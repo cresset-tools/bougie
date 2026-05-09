@@ -36,8 +36,7 @@ fn version_flag_works() {
 fn unimplemented_stub_exits_one() {
     let env = TestEnv::new();
     env.bougie()
-        .arg("php")
-        .arg("dir")
+        .arg("sync")
         .assert()
         .failure()
         .code(1)
