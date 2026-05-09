@@ -67,6 +67,10 @@ version = "1.0"
 default-features = false
 features = ["std", "fs"]
 
+# URL joining for relative manifest URLs in the index protocol.
+[dependencies.url]
+version = "2.5"
+
 [dependencies.walkdir]
 version = "2.5"
 

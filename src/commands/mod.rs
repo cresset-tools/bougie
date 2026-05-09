@@ -1,4 +1,8 @@
 pub mod cache_dir;
 pub mod init;
 pub mod php_dir;
+pub mod php_find;
+pub mod php_install;
+pub mod php_list;
+pub mod php_uninstall;
 pub mod self_version;

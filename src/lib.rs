@@ -2,13 +2,16 @@ pub mod cli;
 pub mod commands;
 pub mod config;
 pub mod errors;
+pub mod fetch;
 pub mod index;
+pub mod install;
 pub mod lock;
 pub mod output;
 pub mod paths;
 pub mod request;
 pub mod resolve;
 pub mod shim;
+pub mod store;
 pub mod target;
 pub mod version;
 
@@ -29,6 +32,22 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
         Command::Init { toml } => commands::init::run(format, field, toml),
         Command::Cache(CacheCommand::Dir) => commands::cache_dir::run(format, field),
         Command::Php(PhpCommand::Dir) => commands::php_dir::run(format, field),
+        Command::Php(PhpCommand::Install { request, flavor }) => commands::php_install::run(
+            format,
+            field,
+            request.as_deref(),
+            flavor.as_deref(),
+        ),
+        Command::Php(PhpCommand::Uninstall { request, flavor }) => commands::php_uninstall::run(
+            format,
+            field,
+            &request,
+            flavor.as_deref(),
+        ),
+        Command::Php(PhpCommand::List { .. }) => commands::php_list::run(format, field),
+        Command::Php(PhpCommand::Find { request }) => {
+            commands::php_find::run(format, field, request.as_deref())
+        }
         Command::SelfCmd(SelfCommand::Version { short }) => {
             commands::self_version::run(format, field, short)
         }

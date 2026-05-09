@@ -8,8 +8,9 @@
 
 use crate::errors::BougieError;
 use crate::index::verify::Verifier;
-use crate::index::wire::Root;
+use crate::index::wire::{Manifest, Root, Section};
 use eyre::{Result, WrapErr};
+use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -99,6 +100,111 @@ pub fn fetch_root(
 
     let root: Root = serde_json::from_slice(&body).wrap_err("parsing fetched index.json")?;
     Ok(FetchedRoot { root, outcome: FetchOutcome::Refreshed })
+}
+
+/// Fetch a section file, verifying its sha256 against the value the
+/// signed root advertised. Cached files are reused when their hash
+/// matches the expected sha; mismatches force a refetch.
+pub fn fetch_section(
+    client: &reqwest::blocking::Client,
+    host_base_url: &str,
+    cache_root: &Path,
+    target: &str,
+    section_name: &str,
+    expected_sha256: &str,
+) -> Result<Section> {
+    let cache_path = cache_root
+        .join("targets")
+        .join(target)
+        .join("sections")
+        .join(format!("{section_name}.json"));
+    if let Ok(bytes) = fs::read(&cache_path)
+        && hex_sha256(&bytes) == expected_sha256
+    {
+        return serde_json::from_slice(&bytes).wrap_err("parsing cached section");
+    }
+    let url = format!(
+        "{}/targets/{}/sections/{}.json",
+        host_base_url.trim_end_matches('/'),
+        target,
+        section_name
+    );
+    let resp = client
+        .get(&url)
+        .send()
+        .map_err(|e| BougieError::Network(e.to_string()))?;
+    if !resp.status().is_success() {
+        return Err(BougieError::Network(format!("GET {} → {}", url, resp.status())).into());
+    }
+    let body = resp
+        .bytes()
+        .map_err(|e| BougieError::Network(format!("reading body: {e}")))?;
+    if hex_sha256(&body) != expected_sha256 {
+        return Err(BougieError::ManifestHashMismatch.into());
+    }
+    if let Some(parent) = cache_path.parent() {
+        fs::create_dir_all(parent).wrap_err("creating section cache dir")?;
+    }
+    atomic_write(&cache_path, &body)?;
+    serde_json::from_slice(&body).wrap_err("parsing fetched section")
+}
+
+/// Fetch a manifest blob (per §3.3 step 5), cached by sha256.
+pub fn fetch_manifest(
+    client: &reqwest::blocking::Client,
+    host_base_url: &str,
+    cache_root: &Path,
+    target: &str,
+    manifest_url: &str,
+    expected_sha256: &str,
+) -> Result<Manifest> {
+    let cache_path = cache_root.join("manifests").join(format!("{expected_sha256}.json"));
+    if let Ok(bytes) = fs::read(&cache_path)
+        && hex_sha256(&bytes) == expected_sha256
+    {
+        return serde_json::from_slice(&bytes).wrap_err("parsing cached manifest");
+    }
+    let absolute_url = if manifest_url.starts_with("http://") || manifest_url.starts_with("https://")
+    {
+        manifest_url.to_owned()
+    } else {
+        let base = format!(
+            "{}/targets/{}/sections/x.json",
+            host_base_url.trim_end_matches('/'),
+            target
+        );
+        let base = url::Url::parse(&base).wrap_err("synthesizing section URL")?;
+        base.join(manifest_url)
+            .wrap_err("joining manifest URL")?
+            .to_string()
+    };
+    let resp = client
+        .get(&absolute_url)
+        .send()
+        .map_err(|e| BougieError::Network(e.to_string()))?;
+    if !resp.status().is_success() {
+        return Err(BougieError::Network(format!("GET {} → {}", absolute_url, resp.status())).into());
+    }
+    let body = resp
+        .bytes()
+        .map_err(|e| BougieError::Network(format!("reading body: {e}")))?;
+    if hex_sha256(&body) != expected_sha256 {
+        return Err(BougieError::ManifestHashMismatch.into());
+    }
+    if let Some(parent) = cache_path.parent() {
+        fs::create_dir_all(parent).wrap_err("creating manifest cache dir")?;
+    }
+    atomic_write(&cache_path, &body)?;
+    serde_json::from_slice(&body).wrap_err("parsing fetched manifest")
+}
+
+fn hex_sha256(bytes: &[u8]) -> String {
+    let mut s = String::with_capacity(64);
+    for b in Sha256::digest(bytes) {
+        use std::fmt::Write as _;
+        let _ = write!(s, "{b:02x}");
+    }
+    s
 }
 
 fn atomic_write(dest: &Path, bytes: &[u8]) -> Result<()> {

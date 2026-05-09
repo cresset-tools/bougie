@@ -363,6 +363,7 @@ dependencies = [
  "toml_edit",
  "tracing",
  "tracing-subscriber",
+ "url",
  "walkdir",
  "which",
  "winnow",
