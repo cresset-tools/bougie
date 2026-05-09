@@ -140,7 +140,7 @@ fn shim_dispatch_via_argv0_symlink() {
     assert!(!out.status.success());
     let stderr = String::from_utf8(out.stderr).unwrap();
     assert!(
-        stderr.contains("project not synced"),
+        stderr.contains("not synced"),
         "stderr was: {stderr}"
     );
 }

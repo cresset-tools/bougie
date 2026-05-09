@@ -6,3 +6,4 @@ pub mod php_install;
 pub mod php_list;
 pub mod php_uninstall;
 pub mod self_version;
+pub mod sync;

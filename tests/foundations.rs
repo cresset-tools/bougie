@@ -36,7 +36,7 @@ fn version_flag_works() {
 fn unimplemented_stub_exits_one() {
     let env = TestEnv::new();
     env.bougie()
-        .arg("sync")
+        .args(["self", "update"])
         .assert()
         .failure()
         .code(1)

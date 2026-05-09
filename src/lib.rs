@@ -11,6 +11,7 @@ pub mod paths;
 pub mod request;
 pub mod resolve;
 pub mod shim;
+pub mod state;
 pub mod store;
 pub mod target;
 pub mod version;
@@ -30,6 +31,9 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
 
     match cli.command {
         Command::Init { toml } => commands::init::run(format, field, toml),
+        Command::Sync { offline: _, dry_run } => {
+            commands::sync::run(format, field, dry_run)
+        }
         Command::Cache(CacheCommand::Dir) => commands::cache_dir::run(format, field),
         Command::Php(PhpCommand::Dir) => commands::php_dir::run(format, field),
         Command::Php(PhpCommand::Install { request, flavor }) => commands::php_install::run(
