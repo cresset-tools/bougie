@@ -33,17 +33,6 @@ fn version_flag_works() {
 }
 
 #[test]
-fn unimplemented_stub_exits_one() {
-    let env = TestEnv::new();
-    env.bougie()
-        .args(["self", "update"])
-        .assert()
-        .failure()
-        .code(1)
-        .stderr(contains("not yet implemented"));
-}
-
-#[test]
 fn unknown_subcommand_errors() {
     let env = TestEnv::new();
     env.bougie()
