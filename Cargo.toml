@@ -1,0 +1,139 @@
+[package]
+name = "bougie"
+version = "0.1.0"
+edition = "2024"
+description = "uv for PHP — relocatable PHP installs and per-project extension management"
+license = "Apache-2.0 OR MIT"
+repository = "https://github.com/jelle/bougie"
+rust-version = "1.95"
+
+[[bin]]
+name = "bougie"
+path = "src/main.rs"
+
+# CLI & config
+[dependencies.clap]
+version = "4.5"
+default-features = false
+features = ["std", "derive", "help", "usage", "error-context", "suggestions", "wrap_help", "color"]
+
+[dependencies.serde]
+version = "1.0"
+features = ["derive"]
+
+[dependencies.serde_json]
+version = "1.0"
+
+# `toml_edit` reads AND writes TOML preserving comments/formatting.
+# Required by `bougie php pin` writing into a hand-edited bougie.toml.
+[dependencies.toml_edit]
+version = "0.25"
+features = ["serde"]
+
+# HTTP + signature path
+[dependencies.reqwest]
+version = "0.13"
+default-features = false
+features = ["blocking", "rustls", "stream"]
+
+[dependencies.rustls]
+version = "0.23"
+default-features = false
+features = ["std", "tls12", "ring"]
+
+[dependencies.sha2]
+version = "0.10"
+
+# Sigstore root signature verification.
+[dependencies.sigstore]
+version = "0.13"
+default-features = false
+features = ["cosign", "verify", "rustls-tls", "sigstore-trust-root"]
+
+# Filesystem & process
+[dependencies.zstd]
+version = "0.13"
+default-features = false
+
+[dependencies.tar]
+version = "0.4"
+
+[dependencies.tempfile]
+version = "3.10"
+
+[dependencies.fd-lock]
+version = "4.0"
+
+[dependencies.walkdir]
+version = "2.5"
+
+[dependencies.which]
+version = "8.0"
+
+# Strict-XDG dirs on every platform (incl. macOS — does NOT use ~/Library/...).
+# Matches the bougie convention from CLI.md §2.1.
+[dependencies.etcetera]
+version = "0.11"
+
+# Output
+[dependencies.anstream]
+version = "0.6"
+
+[dependencies.anstyle]
+version = "1.0"
+
+[dependencies.indicatif]
+version = "0.18"
+
+[dependencies.tracing]
+version = "0.1"
+
+[dependencies.tracing-subscriber]
+version = "0.3"
+default-features = false
+features = ["std", "fmt", "ansi", "env-filter", "json"]
+
+# Errors
+[dependencies.eyre]
+version = "0.6"
+
+[dependencies.color-eyre]
+version = "0.6"
+
+[dependencies.thiserror]
+version = "2.0"
+
+# Hand-rolled parser combinator (Composer constraint syntax + bougie's
+# §3.5.0 PHP version request grammar). No off-the-shelf crate matches.
+[dependencies.winnow]
+version = "1.0"
+
+[dev-dependencies]
+assert_cmd = "2.0"        # spawn the bougie binary in integration tests
+predicates = "3.1"        # human-readable assertions on its output
+insta = "1.41"            # snapshot tests for `--format json` schemas
+wiremock = "0.6"          # fake index server for end-to-end tests
+tempfile = "3.10"         # already in regular deps; pulled into [dev] too for clarity
+serde_json = "1.0"
+
+[profile.release]
+# Smaller, faster, no panic-unwinder.
+codegen-units = 1
+lto = "fat"
+opt-level = 3
+panic = "abort"
+strip = "symbols"
+
+[profile.dev]
+# Default; mostly here so developers don't get surprised by a tuned profile.
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+# Specific opt-outs from pedantic that aren't worth the churn:
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
