@@ -18,7 +18,7 @@ struct Cli {
     #[arg(short, long, global = true)]
     verbose: bool,
 
-    /// Output format. See spec §9 for the schema contract.
+    /// Output format.
     #[arg(long, global = true, default_value = "text")]
     format: OutputFormat,
 }
@@ -103,17 +103,19 @@ enum ExtCommand {
 
 #[derive(Subcommand, Debug)]
 enum PhpCommand {
+    /// Install a new PHP version
     Install {
         request: Option<String>,
         #[arg(long)]
         flavor: Option<String>,
     },
+    /// Remove a PHP version
     Uninstall {
         request: String,
         #[arg(long)]
         flavor: Option<String>,
     },
-    /// List PHP interpreters: installed + available, side by side.
+    /// List PHP interpreters: installed + available
     List {
         request: Option<String>,
         #[arg(long)]
