@@ -61,8 +61,11 @@ version = "0.4"
 [dependencies.tempfile]
 version = "3.10"
 
-[dependencies.fd-lock]
-version = "4.0"
+# Direct flock(2) for the timeout-aware ExclusiveLock in src/lock.rs.
+[dependencies.rustix]
+version = "1.0"
+default-features = false
+features = ["std", "fs"]
 
 [dependencies.walkdir]
 version = "2.5"

@@ -7,6 +7,7 @@
 
 use eyre::{eyre, Result};
 use std::fmt;
+use std::str::FromStr;
 
 /// A partially-specified version: major, optional minor, optional patch.
 /// Matches the `<version>` form in CLI.md §3.5.0.
@@ -50,6 +51,18 @@ fn parse_component(s: &str, label: &str) -> Result<u32> {
         .map_err(|_| eyre!("invalid {label} version component: {s:?}"))
 }
 
+impl PartialVersion {
+    /// Pad missing minor/patch to 0 to get a fully-qualified version
+    /// suitable for ordering comparisons.
+    pub fn pad(&self) -> Version {
+        Version {
+            major: self.major,
+            minor: self.minor.unwrap_or(0),
+            patch: self.patch.unwrap_or(0),
+        }
+    }
+}
+
 impl fmt::Display for PartialVersion {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.major)?;
@@ -60,6 +73,37 @@ impl fmt::Display for PartialVersion {
             write!(f, ".{p}")?;
         }
         Ok(())
+    }
+}
+
+/// Fully-qualified version: every component present.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct Version {
+    pub major: u32,
+    pub minor: u32,
+    pub patch: u32,
+}
+
+impl Version {
+    pub fn new(major: u32, minor: u32, patch: u32) -> Self {
+        Self { major, minor, patch }
+    }
+}
+
+impl FromStr for Version {
+    type Err = eyre::Report;
+    fn from_str(s: &str) -> Result<Self> {
+        let pv = PartialVersion::parse(s)?;
+        if !pv.is_exact() {
+            return Err(eyre!("not an exact version: {s}"));
+        }
+        Ok(pv.pad())
+    }
+}
+
+impl fmt::Display for Version {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}.{}.{}", self.major, self.minor, self.patch)
     }
 }
 
@@ -113,6 +157,45 @@ impl Constraint {
             0 => Err(eyre!("empty constraint")),
             1 => Ok(anys.swap_remove(0)),
             _ => Ok(Self::Any(anys)),
+        }
+    }
+
+    /// True if `v` satisfies this constraint. Composer caret/tilde
+    /// semantics restricted to bougie's subset (PHP versions, where all
+    /// majors are non-zero).
+    pub fn satisfies(&self, v: Version) -> bool {
+        match self {
+            Self::Op(op, pv) => {
+                let target = pv.pad();
+                match op {
+                    Op::Gte => v >= target,
+                    Op::Lte => v <= target,
+                    Op::Gt => v > target,
+                    Op::Lt => v < target,
+                    Op::Eq => v == target,
+                }
+            }
+            Self::Caret(pv) => {
+                let lo = pv.pad();
+                let hi = Version { major: pv.major + 1, minor: 0, patch: 0 };
+                v >= lo && v < hi
+            }
+            Self::Tilde(pv) => {
+                let lo = pv.pad();
+                let hi = if pv.patch.is_some() {
+                    Version {
+                        major: pv.major,
+                        minor: pv.minor.unwrap_or(0) + 1,
+                        patch: 0,
+                    }
+                } else {
+                    Version { major: pv.major + 1, minor: 0, patch: 0 }
+                };
+                v >= lo && v < hi
+            }
+            Self::Exact(pv) => v == pv.pad(),
+            Self::All(items) => items.iter().all(|c| c.satisfies(v)),
+            Self::Any(items) => items.iter().any(|c| c.satisfies(v)),
         }
     }
 }
@@ -243,5 +326,68 @@ mod tests {
             Constraint::Any(inner) => assert_eq!(inner.len(), 2),
             other => panic!("expected Any, got {other:?}"),
         }
+    }
+
+    fn v(maj: u32, min: u32, p: u32) -> Version {
+        Version::new(maj, min, p)
+    }
+
+    #[test]
+    fn caret_x_y_satisfies_within_minor_range() {
+        let c = Constraint::parse("^8.3").unwrap();
+        assert!(c.satisfies(v(8, 3, 0)));
+        assert!(c.satisfies(v(8, 3, 12)));
+        assert!(c.satisfies(v(8, 4, 0)));
+        assert!(!c.satisfies(v(8, 2, 99)));
+        assert!(!c.satisfies(v(9, 0, 0)));
+    }
+
+    #[test]
+    fn tilde_x_y_z_locks_minor() {
+        let c = Constraint::parse("~8.3.0").unwrap();
+        assert!(c.satisfies(v(8, 3, 0)));
+        assert!(c.satisfies(v(8, 3, 99)));
+        assert!(!c.satisfies(v(8, 4, 0)));
+        assert!(!c.satisfies(v(9, 0, 0)));
+    }
+
+    #[test]
+    fn tilde_x_y_locks_major() {
+        let c = Constraint::parse("~8.3").unwrap();
+        assert!(c.satisfies(v(8, 3, 0)));
+        assert!(c.satisfies(v(8, 4, 99)));
+        assert!(!c.satisfies(v(9, 0, 0)));
+        assert!(!c.satisfies(v(7, 9, 9)));
+    }
+
+    #[test]
+    fn intersection_requires_both() {
+        let c = Constraint::parse(">=8.3,<8.5").unwrap();
+        assert!(c.satisfies(v(8, 3, 0)));
+        assert!(c.satisfies(v(8, 4, 99)));
+        assert!(!c.satisfies(v(8, 5, 0)));
+        assert!(!c.satisfies(v(8, 2, 99)));
+    }
+
+    #[test]
+    fn union_accepts_either() {
+        let c = Constraint::parse("^7.4 || ^8.0").unwrap();
+        assert!(c.satisfies(v(7, 4, 0)));
+        assert!(c.satisfies(v(8, 1, 0)));
+        assert!(!c.satisfies(v(6, 0, 0)));
+        assert!(!c.satisfies(v(9, 0, 0)));
+    }
+
+    #[test]
+    fn exact_matches_full_triple() {
+        let c = Constraint::parse("8.3.12").unwrap();
+        assert!(c.satisfies(v(8, 3, 12)));
+        assert!(!c.satisfies(v(8, 3, 11)));
+    }
+
+    #[test]
+    fn version_from_str_requires_full_triple() {
+        assert!(Version::from_str("8.3.12").is_ok());
+        assert!(Version::from_str("8.3").is_err());
     }
 }
