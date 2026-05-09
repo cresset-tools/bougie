@@ -2,6 +2,7 @@ pub mod cli;
 pub mod commands;
 pub mod config;
 pub mod errors;
+pub mod index;
 pub mod output;
 pub mod paths;
 pub mod request;

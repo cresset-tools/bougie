@@ -115,6 +115,8 @@ insta = "1.41"            # snapshot tests for `--format json` schemas
 wiremock = "0.6"          # fake index server for end-to-end tests
 tempfile = "3.10"         # already in regular deps; pulled into [dev] too for clarity
 serde_json = "1.0"
+base64 = "0.22"           # encode test signatures
+tokio = { version = "1", features = ["rt", "macros"] }  # drive wiremock
 
 [profile.release]
 # Smaller, faster, no panic-unwinder.
