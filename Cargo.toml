@@ -2,7 +2,7 @@
 name = "bougie"
 version = "0.1.0"
 edition = "2024"
-description = "uv for PHP — relocatable PHP installs and per-project extension management"
+description = "PHP toolchain management the luxury way."
 license = "Apache-2.0 OR MIT"
 repository = "https://github.com/jelle/bougie"
 rust-version = "1.95"

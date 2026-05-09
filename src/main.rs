@@ -1,11 +1,19 @@
+use clap::builder::styling::{AnsiColor, Effects, Styles};
 use clap::{Parser, Subcommand};
 use eyre::Result;
 use std::process::ExitCode;
 
-/// `bougie`: uv for PHP. Manages relocatable PHP installs and per-project
-/// extension sets. See CLI.md in the spec repo for the full surface.
+const HELP_STYLES: Styles = Styles::styled()
+    .header(AnsiColor::Magenta.on_default().effects(Effects::BOLD))
+    .usage(AnsiColor::Magenta.on_default().effects(Effects::BOLD))
+    .literal(AnsiColor::BrightMagenta.on_default().effects(Effects::BOLD))
+    .placeholder(AnsiColor::BrightMagenta.on_default())
+    .error(AnsiColor::Red.on_default().effects(Effects::BOLD))
+    .valid(AnsiColor::Green.on_default())
+    .invalid(AnsiColor::Yellow.on_default().effects(Effects::BOLD));
+
 #[derive(Parser, Debug)]
-#[command(name = "bougie", version, about, long_about = None)]
+#[command(name = "bougie", version, about, long_about = None, styles = HELP_STYLES)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -14,7 +22,7 @@ struct Cli {
     #[arg(short, long, global = true)]
     quiet: bool,
 
-    /// Verbose output (resolved URLs, cache hits, timings).
+    /// Verbose output.
     #[arg(short, long, global = true)]
     verbose: bool,
 
@@ -32,9 +40,9 @@ enum OutputFormat {
 
 #[derive(Subcommand, Debug)]
 enum Command {
-    /// Create a new project (`composer.json`, `.bougie/` skeleton).
+    /// Create a new project.
     Init {
-        /// Also create a separate `bougie.toml` instead of using composer.json's `extra.bougie`.
+        /// Place bougie configuration in a bougie.toml file.
         #[arg(long)]
         toml: bool,
     },
@@ -45,20 +53,17 @@ enum Command {
 
     /// Install everything the project requires.
     Sync {
-        /// Refuse network; use only cached state.
+        /// Don't try to download anything, this will fail if there are uncached packages.
         #[arg(long)]
         offline: bool,
-        /// Print the plan, change nothing on disk.
+        /// Show the plan, change nothing on disk.
         #[arg(long)]
         dry_run: bool,
     },
 
     /// Run a command in the project environment.
     Run {
-        /// Skip the implicit `bougie sync` first.
-        #[arg(long)]
-        no_sync: bool,
-        /// Add an ephemeral extension for this invocation.
+        /// Add a temporary extension for this invocation.
         #[arg(long, value_name = "EXT=VER")]
         with: Vec<String>,
         /// Command and arguments. Must follow `--`.
@@ -70,7 +75,7 @@ enum Command {
     #[command(subcommand)]
     Php(PhpCommand),
 
-    /// Manage the cache and content-addressed store.
+    /// Manage bougie's cache.
     #[command(subcommand)]
     Cache(CacheCommand),
 
@@ -82,11 +87,11 @@ enum Command {
 
 #[derive(Subcommand, Debug)]
 enum ExtCommand {
-    /// Add an extension dep (delegates to `composer require`, then sync).
+    /// Add an extension dependency.
     Add { names: Vec<String> },
-    /// Remove an extension dep (delegates to `composer remove`, then sync).
+    /// Remove an extension dependency.
     Remove { names: Vec<String> },
-    /// List extensions: installed + available, side by side.
+    /// List available extensions.
     List {
         #[arg(long)]
         only_installed: bool,
@@ -103,19 +108,19 @@ enum ExtCommand {
 
 #[derive(Subcommand, Debug)]
 enum PhpCommand {
-    /// Install a new PHP version
+    /// Install a new PHP version.
     Install {
         request: Option<String>,
         #[arg(long)]
         flavor: Option<String>,
     },
-    /// Remove a PHP version
+    /// Remove a PHP version.
     Uninstall {
         request: String,
         #[arg(long)]
         flavor: Option<String>,
     },
-    /// List PHP interpreters: installed + available
+    /// List available PHP interpreters.
     List {
         request: Option<String>,
         #[arg(long)]
@@ -131,9 +136,9 @@ enum PhpCommand {
         #[arg(long)]
         show_urls: bool,
     },
-    /// Print the absolute path to a satisfying interpreter.
+    /// Search for a PHP interpreter.
     Find { request: Option<String> },
-    /// Pin the project's PHP version (writes to bougie.toml or extra.bougie).
+    /// Pin the project's PHP version.
     Pin {
         request: String,
         #[arg(long, conflicts_with = "composer")]
@@ -143,43 +148,36 @@ enum PhpCommand {
     },
     /// Refresh installed interpreters to the latest published patch.
     Upgrade { minor: Option<String> },
-    /// Print the directory that PHP interpreters are installed in.
+    /// Show the PHP interpreter installation directory.
     Dir,
 }
 
 #[derive(Subcommand, Debug)]
 enum CacheCommand {
-    /// Wipe `$BOUGIE_CACHE` (index, manifests, partial blob downloads).
+    /// Wipe the full cache.
     Clean,
-    /// GC unreachable store paths from `$BOUGIE_HOME/store/`.
+    /// Remove unneeded library files.
     Prune {
         #[arg(long)]
         dry_run: bool,
         #[arg(long)]
         prune_projects: bool,
     },
-    /// Print `$BOUGIE_CACHE`.
+    /// Show the location of the cache directory.
     Dir,
-    /// Print sizes of cache, store, installs.
+    /// Show the cache size.
     Size,
 }
 
 #[derive(Subcommand, Debug)]
 enum SelfCommand {
-    Update {
-        #[arg(long)]
-        check: bool,
-    },
+    /// Update bougie
+    Update,
+    /// Display bougie's version
     Version {
-        /// Print the supported `--format` schema names.
+        /// Only show the version.
         #[arg(long)]
-        schemas: bool,
-        /// Print the published telemetry schema.
-        #[arg(long)]
-        telemetry_schema: bool,
-        /// Single-value extraction.
-        #[arg(long, value_name = "PATH")]
-        field: Option<String>,
+        short: bool,
     },
 }
 
