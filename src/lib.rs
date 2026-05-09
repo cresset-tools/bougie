@@ -1,10 +1,13 @@
 pub mod cli;
 pub mod commands;
+pub mod config;
 pub mod errors;
 pub mod output;
 pub mod paths;
+pub mod request;
 pub mod shim;
 pub mod target;
+pub mod version;
 
 pub use cli::{Cli, Command, OutputFormat};
 pub use errors::{exit_code_for, BougieError};
@@ -20,6 +23,7 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
     let field = cli.field.as_deref();
 
     match cli.command {
+        Command::Init { toml } => commands::init::run(format, field, toml),
         Command::Cache(CacheCommand::Dir) => commands::cache_dir::run(format, field),
         Command::Php(PhpCommand::Dir) => commands::php_dir::run(format, field),
         Command::SelfCmd(SelfCommand::Version { short }) => {
