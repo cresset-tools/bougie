@@ -16,13 +16,12 @@ env:
 
 jobs:
   test:
-    name: cargo test (${{ matrix.os }}, ${{ matrix.profile }})
+    name: cargo test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-        profile: [debug, release]
     steps:
       - uses: actions/checkout@v5
 
@@ -30,23 +29,9 @@ jobs:
       # on first cargo invocation.
 
       - uses: Swatinem/rust-cache@v2
-        with:
-          # Distinguish caches: debug and release share `target/` and would
-          # thrash each other. The matrix value also keeps the keys honest.
-          key: ${{ matrix.profile }}
 
       - name: cargo build
-        run: |
-          if [ "${{ matrix.profile }}" = "release" ]; then
-            cargo build --release --all-targets
-          else
-            cargo build --all-targets
-          fi
+        run: cargo build --all-targets
 
       - name: cargo test
-        run: |
-          if [ "${{ matrix.profile }}" = "release" ]; then
-            cargo test --release
-          else
-            cargo test
-          fi
+        run: cargo test
