@@ -54,16 +54,16 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
             commands::cache_prune::run(format, field, dry_run)
         }
         Command::Php(PhpCommand::Dir) => commands::php_dir::run(format, field),
-        Command::Php(PhpCommand::Install { request, flavor }) => commands::php_install::run(
+        Command::Php(PhpCommand::Install { requests, flavor }) => commands::php_install::run(
             format,
             field,
-            request.as_deref(),
+            &requests,
             flavor.as_deref(),
         ),
-        Command::Php(PhpCommand::Uninstall { request, flavor }) => commands::php_uninstall::run(
+        Command::Php(PhpCommand::Uninstall { requests, flavor }) => commands::php_uninstall::run(
             format,
             field,
-            &request,
+            &requests,
             flavor.as_deref(),
         ),
         Command::Php(PhpCommand::List { .. }) => commands::php_list::run(format, field),

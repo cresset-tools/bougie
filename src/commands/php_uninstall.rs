@@ -13,36 +13,55 @@ use std::process::ExitCode;
 #[derive(Debug, Serialize)]
 pub struct UninstallResult {
     pub schema_version: u32,
-    pub removed: PathBuf,
+    pub removed: Vec<RemovedEntry>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RemovedEntry {
+    pub path: PathBuf,
 }
 
 impl Render for UninstallResult {
     fn render_text(&self, w: &mut dyn Write) -> io::Result<()> {
-        writeln!(w, "removed {}", self.removed.display())
+        for entry in &self.removed {
+            writeln!(w, "removed {}", entry.path.display())?;
+        }
+        Ok(())
     }
 }
 
 pub fn run(
     format: OutputFormat,
     field: Option<&str>,
-    request_str: &str,
+    request_strs: &[String],
     flavor_arg: Option<&str>,
 ) -> Result<ExitCode> {
-    let request = parse_request(request_str)?;
     let paths = Paths::from_env()?;
-    let dest = locate_install(&paths, &request, flavor_arg)?;
-    if !dest.exists() {
-        return Err(BougieError::Resolution {
-            kind: "uninstall".into(),
-            detail: format!("no install directory at {}", dest.display()),
+
+    let mut targets = Vec::with_capacity(request_strs.len());
+    for s in request_strs {
+        let request = parse_request(s)?;
+        let dest = locate_install(&paths, &request, flavor_arg)?;
+        if !dest.exists() {
+            return Err(BougieError::Resolution {
+                kind: "uninstall".into(),
+                detail: format!("no install directory at {}", dest.display()),
+            }
+            .into());
         }
-        .into());
+        targets.push(dest);
     }
-    std::fs::remove_dir_all(&dest).map_err(|e| BougieError::Filesystem {
-        operation: format!("removing {}", dest.display()),
-        detail: e.to_string(),
-    })?;
-    let result = UninstallResult { schema_version: 1, removed: dest };
+
+    let mut removed = Vec::with_capacity(targets.len());
+    for dest in targets {
+        std::fs::remove_dir_all(&dest).map_err(|e| BougieError::Filesystem {
+            operation: format!("removing {}", dest.display()),
+            detail: e.to_string(),
+        })?;
+        removed.push(RemovedEntry { path: dest });
+    }
+
+    let result = UninstallResult { schema_version: 1, removed };
     emit(format, field, &result)?;
     Ok(ExitCode::SUCCESS)
 }

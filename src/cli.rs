@@ -136,16 +136,17 @@ pub enum ExtCommand {
 pub enum PhpCommand {
     /// Install a new PHP version.
     Install {
-        /// The PHP version to install (e.g. `8.3`, `8.3.12`, `8.3+zts`).
-        request: Option<String>,
+        /// The PHP version(s) to install (e.g. `8.3`, `8.3.12`, `8.3+zts`).
+        requests: Vec<String>,
         /// Build flavor to install [possible values: nts, nts-debug, zts, zts-debug].
         #[arg(long)]
         flavor: Option<String>,
     },
     /// Remove a PHP version.
     Uninstall {
-        /// The PHP version to uninstall.
-        request: String,
+        /// The PHP version(s) to uninstall.
+        #[arg(required = true)]
+        requests: Vec<String>,
         /// Build flavor to uninstall [possible values: nts, nts-debug, zts, zts-debug].
         #[arg(long)]
         flavor: Option<String>,

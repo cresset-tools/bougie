@@ -14,6 +14,11 @@ use std::process::ExitCode;
 #[derive(Debug, Serialize)]
 pub struct InstallResult {
     pub schema_version: u32,
+    pub installed: Vec<InstallEntry>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct InstallEntry {
     pub version: String,
     pub flavor: String,
     pub path: PathBuf,
@@ -22,40 +27,54 @@ pub struct InstallResult {
 
 impl Render for InstallResult {
     fn render_text(&self, w: &mut dyn Write) -> io::Result<()> {
-        let verb = if self.already_present { "already" } else { "installed" };
-        writeln!(
-            w,
-            "{verb} php {}-{} at {}",
-            self.version,
-            self.flavor,
-            self.path.display()
-        )
+        for entry in &self.installed {
+            let verb = if entry.already_present { "already" } else { "installed" };
+            writeln!(
+                w,
+                "{verb} php {}-{} at {}",
+                entry.version,
+                entry.flavor,
+                entry.path.display()
+            )?;
+        }
+        Ok(())
     }
 }
 
 pub fn run(
     format: OutputFormat,
     field: Option<&str>,
-    request_str: Option<&str>,
+    request_strs: &[String],
     flavor_arg: Option<&str>,
 ) -> Result<ExitCode> {
-    let request = match request_str {
-        Some(s) => parse_request(s)?,
-        None => default_latest_request(),
-    };
     let flavor = match flavor_arg {
         Some(s) => Some(parse_flavor(s)?),
         None => None,
     };
     let paths = Paths::from_env()?;
-    let installed: InstalledPhp = install_php(&paths, &request, flavor, ResolveOptions::default())?;
-    let result = InstallResult {
-        schema_version: 1,
-        version: installed.version.to_string(),
-        flavor: installed.flavor.to_string(),
-        path: installed.install_path,
-        already_present: installed.already_present,
+
+    let requests: Vec<Request> = if request_strs.is_empty() {
+        vec![default_latest_request()]
+    } else {
+        request_strs
+            .iter()
+            .map(|s| parse_request(s))
+            .collect::<Result<_>>()?
     };
+
+    let mut installed = Vec::with_capacity(requests.len());
+    for request in &requests {
+        let info: InstalledPhp =
+            install_php(&paths, request, flavor, ResolveOptions::default())?;
+        installed.push(InstallEntry {
+            version: info.version.to_string(),
+            flavor: info.flavor.to_string(),
+            path: info.install_path,
+            already_present: info.already_present,
+        });
+    }
+
+    let result = InstallResult { schema_version: 1, installed };
     emit(format, field, &result)?;
     Ok(ExitCode::SUCCESS)
 }
