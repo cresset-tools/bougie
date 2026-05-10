@@ -214,11 +214,13 @@ fn install_then_list_then_find_then_uninstall() {
         .success()
         .stdout(contains("removed"));
 
-    // list now empty
+    // After uninstall the bare `list` no longer shows the install row,
+    // but the index still advertises 8.3.12 as available. `--only-installed`
+    // is the right flag to ask "what's on disk?".
     env.bougie()
         .env("BOUGIE_INDEX_URL", fx.server.uri())
         .env("BOUGIE_TRUST_ROOT_PATH", &trust_path)
-        .args(["php", "list"])
+        .args(["php", "list", "--only-installed"])
         .assert()
         .success()
         .stdout(contains("no PHP interpreters installed"));

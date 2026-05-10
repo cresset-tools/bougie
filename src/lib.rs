@@ -66,7 +66,27 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
             &requests,
             flavor.as_deref(),
         ),
-        Command::Php(PhpCommand::List { .. }) => commands::php_list::run(format, field),
+        Command::Php(PhpCommand::List {
+            request,
+            only_installed,
+            only_available,
+            all_versions,
+            all_platforms,
+            all_arches,
+            show_urls,
+        }) => commands::php_list::run(
+            format,
+            field,
+            commands::php_list::Options {
+                request: request.as_deref(),
+                only_installed,
+                only_available,
+                all_versions,
+                all_platforms,
+                all_arches,
+                show_urls,
+            },
+        ),
         Command::Php(PhpCommand::Find { request }) => {
             commands::php_find::run(format, field, request.as_deref())
         }
