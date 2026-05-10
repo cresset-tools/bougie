@@ -1,6 +1,6 @@
 use crate::cli::OutputFormat;
-use crate::composer::fetch::{build_client, fetch_channels, ChannelEntry};
-use crate::output::{emit, Render};
+use crate::composer::fetch::{build_client, fetch_channels};
+use crate::output::{emit_paged, Render};
 use crate::paths::Paths;
 use eyre::{Result, WrapErr};
 use serde::Serialize;
@@ -12,8 +12,8 @@ use std::process::ExitCode;
 pub struct ListResult {
     pub schema_version: u32,
     pub installed: Vec<String>,
-    pub stable_latest: Option<String>,
-    pub preview_latest: Option<String>,
+    pub stable: Vec<String>,
+    pub preview: Vec<String>,
 }
 
 impl Render for ListResult {
@@ -25,11 +25,11 @@ impl Render for ListResult {
                 writeln!(w, "installed  {v}")?;
             }
         }
-        if let Some(s) = &self.stable_latest {
-            writeln!(w, "available  {s} (stable)")?;
+        for v in &self.stable {
+            writeln!(w, "available  {v} (stable)")?;
         }
-        if let Some(p) = &self.preview_latest {
-            writeln!(w, "available  {p} (preview)")?;
+        for v in &self.preview {
+            writeln!(w, "available  {v} (preview)")?;
         }
         Ok(())
     }
@@ -41,15 +41,10 @@ pub fn run(format: OutputFormat, field: Option<&str>) -> Result<ExitCode> {
 
     // The available view is best-effort: failure to reach getcomposer.org
     // (or a stale cache) shouldn't make `bougie composer list` unusable.
-    let (stable_latest, preview_latest) = fetch_available(&paths).unwrap_or((None, None));
+    let (stable, preview) = fetch_available(&paths).unwrap_or((Vec::new(), Vec::new()));
 
-    let result = ListResult {
-        schema_version: 1,
-        installed,
-        stable_latest,
-        preview_latest,
-    };
-    emit(format, field, &result)?;
+    let result = ListResult { schema_version: 1, installed, stable, preview };
+    emit_paged(format, field, &result)?;
     Ok(ExitCode::SUCCESS)
 }
 
@@ -76,15 +71,11 @@ fn list_installed(paths: &Paths) -> Result<Vec<String>> {
     Ok(out.into_iter().collect())
 }
 
-fn fetch_available(paths: &Paths) -> Result<(Option<String>, Option<String>)> {
+fn fetch_available(paths: &Paths) -> Result<(Vec<String>, Vec<String>)> {
     let client = build_client()?;
     let channels = fetch_channels(&client, paths)?;
     Ok((
-        first_version(&channels.stable),
-        first_version(&channels.preview),
+        channels.stable.into_iter().map(|e| e.version).collect(),
+        channels.preview.into_iter().map(|e| e.version).collect(),
     ))
-}
-
-fn first_version(entries: &[ChannelEntry]) -> Option<String> {
-    entries.iter().next().map(|e| e.version.clone())
 }

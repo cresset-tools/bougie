@@ -20,20 +20,80 @@ pub trait Render: Serialize {
 pub fn emit<R: Render>(format: OutputFormat, field: Option<&str>, result: &R) -> Result<()> {
     let stdout = io::stdout();
     let mut w = stdout.lock();
-    if let Some(path) = field {
-        write_field(&mut w, result, path)
-    } else {
-        match format {
-            OutputFormat::Text => {
-                result.render_text(&mut w)?;
-            }
-            OutputFormat::JsonV1 => {
-                serde_json::to_writer(&mut w, result)?;
-                writeln!(w)?;
-            }
-        }
-        Ok(())
+    write_result(&mut w, format, field, result)
+}
+
+/// Like `emit`, but pipes the rendered output through `$PAGER` (default
+/// `less`) when stdout is a terminal and the user isn't extracting a
+/// field or asking for JSON. Falls back to direct stdout if the pager
+/// can't be spawned.
+pub fn emit_paged<R: Render>(format: OutputFormat, field: Option<&str>, result: &R) -> Result<()> {
+    use std::io::IsTerminal;
+
+    let want_pager = field.is_none()
+        && matches!(format, OutputFormat::Text)
+        && io::stdout().is_terminal();
+    if !want_pager {
+        return emit(format, field, result);
     }
+
+    let pager = std::env::var("PAGER").unwrap_or_else(|_| "less".into());
+    let pager = pager.trim();
+    if pager.is_empty() || pager == "cat" {
+        return emit(format, field, result);
+    }
+
+    let mut parts = pager.split_whitespace();
+    let Some(cmd) = parts.next() else {
+        return emit(format, field, result);
+    };
+    let args: Vec<&str> = parts.collect();
+
+    let mut child_cmd = std::process::Command::new(cmd);
+    child_cmd
+        .args(&args)
+        .stdin(std::process::Stdio::piped());
+    // Match git's defaults: quit-if-one-screen, raw-control-chars,
+    // no-init. Only set LESS if the user hasn't already.
+    if std::env::var_os("LESS").is_none() {
+        child_cmd.env("LESS", "FRX");
+    }
+    let mut child = match child_cmd.spawn() {
+        Ok(c) => c,
+        Err(_) => return emit(format, field, result),
+    };
+    {
+        let mut w = child.stdin.take().expect("piped stdin");
+        // Ignore broken-pipe errors: the user may have quit the pager.
+        if let Err(e) = write_result(&mut w, format, field, result)
+            && e.downcast_ref::<io::Error>()
+                .is_none_or(|ioe| ioe.kind() != io::ErrorKind::BrokenPipe)
+        {
+            let _ = child.wait();
+            return Err(e);
+        }
+    }
+    let _ = child.wait();
+    Ok(())
+}
+
+fn write_result<W: Write, R: Render>(
+    w: &mut W,
+    format: OutputFormat,
+    field: Option<&str>,
+    result: &R,
+) -> Result<()> {
+    if let Some(path) = field {
+        return write_field(w, result, path);
+    }
+    match format {
+        OutputFormat::Text => result.render_text(w)?,
+        OutputFormat::JsonV1 => {
+            serde_json::to_writer(&mut *w, result)?;
+            writeln!(w)?;
+        }
+    }
+    Ok(())
 }
 
 fn write_field<W: Write, R: Serialize>(w: &mut W, value: &R, path: &str) -> Result<()> {
