@@ -18,6 +18,11 @@ jobs:
   # On every push to main: open or update a "release PR" that bumps the
   # version and updates CHANGELOG.md from the commits since the last
   # release. Merging that PR is the signal to publish.
+  #
+  # Uses the `PR_BOT` PAT instead of `GITHUB_TOKEN` so the PR it opens
+  # is authored by an account that *can* trigger other workflows —
+  # PRs opened by `GITHUB_TOKEN` are silenced by GitHub's anti-recursion
+  # rule, which would mean `ci.yml` never runs on release PRs.
   release-plz-pr:
     name: release-plz / release-pr
     runs-on: ubuntu-latest
@@ -25,16 +30,22 @@ jobs:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
+          token: ${{ secrets.PR_BOT }}
       - uses: MarcoIeni/release-plz-action@v0.5
         with:
           command: release-pr
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.PR_BOT }}
 
   # On every push to main: if Cargo.toml's version is ahead of the
   # latest tag (i.e. a release PR has just landed, or someone bumped
   # manually), tag and publish a GitHub release. Idempotent — does
   # nothing when there's nothing new to release.
+  #
+  # Also uses `PR_BOT` so the `release: published` event is authored by
+  # a non-`GITHUB_TOKEN` actor and can fan out to a future binary-build
+  # workflow that listens for it.
+  #
   # `cargo publish` is disabled in release-plz.toml since bougie isn't
   # on crates.io.
   release-plz-release:
@@ -44,14 +55,9 @@ jobs:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
+          token: ${{ secrets.PR_BOT }}
       - uses: MarcoIeni/release-plz-action@v0.5
         with:
           command: release
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-# Note: PRs opened by the default `GITHUB_TOKEN` do NOT trigger other
-# workflows (a GitHub safety guard against recursion). So `ci.yml`
-# won't run on release-plz's PRs out of the box. To enable that,
-# replace `secrets.GITHUB_TOKEN` above with a PAT or a GitHub App
-# token that has `contents:write` + `pull-requests:write`.
+          GITHUB_TOKEN: ${{ secrets.PR_BOT }}
