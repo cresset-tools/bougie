@@ -30,12 +30,22 @@ pub struct FetchedRoot {
 
 /// Fetch (or revalidate) the root index. On success, the cache is up
 /// to date and the parsed root is returned.
-pub fn fetch_root(
+///
+/// `build_verifier` is invoked lazily — only when the server returns a
+/// fresh body that needs to be verified. On a 304 the cached signed
+/// bytes are reused as-is and no verifier is constructed. This matters
+/// for callers that pay a non-trivial cost for verifier construction
+/// (e.g. the production Sigstore Bundle verifier walks the public-good
+/// TUF trust root over the network).
+pub fn fetch_root<F>(
     client: &reqwest::blocking::Client,
     host_base_url: &str,
     cache_root: &Path,
-    verifier: &dyn Verifier,
-) -> Result<FetchedRoot> {
+    build_verifier: F,
+) -> Result<FetchedRoot>
+where
+    F: FnOnce() -> Result<Box<dyn Verifier>>,
+{
     fs::create_dir_all(cache_root)
         .wrap_err_with(|| format!("creating {}", cache_root.display()))?;
 
@@ -85,6 +95,7 @@ pub fn fetch_root(
         .bytes()
         .map_err(|e| net_io(format!("reading signature body of {sig_url}"), &e))?;
 
+    let verifier = build_verifier()?;
     verifier.verify(&url, &body, &sig_bytes)?;
 
     // Atomic writes (rename within cache_root, same FS).

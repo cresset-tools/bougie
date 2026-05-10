@@ -53,7 +53,6 @@ pub fn install_php(
     // Lock the global store before mutating anything.
     let _guard = ExclusiveGuard::acquire(&paths.global_lock(), LOCK_TIMEOUT)?;
 
-    let verifier = build_verifier()?;
     let client = reqwest::blocking::Client::builder()
         .build()
         .map_err(|e| BougieError::Network {
@@ -62,7 +61,7 @@ pub fn install_php(
         })?;
 
     let cache_root = paths.cache_index(&host_to_dirname(&host));
-    let fetched = fetch_root(&client, &host, &cache_root, verifier.as_ref())?;
+    let fetched = fetch_root(&client, &host, &cache_root, build_verifier)?;
     let target_entry = fetched.root.targets.get(&target).ok_or_else(|| {
         let available: Vec<String> = fetched.root.targets.keys().cloned().collect();
         BougieError::UnknownTarget {
