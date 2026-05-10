@@ -1,7 +1,8 @@
 //! Phase 4: index root fetch + signature verification.
 
 use base64::Engine;
-use bougie::index::{DetachedEcdsa, FetchOutcome, fetch_root};
+use bougie::index::{DetachedEcdsa, FetchOutcome, Verifier, fetch_root};
+use eyre::Result;
 use sigstore::crypto::signing_key::ecdsa::{ECDSAKeys, EllipticCurve};
 use tempfile::TempDir;
 use wiremock::matchers::{header, method, path};
@@ -53,6 +54,13 @@ fn rt() -> tokio::runtime::Runtime {
         .unwrap()
 }
 
+/// `fetch_root` takes a `FnOnce()` factory now (the verifier is built
+/// lazily, only when there's a fresh body to verify). This wraps the
+/// detached-ECDSA constructor so each call site stays one line.
+fn make_verifier(pem: &[u8]) -> impl FnOnce() -> Result<Box<dyn Verifier>> + use<'_> {
+    move || Ok(Box::new(DetachedEcdsa::from_pem(pem)?) as Box<dyn Verifier>)
+}
+
 #[test]
 fn fetch_root_refreshes_on_first_call() {
     let runtime = rt();
@@ -77,11 +85,15 @@ fn fetch_root_refreshes_on_first_call() {
     });
 
     let cache = TempDir::new().unwrap();
-    // (verifier built directly from PEM)
-    let verifier = DetachedEcdsa::from_pem(fx.pubkey_pem.as_bytes()).unwrap();
     let client = reqwest::blocking::Client::new();
 
-    let out = fetch_root(&client, &fx.server.uri(), cache.path(), &verifier).unwrap();
+    let out = fetch_root(
+        &client,
+        &fx.server.uri(),
+        cache.path(),
+        make_verifier(fx.pubkey_pem.as_bytes()),
+    )
+    .unwrap();
     assert_eq!(out.outcome, FetchOutcome::Refreshed);
     assert_eq!(out.root.schema, 1);
 
@@ -123,14 +135,24 @@ fn fetch_root_uses_304_on_revalidation() {
     });
 
     let cache = TempDir::new().unwrap();
-    // (verifier built directly from PEM)
-    let verifier = DetachedEcdsa::from_pem(fx.pubkey_pem.as_bytes()).unwrap();
     let client = reqwest::blocking::Client::new();
 
-    let first = fetch_root(&client, &fx.server.uri(), cache.path(), &verifier).unwrap();
+    let first = fetch_root(
+        &client,
+        &fx.server.uri(),
+        cache.path(),
+        make_verifier(fx.pubkey_pem.as_bytes()),
+    )
+    .unwrap();
     assert_eq!(first.outcome, FetchOutcome::Refreshed);
 
-    let second = fetch_root(&client, &fx.server.uri(), cache.path(), &verifier).unwrap();
+    let second = fetch_root(
+        &client,
+        &fx.server.uri(),
+        cache.path(),
+        make_verifier(fx.pubkey_pem.as_bytes()),
+    )
+    .unwrap();
     assert_eq!(second.outcome, FetchOutcome::Cached);
 }
 
@@ -157,10 +179,14 @@ fn tampered_body_fails_signature_check() {
     });
 
     let cache = TempDir::new().unwrap();
-    // (verifier built directly from PEM)
-    let verifier = DetachedEcdsa::from_pem(fx.pubkey_pem.as_bytes()).unwrap();
     let client = reqwest::blocking::Client::new();
-    let err = fetch_root(&client, &fx.server.uri(), cache.path(), &verifier).unwrap_err();
+    let err = fetch_root(
+        &client,
+        &fx.server.uri(),
+        cache.path(),
+        make_verifier(fx.pubkey_pem.as_bytes()),
+    )
+    .unwrap_err();
     let msg = err.to_string();
     assert!(msg.contains("could not verify index signature"), "msg: {msg}");
     assert!(msg.contains(&fx.server.uri()), "msg: {msg}");
@@ -179,10 +205,14 @@ fn http_error_maps_to_network_failure() {
     });
 
     let cache = TempDir::new().unwrap();
-    // (verifier built directly from PEM)
-    let verifier = DetachedEcdsa::from_pem(fx.pubkey_pem.as_bytes()).unwrap();
     let client = reqwest::blocking::Client::new();
-    let err = fetch_root(&client, &fx.server.uri(), cache.path(), &verifier).unwrap_err();
+    let err = fetch_root(
+        &client,
+        &fx.server.uri(),
+        cache.path(),
+        make_verifier(fx.pubkey_pem.as_bytes()),
+    )
+    .unwrap_err();
     assert!(err.to_string().contains("500"));
 }
 
