@@ -75,6 +75,7 @@ pub fn exec(role: Role) -> Result<ExitCode> {
                 .args(&args)
                 .arg0(&bin)
                 .env("PHP_INI_SCAN_DIR", &conf_d)
+                .env("PHP_BINARY", &bin)
                 .exec();
             Err(err.into())
         }
@@ -100,15 +101,17 @@ pub fn exec(role: Role) -> Result<ExitCode> {
                     php_bin.display()
                 ));
             }
-            // Place the phar as argv[1] so $_SERVER['argv'][0] inside
-            // the PHP script is "composer", not the phar path.
             let mut composer_args: Vec<std::ffi::OsString> = Vec::with_capacity(args.len() + 1);
             composer_args.push(phar.into_os_string());
             composer_args.extend(args);
+            // PHP_BINARY env var pins the interpreter for child `@php`
+            // scripts: without it, Symfony's PhpExecutableFinder falls
+            // through to a PATH search and finds the bougie shim.
             let err = std::process::Command::new(&php_bin)
                 .args(&composer_args)
                 .arg0("composer")
                 .env("PHP_INI_SCAN_DIR", &conf_d)
+                .env("PHP_BINARY", &php_bin)
                 .exec();
             Err(err.into())
         }
