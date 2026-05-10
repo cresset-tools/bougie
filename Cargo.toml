@@ -11,6 +11,18 @@ rust-version = "1.95"
 name = "bougie"
 path = "src/main.rs"
 
+[features]
+default = ["dev-trust-root"]
+# Compile in the `BOUGIE_TRUST_ROOT_PATH` override: when set, the
+# verifier swaps the production Sigstore Bundle path for a detached
+# ECDSA P-256 key at the pointed-to PEM. Used by the integration
+# test harness (which can't reach the live Sigstore TUF root) and
+# operators running a private index with their own signing key.
+# A future `cargo install --no-default-features` (or a release
+# pipeline that does the same) ships a binary where the env var is
+# inert and only the live Sigstore path is reachable.
+dev-trust-root = []
+
 # CLI & config
 [dependencies.clap]
 version = "4.5"

@@ -9,10 +9,14 @@
 //!    identity to `cresset-tools/php-build-standalone` issued by
 //!    GitHub Actions.
 //! 2. **Local override (detached ECDSA).** When `BOUGIE_TRUST_ROOT_PATH`
-//!    is set in non-release builds, we treat the sidecar as a base64
-//!    ECDSA P-256 signature against the PEM public key at that path.
-//!    This is what the test harness uses; never reachable in release
-//!    builds.
+//!    is set, we treat the sidecar as a base64 ECDSA P-256 signature
+//!    against the PEM public key at that path. Gated by the
+//!    `dev-trust-root` Cargo feature (default on); a release binary
+//!    built with `--no-default-features` ignores the env var and only
+//!    speaks Sigstore Bundle. The integration test harness uses this
+//!    path because it can't reach the live Sigstore Public Good trust
+//!    root, and operators running a private index with their own key
+//!    can use it too.
 
 use crate::errors::BougieError;
 use eyre::{Result, WrapErr};
@@ -45,10 +49,12 @@ pub trait Verifier {
 }
 
 /// Decide which verifier to construct based on environment. Production
-/// path: Sigstore bundle. Test override (`BOUGIE_TRUST_ROOT_PATH` in
-/// debug/test builds): detached ECDSA against the pinned PEM.
+/// path: Sigstore bundle. Override (`BOUGIE_TRUST_ROOT_PATH`, only
+/// honored when the `dev-trust-root` feature is on — default in cargo,
+/// off in production binaries built with `--no-default-features`):
+/// detached ECDSA against the pinned PEM.
 pub fn build_verifier() -> Result<Box<dyn Verifier>> {
-    if (cfg!(debug_assertions) || cfg!(test))
+    if cfg!(feature = "dev-trust-root")
         && let Some(path) = std::env::var_os("BOUGIE_TRUST_ROOT_PATH")
     {
         let bytes = std::fs::read(&path).wrap_err_with(|| {
@@ -67,7 +73,7 @@ pub struct TrustDescription {
 }
 
 pub fn describe_trust() -> TrustDescription {
-    if (cfg!(debug_assertions) || cfg!(test))
+    if cfg!(feature = "dev-trust-root")
         && let Some(path) = std::env::var_os("BOUGIE_TRUST_ROOT_PATH")
     {
         let fingerprint = std::fs::read(&path)
@@ -106,7 +112,7 @@ impl SigstoreBundleVerifier {
                 url: "(initialization)".into(),
                 trust_root_fingerprint: "sigstore-public-good".into(),
                 reason: format!("could not initialize Sigstore TUF trust root: {e}"),
-                hint: "check network connectivity to the Sigstore Public Good Instance, or set BOUGIE_TRUST_ROOT_PATH for a local override (debug builds only)".into(),
+                hint: "check network connectivity to the Sigstore Public Good Instance, or set BOUGIE_TRUST_ROOT_PATH for a local override (requires the `dev-trust-root` feature, on by default)".into(),
             }
         })?;
         Ok(Self { inner })
