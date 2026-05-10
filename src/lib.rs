@@ -37,7 +37,11 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
         }
         Command::Ext(cli::ExtCommand::Add { names }) => commands::ext_add_remove::add(format, field, names),
         Command::Ext(cli::ExtCommand::Remove { names }) => commands::ext_add_remove::remove(format, field, names),
-        Command::Ext(cli::ExtCommand::List { .. }) => commands::ext_list::run(format, field),
+        Command::Ext(cli::ExtCommand::List {
+            only_installed,
+            only_available,
+            ..
+        }) => commands::ext_list::run(format, field, only_installed, only_available),
         Command::Cache(CacheCommand::Dir) => commands::cache_dir::run(format, field),
         Command::Cache(CacheCommand::Clean) => commands::cache_clean::run(format, field),
         Command::Cache(CacheCommand::Size) => commands::cache_size::run(format, field),

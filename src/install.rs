@@ -18,7 +18,7 @@ use eyre::{eyre, Result};
 use std::path::PathBuf;
 use std::time::Duration;
 
-const DEFAULT_INDEX_URL: &str = "https://index.bougie.tools";
+pub const DEFAULT_INDEX_URL: &str = "https://index.bougie.tools";
 const SECTION_NAME: &str = "interpreter/php";
 const LOCK_TIMEOUT: Duration = Duration::from_mins(1);
 
@@ -131,7 +131,7 @@ fn pick_flavor(in_request: Option<Flavor>, flag: Option<Flavor>) -> Result<Flavo
     }
 }
 
-fn host_to_dirname(host: &str) -> String {
+pub fn host_to_dirname(host: &str) -> String {
     // Strip scheme + sanitize: "https://idx.example.com" → "idx.example.com".
     let h = host.trim_end_matches('/');
     let stripped = h
