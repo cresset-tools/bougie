@@ -28,6 +28,9 @@ fn cache_size_reports_zero_for_empty_env() {
 
 #[test]
 fn ext_list_reads_composer_extensions() {
+    // The renderer strips the `ext-` prefix to match how every other
+    // bougie surface refers to extensions (`bougie ext add xdebug`,
+    // not `ext-xdebug`).
     let env = TestEnv::new();
     let proj = tempfile::TempDir::new().unwrap();
     std::fs::write(
@@ -37,11 +40,14 @@ fn ext_list_reads_composer_extensions() {
     .unwrap();
     env.bougie()
         .current_dir(proj.path())
-        .args(["ext", "list"])
+        // --only-installed avoids the network fetch this offline test
+        // can't satisfy.
+        .args(["ext", "list", "--only-installed"])
         .assert()
         .success()
-        .stdout(contains("ext-xdebug"))
-        .stdout(contains("ext-redis"));
+        .stdout(contains("xdebug"))
+        .stdout(contains("redis"))
+        .stdout(contains("required"));
 }
 
 #[test]

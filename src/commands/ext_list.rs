@@ -1,7 +1,11 @@
 use crate::cli::OutputFormat;
 use crate::config::load_project;
 use crate::errors::BougieError;
-use crate::index::{build_verifier, fetch::fetch_root};
+use crate::index::{
+    build_verifier,
+    fetch::{fetch_root, fetch_section},
+    wire::Section,
+};
 use crate::install::{host_to_dirname, DEFAULT_INDEX_URL};
 use crate::output::{emit, Render};
 use crate::paths::Paths;
@@ -16,96 +20,450 @@ use std::process::ExitCode;
 
 const EXTENSION_PREFIX: &str = "extension/";
 
+#[derive(Debug, Clone, Copy)]
+pub struct Options {
+    pub only_installed: bool,
+    pub only_available: bool,
+    pub all_versions: bool,
+    pub all_platforms: bool,
+    pub show_urls: bool,
+}
+
 #[derive(Debug, Serialize)]
 pub struct ListResult {
     pub schema_version: u32,
-    pub required: Vec<String>,
-    pub installed: Vec<String>,
-    pub available: Vec<String>,
+    pub items: Vec<Row>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct Row {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub php_minor: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub flavor: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    pub status: Vec<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
 }
 
 impl Render for ListResult {
     fn render_text(&self, w: &mut dyn Write) -> io::Result<()> {
-        let req: BTreeSet<&str> = self.required.iter().map(String::as_str).collect();
-        let inst: BTreeSet<&str> = self.installed.iter().map(String::as_str).collect();
-        let avail: BTreeSet<&str> = self.available.iter().map(String::as_str).collect();
-        let union: BTreeSet<&str> = req
-            .iter()
-            .chain(inst.iter())
-            .chain(avail.iter())
-            .copied()
-            .collect();
-        if union.is_empty() {
+        if self.items.is_empty() {
             writeln!(w, "no extensions known")?;
             return Ok(());
         }
-        let pad = union.iter().map(|n| n.len()).max().unwrap_or(0);
-        for name in &union {
-            let mut tags: Vec<&str> = Vec::with_capacity(3);
-            if req.contains(name) {
-                tags.push("required");
-            }
-            if inst.contains(name) {
-                tags.push("installed");
-            }
-            if avail.contains(name) {
-                tags.push("available");
-            }
-            writeln!(w, "{name:<pad$}  {}", tags.join(", "), pad = pad)?;
+        let keys: Vec<String> = self.items.iter().map(format_key).collect();
+        let pad = keys.iter().map(String::len).max().unwrap_or(0);
+        for (row, key) in self.items.iter().zip(keys.iter()) {
+            let suffix = match &row.url {
+                Some(u) => u.clone(),
+                None => row.status.join(", "),
+            };
+            writeln!(w, "{key:<pad$}  {suffix}", pad = pad)?;
         }
         Ok(())
     }
 }
 
-/// `bougie ext list` — combine three views of extensions for the project:
-/// required (composer.json `require` ext-* entries), installed (`.so`
-/// files on disk for the synced PHP), and available (sections the index
-/// advertises for the host target).
-pub fn run(
-    format: OutputFormat,
-    field: Option<&str>,
-    only_installed: bool,
-    only_available: bool,
-) -> Result<ExitCode> {
+fn format_key(row: &Row) -> String {
+    let mut s = row.name.clone();
+    if let Some(v) = &row.version {
+        s.push('-');
+        s.push_str(v);
+    }
+    if let Some(m) = &row.php_minor {
+        s.push_str("+php");
+        s.push_str(&m.replace('.', ""));
+    }
+    if let Some(f) = &row.flavor {
+        s.push('-');
+        s.push_str(f);
+    }
+    if let Some(t) = &row.target {
+        s.push('-');
+        s.push_str(t);
+    }
+    s
+}
+
+/// `bougie ext list` — combine the project's required/installed extensions
+/// with what the index advertises for the active or selected target(s).
+///
+/// Status semantics per CLI.md §3.2.3:
+/// - `installed`  — `.so` is on disk under the project's resolved interpreter
+///   AND the index advertises it.
+/// - `shipped`    — `.so` is on disk but the index has no section for the
+///   name (i.e. it ships bundled with the interpreter).
+/// - `available`  — published in the index for the listed target.
+/// - `local-only` — present on disk, the index has a section for the name,
+///   but no non-yanked artifact for the project's resolved
+///   `(php_minor, flavor)`.
+/// - `required`   — listed in `composer.json`'s `require.ext-*`. Tag, not
+///   exclusive.
+pub fn run(format: OutputFormat, field: Option<&str>, opts: Options) -> Result<ExitCode> {
+    if opts.only_installed && opts.only_available {
+        return Err(BougieError::Resolution {
+            kind: "list".into(),
+            detail: "--only-installed and --only-available are mutually exclusive".into(),
+        }
+        .into());
+    }
+
     let project_root = std::env::current_dir()?;
     let project = load_project(&project_root)?;
-    let mut required: Vec<String> = project
+    let required: BTreeSet<String> = project
         .composer
         .map(|c| c.require_extensions.into_iter().collect())
         .unwrap_or_default();
-    required.sort();
 
-    let installed = list_installed(&project_root)?;
-    let available = if only_installed {
-        Vec::new()
+    let resolved = read_project_resolved(&project_root).ok();
+    let installed: BTreeSet<String> = if opts.only_available {
+        BTreeSet::new()
     } else {
-        fetch_available()?
+        list_installed(&project_root, resolved.as_ref())?
     };
 
-    // Filter the union so the renderer's iteration matches the flag
-    // semantics. Required is shown by default; --only-* flags suppress it.
-    let (required, installed, available) = if only_installed {
-        (Vec::new(), installed, Vec::new())
-    } else if only_available {
-        (Vec::new(), Vec::new(), available)
-    } else {
-        (required, installed, available)
-    };
+    let mut rows: Vec<Row> = Vec::new();
 
-    let result = ListResult { schema_version: 1, required, installed, available };
+    if opts.only_installed {
+        // Disk-only view, no index fetch.
+        let mut names: BTreeSet<String> = installed.iter().cloned().collect();
+        names.extend(required.iter().cloned());
+        for name in names {
+            let mut status = Vec::new();
+            if required.contains(&name) {
+                status.push("required");
+            }
+            if installed.contains(&name) {
+                status.push("installed");
+            }
+            rows.push(Row {
+                name,
+                version: None,
+                php_minor: None,
+                flavor: None,
+                target: None,
+                status,
+                url: None,
+            });
+        }
+    } else {
+        let host = Triple::detect()?;
+        let host_str = host.to_string();
+        let url = std::env::var("BOUGIE_INDEX_URL").unwrap_or_else(|_| DEFAULT_INDEX_URL.into());
+        let paths = Paths::from_env()?;
+        let client = reqwest::blocking::Client::builder()
+            .build()
+            .map_err(|e| BougieError::Network {
+                operation: "building HTTP client".into(),
+                detail: e.to_string(),
+            })?;
+        let cache_root = paths.cache_index(&host_to_dirname(&url));
+        let fetched = fetch_root(&client, &url, &cache_root, build_verifier)?;
+
+        let targets: Vec<String> = if opts.all_platforms {
+            fetched.root.targets.keys().cloned().collect()
+        } else {
+            vec![host_str.clone()]
+        };
+
+        let need_section_fetch = opts.all_versions || opts.show_urls;
+        let mut available_names_host: BTreeSet<String> = BTreeSet::new();
+        // Whether we found a non-yanked artifact matching the project's
+        // (php_minor, flavor). Used to distinguish `installed` vs `local-only`.
+        let mut matches_resolved: BTreeSet<String> = BTreeSet::new();
+
+        for target_str in &targets {
+            let Some(target_entry) = fetched.root.targets.get(target_str) else {
+                continue;
+            };
+            let target_label = if opts.all_platforms {
+                Some(target_str.clone())
+            } else {
+                None
+            };
+            let is_host = target_str == &host_str;
+
+            for section_name in target_entry.sections.keys() {
+                let Some(ext_name) = section_name.strip_prefix(EXTENSION_PREFIX) else {
+                    continue;
+                };
+                if is_host {
+                    available_names_host.insert(ext_name.to_owned());
+                }
+
+                if need_section_fetch {
+                    let section_ref = &target_entry.sections[section_name];
+                    let section = fetch_section(
+                        &client,
+                        &url,
+                        &cache_root,
+                        &fetched.root.version,
+                        target_str,
+                        section_name,
+                        &section_ref.sha256,
+                    )?;
+                    if opts.all_versions {
+                        for art in &section.artifacts {
+                            if art.yanked {
+                                continue;
+                            }
+                            if is_host && resolved_matches(art, resolved.as_ref()) {
+                                matches_resolved.insert(ext_name.to_owned());
+                            }
+                            push_index_row(
+                                &mut rows,
+                                ext_name,
+                                Some(&art.version),
+                                art.php_minor.as_deref(),
+                                Some(&art.flavor),
+                                target_label.as_deref(),
+                                is_host,
+                                resolved.as_ref(),
+                                &required,
+                                &installed,
+                                opts.show_urls.then(|| build_manifest_url(&url, &art.manifest.path)),
+                                art,
+                            );
+                        }
+                    } else if let Some(art) = pick_latest(&section, resolved.as_ref()) {
+                        if is_host && resolved_matches(art, resolved.as_ref()) {
+                            matches_resolved.insert(ext_name.to_owned());
+                        }
+                        push_index_row(
+                            &mut rows,
+                            ext_name,
+                            None,
+                            None,
+                            None,
+                            target_label.as_deref(),
+                            is_host,
+                            resolved.as_ref(),
+                            &required,
+                            &installed,
+                            opts.show_urls.then(|| build_manifest_url(&url, &art.manifest.path)),
+                            art,
+                        );
+                    }
+                } else {
+                    // Cheap path: section keys only. We can't tell whether
+                    // a non-yanked artifact exists for the project's
+                    // resolved (php_minor, flavor) without fetching the
+                    // section, so assume it does — `installed` if also on
+                    // disk, `available` otherwise.
+                    if is_host && installed.contains(ext_name) {
+                        matches_resolved.insert(ext_name.to_owned());
+                    }
+                    push_index_row_cheap(
+                        &mut rows,
+                        ext_name,
+                        target_label.as_deref(),
+                        is_host,
+                        &required,
+                        &installed,
+                    );
+                }
+            }
+        }
+
+        // Tack on names the user `require`s that the index does not advertise.
+        for name in required.difference(&available_names_host) {
+            if installed.contains(name) {
+                continue;
+            }
+            rows.push(Row {
+                name: name.clone(),
+                version: None,
+                php_minor: None,
+                flavor: None,
+                target: None,
+                status: vec!["required"],
+                url: None,
+            });
+        }
+
+        // shipped: on disk, name has no section in the index (interpreter
+        // bundle). local-only: on disk, section exists but no matching
+        // artifact for the project's resolved (php_minor, flavor).
+        for name in &installed {
+            let in_index = available_names_host.contains(name);
+            let matched = matches_resolved.contains(name);
+            if in_index && matched {
+                // already pushed by push_index_row with `installed` tag.
+                continue;
+            }
+            let mut status = Vec::new();
+            if required.contains(name) {
+                status.push("required");
+            }
+            if in_index {
+                status.push("local-only");
+            } else {
+                status.push("shipped");
+            }
+            rows.push(Row {
+                name: name.clone(),
+                version: None,
+                php_minor: None,
+                flavor: None,
+                target: None,
+                status,
+                url: None,
+            });
+        }
+    }
+
+    if opts.only_available {
+        rows.retain(|r| r.status.contains(&"available") && !r.status.contains(&"installed"));
+    }
+
+    rows.sort_by(|a, b| {
+        a.name
+            .cmp(&b.name)
+            .then_with(|| a.target.cmp(&b.target))
+            .then_with(|| a.php_minor.cmp(&b.php_minor))
+            .then_with(|| a.flavor.cmp(&b.flavor))
+            .then_with(|| a.version.cmp(&b.version))
+    });
+
+    let result = ListResult { schema_version: 1, items: rows };
     emit(format, field, &result)?;
     Ok(ExitCode::SUCCESS)
 }
 
-fn list_installed(project_root: &Path) -> Result<Vec<String>> {
-    let Ok((version, flavor)) = read_project_resolved(project_root) else {
-        return Ok(Vec::new());
+#[allow(clippy::too_many_arguments)]
+fn push_index_row(
+    rows: &mut Vec<Row>,
+    name: &str,
+    version: Option<&str>,
+    php_minor: Option<&str>,
+    flavor: Option<&str>,
+    target: Option<&str>,
+    is_host: bool,
+    resolved: Option<&(String, String)>,
+    required: &BTreeSet<String>,
+    installed: &BTreeSet<String>,
+    url: Option<String>,
+    artifact: &crate::index::wire::Artifact,
+) {
+    let mut status = Vec::new();
+    if required.contains(name) {
+        status.push("required");
+    }
+    let installed_for_this_row = is_host
+        && installed.contains(name)
+        && resolved_matches(artifact, resolved);
+    if installed_for_this_row {
+        status.push("installed");
+    }
+    status.push("available");
+    rows.push(Row {
+        name: name.to_owned(),
+        version: version.map(str::to_owned),
+        php_minor: php_minor.map(str::to_owned),
+        flavor: flavor.map(str::to_owned),
+        target: target.map(str::to_owned),
+        status,
+        url,
+    });
+}
+
+fn push_index_row_cheap(
+    rows: &mut Vec<Row>,
+    name: &str,
+    target: Option<&str>,
+    is_host: bool,
+    required: &BTreeSet<String>,
+    installed: &BTreeSet<String>,
+) {
+    let mut status = Vec::new();
+    if required.contains(name) {
+        status.push("required");
+    }
+    if is_host && installed.contains(name) {
+        status.push("installed");
+    }
+    status.push("available");
+    rows.push(Row {
+        name: name.to_owned(),
+        version: None,
+        php_minor: None,
+        flavor: None,
+        target: target.map(str::to_owned),
+        status,
+        url: None,
+    });
+}
+
+fn resolved_matches(
+    art: &crate::index::wire::Artifact,
+    resolved: Option<&(String, String)>,
+) -> bool {
+    let Some((v, f)) = resolved else {
+        return true;
+    };
+    if art.flavor != *f {
+        return false;
+    }
+    let mut parts = v.split('.');
+    let Some(major) = parts.next() else { return true };
+    let Some(minor) = parts.next() else { return true };
+    let target_minor = format!("{major}.{minor}");
+    art.php_minor.as_deref().is_none_or(|m| m == target_minor)
+}
+
+fn build_manifest_url(host_base: &str, manifest_path: &str) -> String {
+    let base = host_base.trim_end_matches('/');
+    if manifest_path.starts_with('/') {
+        format!("{base}{manifest_path}")
+    } else {
+        format!("{base}/{manifest_path}")
+    }
+}
+
+fn pick_latest<'a>(
+    section: &'a Section,
+    resolved: Option<&(String, String)>,
+) -> Option<&'a crate::index::wire::Artifact> {
+    let mut best: Option<(&crate::index::wire::Artifact, Vec<u32>)> = None;
+    for art in &section.artifacts {
+        if art.yanked {
+            continue;
+        }
+        if !resolved_matches(art, resolved) {
+            continue;
+        }
+        let parsed = parse_version_components(&art.version);
+        match &best {
+            None => best = Some((art, parsed)),
+            Some((_, prev)) if parsed > *prev => best = Some((art, parsed)),
+            _ => {}
+        }
+    }
+    best.map(|(art, _)| art)
+}
+
+fn parse_version_components(s: &str) -> Vec<u32> {
+    s.split('.').filter_map(|c| c.parse().ok()).collect()
+}
+
+fn list_installed(
+    project_root: &Path,
+    resolved: Option<&(String, String)>,
+) -> Result<BTreeSet<String>> {
+    let Some((version, flavor)) = resolved else {
+        return Ok(BTreeSet::new());
     };
     let paths = Paths::from_env()?;
     let install = paths.installs().join(format!("{version}-{flavor}"));
     let ext_root = install.join("lib").join("extensions");
     if !ext_root.is_dir() {
-        return Ok(Vec::new());
+        return Ok(BTreeSet::new());
     }
     let mut names: BTreeSet<String> = BTreeSet::new();
     for api_dir in std::fs::read_dir(&ext_root)? {
@@ -122,36 +480,6 @@ fn list_installed(project_root: &Path) -> Result<Vec<String>> {
             }
         }
     }
-    Ok(names.into_iter().collect())
-}
-
-fn fetch_available() -> Result<Vec<String>> {
-    let paths = Paths::from_env()?;
-    let target = Triple::detect()?.to_string();
-    let host = std::env::var("BOUGIE_INDEX_URL").unwrap_or_else(|_| DEFAULT_INDEX_URL.into());
-
-    let client = reqwest::blocking::Client::builder()
-        .build()
-        .map_err(|e| BougieError::Network {
-            operation: "building HTTP client".into(),
-            detail: e.to_string(),
-        })?;
-    let cache_root = paths.cache_index(&host_to_dirname(&host));
-    let fetched = fetch_root(&client, &host, &cache_root, build_verifier)?;
-
-    let target_entry = fetched.root.targets.get(&target).ok_or_else(|| {
-        let advertised: Vec<String> = fetched.root.targets.keys().cloned().collect();
-        BougieError::UnknownTarget {
-            triple: target.clone(),
-            hint: format!("the index at {host} advertises: {}", advertised.join(", ")),
-        }
-    })?;
-
-    let mut names: Vec<String> = target_entry
-        .sections
-        .keys()
-        .filter_map(|name| name.strip_prefix(EXTENSION_PREFIX).map(str::to_owned))
-        .collect();
-    names.sort();
+    let _ = project_root;
     Ok(names)
 }

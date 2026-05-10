@@ -45,8 +45,20 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
         Command::Ext(cli::ExtCommand::List {
             only_installed,
             only_available,
-            ..
-        }) => commands::ext_list::run(format, field, only_installed, only_available),
+            all_versions,
+            all_platforms,
+            show_urls,
+        }) => commands::ext_list::run(
+            format,
+            field,
+            commands::ext_list::Options {
+                only_installed,
+                only_available,
+                all_versions,
+                all_platforms,
+                show_urls,
+            },
+        ),
         Command::Cache(CacheCommand::Dir) => commands::cache_dir::run(format, field),
         Command::Cache(CacheCommand::Clean) => commands::cache_clean::run(format, field),
         Command::Cache(CacheCommand::Size) => commands::cache_size::run(format, field),
