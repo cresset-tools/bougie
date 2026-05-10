@@ -78,22 +78,55 @@ pub fn exec(role: Role) -> Result<ExitCode> {
     Err(err.into())
 }
 
-/// argv[0] is the symlink path (e.g. `.bougie/bin/php`); two `parent()`
-/// calls take us to the project root.
+/// Resolve the project root the shim should read state from. In order:
+///
+/// 1. `$BOUGIE_PROJECT_ROOT` — set by `bougie run`, the most reliable source.
+/// 2. If argv[0] carries a directory part (e.g. `.bougie/bin/php` or an
+///    absolute path), walk three parents up from it (`.bougie/bin/php` →
+///    `.bougie/bin` → `.bougie` → project root).
+/// 3. Otherwise argv[0] is a bare basename (PATH-resolved); walk up from
+///    cwd looking for a `.bougie/` directory.
 fn locate_project_root(argv0: &OsStr) -> Result<PathBuf> {
+    let cwd = std::env::current_dir().wrap_err("getting cwd to locate project root")?;
+    locate_project_root_inner(argv0, std::env::var_os("BOUGIE_PROJECT_ROOT"), &cwd)
+}
+
+fn locate_project_root_inner(
+    argv0: &OsStr,
+    env_root: Option<std::ffi::OsString>,
+    cwd: &Path,
+) -> Result<PathBuf> {
+    if let Some(v) = env_root {
+        return Ok(PathBuf::from(v));
+    }
+
     let p = Path::new(argv0);
-    let abs = if p.is_absolute() {
-        p.to_path_buf()
-    } else {
-        std::env::current_dir()
-            .wrap_err("getting cwd to resolve relative argv[0]")?
-            .join(p)
-    };
-    abs.parent()
-        .and_then(|p| p.parent())
-        .and_then(|p| p.parent())
-        .map(Path::to_path_buf)
-        .ok_or_else(|| eyre!("argv[0]={} has no project root", abs.display()))
+    let has_dir_part = p
+        .parent()
+        .map_or(false, |q| !q.as_os_str().is_empty());
+    if has_dir_part {
+        let abs = if p.is_absolute() {
+            p.to_path_buf()
+        } else {
+            cwd.join(p)
+        };
+        return abs
+            .parent()
+            .and_then(|q| q.parent())
+            .and_then(|q| q.parent())
+            .map(Path::to_path_buf)
+            .ok_or_else(|| eyre!("argv[0]={} has no project root", abs.display()));
+    }
+
+    for ancestor in cwd.ancestors() {
+        if ancestor.join(".bougie").is_dir() {
+            return Ok(ancestor.to_path_buf());
+        }
+    }
+    Err(eyre!(
+        "no bougie project found (no .bougie/ in {} or any parent)",
+        cwd.display()
+    ))
 }
 
 #[cfg(test)]
@@ -125,7 +158,43 @@ mod tests {
 
     #[test]
     fn locate_project_root_walks_two_parents() {
-        let root = locate_project_root(OsStr::new("/proj/.bougie/bin/php")).unwrap();
+        let root = locate_project_root_inner(
+            OsStr::new("/proj/.bougie/bin/php"),
+            None,
+            Path::new("/anywhere"),
+        )
+        .unwrap();
         assert_eq!(root, Path::new("/proj"));
+    }
+
+    #[test]
+    fn locate_project_root_uses_env_var() {
+        let root = locate_project_root_inner(
+            OsStr::new("php"),
+            Some("/some/proj".into()),
+            Path::new("/anywhere"),
+        )
+        .unwrap();
+        assert_eq!(root, Path::new("/some/proj"));
+    }
+
+    #[test]
+    fn locate_project_root_walks_cwd_for_bare_argv0() {
+        let proj = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(proj.path().join(".bougie")).unwrap();
+        let sub = proj.path().join("a/b");
+        std::fs::create_dir_all(&sub).unwrap();
+        let root = locate_project_root_inner(OsStr::new("php"), None, &sub).unwrap();
+        assert_eq!(
+            std::fs::canonicalize(&root).unwrap(),
+            std::fs::canonicalize(proj.path()).unwrap()
+        );
+    }
+
+    #[test]
+    fn locate_project_root_errors_when_no_marker() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let err = locate_project_root_inner(OsStr::new("php"), None, dir.path()).unwrap_err();
+        assert!(err.to_string().contains("no bougie project"));
     }
 }
