@@ -89,6 +89,7 @@ pub fn install_php(
             &host,
             &cache_root,
             &target,
+            SECTION_NAME,
             &selected.artifact.manifest.url,
             &selected.artifact.manifest.sha256,
         )?;

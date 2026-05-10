@@ -157,6 +157,7 @@ pub fn fetch_manifest(
     host_base_url: &str,
     cache_root: &Path,
     target: &str,
+    section_name: &str,
     manifest_url: &str,
     expected_sha256: &str,
 ) -> Result<Manifest> {
@@ -170,10 +171,18 @@ pub fn fetch_manifest(
     {
         manifest_url.to_owned()
     } else {
+        // The section file actually lives at
+        //   <host>/targets/<target>/sections/<section-name>.json
+        // where <section-name> may itself contain `/` (e.g.
+        // "interpreter/php"). Anchor relative manifest URLs at that
+        // exact location, not at a depth-one placeholder, so
+        // `../../manifests/...` resolves to <target>/manifests/...
+        // rather than eating the <target> segment.
         let base = format!(
-            "{}/targets/{}/sections/x.json",
+            "{}/targets/{}/sections/{}.json",
             host_base_url.trim_end_matches('/'),
-            target
+            target,
+            section_name,
         );
         let base = url::Url::parse(&base).wrap_err("synthesizing section URL")?;
         base.join(manifest_url)
