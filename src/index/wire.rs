@@ -17,8 +17,25 @@ use std::collections::BTreeMap;
 #[derive(Debug, Clone, Deserialize)]
 pub struct Root {
     pub schema: u32,
+    /// Per-publish snapshot identifier (DISTRIBUTION.md
+    /// §Snapshot-consistency). Clients embed this in section URLs:
+    /// `versions/<root.version>/targets/<target>/sections/<name>.json`.
+    /// Treat as opaque — the publish pipeline uses an ISO-8601
+    /// timestamp but the protocol does not require any structure.
+    pub version: String,
     pub generated: String,
+    /// Informational: the source revision this publish was built from.
+    /// Optional for backwards-compat with older roots; surfaced via
+    /// `bougie self version --remote` and audit tooling.
+    #[serde(default)]
+    pub source: Option<RootSource>,
     pub targets: BTreeMap<String, RootTarget>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct RootSource {
+    pub git_commit: String,
+    pub git_ref: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -199,6 +216,7 @@ mod tests {
     fn parse_minimal_root() {
         let json = r#"{
             "schema": 1,
+            "version": "20260508T120000Z",
             "generated": "2026-05-08T12:00:00Z",
             "targets": {
                 "x86_64-unknown-linux-gnu": {
@@ -210,6 +228,7 @@ mod tests {
         }"#;
         let root: Root = serde_json::from_str(json).unwrap();
         assert_eq!(root.schema, 1);
+        assert_eq!(root.version, "20260508T120000Z");
         assert_eq!(root.targets.len(), 1);
     }
 

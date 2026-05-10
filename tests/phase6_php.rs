@@ -107,8 +107,10 @@ async fn build_fixture() -> Fixture {
     let section_bytes = serde_json::to_vec(&section_json).unwrap();
     let section_sha = hex(&section_bytes);
 
+    let publish_version = "20260509T000000Z";
     let root_json = serde_json::json!({
         "schema": 1,
+        "version": publish_version,
         "generated": "2026-05-09T00:00:00Z",
         "targets": {
             target.clone(): {
@@ -122,7 +124,9 @@ async fn build_fixture() -> Fixture {
     let sig = signer.sign(&root_bytes).unwrap();
     let sig_b64 = base64::engine::general_purpose::STANDARD.encode(&sig);
 
-    let section_path = format!("/targets/{target}/sections/interpreter/php.json");
+    let section_path = format!(
+        "/versions/{publish_version}/targets/{target}/sections/interpreter/php.json"
+    );
     let manifest_path = manifest_path_abs.clone();
     let blob_path = format!("/blobs/{blob_sha}");
 

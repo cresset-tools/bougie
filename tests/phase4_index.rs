@@ -22,6 +22,7 @@ async fn build_fixture() -> Fixture {
 
     let root_json = serde_json::json!({
         "schema": 1,
+        "version": "20260509T000000Z",
         "generated": "2026-05-09T00:00:00Z",
         "targets": {
             "x86_64-unknown-linux-gnu": {

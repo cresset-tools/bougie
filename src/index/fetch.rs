@@ -101,27 +101,34 @@ pub fn fetch_root(
 /// Fetch a section file, verifying its sha256 against the value the
 /// signed root advertised. Cached files are reused when their hash
 /// matches the expected sha; mismatches force a refetch.
+///
+/// The section URL embeds the root's `version` per DISTRIBUTION.md
+/// §Snapshot-consistency, so each publish lands at a fresh immutable
+/// URL and a CDN cache of the old URL never collides with new content.
 pub fn fetch_section(
     client: &reqwest::blocking::Client,
     host_base_url: &str,
     cache_root: &Path,
+    publish_version: &str,
     target: &str,
     section_name: &str,
     expected_sha256: &str,
 ) -> Result<Section> {
+    // Cache by content sha — the URL changes per publish but the body
+    // identity is the sha. Sharing the cache key across versions means
+    // a section that didn't change between publishes is reused.
     let cache_path = cache_root
-        .join("targets")
-        .join(target)
         .join("sections")
-        .join(format!("{section_name}.json"));
+        .join(format!("{expected_sha256}.json"));
     if let Ok(bytes) = fs::read(&cache_path)
         && hex_sha256(&bytes) == expected_sha256
     {
         return serde_json::from_slice(&bytes).wrap_err("parsing cached section");
     }
     let url = format!(
-        "{}/targets/{}/sections/{}.json",
+        "{}/versions/{}/targets/{}/sections/{}.json",
         host_base_url.trim_end_matches('/'),
+        publish_version,
         target,
         section_name
     );

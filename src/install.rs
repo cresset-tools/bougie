@@ -78,7 +78,15 @@ pub fn install_php(
             kind: "section".into(),
             detail: format!("the index at {host} has no `{SECTION_NAME}` section under target {target}"),
         })?;
-    let section = fetch_section(&client, &host, &cache_root, &target, SECTION_NAME, &section_ref.sha256)?;
+    let section = fetch_section(
+        &client,
+        &host,
+        &cache_root,
+        &fetched.root.version,
+        &target,
+        SECTION_NAME,
+        &section_ref.sha256,
+    )?;
 
     let selected: Selected<'_> = resolve_php(&section, &spec, flavor, opts)?;
     let dest = install_dir(paths, selected.version, flavor);
