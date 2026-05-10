@@ -80,6 +80,10 @@ pub enum Command {
     #[command(subcommand)]
     Php(PhpCommand),
 
+    /// Manage Composer installs.
+    #[command(subcommand)]
+    Composer(ComposerCommand),
+
     /// Manage bougie's cache.
     #[command(subcommand)]
     Cache(CacheCommand),
@@ -93,9 +97,19 @@ pub enum Command {
 #[derive(Subcommand, Debug)]
 pub enum ExtCommand {
     /// Add an extension dependency.
-    Add { names: Vec<String> },
+    Add {
+        names: Vec<String>,
+        /// Skip the implicit `bougie sync` after the composer call.
+        #[arg(long)]
+        no_sync: bool,
+    },
     /// Remove an extension dependency.
-    Remove { names: Vec<String> },
+    Remove {
+        names: Vec<String>,
+        /// Skip the implicit `bougie sync` after the composer call.
+        #[arg(long)]
+        no_sync: bool,
+    },
     /// List available extensions.
     List {
         #[arg(long)]
@@ -155,6 +169,30 @@ pub enum PhpCommand {
     Upgrade { minor: Option<String> },
     /// Show the PHP interpreter installation directory.
     Dir,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ComposerCommand {
+    /// Install a Composer version.
+    Install { request: Option<String> },
+    /// Remove a Composer version.
+    Uninstall { request: String },
+    /// List installed and available Composer versions.
+    List,
+    /// Print the path of a Composer phar.
+    Find { request: Option<String> },
+    /// Pin the project's Composer version.
+    Pin {
+        request: String,
+        #[arg(long, conflicts_with = "composer")]
+        toml: bool,
+        #[arg(long, conflicts_with = "toml")]
+        composer: bool,
+    },
+    /// Show the Composer install directory.
+    Dir,
+    /// Refresh the stable + preview Composer channels to the latest.
+    Upgrade,
 }
 
 #[derive(Subcommand, Debug)]

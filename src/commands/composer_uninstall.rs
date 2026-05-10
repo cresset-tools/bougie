@@ -1,0 +1,75 @@
+use crate::cli::OutputFormat;
+use crate::composer::{parse_request, ComposerRequest};
+use crate::errors::BougieError;
+use crate::output::{emit, Render};
+use crate::paths::Paths;
+use eyre::{eyre, Result};
+use serde::Serialize;
+use std::io::{self, Write};
+use std::path::PathBuf;
+use std::process::ExitCode;
+
+#[derive(Debug, Serialize)]
+pub struct UninstallResult {
+    pub schema_version: u32,
+    pub removed: PathBuf,
+}
+
+impl Render for UninstallResult {
+    fn render_text(&self, w: &mut dyn Write) -> io::Result<()> {
+        writeln!(w, "removed {}", self.removed.display())
+    }
+}
+
+pub fn run(format: OutputFormat, field: Option<&str>, request_str: &str) -> Result<ExitCode> {
+    let request = parse_request(request_str)?;
+    let paths = Paths::from_env()?;
+    let dest = locate_install_dir(&paths, &request)?;
+    if !dest.exists() {
+        return Err(BougieError::Resolution {
+            kind: "composer/uninstall".into(),
+            detail: format!("no install directory at {}", dest.display()),
+        }
+        .into());
+    }
+    std::fs::remove_dir_all(&dest).map_err(|e| BougieError::Filesystem {
+        operation: format!("removing {}", dest.display()),
+        detail: e.to_string(),
+    })?;
+    let result = UninstallResult { schema_version: 1, removed: dest };
+    emit(format, field, &result)?;
+    Ok(ExitCode::SUCCESS)
+}
+
+fn locate_install_dir(paths: &Paths, request: &ComposerRequest) -> Result<PathBuf> {
+    match request {
+        ComposerRequest::Exact(v) => Ok(paths.composer_root().join(v)),
+        ComposerRequest::Path(p) => {
+            let canon = std::fs::canonicalize(p).unwrap_or_else(|_| p.clone());
+            if !canon.starts_with(paths.composer_root()) {
+                return Err(eyre!(
+                    "path {} is not under {}",
+                    p.display(),
+                    paths.composer_root().display()
+                ));
+            }
+            // The path may point at the phar or at the version dir.
+            if canon.is_dir() {
+                Ok(canon)
+            } else {
+                canon
+                    .parent()
+                    .map(Path::to_path_buf)
+                    .ok_or_else(|| eyre!("path {} has no parent", p.display()))
+            }
+        }
+        _ => Err(BougieError::Resolution {
+            kind: "composer/uninstall".into(),
+            detail: "uninstall requires an exact version (e.g. `2.8.5`) or an absolute path"
+                .into(),
+        }
+        .into()),
+    }
+}
+
+use std::path::Path;

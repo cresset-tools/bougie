@@ -45,16 +45,41 @@ fn ext_list_reads_composer_extensions() {
 }
 
 #[test]
-fn ext_add_without_composer_fails_actionably() {
+fn ext_add_outside_a_project_fails_actionably() {
     let env = TestEnv::new();
     let proj = tempfile::TempDir::new().unwrap();
     env.bougie()
         .current_dir(proj.path())
-        .env("PATH", "/nonexistent")
         .args(["ext", "add", "xdebug"])
         .assert()
         .failure()
-        .stderr(contains("composer is not on PATH"));
+        .stderr(contains("no bougie project here"));
+}
+
+#[test]
+fn ext_add_in_project_without_sync_triggers_implicit_sync() {
+    // The shim is missing → ext add should attempt to sync. Without
+    // network this still fails, but the failure must be the underlying
+    // sync error, not a "run `bougie sync` first" handoff. The
+    // user-visible signal that the implicit sync ran is the
+    // "Syncing…" line on stderr.
+    let env = TestEnv::new();
+    let proj = tempfile::TempDir::new().unwrap();
+    std::fs::create_dir_all(proj.path().join(".bougie")).unwrap();
+    std::fs::write(
+        proj.path().join("composer.json"),
+        r#"{"require":{"php":"8.3.12"}}"#,
+    )
+    .unwrap();
+    env.bougie()
+        .current_dir(proj.path())
+        // Point the index at an unreachable URL so sync fails fast,
+        // proving we attempted it rather than handing off.
+        .env("BOUGIE_INDEX_URL", "http://127.0.0.1:1")
+        .args(["ext", "add", "xdebug"])
+        .assert()
+        .failure()
+        .stderr(contains("Syncing…"));
 }
 
 #[test]

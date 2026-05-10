@@ -3,7 +3,7 @@
 //! `<project>/.bougie/bin/`.
 
 use crate::paths::Paths;
-use crate::state::read_project_resolved;
+use crate::state::{read_project_resolved, read_project_resolved_composer};
 use eyre::{eyre, Result, WrapErr};
 use std::ffi::OsStr;
 use std::os::unix::process::CommandExt;
@@ -58,24 +58,61 @@ pub fn exec(role: Role) -> Result<ExitCode> {
 
     let paths = Paths::from_env()?;
     let install = paths.installs().join(format!("{version}-{flavor}"));
-    let bin = install.join("bin").join(role.name());
-    if !bin.exists() {
-        return Err(eyre!(
-            "{}: install at {} is missing — re-run `bougie sync`",
-            role.name(),
-            install.display()
-        ));
-    }
-
     let conf_d = project_root.join(".bougie").join("conf.d");
 
-    // execve replaces this process; the only return path is an error.
-    let err = std::process::Command::new(&bin)
-        .args(&args)
-        .arg0(&bin)
-        .env("PHP_INI_SCAN_DIR", &conf_d)
-        .exec();
-    Err(err.into())
+    match role {
+        Role::Php | Role::PhpFpm => {
+            let bin = install.join("bin").join(role.name());
+            if !bin.exists() {
+                return Err(eyre!(
+                    "{}: install at {} is missing — re-run `bougie sync`",
+                    role.name(),
+                    install.display()
+                ));
+            }
+            // execve replaces this process; the only return is an error.
+            let err = std::process::Command::new(&bin)
+                .args(&args)
+                .arg0(&bin)
+                .env("PHP_INI_SCAN_DIR", &conf_d)
+                .exec();
+            Err(err.into())
+        }
+        Role::Composer => {
+            let composer_version =
+                read_project_resolved_composer(&project_root).wrap_err_with(|| {
+                    format!(
+                        "composer: project at {} is not synced — run `bougie sync` first",
+                        project_root.display()
+                    )
+                })?;
+            let phar = paths.composer_phar(&composer_version);
+            if !phar.exists() {
+                return Err(eyre!(
+                    "composer: phar at {} is missing — re-run `bougie sync`",
+                    phar.display()
+                ));
+            }
+            let php_bin = install.join("bin").join("php");
+            if !php_bin.exists() {
+                return Err(eyre!(
+                    "composer: php at {} is missing — re-run `bougie sync`",
+                    php_bin.display()
+                ));
+            }
+            // Place the phar as argv[1] so $_SERVER['argv'][0] inside
+            // the PHP script is "composer", not the phar path.
+            let mut composer_args: Vec<std::ffi::OsString> = Vec::with_capacity(args.len() + 1);
+            composer_args.push(phar.into_os_string());
+            composer_args.extend(args);
+            let err = std::process::Command::new(&php_bin)
+                .args(&composer_args)
+                .arg0("composer")
+                .env("PHP_INI_SCAN_DIR", &conf_d)
+                .exec();
+            Err(err.into())
+        }
+    }
 }
 
 /// Resolve the project root the shim should read state from. In order:

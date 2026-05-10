@@ -19,6 +19,9 @@ pub fn write_bougie_toml_skeleton() -> String {
         "# version = \"8.3.12\"     # optional override of composer.json's require.php",
         "# flavor = \"nts\"          # nts | nts-debug | zts | zts-debug",
         "",
+        "[composer]",
+        "# version = \"stable\"      # exact (\"2.8.5\"), partial (\"2.8\"), or channel (\"stable\"/\"preview\"/\"snapshot\")",
+        "",
         "[extensions]",
         "# xdebug = \"3.5.1\"",
         "",
@@ -57,6 +60,17 @@ fingerprint = "sha256:abc"
         assert_eq!(cfg.php.version.as_deref(), Some("8.3.12"));
         assert_eq!(cfg.extensions.len(), 2);
         assert_eq!(cfg.index.len(), 1);
+    }
+
+    #[test]
+    fn composer_table_roundtrips() {
+        let cfg = read_bougie_toml(
+            r#"[composer]
+version = "2.8.5"
+"#,
+        )
+        .unwrap();
+        assert_eq!(cfg.composer.version.as_deref(), Some("2.8.5"));
     }
 
     #[test]

@@ -1,8 +1,11 @@
 use crate::cli::OutputFormat;
 use crate::commands::sync;
 use crate::errors::BougieError;
+use crate::paths::Paths;
+use crate::state::{read_project_resolved, read_project_resolved_composer};
 use eyre::{eyre, Result};
 use std::os::unix::process::CommandExt;
+use std::path::Path;
 use std::process::ExitCode;
 
 /// `bougie run [--] <cmd> [args...]` — set `PATH` and `PHP_INI_SCAN_DIR`,
@@ -19,8 +22,7 @@ pub fn run(
         return Err(eyre!("nothing to run"));
     }
     let project_root = std::env::current_dir()?;
-    let resolved_marker = project_root.join(".bougie").join("state").join("resolved");
-    if !no_sync && !resolved_marker.exists() {
+    if !no_sync && !is_environment_present(&project_root)? {
         sync::run(format, field, false)?;
     }
     let bougie_bin = project_root.join(".bougie").join("bin");
@@ -45,4 +47,28 @@ pub fn run(
         detail: err.to_string(),
     }
     .into())
+}
+
+/// True iff the project's resolved markers point at on-disk artifacts
+/// that still exist. Used to decide whether the implicit-sync step is
+/// needed — a missing marker, missing install dir, or missing composer
+/// phar all warrant resyncing.
+fn is_environment_present(project_root: &Path) -> Result<bool> {
+    let paths = Paths::from_env()?;
+
+    let Ok((version, flavor)) = read_project_resolved(project_root) else {
+        return Ok(false);
+    };
+    let install = paths.installs().join(format!("{version}-{flavor}"));
+    if !install.join("bin").join("php").exists() {
+        return Ok(false);
+    }
+
+    let Ok(composer_version) = read_project_resolved_composer(project_root) else {
+        return Ok(false);
+    };
+    if !paths.composer_phar(&composer_version).exists() {
+        return Ok(false);
+    }
+    Ok(true)
 }

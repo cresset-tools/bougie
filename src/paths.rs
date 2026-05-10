@@ -76,6 +76,25 @@ impl Paths {
         self.home.join("bin")
     }
 
+    /// `$BOUGIE_HOME/composer/` — managed Composer installs, one
+    /// directory per version.
+    pub fn composer_root(&self) -> PathBuf {
+        self.home.join("composer")
+    }
+    /// Path to the phar for a specific Composer version:
+    /// `$BOUGIE_HOME/composer/<version>/composer.phar`.
+    pub fn composer_phar(&self, version: &str) -> PathBuf {
+        self.composer_root().join(version).join("composer.phar")
+    }
+    /// Cached snapshot of getcomposer.org's `/versions` JSON.
+    pub fn composer_channels_json(&self) -> PathBuf {
+        self.composer_root().join("channels.json")
+    }
+    /// Etag sidecar for the channels JSON.
+    pub fn composer_channels_etag(&self) -> PathBuf {
+        self.composer_root().join("channels.json.etag")
+    }
+
     /// Per-origin index cache root: `$BOUGIE_CACHE/index/<host>/`.
     pub fn cache_index(&self, host: &str) -> PathBuf {
         self.cache.join("index").join(host)
@@ -130,5 +149,8 @@ mod tests {
         assert_eq!(p.state_json(), Path::new("/h/state/state.json"));
         assert_eq!(p.cache_index("origin.example"), Path::new("/c/index/origin.example"));
         assert_eq!(p.cache_blobs(), Path::new("/c/blobs"));
+        assert_eq!(p.composer_root(), Path::new("/h/composer"));
+        assert_eq!(p.composer_phar("2.8.5"), Path::new("/h/composer/2.8.5/composer.phar"));
+        assert_eq!(p.composer_channels_json(), Path::new("/h/composer/channels.json"));
     }
 }

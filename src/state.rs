@@ -23,6 +23,36 @@ pub fn write_project_resolved(project_root: &Path, version: Version, flavor: Fla
     Ok(dest)
 }
 
+/// Atomically write the per-project resolved Composer version to
+/// `<project>/.bougie/state/resolved-composer`. Format: a single
+/// version line (e.g. `"2.8.5\n"`).
+pub fn write_project_resolved_composer(project_root: &Path, version: &str) -> Result<PathBuf> {
+    let dir = project_root.join(".bougie").join("state");
+    fs::create_dir_all(&dir).wrap_err_with(|| format!("creating {}", dir.display()))?;
+    let dest = dir.join("resolved-composer");
+    let tmp = dir.join("resolved-composer.partial");
+    fs::write(&tmp, format!("{version}\n"))
+        .wrap_err_with(|| format!("writing {}", tmp.display()))?;
+    fs::rename(&tmp, &dest)
+        .wrap_err_with(|| format!("rename {} → {}", tmp.display(), dest.display()))?;
+    Ok(dest)
+}
+
+/// Read the per-project Composer pin written by `write_project_resolved_composer`.
+pub fn read_project_resolved_composer(project_root: &Path) -> Result<String> {
+    let path = project_root
+        .join(".bougie")
+        .join("state")
+        .join("resolved-composer");
+    let body = fs::read_to_string(&path)
+        .wrap_err_with(|| format!("reading {}", path.display()))?;
+    let line = body.trim();
+    if line.is_empty() {
+        return Err(eyre!("empty resolved-composer marker at {}", path.display()));
+    }
+    Ok(line.to_owned())
+}
+
 /// Read the resolved-version marker. Returns `(version, flavor)` strings
 /// (caller parses) so the shim can call this without pulling the full
 /// version + Request modules into its hot path.
@@ -100,6 +130,21 @@ mod tests {
         let (v, f) = read_project_resolved(proj.path()).unwrap();
         assert_eq!(v, "8.3.12");
         assert_eq!(f, "nts");
+    }
+
+    #[test]
+    fn round_trip_resolved_composer() {
+        let proj = TempDir::new().unwrap();
+        let p = write_project_resolved_composer(proj.path(), "2.8.5").unwrap();
+        assert!(p.exists());
+        let v = read_project_resolved_composer(proj.path()).unwrap();
+        assert_eq!(v, "2.8.5");
+    }
+
+    #[test]
+    fn read_resolved_composer_errors_when_missing() {
+        let proj = TempDir::new().unwrap();
+        assert!(read_project_resolved_composer(proj.path()).is_err());
     }
 
     #[test]
