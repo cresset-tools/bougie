@@ -32,7 +32,9 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
     match cli.command {
         Command::Init { toml } => commands::init::run(format, field, toml),
         Command::Sync { offline: _, dry_run } => commands::sync::run(format, field, dry_run),
-        Command::Run { with, argv } => commands::run::run(&with, &argv),
+        Command::Run { with, no_sync, argv } => {
+            commands::run::run(&with, &argv, format, field, no_sync)
+        }
         Command::Ext(cli::ExtCommand::Add { names }) => commands::ext_add_remove::add(format, field, names),
         Command::Ext(cli::ExtCommand::Remove { names }) => commands::ext_add_remove::remove(format, field, names),
         Command::Ext(cli::ExtCommand::List { .. }) => commands::ext_list::run(format, field),

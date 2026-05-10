@@ -68,8 +68,11 @@ pub enum Command {
         /// Add a temporary extension for this invocation.
         #[arg(long, value_name = "EXT=VER")]
         with: Vec<String>,
-        /// Command and arguments. Must follow `--`.
-        #[arg(last = true, required = true)]
+        /// Skip the implicit `bougie sync` before running.
+        #[arg(long)]
+        no_sync: bool,
+        /// Command and arguments. `--` separator is optional.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
         argv: Vec<String>,
     },
 
