@@ -107,7 +107,13 @@ fn resolve_php_inputs(project: &ProjectConfig) -> Result<(VersionLike, Flavor)> 
         Some("zts") => Flavor::Zts,
         Some("zts-debug") => Flavor::ZtsDebug,
         Some(other) => {
-            return Err(BougieError::Resolution(format!("unknown flavor: {other}")).into())
+            return Err(BougieError::Resolution {
+                kind: "flavor".into(),
+                detail: format!(
+                    "[php]flavor = {other:?} is not one of nts | nts-debug | zts | zts-debug"
+                ),
+            }
+            .into())
         }
     };
     Ok((spec, flavor))

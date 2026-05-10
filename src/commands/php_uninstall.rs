@@ -32,10 +32,16 @@ pub fn run(
     let paths = Paths::from_env()?;
     let dest = locate_install(&paths, &request, flavor_arg)?;
     if !dest.exists() {
-        return Err(BougieError::Resolution(format!("no install at {}", dest.display())).into());
+        return Err(BougieError::Resolution {
+            kind: "uninstall".into(),
+            detail: format!("no install directory at {}", dest.display()),
+        }
+        .into());
     }
-    std::fs::remove_dir_all(&dest)
-        .map_err(|e| BougieError::Filesystem(format!("removing {}: {e}", dest.display())))?;
+    std::fs::remove_dir_all(&dest).map_err(|e| BougieError::Filesystem {
+        operation: format!("removing {}", dest.display()),
+        detail: e.to_string(),
+    })?;
     let result = UninstallResult { schema_version: 1, removed: dest };
     emit(format, field, &result)?;
     Ok(ExitCode::SUCCESS)
@@ -57,9 +63,10 @@ fn locate_install(paths: &Paths, request: &Request, flavor_arg: Option<&str>) ->
         Request::VersionLike { spec, flavor } => match spec {
             VersionLike::Version(pv) if pv.is_exact() => (pv.pad(), *flavor),
             _ => {
-                return Err(BougieError::Resolution(
-                    "uninstall requires an exact version".into(),
-                )
+                return Err(BougieError::Resolution {
+                    kind: "uninstall".into(),
+                    detail: "uninstall requires an exact version (e.g. `8.3.12`), not a constraint".into(),
+                }
                 .into())
             }
         },
@@ -67,9 +74,10 @@ fn locate_install(paths: &Paths, request: &Request, flavor_arg: Option<&str>) ->
             (version.pad(), *flavor)
         }
         _ => {
-            return Err(BougieError::Resolution(
-                "uninstall requires an exact (version, flavor) target".into(),
-            )
+            return Err(BougieError::Resolution {
+                kind: "uninstall".into(),
+                detail: "uninstall requires an exact (version, flavor) target — pass e.g. `bougie php uninstall 8.3.12 --flavor nts`".into(),
+            }
             .into())
         }
     };

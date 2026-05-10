@@ -63,51 +63,101 @@ impl TrustRoot {
 /// Verifier abstraction so phase-7 sync code can swap a stub during
 /// tests if needed. Production path is [`Sigstore::new`].
 pub trait Verifier {
-    fn verify(&self, payload: &[u8], signature: &[u8]) -> Result<()>;
+    /// `url` is the index URL whose signature is being verified —
+    /// surfaced in [`BougieError::IndexSignature`] so the user knows
+    /// which fetch failed.
+    fn verify(&self, url: &str, payload: &[u8], signature: &[u8]) -> Result<()>;
 }
 
 pub struct Sigstore {
     key: CosignVerificationKey,
+    fingerprint: String,
 }
 
 impl std::fmt::Debug for Sigstore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Sigstore").finish_non_exhaustive()
+        f.debug_struct("Sigstore")
+            .field("trust_root_fingerprint", &self.fingerprint)
+            .finish_non_exhaustive()
     }
 }
 
 impl Sigstore {
     pub fn new(trust_root: &TrustRoot) -> Result<Self> {
         if trust_root.is_empty() {
-            return Err(BougieError::IndexSignature.into());
+            return Err(BougieError::IndexSignature {
+                url: String::from("(unknown)"),
+                trust_root_fingerprint: trust_root.fingerprint().to_owned(),
+                reason: "no trust root pinned in this build".into(),
+                hint: "rebuild bougie with keys/trust-root.pub populated, or set BOUGIE_TRUST_ROOT_PATH for a development override".into(),
+            }
+            .into());
         }
         let key = CosignVerificationKey::from_pem(
             &trust_root.pem,
             &SigningScheme::ECDSA_P256_SHA256_ASN1,
         )
-        .map_err(|e| eyre::eyre!("trust root is not a valid PEM ECDSA-P256 key: {e}"))?;
-        Ok(Self { key })
+        .map_err(|e| {
+            BougieError::IndexSignature {
+                url: String::from("(unknown)"),
+                trust_root_fingerprint: trust_root.fingerprint().to_owned(),
+                reason: format!("pinned trust root is not a valid PEM ECDSA-P256 key: {e}"),
+                hint: "regenerate keys/trust-root.pub via the build authority and rebuild bougie".into(),
+            }
+        })?;
+        Ok(Self { key, fingerprint: trust_root.fingerprint().to_owned() })
     }
 }
 
 impl Verifier for Sigstore {
-    fn verify(&self, payload: &[u8], signature: &[u8]) -> Result<()> {
-        // The sidecar may carry a base64-encoded signature with optional
-        // surrounding whitespace, or raw signature bytes. Try base64 first.
+    fn verify(&self, url: &str, payload: &[u8], signature: &[u8]) -> Result<()> {
+        // Fast-path detection: a Sigstore Bundle (JSON) is a
+        // structurally different artifact from the detached ECDSA
+        // signature this verifier consumes. Surface that explicitly so
+        // the user sees the architectural mismatch instead of a vague
+        // "signature failure".
+        if looks_like_sigstore_bundle(signature) {
+            return Err(BougieError::IndexSignature {
+                url: url.to_owned(),
+                trust_root_fingerprint: self.fingerprint.clone(),
+                reason: "signature sidecar is a Sigstore Bundle (mediaType=application/vnd.dev.sigstore.bundle.v0.x+json), but this build only verifies detached ECDSA P-256 signatures over the index bytes".into(),
+                hint: "this is an architectural mismatch, not a config error — bougie's verifier needs Sigstore Bundle support (Fulcio cert chain + Rekor) to consume the live index. Track upstream / file an issue".into(),
+            }
+            .into());
+        }
         let trimmed: Vec<u8> = signature
             .iter()
             .copied()
             .filter(|b| !b.is_ascii_whitespace())
             .collect();
-        let result = self
+        let attempt = self
             .key
             .verify_signature(SigstoreSignature::Base64Encoded(&trimmed), payload)
             .or_else(|_| {
                 self.key
                     .verify_signature(SigstoreSignature::Raw(signature), payload)
             });
-        result.map_err(|_| BougieError::IndexSignature.into())
+        attempt.map_err(|e| {
+            BougieError::IndexSignature {
+                url: url.to_owned(),
+                trust_root_fingerprint: self.fingerprint.clone(),
+                reason: format!("signature did not verify against pinned key: {e}"),
+                hint: "either the index was tampered, the build authority rotated keys (rebuild bougie), or the bougie binary is too old".into(),
+            }
+            .into()
+        })
     }
+}
+
+fn looks_like_sigstore_bundle(bytes: &[u8]) -> bool {
+    let first_non_ws = bytes.iter().find(|b| !b.is_ascii_whitespace());
+    if first_non_ws != Some(&b'{') {
+        return false;
+    }
+    // Skip a full JSON parse — substring match is enough for the hint.
+    let head = &bytes[..bytes.len().min(512)];
+    let head = std::str::from_utf8(head).unwrap_or("");
+    head.contains("sigstore.bundle") || head.contains("verificationMaterial")
 }
 
 #[cfg(test)]
@@ -140,11 +190,11 @@ mod tests {
 
         let tr = TrustRoot::from_pem(kp.pub_pem.as_bytes());
         let v = Sigstore::new(&tr).unwrap();
-        v.verify(payload, sig_b64.as_bytes()).unwrap();
+        v.verify("https://test/index.json", payload, sig_b64.as_bytes()).unwrap();
     }
 
     #[test]
-    fn tampered_payload_fails() {
+    fn tampered_payload_fails_with_url_in_message() {
         let kp = fresh_keypair();
         let payload = b"hello bougie";
         let sig = kp.signer.sign(payload).unwrap();
@@ -152,8 +202,12 @@ mod tests {
 
         let tr = TrustRoot::from_pem(kp.pub_pem.as_bytes());
         let v = Sigstore::new(&tr).unwrap();
-        let err = v.verify(b"hello WORLD ", sig_b64.as_bytes()).unwrap_err();
-        assert!(err.to_string().contains("index signature failure"));
+        let err = v
+            .verify("https://test/index.json", b"hello WORLD ", sig_b64.as_bytes())
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("could not verify index signature"));
+        assert!(msg.contains("https://test/index.json"));
     }
 
     #[test]
@@ -166,7 +220,19 @@ mod tests {
 
         let tr = TrustRoot::from_pem(kp_b.pub_pem.as_bytes());
         let v = Sigstore::new(&tr).unwrap();
-        assert!(v.verify(payload, sig_b64.as_bytes()).is_err());
+        assert!(v.verify("https://test/index.json", payload, sig_b64.as_bytes()).is_err());
+    }
+
+    #[test]
+    fn sigstore_bundle_detection_surfaces_actionable_error() {
+        let kp = fresh_keypair();
+        let tr = TrustRoot::from_pem(kp.pub_pem.as_bytes());
+        let v = Sigstore::new(&tr).unwrap();
+        let bundle = br#"{"mediaType":"application/vnd.dev.sigstore.bundle.v0.3+json","verificationMaterial":{"certificate":{}}}"#;
+        let err = v.verify("https://test/index.json", b"any body", bundle).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("Sigstore Bundle"), "msg: {msg}");
+        assert!(msg.contains("architectural mismatch"), "msg: {msg}");
     }
 
     #[test]

@@ -63,10 +63,13 @@ fn find_for_request(paths: &Paths, request: &Request) -> Result<PathBuf> {
     let flavor = in_request_flavor.unwrap_or(Flavor::Nts);
     let dir = install_dir(paths, pv, flavor);
     if !dir.exists() {
-        return Err(BougieError::Resolution(format!(
-            "no installed PHP at {}",
-            dir.display()
-        ))
+        return Err(BougieError::Resolution {
+            kind: "php".into(),
+            detail: format!(
+                "no installed PHP at {} — run `bougie php install` first",
+                dir.display()
+            ),
+        }
         .into());
     }
     Ok(dir.join("bin").join("php"))
@@ -91,8 +94,9 @@ fn find_first_installed(paths: &Paths) -> Result<PathBuf> {
             _ => {}
         }
     }
-    let (v, flavor) = best.ok_or_else(|| {
-        BougieError::Resolution("no PHP interpreter installed; run `bougie php install` first".into())
+    let (v, flavor) = best.ok_or_else(|| BougieError::Resolution {
+        kind: "php".into(),
+        detail: "no PHP interpreter installed yet; run `bougie php install` first".into(),
     })?;
     let pv = crate::version::PartialVersion {
         major: v.major,

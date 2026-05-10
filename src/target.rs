@@ -96,7 +96,11 @@ impl Triple {
                 Ok(Self { arch, vendor: Vendor::Unknown, os: Os::Linux, env: Some(env) })
             }
             "macos" => Ok(Self { arch, vendor: Vendor::Apple, os: Os::Darwin, env: None }),
-            other => Err(BougieError::UnknownTarget(format!("os={other}")).into()),
+            other => Err(BougieError::UnknownTarget {
+                triple: format!("os={other}"),
+                hint: "bougie supports linux and macos; other operating systems would need new build authority targets".into(),
+            }
+            .into()),
         }
     }
 }
@@ -105,16 +109,25 @@ fn detect_arch() -> Result<Arch> {
     match std::env::consts::ARCH {
         "x86_64" => Ok(Arch::X86_64),
         "aarch64" => Ok(Arch::Aarch64),
-        other => Err(BougieError::UnknownTarget(format!("arch={other}")).into()),
+        other => Err(BougieError::UnknownTarget {
+            triple: format!("arch={other}"),
+            hint: "bougie supports x86_64 and aarch64".into(),
+        }
+        .into()),
     }
 }
 
 fn detect_linux_libc() -> Result<Env> {
     let interp = read_pt_interp(Path::new("/bin/sh"))
         .or_else(|_| read_pt_interp(Path::new("/usr/bin/env")))
-        .wrap_err("could not read PT_INTERP from /bin/sh or /usr/bin/env")?;
-    classify_libc(&interp)
-        .ok_or_else(|| BougieError::UnknownTarget(format!("libc=unknown (interp={interp})")).into())
+        .wrap_err("could not read PT_INTERP from /bin/sh or /usr/bin/env to detect libc")?;
+    classify_libc(&interp).ok_or_else(|| {
+        BougieError::UnknownTarget {
+            triple: format!("libc=unknown (PT_INTERP={interp})"),
+            hint: "bougie classifies the libc family by reading /bin/sh's dynamic linker; expected ld-linux-* (gnu) or ld-musl-* (musl)".into(),
+        }
+        .into()
+    })
 }
 
 /// Classify a dynamic linker path string per CLI.md §7.2.

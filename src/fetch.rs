@@ -52,21 +52,26 @@ pub fn fetch_blob(client: &reqwest::blocking::Client, spec: &BlobSpec<'_>) -> Re
 fn try_once(client: &reqwest::blocking::Client, spec: &BlobSpec<'_>) -> Result<()> {
     let tmp = spec.partial_dir.join(format!("{}.partial", spec.sha256));
 
-    let mut resp = client
-        .get(spec.url)
-        .send()
-        .map_err(|e| BougieError::Network(e.to_string()))?;
+    let mut resp = client.get(spec.url).send().map_err(|e| BougieError::Network {
+        operation: format!("fetching blob {}", spec.url),
+        detail: e.to_string(),
+    })?;
     if !resp.status().is_success() {
-        return Err(BougieError::Network(format!("GET {} → {}", spec.url, resp.status())).into());
+        return Err(BougieError::Network {
+            operation: format!("GET {}", spec.url),
+            detail: format!("server returned HTTP {}", resp.status()),
+        }
+        .into());
     }
 
     let mut file = File::create(&tmp).wrap_err_with(|| format!("creating {}", tmp.display()))?;
     let mut hasher = Sha256::new();
     let mut buf = vec![0u8; 64 * 1024];
     loop {
-        let n = resp
-            .read(&mut buf)
-            .map_err(|e| BougieError::Network(format!("reading body: {e}")))?;
+        let n = resp.read(&mut buf).map_err(|e| BougieError::Network {
+            operation: format!("reading blob body from {}", spec.url),
+            detail: e.to_string(),
+        })?;
         if n == 0 {
             break;
         }
@@ -79,7 +84,12 @@ fn try_once(client: &reqwest::blocking::Client, spec: &BlobSpec<'_>) -> Result<(
     let actual = format_hex(&hasher.finalize());
     if !actual.eq_ignore_ascii_case(spec.sha256) {
         let _ = fs::remove_file(&tmp);
-        return Err(BougieError::BlobHashMismatch.into());
+        return Err(BougieError::BlobHashMismatch {
+            url: spec.url.to_owned(),
+            expected: spec.sha256.to_owned(),
+            actual,
+        }
+        .into());
     }
 
     let incoming = sibling_with_suffix(spec.dest, ".incoming");

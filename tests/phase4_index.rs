@@ -160,7 +160,9 @@ fn tampered_body_fails_signature_check() {
     let verifier = Sigstore::new(&trust).unwrap();
     let client = reqwest::blocking::Client::new();
     let err = fetch_root(&client, &fx.server.uri(), cache.path(), &verifier).unwrap_err();
-    assert!(err.to_string().contains("index signature failure"));
+    let msg = err.to_string();
+    assert!(msg.contains("could not verify index signature"), "msg: {msg}");
+    assert!(msg.contains(&fx.server.uri()), "msg: {msg}");
 }
 
 #[test]

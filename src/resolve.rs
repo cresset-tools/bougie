@@ -93,8 +93,9 @@ where
             _ => {}
         }
     }
-    let (artifact, version) = best.ok_or_else(|| {
-        BougieError::Resolution(format!("no {kind} satisfies {label}"))
+    let (artifact, version) = best.ok_or_else(|| BougieError::Resolution {
+        kind: kind.to_owned(),
+        detail: format!("no candidate satisfies {label}"),
     })?;
     Ok(Selected { artifact, version, frozen_warning: artifact.frozen })
 }
@@ -143,9 +144,12 @@ pub fn intersect_php(
     override_spec: Option<&VersionLike>,
 ) -> Result<VersionLike> {
     match (public, override_spec) {
-        (None, None) => Err(BougieError::Resolution(
-            "no PHP version constraint set (require.php or [php]version)".into(),
-        )
+        (None, None) => Err(BougieError::Resolution {
+            kind: "php".into(),
+            detail:
+                "no PHP version constraint set — add `require.php` to composer.json or `[php]version` to bougie.toml"
+                    .into(),
+        }
         .into()),
         (Some(c), None) => Ok(VersionLike::Constraint(c.clone())),
         (None, Some(o)) => Ok(o.clone()),
@@ -158,9 +162,12 @@ pub fn intersect_php(
             if c.satisfies(probe) {
                 Ok(o.clone())
             } else {
-                Err(BougieError::Resolution(format!(
-                    "bougie php pin does not satisfy require.php: {probe}"
-                ))
+                Err(BougieError::Resolution {
+                    kind: "php".into(),
+                    detail: format!(
+                        "bougie pin {probe} does not satisfy composer.json's require.php constraint — change one of them to bring them in line"
+                    ),
+                }
                 .into())
             }
         }
@@ -261,7 +268,9 @@ mod tests {
         let spec = VersionLike::Constraint(Constraint::parse("^8.3").unwrap());
         let err =
             resolve_php(&s, &spec, Flavor::Nts, ResolveOptions::default()).unwrap_err();
-        assert!(err.to_string().contains("no php interpreter"));
+        let msg = err.to_string();
+        assert!(msg.contains("php interpreter"), "msg: {msg}");
+        assert!(msg.contains("no candidate"), "msg: {msg}");
     }
 
     #[test]

@@ -32,5 +32,9 @@ pub fn run(_with: &[String], argv: &[String]) -> Result<ExitCode> {
         .env("PATH", new_path)
         .env("PHP_INI_SCAN_DIR", &conf_d)
         .exec();
-    Err(BougieError::Filesystem(err.to_string()).into())
+    Err(BougieError::Filesystem {
+        operation: format!("execve {program}"),
+        detail: err.to_string(),
+    }
+    .into())
 }

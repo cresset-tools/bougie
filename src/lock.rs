@@ -46,7 +46,11 @@ impl ExclusiveGuard {
             }
             if Instant::now() >= deadline {
                 let pid = read_holder_pid(path).unwrap_or(0);
-                return Err(BougieError::LockHeld { pid }.into());
+                return Err(BougieError::LockHeld {
+                    path: path.display().to_string(),
+                    pid,
+                }
+                .into());
             }
             std::thread::sleep(POLL_INTERVAL);
         }
@@ -114,7 +118,8 @@ mod tests {
         let err =
             ExclusiveGuard::acquire(&path, Duration::from_millis(150)).unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("lock held by pid"), "got: {msg}");
+        assert!(msg.contains("concurrent operation conflict"), "got: {msg}");
+        assert!(msg.contains("held by:  pid"), "got: {msg}");
         assert!(msg.contains(&std::process::id().to_string()));
     }
 

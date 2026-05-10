@@ -50,7 +50,9 @@ pub fn fetch_root(
     if let Some(etag) = cached_etag.as_deref().filter(|s| !s.is_empty()) {
         req = req.header(reqwest::header::IF_NONE_MATCH, etag.trim());
     }
-    let resp = req.send().map_err(|e| BougieError::Network(e.to_string()))?;
+    let resp = req
+        .send()
+        .map_err(|e| net_io(format!("fetching {url}"), &e))?;
 
     if resp.status() == reqwest::StatusCode::NOT_MODIFIED {
         let bytes = fs::read(&root_path)
@@ -60,7 +62,7 @@ pub fn fetch_root(
     }
 
     if !resp.status().is_success() {
-        return Err(BougieError::Network(format!("GET {} → {}", url, resp.status())).into());
+        return Err(net_http(format!("GET {url}"), resp.status()).into());
     }
     let new_etag = resp
         .headers()
@@ -69,27 +71,21 @@ pub fn fetch_root(
         .map(str::to_owned);
     let body = resp
         .bytes()
-        .map_err(|e| BougieError::Network(format!("reading body: {e}")))?;
+        .map_err(|e| net_io(format!("reading body of {url}"), &e))?;
 
-    // Companion signature.
     let sig_url = format!("{url}.sig");
     let sig_resp = client
         .get(&sig_url)
         .send()
-        .map_err(|e| BougieError::Network(e.to_string()))?;
+        .map_err(|e| net_io(format!("fetching {sig_url}"), &e))?;
     if !sig_resp.status().is_success() {
-        return Err(BougieError::Network(format!(
-            "GET {} → {}",
-            sig_url,
-            sig_resp.status()
-        ))
-        .into());
+        return Err(net_http(format!("GET {sig_url}"), sig_resp.status()).into());
     }
     let sig_bytes = sig_resp
         .bytes()
-        .map_err(|e| BougieError::Network(format!("reading signature: {e}")))?;
+        .map_err(|e| net_io(format!("reading signature body of {sig_url}"), &e))?;
 
-    verifier.verify(&body, &sig_bytes)?;
+    verifier.verify(&url, &body, &sig_bytes)?;
 
     // Atomic writes (rename within cache_root, same FS).
     atomic_write(&root_path, &body)?;
@@ -132,15 +128,21 @@ pub fn fetch_section(
     let resp = client
         .get(&url)
         .send()
-        .map_err(|e| BougieError::Network(e.to_string()))?;
+        .map_err(|e| net_io(format!("fetching {url}"), &e))?;
     if !resp.status().is_success() {
-        return Err(BougieError::Network(format!("GET {} → {}", url, resp.status())).into());
+        return Err(net_http(format!("GET {url}"), resp.status()).into());
     }
     let body = resp
         .bytes()
-        .map_err(|e| BougieError::Network(format!("reading body: {e}")))?;
-    if hex_sha256(&body) != expected_sha256 {
-        return Err(BougieError::ManifestHashMismatch.into());
+        .map_err(|e| net_io(format!("reading body of {url}"), &e))?;
+    let actual = hex_sha256(&body);
+    if actual != expected_sha256 {
+        return Err(BougieError::ManifestHashMismatch {
+            url: url.clone(),
+            expected: expected_sha256.to_owned(),
+            actual,
+        }
+        .into());
     }
     if let Some(parent) = cache_path.parent() {
         fs::create_dir_all(parent).wrap_err("creating section cache dir")?;
@@ -181,21 +183,38 @@ pub fn fetch_manifest(
     let resp = client
         .get(&absolute_url)
         .send()
-        .map_err(|e| BougieError::Network(e.to_string()))?;
+        .map_err(|e| net_io(format!("fetching manifest {absolute_url}"), &e))?;
     if !resp.status().is_success() {
-        return Err(BougieError::Network(format!("GET {} → {}", absolute_url, resp.status())).into());
+        return Err(net_http(format!("GET {absolute_url}"), resp.status()).into());
     }
     let body = resp
         .bytes()
-        .map_err(|e| BougieError::Network(format!("reading body: {e}")))?;
-    if hex_sha256(&body) != expected_sha256 {
-        return Err(BougieError::ManifestHashMismatch.into());
+        .map_err(|e| net_io(format!("reading manifest body of {absolute_url}"), &e))?;
+    let actual = hex_sha256(&body);
+    if actual != expected_sha256 {
+        return Err(BougieError::ManifestHashMismatch {
+            url: absolute_url.clone(),
+            expected: expected_sha256.to_owned(),
+            actual,
+        }
+        .into());
     }
     if let Some(parent) = cache_path.parent() {
         fs::create_dir_all(parent).wrap_err("creating manifest cache dir")?;
     }
     atomic_write(&cache_path, &body)?;
     serde_json::from_slice(&body).wrap_err("parsing fetched manifest")
+}
+
+fn net_io(operation: String, e: &impl std::fmt::Display) -> BougieError {
+    BougieError::Network { operation, detail: e.to_string() }
+}
+
+fn net_http(operation: String, status: reqwest::StatusCode) -> BougieError {
+    BougieError::Network {
+        operation,
+        detail: format!("server returned HTTP {status}"),
+    }
 }
 
 fn hex_sha256(bytes: &[u8]) -> String {

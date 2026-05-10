@@ -57,17 +57,28 @@ pub fn install_php(
     let verifier = Sigstore::new(&trust)?;
     let client = reqwest::blocking::Client::builder()
         .build()
-        .map_err(|e| BougieError::Network(e.to_string()))?;
+        .map_err(|e| BougieError::Network {
+            operation: "building HTTP client".into(),
+            detail: e.to_string(),
+        })?;
 
     let cache_root = paths.cache_index(&host_to_dirname(&host));
     let fetched = fetch_root(&client, &host, &cache_root, &verifier)?;
     let target_entry = fetched.root.targets.get(&target).ok_or_else(|| {
-        BougieError::UnknownTarget(format!("{target}; available: {:?}", fetched.root.targets.keys().collect::<Vec<_>>()))
+        let available: Vec<String> = fetched.root.targets.keys().cloned().collect();
+        BougieError::UnknownTarget {
+            triple: target.clone(),
+            hint: format!(
+                "the index at {host} advertises: {}",
+                available.join(", ")
+            ),
+        }
     })?;
-    let section_ref = target_entry
-        .sections
-        .get(SECTION_NAME)
-        .ok_or_else(|| BougieError::Resolution(format!("no {SECTION_NAME} section for {target}")))?;
+    let section_ref =
+        target_entry.sections.get(SECTION_NAME).ok_or_else(|| BougieError::Resolution {
+            kind: "section".into(),
+            detail: format!("the index at {host} has no `{SECTION_NAME}` section under target {target}"),
+        })?;
     let section = fetch_section(&client, &host, &cache_root, &target, SECTION_NAME, &section_ref.sha256)?;
 
     let selected: Selected<'_> = resolve_php(&section, &spec, flavor, opts)?;
@@ -82,8 +93,12 @@ pub fn install_php(
             &selected.artifact.manifest.url,
             &selected.artifact.manifest.sha256,
         )?;
-        let interp = manifest.interpreter.ok_or_else(|| {
-            BougieError::Resolution("interpreter manifest is missing the interpreter blob".into())
+        let interp = manifest.interpreter.ok_or_else(|| BougieError::Resolution {
+            kind: "manifest".into(),
+            detail: format!(
+                "the manifest at {} declares an interpreter but is missing the `interpreter` blob descriptor — the index publisher's bug",
+                selected.artifact.manifest.url
+            ),
         })?;
         let blob_spec = BlobSpec {
             url: &interp.url,
@@ -105,9 +120,12 @@ pub fn install_php(
 
 fn pick_flavor(in_request: Option<Flavor>, flag: Option<Flavor>) -> Result<Flavor> {
     match (in_request, flag) {
-        (Some(a), Some(b)) if a != b => Err(BougieError::Resolution(format!(
-            "flavor mismatch: request says {a}, --flavor says {b}"
-        ))
+        (Some(a), Some(b)) if a != b => Err(BougieError::Resolution {
+            kind: "flavor".into(),
+            detail: format!(
+                "request encodes flavor `{a}` but --flavor=`{b}` was passed; remove one or make them agree"
+            ),
+        }
         .into()),
         (Some(f), _) | (None, Some(f)) => Ok(f),
         (None, None) => Ok(Flavor::Nts),
