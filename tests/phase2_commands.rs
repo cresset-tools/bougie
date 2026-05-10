@@ -71,7 +71,7 @@ fn self_version_text_has_two_lines() {
         .assert()
         .success()
         .stdout(contains("bougie "))
-        .stdout(contains("trust-root:"));
+        .stdout(contains("trust ("));
 }
 
 #[test]
@@ -103,7 +103,8 @@ fn self_version_json_v1_carries_schema_version() {
     let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
     assert_eq!(v["schema_version"], 1);
     assert_eq!(v["bougie"]["version"], env!("CARGO_PKG_VERSION"));
-    assert!(v["bougie"]["trust_root_fingerprint"].is_string());
+    assert!(v["bougie"]["trust"]["kind"].is_string());
+    assert!(v["bougie"]["trust"]["detail"].is_string());
 }
 
 #[test]

@@ -1,6 +1,6 @@
 use crate::cli::OutputFormat;
-use crate::index::TrustRoot;
-use crate::output::{emit, Render};
+use crate::index::describe_trust;
+use crate::output::{Render, emit};
 use eyre::Result;
 use serde::Serialize;
 use std::io::{self, Write};
@@ -17,23 +17,33 @@ pub struct VersionResult {
 #[derive(Debug, Serialize)]
 pub struct VersionInfo {
     pub version: &'static str,
-    pub trust_root_fingerprint: String,
+    pub trust: TrustInfo,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TrustInfo {
+    pub kind: &'static str,
+    pub detail: String,
 }
 
 impl Render for VersionResult {
     fn render_text(&self, w: &mut dyn Write) -> io::Result<()> {
         writeln!(w, "bougie {}", self.bougie.version)?;
-        writeln!(w, "trust-root: sha256:{}", self.bougie.trust_root_fingerprint)
+        writeln!(
+            w,
+            "trust ({}): {}",
+            self.bougie.trust.kind, self.bougie.trust.detail
+        )
     }
 }
 
 pub fn run(format: OutputFormat, field: Option<&str>, short: bool) -> Result<ExitCode> {
-    let trust = TrustRoot::from_env_or_embedded()?;
+    let trust = describe_trust();
     let result = VersionResult {
         schema_version: 1,
         bougie: VersionInfo {
             version: VERSION,
-            trust_root_fingerprint: trust.fingerprint().to_owned(),
+            trust: TrustInfo { kind: trust.kind, detail: trust.detail },
         },
     };
     if short {

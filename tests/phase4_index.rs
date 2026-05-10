@@ -1,7 +1,7 @@
 //! Phase 4: index root fetch + signature verification.
 
 use base64::Engine;
-use bougie::index::{fetch_root, FetchOutcome, Sigstore, TrustRoot};
+use bougie::index::{DetachedEcdsa, FetchOutcome, fetch_root};
 use sigstore::crypto::signing_key::ecdsa::{ECDSAKeys, EllipticCurve};
 use tempfile::TempDir;
 use wiremock::matchers::{header, method, path};
@@ -76,8 +76,8 @@ fn fetch_root_refreshes_on_first_call() {
     });
 
     let cache = TempDir::new().unwrap();
-    let trust = TrustRoot::from_pem(fx.pubkey_pem.as_bytes());
-    let verifier = Sigstore::new(&trust).unwrap();
+    // (verifier built directly from PEM)
+    let verifier = DetachedEcdsa::from_pem(fx.pubkey_pem.as_bytes()).unwrap();
     let client = reqwest::blocking::Client::new();
 
     let out = fetch_root(&client, &fx.server.uri(), cache.path(), &verifier).unwrap();
@@ -122,8 +122,8 @@ fn fetch_root_uses_304_on_revalidation() {
     });
 
     let cache = TempDir::new().unwrap();
-    let trust = TrustRoot::from_pem(fx.pubkey_pem.as_bytes());
-    let verifier = Sigstore::new(&trust).unwrap();
+    // (verifier built directly from PEM)
+    let verifier = DetachedEcdsa::from_pem(fx.pubkey_pem.as_bytes()).unwrap();
     let client = reqwest::blocking::Client::new();
 
     let first = fetch_root(&client, &fx.server.uri(), cache.path(), &verifier).unwrap();
@@ -156,8 +156,8 @@ fn tampered_body_fails_signature_check() {
     });
 
     let cache = TempDir::new().unwrap();
-    let trust = TrustRoot::from_pem(fx.pubkey_pem.as_bytes());
-    let verifier = Sigstore::new(&trust).unwrap();
+    // (verifier built directly from PEM)
+    let verifier = DetachedEcdsa::from_pem(fx.pubkey_pem.as_bytes()).unwrap();
     let client = reqwest::blocking::Client::new();
     let err = fetch_root(&client, &fx.server.uri(), cache.path(), &verifier).unwrap_err();
     let msg = err.to_string();
@@ -178,8 +178,8 @@ fn http_error_maps_to_network_failure() {
     });
 
     let cache = TempDir::new().unwrap();
-    let trust = TrustRoot::from_pem(fx.pubkey_pem.as_bytes());
-    let verifier = Sigstore::new(&trust).unwrap();
+    // (verifier built directly from PEM)
+    let verifier = DetachedEcdsa::from_pem(fx.pubkey_pem.as_bytes()).unwrap();
     let client = reqwest::blocking::Client::new();
     let err = fetch_root(&client, &fx.server.uri(), cache.path(), &verifier).unwrap_err();
     assert!(err.to_string().contains("500"));

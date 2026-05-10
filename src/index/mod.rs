@@ -4,6 +4,9 @@ pub mod fetch;
 pub mod verify;
 pub mod wire;
 
-pub use fetch::{fetch_root, FetchOutcome, FetchedRoot};
-pub use verify::{Sigstore, TrustRoot, Verifier};
+pub use fetch::{FetchOutcome, FetchedRoot, fetch_root};
+pub use verify::{
+    DetachedEcdsa, EXPECTED_ISSUER, EXPECTED_REPOSITORY, SigstoreBundleVerifier, TrustDescription,
+    Verifier, build_verifier, describe_trust,
+};
 pub use wire::{Artifact, Closure, Manifest, Root, Section, SectionRef};

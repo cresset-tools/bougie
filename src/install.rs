@@ -4,8 +4,8 @@
 use crate::errors::BougieError;
 use crate::fetch::{fetch_blob, BlobSpec};
 use crate::index::{
+    build_verifier,
     fetch::{fetch_manifest, fetch_root, fetch_section},
-    Sigstore, TrustRoot,
 };
 use crate::lock::ExclusiveGuard;
 use crate::paths::Paths;
@@ -53,8 +53,7 @@ pub fn install_php(
     // Lock the global store before mutating anything.
     let _guard = ExclusiveGuard::acquire(&paths.global_lock(), LOCK_TIMEOUT)?;
 
-    let trust = TrustRoot::from_env_or_embedded()?;
-    let verifier = Sigstore::new(&trust)?;
+    let verifier = build_verifier()?;
     let client = reqwest::blocking::Client::builder()
         .build()
         .map_err(|e| BougieError::Network {
@@ -63,7 +62,7 @@ pub fn install_php(
         })?;
 
     let cache_root = paths.cache_index(&host_to_dirname(&host));
-    let fetched = fetch_root(&client, &host, &cache_root, &verifier)?;
+    let fetched = fetch_root(&client, &host, &cache_root, verifier.as_ref())?;
     let target_entry = fetched.root.targets.get(&target).ok_or_else(|| {
         let available: Vec<String> = fetched.root.targets.keys().cloned().collect();
         BougieError::UnknownTarget {
