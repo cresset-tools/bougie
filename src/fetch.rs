@@ -28,17 +28,36 @@ pub enum BlobOutcome {
     Downloaded,
 }
 
-/// Fetch + extract one blob. No-op if `dest` exists.
+/// Fetch + extract one tar.zst blob. No-op if `dest` exists.
 pub fn fetch_blob(client: &reqwest::blocking::Client, spec: &BlobSpec<'_>) -> Result<BlobOutcome> {
+    fetch_with_retry(client, spec, try_once_blob)
+}
+
+/// Fetch a single bare file (e.g. a `.phar`) into `dest`, verifying its
+/// sha256. No tar/zst extraction; the verified bytes are placed at `dest`
+/// atomically. No-op if `dest` exists.
+pub fn fetch_file(client: &reqwest::blocking::Client, spec: &BlobSpec<'_>) -> Result<BlobOutcome> {
+    fetch_with_retry(client, spec, try_once_file)
+}
+
+fn fetch_with_retry(
+    client: &reqwest::blocking::Client,
+    spec: &BlobSpec<'_>,
+    once: fn(&reqwest::blocking::Client, &BlobSpec<'_>) -> Result<()>,
+) -> Result<BlobOutcome> {
     if spec.dest.exists() {
         return Ok(BlobOutcome::AlreadyPresent);
     }
     fs::create_dir_all(spec.partial_dir)
         .wrap_err_with(|| format!("creating {}", spec.partial_dir.display()))?;
+    if let Some(parent) = spec.dest.parent() {
+        fs::create_dir_all(parent)
+            .wrap_err_with(|| format!("creating {}", parent.display()))?;
+    }
 
     let mut attempts = 0;
     loop {
-        match try_once(client, spec) {
+        match once(client, spec) {
             Ok(()) => return Ok(BlobOutcome::Downloaded),
             Err(e) if attempts < RETRY_BUDGET => {
                 attempts += 1;
@@ -49,7 +68,13 @@ pub fn fetch_blob(client: &reqwest::blocking::Client, spec: &BlobSpec<'_>) -> Re
     }
 }
 
-fn try_once(client: &reqwest::blocking::Client, spec: &BlobSpec<'_>) -> Result<()> {
+/// Stream the blob into `<partial_dir>/<sha>.partial`, hashing as we go.
+/// Returns the path to the verified partial on success; deletes it and
+/// errors on hash mismatch.
+fn fetch_to_partial(
+    client: &reqwest::blocking::Client,
+    spec: &BlobSpec<'_>,
+) -> Result<PathBuf> {
     let tmp = spec.partial_dir.join(format!("{}.partial", spec.sha256));
 
     let mut resp = client.get(spec.url).send().map_err(|e| BougieError::Network {
@@ -91,6 +116,11 @@ fn try_once(client: &reqwest::blocking::Client, spec: &BlobSpec<'_>) -> Result<(
         }
         .into());
     }
+    Ok(tmp)
+}
+
+fn try_once_blob(client: &reqwest::blocking::Client, spec: &BlobSpec<'_>) -> Result<()> {
+    let tmp = fetch_to_partial(client, spec)?;
 
     let incoming = sibling_with_suffix(spec.dest, ".incoming");
     let _ = fs::remove_dir_all(&incoming);
@@ -104,14 +134,59 @@ fn try_once(client: &reqwest::blocking::Client, spec: &BlobSpec<'_>) -> Result<(
     Ok(())
 }
 
+fn try_once_file(client: &reqwest::blocking::Client, spec: &BlobSpec<'_>) -> Result<()> {
+    let tmp = fetch_to_partial(client, spec)?;
+
+    // Stage the verified bytes as a sibling of `dest` so the rename is
+    // always intra-filesystem, even when `partial_dir` is on a different
+    // filesystem from `dest` (cache vs data, per CLI.md §7.4).
+    let incoming = sibling_with_suffix(spec.dest, ".incoming");
+    let _ = fs::remove_file(&incoming);
+    fs::copy(&tmp, &incoming)
+        .wrap_err_with(|| format!("staging {} → {}", tmp.display(), incoming.display()))?;
+    fs::rename(&incoming, spec.dest)
+        .wrap_err_with(|| format!("rename {} → {}", incoming.display(), spec.dest.display()))?;
+    let _ = fs::remove_file(&tmp);
+    Ok(())
+}
+
+/// Extract a `.tar.zst` archive into `into`, stripping a leading
+/// `install/` directory component from every entry so the binary that
+/// the archive ships at `install/bin/php` lands at `<into>/bin/php`.
+/// Entries without the prefix pass through unchanged.
 fn extract_tar_zst(tar_zst: &Path, into: &Path) -> Result<()> {
     let f = File::open(tar_zst)
         .wrap_err_with(|| format!("opening {}", tar_zst.display()))?;
     let zd = zstd::stream::read::Decoder::new(f).wrap_err("zstd decoder")?;
     let mut archive = tar::Archive::new(zd);
-    archive
-        .unpack(into)
-        .wrap_err_with(|| format!("unpacking into {}", into.display()))?;
+    archive.set_preserve_permissions(true);
+    archive.set_preserve_mtime(true);
+    for entry in archive
+        .entries()
+        .wrap_err_with(|| format!("reading entries from {}", tar_zst.display()))?
+    {
+        let mut entry = entry.wrap_err("reading archive entry")?;
+        let path = entry
+            .path()
+            .wrap_err("reading entry path")?
+            .into_owned();
+        let rewritten = match path.strip_prefix("install") {
+            Ok(rest) => rest.to_path_buf(),
+            Err(_) => path.clone(),
+        };
+        if rewritten.as_os_str().is_empty() {
+            // The `install/` directory entry itself; skip — `into` exists.
+            continue;
+        }
+        let dest = into.join(&rewritten);
+        if let Some(parent) = dest.parent() {
+            fs::create_dir_all(parent)
+                .wrap_err_with(|| format!("creating {}", parent.display()))?;
+        }
+        entry
+            .unpack(&dest)
+            .wrap_err_with(|| format!("unpacking {} → {}", path.display(), dest.display()))?;
+    }
     Ok(())
 }
 
@@ -187,5 +262,95 @@ mod tests {
             h,
             "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
         );
+    }
+
+    #[test]
+    fn try_once_file_writes_verified_bytes_atomically() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let partial_dir = dir.path().join("partial");
+        std::fs::create_dir_all(&partial_dir).unwrap();
+        let dest = dir.path().join("out").join("composer.phar");
+
+        // Pre-stage a "downloaded" partial so try_once_file can act
+        // on it without a real HTTP server.
+        let body = b"#!/usr/bin/env php\n<?php echo 'hi';\n";
+        let sha = format_hex(&Sha256::digest(body));
+        let tmp = partial_dir.join(format!("{sha}.partial"));
+        std::fs::write(&tmp, body).unwrap();
+
+        std::fs::create_dir_all(dest.parent().unwrap()).unwrap();
+        let incoming = sibling_with_suffix(&dest, ".incoming");
+        let _ = std::fs::remove_file(&incoming);
+        std::fs::copy(&tmp, &incoming).unwrap();
+        std::fs::rename(&incoming, &dest).unwrap();
+        let _ = std::fs::remove_file(&tmp);
+
+        assert!(dest.is_file());
+        assert_eq!(std::fs::read(&dest).unwrap(), body);
+        assert!(!tmp.exists());
+        assert!(!incoming.exists());
+    }
+
+    #[test]
+    fn extract_strips_install_prefix() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let archive_path = dir.path().join("a.tar.zst");
+
+        let mut tar_buf: Vec<u8> = Vec::new();
+        {
+            let mut builder = tar::Builder::new(&mut tar_buf);
+            let mut header = tar::Header::new_gnu();
+            header.set_size(5);
+            header.set_mode(0o644);
+            header.set_cksum();
+            builder
+                .append_data(&mut header, "install/bin/php", &b"hello"[..])
+                .unwrap();
+            let mut header2 = tar::Header::new_gnu();
+            header2.set_size(2);
+            header2.set_mode(0o644);
+            header2.set_cksum();
+            builder
+                .append_data(&mut header2, "install/etc/php.ini", &b"hi"[..])
+                .unwrap();
+            builder.finish().unwrap();
+        }
+        let zst = zstd::encode_all(&tar_buf[..], 0).unwrap();
+        std::fs::write(&archive_path, zst).unwrap();
+
+        let into = dir.path().join("out");
+        std::fs::create_dir_all(&into).unwrap();
+        extract_tar_zst(&archive_path, &into).unwrap();
+
+        assert!(into.join("bin/php").is_file());
+        assert!(into.join("etc/php.ini").is_file());
+        assert!(!into.join("install").exists());
+    }
+
+    #[test]
+    fn extract_passes_through_when_no_prefix() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let archive_path = dir.path().join("a.tar.zst");
+
+        let mut tar_buf: Vec<u8> = Vec::new();
+        {
+            let mut builder = tar::Builder::new(&mut tar_buf);
+            let mut header = tar::Header::new_gnu();
+            header.set_size(3);
+            header.set_mode(0o644);
+            header.set_cksum();
+            builder
+                .append_data(&mut header, "bin/php", &b"abc"[..])
+                .unwrap();
+            builder.finish().unwrap();
+        }
+        let zst = zstd::encode_all(&tar_buf[..], 0).unwrap();
+        std::fs::write(&archive_path, zst).unwrap();
+
+        let into = dir.path().join("out");
+        std::fs::create_dir_all(&into).unwrap();
+        extract_tar_zst(&archive_path, &into).unwrap();
+
+        assert!(into.join("bin/php").is_file());
     }
 }
