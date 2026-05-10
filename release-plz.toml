@@ -1,0 +1,20 @@
+# release-plz config — see https://release-plz.dev/docs/config
+#
+# bougie is not (yet) on crates.io and ships via GitHub Releases. The
+# `release-plz release` command creates the tag + GH release; a separate
+# build workflow can listen for the `release: published` event later
+# when there's a binary distribution pipeline to wire up.
+
+[workspace]
+# Don't run `cargo publish` — bougie isn't on crates.io.
+publish = false
+# Create a tag + GitHub release when a release lands.
+git_release_enable = true
+# Match the project's commit-message conventions: a single CHANGELOG.md
+# at the repo root, conventional-ish prefixes (`ci:`, `ext list:`, …).
+changelog_update = true
+# Don't post sections like "Other" for misc commits — keep notes tight.
+git_release_body = """
+{% if version.is_prerelease %}_Prerelease._{% endif %}
+{{ changelog }}
+"""

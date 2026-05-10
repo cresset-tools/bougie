@@ -1,0 +1,57 @@
+name: Release-plz
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+# Don't cancel in-flight release-plz runs — partial state (a half-open
+# PR, an unpushed tag) is worse than waiting for the previous one.
+concurrency:
+  group: release-plz-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # On every push to main: open or update a "release PR" that bumps the
+  # version and updates CHANGELOG.md from the commits since the last
+  # release. Merging that PR is the signal to publish.
+  release-plz-pr:
+    name: release-plz / release-pr
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: MarcoIeni/release-plz-action@v0.5
+        with:
+          command: release-pr
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # On every push to main: if Cargo.toml's version is ahead of the
+  # latest tag (i.e. a release PR has just landed, or someone bumped
+  # manually), tag and publish a GitHub release. Idempotent — does
+  # nothing when there's nothing new to release.
+  # `cargo publish` is disabled in release-plz.toml since bougie isn't
+  # on crates.io.
+  release-plz-release:
+    name: release-plz / release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: MarcoIeni/release-plz-action@v0.5
+        with:
+          command: release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+# Note: PRs opened by the default `GITHUB_TOKEN` do NOT trigger other
+# workflows (a GitHub safety guard against recursion). So `ci.yml`
+# won't run on release-plz's PRs out of the box. To enable that,
+# replace `secrets.GITHUB_TOKEN` above with a PAT or a GitHub App
+# token that has `contents:write` + `pull-requests:write`.
