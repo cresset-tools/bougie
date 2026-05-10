@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancel an in-flight run when the same ref gets a newer push.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  test:
+    name: cargo test (${{ matrix.os }}, ${{ matrix.profile }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        profile: [debug, release]
+    steps:
+      - uses: actions/checkout@v5
+
+      # rust-toolchain.toml pins the channel + components; rustup obeys it
+      # on first cargo invocation.
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Distinguish caches: debug and release share `target/` and would
+          # thrash each other. The matrix value also keeps the keys honest.
+          key: ${{ matrix.profile }}
+
+      - name: cargo build
+        run: |
+          if [ "${{ matrix.profile }}" = "release" ]; then
+            cargo build --release --all-targets
+          else
+            cargo build --all-targets
+          fi
+
+      - name: cargo test
+        run: |
+          if [ "${{ matrix.profile }}" = "release" ]; then
+            cargo test --release
+          else
+            cargo test
+          fi
