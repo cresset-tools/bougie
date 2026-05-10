@@ -60,7 +60,10 @@ pub fn resolve_extension<'a>(
         if a.flavor != flavor.as_str() {
             return false;
         }
-        if a.abi.php != php_minor_string {
+        // Section rows for extensions carry php_minor explicitly
+        // (DISTRIBUTION.md §Section-index); the full ABI lives in the
+        // manifest. Skip rows that omit it as a publisher-side bug.
+        if a.php_minor.as_deref() != Some(&php_minor_string) {
             return false;
         }
         if let Some(pin) = version_pin
@@ -177,25 +180,21 @@ pub fn intersect_php(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::index::wire::{Abi, ManifestRef, SectionKind};
+    use crate::index::wire::{ManifestRef, SectionKind};
 
     fn art(version: &str, flavor: &str, php: &str, yanked: bool, frozen: bool) -> Artifact {
         Artifact {
             tag: format!("test-{version}"),
             version: version.into(),
-            abi: Abi {
-                php: php.into(),
-                zend_module_api_no: "0".into(),
-                ts: false,
-                debug: false,
-            },
             flavor: flavor.into(),
-            libc_min: None,
-            manifest: ManifestRef { url: String::new(), sha256: "0".repeat(64) },
+            php_minor: Some(php.into()),
+            manifest: ManifestRef {
+                path: format!("/targets/x/manifests/test/{version}.json"),
+                sha256: "0".repeat(64),
+            },
             yanked,
             yanked_reason: None,
             frozen,
-            built: "2026-01-01T00:00:00Z".into(),
         }
     }
 
@@ -297,7 +296,7 @@ mod tests {
         );
         let pv = PartialVersion { major: 8, minor: Some(3), patch: None };
         let sel = resolve_extension(&s, pv, Flavor::Nts, None, ResolveOptions::default()).unwrap();
-        assert_eq!(sel.artifact.abi.php, "8.3");
+        assert_eq!(sel.artifact.php_minor.as_deref(), Some("8.3"));
     }
 
     #[test]

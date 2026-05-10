@@ -151,14 +151,18 @@ pub fn fetch_section(
     serde_json::from_slice(&body).wrap_err("parsing fetched section")
 }
 
-/// Fetch a manifest blob (per §3.3 step 5), cached by sha256.
+/// Fetch a manifest body, cached by sha256.
+///
+/// `manifest_path` is the server-absolute path the section row carries
+/// (e.g. `/targets/<target>/manifests/...`). Hostname-relative paths
+/// dodge a class of URL-resolution bugs that bit relative `../../...`
+/// references when section names contained `/`. See DISTRIBUTION.md
+/// §Manifests-and-blobs ("Why absolute manifest paths").
 pub fn fetch_manifest(
     client: &reqwest::blocking::Client,
     host_base_url: &str,
     cache_root: &Path,
-    target: &str,
-    section_name: &str,
-    manifest_url: &str,
+    manifest_path: &str,
     expected_sha256: &str,
 ) -> Result<Manifest> {
     let cache_path = cache_root.join("manifests").join(format!("{expected_sha256}.json"));
@@ -167,42 +171,32 @@ pub fn fetch_manifest(
     {
         return serde_json::from_slice(&bytes).wrap_err("parsing cached manifest");
     }
-    let absolute_url = if manifest_url.starts_with("http://") || manifest_url.starts_with("https://")
-    {
-        manifest_url.to_owned()
-    } else {
-        // The section file actually lives at
-        //   <host>/targets/<target>/sections/<section-name>.json
-        // where <section-name> may itself contain `/` (e.g.
-        // "interpreter/php"). Anchor relative manifest URLs at that
-        // exact location, not at a depth-one placeholder, so
-        // `../../manifests/...` resolves to <target>/manifests/...
-        // rather than eating the <target> segment.
-        let base = format!(
-            "{}/targets/{}/sections/{}.json",
-            host_base_url.trim_end_matches('/'),
-            target,
-            section_name,
-        );
-        let base = url::Url::parse(&base).wrap_err("synthesizing section URL")?;
-        base.join(manifest_url)
-            .wrap_err("joining manifest URL")?
-            .to_string()
-    };
+    let url = format!(
+        "{}{}",
+        host_base_url.trim_end_matches('/'),
+        // Path is server-absolute and starts with '/'. Defensive: a
+        // publisher that forgets the leading slash still produces a
+        // working URL via the format string below.
+        if manifest_path.starts_with('/') {
+            manifest_path.to_owned()
+        } else {
+            format!("/{manifest_path}")
+        }
+    );
     let resp = client
-        .get(&absolute_url)
+        .get(&url)
         .send()
-        .map_err(|e| net_io(format!("fetching manifest {absolute_url}"), &e))?;
+        .map_err(|e| net_io(format!("fetching manifest {url}"), &e))?;
     if !resp.status().is_success() {
-        return Err(net_http(format!("GET {absolute_url}"), resp.status()).into());
+        return Err(net_http(format!("GET {url}"), resp.status()).into());
     }
     let body = resp
         .bytes()
-        .map_err(|e| net_io(format!("reading manifest body of {absolute_url}"), &e))?;
+        .map_err(|e| net_io(format!("reading manifest body of {url}"), &e))?;
     let actual = hex_sha256(&body);
     if actual != expected_sha256 {
         return Err(BougieError::ManifestHashMismatch {
-            url: absolute_url.clone(),
+            url: url.clone(),
             expected: expected_sha256.to_owned(),
             actual,
         }

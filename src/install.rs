@@ -88,21 +88,12 @@ pub fn install_php(
             &client,
             &host,
             &cache_root,
-            &target,
-            SECTION_NAME,
-            &selected.artifact.manifest.url,
+            &selected.artifact.manifest.path,
             &selected.artifact.manifest.sha256,
         )?;
-        let interp = manifest.interpreter.ok_or_else(|| BougieError::Resolution {
-            kind: "manifest".into(),
-            detail: format!(
-                "the manifest at {} declares an interpreter but is missing the `interpreter` blob descriptor — the index publisher's bug",
-                selected.artifact.manifest.url
-            ),
-        })?;
         let blob_spec = BlobSpec {
-            url: &interp.url,
-            sha256: &interp.sha256,
+            url: &manifest.blob.url,
+            sha256: &manifest.blob.sha256,
             partial_dir: &paths.cache_blobs(),
             dest: &dest,
         };

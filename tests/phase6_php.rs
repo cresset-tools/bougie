@@ -69,36 +69,39 @@ async fn build_fixture() -> Fixture {
     let (blob_bytes, blob_sha) = build_php_tarball();
     let blob_url = format!("{}/blobs/{}", server.uri(), &blob_sha);
 
+    let manifest_path_abs = format!(
+        "/targets/{}/manifests/php/8.3/php-8.3.12-{}-nts.json",
+        target, target
+    );
     let manifest_json = serde_json::json!({
+        "schema": 1,
+        "kind": "interpreter",
         "name": "php",
+        "tag": format!("php-8.3.12-{target}-nts"),
         "version": "8.3.12",
-        "abi": {"php":"8.3","zend_module_api_no":"20230831","ts":false,"debug":false},
-        "interpreter": {"sha256": blob_sha, "url": blob_url},
-        "closure": []
+        "target": target,
+        "flavor": "nts",
+        "abi": {"php":"8.3","zend_module_api_no":"20230831","zend_extension_api_no":"420230831"},
+        "libc": {"family":"gnu","min":"2.17"},
+        "blob": {"url": blob_url, "sha256": blob_sha},
+        "closure": [],
+        "sapis": ["cli","fpm"]
     });
     let manifest_bytes = serde_json::to_vec(&manifest_json).unwrap();
     let manifest_sha = hex(&manifest_bytes);
-    let manifest_url = format!(
-        "{}/targets/{}/manifests/php/8.3.12/php-8.3.12-{}-nts.json",
-        server.uri(),
-        target,
-        target
-    );
 
     let section_json = serde_json::json!({
         "schema": 1,
-        "name": "interpreter/php",
+        "name": "php",
         "kind": "interpreter",
         "target": target,
         "artifacts": [{
             "tag": format!("php-8.3.12-{target}-nts"),
             "version": "8.3.12",
-            "abi": {"php":"8.3","zend_module_api_no":"20230831","ts":false,"debug":false},
             "flavor": "nts",
-            "libc_min": "2.17",
-            "manifest": {"url": manifest_url, "sha256": manifest_sha},
+            "manifest": {"path": manifest_path_abs, "sha256": manifest_sha},
             "yanked": false,
-            "built": "2026-05-09T00:00:00Z"
+            "frozen": false
         }]
     });
     let section_bytes = serde_json::to_vec(&section_json).unwrap();
@@ -120,7 +123,7 @@ async fn build_fixture() -> Fixture {
     let sig_b64 = base64::engine::general_purpose::STANDARD.encode(&sig);
 
     let section_path = format!("/targets/{target}/sections/interpreter/php.json");
-    let manifest_path = format!("/targets/{target}/manifests/php/8.3.12/php-8.3.12-{target}-nts.json");
+    let manifest_path = manifest_path_abs.clone();
     let blob_path = format!("/blobs/{blob_sha}");
 
     Mock::given(method("GET")).and(path("/index.json"))

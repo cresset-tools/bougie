@@ -1,8 +1,14 @@
 //! Wire-format types for the index protocol (DISTRIBUTION.md).
 //!
 //! Each level (root → section → manifest → blob) deserializes into a
-//! plain `Deserialize` struct. Validation per CLI.md §7.3 lives in
-//! [`Closure::validate`].
+//! plain `Deserialize` struct.
+//!
+//! Section rows are *lean*: they carry only what the resolver needs to
+//! choose between artifacts (tag, version, flavor, php_minor for
+//! extensions, manifest pointer, yanked, frozen). Manifests are *fat*:
+//! they carry the full ABI/libc surface, the blob URL + sha256, and the
+//! closure of bundled-library store paths. See DISTRIBUTION.md
+//! §Section-index and §Manifests-and-blobs.
 
 use eyre::{eyre, Result};
 use serde::Deserialize;
@@ -42,13 +48,17 @@ pub enum SectionKind {
     Extension,
 }
 
+/// One row in a section. Lean: only the fields a resolver needs.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Artifact {
     pub tag: String,
     pub version: String,
-    pub abi: Abi,
     pub flavor: String,
-    pub libc_min: Option<String>,
+    /// Extension rows only: the PHP minor (`"8.3"`) the extension is
+    /// ABI-compatible with. Interpreter rows omit this — `version`
+    /// already carries the full PHP version.
+    #[serde(default)]
+    pub php_minor: Option<String>,
     pub manifest: ManifestRef,
     #[serde(default)]
     pub yanked: bool,
@@ -56,49 +66,67 @@ pub struct Artifact {
     pub yanked_reason: Option<String>,
     #[serde(default)]
     pub frozen: bool,
-    pub built: String,
+}
+
+/// Pointer to a manifest. `path` is server-absolute and hostname-free
+/// (e.g. `/targets/<target>/manifests/...`); the client prepends its
+/// configured index host. See DISTRIBUTION.md §Manifests-and-blobs.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ManifestRef {
+    pub path: String,
+    pub sha256: String,
+}
+
+/// Fat manifest: the complete install spec for one artifact.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Manifest {
+    pub schema: u32,
+    pub kind: SectionKind,
+    pub name: String,
+    pub tag: String,
+    pub version: String,
+    pub target: String,
+    pub flavor: String,
+    pub abi: Abi,
+    pub libc: Libc,
+    pub blob: Blob,
+    #[serde(default)]
+    pub closure: Vec<Closure>,
+    /// Extension manifests only.
+    #[serde(default)]
+    pub extension: Option<ExtensionRef>,
+    /// Interpreter manifests only.
+    #[serde(default)]
+    pub sapis: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Abi {
     pub php: String,
     pub zend_module_api_no: String,
-    pub ts: bool,
-    pub debug: bool,
+    pub zend_extension_api_no: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct ManifestRef {
+pub struct Libc {
+    /// `gnu`, `musl`, or `darwin`.
+    pub family: String,
+    /// Manylinux-style symbol/macOS floor (`2.17`, `11.0`, …).
+    pub min: String,
+}
+
+/// The artifact's main tarball.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Blob {
     pub url: String,
     pub sha256: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-pub struct Manifest {
-    pub name: String,
-    pub version: String,
-    pub abi: Abi,
-    #[serde(default)]
-    pub closure: Vec<Closure>,
-    /// Present for extension manifests.
-    #[serde(default)]
-    pub extension: Option<ExtensionRef>,
-    /// Present for interpreter manifests.
-    #[serde(default)]
-    pub interpreter: Option<InterpreterRef>,
-}
-
+/// Where the extracted `.so` lives inside the extension tarball.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ExtensionRef {
     pub path: String,
     pub sha256: String,
-    pub url: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct InterpreterRef {
-    pub sha256: String,
-    pub url: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -111,7 +139,7 @@ pub struct Closure {
 }
 
 impl Closure {
-    /// Per §7.3.
+    /// Per CLI.md §7.3.
     pub fn validate(&self) -> Result<()> {
         if !is_kebab_lower(&self.name) {
             return Err(eyre!("invalid closure name: {:?}", self.name));
@@ -133,12 +161,9 @@ impl Closure {
                 self.sha256
             ));
         }
-        if !(self.url.starts_with("http://")
-            || self.url.starts_with("https://")
-            || self.url.contains("{BLOB_BASE}"))
-        {
+        if !(self.url.starts_with("http://") || self.url.starts_with("https://")) {
             return Err(eyre!(
-                "closure {} url is not absolute and not a {{BLOB_BASE}} placeholder: {:?}",
+                "closure {} url must be absolute (the index publisher substitutes {{BLOB_BASE}}): {:?}",
                 self.name,
                 self.url
             ));
@@ -189,7 +214,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_section() {
+    fn parse_extension_section() {
         let json = r#"{
             "schema": 1,
             "name": "xdebug",
@@ -198,34 +223,95 @@ mod tests {
             "artifacts": [{
                 "tag": "xdebug-3.5.1+php83-x86_64-unknown-linux-gnu-nts",
                 "version": "3.5.1",
-                "abi": {"php":"8.3","zend_module_api_no":"20230831","ts":false,"debug":false},
                 "flavor": "nts",
-                "libc_min": "2.17",
-                "manifest": {"url": "../../m.json", "sha256": "deadbeef"},
+                "php_minor": "8.3",
+                "manifest": {
+                    "path": "/targets/x86_64-unknown-linux-gnu/manifests/ext/xdebug/3.5.1/xdebug-3.5.1+php83-x86_64-unknown-linux-gnu-nts.json",
+                    "sha256": "deadbeef"
+                },
                 "yanked": false,
-                "built": "2026-05-07T18:42:00Z"
+                "frozen": false
             }]
         }"#;
         let s: Section = serde_json::from_str(json).unwrap();
         assert_eq!(s.kind, SectionKind::Extension);
         assert_eq!(s.artifacts.len(), 1);
+        assert_eq!(s.artifacts[0].php_minor.as_deref(), Some("8.3"));
+        assert!(s.artifacts[0].manifest.path.starts_with("/targets/"));
         assert!(!s.artifacts[0].yanked);
         assert!(!s.artifacts[0].frozen);
     }
 
     #[test]
-    fn parse_manifest_with_closure() {
+    fn parse_interpreter_section_omits_php_minor() {
         let json = r#"{
-            "name":"xdebug","version":"3.5.1",
-            "abi":{"php":"8.3","zend_module_api_no":"20230831","ts":false,"debug":false},
-            "extension":{"path":"lib/extensions/20230831/xdebug.so","sha256":"abcd","url":"https://b/x"},
-            "closure":[
-                {"name":"libffi","version":"3.4.6","hash":"a1b2c3d4","sha256":"00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff","url":"{BLOB_BASE}/00/00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"}
+            "schema": 1,
+            "name": "php",
+            "kind": "interpreter",
+            "target": "x86_64-unknown-linux-gnu",
+            "artifacts": [{
+                "tag": "php-8.3.12-x86_64-unknown-linux-gnu-nts",
+                "version": "8.3.12",
+                "flavor": "nts",
+                "manifest": {
+                    "path": "/targets/x86_64-unknown-linux-gnu/manifests/php/8.3/php-8.3.12-x86_64-unknown-linux-gnu-nts.json",
+                    "sha256": "deadbeef"
+                },
+                "yanked": false,
+                "frozen": false
+            }]
+        }"#;
+        let s: Section = serde_json::from_str(json).unwrap();
+        assert!(s.artifacts[0].php_minor.is_none());
+    }
+
+    #[test]
+    fn parse_extension_manifest() {
+        let json = r#"{
+            "schema": 1,
+            "kind": "extension",
+            "name": "xdebug",
+            "tag": "xdebug-3.5.1+php83-x86_64-unknown-linux-gnu-nts",
+            "version": "3.5.1",
+            "target": "x86_64-unknown-linux-gnu",
+            "flavor": "nts",
+            "abi": {"php":"8.3","zend_module_api_no":"20230831","zend_extension_api_no":"420230831"},
+            "libc": {"family":"gnu","min":"2.17"},
+            "blob": {"url":"https://blobs.example.com/blobs/aa/aaaa","sha256":"aaaa"},
+            "extension": {"path":"lib/extensions/20230831/xdebug.so","sha256":"abcd"},
+            "closure": [
+                {"name":"libffi","version":"3.4.6","hash":"a1b2c3d4","sha256":"00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff","url":"https://b/x"}
             ]
         }"#;
         let m: Manifest = serde_json::from_str(json).unwrap();
-        assert_eq!(m.closure.len(), 1);
+        assert_eq!(m.kind, SectionKind::Extension);
+        assert_eq!(m.blob.sha256, "aaaa");
+        assert!(m.extension.is_some());
+        assert!(m.sapis.is_none());
         m.closure[0].validate().unwrap();
+    }
+
+    #[test]
+    fn parse_interpreter_manifest() {
+        let json = r#"{
+            "schema": 1,
+            "kind": "interpreter",
+            "name": "php",
+            "tag": "php-8.3.12-x86_64-unknown-linux-gnu-nts",
+            "version": "8.3.12",
+            "target": "x86_64-unknown-linux-gnu",
+            "flavor": "nts",
+            "abi": {"php":"8.3","zend_module_api_no":"20230831","zend_extension_api_no":"420230831"},
+            "libc": {"family":"gnu","min":"2.17"},
+            "blob": {"url":"https://blobs.example.com/blobs/bb/bbbb","sha256":"bbbb"},
+            "closure": [],
+            "sapis": ["cli","fpm"]
+        }"#;
+        let m: Manifest = serde_json::from_str(json).unwrap();
+        assert_eq!(m.kind, SectionKind::Interpreter);
+        assert_eq!(m.sapis.as_deref(), Some(&["cli".to_string(), "fpm".to_string()][..]));
+        assert!(m.extension.is_none());
+        assert!(m.closure.is_empty());
     }
 
     #[test]
@@ -253,7 +339,7 @@ mod tests {
     }
 
     #[test]
-    fn validate_rejects_relative_url_without_placeholder() {
+    fn validate_rejects_relative_url() {
         let c = Closure {
             name: "libffi".into(),
             version: "1".into(),
@@ -261,6 +347,21 @@ mod tests {
             sha256: "0".repeat(64),
             url: "relative/path".into(),
         };
+        assert!(c.validate().unwrap_err().to_string().contains("absolute"));
+    }
+
+    #[test]
+    fn validate_rejects_unsubstituted_placeholder() {
+        let c = Closure {
+            name: "libffi".into(),
+            version: "1".into(),
+            hash: "abcdef01".into(),
+            sha256: "0".repeat(64),
+            url: "{BLOB_BASE}/00/0000".into(),
+        };
+        // Placeholders must be substituted at index-generation time;
+        // a manifest with a raw {BLOB_BASE} reaching the client is a
+        // publisher-side bug.
         assert!(c.validate().unwrap_err().to_string().contains("absolute"));
     }
 
@@ -274,17 +375,5 @@ mod tests {
             url: "https://x".into(),
         };
         assert!(c.validate().is_err());
-    }
-
-    #[test]
-    fn validate_accepts_blob_base_placeholder() {
-        let c = Closure {
-            name: "libffi".into(),
-            version: "1".into(),
-            hash: "abcdef01".into(),
-            sha256: "0".repeat(64),
-            url: "{BLOB_BASE}/00/0000".into(),
-        };
-        c.validate().unwrap();
     }
 }
