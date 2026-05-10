@@ -18,7 +18,7 @@ use eyre::{eyre, Result};
 use std::path::PathBuf;
 use std::time::Duration;
 
-const DEFAULT_INDEX_URL: &str = "https://index.example.com";
+const DEFAULT_INDEX_URL: &str = "https://index.bougie.tools";
 const SECTION_NAME: &str = "interpreter/php";
 const LOCK_TIMEOUT: Duration = Duration::from_mins(1);
 
