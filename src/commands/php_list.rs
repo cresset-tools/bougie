@@ -11,12 +11,23 @@ use crate::request::{parse_request, Flavor, Request, VersionLike};
 use crate::store::{install_dir, list_installed};
 use crate::target::Triple;
 use crate::version::{PartialVersion, Version};
+use anstyle::{AnsiColor, Style};
 use eyre::Result;
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
+
+// Color palette modeled on `uv python list`: cyan for the interpreter
+// label, dim grey for target/separators, green for installed paths,
+// dim for "download available" placeholders.
+const VERSION_STYLE: Style = Style::new().bold();
+const PREFIX_STYLE: Style = AnsiColor::Cyan.on_default();
+const FLAVOR_STYLE: Style = AnsiColor::Cyan.on_default();
+const TARGET_STYLE: Style = Style::new().dimmed();
+const PATH_STYLE: Style = AnsiColor::Green.on_default();
+const PLACEHOLDER_STYLE: Style = Style::new().dimmed();
 
 const SECTION_NAME: &str = "interpreter/php";
 
@@ -60,29 +71,101 @@ impl Render for ListResult {
             .items
             .iter()
             .any(|r| Some(&r.target) != host.as_ref());
-        let keys: Vec<String> = self
+        let pad = self
             .items
             .iter()
-            .map(|r| format_key(r, multi_target))
-            .collect();
-        let pad = keys.iter().map(String::len).max().unwrap_or(0);
-        for (row, key) in self.items.iter().zip(keys.iter()) {
-            let suffix = match (&row.path, &row.url) {
-                (Some(p), _) => p.display().to_string(),
-                (None, Some(u)) => u.clone(),
-                (None, None) => "<download available>".to_string(),
-            };
-            writeln!(w, "{key:<pad$}  {suffix}", pad = pad)?;
+            .map(|r| plain_key_len(r, multi_target))
+            .max()
+            .unwrap_or(0);
+        for row in &self.items {
+            write_key(w, row, multi_target, pad)?;
+            write!(w, "  ")?;
+            write_suffix(w, row)?;
+            writeln!(w)?;
         }
         Ok(())
     }
 }
 
-fn format_key(row: &Row, multi_target: bool) -> String {
+fn plain_key_len(row: &Row, multi_target: bool) -> usize {
     if multi_target {
-        format!("php-{}-{}-{}", row.version, row.target, row.flavor)
+        // "php-" + version + "-" + target + "-" + flavor
+        4 + row.version.len() + 1 + row.target.len() + 1 + row.flavor.len()
     } else {
-        format!("{}-{}", row.version, row.flavor)
+        row.version.len() + 1 + row.flavor.len()
+    }
+}
+
+fn write_key(w: &mut dyn Write, row: &Row, multi_target: bool, pad: usize) -> io::Result<()> {
+    if multi_target {
+        write!(w, "{}php-{}", PREFIX_STYLE.render(), PREFIX_STYLE.render_reset())?;
+        write!(
+            w,
+            "{}{}{}",
+            VERSION_STYLE.render(),
+            row.version,
+            VERSION_STYLE.render_reset()
+        )?;
+        write!(
+            w,
+            "{}-{}-{}",
+            TARGET_STYLE.render(),
+            row.target,
+            TARGET_STYLE.render_reset()
+        )?;
+        write!(
+            w,
+            "{}{}{}",
+            FLAVOR_STYLE.render(),
+            row.flavor,
+            FLAVOR_STYLE.render_reset()
+        )?;
+    } else {
+        write!(
+            w,
+            "{}{}{}",
+            VERSION_STYLE.render(),
+            row.version,
+            VERSION_STYLE.render_reset()
+        )?;
+        write!(w, "-")?;
+        write!(
+            w,
+            "{}{}{}",
+            FLAVOR_STYLE.render(),
+            row.flavor,
+            FLAVOR_STYLE.render_reset()
+        )?;
+    }
+    let plain = plain_key_len(row, multi_target);
+    for _ in plain..pad {
+        write!(w, " ")?;
+    }
+    Ok(())
+}
+
+fn write_suffix(w: &mut dyn Write, row: &Row) -> io::Result<()> {
+    match (&row.path, &row.url) {
+        (Some(p), _) => write!(
+            w,
+            "{}{}{}",
+            PATH_STYLE.render(),
+            p.display(),
+            PATH_STYLE.render_reset()
+        ),
+        (None, Some(u)) => write!(
+            w,
+            "{}{}{}",
+            PLACEHOLDER_STYLE.render(),
+            u,
+            PLACEHOLDER_STYLE.render_reset()
+        ),
+        (None, None) => write!(
+            w,
+            "{}<download available>{}",
+            PLACEHOLDER_STYLE.render(),
+            PLACEHOLDER_STYLE.render_reset()
+        ),
     }
 }
 

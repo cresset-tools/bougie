@@ -17,9 +17,13 @@ pub trait Render: Serialize {
 
 /// Emit a command's final result to stdout. Honors `--field`, falling
 /// back to format-driven rendering.
+///
+/// Stdout is wrapped in [`anstream::AutoStream`] so commands that emit
+/// ANSI escape codes get them stripped automatically when stdout is
+/// not a terminal (or when `NO_COLOR` is set).
 pub fn emit<R: Render>(format: OutputFormat, field: Option<&str>, result: &R) -> Result<()> {
     let stdout = io::stdout();
-    let mut w = stdout.lock();
+    let mut w = anstream::AutoStream::auto(stdout.lock());
     write_result(&mut w, format, field, result)
 }
 
@@ -63,9 +67,21 @@ pub fn emit_paged<R: Render>(format: OutputFormat, field: Option<&str>, result: 
         Err(_) => return emit(format, field, result),
     };
     {
-        let mut w = child.stdin.take().expect("piped stdin");
+        let stdin = child.stdin.take().expect("piped stdin");
+        // We only entered this branch because stdout is a terminal,
+        // so pass ANSI through to the pager unless the user opted out
+        // via `NO_COLOR`. `less -R` (set via LESS=FRX) renders the codes.
+        let no_color = std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty());
+        let res = if no_color {
+            let boxed: Box<dyn Write + Send> = Box::new(stdin);
+            let mut w = anstream::StripStream::new(boxed);
+            write_result(&mut w, format, field, result)
+        } else {
+            let mut w = stdin;
+            write_result(&mut w, format, field, result)
+        };
         // Ignore broken-pipe errors: the user may have quit the pager.
-        if let Err(e) = write_result(&mut w, format, field, result)
+        if let Err(e) = res
             && e.downcast_ref::<io::Error>()
                 .is_none_or(|ioe| ioe.kind() != io::ErrorKind::BrokenPipe)
         {
