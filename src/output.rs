@@ -5,6 +5,23 @@ use crate::cli::OutputFormat;
 use eyre::{eyre, Result};
 use serde::Serialize;
 use std::io::{self, Write};
+use std::sync::OnceLock;
+
+/// Process-wide flag: should long-running fetches render an
+/// `indicatif` progress bar to stderr? Set once at `bougie::run`
+/// entry and read by `fetch::fetch_to_partial`. Hidden when stderr
+/// isn't a TTY, when `--quiet` is set, or when `--format json-v1`
+/// is requested (a TTY progress bar would corrupt the NDJSON event
+/// stream callers are likely parsing).
+static PROGRESS_VISIBLE: OnceLock<bool> = OnceLock::new();
+
+pub fn set_progress_visible(visible: bool) {
+    let _ = PROGRESS_VISIBLE.set(visible);
+}
+
+pub fn progress_visible() -> bool {
+    *PROGRESS_VISIBLE.get().unwrap_or(&false)
+}
 
 /// Implemented by every command's Result struct.
 ///

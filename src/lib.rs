@@ -32,6 +32,17 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
     let format = cli.format;
     let field = cli.field.as_deref();
 
+    // Progress bars (rendered by `fetch::fetch_to_partial`) only make
+    // sense for an interactive text-mode invocation: a JSON consumer
+    // would otherwise see ANSI escapes mixed into stderr alongside
+    // the §9.2 event stream, and `--quiet` users opted out of all
+    // non-error stderr noise.
+    use std::io::IsTerminal;
+    let progress_visible = !cli.quiet
+        && matches!(format, OutputFormat::Text)
+        && std::io::stderr().is_terminal();
+    output::set_progress_visible(progress_visible);
+
     match cli.command {
         Command::Init { toml } => commands::init::run(format, field, toml),
         Command::Sync { offline: _, dry_run } => commands::sync::run(format, field, dry_run),

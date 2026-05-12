@@ -137,6 +137,13 @@ pub struct Libc {
 pub struct Blob {
     pub url: String,
     pub sha256: String,
+    /// Byte length of the tarball at `url` — used by the CLI to
+    /// pre-compute aggregate download progress without paying a
+    /// HEAD round-trip per file. `#[serde(default)]` keeps older
+    /// manifests (published before this field existed) parsable;
+    /// such entries fall through to a sizeless spinner-style bar.
+    #[serde(default)]
+    pub size: u64,
 }
 
 /// Where the extracted `.so` lives inside the extension tarball, and
@@ -189,6 +196,9 @@ pub struct Closure {
     pub hash: String,
     pub sha256: String,
     pub url: String,
+    /// Byte length of the closure tarball — see [`Blob::size`].
+    #[serde(default)]
+    pub size: u64,
 }
 
 impl Closure {
@@ -403,6 +413,7 @@ mod tests {
             hash: "abc".into(),
             sha256: "0".repeat(64),
             url: "https://x".into(),
+            size: 0,
         };
         assert!(c.validate().unwrap_err().to_string().contains("hash"));
     }
@@ -415,6 +426,7 @@ mod tests {
             hash: "abcdef01".into(),
             sha256: "0".repeat(63),
             url: "https://x".into(),
+            size: 0,
         };
         assert!(c.validate().unwrap_err().to_string().contains("64 hex"));
     }
@@ -427,6 +439,7 @@ mod tests {
             hash: "abcdef01".into(),
             sha256: "0".repeat(64),
             url: "relative/path".into(),
+            size: 0,
         };
         assert!(c.validate().unwrap_err().to_string().contains("absolute"));
     }
@@ -439,6 +452,7 @@ mod tests {
             hash: "abcdef01".into(),
             sha256: "0".repeat(64),
             url: "{BLOB_BASE}/00/0000".into(),
+            size: 0,
         };
         // Placeholders must be substituted at index-generation time;
         // a manifest with a raw {BLOB_BASE} reaching the client is a
@@ -454,6 +468,7 @@ mod tests {
             hash: "abcdef01".into(),
             sha256: "0".repeat(64),
             url: "https://x".into(),
+            size: 0,
         };
         assert!(c.validate().is_err());
     }

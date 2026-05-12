@@ -3,7 +3,7 @@
 
 use crate::baseline::{BaselineFilter, BASELINE_EXTENSIONS};
 use crate::errors::BougieError;
-use crate::fetch::{fetch_blob, BlobSpec};
+use crate::fetch::{aggregate_progress_bar, fetch_blob, BlobSpec};
 use crate::index::{
     build_verifier,
     fetch::{fetch_manifest, fetch_root, fetch_section},
@@ -109,7 +109,14 @@ pub fn install_php(
             // Interpreter tarballs wrap their contents in `install/`.
             strip_prefix: "install",
         };
-        fetch_blob(&client, &blob_spec)?;
+        // Interpreter is a monolithic blob (no closure walk here),
+        // so the aggregate's total is just the one tarball's size.
+        // `size == 0` from a pre-`size` publisher falls through to
+        // a spinner-style bar inside `aggregate_progress_bar`.
+        let total = (manifest.blob.size > 0).then_some(manifest.blob.size);
+        let progress = aggregate_progress_bar(total, "downloading");
+        fetch_blob(&client, &blob_spec, &progress)?;
+        progress.finish_and_clear();
     }
 
     Ok(InstalledPhp {
@@ -237,6 +244,31 @@ pub fn install_extension(
     let dest = paths.store().join(&dirname);
     let already_present = dest.exists();
 
+    // Pre-compute the aggregate download size: the main `.so` blob
+    // (if not already on disk) plus every closure entry whose
+    // store_path is missing. Sizes come from the manifest so we
+    // don't pay a HEAD round-trip per file. A `size: 0` from an
+    // older publisher contributes nothing here, and if *every*
+    // contributor is zero the bar falls through to a spinner.
+    let mut total_bytes: u64 = 0;
+    if !already_present {
+        total_bytes = total_bytes.saturating_add(manifest.blob.size);
+    }
+    let mut missing_closures: Vec<(PathBuf, String)> = Vec::with_capacity(manifest.closure.len());
+    for closure in &manifest.closure {
+        let store_path = store_dir_for_closure(paths, &closure.name, &closure.version, &closure.hash);
+        if !store_path.exists() {
+            total_bytes = total_bytes.saturating_add(closure.size);
+            let storename = format!("{}-{}-{}", closure.name, closure.version, closure.hash);
+            missing_closures.push((store_path, storename));
+        } else {
+            missing_closures.push((store_path, String::new()));
+        }
+    }
+
+    let progress =
+        aggregate_progress_bar((total_bytes > 0).then_some(total_bytes), "downloading");
+
     if !already_present {
         let blob_spec = BlobSpec {
             url: &manifest.blob.url,
@@ -247,7 +279,7 @@ pub fn install_extension(
             // at the top level — no wrapping directory to strip.
             strip_prefix: "",
         };
-        fetch_blob(&client, &blob_spec)?;
+        fetch_blob(&client, &blob_spec, &progress)?;
     }
 
     // Walk the manifest's bundled-C-lib closure and fetch any
@@ -266,24 +298,22 @@ pub fn install_extension(
     // Run unconditionally — `dest.exists()` only tells us the .so
     // blob is present; the closure may still be partial from an
     // earlier bougie release that didn't walk it.
-    for closure in &manifest.closure {
-        let store_path = store_dir_for_closure(paths, &closure.name, &closure.version, &closure.hash);
-        let storename = format!("{}-{}-{}", closure.name, closure.version, closure.hash);
+    for (closure, (store_path, storename)) in manifest.closure.iter().zip(&missing_closures) {
         if !store_path.exists() {
             let blob_spec = BlobSpec {
                 url: &closure.url,
                 sha256: &closure.sha256,
                 partial_dir: &paths.cache_blobs(),
-                dest: &store_path,
+                dest: store_path,
                 // Closure tarballs wrap their contents in `<storeName>/`
                 // per shared/tarball-store-path.nix; strip it so the
                 // tarball's `<storeName>/lib/lib*.so` lands at
                 // `<store_path>/lib/lib*.so` (matching the interpreter's
                 // `<install>/store/<storeName>/lib/lib*.so` layout the
                 // RPATHs were compiled to expect).
-                strip_prefix: &storename,
+                strip_prefix: storename,
             };
-            fetch_blob(&client, &blob_spec).wrap_err_with(|| {
+            fetch_blob(&client, &blob_spec, &progress).wrap_err_with(|| {
                 format!(
                     "fetching closure entry `{}-{}-{}` for {}",
                     closure.name, closure.version, closure.hash, manifest.tag
@@ -298,6 +328,7 @@ pub fn install_extension(
                 )
             })?;
     }
+    progress.finish_and_clear();
 
     let so_path = dest.join(&ext_ref.path);
     if !so_path.exists() {
