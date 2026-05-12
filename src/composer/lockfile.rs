@@ -189,6 +189,83 @@ pub fn require_add(
     Ok(())
 }
 
+/// If `config.sort-packages` is `true`, reorder `require` and
+/// `require-dev` exactly like `composer require` would: a prefix-based
+/// grouping matching `Composer\Json\JsonManipulator::sortPackages`.
+///
+/// The groups, in ascending order:
+///
+/// 1. `php` family (`php`, `php-64bit`, `php-ipv6`, `php-zts`, `php-debug`)
+/// 2. `hhvm`
+/// 3. `ext-*`
+/// 4. `lib-*`
+/// 5. Other platform-style names (no `/`, not in groups 1-4)
+/// 6. Regular `vendor/package`
+///
+/// Within each group, names compare lexicographically. Composer uses
+/// PHP's `strnatcmp` for the inner comparison; we use `str::cmp`,
+/// which only diverges when names contain numeric runs whose digit
+/// counts differ (`pkg-2` vs `pkg-10`). Real composer.json files
+/// rarely have such names, and the divergence is purely cosmetic —
+/// the content-hash is computed from the post-sort bytes either way.
+pub fn sort_packages_if_configured(composer_json: &mut Value) -> Result<()> {
+    let Some(obj) = composer_json.as_object_mut() else {
+        return Err(eyre!("composer.json top level must be a JSON object"));
+    };
+    let enabled = obj
+        .get("config")
+        .and_then(Value::as_object)
+        .and_then(|c| c.get("sort-packages"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if !enabled {
+        return Ok(());
+    }
+    for map_key in ["require", "require-dev"] {
+        if let Some(entry) = obj.get_mut(map_key)
+            && let Some(map) = entry.as_object_mut()
+        {
+            sort_require_map(map);
+        }
+    }
+    Ok(())
+}
+
+fn sort_require_map(m: &mut Map<String, Value>) {
+    let mut keys: Vec<String> = m.keys().cloned().collect();
+    keys.sort_by_key(|k| sort_key(k));
+    let mut rebuilt: Map<String, Value> = Map::new();
+    for k in keys {
+        let v = m.shift_remove(&k).expect("key came from m.keys()");
+        rebuilt.insert(k, v);
+    }
+    *m = rebuilt;
+}
+
+/// Compute composer's prefix-then-name sort key. Matches the
+/// `preg_replace` chain in `JsonManipulator::sortPackages`.
+fn sort_key(name: &str) -> String {
+    if name.starts_with("php") && !name.contains('/') {
+        return format!("0-{name}");
+    }
+    if name == "hhvm" {
+        return format!("1-{name}");
+    }
+    if name.starts_with("ext-") {
+        return format!("2-{name}");
+    }
+    if name.starts_with("lib-") {
+        return format!("3-{name}");
+    }
+    if !name.contains('/') && !name.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+        // Other platform-style names (no slash, non-digit start) get
+        // bucket 4 — mirrors composer's `/^\D/` fallback inside the
+        // platform-matched branch.
+        return format!("4-{name}");
+    }
+    format!("5-{name}")
+}
+
 /// Inverse of [`require_add`]. Returns `Ok(true)` if the key was
 /// removed, `Ok(false)` if it wasn't present.
 pub fn require_remove(composer_json: &mut Value, key: &str, dev: bool) -> Result<bool> {
@@ -311,6 +388,10 @@ pub fn apply_require_change(
             require_remove(&mut composer_json, key, *dev)?
         }
     };
+    // Honor `config.sort-packages`: applied after the edit so the new
+    // entry lands in the same position composer would have placed it.
+    // Idempotent when the flag is off.
+    sort_packages_if_configured(&mut composer_json)?;
 
     // Re-encode and recompute the hash from the *post-edit* bytes —
     // this is what composer would itself hash if it re-read the file
@@ -731,6 +812,154 @@ mod tests {
         assert!(std::fs::read_to_string(proj.join("composer.json"))
             .unwrap()
             .contains("ext-redis"));
+    }
+
+    // ---- sort-packages ------------------------------------------------------
+
+    #[test]
+    fn sort_packages_disabled_is_noop() {
+        // Without config.sort-packages, the require map keeps its
+        // source order — even if it's currently unsorted.
+        let mut v: Value = serde_json::from_str(
+            r#"{"require":{"monolog/monolog":"^3.5","php":"^8.3","ext-redis":"*"}}"#,
+        )
+        .unwrap();
+        sort_packages_if_configured(&mut v).unwrap();
+        let keys: Vec<&str> = v
+            .get("require")
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(keys, ["monolog/monolog", "php", "ext-redis"]);
+    }
+
+    #[test]
+    fn sort_packages_matches_composer_oracle() {
+        // PHP-generated oracle from `JsonManipulator::sortPackages`
+        // (see commit message for the one-liner):
+        //   php < php-64bit < hhvm < ext-mongodb < ext-redis
+        //                  < lib-curl < monolog/monolog < symfony/console
+        let mut v: Value = serde_json::from_str(
+            r#"{
+                "config": {"sort-packages": true},
+                "require": {
+                    "monolog/monolog": "^3.5",
+                    "lib-curl": "*",
+                    "ext-redis": "*",
+                    "php": "^8.3",
+                    "symfony/console": "^7.0",
+                    "ext-mongodb": "^1.18",
+                    "hhvm": "*",
+                    "php-64bit": "*"
+                }
+            }"#,
+        )
+        .unwrap();
+        sort_packages_if_configured(&mut v).unwrap();
+        let keys: Vec<&str> = v
+            .get("require")
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            keys,
+            [
+                "php",
+                "php-64bit",
+                "hhvm",
+                "ext-mongodb",
+                "ext-redis",
+                "lib-curl",
+                "monolog/monolog",
+                "symfony/console",
+            ]
+        );
+    }
+
+    #[test]
+    fn sort_packages_handles_require_dev_too() {
+        let mut v: Value = serde_json::from_str(
+            r#"{
+                "config": {"sort-packages": true},
+                "require": {"php": "^8.3"},
+                "require-dev": {
+                    "phpunit/phpunit": "^10.5",
+                    "ext-xdebug": "*"
+                }
+            }"#,
+        )
+        .unwrap();
+        sort_packages_if_configured(&mut v).unwrap();
+        let dev_keys: Vec<&str> = v
+            .get("require-dev")
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(dev_keys, ["ext-xdebug", "phpunit/phpunit"]);
+    }
+
+    #[test]
+    fn apply_require_change_with_sort_packages_places_new_entry_correctly() {
+        // The bug `bougie ext add redis` would hit without sort-packages
+        // support: the new entry lands at the end of require instead of
+        // between php and monolog/monolog. This test pins the fix.
+        let td = TempDir::new().unwrap();
+        let proj = td.path();
+        std::fs::write(
+            proj.join("composer.json"),
+            r#"{
+    "name": "acme/x",
+    "config": {"sort-packages": true},
+    "require": {
+        "php": "^8.3",
+        "monolog/monolog": "^3.5"
+    }
+}
+"#,
+        )
+        .unwrap();
+        apply_require_change(
+            proj,
+            &RequireChange::Add {
+                key: "ext-redis".into(),
+                constraint: "*".into(),
+                dev: false,
+            },
+        )
+        .unwrap();
+        let cj: Value =
+            serde_json::from_slice(&std::fs::read(proj.join("composer.json")).unwrap()).unwrap();
+        let keys: Vec<&str> = cj
+            .get("require")
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(keys, ["php", "ext-redis", "monolog/monolog"]);
+    }
+
+    #[test]
+    fn sort_key_buckets_match_composer() {
+        // Direct unit test of the sort_key fn against composer's
+        // bucketing — guards against accidental drift in the prefix
+        // ordering even when no end-to-end test covers a given group.
+        assert!(sort_key("php") < sort_key("hhvm"));
+        assert!(sort_key("php-zts") < sort_key("hhvm"));
+        assert!(sort_key("hhvm") < sort_key("ext-redis"));
+        assert!(sort_key("ext-zzz") < sort_key("lib-aaa"));
+        assert!(sort_key("lib-curl") < sort_key("composer-runtime-api"));
+        assert!(sort_key("composer-runtime-api") < sort_key("acme/widget"));
     }
 
     #[test]
