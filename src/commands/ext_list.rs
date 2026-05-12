@@ -122,11 +122,13 @@ pub fn run(format: OutputFormat, field: Option<&str>, opts: Options) -> Result<E
         .unwrap_or_default();
 
     let resolved = read_project_resolved(&project_root).ok();
-    let installed: BTreeSet<String> = if opts.only_available {
-        BTreeSet::new()
-    } else {
-        list_installed(&project_root, resolved.as_ref())?
-    };
+    // Always compute the installed set, even under --only-available:
+    // the filter restricts which rows we keep, but each retained row
+    // should still carry its accurate disk-state markers. Hiding the
+    // `installed` tag forces the user to cross-reference a second
+    // command (`bougie ext list --only-installed`) to find what they
+    // already have.
+    let installed: BTreeSet<String> = list_installed(&project_root, resolved.as_ref())?;
 
     let mut rows: Vec<Row> = Vec::new();
 
@@ -319,7 +321,13 @@ pub fn run(format: OutputFormat, field: Option<&str>, opts: Options) -> Result<E
     }
 
     if opts.only_available {
-        rows.retain(|r| r.status.contains(&"available") && !r.status.contains(&"installed"));
+        // "Only rows the index advertises" — installed *or* not. Keeps
+        // the `installed` marker on rows that are on disk so the user
+        // sees coverage at a glance without re-running with a different
+        // flag. Excludes `shipped` (bundled with the interpreter, never
+        // in the index) and `local-only` (in the index but no artifact
+        // matches the project's resolved php_minor + flavor).
+        rows.retain(|r| r.status.contains(&"available"));
     }
 
     rows.sort_by(|a, b| {
@@ -452,34 +460,67 @@ fn parse_version_components(s: &str) -> Vec<u32> {
     s.split('.').filter_map(|c| c.parse().ok()).collect()
 }
 
+/// Union of two enablement signals: extensions bundled with the PHP
+/// install (under `<install>/lib/extensions/<api>/<name>.so`) and
+/// extensions the project has explicitly enabled via a bougie-written
+/// conf.d fragment (`<project>/.bougie/conf.d/20-<name>.ini`).
+///
+/// Skipping the conf.d half would silently drop every `bougie ext add`
+/// from `--only-installed` and from the `installed` marker under
+/// `--only-available`, defeating the at-a-glance coverage view.
 fn list_installed(
     project_root: &Path,
     resolved: Option<&(String, String)>,
 ) -> Result<BTreeSet<String>> {
-    let Some((version, flavor)) = resolved else {
-        return Ok(BTreeSet::new());
-    };
-    let paths = Paths::from_env()?;
-    let install = paths.installs().join(format!("{version}-{flavor}"));
-    let ext_root = install.join("lib").join("extensions");
-    if !ext_root.is_dir() {
-        return Ok(BTreeSet::new());
-    }
     let mut names: BTreeSet<String> = BTreeSet::new();
-    for api_dir in std::fs::read_dir(&ext_root)? {
-        let api_dir = api_dir?.path();
-        if !api_dir.is_dir() {
-            continue;
-        }
-        for entry in std::fs::read_dir(&api_dir)? {
-            let p = entry?.path();
-            if p.extension().and_then(|s| s.to_str()) == Some("so")
-                && let Some(stem) = p.file_stem().and_then(|s| s.to_str())
-            {
-                names.insert(stem.to_owned());
+
+    // Bundled: shipped with the PHP install. Only present once synced.
+    if let Some((version, flavor)) = resolved {
+        let paths = Paths::from_env()?;
+        let ext_root = paths
+            .installs()
+            .join(format!("{version}-{flavor}"))
+            .join("lib")
+            .join("extensions");
+        for api_dir in dir_entries(&ext_root) {
+            for so in dir_entries(&api_dir.path()) {
+                if let Some(stem) = stem_if_ext(&so.path(), "so") {
+                    names.insert(stem.to_owned());
+                }
             }
         }
     }
-    let _ = project_root;
+
+    // User-installed: `bougie ext add` writes `20-<name>.ini` (CLI.md
+    // §6.2). The `00-XX-*.ini` files are bundled-conf mirrors and
+    // surface via the path above.
+    for entry in dir_entries(&project_root.join(".bougie").join("conf.d")) {
+        let p = entry.path();
+        if let Some(stem) = stem_if_ext(&p, "ini")
+            && let Some(name) = stem.strip_prefix("20-")
+        {
+            names.insert(name.to_owned());
+        }
+    }
+
     Ok(names)
+}
+
+/// Iterate a directory's entries, treating a missing directory as
+/// empty. Read errors yield nothing — these scans tolerate noise.
+fn dir_entries(p: &Path) -> impl Iterator<Item = std::fs::DirEntry> {
+    std::fs::read_dir(p)
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+}
+
+/// `Some(stem)` if `p` ends in `.<ext>`. Both the extension match and
+/// the stem extraction must succeed, and the stem must be UTF-8 —
+/// matches the prior inline check exactly.
+fn stem_if_ext<'a>(p: &'a Path, ext: &str) -> Option<&'a str> {
+    if p.extension().and_then(|e| e.to_str()) != Some(ext) {
+        return None;
+    }
+    p.file_stem().and_then(|s| s.to_str())
 }

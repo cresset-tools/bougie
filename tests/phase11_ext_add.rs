@@ -449,3 +449,73 @@ fn ext_add_redis_updates_lockfile_content_hash_when_present() {
         "lockfile content-hash must equal content_hash(written composer.json)"
     );
 }
+
+#[test]
+fn ext_list_only_available_marks_installed_rows() {
+    // After `ext add redis`, `ext list --only-available` must still
+    // include redis AND mark it as installed — that's the user-visible
+    // "what have I got vs what's offered" view. Earlier behaviour
+    // excluded installed rows entirely, forcing a separate
+    // `--only-installed` invocation to find out.
+    let runtime = rt();
+    let fx = runtime.block_on(build_fixture());
+    let env = TestEnv::new();
+    let trust = write_trust_root(&env, &fx.pub_pem);
+    let proj = tempfile::TempDir::new().unwrap();
+
+    std::fs::create_dir_all(proj.path().join(".bougie")).unwrap();
+    std::fs::write(
+        proj.path().join("composer.json"),
+        r#"{
+    "name": "acme/widget-tool",
+    "require": {
+        "php": "8.3.12"
+    }
+}
+"#,
+    )
+    .unwrap();
+
+    // First add redis, then list.
+    env.bougie()
+        .current_dir(proj.path())
+        .env("BOUGIE_INDEX_URL", fx.server.uri())
+        .env("BOUGIE_COMPOSER_BASE_URL", fx.composer_server.uri())
+        .env("BOUGIE_TRUST_ROOT_PATH", &trust)
+        .args(["ext", "add", "redis"])
+        .assert()
+        .success();
+
+    let assertion = env
+        .bougie()
+        .current_dir(proj.path())
+        .env("BOUGIE_INDEX_URL", fx.server.uri())
+        .env("BOUGIE_TRUST_ROOT_PATH", &trust)
+        .args(["ext", "list", "--only-available", "--format", "json-v1"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(assertion.get_output().stdout.clone()).unwrap();
+
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let items = parsed.get("items").and_then(|v| v.as_array()).unwrap();
+    let redis = items
+        .iter()
+        .find(|it| it.get("name").and_then(|v| v.as_str()) == Some("redis"))
+        .expect("redis row should appear under --only-available");
+
+    let status: Vec<&str> = redis
+        .get("status")
+        .and_then(|v| v.as_array())
+        .unwrap()
+        .iter()
+        .filter_map(|s| s.as_str())
+        .collect();
+    assert!(
+        status.contains(&"available"),
+        "redis row should carry `available`: {status:?}"
+    );
+    assert!(
+        status.contains(&"installed"),
+        "redis row should ALSO carry `installed` after `ext add redis`: {status:?}"
+    );
+}
