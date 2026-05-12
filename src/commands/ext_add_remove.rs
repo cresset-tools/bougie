@@ -88,7 +88,7 @@ pub fn add(
     // is actually being initiated for the first time.
     if !no_sync {
         if read_project_resolved(&project_root).is_err() {
-            eprintln!("Syncing… (run `bougie sync` to do this explicitly)");
+            eprintln!("Syncing…");
         }
         ensure_synced(&paths, &project_root, &project, spec, flavor)?;
     }
