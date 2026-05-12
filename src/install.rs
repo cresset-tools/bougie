@@ -106,6 +106,8 @@ pub fn install_php(
             sha256: &manifest.blob.sha256,
             partial_dir: &paths.cache_blobs(),
             dest: &dest,
+            // Interpreter tarballs wrap their contents in `install/`.
+            strip_prefix: "install",
         };
         fetch_blob(&client, &blob_spec)?;
     }
@@ -241,39 +243,60 @@ pub fn install_extension(
             sha256: &manifest.blob.sha256,
             partial_dir: &paths.cache_blobs(),
             dest: &dest,
+            // Per-extension tarballs ship `lib/extensions/<api>/<name>.so`
+            // at the top level — no wrapping directory to strip.
+            strip_prefix: "",
         };
         fetch_blob(&client, &blob_spec)?;
     }
 
     // Walk the manifest's bundled-C-lib closure and fetch any
     // store-paths the consumer doesn't have yet. Mandatory: the
-    // extension `.so` was built with `$ORIGIN/../../<storeName>/lib`
-    // RPATHs into peers in the same store; without these tarballs,
-    // dlopen falls back to the system loader and surfaces errors like
-    // `libicuuc.so.77: cannot open shared object file` for intl or
-    // `libcurl: undefined symbol: ENGINE_init` for curl (system libcurl
-    // built against a different OpenSSL).
+    // extension `.so` was built with
+    // `$ORIGIN/../../../store/<storeName>/lib` RPATHs that assume an
+    // install-shaped layout (matching the interpreter tarball, whose
+    // `<install>/store/<storeName>/lib` directly resolves). Without
+    // these tarballs *and* the corresponding `store/` peer inside
+    // the ext root, dlopen falls back to the system loader and
+    // surfaces errors like `libicuuc.so.77: cannot open shared
+    // object file` for intl or `libcurl: undefined symbol:
+    // ENGINE_init` for curl (system libcurl against a different
+    // OpenSSL).
     //
     // Run unconditionally — `dest.exists()` only tells us the .so
     // blob is present; the closure may still be partial from an
     // earlier bougie release that didn't walk it.
     for closure in &manifest.closure {
         let store_path = store_dir_for_closure(paths, &closure.name, &closure.version, &closure.hash);
-        if store_path.exists() {
-            continue;
+        let storename = format!("{}-{}-{}", closure.name, closure.version, closure.hash);
+        if !store_path.exists() {
+            let blob_spec = BlobSpec {
+                url: &closure.url,
+                sha256: &closure.sha256,
+                partial_dir: &paths.cache_blobs(),
+                dest: &store_path,
+                // Closure tarballs wrap their contents in `<storeName>/`
+                // per shared/tarball-store-path.nix; strip it so the
+                // tarball's `<storeName>/lib/lib*.so` lands at
+                // `<store_path>/lib/lib*.so` (matching the interpreter's
+                // `<install>/store/<storeName>/lib/lib*.so` layout the
+                // RPATHs were compiled to expect).
+                strip_prefix: &storename,
+            };
+            fetch_blob(&client, &blob_spec).wrap_err_with(|| {
+                format!(
+                    "fetching closure entry `{}-{}-{}` for {}",
+                    closure.name, closure.version, closure.hash, manifest.tag
+                )
+            })?;
         }
-        let blob_spec = BlobSpec {
-            url: &closure.url,
-            sha256: &closure.sha256,
-            partial_dir: &paths.cache_blobs(),
-            dest: &store_path,
-        };
-        fetch_blob(&client, &blob_spec).wrap_err_with(|| {
-            format!(
-                "fetching closure entry `{}-{}-{}` for {}",
-                closure.name, closure.version, closure.hash, manifest.tag
-            )
-        })?;
+        materialize_closure_peer(&dest, &closure.name, &closure.version, &closure.hash)
+            .wrap_err_with(|| {
+                format!(
+                    "linking closure peer `{}-{}-{}` for {}",
+                    closure.name, closure.version, closure.hash, manifest.tag
+                )
+            })?;
     }
 
     let so_path = dest.join(&ext_ref.path);
@@ -476,6 +499,54 @@ fn store_dir_for_closure(paths: &Paths, name: &str, version: &str, hash: &str) -
     crate::store::store_dir(paths, name, version, hash)
 }
 
+/// Create the install-shaped `store/<closureName>` peer inside an
+/// extension's content-addressed root, as a relative symlink back at
+/// the actual shared-store entry.
+///
+/// The interpreter tarball ships its closure under
+/// `<install>/store/<storeName>/` so an extension `.so`'s
+/// `$ORIGIN/../../../store/<storeName>/lib` RPATH resolves directly.
+/// Standalone-installed extensions don't get that layout for free
+/// (their root is just `$BOUGIE_HOME/store/ext-<name>-…/`, with no
+/// `store/` peer), so we synthesize it: from inside the ext root,
+/// `store/<closureName>` symlinks two levels up to the shared-store
+/// sibling, which materializes the path the `.so` was compiled to
+/// expect.
+///
+/// The symlink target is a *relative* `../../<closureName>`, so the
+/// whole `$BOUGIE_HOME` tree relocates if the user moves it. Already-
+/// correct symlinks are left alone; conflicting plain files would
+/// indicate corruption and surface as an error.
+fn materialize_closure_peer(ext_root: &Path, name: &str, version: &str, hash: &str) -> Result<()> {
+    let dirname = format!("{name}-{version}-{hash}");
+    let store_peer = ext_root.join("store");
+    std::fs::create_dir_all(&store_peer)
+        .wrap_err_with(|| format!("creating {}", store_peer.display()))?;
+    let link = store_peer.join(&dirname);
+    let target = PathBuf::from("../..").join(&dirname);
+
+    match std::fs::symlink_metadata(&link) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            // Already a symlink — leave it. If a stale link points
+            // elsewhere, deletion-then-recreate would be racy without
+            // the lock we already hold, but the existing link is
+            // accurate by construction (same closure entry hash).
+            return Ok(());
+        }
+        Ok(_) => {
+            return Err(eyre!(
+                "{} exists but isn't a symlink — refusing to overwrite",
+                link.display()
+            ));
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(eyre!("stat {}: {e}", link.display())),
+    }
+    std::os::unix::fs::symlink(&target, &link)
+        .wrap_err_with(|| format!("symlinking {} → {}", link.display(), target.display()))?;
+    Ok(())
+}
+
 pub fn host_to_dirname(host: &str) -> String {
     // Strip scheme + sanitize: "https://idx.example.com" → "idx.example.com".
     let h = host.trim_end_matches('/');
@@ -564,5 +635,48 @@ mod tests {
     fn clean_stale_baseline_fragments_on_missing_dir_is_ok() {
         let td = tempfile::TempDir::new().unwrap();
         clean_stale_baseline_fragments(&td.path().join("does-not-exist")).unwrap();
+    }
+
+    #[test]
+    fn materialize_closure_peer_creates_relative_symlink() {
+        let td = tempfile::TempDir::new().unwrap();
+        // Set up a fake shared store with the closure entry…
+        let store = td.path();
+        std::fs::create_dir_all(store.join("libcurl-8.20.0-abcdef01/lib")).unwrap();
+        let ext_root = store.join("ext-curl-8.5.6+php85-nts-deadbeef");
+        std::fs::create_dir_all(&ext_root).unwrap();
+
+        materialize_closure_peer(&ext_root, "libcurl", "8.20.0", "abcdef01").unwrap();
+
+        let link = ext_root.join("store/libcurl-8.20.0-abcdef01");
+        let meta = std::fs::symlink_metadata(&link).unwrap();
+        assert!(meta.file_type().is_symlink());
+        // Resolves to the real shared-store entry.
+        let target = std::fs::read_link(&link).unwrap();
+        assert_eq!(target, PathBuf::from("../../libcurl-8.20.0-abcdef01"));
+        assert!(std::fs::canonicalize(&link).unwrap().ends_with("libcurl-8.20.0-abcdef01"));
+    }
+
+    #[test]
+    fn materialize_closure_peer_is_idempotent() {
+        let td = tempfile::TempDir::new().unwrap();
+        let store = td.path();
+        std::fs::create_dir_all(store.join("libcurl-8.20.0-abcdef01")).unwrap();
+        let ext_root = store.join("ext-curl-x");
+        std::fs::create_dir_all(&ext_root).unwrap();
+        materialize_closure_peer(&ext_root, "libcurl", "8.20.0", "abcdef01").unwrap();
+        // Second call must not error or duplicate.
+        materialize_closure_peer(&ext_root, "libcurl", "8.20.0", "abcdef01").unwrap();
+    }
+
+    #[test]
+    fn materialize_closure_peer_refuses_to_overwrite_regular_file() {
+        let td = tempfile::TempDir::new().unwrap();
+        let ext_root = td.path().join("ext-x");
+        std::fs::create_dir_all(ext_root.join("store")).unwrap();
+        // A plain file occupies the path we'd want to symlink to.
+        std::fs::write(ext_root.join("store/libcurl-1.0-aaaa"), "junk").unwrap();
+        let err = materialize_closure_peer(&ext_root, "libcurl", "1.0", "aaaa").unwrap_err();
+        assert!(err.to_string().contains("isn't a symlink"), "got: {err}");
     }
 }

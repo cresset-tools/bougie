@@ -20,6 +20,13 @@ pub struct BlobSpec<'a> {
     pub sha256: &'a str,
     pub partial_dir: &'a Path,
     pub dest: &'a Path,
+    /// Leading path component to strip from every entry while
+    /// extracting. Interpreter tarballs wrap their contents in
+    /// `install/`; per-store-path closure tarballs wrap theirs in
+    /// `<storeName>/` (see `shared/tarball-store-path.nix`). Pass `""`
+    /// for unwrapped archives (e.g. per-extension blobs that ship
+    /// `lib/extensions/<api>/<name>.so` at the top level).
+    pub strip_prefix: &'a str,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -126,7 +133,7 @@ fn try_once_blob(client: &reqwest::blocking::Client, spec: &BlobSpec<'_>) -> Res
     let _ = fs::remove_dir_all(&incoming);
     fs::create_dir_all(&incoming)
         .wrap_err_with(|| format!("creating {}", incoming.display()))?;
-    extract_tar_zst(&tmp, &incoming)?;
+    extract_tar_zst(&tmp, &incoming, spec.strip_prefix)?;
 
     fs::rename(&incoming, spec.dest)
         .wrap_err_with(|| format!("rename {} → {}", incoming.display(), spec.dest.display()))?;
@@ -150,11 +157,13 @@ fn try_once_file(client: &reqwest::blocking::Client, spec: &BlobSpec<'_>) -> Res
     Ok(())
 }
 
-/// Extract a `.tar.zst` archive into `into`, stripping a leading
-/// `install/` directory component from every entry so the binary that
-/// the archive ships at `install/bin/php` lands at `<into>/bin/php`.
-/// Entries without the prefix pass through unchanged.
-fn extract_tar_zst(tar_zst: &Path, into: &Path) -> Result<()> {
+/// Extract a `.tar.zst` archive into `into`, stripping `strip_prefix`
+/// as a leading path component from every entry so e.g. the binary
+/// that the archive ships at `install/bin/php` (with
+/// `strip_prefix = "install"`) lands at `<into>/bin/php`. Entries
+/// that don't start with `strip_prefix` pass through unchanged.
+/// Pass `""` to disable stripping (archive entries land verbatim).
+fn extract_tar_zst(tar_zst: &Path, into: &Path, strip_prefix: &str) -> Result<()> {
     let f = File::open(tar_zst)
         .wrap_err_with(|| format!("opening {}", tar_zst.display()))?;
     let zd = zstd::stream::read::Decoder::new(f).wrap_err("zstd decoder")?;
@@ -170,12 +179,16 @@ fn extract_tar_zst(tar_zst: &Path, into: &Path) -> Result<()> {
             .path()
             .wrap_err("reading entry path")?
             .into_owned();
-        let rewritten = match path.strip_prefix("install") {
-            Ok(rest) => rest.to_path_buf(),
-            Err(_) => path.clone(),
+        let rewritten = if strip_prefix.is_empty() {
+            path.clone()
+        } else {
+            match path.strip_prefix(strip_prefix) {
+                Ok(rest) => rest.to_path_buf(),
+                Err(_) => path.clone(),
+            }
         };
         if rewritten.as_os_str().is_empty() {
-            // The `install/` directory entry itself; skip — `into` exists.
+            // The prefix directory entry itself; skip — `into` exists.
             continue;
         }
         let dest = into.join(&rewritten);
@@ -320,7 +333,7 @@ mod tests {
 
         let into = dir.path().join("out");
         std::fs::create_dir_all(&into).unwrap();
-        extract_tar_zst(&archive_path, &into).unwrap();
+        extract_tar_zst(&archive_path, &into, "install").unwrap();
 
         assert!(into.join("bin/php").is_file());
         assert!(into.join("etc/php.ini").is_file());
@@ -349,8 +362,37 @@ mod tests {
 
         let into = dir.path().join("out");
         std::fs::create_dir_all(&into).unwrap();
-        extract_tar_zst(&archive_path, &into).unwrap();
+        extract_tar_zst(&archive_path, &into, "install").unwrap();
 
         assert!(into.join("bin/php").is_file());
+    }
+
+    #[test]
+    fn extract_strips_arbitrary_prefix() {
+        // Closure tarballs wrap contents in `<storeName>/`; the
+        // extractor must strip whatever prefix the caller specifies.
+        let dir = tempfile::TempDir::new().unwrap();
+        let archive_path = dir.path().join("a.tar.zst");
+        let mut tar_buf: Vec<u8> = Vec::new();
+        {
+            let mut builder = tar::Builder::new(&mut tar_buf);
+            let mut header = tar::Header::new_gnu();
+            header.set_size(4);
+            header.set_mode(0o644);
+            header.set_cksum();
+            builder
+                .append_data(&mut header, "libcurl-8.20.0-aaaa/lib/libcurl.so.4", &b"data"[..])
+                .unwrap();
+            builder.finish().unwrap();
+        }
+        let zst = zstd::encode_all(&tar_buf[..], 0).unwrap();
+        std::fs::write(&archive_path, zst).unwrap();
+
+        let into = dir.path().join("out");
+        std::fs::create_dir_all(&into).unwrap();
+        extract_tar_zst(&archive_path, &into, "libcurl-8.20.0-aaaa").unwrap();
+
+        assert!(into.join("lib/libcurl.so.4").is_file());
+        assert!(!into.join("libcurl-8.20.0-aaaa").exists());
     }
 }

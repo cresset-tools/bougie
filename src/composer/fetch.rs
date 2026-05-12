@@ -143,6 +143,10 @@ pub fn fetch_phar(
         sha256: &sha256,
         partial_dir: &paths.cache_blobs(),
         dest: &dest,
+        // fetch_file doesn't extract, so the prefix is irrelevant —
+        // keep it stable to avoid surprises if someone refactors
+        // this call onto fetch_blob.
+        strip_prefix: "",
     };
     fetch_file(client, &spec)?;
     Ok(())
