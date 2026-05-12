@@ -23,7 +23,8 @@ pub fn write_bougie_toml_skeleton() -> String {
         "# version = \"stable\"      # exact (\"2.8.5\"), partial (\"2.8\"), or channel (\"stable\"/\"preview\"/\"snapshot\")",
         "",
         "[extensions]",
-        "# xdebug = \"3.5.1\"",
+        "# xdebug = \"3.5.1\"           # exact version pin",
+        "# mysqli = false               # opt this baseline extension out of auto-enable",
         "",
     ]
     .join("\n")
@@ -60,6 +61,24 @@ fingerprint = "sha256:abc"
         assert_eq!(cfg.php.version.as_deref(), Some("8.3.12"));
         assert_eq!(cfg.extensions.len(), 2);
         assert_eq!(cfg.index.len(), 1);
+    }
+
+    #[test]
+    fn extensions_accept_false_sentinel() {
+        // `mysqli = false` opts a baseline extension out (CLI.md §3.3
+        // step 4). Must parse alongside version-pinned entries.
+        let cfg = read_bougie_toml(
+            r#"[extensions]
+xdebug = "3.5.1"
+mysqli = false
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            cfg.extensions.get("xdebug").and_then(super::super::ExtensionPin::as_version),
+            Some("3.5.1")
+        );
+        assert!(cfg.extensions.get("mysqli").unwrap().is_disabled());
     }
 
     #[test]

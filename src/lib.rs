@@ -1,3 +1,4 @@
+pub mod baseline;
 pub mod cli;
 pub mod commands;
 pub mod composer;
@@ -67,11 +68,18 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
             commands::cache_prune::run(format, field, dry_run)
         }
         Command::Php(PhpCommand::Dir) => commands::php_dir::run(format, field),
-        Command::Php(PhpCommand::Install { requests, flavor }) => commands::php_install::run(
+        Command::Php(PhpCommand::Install {
+            requests,
+            flavor,
+            no_baseline,
+            baseline_only,
+        }) => commands::php_install::run(
             format,
             field,
             &requests,
             flavor.as_deref(),
+            no_baseline,
+            baseline_only.as_deref(),
         ),
         Command::Php(PhpCommand::Uninstall { requests, flavor }) => commands::php_uninstall::run(
             format,

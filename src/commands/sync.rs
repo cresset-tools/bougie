@@ -1,17 +1,19 @@
+use crate::baseline::{self, BaselineFilter};
 use crate::cli::OutputFormat;
 use crate::composer::{self, default_request as default_composer_request, parse_request as parse_composer_request, Installed as InstalledComposer};
-use crate::config::{load_project, ProjectConfig};
+use crate::config::{load_project, ExtensionPin, ProjectConfig};
 use crate::errors::BougieError;
-use crate::install::{install_php, InstalledPhp};
+use crate::install::{install_baseline_into, install_php, InstalledPhp};
 use crate::output::{emit, Render};
 use crate::paths::Paths;
 use crate::request::{Flavor, Request, VersionLike};
 use crate::resolve::{intersect_php, ResolveOptions};
 use crate::state::{write_project_resolved, write_project_resolved_composer, GlobalState};
 use crate::target::Triple;
-use crate::version::Constraint;
+use crate::version::{Constraint, PartialVersion};
 use eyre::{eyre, Result};
 use serde::Serialize;
+use std::collections::BTreeSet;
 use std::io::{self, Write};
 use std::os::unix::fs::symlink;
 use std::path::PathBuf;
@@ -80,6 +82,30 @@ pub fn ensure_synced(
     let installed: InstalledPhp =
         install_php(paths, &request, Some(flavor), ResolveOptions::default())?;
 
+    // Ensure the baseline set is present on this interpreter. Idempotent:
+    // already-installed extensions short-circuit at the blob fetch, and
+    // overwriting `20-<name>.ini` is a no-op when the resolved version
+    // hasn't moved. Failures here are non-fatal — they show up under
+    // `baseline_failed` in `bougie php install --format json-v1` output,
+    // and sync surfaces them as a warning so the project still moves
+    // forward.
+    let php_minor = PartialVersion {
+        major: installed.version.major,
+        minor: Some(installed.version.minor),
+        patch: None,
+    };
+    let baseline_report = install_baseline_into(
+        paths,
+        &installed.install_path,
+        php_minor,
+        installed.flavor,
+        &BaselineFilter::All,
+        ResolveOptions::default(),
+    );
+    for (name, reason) in &baseline_report.failed {
+        eprintln!("warning: baseline extension {name} not installed: {reason}");
+    }
+
     let resolved_path =
         write_project_resolved(project_root, installed.version, installed.flavor)?;
 
@@ -91,7 +117,8 @@ pub fn ensure_synced(
         composer::install_composer(paths, &composer_request)?;
     write_project_resolved_composer(project_root, &composer_installed.version)?;
 
-    replicate_install_conf_d(&installed.install_path, project_root)?;
+    let opt_out = baseline_opt_outs(project);
+    replicate_install_conf_d(&installed.install_path, project_root, &opt_out)?;
 
     let shims_dir = write_shims(project_root)?;
 
@@ -167,11 +194,20 @@ fn resolve_php_inputs(project: &ProjectConfig) -> Result<(VersionLike, Flavor)> 
 /// loaded inside the project. The `00-` prefix keeps user fragments
 /// (10+ for opcache, 20+ for user extensions) loading after.
 ///
+/// Baseline fragments listed in `baseline_opt_out` are skipped at copy
+/// time — the install-root fragment stays in place so other projects
+/// sharing this interpreter still see the extension; only this
+/// project's view is filtered (CLI.md §3.5.1.1 / §3.3 step 4).
+///
 /// Idempotent: existing `00-*` files are overwritten so sync stays the
 /// canonical source of truth for them. User tunables belong in their
 /// own fragment file (e.g. `15-mytunables.ini`), not by editing
 /// bougie-managed `00-*` files.
-fn replicate_install_conf_d(install: &std::path::Path, project_root: &std::path::Path) -> Result<()> {
+fn replicate_install_conf_d(
+    install: &std::path::Path,
+    project_root: &std::path::Path,
+    baseline_opt_out: &BTreeSet<String>,
+) -> Result<()> {
     let src = install.join("etc").join("php").join("conf.d");
     if !src.is_dir() {
         return Ok(());
@@ -199,6 +235,11 @@ fn replicate_install_conf_d(install: &std::path::Path, project_root: &std::path:
         if !name.ends_with(".ini") {
             continue;
         }
+        if let Some(ext_name) = ext_name_from_fragment(name)
+            && baseline_opt_out.contains(ext_name)
+        {
+            continue;
+        }
         let body = std::fs::read_to_string(entry.path())
             .map_err(|e| eyre!("reading {}: {e}", entry.path().display()))?;
         let dst_path = dst.join(format!("00-{name}"));
@@ -207,6 +248,101 @@ fn replicate_install_conf_d(install: &std::path::Path, project_root: &std::path:
             .map_err(|e| eyre!("writing {}: {e}", dst_path.display()))?;
     }
     Ok(())
+}
+
+/// Parse `20-mbstring.ini` → `Some("mbstring")`. Returns `None` for
+/// filenames that don't match the `NN-<name>.ini` shape PBS uses; the
+/// caller treats those as un-opt-outable (they're either core or an
+/// unrecognized fragment, neither of which is in the baseline set).
+fn ext_name_from_fragment(filename: &str) -> Option<&str> {
+    let stem = filename.strip_suffix(".ini")?;
+    // `20-mbstring` — strip leading digits + dash.
+    let dash = stem.find('-')?;
+    let (prefix, rest) = stem.split_at(dash);
+    if !prefix.chars().all(|c| c.is_ascii_digit()) || prefix.is_empty() {
+        return None;
+    }
+    let name = &rest[1..];
+    if baseline::is_baseline(name) {
+        Some(name)
+    } else {
+        None
+    }
+}
+
+/// Collect baseline-extension names this project has opted out of via
+/// the `false` sentinel in `[extensions]` / `extra.bougie.extensions`.
+/// Non-baseline names (e.g. `redis = false`) are silently dropped here
+/// — they would have no replicated fragment to suppress, and we don't
+/// want to retroactively forbid `false` in unrelated slots.
+fn baseline_opt_outs(project: &ProjectConfig) -> BTreeSet<String> {
+    project
+        .bougie
+        .extensions
+        .iter()
+        .filter_map(|(name, pin)| match pin {
+            ExtensionPin::Disabled(_) if baseline::is_baseline(name) => Some(name.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::BougieConfig;
+    use std::collections::BTreeMap;
+    use tempfile::TempDir;
+
+    #[test]
+    fn fragment_name_parsed_only_for_baseline_extensions() {
+        // Only filenames in `<digits>-<name>.ini` shape with a name
+        // that's in the baseline set return Some — core fragments
+        // (e.g. `20-openssl.ini`) deliberately return None so they
+        // can't be opted out.
+        assert_eq!(ext_name_from_fragment("20-mbstring.ini"), Some("mbstring"));
+        assert_eq!(ext_name_from_fragment("20-mysqli.ini"), Some("mysqli"));
+        assert_eq!(ext_name_from_fragment("20-openssl.ini"), None); // core
+        assert_eq!(ext_name_from_fragment("10-opcache.ini"), None); // core
+        assert_eq!(ext_name_from_fragment("notfragment.txt"), None);
+        assert_eq!(ext_name_from_fragment("custom.ini"), None);
+    }
+
+    #[test]
+    fn baseline_opt_outs_filters_to_baseline_disabled_only() {
+        let mut exts = BTreeMap::new();
+        exts.insert("mysqli".into(), ExtensionPin::Disabled(false));
+        exts.insert("redis".into(), ExtensionPin::Disabled(false)); // not baseline
+        exts.insert("mbstring".into(), ExtensionPin::Version("1.0".into())); // pinned, not disabled
+        let project = ProjectConfig {
+            composer: None,
+            bougie: BougieConfig { extensions: exts, ..Default::default() },
+        };
+        let out = baseline_opt_outs(&project);
+        assert!(out.contains("mysqli"));
+        assert!(!out.contains("redis"));
+        assert!(!out.contains("mbstring"));
+    }
+
+    #[test]
+    fn replicate_skips_opted_out_baseline_fragments() {
+        let install = TempDir::new().unwrap();
+        let project = TempDir::new().unwrap();
+        let src = install.path().join("etc/php/conf.d");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("20-mbstring.ini"), "extension=mbstring\n").unwrap();
+        std::fs::write(src.join("20-mysqli.ini"), "extension=mysqli\n").unwrap();
+        std::fs::write(src.join("20-openssl.ini"), "extension=openssl\n").unwrap();
+
+        let mut opt_out = BTreeSet::new();
+        opt_out.insert("mysqli".into());
+        replicate_install_conf_d(install.path(), project.path(), &opt_out).unwrap();
+
+        let dst = project.path().join(".bougie/conf.d");
+        assert!(dst.join("00-20-mbstring.ini").exists());
+        assert!(dst.join("00-20-openssl.ini").exists()); // core, can't be opted out
+        assert!(!dst.join("00-20-mysqli.ini").exists());
+    }
 }
 
 fn write_shims(project_root: &std::path::Path) -> Result<PathBuf> {

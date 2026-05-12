@@ -1,5 +1,6 @@
+use crate::baseline::{parse_baseline_only, BaselineFilter};
 use crate::cli::OutputFormat;
-use crate::install::{install_php, InstalledPhp};
+use crate::install::{install_baseline_into, install_php, BaselineReport, InstalledPhp};
 use crate::output::{emit, Render};
 use crate::paths::Paths;
 use crate::request::{parse_request, Flavor, Request, VersionLike};
@@ -23,6 +24,19 @@ pub struct InstallEntry {
     pub flavor: String,
     pub path: PathBuf,
     pub already_present: bool,
+    /// Names of baseline extensions installed alongside this
+    /// interpreter (CLI.md §3.5.1.1). Empty when `--no-baseline`.
+    pub baseline: Vec<String>,
+    /// Per-name failure detail for baseline extensions that didn't
+    /// install. The interpreter is still considered installed; the
+    /// next `bougie sync` retries.
+    pub baseline_failed: Vec<BaselineFailure>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BaselineFailure {
+    pub name: String,
+    pub reason: String,
 }
 
 impl Render for InstallResult {
@@ -36,6 +50,16 @@ impl Render for InstallResult {
                 entry.flavor,
                 entry.path.display()
             )?;
+            if !entry.baseline.is_empty() {
+                writeln!(w, "  baseline: {}", entry.baseline.join(", "))?;
+            }
+            for failure in &entry.baseline_failed {
+                writeln!(
+                    w,
+                    "  baseline failed: {} — {} (next `bougie sync` will retry)",
+                    failure.name, failure.reason
+                )?;
+            }
         }
         Ok(())
     }
@@ -46,11 +70,14 @@ pub fn run(
     field: Option<&str>,
     request_strs: &[String],
     flavor_arg: Option<&str>,
+    no_baseline: bool,
+    baseline_only: Option<&str>,
 ) -> Result<ExitCode> {
     let flavor = match flavor_arg {
         Some(s) => Some(parse_flavor(s)?),
         None => None,
     };
+    let baseline_filter = resolve_baseline_filter(no_baseline, baseline_only)?;
     let paths = Paths::from_env()?;
 
     let requests: Vec<Request> = if request_strs.is_empty() {
@@ -66,17 +93,54 @@ pub fn run(
     for request in &requests {
         let info: InstalledPhp =
             install_php(&paths, request, flavor, ResolveOptions::default())?;
+        let php_minor = PartialVersion {
+            major: info.version.major,
+            minor: Some(info.version.minor),
+            patch: None,
+        };
+        // Baseline install runs *after* install_php returns so the
+        // global lock has been released — install_extension acquires
+        // the same lock and nesting would deadlock. install.rs
+        // documents this constraint on install_baseline_into.
+        let report: BaselineReport = install_baseline_into(
+            &paths,
+            &info.install_path,
+            php_minor,
+            info.flavor,
+            &baseline_filter,
+            ResolveOptions::default(),
+        );
         installed.push(InstallEntry {
             version: info.version.to_string(),
             flavor: info.flavor.to_string(),
             path: info.install_path,
             already_present: info.already_present,
+            baseline: report.installed,
+            baseline_failed: report
+                .failed
+                .into_iter()
+                .map(|(name, reason)| BaselineFailure { name, reason })
+                .collect(),
         });
     }
 
     let result = InstallResult { schema_version: 1, installed };
     emit(format, field, &result)?;
     Ok(ExitCode::SUCCESS)
+}
+
+fn resolve_baseline_filter(
+    no_baseline: bool,
+    baseline_only: Option<&str>,
+) -> Result<BaselineFilter> {
+    match (no_baseline, baseline_only) {
+        (true, Some(_)) => Err(eyre!(
+            "--no-baseline and --baseline-only are mutually exclusive"
+        )),
+        (true, None) => Ok(BaselineFilter::None),
+        (false, Some(spec)) => parse_baseline_only(spec).map_err(|m| eyre!("{m}")),
+        (false, None) => Ok(BaselineFilter::All),
+    }
 }
 
 /// `>= 0` — match anything (highest non-yanked overall). Used when the
@@ -99,4 +163,42 @@ fn parse_flavor(s: &str) -> Result<Flavor> {
         "zts-debug" => Flavor::ZtsDebug,
         other => return Err(eyre!("unknown flavor: {other}")),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn baseline_filter_defaults_to_all() {
+        match resolve_baseline_filter(false, None).unwrap() {
+            BaselineFilter::All => {}
+            other => panic!("expected All, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn no_baseline_flag_disables_set() {
+        match resolve_baseline_filter(true, None).unwrap() {
+            BaselineFilter::None => {}
+            other => panic!("expected None, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn baseline_only_parses_subset() {
+        match resolve_baseline_filter(false, Some("mbstring,curl")).unwrap() {
+            BaselineFilter::Only(set) => {
+                assert!(set.contains("mbstring"));
+                assert!(set.contains("curl"));
+                assert!(!set.contains("intl"));
+            }
+            other => panic!("expected Only(..), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn no_baseline_and_baseline_only_conflict() {
+        assert!(resolve_baseline_filter(true, Some("mbstring")).is_err());
+    }
 }

@@ -141,6 +141,12 @@ pub enum PhpCommand {
         /// Build flavor to install [possible values: nts, nts-debug, zts, zts-debug].
         #[arg(long)]
         flavor: Option<String>,
+        /// Skip the baseline extension set; install only the Debian-aligned core.
+        #[arg(long, conflicts_with = "baseline_only")]
+        no_baseline: bool,
+        /// Install only the listed baseline extensions (comma-separated).
+        #[arg(long, value_name = "EXT[,EXT…]")]
+        baseline_only: Option<String>,
     },
     /// Remove a PHP version.
     Uninstall {

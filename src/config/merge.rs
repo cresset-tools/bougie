@@ -1,7 +1,10 @@
 //! §4.2.1 merge between `bougie.toml` and `composer.json`'s `extra.bougie`,
 //! plus the loader that orchestrates reading both files from disk.
 
-use super::{read_bougie_toml, BougieConfig, ComposerConfig, ComposerJson, IndexEntry, PhpConfig};
+use super::{
+    read_bougie_toml, BougieConfig, ComposerConfig, ComposerJson, ExtensionPin, IndexEntry,
+    PhpConfig,
+};
 use eyre::{Result, WrapErr};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -29,9 +32,9 @@ pub fn merge(toml_cfg: BougieConfig, extra_cfg: BougieConfig) -> BougieConfig {
 }
 
 fn deep_merge_extensions(
-    base: BTreeMap<String, String>,
-    over: BTreeMap<String, String>,
-) -> BTreeMap<String, String> {
+    base: BTreeMap<String, ExtensionPin>,
+    over: BTreeMap<String, ExtensionPin>,
+) -> BTreeMap<String, ExtensionPin> {
     let mut out = base;
     out.extend(over);
     out
@@ -107,22 +110,39 @@ mod tests {
     #[test]
     fn extension_tables_deep_merge() {
         let mut toml_exts = BTreeMap::new();
-        toml_exts.insert("xdebug".into(), "3.5.1".into());
+        toml_exts.insert("xdebug".into(), ExtensionPin::Version("3.5.1".into()));
         let toml_cfg = BougieConfig {
             extensions: toml_exts,
             ..Default::default()
         };
         let mut extra_exts = BTreeMap::new();
-        extra_exts.insert("redis".into(), "6.0.2".into());
-        extra_exts.insert("xdebug".into(), "3.0.0".into()); // shadowed by toml
+        extra_exts.insert("redis".into(), ExtensionPin::Version("6.0.2".into()));
+        extra_exts.insert("xdebug".into(), ExtensionPin::Version("3.0.0".into())); // shadowed by toml
         let extra_cfg = BougieConfig {
             extensions: extra_exts,
             ..Default::default()
         };
         let merged = merge(toml_cfg, extra_cfg);
         assert_eq!(merged.extensions.len(), 2);
-        assert_eq!(merged.extensions.get("xdebug").map(String::as_str), Some("3.5.1"));
-        assert_eq!(merged.extensions.get("redis").map(String::as_str), Some("6.0.2"));
+        assert_eq!(merged.extensions.get("xdebug").and_then(ExtensionPin::as_version), Some("3.5.1"));
+        assert_eq!(merged.extensions.get("redis").and_then(ExtensionPin::as_version), Some("6.0.2"));
+    }
+
+    #[test]
+    fn toml_disabled_shadows_extra_version() {
+        // mysqli = false in bougie.toml must take precedence over a
+        // version pin in extra.bougie — otherwise the project can't
+        // opt out of a baseline extension that an upstream `extra`
+        // tried to pin.
+        let mut toml_exts = BTreeMap::new();
+        toml_exts.insert("mysqli".into(), ExtensionPin::Disabled(false));
+        let mut extra_exts = BTreeMap::new();
+        extra_exts.insert("mysqli".into(), ExtensionPin::Version("ignored".into()));
+        let merged = merge(
+            BougieConfig { extensions: toml_exts, ..Default::default() },
+            BougieConfig { extensions: extra_exts, ..Default::default() },
+        );
+        assert!(merged.extensions.get("mysqli").unwrap().is_disabled());
     }
 
     #[test]

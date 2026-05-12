@@ -92,9 +92,39 @@ mod tests {
         let cfg = c.extra_bougie.unwrap();
         assert_eq!(cfg.php.version.as_deref(), Some("8.3.12"));
         assert_eq!(cfg.php.flavor.as_deref(), Some("nts"));
-        assert_eq!(cfg.extensions.get("xdebug").map(String::as_str), Some("3.5.1"));
+        assert_eq!(
+            cfg.extensions
+                .get("xdebug")
+                .and_then(crate::config::ExtensionPin::as_version),
+            Some("3.5.1")
+        );
         assert_eq!(cfg.index.len(), 1);
         assert_eq!(cfg.index[0].host, "https://i.example");
+    }
+
+    #[test]
+    fn extension_can_be_disabled_via_false_sentinel() {
+        // composer.json's `extra.bougie.extensions` accepts `false` to
+        // opt a baseline extension out of the project's auto-enable
+        // set (CLI.md §3.3 step 4).
+        let c = read_composer_json(
+            r#"{
+                "extra": {
+                    "bougie": {
+                        "extensions": {"mysqli": false, "redis": "6.0.2"}
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+        let cfg = c.extra_bougie.unwrap();
+        assert!(cfg.extensions.get("mysqli").unwrap().is_disabled());
+        assert_eq!(
+            cfg.extensions
+                .get("redis")
+                .and_then(crate::config::ExtensionPin::as_version),
+            Some("6.0.2")
+        );
     }
 
     #[test]
