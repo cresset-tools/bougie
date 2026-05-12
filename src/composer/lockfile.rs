@@ -17,9 +17,11 @@
 //! (`src/Composer/Package/Locker.php:89` in composer/composer).
 
 use crate::composer::php_json::{self, Mode};
-use eyre::{eyre, Result};
+use eyre::{eyre, Result, WrapErr};
 use md5::{Digest, Md5};
 use serde_json::{Map, Value};
+use std::io::Write;
+use std::path::{Path, PathBuf};
 
 /// Keys that participate in Composer's content-hash, in the order
 /// PHP's `array_intersect($relevantKeys, array_keys($content))` would
@@ -105,6 +107,241 @@ fn hex_lower(bytes: &[u8]) -> String {
         out.push(HEX[(b & 0xf) as usize] as char);
     }
     out
+}
+
+/// Read a JSON file from disk and parse as `serde_json::Value`.
+/// Preserves object key order (`serde_json::preserve_order` feature)
+/// so subsequent re-serialisation mirrors the source layout.
+pub fn read_json_file(path: &Path) -> Result<Value> {
+    let bytes = std::fs::read(path)
+        .wrap_err_with(|| format!("reading {}", path.display()))?;
+    serde_json::from_slice(&bytes)
+        .map_err(|e| eyre!("parsing {}: {e}", path.display()))
+}
+
+/// Write a JSON value to disk in the same format Composer's
+/// `JsonFile::encode` produces — 4-space indent, raw `/`, raw UTF-8
+/// except U+2028 / U+2029, plus a trailing newline — and atomically
+/// via tempfile-then-rename so a concurrent `composer install` never
+/// sees a half-written file.
+pub fn write_json_file(path: &Path, value: &Value) -> Result<()> {
+    write_json_bytes(path, &encode_for_disk(value))
+}
+
+/// Composer's on-disk JSON encoding: `Mode::Pretty` + trailing newline.
+/// Exposed for callers that need the byte stream itself — e.g. computing
+/// `content_hash` from the exact bytes about to be written.
+pub fn encode_for_disk(value: &Value) -> Vec<u8> {
+    let mut bytes = php_json::encode(value, Mode::Pretty);
+    bytes.push(b'\n');
+    bytes
+}
+
+/// Atomic write: tempfile in the destination directory, `fsync`,
+/// rename onto the target. Same-filesystem rename guarantees atomicity
+/// on POSIX; concurrent readers see either the old file or the new,
+/// never a torn read.
+fn write_json_bytes(path: &Path, bytes: &[u8]) -> Result<()> {
+    let parent = path.parent().ok_or_else(|| {
+        eyre!("path {} has no parent directory", path.display())
+    })?;
+    let dir = if parent.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        std::fs::create_dir_all(parent)
+            .wrap_err_with(|| format!("creating {}", parent.display()))?;
+        parent
+    };
+    let mut tf = tempfile::NamedTempFile::new_in(dir)
+        .wrap_err_with(|| format!("creating tempfile in {}", dir.display()))?;
+    tf.as_file_mut()
+        .write_all(bytes)
+        .wrap_err_with(|| format!("writing {}", tf.path().display()))?;
+    tf.as_file_mut()
+        .sync_all()
+        .wrap_err_with(|| format!("fsyncing {}", tf.path().display()))?;
+    tf.persist(path)
+        .map_err(|e| eyre!("renaming temp to {}: {e}", path.display()))?;
+    Ok(())
+}
+
+/// `composer require ext-<name>` semantics, but as a pure JSON edit.
+/// Appends to the existing `require` (or `require-dev` if `dev`) map,
+/// or creates the map if absent. Re-inserting an existing key updates
+/// its constraint in place, preserving position — same as composer.
+pub fn require_add(
+    composer_json: &mut Value,
+    key: &str,
+    constraint: &str,
+    dev: bool,
+) -> Result<()> {
+    let obj = composer_json
+        .as_object_mut()
+        .ok_or_else(|| eyre!("composer.json top level must be a JSON object"))?;
+    let map_key = if dev { "require-dev" } else { "require" };
+    let entry = obj
+        .entry(map_key.to_string())
+        .or_insert_with(|| Value::Object(Map::new()));
+    let map = entry
+        .as_object_mut()
+        .ok_or_else(|| eyre!("composer.json `{map_key}` exists but is not an object"))?;
+    map.insert(key.to_string(), Value::String(constraint.to_string()));
+    Ok(())
+}
+
+/// Inverse of [`require_add`]. Returns `Ok(true)` if the key was
+/// removed, `Ok(false)` if it wasn't present.
+pub fn require_remove(composer_json: &mut Value, key: &str, dev: bool) -> Result<bool> {
+    let obj = composer_json
+        .as_object_mut()
+        .ok_or_else(|| eyre!("composer.json top level must be a JSON object"))?;
+    let map_key = if dev { "require-dev" } else { "require" };
+    let Some(entry) = obj.get_mut(map_key) else {
+        return Ok(false);
+    };
+    let Some(map) = entry.as_object_mut() else {
+        return Err(eyre!("composer.json `{map_key}` exists but is not an object"));
+    };
+    Ok(map.shift_remove(key).is_some())
+}
+
+/// Mirror a `require[-dev]` entry in `composer.lock`'s top-level
+/// `platform` / `platform-dev` map. Composer writes this when running
+/// `composer require`; replicating it keeps the lockfile in the shape
+/// `composer install` expects.
+pub fn lock_set_platform(
+    lock: &mut Value,
+    key: &str,
+    constraint: &str,
+    dev: bool,
+) -> Result<()> {
+    let obj = lock
+        .as_object_mut()
+        .ok_or_else(|| eyre!("composer.lock top level must be a JSON object"))?;
+    let map_key = if dev { "platform-dev" } else { "platform" };
+    let entry = obj
+        .entry(map_key.to_string())
+        .or_insert_with(|| Value::Object(Map::new()));
+    // Composer writes an empty platform as `[]` (PHP empty-array form).
+    // If we encounter that shape, replace it with an object before
+    // inserting so the type is consistent post-edit.
+    if entry.is_array() {
+        *entry = Value::Object(Map::new());
+    }
+    let map = entry
+        .as_object_mut()
+        .ok_or_else(|| eyre!("composer.lock `{map_key}` exists but is not an object"))?;
+    map.insert(key.to_string(), Value::String(constraint.to_string()));
+    Ok(())
+}
+
+/// Inverse of [`lock_set_platform`].
+pub fn lock_unset_platform(lock: &mut Value, key: &str, dev: bool) -> Result<bool> {
+    let obj = lock
+        .as_object_mut()
+        .ok_or_else(|| eyre!("composer.lock top level must be a JSON object"))?;
+    let map_key = if dev { "platform-dev" } else { "platform" };
+    let Some(entry) = obj.get_mut(map_key) else {
+        return Ok(false);
+    };
+    let Some(map) = entry.as_object_mut() else {
+        // `[]` form: nothing to remove.
+        return Ok(false);
+    };
+    Ok(map.shift_remove(key).is_some())
+}
+
+/// Update the top-level `content-hash` field. Creates it if absent —
+/// older composer.lock files (pre-1.0) didn't have one, but every
+/// current lockfile does, so absence is exceptional.
+pub fn lock_set_content_hash(lock: &mut Value, hash: &str) -> Result<()> {
+    let obj = lock
+        .as_object_mut()
+        .ok_or_else(|| eyre!("composer.lock top level must be a JSON object"))?;
+    obj.insert("content-hash".to_string(), Value::String(hash.to_string()));
+    Ok(())
+}
+
+/// What [`apply_require_change`] should do.
+#[derive(Debug, Clone)]
+pub enum RequireChange {
+    /// `composer require <key>:<constraint>` (or `--dev`).
+    Add {
+        key: String,
+        constraint: String,
+        dev: bool,
+    },
+    /// `composer remove <key>` (or `--dev`).
+    Remove { key: String, dev: bool },
+}
+
+/// Result of [`apply_require_change`]. The new `content-hash` is
+/// returned so the caller can surface it in `--format json` output
+/// without re-reading the lockfile.
+#[derive(Debug, Clone)]
+pub struct RequireApplied {
+    pub composer_json_path: PathBuf,
+    pub composer_lock_path: Option<PathBuf>,
+    pub new_content_hash: String,
+    pub change_applied: bool,
+}
+
+/// Drive the end-to-end edit: load composer.json, apply the change,
+/// recompute the hash from the post-edit bytes, write composer.json
+/// back, and — if composer.lock exists — mirror the require to its
+/// `platform` map and splice in the new content-hash.
+///
+/// Idempotent: `Add` of an already-present key updates the constraint
+/// (composer's behaviour); `Remove` of an absent key is a no-op with
+/// `change_applied = false`.
+pub fn apply_require_change(
+    project_root: &Path,
+    change: &RequireChange,
+) -> Result<RequireApplied> {
+    let composer_json_path = project_root.join("composer.json");
+    let composer_lock_path = project_root.join("composer.lock");
+
+    let mut composer_json = read_json_file(&composer_json_path)?;
+    let change_applied = match change {
+        RequireChange::Add { key, constraint, dev } => {
+            require_add(&mut composer_json, key, constraint, *dev)?;
+            true
+        }
+        RequireChange::Remove { key, dev } => {
+            require_remove(&mut composer_json, key, *dev)?
+        }
+    };
+
+    // Re-encode and recompute the hash from the *post-edit* bytes —
+    // this is what composer would itself hash if it re-read the file
+    // we're about to write.
+    let written_bytes = encode_for_disk(&composer_json);
+    let new_content_hash = content_hash(&written_bytes)?;
+    write_json_bytes(&composer_json_path, &written_bytes)?;
+
+    let lock_updated = if composer_lock_path.exists() {
+        let mut lock = read_json_file(&composer_lock_path)?;
+        match change {
+            RequireChange::Add { key, constraint, dev } => {
+                lock_set_platform(&mut lock, key, constraint, *dev)?;
+            }
+            RequireChange::Remove { key, dev } => {
+                lock_unset_platform(&mut lock, key, *dev)?;
+            }
+        }
+        lock_set_content_hash(&mut lock, &new_content_hash)?;
+        write_json_file(&composer_lock_path, &lock)?;
+        true
+    } else {
+        false
+    };
+
+    Ok(RequireApplied {
+        composer_json_path,
+        composer_lock_path: lock_updated.then_some(composer_lock_path),
+        new_content_hash,
+        change_applied,
+    })
 }
 
 #[cfg(test)]
@@ -257,5 +494,259 @@ mod tests {
     fn hex_lower_is_lowercase() {
         assert_eq!(hex_lower(&[0xab, 0xcd]), "abcd");
         assert_eq!(hex_lower(&[0x00, 0xff]), "00ff");
+    }
+
+    // ---- IO & editing -------------------------------------------------------
+
+    use tempfile::TempDir;
+
+    /// Composer-emitted composer.json (4-space indent, trailing newline,
+    /// raw slashes — `JsonFile::encode` default).
+    const FIXTURE_DISK_COMPOSER_JSON: &str = "\
+{
+    \"name\": \"acme/widget-tool\",
+    \"require\": {
+        \"php\": \"^8.3\",
+        \"monolog/monolog\": \"^3.5\"
+    },
+    \"require-dev\": {
+        \"phpunit/phpunit\": \"^10.5\"
+    }
+}
+";
+    const FIXTURE_STARTING_HASH: &str = "be62286b165a989453dc015b7cf2d1f3";
+    const FIXTURE_POST_ADD_HASH: &str = "d353d0970b82c8e447c124f0129142d5";
+
+    /// Skeletal composer.lock with the starting content-hash baked in.
+    /// Real composer.lock files have many more keys (packages, aliases,
+    /// stability-flags, etc.) — the editor must touch only `content-hash`
+    /// and `platform[-dev]` and leave everything else byte-identical
+    /// modulo pretty-print normalisation.
+    const FIXTURE_DISK_COMPOSER_LOCK: &str = "\
+{
+    \"_readme\": [
+        \"This file locks the dependencies of your project to a known state\"
+    ],
+    \"content-hash\": \"be62286b165a989453dc015b7cf2d1f3\",
+    \"packages\": [],
+    \"packages-dev\": [],
+    \"aliases\": [],
+    \"minimum-stability\": \"stable\",
+    \"stability-flags\": {},
+    \"prefer-stable\": false,
+    \"prefer-lowest\": false,
+    \"platform\": {
+        \"php\": \"^8.3\"
+    },
+    \"platform-dev\": [],
+    \"plugin-api-version\": \"2.6.0\"
+}
+";
+
+    #[test]
+    fn round_trip_composer_json_via_encode_for_disk() {
+        // Re-encoding what PHP wrote must produce the exact same bytes.
+        // If this test ever fails, the pretty-print encoder has drifted
+        // from JsonFile::encode's output.
+        let value: Value = serde_json::from_str(FIXTURE_DISK_COMPOSER_JSON).unwrap();
+        let bytes = encode_for_disk(&value);
+        assert_eq!(
+            std::str::from_utf8(&bytes).unwrap(),
+            FIXTURE_DISK_COMPOSER_JSON
+        );
+    }
+
+    #[test]
+    fn starting_hash_matches_disk_bytes() {
+        // The hash is computed from the on-disk composer.json (which
+        // has `/` raw + indented), but the hash algorithm itself
+        // produces the flags=0 byte stream. So content_hash(disk bytes)
+        // should equal the PHP-generated starting hash.
+        let h = content_hash(FIXTURE_DISK_COMPOSER_JSON.as_bytes()).unwrap();
+        assert_eq!(h, FIXTURE_STARTING_HASH);
+    }
+
+    #[test]
+    fn require_add_appends_to_existing_require() {
+        let mut v: Value = serde_json::from_str(FIXTURE_DISK_COMPOSER_JSON).unwrap();
+        require_add(&mut v, "ext-redis", "*", false).unwrap();
+        let req = v.get("require").unwrap().as_object().unwrap();
+        assert_eq!(req.get("ext-redis").unwrap(), &Value::String("*".into()));
+        // Existing entries stay in source order, new entry at the end.
+        let keys: Vec<&str> = req.keys().map(String::as_str).collect();
+        assert_eq!(keys, ["php", "monolog/monolog", "ext-redis"]);
+    }
+
+    #[test]
+    fn require_add_creates_require_if_absent() {
+        let mut v: Value = serde_json::from_str(r#"{"name":"a/b"}"#).unwrap();
+        require_add(&mut v, "ext-redis", "*", false).unwrap();
+        assert_eq!(
+            v.get("require").unwrap().get("ext-redis").unwrap(),
+            &Value::String("*".into())
+        );
+    }
+
+    #[test]
+    fn require_add_updates_existing_key_in_place() {
+        // composer require ext-redis:^6 on a project that already has
+        // ext-redis:* updates the constraint without moving the key.
+        let mut v: Value = serde_json::from_str(
+            r#"{"require":{"php":"^8.3","ext-redis":"*","monolog/monolog":"^3.5"}}"#,
+        )
+        .unwrap();
+        require_add(&mut v, "ext-redis", "^6", false).unwrap();
+        let req = v.get("require").unwrap().as_object().unwrap();
+        let keys: Vec<&str> = req.keys().map(String::as_str).collect();
+        assert_eq!(keys, ["php", "ext-redis", "monolog/monolog"]);
+        assert_eq!(req.get("ext-redis").unwrap(), &Value::String("^6".into()));
+    }
+
+    #[test]
+    fn require_add_with_dev_uses_require_dev() {
+        let mut v: Value = serde_json::from_str(FIXTURE_DISK_COMPOSER_JSON).unwrap();
+        require_add(&mut v, "ext-xdebug", "*", true).unwrap();
+        assert!(v.get("require-dev").unwrap().get("ext-xdebug").is_some());
+        assert!(v.get("require").unwrap().get("ext-xdebug").is_none());
+    }
+
+    #[test]
+    fn require_remove_drops_key_and_reports_state() {
+        let mut v: Value = serde_json::from_str(FIXTURE_DISK_COMPOSER_JSON).unwrap();
+        assert!(require_remove(&mut v, "monolog/monolog", false).unwrap());
+        assert!(v.get("require").unwrap().get("monolog/monolog").is_none());
+        // Idempotent: removing again is a no-op returning false.
+        assert!(!require_remove(&mut v, "monolog/monolog", false).unwrap());
+    }
+
+    #[test]
+    fn lock_set_platform_handles_array_form_empty() {
+        // Composer writes empty platform-dev as `[]` (PHP array form).
+        let mut lock: Value = serde_json::from_str(FIXTURE_DISK_COMPOSER_LOCK).unwrap();
+        assert!(lock.get("platform-dev").unwrap().is_array());
+        lock_set_platform(&mut lock, "ext-xdebug", "*", true).unwrap();
+        let pd = lock.get("platform-dev").unwrap();
+        assert!(pd.is_object());
+        assert_eq!(pd.get("ext-xdebug").unwrap(), &Value::String("*".into()));
+    }
+
+    #[test]
+    fn lock_set_content_hash_replaces_existing() {
+        let mut lock: Value = serde_json::from_str(FIXTURE_DISK_COMPOSER_LOCK).unwrap();
+        lock_set_content_hash(&mut lock, "deadbeef").unwrap();
+        assert_eq!(
+            lock.get("content-hash").unwrap(),
+            &Value::String("deadbeef".into())
+        );
+    }
+
+    #[test]
+    fn apply_require_change_updates_both_files_and_hash() {
+        // The end-to-end story: a project with composer.json + lockfile
+        // matching `FIXTURE_STARTING_HASH`; bougie adds ext-redis;
+        // composer.json gains the require, composer.lock's `platform`
+        // gains the mirror and `content-hash` updates to a value that
+        // matches our content_hash of the new composer.json.
+        let td = TempDir::new().unwrap();
+        let proj = td.path();
+        std::fs::write(proj.join("composer.json"), FIXTURE_DISK_COMPOSER_JSON).unwrap();
+        std::fs::write(proj.join("composer.lock"), FIXTURE_DISK_COMPOSER_LOCK).unwrap();
+
+        let applied = apply_require_change(
+            proj,
+            &RequireChange::Add {
+                key: "ext-redis".into(),
+                constraint: "*".into(),
+                dev: false,
+            },
+        )
+        .unwrap();
+
+        assert!(applied.change_applied);
+        assert!(applied.composer_lock_path.is_some());
+        assert_eq!(applied.new_content_hash, FIXTURE_POST_ADD_HASH);
+
+        // composer.json has the require entry.
+        let cj: Value =
+            serde_json::from_slice(&std::fs::read(proj.join("composer.json")).unwrap()).unwrap();
+        assert_eq!(
+            cj.get("require").unwrap().get("ext-redis").unwrap(),
+            &Value::String("*".into())
+        );
+
+        // composer.lock has the platform mirror and the new hash.
+        let lock: Value =
+            serde_json::from_slice(&std::fs::read(proj.join("composer.lock")).unwrap()).unwrap();
+        assert_eq!(
+            lock.get("content-hash").unwrap(),
+            &Value::String(FIXTURE_POST_ADD_HASH.into())
+        );
+        assert_eq!(
+            lock.get("platform").unwrap().get("ext-redis").unwrap(),
+            &Value::String("*".into())
+        );
+    }
+
+    #[test]
+    fn apply_require_change_self_consistent() {
+        // The new content-hash returned by apply_require_change MUST
+        // equal content_hash(the composer.json we just wrote) — that
+        // self-consistency is what makes `composer install` accept it.
+        let td = TempDir::new().unwrap();
+        let proj = td.path();
+        std::fs::write(proj.join("composer.json"), FIXTURE_DISK_COMPOSER_JSON).unwrap();
+        std::fs::write(proj.join("composer.lock"), FIXTURE_DISK_COMPOSER_LOCK).unwrap();
+        let applied = apply_require_change(
+            proj,
+            &RequireChange::Add {
+                key: "ext-mongodb".into(),
+                constraint: "^1.18".into(),
+                dev: false,
+            },
+        )
+        .unwrap();
+        let written_json = std::fs::read(proj.join("composer.json")).unwrap();
+        let recomputed = content_hash(&written_json).unwrap();
+        assert_eq!(recomputed, applied.new_content_hash);
+    }
+
+    #[test]
+    fn apply_require_change_without_lockfile_skips_it() {
+        let td = TempDir::new().unwrap();
+        let proj = td.path();
+        std::fs::write(proj.join("composer.json"), FIXTURE_DISK_COMPOSER_JSON).unwrap();
+        // No composer.lock — first sync hasn't happened yet.
+        let applied = apply_require_change(
+            proj,
+            &RequireChange::Add {
+                key: "ext-redis".into(),
+                constraint: "*".into(),
+                dev: false,
+            },
+        )
+        .unwrap();
+        assert!(applied.composer_lock_path.is_none());
+        assert!(!proj.join("composer.lock").exists());
+        // composer.json was still updated.
+        assert!(std::fs::read_to_string(proj.join("composer.json"))
+            .unwrap()
+            .contains("ext-redis"));
+    }
+
+    #[test]
+    fn apply_require_change_remove_absent_key_is_noop() {
+        let td = TempDir::new().unwrap();
+        let proj = td.path();
+        std::fs::write(proj.join("composer.json"), FIXTURE_DISK_COMPOSER_JSON).unwrap();
+        let applied = apply_require_change(
+            proj,
+            &RequireChange::Remove { key: "ext-redis".into(), dev: false },
+        )
+        .unwrap();
+        assert!(!applied.change_applied);
+        // composer.json still parses cleanly.
+        let cj: Value =
+            serde_json::from_slice(&std::fs::read(proj.join("composer.json")).unwrap()).unwrap();
+        assert!(cj.get("require").unwrap().get("ext-redis").is_none());
     }
 }
