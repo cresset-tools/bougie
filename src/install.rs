@@ -245,6 +245,37 @@ pub fn install_extension(
         fetch_blob(&client, &blob_spec)?;
     }
 
+    // Walk the manifest's bundled-C-lib closure and fetch any
+    // store-paths the consumer doesn't have yet. Mandatory: the
+    // extension `.so` was built with `$ORIGIN/../../<storeName>/lib`
+    // RPATHs into peers in the same store; without these tarballs,
+    // dlopen falls back to the system loader and surfaces errors like
+    // `libicuuc.so.77: cannot open shared object file` for intl or
+    // `libcurl: undefined symbol: ENGINE_init` for curl (system libcurl
+    // built against a different OpenSSL).
+    //
+    // Run unconditionally — `dest.exists()` only tells us the .so
+    // blob is present; the closure may still be partial from an
+    // earlier bougie release that didn't walk it.
+    for closure in &manifest.closure {
+        let store_path = store_dir_for_closure(paths, &closure.name, &closure.version, &closure.hash);
+        if store_path.exists() {
+            continue;
+        }
+        let blob_spec = BlobSpec {
+            url: &closure.url,
+            sha256: &closure.sha256,
+            partial_dir: &paths.cache_blobs(),
+            dest: &store_path,
+        };
+        fetch_blob(&client, &blob_spec).wrap_err_with(|| {
+            format!(
+                "fetching closure entry `{}-{}-{}` for {}",
+                closure.name, closure.version, closure.hash, manifest.tag
+            )
+        })?;
+    }
+
     let so_path = dest.join(&ext_ref.path);
     if !so_path.exists() {
         return Err(eyre!(
@@ -282,10 +313,21 @@ pub struct BaselineReport {
 
 /// Install every baseline extension admitted by `filter` into the
 /// content-addressed store, then write a conf.d fragment under
-/// `<install_root>/etc/php/conf.d/20-<name>.ini` so the interpreter
-/// auto-loads them. Errors per extension are downgraded to entries
-/// in [`BaselineReport::failed`] — the caller decides whether to
-/// surface them or treat them as a hard failure.
+/// `<install_root>/etc/php/conf.d/<NN>-<name>.ini` so the interpreter
+/// auto-loads them. The numeric prefix mirrors `php-build-standalone`'s
+/// `php/build-php.sh` convention so that `pdo_*` loads after `pdo` and
+/// `mysqli` / `sqlite3` / `pgsql` load after their PDO siblings — see
+/// [`conf_d_prefix_for`]. Errors per extension are downgraded to
+/// entries in [`BaselineReport::failed`].
+///
+/// Before iterating, any pre-existing bougie-baseline-managed fragments
+/// in `conf_d` are deleted. This keeps a re-run idempotent across
+/// changes to [`conf_d_prefix_for`] or to [`BASELINE_EXTENSIONS`]: an
+/// old `20-pdo_mysql.ini` from a previous bougie release won't linger
+/// alongside the new `35-pdo_mysql.ini`, which would otherwise
+/// trigger `undefined symbol: pdo_dbh_ce` (pdo_mysql loaded before
+/// pdo) or `Module "pdo_mysql" is already loaded` (both fragments
+/// loaded in sequence).
 ///
 /// This is intentionally separate from [`install_php`] and must be
 /// called *after* `install_php` returns: both functions acquire the
@@ -310,6 +352,15 @@ pub fn install_baseline_into(
         return report;
     }
 
+    if let Err(e) = clean_stale_baseline_fragments(&conf_d) {
+        // Non-fatal: leave the loop a chance to overwrite each
+        // canonical-prefix file. Surface as a synthetic failure so
+        // CI dashboards see something happened.
+        report
+            .failed
+            .push(("<conf.d-cleanup>".into(), format!("{e:#}")));
+    }
+
     for &name in BASELINE_EXTENSIONS {
         if !filter.includes(name) {
             continue;
@@ -330,16 +381,70 @@ pub fn install_baseline_into(
     report
 }
 
-/// Write `20-<name>.ini` under `<install>/etc/php/conf.d/` referencing
-/// the content-addressed store path of the just-installed `.so`. PHP's
-/// alphabetic conf.d scan loads `20-*` after `10-opcache.ini` but
-/// before any user `50-*.ini` overrides — matching the prefix
-/// php-build-standalone already uses for non-zend extensions.
+/// Numeric conf.d prefix for a baseline (or user) extension. Mirrors
+/// `php-build-standalone`'s `php/build-php.sh` numbering so that PHP's
+/// alphabetic conf.d scan honors load-order dependencies:
+///
+/// - `35-pdo_*.ini` loads after `30-pdo.ini` (the core PDO base must
+///   be initialized before any driver can register against it).
+/// - `40-mysqli.ini` / `40-sqlite3.ini` / `40-pgsql.ini` load after
+///   the `35-pdo_*` siblings, matching the conventional grouping
+///   even though `mysqli` doesn't have a hard pdo dependency.
+/// - Everything else loads at `20-` — right after `10-opcache.ini`
+///   but before any user `50-*.ini` overrides.
+pub fn conf_d_prefix_for(name: &str) -> u32 {
+    if name.starts_with("pdo_") {
+        35
+    } else if matches!(name, "mysqli" | "sqlite3" | "pgsql") {
+        40
+    } else {
+        20
+    }
+}
+
+const BASELINE_FRAGMENT_HEADER: &str = "; managed by bougie — baseline extension";
+
+/// Delete any `.ini` fragment under `conf_d` that starts with the
+/// bougie-baseline marker. Run before re-writing baseline fragments
+/// so a prefix change between bougie releases doesn't leave orphans
+/// (see [`install_baseline_into`] docstring for why this matters).
+///
+/// Only files whose first line begins with [`BASELINE_FRAGMENT_HEADER`]
+/// are removed — user-authored `15-mytunables.ini` and shipped
+/// interpreter fragments stay put.
+fn clean_stale_baseline_fragments(conf_d: &Path) -> Result<()> {
+    let entries = match std::fs::read_dir(conf_d) {
+        Ok(e) => e,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(eyre!("reading {}: {e}", conf_d.display())),
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("ini") {
+            continue;
+        }
+        let Ok(body) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        if body.starts_with(BASELINE_FRAGMENT_HEADER) {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+    Ok(())
+}
+
+/// Write `<NN>-<name>.ini` under `<install>/etc/php/conf.d/` referencing
+/// the content-addressed store path of the just-installed `.so`. The
+/// `<NN>` prefix is chosen by [`conf_d_prefix_for`] so the
+/// load-order dependencies PHP build conventions encode in the prefix
+/// (`30-pdo` → `35-pdo_*` → `40-mysqli/sqlite3/pgsql`) are preserved.
 fn write_install_conf_d(conf_d: &Path, installed: &InstalledExt) -> Result<()> {
-    let path = conf_d.join(format!("20-{}.ini", installed.name));
+    let prefix = conf_d_prefix_for(&installed.name);
+    let path = conf_d.join(format!("{prefix}-{}.ini", installed.name));
     let body = format!(
-        "; managed by bougie — baseline extension {name} {version}\n\
+        "{header} {name} {version}\n\
          {directive}={so}\n",
+        header = BASELINE_FRAGMENT_HEADER,
         name = installed.name,
         version = installed.version,
         directive = installed.load.ini_directive(),
@@ -361,6 +466,14 @@ fn write_install_conf_d(conf_d: &Path, installed: &InstalledExt) -> Result<()> {
     tf.persist(&path)
         .map_err(|e| eyre!("renaming temp to {}: {e}", path.display()))?;
     Ok(())
+}
+
+/// `$BOUGIE_HOME/store/<name>-<version>-<hash>/` for a closure entry.
+/// Thin wrapper over [`crate::store::store_dir`] kept here so callers
+/// don't need to import the store module just to compute closure
+/// destinations.
+fn store_dir_for_closure(paths: &Paths, name: &str, version: &str, hash: &str) -> PathBuf {
+    crate::store::store_dir(paths, name, version, hash)
 }
 
 pub fn host_to_dirname(host: &str) -> String {
@@ -404,5 +517,52 @@ mod tests {
         assert_eq!(host_to_dirname("https://idx.example.com"), "idx.example.com");
         assert_eq!(host_to_dirname("http://idx:8080"), "idx_8080");
         assert_eq!(host_to_dirname("idx.example.com/"), "idx.example.com");
+    }
+
+    #[test]
+    fn conf_d_prefix_handles_pdo_drivers_and_db_drivers() {
+        assert_eq!(conf_d_prefix_for("pdo_mysql"), 35);
+        assert_eq!(conf_d_prefix_for("pdo_sqlite"), 35);
+        assert_eq!(conf_d_prefix_for("pdo_pgsql"), 35);
+        assert_eq!(conf_d_prefix_for("mysqli"), 40);
+        assert_eq!(conf_d_prefix_for("sqlite3"), 40);
+        assert_eq!(conf_d_prefix_for("pgsql"), 40);
+        assert_eq!(conf_d_prefix_for("mbstring"), 20);
+        assert_eq!(conf_d_prefix_for("curl"), 20);
+        assert_eq!(conf_d_prefix_for("redis"), 20);
+    }
+
+    #[test]
+    fn clean_stale_baseline_fragments_removes_only_marked_files() {
+        let td = tempfile::TempDir::new().unwrap();
+        let conf_d = td.path();
+        // Baseline-managed: should go.
+        std::fs::write(
+            conf_d.join("20-pdo_mysql.ini"),
+            format!("{BASELINE_FRAGMENT_HEADER} pdo_mysql 1.0\nextension=x\n"),
+        )
+        .unwrap();
+        std::fs::write(
+            conf_d.join("20-mbstring.ini"),
+            format!("{BASELINE_FRAGMENT_HEADER} mbstring 1.0\nextension=y\n"),
+        )
+        .unwrap();
+        // Shipped by the PHP build — bare extension= line, must stay.
+        std::fs::write(conf_d.join("35-pdo_pgsql.ini"), "extension=pdo_pgsql\n").unwrap();
+        // User tunable, must stay.
+        std::fs::write(conf_d.join("15-mytunables.ini"), "memory_limit=2G\n").unwrap();
+
+        clean_stale_baseline_fragments(conf_d).unwrap();
+
+        assert!(!conf_d.join("20-pdo_mysql.ini").exists());
+        assert!(!conf_d.join("20-mbstring.ini").exists());
+        assert!(conf_d.join("35-pdo_pgsql.ini").exists());
+        assert!(conf_d.join("15-mytunables.ini").exists());
+    }
+
+    #[test]
+    fn clean_stale_baseline_fragments_on_missing_dir_is_ok() {
+        let td = tempfile::TempDir::new().unwrap();
+        clean_stale_baseline_fragments(&td.path().join("does-not-exist")).unwrap();
     }
 }
