@@ -25,6 +25,31 @@ pub const BASELINE_EXTENSIONS: &[&str] = &[
     "mysqli",
 ];
 
+/// Extensions that are *statically compiled into the PHP binary* and
+/// can never be loaded as `.so` files. `composer.json` projects
+/// frequently declare `ext-pcre` / `ext-json` / `ext-spl` for
+/// platform-validation reasons; bougie must treat those as
+/// already-satisfied rather than attempting an index lookup that
+/// will fail.
+///
+/// Derived from PHP's default `get_loaded_extensions()` set on a
+/// stock build plus the configure-time-static deps our
+/// `php-build-standalone` pipeline links in (`libxml`). Keep
+/// lowercase — `composer.json` keys are case-sensitive and the
+/// idiomatic spelling is lowercase.
+pub const BUILTIN_EXTENSIONS: &[&str] = &[
+    "core",
+    "date",
+    "hash",
+    "json",
+    "libxml",
+    "pcre",
+    "random",
+    "reflection",
+    "spl",
+    "standard",
+];
+
 /// Per-invocation narrowing applied by `bougie php install`'s
 /// `--no-baseline` / `--baseline-only` flags. Project-level opt-out
 /// (the `false` sentinel in `[extensions]`) is a separate concern
@@ -55,6 +80,15 @@ impl BaselineFilter {
 /// baseline extensions are opt-outable; core is non-negotiable).
 pub fn is_baseline(name: &str) -> bool {
     BASELINE_EXTENSIONS.contains(&name)
+}
+
+/// `true` if `name` names an extension that's statically compiled
+/// into every PHP binary (see [`BUILTIN_EXTENSIONS`]). Sync uses this
+/// to short-circuit `composer.json`'s platform-validation entries
+/// like `ext-pcre` before attempting an index lookup that has no
+/// chance of succeeding.
+pub fn is_builtin(name: &str) -> bool {
+    BUILTIN_EXTENSIONS.contains(&name)
 }
 
 /// Parse `--baseline-only=a,b,c` into a [`BaselineFilter::Only`].
@@ -94,6 +128,20 @@ mod tests {
         assert!(is_baseline("pdo_mysql"));
         assert!(!is_baseline("xdebug"));
         assert!(!is_baseline("redis"));
+    }
+
+    #[test]
+    fn builtin_membership() {
+        // Composer projects commonly list `ext-pcre` / `ext-spl` as
+        // platform-validation entries — those must short-circuit the
+        // index lookup in sync's auto-install path.
+        assert!(is_builtin("pcre"));
+        assert!(is_builtin("spl"));
+        assert!(is_builtin("json"));
+        assert!(is_builtin("standard"));
+        assert!(!is_builtin("redis"));
+        assert!(!is_builtin("mbstring")); // shared in our build, baseline territory
+        assert!(!is_builtin("openssl")); // shared, core territory
     }
 
     #[test]

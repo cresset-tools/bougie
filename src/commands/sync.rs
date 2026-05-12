@@ -1,9 +1,10 @@
 use crate::baseline::{self, BaselineFilter};
 use crate::cli::OutputFormat;
 use crate::composer::{self, default_request as default_composer_request, parse_request as parse_composer_request, Installed as InstalledComposer};
+use crate::conf_d;
 use crate::config::{load_project, ExtensionPin, ProjectConfig};
 use crate::errors::BougieError;
-use crate::install::{install_baseline_into, install_php, InstalledPhp};
+use crate::install::{install_baseline_into, install_extension, install_php, InstalledExt, InstalledPhp};
 use crate::output::{emit, Render};
 use crate::paths::Paths;
 use crate::request::{Flavor, Request, VersionLike};
@@ -29,6 +30,11 @@ pub struct SyncResult {
     pub shims_dir: PathBuf,
     pub composer_version: String,
     pub composer_path: PathBuf,
+    /// Extensions auto-installed from `composer.json`'s `require.ext-*`
+    /// — i.e. project-required extensions that weren't already provided
+    /// by the core/baseline sets. Built-in (statically-linked) entries
+    /// like `ext-pcre` are filtered out before this list is populated.
+    pub installed_extensions: Vec<String>,
 }
 
 impl Render for SyncResult {
@@ -46,6 +52,13 @@ impl Render for SyncResult {
             self.composer_version,
             self.composer_path.display()
         )?;
+        if !self.installed_extensions.is_empty() {
+            writeln!(
+                w,
+                "installed extensions from composer.json: {}",
+                self.installed_extensions.join(", ")
+            )?;
+        }
         writeln!(w, "shims at {}", self.shims_dir.display())
     }
 }
@@ -120,6 +133,14 @@ pub fn ensure_synced(
     let opt_out = baseline_opt_outs(project);
     replicate_install_conf_d(&installed.install_path, project_root, &opt_out)?;
 
+    let installed_extensions = install_required_extensions(
+        paths,
+        project_root,
+        project,
+        php_minor,
+        installed.flavor,
+    )?;
+
     let shims_dir = write_shims(project_root)?;
 
     let mut global = GlobalState::load(paths)?;
@@ -136,7 +157,96 @@ pub fn ensure_synced(
         shims_dir,
         composer_version: composer_installed.version,
         composer_path: composer_installed.phar_path,
+        installed_extensions,
     })
+}
+
+/// Install every `require.ext-*` from `composer.json` that isn't
+/// already provided by the static PHP build (`ext-pcre`, `ext-spl`,
+/// …), shipped in the install's `etc/php/conf.d/` (core), or
+/// replicated from the install (baseline). Returns the names of
+/// extensions that were actually installed and enabled here, ordered
+/// by composer.json's iteration order.
+///
+/// Errors are fatal: if composer.json declares `ext-redis` and bougie
+/// can't satisfy it, the project would `composer install` into a
+/// broken state, so sync surfaces the resolution failure instead of
+/// silently continuing.
+fn install_required_extensions(
+    paths: &Paths,
+    project_root: &std::path::Path,
+    project: &ProjectConfig,
+    php_minor: PartialVersion,
+    flavor: Flavor,
+) -> Result<Vec<String>> {
+    let Some(composer) = project.composer.as_ref() else {
+        return Ok(Vec::new());
+    };
+    let project_conf_d = project_root.join(".bougie").join("conf.d");
+    let mut installed_names = Vec::new();
+    for name in &composer.require_extensions {
+        if baseline::is_builtin(name) {
+            continue;
+        }
+        if is_ext_enabled_in_project(&project_conf_d, name) {
+            continue;
+        }
+        // bougie.toml's `[extensions]` table can pin or disable an
+        // ext. Disabled wins for baseline (sync filtered above), but
+        // here composer.json *explicitly* requires it — treat
+        // Disabled as "no pin," i.e. install at latest. We do not
+        // error: composer.json is the project-state source of truth,
+        // [extensions]=false is a hint, not a veto.
+        let version_pin = project
+            .bougie
+            .extensions
+            .get(name)
+            .and_then(ExtensionPin::as_version);
+
+        let installed: InstalledExt = install_extension(
+            paths,
+            name,
+            version_pin,
+            php_minor,
+            flavor,
+            ResolveOptions::default(),
+        )?;
+        conf_d::write_ext_fragment(
+            project_root,
+            &installed.name,
+            &installed.so_path,
+            installed.load,
+        )?;
+        installed_names.push(installed.name);
+    }
+    Ok(installed_names)
+}
+
+/// `true` if the project's `.bougie/conf.d/` already has a fragment
+/// that ends with `-<name>.ini` — i.e. core or baseline replication
+/// already enabled it, OR a previous `bougie ext add` / sync wrote a
+/// `20-<name>.ini` for it. Either way the auto-install step should
+/// skip it.
+///
+/// Matches on the filename's trailing `-<name>` segment rather than
+/// reading file contents — a `15-<name>.ini` user tunable would be a
+/// false positive in theory, but `<name>` would have to *exactly*
+/// match an extension that's also in `composer.json`, which would
+/// itself be a configuration smell worth surfacing rather than
+/// papering over.
+fn is_ext_enabled_in_project(conf_d: &std::path::Path, name: &str) -> bool {
+    let Ok(entries) = std::fs::read_dir(conf_d) else {
+        return false;
+    };
+    let target_suffix = format!("-{name}.ini");
+    for entry in entries.flatten() {
+        let fname = entry.file_name();
+        let Some(fname) = fname.to_str() else { continue };
+        if fname.ends_with(&target_suffix) {
+            return true;
+        }
+    }
+    false
 }
 
 /// Resolve the project's PHP inputs (constraint + flavor). Public so
@@ -322,6 +432,37 @@ mod tests {
         assert!(out.contains("mysqli"));
         assert!(!out.contains("redis"));
         assert!(!out.contains("mbstring"));
+    }
+
+    #[test]
+    fn is_ext_enabled_in_project_finds_replicated_and_user_fragments() {
+        let td = TempDir::new().unwrap();
+        let dir = td.path().join(".bougie/conf.d");
+        std::fs::create_dir_all(&dir).unwrap();
+        // Replicated core fragment.
+        std::fs::write(dir.join("00-20-openssl.ini"), "extension=openssl\n").unwrap();
+        // Replicated baseline fragment.
+        std::fs::write(dir.join("00-20-mbstring.ini"), "extension=mbstring\n").unwrap();
+        // User-added via ext add.
+        std::fs::write(dir.join("20-redis.ini"), "extension=redis\n").unwrap();
+
+        assert!(is_ext_enabled_in_project(&dir, "openssl"));
+        assert!(is_ext_enabled_in_project(&dir, "mbstring"));
+        assert!(is_ext_enabled_in_project(&dir, "redis"));
+        assert!(!is_ext_enabled_in_project(&dir, "xdebug"));
+        assert!(!is_ext_enabled_in_project(&dir, "pdo_mysql"));
+    }
+
+    #[test]
+    fn is_ext_enabled_handles_missing_conf_d_dir() {
+        // Sync's auto-install step runs after replicate, which creates
+        // the conf.d dir, but a malformed project (no .bougie dir) is
+        // possible — must not panic.
+        let td = TempDir::new().unwrap();
+        assert!(!is_ext_enabled_in_project(
+            &td.path().join("nonexistent"),
+            "redis"
+        ));
     }
 
     #[test]
