@@ -139,11 +139,47 @@ pub struct Blob {
     pub sha256: String,
 }
 
-/// Where the extracted `.so` lives inside the extension tarball.
+/// Where the extracted `.so` lives inside the extension tarball, and
+/// which PHP INI directive to enable it under.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ExtensionRef {
     pub path: String,
     pub sha256: String,
+    /// Whether PHP loads this extension via `extension=` (regular Zend
+    /// extension that hooks the runtime through MINIT/RSHUTDOWN) or
+    /// `zend_extension=` (Zend extensions that hook the opcode
+    /// dispatch, e.g. opcache, xdebug, pcov, datadog-trace).
+    ///
+    /// Optional + defaulted so manifests written before the field was
+    /// introduced still parse: an omitted `load` means `Extension`,
+    /// which is correct for the overwhelming majority of `.so` files.
+    /// Publishers shipping a zend extension MUST set it explicitly.
+    #[serde(default)]
+    pub load: LoadDirective,
+}
+
+/// The PHP INI directive a `.so` is loaded under. Serialised in
+/// kebab-case to match the rest of the wire format (`extension`,
+/// `zend-extension`) — the in-INI spelling uses an underscore
+/// (`zend_extension`) and is handled at INI-emit time, not here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum LoadDirective {
+    #[default]
+    Extension,
+    ZendExtension,
+}
+
+impl LoadDirective {
+    /// The INI directive token PHP expects (`extension` or
+    /// `zend_extension`). Note the underscore form — unlike the wire
+    /// representation, INI files use `snake_case` for this directive.
+    pub fn ini_directive(self) -> &'static str {
+        match self {
+            Self::Extension => "extension",
+            Self::ZendExtension => "zend_extension",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -297,7 +333,7 @@ mod tests {
             "abi": {"php":"8.3","zend_module_api_no":"20230831","zend_extension_api_no":"420230831"},
             "libc": {"family":"gnu","min":"2.17"},
             "blob": {"url":"https://blobs.example.com/blobs/aa/aaaa","sha256":"aaaa"},
-            "extension": {"path":"lib/extensions/20230831/xdebug.so","sha256":"abcd"},
+            "extension": {"path":"lib/extensions/20230831/xdebug.so","sha256":"abcd","load":"zend-extension"},
             "closure": [
                 {"name":"libffi","version":"3.4.6","hash":"a1b2c3d4","sha256":"00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff","url":"https://b/x"}
             ]
@@ -305,9 +341,35 @@ mod tests {
         let m: Manifest = serde_json::from_str(json).unwrap();
         assert_eq!(m.kind, SectionKind::Extension);
         assert_eq!(m.blob.sha256, "aaaa");
-        assert!(m.extension.is_some());
+        let ext = m.extension.as_ref().unwrap();
+        assert_eq!(ext.load, LoadDirective::ZendExtension);
+        assert_eq!(ext.load.ini_directive(), "zend_extension");
         assert!(m.sapis.is_none());
         m.closure[0].validate().unwrap();
+    }
+
+    #[test]
+    fn extension_manifest_load_directive_defaults_to_extension() {
+        // Pre-load-directive manifests (no `load` field) must keep
+        // parsing — bougie's first ext-bundle releases predate this
+        // schema bump and should remain consumable without re-publish.
+        let json = r#"{
+            "schema": 1,
+            "kind": "extension",
+            "name": "redis",
+            "tag": "redis-6.0.2+php83-x86_64-unknown-linux-gnu-nts",
+            "version": "6.0.2",
+            "target": "x86_64-unknown-linux-gnu",
+            "flavor": "nts",
+            "abi": {"php":"8.3","zend_module_api_no":"20230831","zend_extension_api_no":"420230831"},
+            "libc": {"family":"gnu","min":"2.17"},
+            "blob": {"url":"https://blobs.example.com/blobs/cc/cccc","sha256":"cccc"},
+            "extension": {"path":"lib/extensions/20230831/redis.so","sha256":"dddd"}
+        }"#;
+        let m: Manifest = serde_json::from_str(json).unwrap();
+        let ext = m.extension.as_ref().unwrap();
+        assert_eq!(ext.load, LoadDirective::Extension);
+        assert_eq!(ext.load.ini_directive(), "extension");
     }
 
     #[test]

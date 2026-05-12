@@ -6,14 +6,15 @@ use crate::fetch::{fetch_blob, BlobSpec};
 use crate::index::{
     build_verifier,
     fetch::{fetch_manifest, fetch_root, fetch_section},
+    wire::LoadDirective,
 };
 use crate::lock::ExclusiveGuard;
 use crate::paths::Paths;
 use crate::request::{Flavor, Request};
-use crate::resolve::{resolve_php, ResolveOptions, Selected};
+use crate::resolve::{resolve_extension, resolve_php, ResolveOptions, Selected};
 use crate::store::install_dir;
 use crate::target::Triple;
-use crate::version::Version;
+use crate::version::{PartialVersion, Version};
 use eyre::{eyre, Result};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -128,6 +129,141 @@ fn pick_flavor(in_request: Option<Flavor>, flag: Option<Flavor>) -> Result<Flavo
         (Some(f), _) | (None, Some(f)) => Ok(f),
         (None, None) => Ok(Flavor::Nts),
     }
+}
+
+/// One installed extension, as produced by [`install_extension`].
+#[derive(Debug, Clone)]
+pub struct InstalledExt {
+    pub name: String,
+    pub version: Version,
+    pub flavor: Flavor,
+    pub php_minor: PartialVersion,
+    /// Store directory the tarball was extracted into.
+    pub store_path: PathBuf,
+    /// Absolute path to the `.so` inside [`Self::store_path`], suitable
+    /// for the right-hand side of the conf.d `extension=` /
+    /// `zend_extension=` directive.
+    pub so_path: PathBuf,
+    /// Whether the conf.d fragment emits `extension=` or `zend_extension=`.
+    pub load: LoadDirective,
+    pub already_present: bool,
+    pub frozen_warning: bool,
+}
+
+/// Install a PHP extension into the content-addressed store.
+///
+/// Mirrors [`install_php`] but targets the extension's own section
+/// (`extension/<name>`) and uses [`resolve_extension`] for selection.
+/// The destination is `$BOUGIE_HOME/store/ext-<name>-<version>+php<minor>-<flavor>-<sha8>/`,
+/// content-addressed by the first 8 hex chars of the blob sha256 so
+/// different ABI builds of the same `<name>-<version>` don't collide.
+pub fn install_extension(
+    paths: &Paths,
+    name: &str,
+    version_pin: Option<&str>,
+    php_minor: PartialVersion,
+    flavor: Flavor,
+    opts: ResolveOptions,
+) -> Result<InstalledExt> {
+    let target = Triple::detect()?.to_string();
+    let host = std::env::var("BOUGIE_INDEX_URL").unwrap_or_else(|_| DEFAULT_INDEX_URL.into());
+    let section_name = format!("extension/{name}");
+
+    let _guard = ExclusiveGuard::acquire(&paths.global_lock(), LOCK_TIMEOUT)?;
+
+    let client = reqwest::blocking::Client::builder()
+        .build()
+        .map_err(|e| BougieError::Network {
+            operation: "building HTTP client".into(),
+            detail: e.to_string(),
+        })?;
+
+    let cache_root = paths.cache_index(&host_to_dirname(&host));
+    let fetched = fetch_root(&client, &host, &cache_root, build_verifier)?;
+    let target_entry = fetched.root.targets.get(&target).ok_or_else(|| {
+        let available: Vec<String> = fetched.root.targets.keys().cloned().collect();
+        BougieError::UnknownTarget {
+            triple: target.clone(),
+            hint: format!("the index at {host} advertises: {}", available.join(", ")),
+        }
+    })?;
+    let section_ref = target_entry
+        .sections
+        .get(&section_name)
+        .ok_or_else(|| BougieError::Resolution {
+            kind: "extension".into(),
+            detail: format!(
+                "the index at {host} has no `{section_name}` section under target {target} — \
+                 run `bougie ext list --only-available` to see what's published"
+            ),
+        })?;
+    let section = fetch_section(
+        &client,
+        &host,
+        &cache_root,
+        &fetched.root.version,
+        &target,
+        &section_name,
+        &section_ref.sha256,
+    )?;
+
+    let selected: Selected<'_> = resolve_extension(&section, php_minor, flavor, version_pin, opts)?;
+
+    let manifest = fetch_manifest(
+        &client,
+        &host,
+        &cache_root,
+        &selected.artifact.manifest.path,
+        &selected.artifact.manifest.sha256,
+    )?;
+    let ext_ref = manifest.extension.as_ref().ok_or_else(|| {
+        eyre!(
+            "manifest for {} is missing the `extension` field — \
+             publisher bug: an extension-kind manifest must declare its `.so` path",
+            manifest.tag
+        )
+    })?;
+
+    let sha8: String = manifest.blob.sha256.chars().take(8).collect();
+    let php_minor_label = format!("php{}{}", php_minor.major, php_minor.minor.unwrap_or(0));
+    let dirname = format!(
+        "ext-{}-{}+{php_minor_label}-{flavor}-{sha8}",
+        manifest.name, manifest.version,
+    );
+    let dest = paths.store().join(&dirname);
+    let already_present = dest.exists();
+
+    if !already_present {
+        let blob_spec = BlobSpec {
+            url: &manifest.blob.url,
+            sha256: &manifest.blob.sha256,
+            partial_dir: &paths.cache_blobs(),
+            dest: &dest,
+        };
+        fetch_blob(&client, &blob_spec)?;
+    }
+
+    let so_path = dest.join(&ext_ref.path);
+    if !so_path.exists() {
+        return Err(eyre!(
+            "extracted ext bundle is missing the declared `.so` at {} \
+             — blob {} may be corrupt or the manifest is wrong",
+            so_path.display(),
+            manifest.tag
+        ));
+    }
+
+    Ok(InstalledExt {
+        name: manifest.name.clone(),
+        version: selected.version,
+        flavor,
+        php_minor,
+        store_path: dest,
+        so_path,
+        load: ext_ref.load,
+        already_present,
+        frozen_warning: selected.frozen_warning,
+    })
 }
 
 pub fn host_to_dirname(host: &str) -> String {
