@@ -214,7 +214,11 @@ fn write_shims(project_root: &std::path::Path) -> Result<PathBuf> {
     std::fs::create_dir_all(&bin_dir)?;
     let bougie_bin =
         std::env::current_exe().map_err(|e| eyre!("locating current executable: {e}"))?;
-    for name in ["php", "php-fpm", "composer"] {
+    // `unzip` is here because Composer's ZipDownloader does a PATH
+    // lookup for it and prefers it over PHP's ZipArchive (§3.7,
+    // commands::unzip). Materialising it as a sibling shim keeps the
+    // composer subprocess discovery path inside `.bougie/bin/`.
+    for name in ["php", "php-fpm", "composer", "unzip"] {
         let link = bin_dir.join(name);
         if link.exists() || link.symlink_metadata().is_ok() {
             std::fs::remove_file(&link)?;

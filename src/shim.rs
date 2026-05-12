@@ -1,7 +1,10 @@
 //! `argv[0]`-dispatched exec path. Bougie is invoked as `php`,
-//! `php-fpm`, or `composer` via symlinks under
-//! `<project>/.bougie/bin/`.
+//! `php-fpm`, `composer`, or `unzip` via symlinks under
+//! `<project>/.bougie/bin/`. The `unzip` role exists because Composer's
+//! `ZipDownloader` prefers a PATH `unzip` over PHP's `ZipArchive`; see
+//! `commands::unzip` for the invocation surface.
 
+use crate::commands::unzip;
 use crate::paths::Paths;
 use crate::state::{read_project_resolved, read_project_resolved_composer};
 use eyre::{eyre, Result, WrapErr};
@@ -15,6 +18,7 @@ pub enum Role {
     Php,
     PhpFpm,
     Composer,
+    Unzip,
 }
 
 impl Role {
@@ -23,6 +27,7 @@ impl Role {
             Self::Php => "php",
             Self::PhpFpm => "php-fpm",
             Self::Composer => "composer",
+            Self::Unzip => "unzip",
         }
     }
 }
@@ -33,6 +38,7 @@ pub fn role_from_argv0(argv0: &OsStr) -> Option<Role> {
         "php" => Some(Role::Php),
         "php-fpm" => Some(Role::PhpFpm),
         "composer" => Some(Role::Composer),
+        "unzip" => Some(Role::Unzip),
         _ => None,
     }
 }
@@ -46,6 +52,14 @@ pub fn exec(role: Role) -> Result<ExitCode> {
         return Err(eyre!("missing argv[0]"));
     }
     let argv0 = args.remove(0);
+
+    // The unzip role is project-agnostic — Composer's `ZipDownloader`
+    // calls `unzip` from its own working directory and only cares about
+    // archive extraction. Skip project resolution entirely.
+    if role == Role::Unzip {
+        return unzip::run(args);
+    }
+
     let project_root = locate_project_root(&argv0)?;
 
     let (version, flavor) = read_project_resolved(&project_root).wrap_err_with(|| {
@@ -104,18 +118,41 @@ pub fn exec(role: Role) -> Result<ExitCode> {
             let mut composer_args: Vec<std::ffi::OsString> = Vec::with_capacity(args.len() + 1);
             composer_args.push(phar.into_os_string());
             composer_args.extend(args);
+            // Prepend `.bougie/bin` to PATH so Composer's ZipDownloader
+            // discovers our bundled `unzip` shim via Symfony's
+            // ExecutableFinder. Without this, Composer either picks up
+            // a system `unzip` (host-dependent) or falls back to PHP's
+            // slower `ZipArchive`.
+            let bin_dir = project_root.join(".bougie").join("bin");
+            let prev_path = std::env::var_os("PATH").unwrap_or_default();
+            let new_path = prepend_path(&bin_dir, &prev_path);
             // PHP_BINARY env var pins the interpreter for child `@php`
             // scripts: without it, Symfony's PhpExecutableFinder falls
             // through to a PATH search and finds the bougie shim.
             let err = std::process::Command::new(&php_bin)
                 .args(&composer_args)
                 .arg0("composer")
+                .env("PATH", new_path)
                 .env("PHP_INI_SCAN_DIR", &conf_d)
                 .env("PHP_BINARY", &php_bin)
                 .exec();
             Err(err.into())
         }
+        Role::Unzip => unreachable!("unzip role handled above"),
     }
+}
+
+/// Prepend `dir` to a colon-separated `PATH` value, preserving the
+/// existing entries. Returns just `dir` if `prev` is empty.
+fn prepend_path(dir: &Path, prev: &std::ffi::OsStr) -> std::ffi::OsString {
+    use std::ffi::OsString;
+    let mut out = OsString::new();
+    out.push(dir.as_os_str());
+    if !prev.is_empty() {
+        out.push(":");
+        out.push(prev);
+    }
+    out
 }
 
 /// Resolve the project root the shim should read state from. In order:
@@ -188,6 +225,22 @@ mod tests {
             role_from_argv0(&OsString::from("./composer")),
             Some(Role::Composer)
         );
+        assert_eq!(
+            role_from_argv0(&OsString::from("/proj/.bougie/bin/unzip")),
+            Some(Role::Unzip)
+        );
+    }
+
+    #[test]
+    fn prepend_path_handles_empty_prev() {
+        let out = prepend_path(Path::new("/a/b"), std::ffi::OsStr::new(""));
+        assert_eq!(out, std::ffi::OsString::from("/a/b"));
+    }
+
+    #[test]
+    fn prepend_path_joins_with_colon() {
+        let out = prepend_path(Path::new("/a/b"), std::ffi::OsStr::new("/usr/bin:/bin"));
+        assert_eq!(out, std::ffi::OsString::from("/a/b:/usr/bin:/bin"));
     }
 
     #[test]

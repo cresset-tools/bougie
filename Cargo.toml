@@ -70,6 +70,15 @@ default-features = false
 [dependencies.tar]
 version = "0.4"
 
+# In-process `unzip` shim — Composer's ZipDownloader prefers a PATH
+# `unzip` over PHP's ZipArchive (faster + preserves Unix mode bits and
+# symlinks). We satisfy that preference by exposing `unzip` as an
+# argv[0] role on the bougie binary, implemented against this crate.
+[dependencies.zip]
+version = "8.0"
+default-features = false
+features = ["deflate"]
+
 [dependencies.tempfile]
 version = "3.10"
 
@@ -136,6 +145,7 @@ tempfile = "3.10"         # already in regular deps; pulled into [dev] too for c
 serde_json = "1.0"
 base64 = "0.22"           # encode test signatures
 tokio = { version = "1", features = ["rt", "macros"] }  # drive wiremock
+zip = { version = "8.0", default-features = false, features = ["deflate"] }  # build fixture archives for the unzip-shim integration test
 
 [profile.release]
 # Smaller, faster, no panic-unwinder.

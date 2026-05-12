@@ -23,3 +23,4 @@ pub mod run;
 pub mod self_update;
 pub mod self_version;
 pub mod sync;
+pub mod unzip;
