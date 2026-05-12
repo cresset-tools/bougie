@@ -7,6 +7,8 @@
 //! file). See CLI.md §3.7 (composer namespace) and §2.1 (paths).
 
 pub mod fetch;
+pub mod lockfile;
+pub mod php_json;
 pub mod request;
 pub mod resolve;
 

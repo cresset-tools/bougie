@@ -35,6 +35,11 @@ features = ["derive"]
 
 [dependencies.serde_json]
 version = "1.0"
+# Preserve object key insertion order on round-trip. Required by the
+# composer.lock content-hash algorithm: PHP's `Locker::getContentHash`
+# ksorts the *top* level but leaves nested object keys in their source
+# order, and we re-emit composer.lock close to its original form.
+features = ["preserve_order"]
 
 # `toml_edit` reads AND writes TOML preserving comments/formatting.
 # Required by `bougie php pin` writing into a hand-edited bougie.toml.
@@ -54,6 +59,13 @@ default-features = false
 features = ["std", "tls12", "ring"]
 
 [dependencies.sha2]
+version = "0.10"
+
+# Composer's `Locker::getContentHash` is MD5 of a canonicalized
+# composer.json subset. MD5 isn't in `sha2`; pull the RustCrypto MD5
+# crate. Hash-collision risk is irrelevant here — the algorithm is
+# composer's published contract and we have to match it.
+[dependencies.md-5]
 version = "0.10"
 
 # Sigstore root signature verification.
