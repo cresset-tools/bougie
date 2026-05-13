@@ -117,8 +117,10 @@ pub enum ServerCommand {
     Add {
         /// Hostname (e.g. `myapp.bougie.run`).
         hostname: String,
-        /// Absolute path to the project root.
-        project: std::path::PathBuf,
+        /// Project root. When omitted, bougie walks up from cwd
+        /// looking for `composer.json`, `bougie.toml`, or `.bougie/`
+        /// and uses the first match.
+        project: Option<std::path::PathBuf>,
         /// Web root, relative to the project (default `.`).
         #[arg(long)]
         root: Option<String>,

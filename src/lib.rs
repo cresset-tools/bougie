@@ -180,7 +180,7 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
                 format,
                 field,
                 &hostname,
-                &project,
+                project.as_deref(),
                 root.as_deref(),
             )
         }

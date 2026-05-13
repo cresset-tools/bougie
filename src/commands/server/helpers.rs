@@ -5,7 +5,7 @@
 
 use crate::cli::OutputFormat;
 use crate::output::{emit, Render};
-use eyre::Result;
+use eyre::{Result, WrapErr};
 use serde::Serialize;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -48,17 +48,32 @@ pub fn add(
     format: OutputFormat,
     field: Option<&str>,
     hostname: &str,
-    project: &Path,
+    project: Option<&Path>,
     root: Option<&str>,
 ) -> Result<ExitCode> {
+    // Auto-detect when the user didn't pass a project path. The detected
+    // path goes through the same canonicalize-or-lexically-clean
+    // pipeline as a literal argument, so the success message + stored
+    // value still reflect the canonical form.
+    let project_arg: PathBuf = match project {
+        Some(p) => p.to_path_buf(),
+        None => {
+            let cwd = std::env::current_dir().wrap_err("getting cwd")?;
+            let detected = auto_detect_project(&cwd).wrap_err(
+                "no project path given and auto-detection from cwd failed",
+            )?;
+            eprintln!("bougie: auto-detected project {}", detected.display());
+            detected
+        }
+    };
     let path = config::resolve_path(None)?;
-    let canonical = config::add_host(&path, hostname, project, root)?;
+    let canonical = config::add_host(&path, hostname, &project_arg, root)?;
     // Echo the canonical path back so users see what actually landed
     // in server.toml — `bougie server add myapp .` should not display
     // the literal `.`.
     let (stored, added) = match canonical.clone() {
         Some(c) => (c, true),
-        None => (project.to_path_buf(), false),
+        None => (project_arg.clone(), false),
     };
     let result = AddResult {
         schema_version: 1,
@@ -90,6 +105,25 @@ pub fn warn_host(host: &config::HostBlock) {
     for w in config::validate_host(host) {
         eprintln!("warning: host {}: {}", host.hostname, w.render());
     }
+}
+
+/// Walk up from `cwd` looking for a project marker. Returns the
+/// shallowest ancestor that contains `composer.json`, `bougie.toml`,
+/// or a `.bougie/` directory. The intent is "you cd'd into your
+/// project and ran `bougie server add` — figure out what you meant".
+pub fn auto_detect_project(cwd: &Path) -> Result<PathBuf> {
+    for ancestor in cwd.ancestors() {
+        if ancestor.join("composer.json").is_file()
+            || ancestor.join("bougie.toml").is_file()
+            || ancestor.join(".bougie").is_dir()
+        {
+            return Ok(ancestor.to_path_buf());
+        }
+    }
+    Err(eyre::eyre!(
+        "no project marker (composer.json, bougie.toml, or .bougie/) found in {} or any parent",
+        cwd.display()
+    ))
 }
 
 #[derive(Debug, Serialize)]

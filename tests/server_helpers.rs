@@ -169,6 +169,69 @@ fn add_warns_on_missing_web_root() {
 }
 
 #[test]
+fn add_auto_detects_project_from_composer_json() {
+    let env = TestEnv::new();
+    let xdg = TempDir::new().unwrap();
+    let proj = TempDir::new().unwrap();
+    std::fs::write(proj.path().join("composer.json"), r#"{"require":{"php":"^8.3"}}"#).unwrap();
+
+    env.bougie()
+        .env("XDG_CONFIG_HOME", xdg.path())
+        .current_dir(proj.path())
+        .args(["server", "add", "auto.bougie.run"])   // no project path!
+        .assert()
+        .success()
+        .stderr(contains("auto-detected project"))
+        .stdout(contains("added auto.bougie.run"));
+
+    // server.toml should hold the auto-detected path.
+    let cfg = std::fs::read_to_string(xdg.path().join("bougie/server.toml")).unwrap();
+    let canonical = proj.path().canonicalize().unwrap();
+    assert!(cfg.contains(canonical.to_str().unwrap()), "got: {cfg}");
+}
+
+#[test]
+fn add_auto_detects_from_subdirectory() {
+    let env = TestEnv::new();
+    let xdg = TempDir::new().unwrap();
+    let proj = TempDir::new().unwrap();
+    std::fs::write(proj.path().join("composer.json"), r#"{"require":{"php":"^8.3"}}"#).unwrap();
+    let sub = proj.path().join("src/Service");
+    std::fs::create_dir_all(&sub).unwrap();
+
+    // Run from a deep sub-directory; auto-detect should still find the
+    // project root by walking up to composer.json.
+    env.bougie()
+        .env("XDG_CONFIG_HOME", xdg.path())
+        .current_dir(&sub)
+        .args(["server", "add", "deep.bougie.run"])
+        .assert()
+        .success()
+        .stderr(contains("auto-detected project"));
+
+    let cfg = std::fs::read_to_string(xdg.path().join("bougie/server.toml")).unwrap();
+    let canonical = proj.path().canonicalize().unwrap();
+    assert!(cfg.contains(canonical.to_str().unwrap()));
+    assert!(!cfg.contains("src/Service"));
+}
+
+#[test]
+fn add_with_no_project_marker_errors_actionably() {
+    let env = TestEnv::new();
+    let xdg = TempDir::new().unwrap();
+    let proj = TempDir::new().unwrap();
+    // No composer.json, no bougie.toml, no .bougie/.
+
+    env.bougie()
+        .env("XDG_CONFIG_HOME", xdg.path())
+        .current_dir(proj.path())
+        .args(["server", "add", "nope.bougie.run"])
+        .assert()
+        .failure()
+        .stderr(contains("no project marker"));
+}
+
+#[test]
 fn add_with_clean_layout_emits_no_warning() {
     let env = TestEnv::new();
     let xdg = TempDir::new().unwrap();
