@@ -188,14 +188,8 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
             commands::server::helpers::remove(format, field, &hostname)
         }
         Command::Server(ServerCommand::List) => commands::server::helpers::list(format, field),
-        Command::Server(ServerCommand::Hosts(ServerHostsCommand::Add { name })) => {
-            commands::server::hosts::add(format, field, &name)
-        }
-        Command::Server(ServerCommand::Hosts(ServerHostsCommand::Remove { name })) => {
-            commands::server::hosts::remove(format, field, &name)
-        }
-        Command::Server(ServerCommand::Hosts(ServerHostsCommand::Apply)) => {
-            commands::server::hosts::apply(format, field)
+        Command::Server(ServerCommand::Hosts(ServerHostsCommand::Apply { config })) => {
+            commands::server::hosts::apply(format, field, config.as_deref())
         }
         Command::Server(ServerCommand::Tls(ServerTlsCommand::Install)) => {
             commands::server::tls::install(format, field)

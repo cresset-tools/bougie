@@ -140,12 +140,17 @@ pub enum ServerCommand {
 
 #[derive(Subcommand, Debug)]
 pub enum ServerHostsCommand {
-    /// Stage a hostname for inclusion in /etc/hosts.
-    Add { name: String },
-    /// Remove a staged hostname.
-    Remove { name: String },
-    /// Rewrite the bougie sentinel block in /etc/hosts (run via sudo).
-    Apply,
+    /// Rewrite the bougie sentinel block in /etc/hosts to match
+    /// server.toml. Requires root — runs via sudo.
+    ///
+    /// With `[server].manage_etc_hosts = true`, `bougie server
+    /// add/remove` invoke this automatically after every mutation.
+    Apply {
+        /// Alternate server.toml path. Required when invoking via
+        /// sudo because sudo strips XDG_CONFIG_HOME by default.
+        #[arg(long, value_name = "PATH")]
+        config: Option<std::path::PathBuf>,
+    },
 }
 
 #[derive(Subcommand, Debug)]

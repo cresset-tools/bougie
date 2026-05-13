@@ -45,6 +45,13 @@ pub struct ServerSection {
     pub idle_pool_timeout: String,
     pub max_concurrent_pools: u32,
     pub debug_only_extensions: Vec<String>,
+    /// When true, `bougie server add` / `remove` re-sync the bougie
+    /// sentinel block in `/etc/hosts` automatically by spawning
+    /// `sudo bougie server hosts apply` after the server.toml mutation.
+    /// Default `false` — opt-in for users on DNS-rebinding-protected
+    /// networks (pi-hole, UniFi/OpenWRT, some corporate DNS) or fully
+    /// offline machines.
+    pub manage_etc_hosts: bool,
 }
 
 impl Default for ServerSection {
@@ -55,6 +62,7 @@ impl Default for ServerSection {
             idle_pool_timeout: DEFAULT_IDLE_POOL_TIMEOUT.into(),
             max_concurrent_pools: DEFAULT_MAX_CONCURRENT_POOLS,
             debug_only_extensions: default_debug_only_extensions(),
+            manage_etc_hosts: false,
         }
     }
 }

@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use super::config;
+use super::hosts;
 
 #[derive(Debug, Serialize)]
 pub struct AddResult {
@@ -52,13 +53,16 @@ pub fn add(
     let added = config::add_host(&path, hostname, project, root)?;
     let result = AddResult {
         schema_version: 1,
-        config: path,
+        config: path.clone(),
         hostname: hostname.to_owned(),
         project: project.to_path_buf(),
         root: root.unwrap_or(".").to_owned(),
         added,
     };
     emit(format, field, &result)?;
+    if added {
+        maybe_auto_apply_hosts(&path);
+    }
     Ok(ExitCode::SUCCESS)
 }
 
@@ -86,11 +90,14 @@ pub fn remove(format: OutputFormat, field: Option<&str>, hostname: &str) -> Resu
     let removed = config::remove_host(&path, hostname)?;
     let result = RemoveResult {
         schema_version: 1,
-        config: path,
+        config: path.clone(),
         hostname: hostname.to_owned(),
         removed,
     };
     emit(format, field, &result)?;
+    if removed {
+        maybe_auto_apply_hosts(&path);
+    }
     Ok(if removed { ExitCode::SUCCESS } else { ExitCode::from(1) })
 }
 
@@ -123,6 +130,40 @@ impl Render for ListResult {
             }
         }
         Ok(())
+    }
+}
+
+/// If `[server].manage_etc_hosts` is on, spawn `sudo bougie server
+/// hosts apply` to re-sync `/etc/hosts`. Errors are non-fatal: the
+/// server.toml mutation is already committed, so we surface an
+/// actionable hint and return.
+///
+/// Skipped entirely when bougie is already running as root — that
+/// happens when the user runs `bougie server add` itself under sudo,
+/// in which case spawning a nested sudo would prompt twice for no
+/// reason. The root-flag check is also what makes the
+/// `tests/server_helpers.rs` integration tests work: they run as the
+/// user, so the flag-off path is exercised.
+fn maybe_auto_apply_hosts(config_path: &Path) {
+    let cfg = match config::load(config_path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!(
+                "bougie: server.toml updated, but reloading it failed: {e:#}"
+            );
+            return;
+        }
+    };
+    if !cfg.server.manage_etc_hosts {
+        return;
+    }
+    match hosts::spawn_sudo_apply(config_path) {
+        Ok(true) => {}
+        Ok(false) => hosts::print_sudo_failure_hint(config_path),
+        Err(e) => {
+            eprintln!("bougie: failed to spawn sudo: {e:#}");
+            hosts::print_sudo_failure_hint(config_path);
+        }
     }
 }
 
