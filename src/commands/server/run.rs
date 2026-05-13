@@ -87,6 +87,18 @@ pub fn run(
             .collect()
     };
 
+    // Prune stale per-project runtime dirs from earlier server runs
+    // that exited abnormally (SIGKILL, panic, machine reboot leaving
+    // bind-mounted XDG_RUNTIME_DIR). The graceful shutdown path
+    // already removes our own dirs; this catches everything else.
+    let server_paths_for_prune = ServerPaths::from_env()?;
+    for (path, err) in server_paths_for_prune.prune_project_dirs(&projects) {
+        eprintln!(
+            "bougie server: failed to prune stale runtime dir {}: {err}",
+            path.display()
+        );
+    }
+
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .thread_name("bougie-server")
@@ -170,20 +182,35 @@ async fn serve(
     // Phase B: drain. Cap the wait — a hung backend shouldn't strand
     // `^C`. Phase 2's FastCGI dispatch is the real source of slow
     // drains; the cap is sized for that future case.
-    tokio::select! {
-        res = &mut serve_fut => {
-            res.wrap_err("serving HTTP")?;
-        }
+    let drain_result = tokio::select! {
+        res = &mut serve_fut => res.wrap_err("serving HTTP"),
         () = tokio::time::sleep(SHUTDOWN_GRACE) => {
             eprintln!("bougie server: shutdown grace ({SHUTDOWN_GRACE:?}) elapsed, exiting hard");
+            Ok(())
         }
-    }
+    };
 
     // Reap every php-fpm master we spawned. `kill_on_drop(true)` on
     // each `Child` is the belt; `terminate()` is the braces.
     reaper_task.abort();
     pools_for_shutdown.shutdown().await;
 
+    // Pools are dead — wipe every per-project runtime dir we
+    // created. Anything under `$XDG_RUNTIME_DIR/bougie/server/`
+    // matching the project-hash naming convention is fair game; the
+    // control socket itself is a file, not a subdir, so it survives.
+    // This runs even if phase B reported an error so an aborted serve
+    // doesn't leak stale state — same idea as a defer/Drop guard.
+    if let Ok(sp) = ServerPaths::from_env() {
+        for (path, err) in sp.prune_project_dirs(&[]) {
+            eprintln!(
+                "bougie server: failed to clean up runtime dir {}: {err}",
+                path.display()
+            );
+        }
+    }
+
+    drain_result?;
     Ok(ExitCode::SUCCESS)
 }
 

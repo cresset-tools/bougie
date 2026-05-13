@@ -74,6 +74,57 @@ impl ServerPaths {
     pub fn control_socket(&self) -> PathBuf {
         self.runtime_root.join("control.sock")
     }
+
+    /// Remove every per-project subdirectory of `runtime_root` whose
+    /// 12-hex name doesn't match any of `keep`. Called at server
+    /// startup (with `keep` = current `[[host]]` projects) to clear
+    /// orphans from prior runs that exited abnormally, and at
+    /// shutdown (with `keep` = `&[]`) to wipe everything this server
+    /// owned. Non-fatal: a failure to prune is logged but doesn't
+    /// abort startup or shutdown.
+    ///
+    /// Files directly under `runtime_root` (notably `control.sock`)
+    /// are left alone — this only touches subdirs.
+    pub fn prune_project_dirs(&self, keep: &[std::path::PathBuf]) -> Vec<(PathBuf, String)> {
+        use std::collections::HashSet;
+        let mut errors = Vec::new();
+        let entries = match std::fs::read_dir(&self.runtime_root) {
+            Ok(e) => e,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return errors,
+            Err(e) => {
+                errors.push((self.runtime_root.clone(), e.to_string()));
+                return errors;
+            }
+        };
+        let keep_hashes: HashSet<String> = keep.iter().map(|p| project_hash(p)).collect();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            // Skip files (control.sock and stray detritus).
+            if !entry.file_type().is_ok_and(|t| t.is_dir()) {
+                continue;
+            }
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            // Defensive: only touch dirs that look like a project
+            // hash (12 lowercase-hex chars). Anything else might be
+            // a future bougie artifact we don't recognise yet.
+            if !is_project_hash_name(name) {
+                continue;
+            }
+            if keep_hashes.contains(name) {
+                continue;
+            }
+            if let Err(e) = std::fs::remove_dir_all(&path) {
+                errors.push((path, e.to_string()));
+            }
+        }
+        errors
+    }
+}
+
+fn is_project_hash_name(name: &str) -> bool {
+    name.len() == 12 && name.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
 }
 
 /// First 12 hex chars of `sha256(canonical_project_path)`. Used as the
@@ -190,6 +241,71 @@ mod tests {
             p.control_socket(),
             PathBuf::from("/run/user/1000/bougie/server/control.sock")
         );
+    }
+
+    #[test]
+    fn prune_removes_stale_subdirs_and_keeps_known_ones() {
+        let td = TempDir::new().unwrap();
+        let root = td.path().join("bougie/server");
+        std::fs::create_dir_all(&root).unwrap();
+        let sp = ServerPaths::from_root(root.clone());
+
+        let project = td.path().join("proj");
+        std::fs::create_dir_all(&project).unwrap();
+        let live_hash = project_hash(&project);
+        std::fs::create_dir_all(root.join(&live_hash)).unwrap();
+        std::fs::create_dir_all(root.join("aaaaaaaaaaaa")).unwrap();
+        std::fs::create_dir_all(root.join("bbbbbbbbbbbb")).unwrap();
+        // Control socket file lives directly under root — must survive.
+        std::fs::write(root.join("control.sock"), b"").unwrap();
+        // Non-hash-shaped dir — should be left alone (future bougie
+        // artifact we don't recognise yet).
+        std::fs::create_dir_all(root.join("not-a-hash")).unwrap();
+
+        let errs = sp.prune_project_dirs(&[project.clone()]);
+        assert!(errs.is_empty(), "{errs:?}");
+
+        assert!(root.join(&live_hash).exists());
+        assert!(!root.join("aaaaaaaaaaaa").exists());
+        assert!(!root.join("bbbbbbbbbbbb").exists());
+        assert!(root.join("control.sock").exists());
+        assert!(root.join("not-a-hash").exists());
+    }
+
+    #[test]
+    fn prune_with_empty_keep_wipes_all_hash_subdirs() {
+        let td = TempDir::new().unwrap();
+        let root = td.path().join("bougie/server");
+        std::fs::create_dir_all(&root).unwrap();
+        let sp = ServerPaths::from_root(root.clone());
+        std::fs::create_dir_all(root.join("aaaaaaaaaaaa")).unwrap();
+        std::fs::create_dir_all(root.join("bbbbbbbbbbbb")).unwrap();
+        std::fs::write(root.join("control.sock"), b"").unwrap();
+
+        let errs = sp.prune_project_dirs(&[]);
+        assert!(errs.is_empty(), "{errs:?}");
+
+        assert!(!root.join("aaaaaaaaaaaa").exists());
+        assert!(!root.join("bbbbbbbbbbbb").exists());
+        assert!(root.join("control.sock").exists());
+    }
+
+    #[test]
+    fn prune_with_missing_runtime_root_is_noop() {
+        let sp = ServerPaths::from_root(PathBuf::from("/nonexistent-bougie-test-path"));
+        let errs = sp.prune_project_dirs(&[]);
+        assert!(errs.is_empty());
+    }
+
+    #[test]
+    fn is_project_hash_name_accepts_12_lower_hex() {
+        assert!(is_project_hash_name("0123456789ab"));
+        assert!(is_project_hash_name("aaaaaaaaaaaa"));
+        assert!(!is_project_hash_name("0123456789AB")); // uppercase rejected
+        assert!(!is_project_hash_name("0123456789a")); // too short
+        assert!(!is_project_hash_name("0123456789abc")); // too long
+        assert!(!is_project_hash_name("ghijklmnopqr")); // non-hex
+        assert!(!is_project_hash_name("control.sock"));
     }
 
     #[test]
