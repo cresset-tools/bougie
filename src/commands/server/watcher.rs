@@ -65,6 +65,9 @@ pub fn start(
     let mut watcher: notify::RecommendedWatcher = notify::recommended_watcher(
         move |res: notify::Result<notify::Event>| {
             let Ok(event) = res else { return };
+            if !is_relevant(&event.kind) {
+                return;
+            }
             for path in &event.paths {
                 if let Some((project, kind)) = classify(&path_to_project_for_cb, path) {
                     let _ = tx_for_cb.send(PendingEvent { project, kind });
@@ -143,6 +146,26 @@ pub fn start(
     });
 
     Ok(WatcherHandle { _watcher: watcher, _watched: watched, dispatch })
+}
+
+/// Decide whether a `notify` event represents an actual filesystem
+/// change we need to react to. Access events (open, read, close-nowrite,
+/// metadata-only) are filtered out — they don't change what php-fpm
+/// would load, AND `build_variant_confd`'s own `read_dir` of the
+/// watched directory triggers them, which would set up an infinite
+/// reload loop:
+///
+///   request → spawn → read_dir → IN_OPEN → debounce → reload →
+///   read_dir → IN_OPEN → debounce → reload → …
+///
+/// Only Create / Modify / Remove imply a real change to the conf.d
+/// or composer.json contents.
+fn is_relevant(kind: &notify::EventKind) -> bool {
+    use notify::EventKind;
+    matches!(
+        kind,
+        EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_)
+    )
 }
 
 /// Future that resolves at the given deadline, or never if `None`.
@@ -305,6 +328,24 @@ mod tests {
         let map = build_path_map(std::slice::from_ref(&project));
         assert!(classify(&map, Path::new("/p/myapp/README.md")).is_none());
         assert!(classify(&map, Path::new("/p/myapp/src/app.php")).is_none());
+    }
+
+    #[test]
+    fn is_relevant_filters_access_events() {
+        use notify::event::{AccessKind, AccessMode, CreateKind, ModifyKind, RemoveKind};
+        use notify::EventKind;
+        // Access events come from us reading the directory — must not
+        // trigger reloads.
+        assert!(!is_relevant(&EventKind::Access(AccessKind::Open(AccessMode::Read))));
+        assert!(!is_relevant(&EventKind::Access(AccessKind::Close(AccessMode::Read))));
+        assert!(!is_relevant(&EventKind::Access(AccessKind::Any)));
+        // Real changes do.
+        assert!(is_relevant(&EventKind::Create(CreateKind::File)));
+        assert!(is_relevant(&EventKind::Modify(ModifyKind::Data(notify::event::DataChange::Any))));
+        assert!(is_relevant(&EventKind::Remove(RemoveKind::File)));
+        // Catch-all kinds we don't care about.
+        assert!(!is_relevant(&EventKind::Any));
+        assert!(!is_relevant(&EventKind::Other));
     }
 
     #[test]
