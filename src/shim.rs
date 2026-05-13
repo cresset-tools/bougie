@@ -72,7 +72,14 @@ pub fn exec(role: Role) -> Result<ExitCode> {
 
     let paths = Paths::from_env()?;
     let install = paths.installs().join(format!("{version}-{flavor}"));
-    let conf_d = project_root.join(".bougie").join("conf.d");
+    // Honor an active xdebug session signalled by the parent's
+    // XDEBUG_SESSION env var: include the project's debug overlay
+    // dir in PHP_INI_SCAN_DIR so xdebug.so loads for this exec.
+    // `bougie run --xdebug` exports XDEBUG_SESSION=1 specifically so
+    // this branch fires here in the shim — see
+    // `commands::run::run`.
+    let debug_overlay = crate::conf_d::xdebug_session_env_active();
+    let scan_dir = crate::conf_d::php_ini_scan_dir(&project_root, debug_overlay);
 
     match role {
         Role::Php | Role::PhpFpm => {
@@ -88,7 +95,7 @@ pub fn exec(role: Role) -> Result<ExitCode> {
             let err = std::process::Command::new(&bin)
                 .args(&args)
                 .arg0(&bin)
-                .env("PHP_INI_SCAN_DIR", &conf_d)
+                .env("PHP_INI_SCAN_DIR", &scan_dir)
                 .env("PHP_BINARY", &bin)
                 .exec();
             Err(err.into())
@@ -133,7 +140,7 @@ pub fn exec(role: Role) -> Result<ExitCode> {
                 .args(&composer_args)
                 .arg0("composer")
                 .env("PATH", new_path)
-                .env("PHP_INI_SCAN_DIR", &conf_d)
+                .env("PHP_INI_SCAN_DIR", &scan_dir)
                 .env("PHP_BINARY", &php_bin)
                 .exec();
             Err(err.into())

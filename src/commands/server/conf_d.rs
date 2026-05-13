@@ -8,9 +8,11 @@
 //! 2. `<variant>.confd/` — directory of symlinks to source fragments
 //!    under `<project>/.bougie/conf.d{,-debug}/`. The "normal" variant
 //!    is built from `conf.d/` only; the "xdebug" variant merges both
-//!    `conf.d/` and `conf.d-debug/`. Debug-only extensions (xdebug)
-//!    live in `conf.d-debug/` and are therefore never loaded by the
-//!    normal pool — see `src/conf_d.rs::DEBUG_ONLY_EXTENSIONS`.
+//!    `conf.d/` and `conf.d-debug/`. The overlay dir holds fragments
+//!    the server itself wrote (via
+//!    `commands::server::pool::ensure_debug_extension`) when it
+//!    lazily activated xdebug for a request — `bougie ext add xdebug`
+//!    instead lands in `conf.d/` and is visible to every variant.
 
 use eyre::{Result, WrapErr};
 use std::collections::HashSet;

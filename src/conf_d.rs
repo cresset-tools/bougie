@@ -1,10 +1,23 @@
-//! Per-project `.bougie/conf.d/` fragment generation for user-installed
-//! extensions. Bundled extensions are handled separately by
+//! Per-project `.bougie/conf.d{,-debug}/` fragment generation for user-
+//! installed extensions. Bundled extensions are handled separately by
 //! `commands::sync::replicate_install_conf_d`, which copies the
 //! `00-XX-<name>.ini` shipped with each PHP install. This module
 //! covers the `<NN>-<name>.ini` fragments that *enable* extensions
 //! bougie installed itself (i.e. via `bougie ext add` or sync's
 //! composer.json auto-install).
+//!
+//! Two parallel directories:
+//!
+//! - `.bougie/conf.d/` — the project's declared environment. Every
+//!   `bougie ext add <name>` lands here, including xdebug. Loaded by
+//!   `bougie run`, the server's normal pool, *and* the server's
+//!   xdebug pool — when the user says "give me xdebug", they get it
+//!   everywhere.
+//! - `.bougie/conf.d-debug/` — a server-private overlay. Bougie
+//!   server writes here when it lazily activates xdebug on the first
+//!   `XDEBUG_SESSION`-cookie request and the user hasn't explicitly
+//!   added it. Read only by the server's xdebug pool variant; never
+//!   touched by `bougie run`.
 //!
 //! The numeric prefix `<NN>` is chosen by `install::conf_d_prefix_for`
 //! to mirror `php-build-standalone`'s build-time numbering: `35-` for
@@ -19,51 +32,51 @@ use eyre::{eyre, Result, WrapErr};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-/// Extension names that should NOT load in everyday flows
-/// (`bougie run php …`, the server's "normal" pool). They're written
-/// to a parallel `<project>/.bougie/conf.d-debug/` directory and only
-/// the server's "xdebug" pool variant scans that dir.
-///
-/// Hardcoded for v1 — xdebug is the only extension where the on/off
-/// tradeoff is dramatic enough that "loaded everywhere" measurably
-/// slows down every CLI command. A future polish pass could read this
-/// from `[server].debug_only_extensions` so users can mark e.g.
-/// `ddtrace` or `excimer` the same way.
-pub const DEBUG_ONLY_EXTENSIONS: &[&str] = &["xdebug"];
-
-pub fn is_debug_only(name: &str) -> bool {
-    DEBUG_ONLY_EXTENSIONS
-        .iter()
-        .any(|x| x.eq_ignore_ascii_case(name))
-}
-
-/// `<project>/.bougie/conf.d/` — regular extension fragments. Loaded by
-/// every flow: `bougie run`, server's normal pool, server's xdebug pool.
+/// `<project>/.bougie/conf.d/` — every extension the user has explicitly
+/// added. Loaded by every flow that needs PHP: `bougie run`, the
+/// server's normal pool, and the server's xdebug pool.
 pub fn project_confd_dir(project_root: &Path) -> PathBuf {
     project_root.join(".bougie").join("conf.d")
 }
 
-/// `<project>/.bougie/conf.d-debug/` — debug-only fragments
-/// ([`DEBUG_ONLY_EXTENSIONS`]). Loaded only by the server's xdebug
-/// pool variant. Lives in a separate directory so `bougie run` and the
-/// normal pool can use a single `PHP_INI_SCAN_DIR` without filtering.
+/// `<project>/.bougie/conf.d-debug/` — server-private overlay. Read
+/// only by the server's xdebug pool variant. Bougie server writes
+/// here from [`write_debug_overlay_fragment`] when it lazily installs
+/// xdebug for an `XDEBUG_SESSION`-cookied request and the user hasn't
+/// explicitly added it. `bougie ext add` does NOT write here — see
+/// [`write_ext_fragment`].
 pub fn project_confd_debug_dir(project_root: &Path) -> PathBuf {
     project_root.join(".bougie").join("conf.d-debug")
 }
 
-/// Which target conf.d an extension's fragment belongs in.
-fn fragment_dir_for(project_root: &Path, name: &str) -> PathBuf {
-    if is_debug_only(name) {
-        project_confd_debug_dir(project_root)
-    } else {
-        project_confd_dir(project_root)
+/// Compose a `PHP_INI_SCAN_DIR` value. With `debug_overlay=false` it's
+/// just `conf.d/`; with `true` it's `conf.d:conf.d-debug` so PHP
+/// scans both. Shared between `bougie run` and the `php`/`composer`
+/// argv0 shim so both paths arrive at the same effective config when
+/// `XDEBUG_SESSION` is set or `--xdebug` was passed.
+pub fn php_ini_scan_dir(project_root: &Path, debug_overlay: bool) -> std::ffi::OsString {
+    let regular = project_confd_dir(project_root);
+    if !debug_overlay {
+        return regular.into_os_string();
     }
+    let mut joined = regular.into_os_string();
+    joined.push(":");
+    joined.push(project_confd_debug_dir(project_root));
+    joined
 }
 
-/// Write — atomically — a single `<NN>-<name>.ini` fragment that loads
-/// the given `.so` via the right INI directive. Returns the fragment's
-/// absolute path so callers can surface it in `--format json` output.
-/// `<NN>` is determined by [`conf_d_prefix_for`] — see module docs.
+/// `true` if the parent environment signals an active xdebug session.
+/// Equivalent to the cookie/query gate the server uses, applied to a
+/// child process bougie is about to exec.
+pub fn xdebug_session_env_active() -> bool {
+    std::env::var_os("XDEBUG_SESSION").is_some_and(|v| !v.is_empty())
+}
+
+/// Write — atomically — the `<NN>-<name>.ini` fragment for an
+/// explicit `bougie ext add <name>` into `.bougie/conf.d/`. Returns
+/// the fragment's absolute path so callers can surface it in
+/// `--format json` output. `<NN>` is determined by
+/// [`conf_d_prefix_for`] — see module docs.
 ///
 /// Existing fragments are overwritten unconditionally: a re-install at
 /// a new version updates the `.so` path in place.
@@ -73,12 +86,31 @@ pub fn write_ext_fragment(
     so_path: &Path,
     load: LoadDirective,
 ) -> Result<PathBuf> {
-    // Migrate any pre-existing fragment for this ext that's in the
-    // "wrong" directory now that we split debug-only out — see
-    // `migrate_debug_fragments`. Idempotent.
-    migrate_one(project_root, name)?;
+    write_fragment_into(project_confd_dir(project_root), name, so_path, load)
+}
 
-    let dir = fragment_dir_for(project_root, name);
+/// Write — atomically — the `<NN>-<name>.ini` fragment for the
+/// server-private debug overlay (`.bougie/conf.d-debug/`). Used by
+/// `commands::server::pool::ensure_debug_extension` when the server
+/// lazily activates xdebug on a debug-routed request and the user
+/// hasn't explicitly added it. Behaves like [`write_ext_fragment`]
+/// otherwise (atomic write, prefix collision cleanup, default INI
+/// settings appended).
+pub fn write_debug_overlay_fragment(
+    project_root: &Path,
+    name: &str,
+    so_path: &Path,
+    load: LoadDirective,
+) -> Result<PathBuf> {
+    write_fragment_into(project_confd_debug_dir(project_root), name, so_path, load)
+}
+
+fn write_fragment_into(
+    dir: PathBuf,
+    name: &str,
+    so_path: &Path,
+    load: LoadDirective,
+) -> Result<PathBuf> {
     std::fs::create_dir_all(&dir)
         .wrap_err_with(|| format!("creating {}", dir.display()))?;
     let prefix = conf_d_prefix_for(name);
@@ -89,14 +121,35 @@ pub fn write_ext_fragment(
     // we write `35-pdo_mysql.ini` or PHP would load pdo_mysql before
     // pdo.so initializes pdo_dbh_ce).
     remove_other_prefix_fragments(&dir, name, prefix)?;
-    let body = format!(
+    let mut body = format!(
         "; managed by bougie — do not edit; regenerated by `bougie ext add {name}`\n\
          {directive}={so}\n",
         directive = load.ini_directive(),
         so = so_path.display(),
     );
+    body.push_str(default_ini_settings_for(name));
     write_atomic(&path, body.as_bytes())?;
     Ok(path)
+}
+
+/// Per-extension INI settings appended to the fragment body. Only
+/// xdebug needs them today: xdebug 3 ships with `xdebug.mode=off`,
+/// under which the extension loads (phpinfo shows it) but every
+/// runtime API — step debugger, breakpoints, `xdebug_break()`,
+/// profiler — is a no-op. We pick `debug,develop` to give "step
+/// debugger + dev helpers" out of the box, matching the most common
+/// IDE/Xdebug-Helper setup. Other extensions return `""`.
+fn default_ini_settings_for(name: &str) -> &'static str {
+    if name.eq_ignore_ascii_case("xdebug") {
+        // xdebug.start_with_request=trigger: only attach when a request
+        // carries XDEBUG_SESSION/XDEBUG_TRIGGER — which is already the
+        // server-side gate for the xdebug pool variant, so by the time
+        // this fragment loads we know we want xdebug active.
+        "xdebug.mode=debug,develop\n\
+         xdebug.start_with_request=trigger\n"
+    } else {
+        ""
+    }
 }
 
 /// Remove any `<NN>-<name>.ini` fragment if it exists. Returns
@@ -139,54 +192,37 @@ fn remove_fragment_in(dir: &Path, name: &str) -> Result<bool> {
     Ok(removed)
 }
 
-/// Walk every debug-only extension and move stale fragments from
-/// `conf.d/` to `conf.d-debug/`. Called on `bougie ext add` and
-/// `bougie server run` startup so users with pre-split projects
-/// silently get the new layout without manual cleanup. Emits one
-/// stderr line per move so the surprise is visible.
-pub fn migrate_debug_fragments(project_root: &Path) -> Result<()> {
-    for name in DEBUG_ONLY_EXTENSIONS {
-        migrate_one(project_root, name)?;
+/// `true` if `<NN>-<name>.ini` already exists in either the regular
+/// or the debug-overlay conf.d. Used by the server's lazy xdebug
+/// activator to skip when the user already installed xdebug
+/// explicitly (in which case the fragment is in `conf.d/` and the
+/// xdebug pool's merged scan dir picks it up).
+pub fn fragment_present_anywhere(project_root: &Path, name: &str) -> bool {
+    for dir in [
+        project_confd_dir(project_root),
+        project_confd_debug_dir(project_root),
+    ] {
+        if fragment_present_in(&dir, name) {
+            return true;
+        }
     }
-    Ok(())
+    false
 }
 
-fn migrate_one(project_root: &Path, name: &str) -> Result<()> {
-    if !is_debug_only(name) {
-        return Ok(());
-    }
-    let from_dir = project_confd_dir(project_root);
-    let to_dir = project_confd_debug_dir(project_root);
-    let entries = match std::fs::read_dir(&from_dir) {
-        Ok(e) => e,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(e) => return Err(eyre!("reading {}: {e}", from_dir.display())),
+fn fragment_present_in(dir: &Path, name: &str) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
     };
-    let target_suffix = format!("-{name}.ini");
-    let mut moved = false;
+    let suffix = format!("-{name}.ini");
     for entry in entries.flatten() {
-        let fname = entry.file_name();
-        let Some(fname_str) = fname.to_str() else { continue };
-        if !fname_str.ends_with(&target_suffix) || !has_numeric_prefix(fname_str) {
-            continue;
+        if let Some(fname) = entry.file_name().to_str()
+            && fname.ends_with(&suffix)
+            && has_numeric_prefix(fname)
+        {
+            return true;
         }
-        if !moved {
-            std::fs::create_dir_all(&to_dir)
-                .wrap_err_with(|| format!("creating {}", to_dir.display()))?;
-            moved = true;
-        }
-        let from = entry.path();
-        let to = to_dir.join(fname_str);
-        eprintln!(
-            "bougie: migrating {} -> {} (debug-only extensions now live in conf.d-debug/)",
-            from.display(),
-            to.display()
-        );
-        std::fs::rename(&from, &to).wrap_err_with(|| {
-            format!("moving {} -> {}", from.display(), to.display())
-        })?;
     }
-    Ok(())
+    false
 }
 
 /// Delete `<other_prefix>-<name>.ini` fragments where `other_prefix`
@@ -374,15 +410,11 @@ mod tests {
     }
 
     #[test]
-    fn is_debug_only_classifies_xdebug() {
-        assert!(is_debug_only("xdebug"));
-        assert!(is_debug_only("Xdebug"));
-        assert!(!is_debug_only("redis"));
-        assert!(!is_debug_only("pdo_mysql"));
-    }
-
-    #[test]
-    fn xdebug_fragment_lands_in_conf_d_debug() {
+    fn explicit_xdebug_add_lands_in_conf_d() {
+        // The user's explicit `bougie ext add xdebug` writes to the
+        // regular conf.d/ — this is the "I want xdebug everywhere"
+        // signal. The debug-overlay dir is reserved for the server's
+        // implicit lazy activation.
         let td = TempDir::new().unwrap();
         let so = td.path().join("store/xdebug-3/xdebug.so");
         let path = write_ext_fragment(
@@ -393,89 +425,109 @@ mod tests {
         )
         .unwrap();
         assert!(
-            path.starts_with(td.path().join(".bougie/conf.d-debug")),
-            "xdebug fragment should live in conf.d-debug/, got {}",
+            path.starts_with(td.path().join(".bougie/conf.d")),
+            "expected conf.d/, got {}",
             path.display()
         );
-        assert!(!td.path().join(".bougie/conf.d/30-xdebug.ini").exists());
-    }
-
-    #[test]
-    fn regular_ext_does_not_touch_conf_d_debug() {
-        let td = TempDir::new().unwrap();
-        let so = td.path().join("store/redis-6/redis.so");
-        write_ext_fragment(td.path(), "redis", &so, LoadDirective::Extension).unwrap();
         assert!(!td.path().join(".bougie/conf.d-debug").exists());
     }
 
     #[test]
-    fn migrate_moves_stale_xdebug_fragment() {
+    fn xdebug_fragment_includes_mode_and_trigger() {
+        // With xdebug 3's default `xdebug.mode=off`, the extension
+        // loads but every runtime API is inert. Make sure the
+        // fragment carries the mode flags that flip it on.
         let td = TempDir::new().unwrap();
-        let stale_dir = td.path().join(".bougie/conf.d");
-        std::fs::create_dir_all(&stale_dir).unwrap();
-        std::fs::write(
-            stale_dir.join("30-xdebug.ini"),
-            "zend_extension=/old/xdebug.so\n",
+        let so = td.path().join("store/xdebug-3/xdebug.so");
+        let path = write_ext_fragment(
+            td.path(),
+            "xdebug",
+            &so,
+            LoadDirective::ZendExtension,
         )
         .unwrap();
-
-        migrate_debug_fragments(td.path()).unwrap();
-
-        assert!(!stale_dir.join("30-xdebug.ini").exists());
-        let new_path = td.path().join(".bougie/conf.d-debug/30-xdebug.ini");
-        assert!(new_path.exists());
-        let body = std::fs::read_to_string(&new_path).unwrap();
-        assert!(body.contains("zend_extension=/old/xdebug.so"));
+        let body = std::fs::read_to_string(&path).unwrap();
+        assert!(body.contains("xdebug.mode=debug,develop"), "got: {body}");
+        assert!(body.contains("xdebug.start_with_request=trigger"), "got: {body}");
     }
 
     #[test]
-    fn migrate_is_noop_when_already_split() {
+    fn regular_ext_does_not_get_xdebug_settings() {
         let td = TempDir::new().unwrap();
-        let debug_dir = td.path().join(".bougie/conf.d-debug");
-        std::fs::create_dir_all(&debug_dir).unwrap();
-        std::fs::write(debug_dir.join("30-xdebug.ini"), "ok\n").unwrap();
-        migrate_debug_fragments(td.path()).unwrap();
-        assert_eq!(
-            std::fs::read_to_string(debug_dir.join("30-xdebug.ini")).unwrap(),
-            "ok\n"
+        let so = td.path().join("store/redis-6/redis.so");
+        let path =
+            write_ext_fragment(td.path(), "redis", &so, LoadDirective::Extension).unwrap();
+        let body = std::fs::read_to_string(&path).unwrap();
+        assert!(!body.contains("xdebug.mode"));
+        assert!(!body.contains("start_with_request"));
+    }
+
+    #[test]
+    fn debug_overlay_writer_lands_in_conf_d_debug() {
+        // The server's lazy-activation path explicitly opts into the
+        // debug overlay via `write_debug_overlay_fragment`.
+        let td = TempDir::new().unwrap();
+        let so = td.path().join("store/xdebug-3/xdebug.so");
+        let path = write_debug_overlay_fragment(
+            td.path(),
+            "xdebug",
+            &so,
+            LoadDirective::ZendExtension,
+        )
+        .unwrap();
+        assert!(
+            path.starts_with(td.path().join(".bougie/conf.d-debug")),
+            "expected conf.d-debug/, got {}",
+            path.display()
         );
+        assert!(!td.path().join(".bougie/conf.d").exists());
     }
 
     #[test]
-    fn write_xdebug_migrates_stale_fragment_in_place() {
-        // Simulates a project that pre-existed the split: 20-xdebug.ini
-        // sits in conf.d/. The first re-install via write_ext_fragment
-        // must end up with the new fragment in conf.d-debug/ and the
-        // old one gone, even at a different prefix.
+    fn fragment_present_anywhere_finds_explicit_add() {
         let td = TempDir::new().unwrap();
-        let stale_dir = td.path().join(".bougie/conf.d");
-        std::fs::create_dir_all(&stale_dir).unwrap();
-        std::fs::write(stale_dir.join("20-xdebug.ini"), "old\n").unwrap();
-
         let so = td.path().join("store/xdebug-3/xdebug.so");
         write_ext_fragment(td.path(), "xdebug", &so, LoadDirective::ZendExtension).unwrap();
-
-        assert!(!stale_dir.join("20-xdebug.ini").exists());
-        let target_dir = td.path().join(".bougie/conf.d-debug");
-        let entries: Vec<_> = std::fs::read_dir(&target_dir)
-            .unwrap()
-            .filter_map(Result::ok)
-            .map(|e| e.file_name().to_string_lossy().into_owned())
-            .collect();
-        assert_eq!(entries.len(), 1);
-        assert!(entries[0].ends_with("-xdebug.ini"));
+        assert!(fragment_present_anywhere(td.path(), "xdebug"));
     }
 
     #[test]
-    fn remove_finds_xdebug_in_either_dir() {
+    fn fragment_present_anywhere_finds_overlay() {
+        let td = TempDir::new().unwrap();
+        let so = td.path().join("store/xdebug-3/xdebug.so");
+        write_debug_overlay_fragment(td.path(), "xdebug", &so, LoadDirective::ZendExtension)
+            .unwrap();
+        assert!(fragment_present_anywhere(td.path(), "xdebug"));
+    }
+
+    #[test]
+    fn fragment_present_anywhere_is_false_when_absent() {
+        let td = TempDir::new().unwrap();
+        assert!(!fragment_present_anywhere(td.path(), "xdebug"));
+    }
+
+    #[test]
+    fn php_ini_scan_dir_default_is_conf_d_only() {
+        let s = php_ini_scan_dir(Path::new("/p"), false);
+        assert_eq!(s.to_str().unwrap(), "/p/.bougie/conf.d");
+    }
+
+    #[test]
+    fn php_ini_scan_dir_overlay_joins_both_with_colon() {
+        let s = php_ini_scan_dir(Path::new("/p"), true);
+        assert_eq!(s.to_str().unwrap(), "/p/.bougie/conf.d:/p/.bougie/conf.d-debug");
+    }
+
+    #[test]
+    fn remove_finds_fragment_in_either_dir() {
+        // remove_ext_fragment still scans both directories so cleanup
+        // works regardless of which writer placed the fragment.
         let td = TempDir::new().unwrap();
         let debug_dir = td.path().join(".bougie/conf.d-debug");
         std::fs::create_dir_all(&debug_dir).unwrap();
         std::fs::write(debug_dir.join("30-xdebug.ini"), "x\n").unwrap();
         assert!(remove_ext_fragment(td.path(), "xdebug").unwrap());
 
-        // Also still works for stale layout (extension was never
-        // migrated, lives in conf.d/).
         let regular_dir = td.path().join(".bougie/conf.d");
         std::fs::create_dir_all(&regular_dir).unwrap();
         std::fs::write(regular_dir.join("30-xdebug.ini"), "x\n").unwrap();

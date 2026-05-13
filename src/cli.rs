@@ -71,6 +71,11 @@ pub enum Command {
         /// Skip the implicit `bougie sync` before running.
         #[arg(long)]
         no_sync: bool,
+        /// Layer the server's debug overlay (`.bougie/conf.d-debug/`)
+        /// into PHP_INI_SCAN_DIR and set `XDEBUG_SESSION=1` for the
+        /// child. Installs xdebug on first use if not already present.
+        #[arg(long)]
+        xdebug: bool,
         /// Command and arguments. `--` separator is optional.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
         argv: Vec<String>,

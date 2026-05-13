@@ -87,19 +87,6 @@ pub fn run(
             .collect()
     };
 
-    // Best-effort migration of stale `conf.d/<NN>-xdebug.ini` fragments
-    // into the new `conf.d-debug/` layout. Users with projects from
-    // before the split would otherwise still load xdebug on the normal
-    // pool — defeating the whole point of the split.
-    for project in &projects {
-        if let Err(e) = crate::conf_d::migrate_debug_fragments(project) {
-            eprintln!(
-                "bougie server: migrating debug fragments in {} failed: {e:#}",
-                project.display()
-            );
-        }
-    }
-
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .thread_name("bougie-server")

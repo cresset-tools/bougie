@@ -49,8 +49,8 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
     match cli.command {
         Command::Init { toml } => commands::init::run(format, field, toml),
         Command::Sync { offline: _, dry_run } => commands::sync::run(format, field, dry_run),
-        Command::Run { with, no_sync, argv } => {
-            commands::run::run(&with, &argv, format, field, no_sync)
+        Command::Run { with, no_sync, xdebug, argv } => {
+            commands::run::run(&with, &argv, format, field, no_sync, xdebug)
         }
         Command::Ext(cli::ExtCommand::Add { names, no_sync }) => {
             commands::ext_add_remove::add(format, field, names, no_sync)

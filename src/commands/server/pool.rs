@@ -402,6 +402,15 @@ impl PoolManager {
         cmd.arg("-y").arg(&conf_path)
             .arg("-p").arg(&project_dir)
             .arg("-F")
+            // PHP_INI_SCAN_DIR must be set on php-fpm's *own* process
+            // env: the master parses INI files at startup, before any
+            // worker is forked. The pool conf's `env[PHP_INI_SCAN_DIR]`
+            // only reaches workers (it lands in $_ENV/$_SERVER for the
+            // PHP script) and so doesn't influence which fragments
+            // get loaded. Without this, the merged `xdebug.confd/`
+            // (including the xdebug.ini symlink) is scanned but
+            // overridden by php-fpm's compiled-in default.
+            .env("PHP_INI_SCAN_DIR", &confd_dir)
             // php-fpm's stderr carries the per-pool log; capture and
             // forward through bougie's logger.
             .stderr(std::process::Stdio::piped())
@@ -535,11 +544,14 @@ where
     }
 }
 
-/// Short label for a project to embed in `[fpm:<label>:<variant>]`.
-/// Trailing path component is the typical project name; falls back to
-/// Ensure a debug-only extension is installed and visible in the
-/// project's `conf.d-debug/`. Idempotent: if a fragment for `name`
-/// already exists in `conf.d-debug/`, this is a no-op.
+/// Ensure a debug-only extension is installed and the server's
+/// xdebug pool can find a fragment for it. Idempotent: if a fragment
+/// for `name` already exists in *either* `.bougie/conf.d/` (because
+/// the user ran `bougie ext add xdebug`) or `.bougie/conf.d-debug/`
+/// (because a previous request already triggered this path), this is
+/// a no-op. Otherwise the .so is fetched/located in the store and a
+/// fragment is written to `.bougie/conf.d-debug/` — the server's
+/// private overlay, invisible to `bougie run` and the normal pool.
 ///
 /// The install side uses [`crate::install::install_extension`], which
 /// is blocking (uses `reqwest::blocking`), so we hand it to
@@ -550,8 +562,7 @@ async fn ensure_debug_extension(
     name: &str,
     bougie_paths: &Paths,
 ) -> Result<()> {
-    let debug_dir = crate::conf_d::project_confd_debug_dir(project);
-    if fragment_exists_for(&debug_dir, name) {
+    if crate::conf_d::fragment_present_anywhere(project, name) {
         return Ok(());
     }
     let project = project.to_path_buf();
@@ -575,7 +586,7 @@ async fn ensure_debug_extension(
             project.display(),
             if installed.already_present { "" } else { "; downloaded" },
         );
-        crate::conf_d::write_ext_fragment(
+        crate::conf_d::write_debug_overlay_fragment(
             &project,
             &installed.name,
             &installed.so_path,
@@ -588,24 +599,8 @@ async fn ensure_debug_extension(
     Ok(())
 }
 
-/// Cheap scan: does any `<NN>-<name>.ini` already exist under `dir`?
-/// We don't care about the prefix number — bougie can publish at
-/// different prefixes across releases.
-fn fragment_exists_for(dir: &Path, name: &str) -> bool {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return false;
-    };
-    let suffix = format!("-{name}.ini");
-    for entry in entries.flatten() {
-        if let Some(fname) = entry.file_name().to_str()
-            && fname.ends_with(&suffix)
-        {
-            return true;
-        }
-    }
-    false
-}
-
+/// Short label for a project to embed in `[fpm:<label>:<variant>]`.
+/// Trailing path component is the typical project name; falls back to
 /// the full path string when the basename is empty (root, weird mount
 /// points).
 fn project_label(project: &Path) -> String {
