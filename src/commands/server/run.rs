@@ -69,6 +69,14 @@ pub fn run(
         );
     }
 
+    // Walk every configured [[host]] and surface filesystem
+    // discrepancies (missing project dir, missing web root, no index
+    // file). The server still starts — these are heads-up warnings so
+    // users debug a 404 with information instead of silence.
+    for host in &cfg.hosts {
+        super::helpers::warn_host(host);
+    }
+
     // Unique project list dedup'd here so two hostnames pointing at
     // the same project share one filesystem watch.
     let projects: Vec<std::path::PathBuf> = {

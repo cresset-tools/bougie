@@ -101,6 +101,121 @@ fn default_root() -> String {
     ".".into()
 }
 
+/// A single problem found while validating a `[[host]]` entry.
+/// Pure data — callers decide whether to print, log, or fail.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HostWarning {
+    /// `<project>` does not exist on disk.
+    MissingProject { project: PathBuf },
+    /// `<project>` exists but isn't a directory.
+    ProjectNotDirectory { project: PathBuf },
+    /// `<project>/<root>` does not exist on disk.
+    MissingWebRoot { web_root: PathBuf },
+    /// `<project>/<root>` exists but isn't a directory.
+    WebRootNotDirectory { web_root: PathBuf },
+    /// `<project>/<root>` exists but contains none of the configured
+    /// `index` entries. `try_files` may still match a `.php`
+    /// request via fallthrough — this is a heads-up, not a hard
+    /// problem.
+    NoIndexFile {
+        web_root: PathBuf,
+        tried: Vec<String>,
+    },
+}
+
+impl HostWarning {
+    /// Format the warning for a one-line stderr emit. Caller prefixes
+    /// with `warning: host <name>:` so multi-warning output stays
+    /// scannable.
+    pub fn render(&self) -> String {
+        match self {
+            Self::MissingProject { project } => {
+                format!("project {} does not exist", project.display())
+            }
+            Self::ProjectNotDirectory { project } => {
+                format!("project {} is not a directory", project.display())
+            }
+            Self::MissingWebRoot { web_root } => {
+                format!("web root {} does not exist", web_root.display())
+            }
+            Self::WebRootNotDirectory { web_root } => {
+                format!("web root {} is not a directory", web_root.display())
+            }
+            Self::NoIndexFile { web_root, tried } => {
+                format!(
+                    "web root {} has no index file (tried {})",
+                    web_root.display(),
+                    tried.join(", ")
+                )
+            }
+        }
+    }
+}
+
+/// Inspect a single `[[host]]` entry. Returns every problem found in
+/// one pass so the caller can emit them all together (preferred over
+/// surfacing only the first error and forcing a re-run).
+///
+/// Pure with respect to logging / abort policy — the function only
+/// reads from the filesystem and returns warnings. `bougie server
+/// add` and `bougie server run` both use this and decide what to do
+/// with the result (currently: warn and continue).
+pub fn validate_host(host: &HostBlock) -> Vec<HostWarning> {
+    let mut out = Vec::new();
+    let project_meta = std::fs::metadata(&host.project);
+    match &project_meta {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            out.push(HostWarning::MissingProject { project: host.project.clone() });
+            return out;
+        }
+        Err(_) => {
+            // Permission-denied / IO error: surface as MissingProject
+            // — accurate enough, and we won't be able to validate the
+            // web root either.
+            out.push(HostWarning::MissingProject { project: host.project.clone() });
+            return out;
+        }
+        Ok(m) if !m.is_dir() => {
+            out.push(HostWarning::ProjectNotDirectory { project: host.project.clone() });
+            return out;
+        }
+        Ok(_) => {}
+    }
+
+    let web_root = host.project.join(&host.root);
+    match std::fs::metadata(&web_root) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            out.push(HostWarning::MissingWebRoot { web_root });
+            return out;
+        }
+        Err(_) => {
+            out.push(HostWarning::MissingWebRoot { web_root });
+            return out;
+        }
+        Ok(m) if !m.is_dir() => {
+            out.push(HostWarning::WebRootNotDirectory { web_root });
+            return out;
+        }
+        Ok(_) => {}
+    }
+
+    // Index file presence is a soft check. try_files might still match
+    // (e.g. `try_files = ["$uri", "/index.php$is_args$args"]` with a
+    // front controller at the project root rather than the web root).
+    // We surface a heads-up either way.
+    let any_index_present = host
+        .index
+        .iter()
+        .any(|name| web_root.join(name).is_file());
+    if !any_index_present && !host.index.is_empty() {
+        out.push(HostWarning::NoIndexFile {
+            web_root,
+            tried: host.index.clone(),
+        });
+    }
+    out
+}
+
 fn default_index() -> Vec<String> {
     vec!["index.php".into(), "index.html".into()]
 }
@@ -596,6 +711,84 @@ listen = "0.0.0.0:7080"  # bound everywhere
         fn drop(&mut self) {
             let _ = std::env::set_current_dir(&self.prev);
         }
+    }
+
+    fn host_at(project: &Path, root: &str, index: &[&str]) -> HostBlock {
+        HostBlock {
+            hostname: "test.bougie.run".into(),
+            project: project.to_path_buf(),
+            root: root.into(),
+            index: index.iter().map(|s| (*s).to_string()).collect(),
+            try_files: default_try_files(),
+            aliases: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn validate_clean_layout_emits_no_warnings() {
+        let td = TempDir::new().unwrap();
+        std::fs::create_dir_all(td.path().join("public")).unwrap();
+        std::fs::write(td.path().join("public/index.php"), "<?php").unwrap();
+        let h = host_at(td.path(), "public", &["index.php", "index.html"]);
+        assert!(validate_host(&h).is_empty());
+    }
+
+    #[test]
+    fn validate_flags_missing_project() {
+        let td = TempDir::new().unwrap();
+        let h = host_at(&td.path().join("does-not-exist"), "public", &["index.php"]);
+        let ws = validate_host(&h);
+        assert_eq!(ws.len(), 1);
+        assert!(matches!(ws[0], HostWarning::MissingProject { .. }));
+    }
+
+    #[test]
+    fn validate_flags_missing_web_root() {
+        let td = TempDir::new().unwrap();
+        let h = host_at(td.path(), "pub", &["index.php"]);
+        let ws = validate_host(&h);
+        assert_eq!(ws.len(), 1);
+        match &ws[0] {
+            HostWarning::MissingWebRoot { web_root } => {
+                assert!(web_root.ends_with("pub"));
+            }
+            other => panic!("expected MissingWebRoot, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_flags_web_root_not_directory() {
+        let td = TempDir::new().unwrap();
+        std::fs::write(td.path().join("public"), "i am a file not a dir").unwrap();
+        let h = host_at(td.path(), "public", &["index.php"]);
+        let ws = validate_host(&h);
+        assert!(matches!(ws[0], HostWarning::WebRootNotDirectory { .. }));
+    }
+
+    #[test]
+    fn validate_flags_no_index() {
+        let td = TempDir::new().unwrap();
+        std::fs::create_dir_all(td.path().join("public")).unwrap();
+        // public/ exists but is empty.
+        let h = host_at(td.path(), "public", &["index.php", "index.html"]);
+        let ws = validate_host(&h);
+        match &ws[0] {
+            HostWarning::NoIndexFile { tried, .. } => {
+                assert_eq!(tried, &vec!["index.php".to_string(), "index.html".to_string()]);
+            }
+            other => panic!("expected NoIndexFile, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_empty_index_list_skips_index_warning() {
+        // An advanced user can clear `index` entirely (e.g. for an API
+        // project where every request hits a front controller). Don't
+        // produce a NoIndexFile noise warning in that case.
+        let td = TempDir::new().unwrap();
+        std::fs::create_dir_all(td.path().join("public")).unwrap();
+        let h = host_at(td.path(), "public", &[]);
+        assert!(validate_host(&h).is_empty());
     }
 
     #[test]

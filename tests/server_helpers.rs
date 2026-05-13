@@ -5,6 +5,7 @@
 mod common;
 
 use common::TestEnv;
+use predicates::prelude::PredicateBooleanExt;
 use predicates::str::contains;
 use tempfile::TempDir;
 
@@ -142,6 +143,53 @@ fn add_rejects_bad_hostname() {
 
 // `bougie server run` was a phase-0 placeholder; the live listener
 // landed in phase 1 and is exercised by `tests/server_listener.rs`.
+
+#[test]
+fn add_warns_on_missing_web_root() {
+    let env = TestEnv::new();
+    let xdg = TempDir::new().unwrap();
+    let proj = TempDir::new().unwrap();
+    // Project exists but `public/` doesn't.
+    env.bougie()
+        .env("XDG_CONFIG_HOME", xdg.path())
+        .args([
+            "server",
+            "add",
+            "missing-root.bougie.run",
+            proj.path().to_str().unwrap(),
+            "--root",
+            "public",
+        ])
+        .assert()
+        .success()
+        .stdout(contains("added missing-root.bougie.run"))
+        .stderr(contains("warning: host missing-root.bougie.run"))
+        .stderr(contains("web root"))
+        .stderr(contains("public"));
+}
+
+#[test]
+fn add_with_clean_layout_emits_no_warning() {
+    let env = TestEnv::new();
+    let xdg = TempDir::new().unwrap();
+    let proj = TempDir::new().unwrap();
+    std::fs::create_dir_all(proj.path().join("public")).unwrap();
+    std::fs::write(proj.path().join("public/index.php"), "<?php echo 'ok';").unwrap();
+
+    env.bougie()
+        .env("XDG_CONFIG_HOME", xdg.path())
+        .args([
+            "server",
+            "add",
+            "clean.bougie.run",
+            proj.path().to_str().unwrap(),
+            "--root",
+            "public",
+        ])
+        .assert()
+        .success()
+        .stderr(predicates::str::contains("warning:").not());
+}
 
 #[test]
 fn manage_etc_hosts_auto_applies_on_add() {

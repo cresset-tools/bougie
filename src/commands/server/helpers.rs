@@ -64,15 +64,32 @@ pub fn add(
         schema_version: 1,
         config: path.clone(),
         hostname: hostname.to_owned(),
-        project: stored,
+        project: stored.clone(),
         root: root.unwrap_or(".").to_owned(),
         added,
     };
     emit(format, field, &result)?;
     if added {
+        // Validate against the live config (which now reflects the new
+        // entry) so the user gets a heads-up if pub/, public/, etc.
+        // doesn't exist or doesn't contain an index file. Warning only;
+        // the user might be wiring up a future project.
+        if let Ok(cfg) = config::load(&path)
+            && let Some(host_block) = cfg.hosts.iter().find(|h| h.hostname == hostname)
+        {
+            warn_host(host_block);
+        }
         maybe_auto_apply_hosts(&path);
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// Print every validation warning for a `[[host]]` entry to stderr.
+/// Shared between `bougie server add` and `bougie server run`.
+pub fn warn_host(host: &config::HostBlock) {
+    for w in config::validate_host(host) {
+        eprintln!("warning: host {}: {}", host.hostname, w.render());
+    }
 }
 
 #[derive(Debug, Serialize)]
