@@ -222,7 +222,7 @@ fn parse_name_with_optional_version(raw: &str) -> Result<(String, Option<String>
 /// what frees us from having to compute a "dominant minor" from
 /// open-ended constraints like `>=8.3` — the resolver already picked
 /// a concrete patch + flavor at sync time.
-fn resolved_php_for_ext_install(project_root: &Path) -> Result<(PartialVersion, Flavor)> {
+pub fn resolved_php_for_ext_install(project_root: &Path) -> Result<(PartialVersion, Flavor)> {
     let (version_str, flavor_str) = read_project_resolved(project_root).wrap_err(
         "project's resolved PHP isn't recorded yet — run `bougie sync` (or drop --no-sync) first",
     )?;

@@ -53,7 +53,6 @@ pub fn run(
     let pools = Arc::new(PoolManager::new(
         bougie_paths,
         server_paths,
-        cfg.server.debug_only_extensions.clone(),
         idle_pool_timeout,
         max_concurrent_pools,
     ));
@@ -87,6 +86,19 @@ pub fn run(
             .filter(|p| seen.insert(p.clone()))
             .collect()
     };
+
+    // Best-effort migration of stale `conf.d/<NN>-xdebug.ini` fragments
+    // into the new `conf.d-debug/` layout. Users with projects from
+    // before the split would otherwise still load xdebug on the normal
+    // pool — defeating the whole point of the split.
+    for project in &projects {
+        if let Err(e) = crate::conf_d::migrate_debug_fragments(project) {
+            eprintln!(
+                "bougie server: migrating debug fragments in {} failed: {e:#}",
+                project.display()
+            );
+        }
+    }
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()

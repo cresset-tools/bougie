@@ -19,6 +19,47 @@ use eyre::{eyre, Result, WrapErr};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+/// Extension names that should NOT load in everyday flows
+/// (`bougie run php …`, the server's "normal" pool). They're written
+/// to a parallel `<project>/.bougie/conf.d-debug/` directory and only
+/// the server's "xdebug" pool variant scans that dir.
+///
+/// Hardcoded for v1 — xdebug is the only extension where the on/off
+/// tradeoff is dramatic enough that "loaded everywhere" measurably
+/// slows down every CLI command. A future polish pass could read this
+/// from `[server].debug_only_extensions` so users can mark e.g.
+/// `ddtrace` or `excimer` the same way.
+pub const DEBUG_ONLY_EXTENSIONS: &[&str] = &["xdebug"];
+
+pub fn is_debug_only(name: &str) -> bool {
+    DEBUG_ONLY_EXTENSIONS
+        .iter()
+        .any(|x| x.eq_ignore_ascii_case(name))
+}
+
+/// `<project>/.bougie/conf.d/` — regular extension fragments. Loaded by
+/// every flow: `bougie run`, server's normal pool, server's xdebug pool.
+pub fn project_confd_dir(project_root: &Path) -> PathBuf {
+    project_root.join(".bougie").join("conf.d")
+}
+
+/// `<project>/.bougie/conf.d-debug/` — debug-only fragments
+/// ([`DEBUG_ONLY_EXTENSIONS`]). Loaded only by the server's xdebug
+/// pool variant. Lives in a separate directory so `bougie run` and the
+/// normal pool can use a single `PHP_INI_SCAN_DIR` without filtering.
+pub fn project_confd_debug_dir(project_root: &Path) -> PathBuf {
+    project_root.join(".bougie").join("conf.d-debug")
+}
+
+/// Which target conf.d an extension's fragment belongs in.
+fn fragment_dir_for(project_root: &Path, name: &str) -> PathBuf {
+    if is_debug_only(name) {
+        project_confd_debug_dir(project_root)
+    } else {
+        project_confd_dir(project_root)
+    }
+}
+
 /// Write — atomically — a single `<NN>-<name>.ini` fragment that loads
 /// the given `.so` via the right INI directive. Returns the fragment's
 /// absolute path so callers can surface it in `--format json` output.
@@ -32,7 +73,12 @@ pub fn write_ext_fragment(
     so_path: &Path,
     load: LoadDirective,
 ) -> Result<PathBuf> {
-    let dir = project_root.join(".bougie").join("conf.d");
+    // Migrate any pre-existing fragment for this ext that's in the
+    // "wrong" directory now that we split debug-only out — see
+    // `migrate_debug_fragments`. Idempotent.
+    migrate_one(project_root, name)?;
+
+    let dir = fragment_dir_for(project_root, name);
     std::fs::create_dir_all(&dir)
         .wrap_err_with(|| format!("creating {}", dir.display()))?;
     let prefix = conf_d_prefix_for(name);
@@ -57,9 +103,22 @@ pub fn write_ext_fragment(
 /// `Ok(true)` when a file was removed, `Ok(false)` if no fragment was
 /// present. Scans all numeric prefixes rather than only the canonical
 /// one so that `bougie ext remove` works after a prefix mapping change.
+/// Scans both `conf.d/` and `conf.d-debug/` so removing an ext that
+/// was installed before the split (and so lives in conf.d/) still
+/// works.
 pub fn remove_ext_fragment(project_root: &Path, name: &str) -> Result<bool> {
-    let dir = project_root.join(".bougie").join("conf.d");
-    let entries = match std::fs::read_dir(&dir) {
+    let mut removed = false;
+    for dir in [
+        project_confd_dir(project_root),
+        project_confd_debug_dir(project_root),
+    ] {
+        removed |= remove_fragment_in(&dir, name)?;
+    }
+    Ok(removed)
+}
+
+fn remove_fragment_in(dir: &Path, name: &str) -> Result<bool> {
+    let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
         Err(e) => return Err(eyre!("reading {}: {e}", dir.display())),
@@ -78,6 +137,56 @@ pub fn remove_ext_fragment(project_root: &Path, name: &str) -> Result<bool> {
         }
     }
     Ok(removed)
+}
+
+/// Walk every debug-only extension and move stale fragments from
+/// `conf.d/` to `conf.d-debug/`. Called on `bougie ext add` and
+/// `bougie server run` startup so users with pre-split projects
+/// silently get the new layout without manual cleanup. Emits one
+/// stderr line per move so the surprise is visible.
+pub fn migrate_debug_fragments(project_root: &Path) -> Result<()> {
+    for name in DEBUG_ONLY_EXTENSIONS {
+        migrate_one(project_root, name)?;
+    }
+    Ok(())
+}
+
+fn migrate_one(project_root: &Path, name: &str) -> Result<()> {
+    if !is_debug_only(name) {
+        return Ok(());
+    }
+    let from_dir = project_confd_dir(project_root);
+    let to_dir = project_confd_debug_dir(project_root);
+    let entries = match std::fs::read_dir(&from_dir) {
+        Ok(e) => e,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(eyre!("reading {}: {e}", from_dir.display())),
+    };
+    let target_suffix = format!("-{name}.ini");
+    let mut moved = false;
+    for entry in entries.flatten() {
+        let fname = entry.file_name();
+        let Some(fname_str) = fname.to_str() else { continue };
+        if !fname_str.ends_with(&target_suffix) || !has_numeric_prefix(fname_str) {
+            continue;
+        }
+        if !moved {
+            std::fs::create_dir_all(&to_dir)
+                .wrap_err_with(|| format!("creating {}", to_dir.display()))?;
+            moved = true;
+        }
+        let from = entry.path();
+        let to = to_dir.join(fname_str);
+        eprintln!(
+            "bougie: migrating {} -> {} (debug-only extensions now live in conf.d-debug/)",
+            from.display(),
+            to.display()
+        );
+        std::fs::rename(&from, &to).wrap_err_with(|| {
+            format!("moving {} -> {}", from.display(), to.display())
+        })?;
+    }
+    Ok(())
 }
 
 /// Delete `<other_prefix>-<name>.ini` fragments where `other_prefix`
@@ -262,5 +371,114 @@ mod tests {
         std::fs::write(dir.join("35-pdo_mysql.ini"), "extension=x\n").unwrap();
         assert!(remove_ext_fragment(td.path(), "pdo_mysql").unwrap());
         assert!(!dir.join("35-pdo_mysql.ini").exists());
+    }
+
+    #[test]
+    fn is_debug_only_classifies_xdebug() {
+        assert!(is_debug_only("xdebug"));
+        assert!(is_debug_only("Xdebug"));
+        assert!(!is_debug_only("redis"));
+        assert!(!is_debug_only("pdo_mysql"));
+    }
+
+    #[test]
+    fn xdebug_fragment_lands_in_conf_d_debug() {
+        let td = TempDir::new().unwrap();
+        let so = td.path().join("store/xdebug-3/xdebug.so");
+        let path = write_ext_fragment(
+            td.path(),
+            "xdebug",
+            &so,
+            LoadDirective::ZendExtension,
+        )
+        .unwrap();
+        assert!(
+            path.starts_with(td.path().join(".bougie/conf.d-debug")),
+            "xdebug fragment should live in conf.d-debug/, got {}",
+            path.display()
+        );
+        assert!(!td.path().join(".bougie/conf.d/30-xdebug.ini").exists());
+    }
+
+    #[test]
+    fn regular_ext_does_not_touch_conf_d_debug() {
+        let td = TempDir::new().unwrap();
+        let so = td.path().join("store/redis-6/redis.so");
+        write_ext_fragment(td.path(), "redis", &so, LoadDirective::Extension).unwrap();
+        assert!(!td.path().join(".bougie/conf.d-debug").exists());
+    }
+
+    #[test]
+    fn migrate_moves_stale_xdebug_fragment() {
+        let td = TempDir::new().unwrap();
+        let stale_dir = td.path().join(".bougie/conf.d");
+        std::fs::create_dir_all(&stale_dir).unwrap();
+        std::fs::write(
+            stale_dir.join("30-xdebug.ini"),
+            "zend_extension=/old/xdebug.so\n",
+        )
+        .unwrap();
+
+        migrate_debug_fragments(td.path()).unwrap();
+
+        assert!(!stale_dir.join("30-xdebug.ini").exists());
+        let new_path = td.path().join(".bougie/conf.d-debug/30-xdebug.ini");
+        assert!(new_path.exists());
+        let body = std::fs::read_to_string(&new_path).unwrap();
+        assert!(body.contains("zend_extension=/old/xdebug.so"));
+    }
+
+    #[test]
+    fn migrate_is_noop_when_already_split() {
+        let td = TempDir::new().unwrap();
+        let debug_dir = td.path().join(".bougie/conf.d-debug");
+        std::fs::create_dir_all(&debug_dir).unwrap();
+        std::fs::write(debug_dir.join("30-xdebug.ini"), "ok\n").unwrap();
+        migrate_debug_fragments(td.path()).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(debug_dir.join("30-xdebug.ini")).unwrap(),
+            "ok\n"
+        );
+    }
+
+    #[test]
+    fn write_xdebug_migrates_stale_fragment_in_place() {
+        // Simulates a project that pre-existed the split: 20-xdebug.ini
+        // sits in conf.d/. The first re-install via write_ext_fragment
+        // must end up with the new fragment in conf.d-debug/ and the
+        // old one gone, even at a different prefix.
+        let td = TempDir::new().unwrap();
+        let stale_dir = td.path().join(".bougie/conf.d");
+        std::fs::create_dir_all(&stale_dir).unwrap();
+        std::fs::write(stale_dir.join("20-xdebug.ini"), "old\n").unwrap();
+
+        let so = td.path().join("store/xdebug-3/xdebug.so");
+        write_ext_fragment(td.path(), "xdebug", &so, LoadDirective::ZendExtension).unwrap();
+
+        assert!(!stale_dir.join("20-xdebug.ini").exists());
+        let target_dir = td.path().join(".bougie/conf.d-debug");
+        let entries: Vec<_> = std::fs::read_dir(&target_dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].ends_with("-xdebug.ini"));
+    }
+
+    #[test]
+    fn remove_finds_xdebug_in_either_dir() {
+        let td = TempDir::new().unwrap();
+        let debug_dir = td.path().join(".bougie/conf.d-debug");
+        std::fs::create_dir_all(&debug_dir).unwrap();
+        std::fs::write(debug_dir.join("30-xdebug.ini"), "x\n").unwrap();
+        assert!(remove_ext_fragment(td.path(), "xdebug").unwrap());
+
+        // Also still works for stale layout (extension was never
+        // migrated, lives in conf.d/).
+        let regular_dir = td.path().join(".bougie/conf.d");
+        std::fs::create_dir_all(&regular_dir).unwrap();
+        std::fs::write(regular_dir.join("30-xdebug.ini"), "x\n").unwrap();
+        assert!(remove_ext_fragment(td.path(), "xdebug").unwrap());
     }
 }

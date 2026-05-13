@@ -541,7 +541,6 @@ mod tests {
         let pm = Arc::new(PoolManager::new(
             bp,
             sp,
-            vec!["xdebug".into()],
             std::time::Duration::from_secs(600),
             16,
         ));

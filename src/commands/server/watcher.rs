@@ -79,18 +79,20 @@ pub fn start(
 
     let mut watched: Vec<PathBuf> = Vec::new();
     for project in projects {
-        let confd = project.join(".bougie").join("conf.d");
-        if confd.is_dir()
-            && let Err(e) = watcher.watch(&confd, RecursiveMode::Recursive)
-        {
-            eprintln!(
-                "bougie server: failed to watch {}: {e}",
-                confd.display()
-            );
-            continue;
-        }
-        if confd.is_dir() {
-            watched.push(confd);
+        // Both `.bougie/conf.d/` (regular extensions) and
+        // `.bougie/conf.d-debug/` (xdebug et al.) feed pool variants;
+        // either changing means the running pools need fresh symlinks.
+        for sub in [crate::conf_d::project_confd_dir(project), crate::conf_d::project_confd_debug_dir(project)] {
+            if sub.is_dir() {
+                if let Err(e) = watcher.watch(&sub, RecursiveMode::Recursive) {
+                    eprintln!(
+                        "bougie server: failed to watch {}: {e}",
+                        sub.display()
+                    );
+                    continue;
+                }
+                watched.push(sub);
+            }
         }
         // Watch the parent directory of composer.json/bougie.toml
         // rather than the files themselves: many editors do
@@ -186,7 +188,8 @@ type PathMap = Vec<(PathBuf, PathBuf, ChangeKind)>;
 fn build_path_map(projects: &[PathBuf]) -> PathMap {
     let mut out = PathMap::new();
     for project in projects {
-        out.push((project.join(".bougie").join("conf.d"), project.clone(), ChangeKind::ConfD));
+        out.push((crate::conf_d::project_confd_dir(project), project.clone(), ChangeKind::ConfD));
+        out.push((crate::conf_d::project_confd_debug_dir(project), project.clone(), ChangeKind::ConfD));
         // Composer + bougie.toml share the version-input kind; we
         // distinguish their basenames inside `classify` so unrelated
         // files in the project root (README.md, src/, etc.) don't

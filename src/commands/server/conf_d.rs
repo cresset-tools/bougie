@@ -6,25 +6,27 @@
 //! 1. `<variant>.conf` — the FPM pool config file passed to
 //!    `php-fpm -y`. Hand-emitted INI; the schema is small and fixed.
 //! 2. `<variant>.confd/` — directory of symlinks to source fragments
-//!    under `<project>/.bougie/conf.d/`. The "normal" variant excludes
-//!    fragments whose extension name appears in
-//!    `[server].debug_only_extensions` (default `["xdebug"]`); the
-//!    "xdebug" variant (phase 3) carries every fragment.
+//!    under `<project>/.bougie/conf.d{,-debug}/`. The "normal" variant
+//!    is built from `conf.d/` only; the "xdebug" variant merges both
+//!    `conf.d/` and `conf.d-debug/`. Debug-only extensions (xdebug)
+//!    live in `conf.d-debug/` and are therefore never loaded by the
+//!    normal pool — see `src/conf_d.rs::DEBUG_ONLY_EXTENSIONS`.
 
 use eyre::{Result, WrapErr};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use super::paths::create_dir_0700;
 
 /// Build the `<variant>.confd/` directory under the per-project runtime
-/// dir. Each entry is a symlink to a `.ini` fragment in the project's
-/// `.bougie/conf.d/`. `exclude_extensions` is consulted by ext name —
-/// for the "normal" variant pass `["xdebug"]`; for the "xdebug" variant
-/// pass `&[]`. Idempotent: any prior `.confd/` is replaced.
+/// dir. Each entry is a symlink to a `.ini` fragment in one of
+/// `source_dirs`. Earlier sources win on filename collision so the
+/// caller can order them most-stable-first (the project's `conf.d/`
+/// before the debug overlay). Idempotent: any prior `.confd/` is
+/// replaced.
 pub fn build_variant_confd(
     target_dir: &Path,
-    source_confd: &Path,
-    exclude_extensions: &[String],
+    source_dirs: &[&Path],
 ) -> Result<Vec<PathBuf>> {
     // Drop any stale variant directory so prefix changes between
     // bougie releases don't leave orphans. `remove_dir_all` returns
@@ -42,55 +44,34 @@ pub fn build_variant_confd(
     create_dir_0700(target_dir)?;
 
     let mut linked = Vec::new();
-    let entries = match std::fs::read_dir(source_confd) {
-        Ok(e) => e,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(linked),
-        Err(e) => {
-            return Err(eyre::eyre!(
-                "reading {}: {e}",
-                source_confd.display()
-            ));
-        }
-    };
-
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|s| s.to_str()) != Some("ini") {
-            continue;
-        }
-        let Some(fname) = path.file_name().and_then(|s| s.to_str()) else {
-            continue;
+    let mut seen: HashSet<String> = HashSet::new();
+    for source in source_dirs {
+        let entries = match std::fs::read_dir(source) {
+            Ok(e) => e,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => {
+                return Err(eyre::eyre!("reading {}: {e}", source.display()));
+            }
         };
-        if let Some(name) = extension_name_from_fragment(fname)
-            && exclude_extensions.iter().any(|x| x.eq_ignore_ascii_case(name))
-        {
-            continue;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("ini") {
+                continue;
+            }
+            let Some(fname) = path.file_name().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            if !seen.insert(fname.to_owned()) {
+                continue;
+            }
+            let link = target_dir.join(fname);
+            std::os::unix::fs::symlink(&path, &link).wrap_err_with(|| {
+                format!("symlinking {} -> {}", link.display(), path.display())
+            })?;
+            linked.push(link);
         }
-        let link = target_dir.join(fname);
-        std::os::unix::fs::symlink(&path, &link)
-            .wrap_err_with(|| format!("symlinking {} -> {}", link.display(), path.display()))?;
-        linked.push(link);
     }
     Ok(linked)
-}
-
-/// Parse the extension name out of a conf.d fragment basename. The
-/// project's fragments follow the `<NN>-<name>.ini` convention bougie
-/// itself writes via `src/conf_d.rs::write_ext_fragment`. Returns `None`
-/// for files that don't match — those are passed through unfiltered.
-fn extension_name_from_fragment(filename: &str) -> Option<&str> {
-    // `35-pdo_mysql.ini` → `pdo_mysql`.
-    let stem = filename.strip_suffix(".ini")?;
-    let dash = stem.find('-')?;
-    let after = &stem[dash + 1..];
-    if after.is_empty() {
-        return None;
-    }
-    let leading: &str = &stem[..dash];
-    if !leading.bytes().all(|c| c.is_ascii_digit()) {
-        return None;
-    }
-    Some(after)
 }
 
 /// Pool config emitted to `<variant>.conf`. SERVER.md §7.3 schema.
@@ -152,35 +133,69 @@ mod tests {
     }
 
     #[test]
-    fn variant_links_every_ini_when_nothing_excluded() {
+    fn variant_links_every_ini_from_single_source() {
         let td = TempDir::new().unwrap();
         let source = td.path().join("conf.d");
         let target = td.path().join("normal.confd");
         write_fragment(&source, "20-redis.ini", "extension=redis.so\n");
         write_fragment(&source, "35-pdo_mysql.ini", "extension=pdo_mysql.so\n");
 
-        let linked = build_variant_confd(&target, &source, &[]).unwrap();
+        let linked = build_variant_confd(&target, &[&source]).unwrap();
         assert_eq!(linked.len(), 2);
         assert!(target.join("20-redis.ini").exists());
         assert!(target.join("35-pdo_mysql.ini").exists());
     }
 
     #[test]
-    fn variant_excludes_xdebug_by_name() {
+    fn variant_excludes_debug_dir_when_not_listed() {
         let td = TempDir::new().unwrap();
-        let source = td.path().join("conf.d");
+        let normal = td.path().join("conf.d");
+        let debug = td.path().join("conf.d-debug");
         let target = td.path().join("normal.confd");
-        write_fragment(&source, "20-redis.ini", "extension=redis.so\n");
-        write_fragment(&source, "30-xdebug.ini", "zend_extension=xdebug.so\n");
+        write_fragment(&normal, "20-redis.ini", "extension=redis.so\n");
+        write_fragment(&debug, "30-xdebug.ini", "zend_extension=xdebug.so\n");
 
-        let linked =
-            build_variant_confd(&target, &source, &["xdebug".to_string()]).unwrap();
+        // Normal variant only sees `conf.d/`.
+        let linked = build_variant_confd(&target, &[&normal]).unwrap();
         let names: Vec<String> = linked
             .iter()
             .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
             .collect();
         assert_eq!(names, vec!["20-redis.ini".to_string()]);
         assert!(!target.join("30-xdebug.ini").exists());
+    }
+
+    #[test]
+    fn variant_merges_debug_dir_when_listed() {
+        let td = TempDir::new().unwrap();
+        let normal = td.path().join("conf.d");
+        let debug = td.path().join("conf.d-debug");
+        let target = td.path().join("xdebug.confd");
+        write_fragment(&normal, "20-redis.ini", "extension=redis.so\n");
+        write_fragment(&debug, "30-xdebug.ini", "zend_extension=xdebug.so\n");
+
+        let linked = build_variant_confd(&target, &[&normal, &debug]).unwrap();
+        let mut names: Vec<String> = linked
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        assert_eq!(names, vec!["20-redis.ini".to_string(), "30-xdebug.ini".to_string()]);
+    }
+
+    #[test]
+    fn variant_earlier_source_wins_on_collision() {
+        let td = TempDir::new().unwrap();
+        let primary = td.path().join("conf.d");
+        let overlay = td.path().join("conf.d-debug");
+        let target = td.path().join("xdebug.confd");
+        write_fragment(&primary, "30-xdebug.ini", "from-primary\n");
+        write_fragment(&overlay, "30-xdebug.ini", "from-overlay\n");
+
+        let _ = build_variant_confd(&target, &[&primary, &overlay]).unwrap();
+        // Link should resolve through primary.
+        let resolved = std::fs::read_link(target.join("30-xdebug.ini")).unwrap();
+        assert!(resolved.starts_with(&primary));
     }
 
     #[test]
@@ -191,7 +206,7 @@ mod tests {
         write_fragment(&source, "README.md", "# notes\n");
         write_fragment(&source, "20-redis.ini", "extension=redis.so\n");
 
-        let linked = build_variant_confd(&target, &source, &[]).unwrap();
+        let linked = build_variant_confd(&target, &[&source]).unwrap();
         assert_eq!(linked.len(), 1);
         assert!(linked[0].ends_with("20-redis.ini"));
     }
@@ -204,34 +219,19 @@ mod tests {
         write_fragment(&target, "stale.ini", "leftover\n");
         write_fragment(&source, "20-redis.ini", "extension=redis.so\n");
 
-        let _ = build_variant_confd(&target, &source, &[]).unwrap();
+        let _ = build_variant_confd(&target, &[&source]).unwrap();
         assert!(target.join("20-redis.ini").exists());
         assert!(!target.join("stale.ini").exists());
     }
 
     #[test]
-    fn variant_returns_empty_when_source_missing() {
+    fn variant_returns_empty_when_sources_missing() {
         let td = TempDir::new().unwrap();
         let source = td.path().join("does-not-exist");
         let target = td.path().join("normal.confd");
-        let linked = build_variant_confd(&target, &source, &[]).unwrap();
+        let linked = build_variant_confd(&target, &[&source]).unwrap();
         assert!(linked.is_empty());
         assert!(target.exists());
-    }
-
-    #[test]
-    fn extension_name_parses_canonical_form() {
-        assert_eq!(extension_name_from_fragment("20-redis.ini"), Some("redis"));
-        assert_eq!(extension_name_from_fragment("35-pdo_mysql.ini"), Some("pdo_mysql"));
-        assert_eq!(extension_name_from_fragment("40-mysqli.ini"), Some("mysqli"));
-    }
-
-    #[test]
-    fn extension_name_rejects_malformed() {
-        assert!(extension_name_from_fragment("noprefix.ini").is_none());
-        assert!(extension_name_from_fragment("abc-redis.ini").is_none());
-        assert!(extension_name_from_fragment("20-.ini").is_none());
-        assert!(extension_name_from_fragment("20-redis.conf").is_none());
     }
 
     #[test]

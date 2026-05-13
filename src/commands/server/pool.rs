@@ -1,13 +1,16 @@
-//! php-fpm pool lifecycle. Phase 2 surface:
+//! php-fpm pool lifecycle.
 //!
-//! - Spawn one pool per `(project, php-version+flavor, variant="normal")`.
-//! - Variant conf.d (excluding `debug_only_extensions`) materialized on
-//!   spawn; pool `.conf` rendered alongside it.
-//! - FCGI_GET_VALUES health probe before the pool is dispatchable.
+//! - One pool per `(project, php-version+flavor, variant)`. Variant
+//!   "normal" handles every request that isn't explicitly tagged for
+//!   debugging; "xdebug" is the lazy debug-friendly twin.
+//! - Variant conf.d is materialized on spawn by symlinking from the
+//!   project's `.bougie/conf.d{,-debug}/` — normal reads only `conf.d/`,
+//!   xdebug reads both. The pool `.conf` is rendered alongside it.
+//! - First request to the xdebug variant triggers a synchronous
+//!   `bougie install xdebug` (via `ensure_debug_extension`) so users
+//!   don't have to `bougie ext add xdebug` manually.
+//! - `FCGI_GET_VALUES` health probe before the pool is dispatchable.
 //! - Stderr captured + line-prefixed with `[fpm:<project>:<variant>]`.
-//!
-//! Out of phase 2 (deferred to phase 4): idle-out, LRU cap, file-watch
-//! reload, restart on PHP-version change.
 
 use eyre::{Result, WrapErr};
 use std::collections::HashMap;
@@ -151,7 +154,6 @@ fn now_millis() -> u64 {
 pub struct PoolManager {
     bougie_paths: Paths,
     server_paths: ServerPaths,
-    debug_only_extensions: Vec<String>,
     idle_pool_timeout: Duration,
     max_concurrent_pools: usize,
     pools: Mutex<HashMap<PoolKey, Arc<Pool>>>,
@@ -161,17 +163,28 @@ impl PoolManager {
     pub fn new(
         bougie_paths: Paths,
         server_paths: ServerPaths,
-        debug_only_extensions: Vec<String>,
         idle_pool_timeout: Duration,
         max_concurrent_pools: usize,
     ) -> Self {
         Self {
             bougie_paths,
             server_paths,
-            debug_only_extensions,
             idle_pool_timeout,
             max_concurrent_pools,
             pools: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Source `.bougie/conf.d*` dirs to merge into a variant's
+    /// `<variant>.confd/`. Normal pool reads only `conf.d/`; xdebug
+    /// pool also reads `conf.d-debug/` (where xdebug.ini lives). Order
+    /// matters: the regular dir comes first so a primary entry would
+    /// shadow a stale duplicate in the debug overlay.
+    fn variant_source_dirs(variant: &str, project: &Path) -> Vec<PathBuf> {
+        let regular = crate::conf_d::project_confd_dir(project);
+        match variant {
+            "xdebug" => vec![regular, crate::conf_d::project_confd_debug_dir(project)],
+            _ => vec![regular],
         }
     }
 
@@ -243,16 +256,13 @@ impl PoolManager {
     pub async fn reload_project(&self, project: &Path) -> Result<usize> {
         let pools = self.snapshot_for_project(project).await;
         let mut reloaded = 0usize;
-        let source_confd = project.join(".bougie").join("conf.d");
         for pool in pools {
             let confd_dir = self
                 .server_paths
                 .pool_confd(&pool.key.project, &pool.key.variant);
-            let exclude = match pool.key.variant.as_str() {
-                "normal" => self.debug_only_extensions.clone(),
-                _ => Vec::new(),
-            };
-            conf_d::build_variant_confd(&confd_dir, &source_confd, &exclude)?;
+            let sources = Self::variant_source_dirs(&pool.key.variant, project);
+            let source_refs: Vec<&Path> = sources.iter().map(PathBuf::as_path).collect();
+            conf_d::build_variant_confd(&confd_dir, &source_refs)?;
             pool.reload()?;
             reloaded += 1;
         }
@@ -361,16 +371,23 @@ impl PoolManager {
             ));
         }
 
+        // First request to the xdebug variant is the trigger for
+        // installing xdebug into the project. We keep it out of
+        // `bougie sync` deliberately: xdebug-as-a-project-dependency
+        // would force every other dev on the team to install it. The
+        // server, in contrast, only loads xdebug when this pool is
+        // routed to — so its install can be lazy + server-private.
+        if key.variant == "xdebug" {
+            ensure_debug_extension(project, "xdebug", &self.bougie_paths).await?;
+        }
+
         let project_dir = self.server_paths.project_dir(project);
         create_dir_0700(&project_dir)?;
 
         let confd_dir = self.server_paths.pool_confd(project, &key.variant);
-        let source_confd = project.join(".bougie").join("conf.d");
-        let exclude = match key.variant.as_str() {
-            "normal" => self.debug_only_extensions.clone(),
-            _ => Vec::new(),
-        };
-        conf_d::build_variant_confd(&confd_dir, &source_confd, &exclude)?;
+        let sources = Self::variant_source_dirs(&key.variant, project);
+        let source_refs: Vec<&Path> = sources.iter().map(PathBuf::as_path).collect();
+        conf_d::build_variant_confd(&confd_dir, &source_refs)?;
 
         let socket = self.server_paths.pool_socket(project, &key.variant);
         // A stale socket from a previous run blocks bind(); php-fpm
@@ -520,6 +537,75 @@ where
 
 /// Short label for a project to embed in `[fpm:<label>:<variant>]`.
 /// Trailing path component is the typical project name; falls back to
+/// Ensure a debug-only extension is installed and visible in the
+/// project's `conf.d-debug/`. Idempotent: if a fragment for `name`
+/// already exists in `conf.d-debug/`, this is a no-op.
+///
+/// The install side uses [`crate::install::install_extension`], which
+/// is blocking (uses `reqwest::blocking`), so we hand it to
+/// `spawn_blocking` to keep the tokio runtime responsive while a
+/// possibly-multi-MB download runs.
+async fn ensure_debug_extension(
+    project: &Path,
+    name: &str,
+    bougie_paths: &Paths,
+) -> Result<()> {
+    let debug_dir = crate::conf_d::project_confd_debug_dir(project);
+    if fragment_exists_for(&debug_dir, name) {
+        return Ok(());
+    }
+    let project = project.to_path_buf();
+    let project_for_log = project.clone();
+    let bougie_paths = bougie_paths.clone();
+    let name_owned = name.to_owned();
+    let name_for_log = name_owned.clone();
+    tokio::task::spawn_blocking(move || -> Result<()> {
+        let (php_minor, flavor) =
+            crate::commands::ext_add_remove::resolved_php_for_ext_install(&project)?;
+        let installed = crate::install::install_extension(
+            &bougie_paths,
+            &name_owned,
+            None,
+            php_minor,
+            flavor,
+            crate::resolve::ResolveOptions::default(),
+        )?;
+        eprintln!(
+            "bougie server: enabling {name_owned} for {} (first xdebug request{})",
+            project.display(),
+            if installed.already_present { "" } else { "; downloaded" },
+        );
+        crate::conf_d::write_ext_fragment(
+            &project,
+            &installed.name,
+            &installed.so_path,
+            installed.load,
+        )?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| eyre::eyre!("join error enabling {name_for_log} in {}: {e}", project_for_log.display()))??;
+    Ok(())
+}
+
+/// Cheap scan: does any `<NN>-<name>.ini` already exist under `dir`?
+/// We don't care about the prefix number — bougie can publish at
+/// different prefixes across releases.
+fn fragment_exists_for(dir: &Path, name: &str) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    let suffix = format!("-{name}.ini");
+    for entry in entries.flatten() {
+        if let Some(fname) = entry.file_name().to_str()
+            && fname.ends_with(&suffix)
+        {
+            return true;
+        }
+    }
+    false
+}
+
 /// the full path string when the basename is empty (root, weird mount
 /// points).
 fn project_label(project: &Path) -> String {
