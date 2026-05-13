@@ -52,12 +52,19 @@ pub fn add(
     root: Option<&str>,
 ) -> Result<ExitCode> {
     let path = config::resolve_path(None)?;
-    let added = config::add_host(&path, hostname, project, root)?;
+    let canonical = config::add_host(&path, hostname, project, root)?;
+    // Echo the canonical path back so users see what actually landed
+    // in server.toml — `bougie server add myapp .` should not display
+    // the literal `.`.
+    let (stored, added) = match canonical.clone() {
+        Some(c) => (c, true),
+        None => (project.to_path_buf(), false),
+    };
     let result = AddResult {
         schema_version: 1,
         config: path.clone(),
         hostname: hostname.to_owned(),
-        project: project.to_path_buf(),
+        project: stored,
         root: root.unwrap_or(".").to_owned(),
         added,
     };

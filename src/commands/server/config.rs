@@ -134,14 +134,15 @@ pub fn parse_str(text: &str) -> Result<ServerConfig> {
     toml_edit::de::from_str(text).wrap_err("parsing server.toml")
 }
 
-/// Append a `[[host]]` block. Returns `false` if a host with the same
-/// hostname (or matching alias) is already present.
+/// Append a `[[host]]` block. Returns `Some(canonical_project)` when
+/// the host was added, `None` when an entry with the same hostname (or
+/// matching alias) was already present.
 pub fn add_host(
     path: &Path,
     hostname: &str,
     project: &Path,
     root: Option<&str>,
-) -> Result<bool> {
+) -> Result<Option<PathBuf>> {
     validate_hostname(hostname)?;
     let project = canonicalize_project(project)?;
 
@@ -151,7 +152,7 @@ pub fn add_host(
         .wrap_err_with(|| format!("parsing {}", path.display()))?;
 
     if find_host_index(&doc, hostname).is_some() {
-        return Ok(false);
+        return Ok(None);
     }
 
     let mut table = toml_edit::Table::new();
@@ -173,7 +174,7 @@ pub fn add_host(
     host.push(table);
 
     write_atomically(path, &doc.to_string())?;
-    Ok(true)
+    Ok(Some(project))
 }
 
 /// Remove the `[[host]]` block with matching `hostname` (top-level or
@@ -224,17 +225,47 @@ fn validate_hostname(hostname: &str) -> Result<()> {
     Ok(())
 }
 
+/// Normalize the project path to an absolute form that survives a
+/// re-read of server.toml. Strategy:
+///
+/// 1. Relative paths → joined with cwd so the entry doesn't depend on
+///    where `bougie server add` was invoked from.
+/// 2. If the resulting path exists on disk, `canonicalize` resolves
+///    symlinks AND `.` / `..` components — so `bougie server add .`
+///    inside `/foo` stores `/foo`, not `/foo/.`.
+/// 3. If the path doesn't exist yet (user is wiring up a future
+///    project), fall back to lexical cleaning so we still drop the
+///    `.` / `..` segments without forcing the path to exist.
 fn canonicalize_project(project: &Path) -> Result<PathBuf> {
-    // `canonicalize` would be ideal but the project might be a path
-    // the user is planning to create. Reject only the obvious miss:
-    // relative paths land in server.toml as-is and the server would
-    // resolve them at runtime against an unpredictable cwd.
-    if project.is_relative() {
-        let cwd = std::env::current_dir().wrap_err("getting current directory")?;
-        Ok(cwd.join(project))
+    let absolute = if project.is_relative() {
+        std::env::current_dir()
+            .wrap_err("getting current directory")?
+            .join(project)
     } else {
-        Ok(project.to_path_buf())
+        project.to_path_buf()
+    };
+    Ok(absolute
+        .canonicalize()
+        .unwrap_or_else(|_| lexically_clean(&absolute)))
+}
+
+/// Lexical normalizer used as the fallback when the project path
+/// doesn't exist on disk. Drops `.` components and applies `..` by
+/// popping the previous component (no symlink awareness — by design,
+/// since the path is non-existent and there's nothing to follow).
+fn lexically_clean(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for c in path.components() {
+        match c {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other.as_os_str()),
+        }
     }
+    out
 }
 
 fn find_host_index(doc: &toml_edit::DocumentMut, hostname: &str) -> Option<usize> {
@@ -402,19 +433,19 @@ project  = "/tmp/x"
     fn add_host_creates_file_with_skeleton_then_appends() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("server.toml");
-        let added =
+        let canonical =
             add_host(&path, "myapp.bougie.run", Path::new("/tmp/myapp"), Some("public")).unwrap();
-        assert!(added);
+        assert_eq!(canonical, Some(PathBuf::from("/tmp/myapp")));
         let cfg = load(&path).unwrap();
         assert_eq!(cfg.hosts.len(), 1);
         assert_eq!(cfg.hosts[0].hostname, "myapp.bougie.run");
         assert_eq!(cfg.hosts[0].project, PathBuf::from("/tmp/myapp"));
         assert_eq!(cfg.hosts[0].root, "public");
 
-        // Re-adding is idempotent.
+        // Re-adding is idempotent: returns None.
         let again =
             add_host(&path, "myapp.bougie.run", Path::new("/tmp/myapp"), Some("public")).unwrap();
-        assert!(!again);
+        assert!(again.is_none());
     }
 
     #[test]
@@ -473,6 +504,57 @@ listen = "0.0.0.0:7080"  # bound everywhere
         assert!(body.contains("my custom comment"));
         assert!(body.contains("bound everywhere"));
         assert!(body.contains("a.bougie.run"));
+    }
+
+    #[test]
+    fn add_canonicalizes_dot_against_cwd() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("server.toml");
+        let project = dir.path().join("proj");
+        std::fs::create_dir_all(&project).unwrap();
+
+        // Run the helper in the project dir so `.` resolves there.
+        let _guard = CwdGuard::change_to(&project);
+        add_host(&path, "myapp.bougie.run", Path::new("."), None).unwrap();
+        drop(_guard);
+
+        let cfg = load(&path).unwrap();
+        let stored = &cfg.hosts[0].project;
+        let canonical_project = project.canonicalize().unwrap();
+        assert_eq!(stored, &canonical_project);
+        assert!(!stored.to_string_lossy().ends_with("/."), "got: {}", stored.display());
+    }
+
+    #[test]
+    fn add_drops_dot_segments_for_nonexistent_path() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("server.toml");
+        // Path that doesn't exist — fallback to lexical cleaning.
+        let future = dir.path().join("future/./project/../project");
+        add_host(&path, "myapp.bougie.run", &future, None).unwrap();
+        let cfg = load(&path).unwrap();
+        let stored = cfg.hosts[0].project.clone();
+        assert_eq!(stored, dir.path().join("future/project"));
+    }
+
+    /// Per-test cwd swap. Restores on drop so concurrent tests in the
+    /// same process don't race.
+    struct CwdGuard {
+        prev: std::path::PathBuf,
+    }
+
+    impl CwdGuard {
+        fn change_to(p: &Path) -> Self {
+            let prev = std::env::current_dir().unwrap();
+            std::env::set_current_dir(p).unwrap();
+            Self { prev }
+        }
+    }
+
+    impl Drop for CwdGuard {
+        fn drop(&mut self) {
+            let _ = std::env::set_current_dir(&self.prev);
+        }
     }
 
     #[test]
