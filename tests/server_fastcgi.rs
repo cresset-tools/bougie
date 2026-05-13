@@ -117,11 +117,24 @@ impl ServerHandle {
 fn http(method: &str, url: &str, host: &str, body: Option<(&str, &[u8])>)
     -> (u16, std::collections::HashMap<String, String>, Vec<u8>)
 {
+    http_with_headers(method, url, host, &[], body)
+}
+
+fn http_with_headers(
+    method: &str,
+    url: &str,
+    host: &str,
+    extra: &[(&str, &str)],
+    body: Option<(&str, &[u8])>,
+) -> (u16, std::collections::HashMap<String, String>, Vec<u8>) {
     let client = reqwest::blocking::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .unwrap();
     let mut req = client.request(method.parse().unwrap(), url).header("Host", host);
+    for (k, v) in extra {
+        req = req.header(*k, *v);
+    }
     if let Some((ct, b)) = body {
         req = req.header("Content-Type", ct).body(b.to_vec());
     }
@@ -203,6 +216,120 @@ echo "BODY=" . file_get_contents('php://input') . "\n";
     let body_str = String::from_utf8_lossy(&body);
     assert!(body_str.contains("METHOD=POST"));
     assert!(body_str.contains("BODY={\"hi\":1}"), "got: {body_str}");
+
+    let _ = server.shutdown();
+}
+
+#[test]
+fn xdebug_session_cookie_routes_to_xdebug_pool() {
+    let Some((resolved, bougie_home)) = discover_installed_php() else {
+        eprintln!("(skipped: no bougie-installed php-fpm found on this system)");
+        return;
+    };
+
+    let env = TestEnv::new();
+    let xdg = TempDir::new().unwrap();
+    let proj = TempDir::new().unwrap();
+
+    std::fs::create_dir_all(proj.path().join("public")).unwrap();
+    std::fs::create_dir_all(proj.path().join(".bougie/state")).unwrap();
+    std::fs::create_dir_all(proj.path().join(".bougie/conf.d")).unwrap();
+    std::fs::write(proj.path().join("public/index.php"), "<?php echo 'ok';").unwrap();
+    std::fs::write(proj.path().join(".bougie/state/resolved"), &resolved).unwrap();
+
+    env.bougie()
+        .env("XDG_CONFIG_HOME", xdg.path())
+        .args([
+            "server",
+            "add",
+            "xdebug-test.bougie.run",
+            proj.path().to_str().unwrap(),
+            "--root",
+            "public",
+        ])
+        .assert()
+        .success();
+
+    let server = ServerHandle::spawn(&env, xdg.path(), &bougie_home);
+
+    // No cookie → normal pool.
+    let (status, headers, _) =
+        http("GET", &server.url("/index.php"), "xdebug-test.bougie.run", None);
+    assert_eq!(status, 200);
+    assert_eq!(headers.get("x-bougie-pool").map(String::as_str), Some("normal"));
+
+    // XDEBUG_SESSION cookie → xdebug pool.
+    let (status, headers, _) = http_with_headers(
+        "GET",
+        &server.url("/index.php"),
+        "xdebug-test.bougie.run",
+        &[("Cookie", "XDEBUG_SESSION=phpstorm")],
+        None,
+    );
+    assert_eq!(status, 200);
+    assert_eq!(headers.get("x-bougie-pool").map(String::as_str), Some("xdebug"));
+
+    // X-Bougie-Force-Xdebug header path too.
+    let (status, headers, _) = http_with_headers(
+        "GET",
+        &server.url("/index.php"),
+        "xdebug-test.bougie.run",
+        &[("X-Bougie-Force-Xdebug", "1")],
+        None,
+    );
+    assert_eq!(status, 200);
+    assert_eq!(headers.get("x-bougie-pool").map(String::as_str), Some("xdebug"));
+
+    // Back to no cookie → still routes to the original normal pool
+    // (both pools coexist; switching is per-request, no restart).
+    let (status, headers, _) =
+        http("GET", &server.url("/index.php"), "xdebug-test.bougie.run", None);
+    assert_eq!(status, 200);
+    assert_eq!(headers.get("x-bougie-pool").map(String::as_str), Some("normal"));
+
+    let _ = server.shutdown();
+}
+
+#[test]
+fn xdebug_query_param_routes_to_xdebug_pool() {
+    let Some((resolved, bougie_home)) = discover_installed_php() else {
+        eprintln!("(skipped: no bougie-installed php-fpm found on this system)");
+        return;
+    };
+
+    let env = TestEnv::new();
+    let xdg = TempDir::new().unwrap();
+    let proj = TempDir::new().unwrap();
+
+    std::fs::create_dir_all(proj.path().join("public")).unwrap();
+    std::fs::create_dir_all(proj.path().join(".bougie/state")).unwrap();
+    std::fs::create_dir_all(proj.path().join(".bougie/conf.d")).unwrap();
+    std::fs::write(proj.path().join("public/index.php"), "<?php echo 'ok';").unwrap();
+    std::fs::write(proj.path().join(".bougie/state/resolved"), &resolved).unwrap();
+
+    env.bougie()
+        .env("XDG_CONFIG_HOME", xdg.path())
+        .args([
+            "server",
+            "add",
+            "xdebug-q.bougie.run",
+            proj.path().to_str().unwrap(),
+            "--root",
+            "public",
+        ])
+        .assert()
+        .success();
+
+    let server = ServerHandle::spawn(&env, xdg.path(), &bougie_home);
+
+    let (status, headers, _) = http(
+        "GET",
+        &server.url("/index.php?XDEBUG_SESSION_START=phpstorm"),
+        "xdebug-q.bougie.run",
+        None,
+    );
+    assert_eq!(status, 200);
+    assert_eq!(headers.get("x-bougie-pool").map(String::as_str), Some("xdebug"));
 
     let _ = server.shutdown();
 }

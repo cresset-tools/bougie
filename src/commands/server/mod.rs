@@ -17,3 +17,4 @@ pub mod router;
 pub mod run;
 pub mod static_files;
 pub mod tls;
+pub mod xdebug;

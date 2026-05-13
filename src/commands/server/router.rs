@@ -27,6 +27,7 @@ use super::fastcgi;
 use super::log::{emit_request, RequestRow};
 use super::pool::PoolManager;
 use super::static_files::{self, Resolution};
+use super::xdebug::{self, Variant};
 
 /// Upper bound on request body bytes forwarded to FastCGI. 32 MB
 /// matches SERVER_PLAN.md's deferred decision; the cap can be lifted
@@ -88,9 +89,15 @@ async fn dispatch(
     let host_header = host_from_headers(req.headers()).unwrap_or_default();
     let host_key = host_header.to_ascii_lowercase();
 
+    let variant = if xdebug::is_xdebug_request(req.headers(), &query) {
+        Variant::Xdebug
+    } else {
+        Variant::Normal
+    };
+
     let resp = match state.hosts.get(&host_key) {
         None => unknown_host(&host_header),
-        Some(host) => serve(&state, host, &host_header, &path, &query, peer, req).await,
+        Some(host) => serve(&state, host, &host_header, &path, &query, peer, variant, req).await,
     };
 
     let (status, bytes_out) = response_summary(&resp);
@@ -143,6 +150,7 @@ async fn serve(
     path: &str,
     query: &str,
     peer: SocketAddr,
+    variant: Variant,
     req: Request<Body>,
 ) -> Response {
     match static_files::resolve(host, path, query) {
@@ -157,6 +165,7 @@ async fn serve(
                 &path_info,
                 query,
                 peer,
+                variant,
                 req,
             )
             .await
@@ -176,9 +185,10 @@ async fn serve_php(
     path_info: &str,
     query: &str,
     peer: SocketAddr,
+    variant: Variant,
     req: Request<Body>,
 ) -> Response {
-    let pool = match state.pools.get_or_spawn(&host.project, "normal").await {
+    let pool = match state.pools.get_or_spawn(&host.project, variant.as_str()).await {
         Ok(p) => p,
         Err(e) => return bad_gateway(&format!("php-fpm failed to start: {e:#}")),
     };
@@ -259,7 +269,7 @@ async fn serve_php(
     // server's stderr so users see warnings inline with the
     // [fpm:<host>:<variant>] prefix.
     if !result.stderr.is_empty() {
-        let prefix = format!("[php:{}:{}]", host_header, "normal");
+        let prefix = format!("[php:{}:{}]", host_header, variant.as_str());
         for line in result.stderr.split(|b| *b == b'\n') {
             if line.is_empty() {
                 continue;
@@ -268,7 +278,7 @@ async fn serve_php(
         }
     }
 
-    cgi_to_response(&result.stdout, pool.php_version(), &host.project, "normal")
+    cgi_to_response(&result.stdout, pool.php_version(), &host.project, variant.as_str())
 }
 
 /// Wrap up [`collect_body`]'s tuple return. The outer Result lets the
