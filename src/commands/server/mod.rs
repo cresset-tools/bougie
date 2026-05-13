@@ -8,5 +8,8 @@
 pub mod config;
 pub mod helpers;
 pub mod hosts;
+pub mod log;
+pub mod router;
 pub mod run;
+pub mod static_files;
 pub mod tls;

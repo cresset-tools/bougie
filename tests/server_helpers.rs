@@ -140,16 +140,5 @@ fn add_rejects_bad_hostname() {
         .stderr(contains("hostname"));
 }
 
-#[test]
-fn run_placeholder_errors_actionably() {
-    let env = TestEnv::new();
-    let xdg = TempDir::new().unwrap();
-
-    env.bougie()
-        .env("XDG_CONFIG_HOME", xdg.path())
-        .args(["server", "run"])
-        .assert()
-        .failure()
-        .stderr(contains("not implemented yet"))
-        .stderr(contains("phase 1"));
-}
+// `bougie server run` was a phase-0 placeholder; the live listener
+// landed in phase 1 and is exercised by `tests/server_listener.rs`.

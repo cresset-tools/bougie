@@ -269,20 +269,17 @@ fn read_or_skeleton(path: &Path) -> Result<String> {
 /// Hand-written skeleton emitted the first time `bougie server add`
 /// runs without an existing `server.toml`. Comments mirror the docs in
 /// SERVER.md §4.2 so users can see the knobs without crossing to the
-/// web.
+/// web. The `[server]` block is left implicit — every field has a
+/// default in [`ServerSection`], and the comments live free-floating
+/// at the top so `toml_edit` doesn't bind them to a table that may
+/// move once the user adds hosts.
 pub fn skeleton() -> String {
-    [
-        "# bougie server configuration. See SERVER.md §4.2.",
-        "",
-        "[server]",
-        "# listen = \"127.0.0.1:7080\"        # also accepts [::1]:7080, 0.0.0.0:7080",
-        "# log_format = \"text\"               # text | json-v1",
-        "# idle_pool_timeout = \"10m\"        # reap idle php-fpm masters after this",
-        "# max_concurrent_pools = 16          # LRU cap on simultaneously-active pools",
-        "# debug_only_extensions = [\"xdebug\"]",
-        "",
-    ]
-    .join("\n")
+    // Empty skeleton: every field has a default in [`ServerSection`],
+    // and the file fills itself in as users run `bougie server add`.
+    // toml_edit binds trailing comments oddly when the first edit
+    // appends a `[[host]]` block, so we avoid a doc-header comment
+    // here and document the schema in SERVER.md instead.
+    String::new()
 }
 
 fn write_atomically(path: &Path, contents: &str) -> Result<()> {

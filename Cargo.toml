@@ -148,6 +148,50 @@ version = "2.0"
 [dependencies.winnow]
 version = "1.0"
 
+# `bougie server` async stack. Reserved for the HTTP server subcommand;
+# the rest of bougie is sync. Features are pruned to what the server
+# actually uses today (no multipart, no JSON-body parsing on the wire —
+# requests are forwarded verbatim to FastCGI in phase 2+).
+[dependencies.tokio]
+version = "1"
+default-features = false
+features = [
+    "rt-multi-thread", "net", "process", "signal", "fs",
+    "macros", "time", "sync", "io-util",
+]
+
+[dependencies.axum]
+version = "0.8"
+default-features = false
+features = ["http1", "tokio"]
+
+[dependencies.hyper]
+version = "1"
+default-features = false
+features = ["server", "http1"]
+
+[dependencies.hyper-util]
+version = "0.1"
+default-features = false
+features = ["tokio", "server"]
+
+[dependencies.tower]
+version = "0.5"
+default-features = false
+features = ["util"]
+
+[dependencies.tower-http]
+version = "0.6"
+default-features = false
+features = ["trace"]
+
+[dependencies.mime_guess]
+version = "2"
+default-features = false
+
+[dependencies.percent-encoding]
+version = "2"
+
 [dev-dependencies]
 assert_cmd = "2.0"        # spawn the bougie binary in integration tests
 predicates = "3.1"        # human-readable assertions on its output
@@ -158,6 +202,7 @@ serde_json = "1.0"
 base64 = "0.22"           # encode test signatures
 tokio = { version = "1", features = ["rt", "macros"] }  # drive wiremock
 zip = { version = "8.0", default-features = false, features = ["deflate"] }  # build fixture archives for the unzip-shim integration test
+reqwest = { version = "0.13", default-features = false, features = ["blocking", "rustls"] }  # already a regular dep, repeated here so feature unification keeps blocking on
 
 [profile.release]
 # Smaller, faster, no panic-unwinder.
