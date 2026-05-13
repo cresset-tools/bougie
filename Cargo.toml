@@ -197,6 +197,13 @@ version = "2"
 [dependencies.http-body-util]
 version = "0.1"
 
+# File-watch reload for the bougie server's pool lifecycle (phase 4):
+# notify::RecommendedWatcher picks the best backend per OS (inotify on
+# Linux, FSEvents on macOS). Default features keep the cross-platform
+# defaults; we only consume the recommended watcher.
+[dependencies.notify]
+version = "8"
+
 [dev-dependencies]
 assert_cmd = "2.0"        # spawn the bougie binary in integration tests
 predicates = "3.1"        # human-readable assertions on its output

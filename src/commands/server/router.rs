@@ -192,6 +192,8 @@ async fn serve_php(
         Ok(p) => p,
         Err(e) => return bad_gateway(&format!("php-fpm failed to start: {e:#}")),
     };
+    // Touch up front so a long dispatch can't be reaped underneath us.
+    pool.touch();
 
     let body_bytes = match collect_body(req).await {
         Ok(b) => b,
@@ -516,7 +518,13 @@ mod tests {
     fn empty_state(cfg: &ServerConfig) -> eyre::Result<AppState> {
         let bp = crate::paths::Paths::new(PathBuf::from("/tmp/bh"), PathBuf::from("/tmp/bc"));
         let sp = ServerPaths::from_root(PathBuf::from("/tmp/sp"));
-        let pm = Arc::new(PoolManager::new(bp, sp, vec!["xdebug".into()]));
+        let pm = Arc::new(PoolManager::new(
+            bp,
+            sp,
+            vec!["xdebug".into()],
+            std::time::Duration::from_secs(600),
+            16,
+        ));
         AppState::build(cfg, pm, 7080)
     }
 

@@ -13,6 +13,7 @@ use common::TestEnv;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Command as StdCommand, Stdio};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
@@ -62,17 +63,34 @@ struct ServerHandle {
     child: std::process::Child,
     addr: String,
     stderr: Option<std::thread::JoinHandle<Vec<String>>>,
+    // Drained lines made visible while the server is still running.
+    // Phase 4 tests inspect this to verify pool_reload / pool_idle_out
+    // events fired without having to wait for full shutdown.
+    live_stderr: Arc<std::sync::Mutex<Vec<String>>>,
 }
 
 impl ServerHandle {
     fn spawn(env: &TestEnv, xdg_config: &Path, bougie_home: &Path) -> Self {
+        Self::spawn_with_extra_env(env, xdg_config, bougie_home, &[])
+    }
+
+    fn spawn_with_extra_env(
+        env: &TestEnv,
+        xdg_config: &Path,
+        bougie_home: &Path,
+        extra: &[(&str, &str)],
+    ) -> Self {
         let bin = assert_cmd::cargo::cargo_bin("bougie");
-        let mut child = StdCommand::new(bin)
-            .args(["server", "run", "--listen", "127.0.0.1:0"])
+        let mut cmd = StdCommand::new(bin);
+        cmd.args(["server", "run", "--listen", "127.0.0.1:0"])
             .env("BOUGIE_HOME", bougie_home)
             .env("BOUGIE_CACHE", env.cache_path())
             .env("XDG_CONFIG_HOME", xdg_config)
-            .env_remove("RUST_LOG")
+            .env_remove("RUST_LOG");
+        for (k, v) in extra {
+            cmd.env(*k, *v);
+        }
+        let mut child = cmd
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
             .spawn()
@@ -80,14 +98,33 @@ impl ServerHandle {
         let stderr = child.stderr.take().expect("piped stderr");
         let mut reader: Box<dyn BufRead + Send> = Box::new(BufReader::new(stderr));
         let addr = wait_for_listening(&mut reader);
+        let live_stderr = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let live_for_thread = Arc::clone(&live_stderr);
         let stderr_thread = std::thread::spawn(move || {
             let mut lines = Vec::new();
             for line in reader.lines().map_while(Result::ok) {
+                live_for_thread.lock().unwrap().push(line.clone());
                 lines.push(line);
             }
             lines
         });
-        Self { child, addr, stderr: Some(stderr_thread) }
+        Self { child, addr, stderr: Some(stderr_thread), live_stderr }
+    }
+
+    fn live_stderr_contains(&self, needle: &str) -> bool {
+        let lines = self.live_stderr.lock().unwrap();
+        lines.iter().any(|l| l.contains(needle))
+    }
+
+    fn wait_for_stderr(&self, needle: &str, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            if self.live_stderr_contains(needle) {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        false
     }
 
     fn url(&self, path: &str) -> String {
@@ -286,6 +323,162 @@ fn xdebug_session_cookie_routes_to_xdebug_pool() {
         http("GET", &server.url("/index.php"), "xdebug-test.bougie.run", None);
     assert_eq!(status, 200);
     assert_eq!(headers.get("x-bougie-pool").map(String::as_str), Some("normal"));
+
+    let _ = server.shutdown();
+}
+
+/// Build a fixture project: web root + index.php + .bougie/state/resolved.
+fn make_php_project(resolved: &str) -> TempDir {
+    let proj = TempDir::new().unwrap();
+    std::fs::create_dir_all(proj.path().join("public")).unwrap();
+    std::fs::create_dir_all(proj.path().join(".bougie/state")).unwrap();
+    std::fs::create_dir_all(proj.path().join(".bougie/conf.d")).unwrap();
+    std::fs::write(proj.path().join("public/index.php"), "<?php echo 'ok';").unwrap();
+    std::fs::write(proj.path().join(".bougie/state/resolved"), resolved).unwrap();
+    proj
+}
+
+/// Write a `[server]` block so a test can pin idle/max overrides
+/// before the bougie subprocess starts.
+fn write_server_toml(xdg: &Path, body: &str, hosts: &[(&str, &Path)]) {
+    let cfg = xdg.join("bougie/server.toml");
+    std::fs::create_dir_all(cfg.parent().unwrap()).unwrap();
+    let mut s = body.to_string();
+    s.push('\n');
+    for (host, project) in hosts {
+        s.push_str(&format!(
+            "[[host]]\nhostname = \"{host}\"\nproject = \"{}\"\nroot = \"public\"\n\n",
+            project.display()
+        ));
+    }
+    std::fs::write(&cfg, s).unwrap();
+}
+
+#[test]
+fn lru_evicts_oldest_when_cap_hit() {
+    let Some((resolved, bougie_home)) = discover_installed_php() else {
+        eprintln!("(skipped: no bougie-installed php-fpm found on this system)");
+        return;
+    };
+
+    let env = TestEnv::new();
+    let xdg = TempDir::new().unwrap();
+    let proj_a = make_php_project(&resolved);
+    let proj_b = make_php_project(&resolved);
+
+    write_server_toml(
+        xdg.path(),
+        "[server]\nmax_concurrent_pools = 1\nidle_pool_timeout = \"1h\"\n",
+        &[
+            ("a.bougie.run", proj_a.path()),
+            ("b.bougie.run", proj_b.path()),
+        ],
+    );
+
+    let server = ServerHandle::spawn(&env, xdg.path(), &bougie_home);
+
+    let (s, _, _) = http("GET", &server.url("/index.php"), "a.bougie.run", None);
+    assert_eq!(s, 200);
+    let (s, _, _) = http("GET", &server.url("/index.php"), "b.bougie.run", None);
+    assert_eq!(s, 200);
+
+    assert!(
+        server.wait_for_stderr("pool_evicted", Duration::from_secs(3)),
+        "expected pool_evicted event in stderr"
+    );
+
+    let _ = server.shutdown();
+}
+
+#[test]
+fn idle_pool_is_reaped() {
+    let Some((resolved, bougie_home)) = discover_installed_php() else {
+        eprintln!("(skipped: no bougie-installed php-fpm found on this system)");
+        return;
+    };
+
+    let env = TestEnv::new();
+    let xdg = TempDir::new().unwrap();
+    let proj = make_php_project(&resolved);
+
+    write_server_toml(
+        xdg.path(),
+        // 1s idle timeout, paired with a fast reaper period so the
+        // test doesn't sit for 10s.
+        "[server]\nidle_pool_timeout = \"1s\"\nmax_concurrent_pools = 16\n",
+        &[("idle.bougie.run", proj.path())],
+    );
+
+    let server = ServerHandle::spawn_with_extra_env(
+        &env,
+        xdg.path(),
+        &bougie_home,
+        &[("BOUGIE_SERVER_REAPER_PERIOD_MS", "200")],
+    );
+
+    let (s, _, _) = http("GET", &server.url("/index.php"), "idle.bougie.run", None);
+    assert_eq!(s, 200);
+
+    assert!(
+        server.wait_for_stderr("pool_idle_out", Duration::from_secs(5)),
+        "expected pool_idle_out event"
+    );
+
+    // A subsequent request should still succeed — the pool just
+    // cold-starts again.
+    let (s, _, _) = http("GET", &server.url("/index.php"), "idle.bougie.run", None);
+    assert_eq!(s, 200);
+
+    let _ = server.shutdown();
+}
+
+#[test]
+fn confd_change_triggers_reload() {
+    let Some((resolved, bougie_home)) = discover_installed_php() else {
+        eprintln!("(skipped: no bougie-installed php-fpm found on this system)");
+        return;
+    };
+
+    let env = TestEnv::new();
+    let xdg = TempDir::new().unwrap();
+    let proj = make_php_project(&resolved);
+
+    env.bougie()
+        .env("XDG_CONFIG_HOME", xdg.path())
+        .args([
+            "server",
+            "add",
+            "reload.bougie.run",
+            proj.path().to_str().unwrap(),
+            "--root",
+            "public",
+        ])
+        .assert()
+        .success();
+
+    let server = ServerHandle::spawn(&env, xdg.path(), &bougie_home);
+
+    let (s, _, _) = http("GET", &server.url("/index.php"), "reload.bougie.run", None);
+    assert_eq!(s, 200);
+
+    // Drop a new conf.d fragment — phase 2 doesn't actually have to
+    // load anything from it; we only want to verify the watcher
+    // dispatch + SIGUSR2.
+    std::fs::write(
+        proj.path().join(".bougie/conf.d/99-test.ini"),
+        "; managed by bougie server test — touch trigger\n",
+    )
+    .unwrap();
+
+    assert!(
+        server.wait_for_stderr("pool_reload", Duration::from_secs(3)),
+        "expected pool_reload event after conf.d write"
+    );
+
+    // Pool should still serve requests post-reload — SIGUSR2 doesn't
+    // kill the master.
+    let (s, _, _) = http("GET", &server.url("/index.php"), "reload.bougie.run", None);
+    assert_eq!(s, 200);
 
     let _ = server.shutdown();
 }

@@ -19,8 +19,9 @@ use std::time::Duration;
 use super::config;
 use super::log::{self, LogFormat};
 use super::paths::ServerPaths;
-use super::pool::PoolManager;
+use super::pool::{self, PoolManager};
 use super::router::{self, AppState};
+use super::watcher;
 
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 
@@ -45,10 +46,15 @@ pub fn run(
 
     let bougie_paths = Paths::from_env()?;
     let server_paths = ServerPaths::from_env()?;
+    let idle_pool_timeout = cfg.server.idle_pool_timeout_duration()?;
+    let max_concurrent_pools = usize::try_from(cfg.server.max_concurrent_pools)
+        .unwrap_or(16);
     let pools = Arc::new(PoolManager::new(
         bougie_paths,
         server_paths,
         cfg.server.debug_only_extensions.clone(),
+        idle_pool_timeout,
+        max_concurrent_pools,
     ));
 
     // Hostname-collision check happens here so config errors surface
@@ -62,17 +68,32 @@ pub fn run(
         );
     }
 
+    // Unique project list dedup'd here so two hostnames pointing at
+    // the same project share one filesystem watch.
+    let projects: Vec<std::path::PathBuf> = {
+        let mut seen = std::collections::HashSet::new();
+        cfg.hosts
+            .iter()
+            .map(|h| h.project.clone())
+            .filter(|p| seen.insert(p.clone()))
+            .collect()
+    };
+
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .thread_name("bougie-server")
         .build()
         .wrap_err("building tokio runtime")?;
 
-    let exit = rt.block_on(async move { serve(listen, state).await })?;
+    let exit = rt.block_on(async move { serve(listen, state, projects).await })?;
     Ok(exit)
 }
 
-async fn serve(listen: SocketAddr, state: Arc<AppState>) -> Result<ExitCode> {
+async fn serve(
+    listen: SocketAddr,
+    state: Arc<AppState>,
+    projects: Vec<std::path::PathBuf>,
+) -> Result<ExitCode> {
     let listener = tokio::net::TcpListener::bind(listen)
         .await
         .wrap_err_with(|| format!("binding {listen}"))?;
@@ -85,6 +106,16 @@ async fn serve(listen: SocketAddr, state: Arc<AppState>) -> Result<ExitCode> {
 
     let signal_rx = shutdown_rx.clone();
     let pools_for_shutdown = Arc::clone(&state.pools);
+    let reaper_task = pool::start_idle_reaper(Arc::clone(&state.pools));
+    let _watcher_handle = match watcher::start(&projects, &state.pools) {
+        Ok(h) => Some(h),
+        Err(e) => {
+            // A failure here is non-fatal — pools still serve, reload
+            // just won't fire. Surface a warning and continue.
+            eprintln!("bougie server: filesystem watcher unavailable: {e:#}");
+            None
+        }
+    };
     let app = router::build(state).into_make_service_with_connect_info::<SocketAddr>();
     let serve_fut = axum::serve(listener, app)
         .with_graceful_shutdown(async move {
@@ -124,6 +155,7 @@ async fn serve(listen: SocketAddr, state: Arc<AppState>) -> Result<ExitCode> {
 
     // Reap every php-fpm master we spawned. `kill_on_drop(true)` on
     // each `Child` is the belt; `terminate()` is the braces.
+    reaper_task.abort();
     pools_for_shutdown.shutdown().await;
 
     Ok(ExitCode::SUCCESS)

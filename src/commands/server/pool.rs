@@ -12,8 +12,9 @@
 use eyre::{Result, WrapErr};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Child;
 use tokio::sync::Mutex;
@@ -26,6 +27,18 @@ use crate::state::read_project_resolved;
 
 const POOL_READY_TIMEOUT: Duration = Duration::from_secs(2);
 const POOL_READY_POLL: Duration = Duration::from_millis(25);
+/// How often the idle reaper scans the pool map. The plan calls for
+/// ~10s — finer-grained doesn't help when idle timeouts are minutes.
+/// Tests can shorten via `BOUGIE_SERVER_REAPER_PERIOD_MS` so the
+/// idle-out path doesn't add 10s per test case.
+const DEFAULT_REAPER_PERIOD: Duration = Duration::from_secs(10);
+
+fn reaper_period() -> Duration {
+    std::env::var("BOUGIE_SERVER_REAPER_PERIOD_MS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .map_or(DEFAULT_REAPER_PERIOD, Duration::from_millis)
+}
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct PoolKey {
@@ -54,6 +67,14 @@ pub struct Pool {
     /// Started-at, for log decoration.
     #[allow(dead_code)]
     pub started_at: Instant,
+    /// OS pid of the php-fpm master. Cached at spawn so we can SIGUSR2
+    /// the master from inside an immutable `&Pool` (no need to lock the
+    /// child Mutex on the hot reload path).
+    pid: u32,
+    /// Millis since UNIX_EPOCH when this pool last served a request
+    /// (or was first marked dispatchable). The reaper compares this
+    /// against `idle_pool_timeout` to decide what to terminate.
+    last_served_at: AtomicU64,
     child: Mutex<Child>,
 }
 
@@ -66,13 +87,53 @@ impl Pool {
         &self.php_version
     }
 
-    /// Send SIGTERM to the pool master. Phase 4 will hang the LRU eviction
-    /// and idle-out work off this; phase 2 only invokes it during server
-    /// shutdown.
+    pub fn pid(&self) -> u32 {
+        self.pid
+    }
+
+    /// Mark the pool as freshly used. Called by the router right after
+    /// `get_or_spawn` returns so a pool actively serving long requests
+    /// doesn't get reaped underneath the dispatch.
+    pub fn touch(&self) {
+        self.last_served_at.store(now_millis(), Ordering::Relaxed);
+    }
+
+    /// Age relative to wall-clock now. Used by the reaper.
+    pub fn idle_for(&self) -> Duration {
+        let then = self.last_served_at.load(Ordering::Relaxed);
+        let now = now_millis();
+        Duration::from_millis(now.saturating_sub(then))
+    }
+
+    /// Send SIGTERM to the pool master. Phase 4 hangs the LRU eviction
+    /// and idle-out paths off this; shutdown still calls it on every
+    /// pool. `kill_on_drop(true)` on the child is the belt; this is
+    /// the braces (so we don't wait until the Arc<Pool> drops to start
+    /// reaping the process).
     pub async fn terminate(&self) {
         let mut guard = self.child.lock().await;
         let _ = guard.start_kill();
     }
+
+    /// SIGUSR2 the master. php-fpm catches this as "reload": it
+    /// rescans `PHP_INI_SCAN_DIR`, respawns workers, but keeps its PID
+    /// and listening socket so in-flight requests aren't disrupted.
+    pub fn reload(&self) -> Result<()> {
+        let pid = rustix::process::Pid::from_raw(
+            i32::try_from(self.pid)
+                .map_err(|_| eyre::eyre!("pid {} does not fit in i32", self.pid))?,
+        )
+        .ok_or_else(|| eyre::eyre!("invalid pid {}", self.pid))?;
+        rustix::process::kill_process(pid, rustix::process::Signal::USR2)
+            .wrap_err_with(|| format!("SIGUSR2 -> pid {}", self.pid))?;
+        Ok(())
+    }
+}
+
+fn now_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
 }
 
 #[derive(Debug)]
@@ -80,6 +141,8 @@ pub struct PoolManager {
     bougie_paths: Paths,
     server_paths: ServerPaths,
     debug_only_extensions: Vec<String>,
+    idle_pool_timeout: Duration,
+    max_concurrent_pools: usize,
     pools: Mutex<HashMap<PoolKey, Arc<Pool>>>,
 }
 
@@ -88,17 +151,27 @@ impl PoolManager {
         bougie_paths: Paths,
         server_paths: ServerPaths,
         debug_only_extensions: Vec<String>,
+        idle_pool_timeout: Duration,
+        max_concurrent_pools: usize,
     ) -> Self {
         Self {
             bougie_paths,
             server_paths,
             debug_only_extensions,
+            idle_pool_timeout,
+            max_concurrent_pools,
             pools: Mutex::new(HashMap::new()),
         }
     }
 
-    /// Return an existing healthy pool or spawn a new one. Phase 2
-    /// always passes `variant = "normal"`; phase 3 adds "xdebug".
+    pub fn idle_pool_timeout(&self) -> Duration {
+        self.idle_pool_timeout
+    }
+
+    /// Return an existing healthy pool or spawn a new one. Enforces
+    /// the LRU cap: if the map already holds `max_concurrent_pools`
+    /// entries, the oldest-idle pool is evicted before the new spawn
+    /// (SERVER.md §7.2 "Concurrency cap").
     pub async fn get_or_spawn(&self, project: &Path, variant: &str) -> Result<Arc<Pool>> {
         let (version, flavor) = read_project_resolved(project).wrap_err_with(|| {
             format!(
@@ -127,6 +200,13 @@ impl PoolManager {
             pool.terminate().await;
             return Ok(Arc::clone(existing));
         }
+        // Enforce the concurrency cap *before* inserting. The evicted
+        // pool's last_served_at is older than the brand-new one's, so
+        // even if the new pool would land below the cutoff a moment
+        // later, we never end up over capacity in the steady state.
+        if map.len() >= self.max_concurrent_pools {
+            evict_lru(&mut map);
+        }
         map.insert(key, Arc::clone(&pool));
         Ok(pool)
     }
@@ -140,6 +220,101 @@ impl PoolManager {
         for p in pools {
             p.terminate().await;
         }
+    }
+
+    /// Walk every active pool whose project matches `project` and
+    /// re-issue `build_variant_confd` + SIGUSR2 to the master.
+    ///
+    /// On file-watch events for `<project>/.bougie/conf.d/`: this is
+    /// what swaps in a freshly-installed extension without killing the
+    /// master. In-flight requests finish on the old workers; new ones
+    /// see the new conf.d.
+    pub async fn reload_project(&self, project: &Path) -> Result<usize> {
+        let pools = self.snapshot_for_project(project).await;
+        let mut reloaded = 0usize;
+        let source_confd = project.join(".bougie").join("conf.d");
+        for pool in pools {
+            let confd_dir = self
+                .server_paths
+                .pool_confd(&pool.key.project, &pool.key.variant);
+            let exclude = match pool.key.variant.as_str() {
+                "normal" => self.debug_only_extensions.clone(),
+                _ => Vec::new(),
+            };
+            conf_d::build_variant_confd(&confd_dir, &source_confd, &exclude)?;
+            pool.reload()?;
+            reloaded += 1;
+        }
+        Ok(reloaded)
+    }
+
+    /// Drop every active pool whose project matches `project`. The
+    /// next request lazily respawns against whatever
+    /// `.bougie/state/resolved` says now — so a PHP-version change
+    /// rolls in transparently.
+    pub async fn restart_project(&self, project: &Path) -> usize {
+        let keys_to_drop: Vec<PoolKey> = {
+            let map = self.pools.lock().await;
+            map.iter()
+                .filter(|(k, _)| k.project == project)
+                .map(|(k, _)| k.clone())
+                .collect()
+        };
+        let mut count = 0usize;
+        for key in keys_to_drop {
+            if let Some(pool) = self.pools.lock().await.remove(&key) {
+                pool.terminate().await;
+                count += 1;
+            }
+        }
+        count
+    }
+
+    /// Periodic scan: SIGTERM any pool whose `idle_for() > idle_pool_timeout`.
+    /// Spawned by `start_idle_reaper`; runs until cancelled at shutdown.
+    pub async fn reap_idle(&self) -> usize {
+        let mut victims: Vec<(PoolKey, Arc<Pool>)> = Vec::new();
+        {
+            let map = self.pools.lock().await;
+            for (k, p) in map.iter() {
+                if p.idle_for() >= self.idle_pool_timeout {
+                    victims.push((k.clone(), Arc::clone(p)));
+                }
+            }
+        }
+        if victims.is_empty() {
+            return 0;
+        }
+        let mut map = self.pools.lock().await;
+        for (k, pool) in &victims {
+            map.remove(k);
+            eprintln!(
+                "[pool_idle_out] project={} variant={} pid={} idle={:?}",
+                pool.key.project.display(),
+                pool.key.variant,
+                pool.pid(),
+                pool.idle_for(),
+            );
+        }
+        drop(map);
+        for (_, pool) in &victims {
+            pool.terminate().await;
+        }
+        victims.len()
+    }
+
+    async fn snapshot_for_project(&self, project: &Path) -> Vec<Arc<Pool>> {
+        let map = self.pools.lock().await;
+        map.iter()
+            .filter(|(k, _)| k.project == project)
+            .map(|(_, v)| Arc::clone(v))
+            .collect()
+    }
+
+    /// Live PID list — handy for tests + the phase-6 control socket.
+    pub async fn pids(&self) -> Vec<(PoolKey, u32)> {
+        let map = self.pools.lock().await;
+        map.iter().map(|(k, p)| (k.clone(), p.pid())).collect()
     }
 
     async fn spawn(&self, key: PoolKey) -> Result<Pool> {
@@ -220,13 +395,65 @@ impl PoolManager {
             .await
             .wrap_err_with(|| format!("FastCGI health probe failed for pool {}", key.variant))?;
 
+        let pid = child
+            .id()
+            .ok_or_else(|| eyre::eyre!("php-fpm child exited before bougie captured its pid"))?;
         Ok(Pool {
             key: key.clone(),
             socket,
             php_version: format!("{}-{}", key.version, key.flavor),
             started_at: Instant::now(),
+            pid,
+            last_served_at: AtomicU64::new(now_millis()),
             child: Mutex::new(child),
         })
+    }
+}
+
+/// Spawn the periodic idle-out reaper. Returns a `JoinHandle` the
+/// server can `abort()` at shutdown. Runs `reap_idle` every
+/// `BOUGIE_SERVER_REAPER_PERIOD_MS` (or [`DEFAULT_REAPER_PERIOD`] when
+/// unset). Cheap when the pool map is empty.
+pub fn start_idle_reaper(manager: Arc<PoolManager>) -> tokio::task::JoinHandle<()> {
+    let period = reaper_period();
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(period);
+        // First tick fires immediately; skip it so we don't reap a
+        // pool that just barely missed the timeout on the boundary.
+        ticker.tick().await;
+        loop {
+            ticker.tick().await;
+            let _ = manager.reap_idle().await;
+        }
+    })
+}
+
+/// Evict the LRU pool from `map`. Picks the entry with the oldest
+/// `last_served_at`. Caller must hold the map lock. Emits an
+/// `[pool_evicted]` log line; the actual SIGTERM happens after the
+/// caller releases the lock so we don't sit on it during the
+/// async `terminate()`.
+fn evict_lru(map: &mut HashMap<PoolKey, Arc<Pool>>) {
+    let Some(oldest_key) = map
+        .iter()
+        .min_by_key(|(_, p)| p.last_served_at.load(Ordering::Relaxed))
+        .map(|(k, _)| k.clone())
+    else {
+        return;
+    };
+    if let Some(pool) = map.remove(&oldest_key) {
+        eprintln!(
+            "[pool_evicted] project={} variant={} pid={} reason=lru-cap",
+            pool.key.project.display(),
+            pool.key.variant,
+            pool.pid(),
+        );
+        // Fire-and-forget the terminate; the kill_on_drop on the
+        // child catches the slow case if the SIGTERM dispatch races.
+        let pool_clone = pool.clone();
+        tokio::spawn(async move {
+            pool_clone.terminate().await;
+        });
     }
 }
 
