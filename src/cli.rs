@@ -92,6 +92,68 @@ pub enum Command {
     #[command(subcommand)]
     #[command(name = "self")]
     SelfCmd(SelfCommand),
+
+    /// Run the bougie development HTTP server. With no subcommand, runs
+    /// the foreground server. See SERVER.md.
+    #[command(subcommand)]
+    Server(ServerCommand),
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ServerCommand {
+    /// Run the server in the foreground.
+    Run {
+        /// Alternate server.toml path.
+        #[arg(long, value_name = "PATH")]
+        config: Option<std::path::PathBuf>,
+        /// CLI override of `[server].listen` (e.g. `127.0.0.1:7080`).
+        #[arg(long, value_name = "ADDR")]
+        listen: Option<String>,
+        /// CLI override of `[server].log_format`.
+        #[arg(long, value_name = "FMT")]
+        log_format: Option<String>,
+    },
+    /// Add a `[[host]]` block to server.toml.
+    Add {
+        /// Hostname (e.g. `myapp.bougie.run`).
+        hostname: String,
+        /// Absolute path to the project root.
+        project: std::path::PathBuf,
+        /// Web root, relative to the project (default `.`).
+        #[arg(long)]
+        root: Option<String>,
+    },
+    /// Remove a `[[host]]` block by hostname.
+    Remove {
+        /// Hostname to remove (matches `hostname` or any `[[host.alias]]`).
+        hostname: String,
+    },
+    /// List configured hosts.
+    List,
+    /// Manage `/etc/hosts` overrides (phase 5).
+    #[command(subcommand)]
+    Hosts(ServerHostsCommand),
+    /// Manage local TLS via mkcert (phase 7).
+    #[command(subcommand)]
+    Tls(ServerTlsCommand),
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ServerHostsCommand {
+    /// Stage a hostname for inclusion in /etc/hosts.
+    Add { name: String },
+    /// Remove a staged hostname.
+    Remove { name: String },
+    /// Rewrite the bougie sentinel block in /etc/hosts (run via sudo).
+    Apply,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ServerTlsCommand {
+    /// Fetch mkcert and install bougie's local CA.
+    Install,
+    /// Uninstall bougie's local CA.
+    Uninstall,
 }
 
 #[derive(Subcommand, Debug)]

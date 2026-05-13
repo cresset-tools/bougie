@@ -24,7 +24,10 @@ pub use errors::{exit_code_for, BougieError};
 pub use paths::Paths;
 pub use target::Triple;
 
-use cli::{CacheCommand, ComposerCommand, PhpCommand, SelfCommand};
+use cli::{
+    CacheCommand, ComposerCommand, PhpCommand, SelfCommand, ServerCommand, ServerHostsCommand,
+    ServerTlsCommand,
+};
 use eyre::Result;
 use std::process::ExitCode;
 
@@ -162,6 +165,43 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
         Command::SelfCmd(SelfCommand::Update) => commands::self_update::run(),
         Command::SelfCmd(SelfCommand::Version { short }) => {
             commands::self_version::run(format, field, short)
+        }
+        Command::Server(ServerCommand::Run { config, listen, log_format }) => {
+            commands::server::run::run(
+                format,
+                field,
+                config.as_deref(),
+                listen.as_deref(),
+                log_format.as_deref(),
+            )
+        }
+        Command::Server(ServerCommand::Add { hostname, project, root }) => {
+            commands::server::helpers::add(
+                format,
+                field,
+                &hostname,
+                &project,
+                root.as_deref(),
+            )
+        }
+        Command::Server(ServerCommand::Remove { hostname }) => {
+            commands::server::helpers::remove(format, field, &hostname)
+        }
+        Command::Server(ServerCommand::List) => commands::server::helpers::list(format, field),
+        Command::Server(ServerCommand::Hosts(ServerHostsCommand::Add { name })) => {
+            commands::server::hosts::add(format, field, &name)
+        }
+        Command::Server(ServerCommand::Hosts(ServerHostsCommand::Remove { name })) => {
+            commands::server::hosts::remove(format, field, &name)
+        }
+        Command::Server(ServerCommand::Hosts(ServerHostsCommand::Apply)) => {
+            commands::server::hosts::apply(format, field)
+        }
+        Command::Server(ServerCommand::Tls(ServerTlsCommand::Install)) => {
+            commands::server::tls::install(format, field)
+        }
+        Command::Server(ServerCommand::Tls(ServerTlsCommand::Uninstall)) => {
+            commands::server::tls::uninstall(format, field)
         }
     }
 }

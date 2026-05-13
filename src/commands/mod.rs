@@ -22,5 +22,6 @@ pub mod php_upgrade;
 pub mod run;
 pub mod self_update;
 pub mod self_version;
+pub mod server;
 pub mod sync;
 pub mod unzip;
