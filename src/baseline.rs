@@ -25,6 +25,24 @@ pub const BASELINE_EXTENSIONS: &[&str] = &[
     "mysqli",
 ];
 
+/// Extensions to pre-download into the content-addressed store as part
+/// of a default `bougie php install` / `bougie sync`, but NOT enable
+/// via any conf.d fragment. The motivating case is xdebug: every PHP
+/// dev wants it cached so the first `?XDEBUG_TRIGGER` request doesn't
+/// stall on a 5 MB download, but loading it on every CLI invocation
+/// would tank `bougie run` speed (and any normal HTTP request).
+///
+/// Activation is the caller's job:
+/// - `bougie server` writes a fragment under `.bougie/conf.d-debug/`
+///   the first time the xdebug pool variant is hit — see
+///   `commands/server/pool.rs::ensure_debug_extension`.
+/// - `bougie ext add xdebug` makes the activation explicit and
+///   permanent (also lands in `conf.d-debug/`).
+///
+/// Skipped when `--no-baseline` is set on `bougie php install` (the
+/// same flag that strips the baseline set down to nothing).
+pub const PREINSTALLED_EXTENSIONS: &[&str] = &["xdebug"];
+
 /// Extensions that are *statically compiled into the PHP binary* and
 /// can never be loaded as `.so` files. `composer.json` projects
 /// frequently declare `ext-pcre` / `ext-json` / `ext-spl` for
@@ -128,6 +146,23 @@ mod tests {
         assert!(is_baseline("pdo_mysql"));
         assert!(!is_baseline("xdebug"));
         assert!(!is_baseline("redis"));
+    }
+
+    #[test]
+    fn preinstalled_and_baseline_are_disjoint() {
+        // A name in both would be enabled by baseline and so the
+        // preinstall (no-conf.d) semantic would be meaningless.
+        for &name in PREINSTALLED_EXTENSIONS {
+            assert!(
+                !is_baseline(name),
+                "{name} is in both BASELINE_EXTENSIONS and PREINSTALLED_EXTENSIONS"
+            );
+        }
+    }
+
+    #[test]
+    fn xdebug_is_preinstalled_by_default() {
+        assert!(PREINSTALLED_EXTENSIONS.contains(&"xdebug"));
     }
 
     #[test]

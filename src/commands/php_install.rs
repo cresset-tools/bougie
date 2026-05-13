@@ -1,6 +1,9 @@
 use crate::baseline::{parse_baseline_only, BaselineFilter};
 use crate::cli::OutputFormat;
-use crate::install::{install_baseline_into, install_php, BaselineReport, InstalledPhp};
+use crate::install::{
+    install_baseline_into, install_php, preinstall_into, BaselineReport, InstalledPhp,
+    PreinstallReport,
+};
 use crate::output::{emit, Render};
 use crate::paths::Paths;
 use crate::request::{parse_request, Flavor, Request, VersionLike};
@@ -31,6 +34,11 @@ pub struct InstallEntry {
     /// install. The interpreter is still considered installed; the
     /// next `bougie sync` retries.
     pub baseline_failed: Vec<BaselineFailure>,
+    /// Names of extensions pre-downloaded into the store but not
+    /// enabled (currently: xdebug). Empty when `--no-baseline`.
+    pub preinstalled: Vec<String>,
+    /// Per-name failure detail for preinstall, matching `baseline_failed`.
+    pub preinstall_failed: Vec<BaselineFailure>,
 }
 
 #[derive(Debug, Serialize)]
@@ -57,6 +65,20 @@ impl Render for InstallResult {
                 writeln!(
                     w,
                     "  baseline failed: {} — {} (next `bougie sync` will retry)",
+                    failure.name, failure.reason
+                )?;
+            }
+            if !entry.preinstalled.is_empty() {
+                writeln!(
+                    w,
+                    "  pre-downloaded (inactive): {}",
+                    entry.preinstalled.join(", ")
+                )?;
+            }
+            for failure in &entry.preinstall_failed {
+                writeln!(
+                    w,
+                    "  preinstall failed: {} — {} (next `bougie sync` will retry)",
                     failure.name, failure.reason
                 )?;
             }
@@ -110,6 +132,22 @@ pub fn run(
             &baseline_filter,
             ResolveOptions::default(),
         );
+        // Pre-download (without enabling) extensions like xdebug so
+        // the first server-side debug request doesn't stall on a
+        // download. Skipped under `--no-baseline` so that flag still
+        // produces a minimal install.
+        let preinstall: PreinstallReport =
+            if matches!(baseline_filter, BaselineFilter::None) {
+                PreinstallReport::default()
+            } else {
+                preinstall_into(
+                    &paths,
+                    &info.install_path,
+                    php_minor,
+                    info.flavor,
+                    ResolveOptions::default(),
+                )
+            };
         installed.push(InstallEntry {
             version: info.version.to_string(),
             flavor: info.flavor.to_string(),
@@ -117,6 +155,12 @@ pub fn run(
             already_present: info.already_present,
             baseline: report.installed,
             baseline_failed: report
+                .failed
+                .into_iter()
+                .map(|(name, reason)| BaselineFailure { name, reason })
+                .collect(),
+            preinstalled: preinstall.installed,
+            preinstall_failed: preinstall
                 .failed
                 .into_iter()
                 .map(|(name, reason)| BaselineFailure { name, reason })

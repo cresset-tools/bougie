@@ -4,7 +4,10 @@ use crate::composer::{self, default_request as default_composer_request, parse_r
 use crate::conf_d;
 use crate::config::{load_project, ExtensionPin, ProjectConfig};
 use crate::errors::BougieError;
-use crate::install::{install_baseline_into, install_extension, install_php, InstalledExt, InstalledPhp};
+use crate::install::{
+    install_baseline_into, install_extension, install_php, preinstall_into, InstalledExt,
+    InstalledPhp,
+};
 use crate::output::{emit, Render};
 use crate::paths::Paths;
 use crate::request::{Flavor, Request, VersionLike};
@@ -117,6 +120,21 @@ pub fn ensure_synced(
     );
     for (name, reason) in &baseline_report.failed {
         eprintln!("warning: baseline extension {name} not installed: {reason}");
+    }
+
+    // Pre-download xdebug et al. into the store so the first
+    // server-side debug request doesn't pay the download cost. No
+    // conf.d fragment is written here — see
+    // `crate::baseline::PREINSTALLED_EXTENSIONS`.
+    let preinstall_report = preinstall_into(
+        paths,
+        &installed.install_path,
+        php_minor,
+        installed.flavor,
+        ResolveOptions::default(),
+    );
+    for (name, reason) in &preinstall_report.failed {
+        eprintln!("warning: pre-download of {name} failed: {reason}");
     }
 
     let resolved_path =

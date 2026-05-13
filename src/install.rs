@@ -1,7 +1,7 @@
 //! Orchestrates a PHP interpreter installation: refresh index, resolve,
 //! fetch + extract. Shared by `bougie php install` and `bougie sync`.
 
-use crate::baseline::{BaselineFilter, BASELINE_EXTENSIONS};
+use crate::baseline::{BaselineFilter, BASELINE_EXTENSIONS, PREINSTALLED_EXTENSIONS};
 use crate::errors::BougieError;
 use crate::fetch::{aggregate_progress_bar, fetch_blob, BlobSpec};
 use crate::index::{
@@ -429,6 +429,45 @@ pub fn install_baseline_into(
                     report.installed.push(name.into());
                 }
             }
+            Err(e) => report.failed.push((name.into(), format!("{e:#}"))),
+        }
+    }
+    report
+}
+
+/// Outcome of [`preinstall_into`]. Same shape as
+/// [`BaselineReport`] so the two can be surfaced side-by-side in the
+/// `bougie php install` JSON output.
+#[derive(Debug, Default, Clone)]
+pub struct PreinstallReport {
+    pub installed: Vec<String>,
+    pub failed: Vec<(String, String)>,
+}
+
+/// Pre-download (but don't activate) every extension in
+/// [`PREINSTALLED_EXTENSIONS`] for the given interpreter. Each `.so`
+/// lands in the content-addressed store under `paths.store()` — same
+/// location `install_extension` would use anyway — so a later
+/// `bougie ext add xdebug` (or the server's lazy activation path)
+/// finds it already on disk and only writes a conf.d fragment.
+///
+/// `_install_root` is currently unused (no conf.d fragment is written
+/// here) but kept in the signature for symmetry with
+/// [`install_baseline_into`] and to leave room for future
+/// per-interpreter bookkeeping. Errors are per-name and non-fatal —
+/// caller surfaces them as warnings, same pattern as
+/// [`BaselineReport`].
+pub fn preinstall_into(
+    paths: &Paths,
+    _install_root: &Path,
+    php_minor: PartialVersion,
+    flavor: Flavor,
+    resolve_opts: ResolveOptions,
+) -> PreinstallReport {
+    let mut report = PreinstallReport::default();
+    for &name in PREINSTALLED_EXTENSIONS {
+        match install_extension(paths, name, None, php_minor, flavor, resolve_opts) {
+            Ok(_) => report.installed.push(name.into()),
             Err(e) => report.failed.push((name.into(), format!("{e:#}"))),
         }
     }
