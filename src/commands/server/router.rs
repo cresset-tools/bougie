@@ -40,7 +40,12 @@ pub struct AppState {
     /// `[[host]]` block. Populated once at startup.
     pub hosts: HashMap<String, Arc<HostBlock>>,
     pub pools: Arc<PoolManager>,
-    pub listen_port: u16,
+    /// Bound listen port. Read by `serve_php` for `SERVER_PORT` and
+    /// by the control socket's status response. Wrapped in an
+    /// `AtomicU16` because the actual port is only known after
+    /// `TcpListener::bind` resolves an ephemeral request — by then
+    /// state is already inside an `Arc`.
+    pub listen_port: std::sync::atomic::AtomicU16,
 }
 
 impl AppState {
@@ -57,7 +62,22 @@ impl AppState {
                 insert_unique(&mut hosts, &alias.hostname, &shared)?;
             }
         }
-        Ok(Self { hosts, pools, listen_port })
+        Ok(Self {
+            hosts,
+            pools,
+            listen_port: std::sync::atomic::AtomicU16::new(listen_port),
+        })
+    }
+
+    /// Set the actual bound port after `TcpListener::bind` resolves
+    /// (when the requested port was 0). Called once during startup
+    /// from `serve`.
+    pub fn set_listen_port(&self, port: u16) {
+        self.listen_port.store(port, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn listen_port(&self) -> u16 {
+        self.listen_port.load(std::sync::atomic::Ordering::Relaxed)
     }
 }
 
@@ -214,7 +234,7 @@ async fn serve_php(
         .unwrap_or("");
     let content_length = body.len().to_string();
     let method_str = method.as_str();
-    let server_port = state.listen_port.to_string();
+    let server_port = state.listen_port().to_string();
     let peer_addr = peer.ip().to_string();
     let peer_port = peer.port().to_string();
     let script_fn_str = script_filename.display().to_string();

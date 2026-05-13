@@ -48,6 +48,17 @@ pub struct PoolKey {
     pub variant: String,
 }
 
+/// One row in [`PoolManager::status_snapshot`]. Mirrors the JSON
+/// wire shape the control socket emits for `status`.
+#[derive(Debug, Clone)]
+pub struct PoolStatusRow {
+    pub key: PoolKey,
+    pub pid: u32,
+    pub idle_ms: u64,
+    pub started_ago_ms: u64,
+    pub php_version: String,
+}
+
 impl PoolKey {
     pub fn new(project: &Path, version: &str, flavor: &str, variant: &str) -> Self {
         Self {
@@ -64,8 +75,8 @@ pub struct Pool {
     pub key: PoolKey,
     pub socket: PathBuf,
     pub php_version: String,
-    /// Started-at, for log decoration.
-    #[allow(dead_code)]
+    /// Started-at, for log decoration + the control socket's
+    /// `started_ago_ms` field.
     pub started_at: Instant,
     /// OS pid of the php-fpm master. Cached at spawn so we can SIGUSR2
     /// the master from inside an immutable `&Pool` (no need to lock the
@@ -315,6 +326,25 @@ impl PoolManager {
     pub async fn pids(&self) -> Vec<(PoolKey, u32)> {
         let map = self.pools.lock().await;
         map.iter().map(|(k, p)| (k.clone(), p.pid())).collect()
+    }
+
+    /// Richer snapshot: pid + idle age + started-ago per pool, for the
+    /// control socket's `status` response. `started_ago_ms` is wall-
+    /// clock-free (uses tokio's Instant), so it survives system clock
+    /// jumps without going negative.
+    pub async fn status_snapshot(&self) -> Vec<PoolStatusRow> {
+        let map = self.pools.lock().await;
+        let now = Instant::now();
+        map.iter()
+            .map(|(k, p)| PoolStatusRow {
+                key: k.clone(),
+                pid: p.pid(),
+                idle_ms: u64::try_from(p.idle_for().as_millis()).unwrap_or(u64::MAX),
+                started_ago_ms: u64::try_from(now.saturating_duration_since(p.started_at).as_millis())
+                    .unwrap_or(u64::MAX),
+                php_version: p.php_version.clone(),
+            })
+            .collect()
     }
 
     async fn spawn(&self, key: PoolKey) -> Result<Pool> {

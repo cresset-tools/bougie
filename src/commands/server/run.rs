@@ -17,6 +17,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use super::config;
+use super::control;
 use super::log::{self, LogFormat};
 use super::paths::ServerPaths;
 use super::pool::{self, PoolManager};
@@ -85,7 +86,9 @@ pub fn run(
         .build()
         .wrap_err("building tokio runtime")?;
 
-    let exit = rt.block_on(async move { serve(listen, state, projects).await })?;
+    let control_socket = ServerPaths::from_env()?.control_socket();
+    let exit = rt
+        .block_on(async move { serve(listen, state, projects, control_socket).await })?;
     Ok(exit)
 }
 
@@ -93,10 +96,14 @@ async fn serve(
     listen: SocketAddr,
     state: Arc<AppState>,
     projects: Vec<std::path::PathBuf>,
+    control_socket: std::path::PathBuf,
 ) -> Result<ExitCode> {
     let listener = tokio::net::TcpListener::bind(listen)
         .await
         .wrap_err_with(|| format!("binding {listen}"))?;
+    if let Ok(addr) = listener.local_addr() {
+        state.set_listen_port(addr.port());
+    }
     let bound = listener
         .local_addr()
         .map_or_else(|_| listen.to_string(), |a| a.to_string());
@@ -113,6 +120,18 @@ async fn serve(
             // A failure here is non-fatal — pools still serve, reload
             // just won't fire. Surface a warning and continue.
             eprintln!("bougie server: filesystem watcher unavailable: {e:#}");
+            None
+        }
+    };
+    let _control_handle = match control::start(Arc::clone(&state), control_socket.clone()) {
+        Ok(h) => {
+            eprintln!("bougie server: control socket at {}", control_socket.display());
+            Some(h)
+        }
+        Err(e) => {
+            // Non-fatal: `bougie server list` will fall back to
+            // config-only output.
+            eprintln!("bougie server: control socket unavailable: {e:#}");
             None
         }
     };

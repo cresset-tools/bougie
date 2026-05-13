@@ -7,6 +7,7 @@
 
 pub mod config;
 pub mod conf_d;
+pub mod control;
 pub mod fastcgi;
 pub mod helpers;
 pub mod hosts;

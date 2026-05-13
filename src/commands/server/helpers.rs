@@ -12,7 +12,9 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use super::config;
+use super::control::{self, LivePoolRow};
 use super::hosts;
+use super::paths::ServerPaths;
 
 #[derive(Debug, Serialize)]
 pub struct AddResult {
@@ -106,6 +108,11 @@ pub struct ListResult {
     pub schema_version: u32,
     pub config: PathBuf,
     pub hosts: Vec<ListedHost>,
+    /// Live block populated when a server is running on this user's
+    /// control socket. Absent when no server is running — keeps the
+    /// json-v1 shape forward-compatible.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub live: Option<LiveBlock>,
 }
 
 #[derive(Debug, Serialize)]
@@ -117,16 +124,48 @@ pub struct ListedHost {
     pub aliases: Vec<String>,
 }
 
+#[derive(Debug, Serialize)]
+pub struct LiveBlock {
+    pub listen_port: u16,
+    pub pools: Vec<LivePoolRow>,
+}
+
 impl Render for ListResult {
     fn render_text(&self, w: &mut dyn Write) -> io::Result<()> {
         if self.hosts.is_empty() {
             writeln!(w, "no hosts configured ({})", self.config.display())?;
-            return Ok(());
+        } else {
+            for h in &self.hosts {
+                writeln!(w, "{}  {}  root={}", h.hostname, h.project.display(), h.root)?;
+                for alias in &h.aliases {
+                    writeln!(w, "  alias {alias}")?;
+                }
+            }
         }
-        for h in &self.hosts {
-            writeln!(w, "{}  {}  root={}", h.hostname, h.project.display(), h.root)?;
-            for alias in &h.aliases {
-                writeln!(w, "  alias {alias}")?;
+        match &self.live {
+            None => {
+                writeln!(w, "(no server running on this user's control socket)")?;
+            }
+            Some(live) => {
+                writeln!(w)?;
+                writeln!(
+                    w,
+                    "running on :{} ({} pools)",
+                    live.listen_port,
+                    live.pools.len()
+                )?;
+                for p in &live.pools {
+                    writeln!(
+                        w,
+                        "  {} [{}] pid={} php={} idle={}ms uptime={}ms",
+                        p.project.display(),
+                        p.variant,
+                        p.pid,
+                        p.php_version,
+                        p.idle_ms,
+                        p.started_ago_ms,
+                    )?;
+                }
             }
         }
         Ok(())
@@ -180,7 +219,25 @@ pub fn list(format: OutputFormat, field: Option<&str>) -> Result<ExitCode> {
             aliases: h.aliases.into_iter().map(|a| a.hostname).collect(),
         })
         .collect();
-    let result = ListResult { schema_version: 1, config: path, hosts };
+    let live = query_live_status();
+    let result = ListResult { schema_version: 1, config: path, hosts, live };
     emit(format, field, &result)?;
     Ok(ExitCode::SUCCESS)
+}
+
+/// Try to query the running server's control socket. Returns `None`
+/// silently when the socket is missing or the connect fails — the
+/// `bougie server list` UX promises a graceful fallback to config-only
+/// output when no server is running.
+fn query_live_status() -> Option<LiveBlock> {
+    let server_paths = ServerPaths::from_env().ok()?;
+    let socket = server_paths.control_socket();
+    let status = control::try_query_status(&socket)?;
+    if !status.ok {
+        return None;
+    }
+    Some(LiveBlock {
+        listen_port: status.listen_port,
+        pools: status.pools,
+    })
 }
