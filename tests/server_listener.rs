@@ -215,7 +215,11 @@ fn unknown_host_is_404() {
 }
 
 #[test]
-fn php_request_is_501_in_phase_1() {
+fn php_request_without_resolved_php_returns_502() {
+    // Phase 2 replaces the phase-1 501 stub with a real FastCGI
+    // dispatcher. With no `.bougie/state/resolved` in the project,
+    // the pool manager can't find a php-fpm binary and surfaces the
+    // failure as 502 — actionable for the user.
     let env = TestEnv::new();
     let xdg = TempDir::new().unwrap();
     let proj = TempDir::new().unwrap();
@@ -234,8 +238,12 @@ fn php_request_is_501_in_phase_1() {
         .success();
     let server = ServerHandle::spawn(&env, xdg.path());
     let (status, _, body) = http_get(&server.url("/script.php"), "myapp.bougie.run");
-    assert_eq!(status, 501);
-    assert!(String::from_utf8_lossy(&body).to_lowercase().contains("phase 2"));
+    assert_eq!(status, 502);
+    let body_str = String::from_utf8_lossy(&body).to_lowercase();
+    assert!(
+        body_str.contains("php-fpm") || body_str.contains("bougie sync"),
+        "got: {body_str}"
+    );
     let _ = server.shutdown();
 }
 

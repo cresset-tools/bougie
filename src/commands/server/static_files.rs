@@ -16,9 +16,18 @@ pub enum Resolution {
     /// path has been verified to be under the host's web root (both
     /// lexically and via `canonicalize`).
     Static { path: PathBuf },
-    /// A `.php` script matched. Phase 1 cannot serve it; phase 2's
-    /// `FastCGI` layer will. `script_filename` is the canonical path.
-    Php { script_filename: PathBuf, path_info: String },
+    /// A `.php` script matched. `script_filename` is the canonical
+    /// path on disk; `script_name` is the URI portion that maps to
+    /// the script (leading `/`); `path_info` is the request URI
+    /// portion *after* the script when a front-controller pattern
+    /// fell through (empty for direct `.php` hits). The router uses
+    /// these to populate `SCRIPT_FILENAME`, `SCRIPT_NAME`, and
+    /// `PATH_INFO` per the nginx FastCGI convention.
+    Php {
+        script_filename: PathBuf,
+        script_name: String,
+        path_info: String,
+    },
     /// No `try_files` entry resolved to a real file.
     NotFound,
     /// A traversal attempt or symlink escape. The request is rejected
@@ -45,7 +54,20 @@ pub fn resolve(host: &HostBlock, request_path: &str, query: &str) -> Resolution 
 
     for pattern in &host.try_files {
         let expanded = expand_placeholders(pattern, &decoded, query);
-        match resolve_candidate(&canonical_root, &expanded, &host.index) {
+        // A "fallthrough" pattern is one whose path-part (before any
+        // query suffix) doesn't equal the request URI: `$uri` patterns
+        // produce identical candidates, literal-prefix patterns like
+        // `/index.php$is_args$args` don't.
+        let candidate_path = expanded.split('?').next().unwrap_or(&expanded);
+        let fallthrough = candidate_path != decoded;
+        let original_uri_decoded: &str = &decoded;
+        match resolve_candidate(
+            &canonical_root,
+            &expanded,
+            &host.index,
+            original_uri_decoded,
+            fallthrough,
+        ) {
             Resolution::NotFound => {}
             other => return other,
         }
@@ -60,7 +82,13 @@ fn expand_placeholders(pattern: &str, uri: &str, query: &str) -> String {
         .replace("$args", query)
 }
 
-fn resolve_candidate(canonical_root: &Path, candidate: &str, index: &[String]) -> Resolution {
+fn resolve_candidate(
+    canonical_root: &Path,
+    candidate: &str,
+    index: &[String],
+    original_uri: &str,
+    fallthrough: bool,
+) -> Resolution {
     // Strip the query string if the pattern carried `$is_args$args`.
     let candidate = candidate.split('?').next().unwrap_or(candidate);
 
@@ -81,7 +109,7 @@ fn resolve_candidate(canonical_root: &Path, candidate: &str, index: &[String]) -
         if !canonical.starts_with(canonical_root) {
             return Resolution::Forbidden;
         }
-        return classify(canonical, &rel);
+        return classify(canonical, &rel, original_uri, fallthrough);
     }
 
     if meta.is_dir() {
@@ -96,7 +124,9 @@ fn resolve_candidate(canonical_root: &Path, candidate: &str, index: &[String]) -
                 }
                 let mut rel_with_index = rel.clone();
                 rel_with_index.push(entry);
-                return classify(canonical, &rel_with_index);
+                // Directory-index hits are direct, even though the URI
+                // didn't end with the index filename.
+                return classify(canonical, &rel_with_index, original_uri, false);
             }
         }
         return Resolution::NotFound;
@@ -108,13 +138,19 @@ fn resolve_candidate(canonical_root: &Path, candidate: &str, index: &[String]) -
     if !canonical.starts_with(canonical_root) {
         return Resolution::Forbidden;
     }
-    classify(canonical, &rel)
+    classify(canonical, &rel, original_uri, fallthrough)
 }
 
-fn classify(canonical: PathBuf, rel: &Path) -> Resolution {
+fn classify(
+    canonical: PathBuf,
+    rel: &Path,
+    original_uri: &str,
+    fallthrough: bool,
+) -> Resolution {
     if canonical.extension().is_some_and(|e| e.eq_ignore_ascii_case("php")) {
-        let path_info = format!("/{}", rel.display());
-        return Resolution::Php { script_filename: canonical, path_info };
+        let script_name = format!("/{}", rel.display());
+        let path_info = if fallthrough { original_uri.to_owned() } else { String::new() };
+        return Resolution::Php { script_filename: canonical, script_name, path_info };
     }
     Resolution::Static { path: canonical }
 }
@@ -228,9 +264,10 @@ mod tests {
             &["index.php"],
         );
         match resolve(&h, "/users/42", "page=1") {
-            Resolution::Php { script_filename, path_info } => {
+            Resolution::Php { script_filename, script_name, path_info } => {
                 assert!(script_filename.ends_with("index.php"));
-                assert_eq!(path_info, "/index.php");
+                assert_eq!(script_name, "/index.php");
+                assert_eq!(path_info, "/users/42");
             }
             other => panic!("expected Php fallthrough, got {other:?}"),
         }
@@ -248,8 +285,10 @@ mod tests {
         let d = fixture(&[("public/info.php", "<?php phpinfo();")]);
         let h = host(d.path(), "public", &["$uri"], &[]);
         match resolve(&h, "/info.php", "") {
-            Resolution::Php { script_filename, .. } => {
+            Resolution::Php { script_filename, script_name, path_info } => {
                 assert!(script_filename.ends_with("info.php"));
+                assert_eq!(script_name, "/info.php");
+                assert_eq!(path_info, "");
             }
             other => panic!("expected Php, got {other:?}"),
         }

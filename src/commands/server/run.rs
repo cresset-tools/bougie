@@ -8,6 +8,7 @@
 //! feel sluggish.
 
 use crate::cli::OutputFormat;
+use crate::paths::Paths;
 use eyre::{Result, WrapErr};
 use std::net::SocketAddr;
 use std::path::Path;
@@ -17,6 +18,8 @@ use std::time::Duration;
 
 use super::config;
 use super::log::{self, LogFormat};
+use super::paths::ServerPaths;
+use super::pool::PoolManager;
 use super::router::{self, AppState};
 
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
@@ -40,9 +43,17 @@ pub fn run(
     let log_fmt = LogFormat::parse(log_fmt_str).map_err(eyre::Report::msg)?;
     log::init(log_fmt);
 
+    let bougie_paths = Paths::from_env()?;
+    let server_paths = ServerPaths::from_env()?;
+    let pools = Arc::new(PoolManager::new(
+        bougie_paths,
+        server_paths,
+        cfg.server.debug_only_extensions.clone(),
+    ));
+
     // Hostname-collision check happens here so config errors surface
     // before we bind a port (§spec implementation note).
-    let state = Arc::new(AppState::from_config(&cfg)?);
+    let state = Arc::new(AppState::build(&cfg, Arc::clone(&pools), listen.port())?);
 
     if state.hosts.is_empty() {
         eprintln!(
@@ -73,7 +84,8 @@ async fn serve(listen: SocketAddr, state: Arc<AppState>) -> Result<ExitCode> {
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
     let signal_rx = shutdown_rx.clone();
-    let app = router::build(state);
+    let pools_for_shutdown = Arc::clone(&state.pools);
+    let app = router::build(state).into_make_service_with_connect_info::<SocketAddr>();
     let serve_fut = axum::serve(listener, app)
         .with_graceful_shutdown(async move {
             let mut rx = signal_rx;
@@ -109,6 +121,11 @@ async fn serve(listen: SocketAddr, state: Arc<AppState>) -> Result<ExitCode> {
             eprintln!("bougie server: shutdown grace ({SHUTDOWN_GRACE:?}) elapsed, exiting hard");
         }
     }
+
+    // Reap every php-fpm master we spawned. `kill_on_drop(true)` on
+    // each `Child` is the belt; `terminate()` is the braces.
+    pools_for_shutdown.shutdown().await;
+
     Ok(ExitCode::SUCCESS)
 }
 

@@ -393,6 +393,7 @@ dependencies = [
  "color-eyre",
  "etcetera",
  "eyre",
+ "http-body-util",
  "hyper",
  "hyper-util",
  "indicatif",

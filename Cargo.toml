@@ -94,11 +94,13 @@ features = ["deflate"]
 [dependencies.tempfile]
 version = "3.10"
 
-# Direct flock(2) for the timeout-aware ExclusiveLock in src/lock.rs.
+# Direct flock(2) for the timeout-aware ExclusiveLock in src/lock.rs;
+# also `geteuid()` for the $XDG_RUNTIME_DIR fallback path inside
+# `bougie server`.
 [dependencies.rustix]
 version = "1.0"
 default-features = false
-features = ["std", "fs"]
+features = ["std", "fs", "process"]
 
 # URL joining for relative manifest URLs in the index protocol.
 [dependencies.url]
@@ -191,6 +193,9 @@ default-features = false
 
 [dependencies.percent-encoding]
 version = "2"
+
+[dependencies.http-body-util]
+version = "0.1"
 
 [dev-dependencies]
 assert_cmd = "2.0"        # spawn the bougie binary in integration tests
