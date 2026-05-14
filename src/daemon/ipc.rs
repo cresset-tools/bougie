@@ -51,8 +51,8 @@ pub struct RequestEnvelope {
 }
 
 /// Method-specific deserialized request. `Status` / `DaemonVersion` /
-/// `DaemonShutdown` carry no args; `ServiceUp` / `ServiceDown` pull
-/// their fields out of the envelope's `args` object.
+/// `DaemonShutdown` carry no args; the others pull their fields out
+/// of the envelope's `args` object.
 #[derive(Debug)]
 pub enum Request {
     Status,
@@ -60,6 +60,9 @@ pub enum Request {
     DaemonShutdown,
     ServiceUp(ServiceUpArgs),
     ServiceDown(ServiceDownArgs),
+    /// Used by `bougie run` to pick up tenant-derived env vars to
+    /// inject into the child PHP process. Idempotent + side-effect-free.
+    ServiceEnv(ServiceEnvArgs),
 }
 
 #[derive(Debug, Deserialize)]
@@ -74,6 +77,11 @@ pub struct ServiceDownArgs {
     pub services: Vec<String>,
     #[serde(default)]
     pub purge: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ServiceEnvArgs {
+    pub project: std::path::PathBuf,
 }
 
 #[derive(Debug, Deserialize)]
@@ -207,6 +215,9 @@ fn parse_request(line: &str) -> Result<Request, String> {
         "service.down" => serde_json::from_value::<ServiceDownArgs>(env.args)
             .map(Request::ServiceDown)
             .map_err(|e| format!("service.down args: {e}")),
+        "service.env" => serde_json::from_value::<ServiceEnvArgs>(env.args)
+            .map(Request::ServiceEnv)
+            .map_err(|e| format!("service.env args: {e}")),
         other => Err(format!("unknown method `{other}`")),
     }
 }
@@ -235,7 +246,48 @@ async fn dispatch(req: Request, state: &Arc<DaemonState>) -> ResultFrame {
         Request::ServiceDown(args) => {
             dispatch_down(state, args.project, args.services, args.purge).await
         }
+        Request::ServiceEnv(args) => dispatch_env(state, args.project).await,
     }
+}
+
+/// Build the `BOUGIE_SERVICE_*` env map for this project's tenants.
+/// Reads each catalog entry's `tenants.json` and emits per-service
+/// vars per SERVICES.md §3.4. Side-effect free.
+async fn dispatch_env(state: &Arc<DaemonState>, project: std::path::PathBuf) -> ResultFrame {
+    use crate::daemon::{catalog, tenants};
+
+    let mut vars: serde_json::Map<String, Value> = serde_json::Map::new();
+    for entry in catalog::CATALOG {
+        if !entry.user_facing {
+            continue;
+        }
+        let tenants_path = state.paths.service_tenants(entry.name);
+        let Ok(all) = tenants::load_all(&tenants_path) else {
+            continue;
+        };
+        let Some(tenant) = all.into_iter().find(|t| t.project == project) else {
+            continue;
+        };
+        let prefix = format!("BOUGIE_SERVICE_{}_", entry.name.to_ascii_uppercase());
+        match entry.name {
+            "redis" => {
+                let sock = state
+                    .paths
+                    .service_run("redis")
+                    .join("redis.sock")
+                    .display()
+                    .to_string();
+                vars.insert(format!("{prefix}SOCKET"), Value::String(sock));
+                if let Some(db) = tenant.alloc.get("db_number") {
+                    vars.insert(format!("{prefix}DB"), db.clone());
+                }
+            }
+            // mariadb / opensearch / rabbitmq / server env shapes land
+            // with their provisioners (Phases 6 / 7 / 8 / 10).
+            _ => {}
+        }
+    }
+    ResultFrame::ok(serde_json::json!({"vars": Value::Object(vars)}))
 }
 
 async fn dispatch_up(
