@@ -135,6 +135,27 @@ pub enum ServicesCommand {
     },
     /// Print the built-in service catalog (no daemon required).
     Catalog,
+    /// Start the named services (or every declared service) and
+    /// provision the project's tenant in each.
+    Up {
+        /// Service names to bring up. Empty = every declared service.
+        names: Vec<String>,
+    },
+    /// Stop the named services (or every declared service) for the
+    /// current project. The global service stops only when no other
+    /// project's tenant remains.
+    Down {
+        names: Vec<String>,
+        /// Destroy persisted tenant data (e.g. FLUSHDB on redis). Off
+        /// by default — re-adding the service should restore state.
+        #[arg(long)]
+        purge: bool,
+    },
+    /// Per-service status for the current project.
+    Status {
+        /// Limit to a single service.
+        name: Option<String>,
+    },
     /// Inspect and control the `bougied` daemon.
     #[command(subcommand)]
     Daemon(ServicesDaemonCommand),

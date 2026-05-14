@@ -210,6 +210,15 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
         Command::Services(ServicesCommand::Catalog) => {
             commands::services::catalog::run(format, field)
         }
+        Command::Services(ServicesCommand::Up { names }) => {
+            commands::services::up::run(format, field, names)
+        }
+        Command::Services(ServicesCommand::Down { names, purge }) => {
+            commands::services::down::run(format, field, names, purge)
+        }
+        Command::Services(ServicesCommand::Status { name }) => {
+            commands::services::status::run(format, field, name)
+        }
         Command::Services(ServicesCommand::Daemon(ServicesDaemonCommand::Status)) => {
             commands::services::daemon::status(format, field)
         }

@@ -25,7 +25,7 @@ fn wait_for_no_socket(env: &TestEnv) {
 }
 
 #[test]
-fn status_autospawns_daemon_and_reports_empty_service_list() {
+fn status_autospawns_daemon_and_reports_every_catalog_entry_as_stopped() {
     let env = TestEnv::new();
 
     // First call: daemon isn't running yet. The client must spawn it.
@@ -49,7 +49,17 @@ fn status_autospawns_daemon_and_reports_empty_service_list() {
             .unwrap()
     );
     assert!(v["pid"].is_number(), "expected pid, got {v}");
-    assert_eq!(v["services"].as_array().map(Vec::len), Some(0));
+    let services = v["services"].as_array().expect("services array");
+    assert!(!services.is_empty(), "daemon reports the full catalog");
+    let names: Vec<&str> = services
+        .iter()
+        .filter_map(|s| s["name"].as_str())
+        .collect();
+    assert!(names.contains(&"redis"), "{names:?}");
+    // Nothing should be running on a fresh daemon.
+    for svc in services {
+        assert_eq!(svc["state"], "stopped", "{svc}");
+    }
 
     // Clean up so we don't leak a daemon for the next test.
     env.bougie()

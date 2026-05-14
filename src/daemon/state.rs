@@ -1,19 +1,24 @@
-//! Shared daemon state. Phase 1 ships only the shutdown channel; the
-//! supervisor + tenant maps land in Phase 3.
+//! Shared daemon state. Carries the shutdown channel + the
+//! service-supervisor handle so every IPC connection can drive the
+//! supervisor without re-resolving paths.
 
 use super::ipc::ShutdownTx;
+use super::supervisor::{Shared as SupervisorHandle, Supervisor};
 use crate::Paths;
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
 /// Long-lived state shared by every accepted IPC connection.
 #[derive(Debug)]
 pub struct DaemonState {
-    #[allow(dead_code)] // used by future service.* methods
     pub paths: Paths,
     pub shutdown_tx: ShutdownTx,
+    pub supervisor: SupervisorHandle,
 }
 
 impl DaemonState {
     pub fn new(paths: Paths, shutdown_tx: ShutdownTx) -> Self {
-        Self { paths, shutdown_tx }
+        let supervisor = Arc::new(Mutex::new(Supervisor::new(paths.clone())));
+        Self { paths, shutdown_tx, supervisor }
     }
 }

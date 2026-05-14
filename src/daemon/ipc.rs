@@ -38,35 +38,48 @@ const MAX_REQUEST_BYTES: u64 = 64 * 1024;
 
 // -------------------- Request side --------------------
 
-/// One incoming request from the CLI.
-///
-/// The wire envelope is `{"v": 1, "method": "...", "args": {...}}`.
-/// `args` is folded inline via `#[serde(flatten)]` so callers can
-/// elide the wrapper for argless methods.
+/// Raw wire envelope: `{"v": 1, "method": "...", "args": {...}}`.
+/// Method-specific args are pulled out of `args` after the method
+/// string dispatches to a variant.
 #[derive(Debug, Deserialize)]
 pub struct RequestEnvelope {
-    /// Wire-protocol version. Must equal `1`; mismatched envelopes
-    /// are rejected before dispatch.
     #[serde(rename = "v")]
     pub version: u32,
-    #[serde(flatten)]
-    pub req: Request,
+    pub method: String,
+    #[serde(default)]
+    pub args: Value,
+}
+
+/// Method-specific deserialized request. `Status` / `DaemonVersion` /
+/// `DaemonShutdown` carry no args; `ServiceUp` / `ServiceDown` pull
+/// their fields out of the envelope's `args` object.
+#[derive(Debug)]
+pub enum Request {
+    Status,
+    DaemonVersion,
+    DaemonShutdown,
+    ServiceUp(ServiceUpArgs),
+    ServiceDown(ServiceDownArgs),
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(tag = "method")]
-pub enum Request {
-    /// Empty service list in Phase 1; real data once Phase 3 lands.
-    #[serde(rename = "status")]
-    Status,
-    /// Returns `{version, build_hash}` for CLI-vs-daemon mismatch
-    /// detection.
-    #[serde(rename = "daemon.version")]
-    DaemonVersion,
-    /// Tell the daemon to drain and exit cleanly. The response is
-    /// sent before exit; the socket disappears shortly after.
-    #[serde(rename = "daemon.shutdown")]
-    DaemonShutdown,
+pub struct ServiceUpArgs {
+    pub project: std::path::PathBuf,
+    pub services: Vec<ServiceRequest>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ServiceDownArgs {
+    pub project: std::path::PathBuf,
+    pub services: Vec<String>,
+    #[serde(default)]
+    pub purge: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ServiceRequest {
+    pub name: String,
+    pub tenant: String,
 }
 
 // -------------------- Response side --------------------
@@ -184,14 +197,29 @@ fn parse_request(line: &str) -> Result<Request, String> {
             env.version
         ));
     }
-    Ok(env.req)
+    match env.method.as_str() {
+        "status" => Ok(Request::Status),
+        "daemon.version" => Ok(Request::DaemonVersion),
+        "daemon.shutdown" => Ok(Request::DaemonShutdown),
+        "service.up" => serde_json::from_value::<ServiceUpArgs>(env.args)
+            .map(Request::ServiceUp)
+            .map_err(|e| format!("service.up args: {e}")),
+        "service.down" => serde_json::from_value::<ServiceDownArgs>(env.args)
+            .map(Request::ServiceDown)
+            .map_err(|e| format!("service.down args: {e}")),
+        other => Err(format!("unknown method `{other}`")),
+    }
 }
 
 async fn dispatch(req: Request, state: &Arc<DaemonState>) -> ResultFrame {
     match req {
-        Request::Status => ResultFrame::ok(serde_json::json!({
-            "services": [],
-        })),
+        Request::Status => {
+            let snap = state.supervisor.lock().await.snapshot();
+            ResultFrame::ok(
+                serde_json::to_value(serde_json::json!({"services": snap}))
+                    .unwrap_or(Value::Null),
+            )
+        }
         Request::DaemonVersion => ResultFrame::ok(serde_json::json!({
             "version": env!("CARGO_PKG_VERSION"),
             "build_hash": option_env!("BOUGIE_BUILD_HASH").unwrap_or(""),
@@ -203,7 +231,118 @@ async fn dispatch(req: Request, state: &Arc<DaemonState>) -> ResultFrame {
             let _ = state.shutdown_tx.send(true);
             ResultFrame::ok(serde_json::json!({"ok": true}))
         }
+        Request::ServiceUp(args) => dispatch_up(state, args.project, args.services).await,
+        Request::ServiceDown(args) => {
+            dispatch_down(state, args.project, args.services, args.purge).await
+        }
     }
+}
+
+async fn dispatch_up(
+    state: &Arc<DaemonState>,
+    project: std::path::PathBuf,
+    services: Vec<ServiceRequest>,
+) -> ResultFrame {
+    use crate::daemon::{catalog, provisioners};
+
+    let names: Vec<&str> = services.iter().map(|s| s.name.as_str()).collect();
+    let order = match super::supervisor::compute_start_order(&names) {
+        Ok(o) => o,
+        Err(e) => return ResultFrame::err("bad_request", e.to_string()),
+    };
+
+    let mut started = Vec::new();
+    let mut tenants_map = serde_json::Map::new();
+    for name in order {
+        // Skip transitive runtime deps; not all are real services.
+        let Some(entry) = catalog::find(name) else { continue };
+        // Start (idempotent).
+        let start_res = state.supervisor.lock().await.start(name).await;
+        match start_res {
+            Ok(true) => started.push(name.to_string()),
+            Ok(false) => {}
+            Err(e) => {
+                return ResultFrame::err(
+                    "service_start_failed",
+                    format!("{}: {}", name, e),
+                );
+            }
+        }
+        // Provision the tenant for this project (only for user_facing
+        // entries — runtime deps have no tenancy).
+        if entry.user_facing {
+            let tenant_name = match services.iter().find(|s| s.name == name) {
+                Some(s) => s.tenant.clone(),
+                None => continue, // dep ordered in but not in the request
+            };
+            let tenants_path = state.paths.service_tenants(name);
+            match provisioners::provision(entry, &tenants_path, &tenant_name, &project) {
+                Ok(t) => {
+                    tenants_map.insert(name.to_string(), Value::String(t.tenant));
+                }
+                Err(e) => {
+                    return ResultFrame::err(
+                        "provision_failed",
+                        format!("{}: {}", name, e),
+                    );
+                }
+            }
+        }
+    }
+
+    ResultFrame::ok(serde_json::json!({
+        "started": started,
+        "tenants": Value::Object(tenants_map),
+    }))
+}
+
+async fn dispatch_down(
+    state: &Arc<DaemonState>,
+    project: std::path::PathBuf,
+    services: Vec<String>,
+    purge: bool,
+) -> ResultFrame {
+    use crate::daemon::{catalog, provisioners, tenants};
+
+    let mut stopped = Vec::new();
+    let mut deprovisioned = Vec::new();
+    for name in services {
+        let Some(entry) = catalog::find(&name) else {
+            return ResultFrame::err("unknown_service", format!("`{name}` not in catalog"));
+        };
+        if entry.user_facing {
+            let tenants_path = state.paths.service_tenants(entry.name);
+            // Find this project's tenant; if any, deprovision it.
+            let project_tenant = tenants::load_all(&tenants_path)
+                .ok()
+                .and_then(|all| all.into_iter().find(|t| t.project == project));
+            if let Some(t) = project_tenant {
+                let sock_default = state.paths.service_run(entry.name).join(format!("{}.sock", entry.name));
+                let sock = if sock_default.exists() { Some(sock_default.as_path()) } else { None };
+                if let Err(e) = provisioners::deprovision(entry, &tenants_path, &t.tenant, sock, purge) {
+                    return ResultFrame::err(
+                        "deprovision_failed",
+                        format!("{}: {}", entry.name, e),
+                    );
+                }
+                deprovisioned.push(entry.name.to_string());
+            }
+            // Stop the global service iff no tenants remain.
+            let remaining = tenants::load_all(&tenants_path)
+                .map(|v| v.len())
+                .unwrap_or(0);
+            if remaining == 0 {
+                let stop_res = state.supervisor.lock().await.stop(entry.name).await;
+                if let Ok(true) = stop_res {
+                    stopped.push(entry.name.to_string());
+                }
+            }
+        }
+    }
+    ResultFrame::ok(serde_json::json!({
+        "stopped": stopped,
+        "deprovisioned": deprovisioned,
+    }))
 }
 
 #[cfg(test)]
@@ -237,7 +376,34 @@ mod tests {
     #[test]
     fn rejects_unknown_method() {
         let err = parse_request(r#"{"v": 1, "method": "bogus"}"#).unwrap_err();
-        assert!(err.contains("malformed"), "{err}");
+        assert!(err.contains("unknown method"), "{err}");
+    }
+
+    #[test]
+    fn parses_service_up_request() {
+        let r = parse_request(
+            r#"{"v": 1, "method": "service.up", "args": {"project": "/p", "services": [{"name": "redis", "tenant": "acme"}]}}"#,
+        )
+        .unwrap();
+        let Request::ServiceUp(args) = r else {
+            panic!("expected ServiceUp");
+        };
+        assert_eq!(args.project, std::path::Path::new("/p"));
+        assert_eq!(args.services.len(), 1);
+        assert_eq!(args.services[0].name, "redis");
+        assert_eq!(args.services[0].tenant, "acme");
+    }
+
+    #[test]
+    fn parses_service_down_request_with_purge() {
+        let r = parse_request(
+            r#"{"v": 1, "method": "service.down", "args": {"project": "/p", "services": ["redis"], "purge": true}}"#,
+        )
+        .unwrap();
+        let Request::ServiceDown(args) = r else {
+            panic!("expected ServiceDown");
+        };
+        assert!(args.purge);
     }
 
     #[test]

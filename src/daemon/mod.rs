@@ -13,6 +13,7 @@
 
 pub mod catalog;
 pub mod ipc;
+pub mod provisioners;
 pub mod sandbox;
 mod state;
 pub mod supervisor;
@@ -105,9 +106,65 @@ async fn serve(paths: Paths) -> Result<ExitCode> {
         });
     }
 
-    accept_loop(listener, state, shutdown_rx).await;
+    // 1-second supervisor tick. Reaps exited children, transitions
+    // Running → Failed, and (Phase 5+) fires deadline-driven restarts.
+    {
+        let supervisor = Arc::clone(&state.supervisor);
+        let mut tick_rx = shutdown_rx.clone();
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(std::time::Duration::from_secs(1));
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tokio::select! {
+                    _ = ticker.tick() => {
+                        supervisor.lock().await.check_all().await;
+                    }
+                    _ = tick_rx.changed() => {
+                        if *tick_rx.borrow() {
+                            return;
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    accept_loop(listener, Arc::clone(&state), shutdown_rx).await;
+
+    // Drain: stop every running service in reverse start-order so
+    // bougied exits with no orphans. Best-effort — surfacing errors
+    // here doesn't help anyone since we're already exiting.
+    drain(&state).await;
 
     Ok(ExitCode::SUCCESS)
+}
+
+async fn drain(state: &Arc<DaemonState>) {
+    use crate::daemon::supervisor::ServiceState;
+    let running: Vec<&'static str> = {
+        let sup = state.supervisor.lock().await;
+        sup.snapshot()
+            .into_iter()
+            .filter(|s| {
+                matches!(
+                    s.state,
+                    ServiceState::Running
+                        | ServiceState::HealthChecking
+                        | ServiceState::Starting
+                )
+            })
+            // SAFETY: catalog names are 'static; the snapshot copied
+            // them into owned Strings, but we can re-resolve to 'static
+            // via the catalog itself.
+            .filter_map(|s| {
+                crate::daemon::catalog::find(&s.name).map(|e| e.name)
+            })
+            .collect()
+    };
+    for name in running.iter().rev() {
+        let mut sup = state.supervisor.lock().await;
+        let _ = sup.stop(name).await;
+    }
 }
 
 async fn accept_loop(
