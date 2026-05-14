@@ -1,5 +1,6 @@
 use crate::cli::OutputFormat;
 use crate::composer::fetch::{build_client, fetch_channels};
+use crate::list_format::{write_row, KeyParts, Suffix};
 use crate::output::{emit_paged, Render};
 use crate::paths::Paths;
 use eyre::{Result, WrapErr};
@@ -18,20 +19,72 @@ pub struct ListResult {
 
 impl Render for ListResult {
     fn render_text(&self, w: &mut dyn Write) -> io::Result<()> {
+        // Always surface the "nothing installed" hint when the on-disk
+        // set is empty — even if the available channels are populated.
+        // Hides the difference between "no network" and "nothing
+        // downloaded yet" behind one familiar line.
         if self.installed.is_empty() {
             writeln!(w, "no composer versions installed")?;
-        } else {
-            for v in &self.installed {
-                writeln!(w, "installed  {v}")?;
+        }
+        if self.installed.is_empty() && self.stable.is_empty() && self.preview.is_empty() {
+            return Ok(());
+        }
+
+        // Resolve installed phar paths lazily so the JSON schema stays
+        // version-only. The path is only needed for the green
+        // text-mode suffix.
+        let paths = Paths::from_env().ok();
+        let installed_set: BTreeSet<&str> = self.installed.iter().map(String::as_str).collect();
+
+        let mut pad = 0;
+        for v in &self.installed {
+            pad = pad.max(KeyParts { version: v, ..KeyParts::default() }.plain_len());
+        }
+        for v in self.stable.iter().chain(self.preview.iter()) {
+            if installed_set.contains(v.as_str()) {
+                continue;
+            }
+            // Stable and preview share the same key shape; only the
+            // channel name differs, and both are 6/7 chars — measure
+            // once with the longer.
+            pad = pad.max(channel_key(v, "preview").plain_len());
+        }
+
+        for v in &self.installed {
+            let key = KeyParts { version: v, ..KeyParts::default() };
+            match &paths {
+                Some(p) => {
+                    let phar = p.composer_phar(v);
+                    write_row(w, &key, pad, &Suffix::Path(&phar), None)?;
+                }
+                // Falling back to the placeholder keeps the column
+                // alignment if $BOUGIE_HOME resolution somehow fails
+                // — better than skipping the row.
+                None => write_row(w, &key, pad, &Suffix::Placeholder, None)?,
             }
         }
         for v in &self.stable {
-            writeln!(w, "available  {v} (stable)")?;
+            if installed_set.contains(v.as_str()) {
+                continue;
+            }
+            write_row(w, &channel_key(v, "stable"), pad, &Suffix::Placeholder, None)?;
         }
         for v in &self.preview {
-            writeln!(w, "available  {v} (preview)")?;
+            if installed_set.contains(v.as_str()) {
+                continue;
+            }
+            write_row(w, &channel_key(v, "preview"), pad, &Suffix::Placeholder, None)?;
         }
         Ok(())
+    }
+}
+
+fn channel_key<'a>(version: &'a str, channel: &'a str) -> KeyParts<'a> {
+    KeyParts {
+        prefix: None,
+        version,
+        target: None,
+        flavor: Some(channel),
     }
 }
 

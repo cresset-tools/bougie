@@ -7,6 +7,9 @@ use crate::index::{
     wire::Section,
 };
 use crate::install::{host_to_dirname, DEFAULT_INDEX_URL};
+use crate::list_format::{
+    pad_spaces, write_styled, FLAVOR_STYLE, SEP_STYLE, Suffix, TARGET_STYLE, VERSION_STYLE,
+};
 use crate::output::{emit, Render};
 use crate::paths::Paths;
 use crate::state::read_project_resolved;
@@ -57,38 +60,67 @@ impl Render for ListResult {
             writeln!(w, "no extensions known")?;
             return Ok(());
         }
-        let keys: Vec<String> = self.items.iter().map(format_key).collect();
-        let pad = keys.iter().map(String::len).max().unwrap_or(0);
-        for (row, key) in self.items.iter().zip(keys.iter()) {
+        let pad = self.items.iter().map(plain_key_len).max().unwrap_or(0);
+        for row in &self.items {
+            write_key(w, row)?;
+            pad_spaces(w, plain_key_len(row), pad)?;
+            write!(w, "  ")?;
+            // `--show-urls` upgrades the suffix from status tags to the
+            // dim URL. The unifying mental model: green path when
+            // resolved on-disk, dim URL/placeholder when remote, dim
+            // status when neither applies. Ext rows currently have no
+            // resolved path (the .so location isn't carried through
+            // the index data), so paths never appear here.
+            let tag_refs: Vec<&str> = row.status.to_vec();
             let suffix = match &row.url {
-                Some(u) => u.clone(),
-                None => row.status.join(", "),
+                Some(u) => Suffix::Url(u.as_str()),
+                None => Suffix::Status(&tag_refs),
             };
-            writeln!(w, "{key:<pad$}  {suffix}", pad = pad)?;
+            suffix.write(w)?;
+            writeln!(w)?;
         }
         Ok(())
     }
 }
 
-fn format_key(row: &Row) -> String {
-    let mut s = row.name.clone();
+fn plain_key_len(row: &Row) -> usize {
+    let mut n = row.name.len();
     if let Some(v) = &row.version {
-        s.push('-');
-        s.push_str(v);
+        n += 1 + v.len();
     }
     if let Some(m) = &row.php_minor {
-        s.push_str("+php");
-        s.push_str(&m.replace('.', ""));
+        n += 4 + m.replace('.', "").len(); // "+php"
     }
     if let Some(f) = &row.flavor {
-        s.push('-');
-        s.push_str(f);
+        n += 1 + f.len();
     }
     if let Some(t) = &row.target {
-        s.push('-');
-        s.push_str(t);
+        n += 1 + t.len();
     }
-    s
+    n
+}
+
+fn write_key(w: &mut dyn Write, row: &Row) -> io::Result<()> {
+    // Bold name — same role as the bold version in php list: the
+    // primary identifier of the row.
+    write_styled(w, VERSION_STYLE, &row.name)?;
+    if let Some(v) = &row.version {
+        write_styled(w, SEP_STYLE, "-")?;
+        write_styled(w, TARGET_STYLE, v)?;
+    }
+    if let Some(m) = &row.php_minor {
+        write_styled(w, SEP_STYLE, "+php")?;
+        write_styled(w, TARGET_STYLE, &m.replace('.', ""))?;
+    }
+    if let Some(f) = &row.flavor {
+        write_styled(w, SEP_STYLE, "-")?;
+        write_styled(w, FLAVOR_STYLE, f)?;
+    }
+    if let Some(t) = &row.target {
+        write_styled(w, SEP_STYLE, "-")?;
+        write_styled(w, TARGET_STYLE, t)?;
+    }
+    Ok(())
 }
 
 /// `bougie ext list` — combine the project's required/installed extensions

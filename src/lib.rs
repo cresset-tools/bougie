@@ -8,6 +8,7 @@ pub mod errors;
 pub mod fetch;
 pub mod index;
 pub mod install;
+pub mod list_format;
 pub mod lock;
 pub mod output;
 pub mod paths;
