@@ -405,8 +405,28 @@ async fn dispatch_env(state: &Arc<DaemonState>, project: std::path::PathBuf) -> 
                     vars.insert(format!("{prefix}DB"), db.clone());
                 }
             }
-            // mariadb / opensearch / rabbitmq / server env shapes land
-            // with their provisioners (Phases 6 / 7 / 8 / 10).
+            "mariadb" => {
+                let sock = state
+                    .paths
+                    .service_run("mariadb")
+                    .join("mariadb.sock")
+                    .display()
+                    .to_string();
+                vars.insert(format!("{prefix}SOCKET"), Value::String(sock));
+                vars.insert(
+                    format!("{prefix}DATABASE"),
+                    Value::String(tenant.tenant.clone()),
+                );
+                vars.insert(
+                    format!("{prefix}USER"),
+                    Value::String(tenant.tenant.clone()),
+                );
+                if let Some(pw) = tenant.secrets.get("password") {
+                    vars.insert(format!("{prefix}PASSWORD"), Value::String(pw.clone()));
+                }
+            }
+            // opensearch / rabbitmq / server env shapes land with their
+            // provisioners (Phases 7 / 10 / 8).
             _ => {}
         }
     }
@@ -431,6 +451,14 @@ async fn dispatch_up(
     for name in order {
         // Skip transitive runtime deps; not all are real services.
         let Some(entry) = catalog::find(name) else { continue };
+        // One-shot bootstrap (e.g. mariadb-install-db on first run).
+        // Idempotent — safe even when the service is already running.
+        if let Err(e) = provisioners::pre_start(entry, &state.paths) {
+            return ResultFrame::err(
+                "pre_start_failed",
+                format!("{}: {}", name, e),
+            );
+        }
         // Start (idempotent).
         let start_res = state.supervisor.lock().await.start(name).await;
         match start_res {
@@ -451,7 +479,13 @@ async fn dispatch_up(
                 None => continue, // dep ordered in but not in the request
             };
             let tenants_path = state.paths.service_tenants(name);
-            match provisioners::provision(entry, &tenants_path, &tenant_name, &project) {
+            match provisioners::provision(
+                entry,
+                &state.paths,
+                &tenants_path,
+                &tenant_name,
+                &project,
+            ) {
                 Ok(t) => {
                     tenants_map.insert(name.to_string(), Value::String(t.tenant));
                 }
@@ -494,7 +528,14 @@ async fn dispatch_down(
             if let Some(t) = project_tenant {
                 let sock_default = state.paths.service_run(entry.name).join(format!("{}.sock", entry.name));
                 let sock = if sock_default.exists() { Some(sock_default.as_path()) } else { None };
-                if let Err(e) = provisioners::deprovision(entry, &tenants_path, &t.tenant, sock, purge) {
+                if let Err(e) = provisioners::deprovision(
+                    entry,
+                    &state.paths,
+                    &tenants_path,
+                    &t.tenant,
+                    sock,
+                    purge,
+                ) {
                     return ResultFrame::err(
                         "deprovision_failed",
                         format!("{}: {}", entry.name, e),

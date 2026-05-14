@@ -104,8 +104,10 @@ pub const CATALOG: &[CatalogEntry] = &[
     },
     CatalogEntry {
         name: "mariadb",
-        version: "11.4.10",
-        tarball: "mariadb-11.4.10",
+        // 11.4.4 matches the tag published by the bougie index today;
+        // bump when the index ships a newer 11.4.x.
+        version: "11.4.4",
+        tarball: "mariadb-11.4.4",
         binary: "bin/mariadbd",
         binding: Binding::UnixSocket { sockname: "mariadb.sock" },
         tenancy: Tenancy::Mariadb,

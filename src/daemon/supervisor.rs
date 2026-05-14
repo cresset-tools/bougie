@@ -8,11 +8,11 @@
 use super::catalog::{self, Binding, CatalogEntry};
 use super::logs::LogWriter;
 use super::sandbox;
+use super::store_layout;
 use crate::Paths;
 use eyre::{eyre, Context, Result};
 use serde::Serialize;
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -110,49 +110,11 @@ impl Supervisor {
         out
     }
 
-    /// Resolve the on-disk path of a service's main binary, scanning
-    /// `\$BOUGIE_HOME/store/` for any directory starting with the
-    /// catalog's `tarball` prefix. Phase 3 expects the tarball to be
-    /// present already; auto-fetch via `fetch::fetch_blob` lands in a
-    /// follow-up.
-    fn binary_path(&self, entry: &CatalogEntry) -> Result<PathBuf> {
-        if entry.tarball.is_empty() {
-            // `server` re-uses the bougie binary itself.
-            let exe = std::env::current_exe().wrap_err("locating current bougie binary")?;
-            return Ok(exe);
-        }
-        let store = self.paths.store();
-        let prefix = format!("{}-", entry.tarball);
-        // Exact-name match (no hash suffix) is also valid — common in
-        // tests that lay out a fixture tarball without the deterministic
-        // hash flow.
-        let exact = store.join(entry.tarball);
-        if exact.is_dir() {
-            return Ok(exact.join(entry.binary));
-        }
-        let mut found = None;
-        if let Ok(rd) = std::fs::read_dir(&store) {
-            for ent in rd.flatten() {
-                let name = ent.file_name();
-                if name
-                    .to_str()
-                    .is_some_and(|s| s.starts_with(&prefix))
-                {
-                    found = Some(ent.path());
-                    break;
-                }
-            }
-        }
-        let dir = found.ok_or_else(|| {
-            eyre!(
-                "service `{}`: tarball `{}` not found under {}. \
-                 Tarball auto-fetch is not yet wired (Phase 3 follow-up).",
-                entry.name,
-                entry.tarball,
-                store.display(),
-            )
-        })?;
-        Ok(dir.join(entry.binary))
+    /// Resolve the on-disk path of a service's main binary. Thin
+    /// wrapper over `store_layout::binary` so the supervisor and the
+    /// per-service provisioners agree on where each service lives.
+    fn binary_path(&self, entry: &CatalogEntry) -> Result<std::path::PathBuf> {
+        store_layout::binary(&self.paths, entry)
     }
 
     /// Spawn a service if it isn't already running. Walks
@@ -316,10 +278,10 @@ impl Supervisor {
 
 // -------------------- helpers --------------------
 
-/// Render `exec_args` for a service. Phase 3 only renders redis args
-/// because redis is the only Phase-3 provisioner; other services will
-/// have their own arg templates in later phases. The fallback is `[]`
-/// (run the binary with no args).
+/// Render `exec_args` for a service. Each entry's argv is hand-rolled
+/// here rather than templated — services have idiosyncratic flags
+/// (mariadb's `--skip-networking`, redis's `--unixsocketperm`, etc.)
+/// and the table is short. Fallback `[]` runs the binary with no args.
 fn render_exec_args(entry: &CatalogEntry, paths: &Paths) -> Vec<String> {
     match entry.name {
         "redis" => {
@@ -346,6 +308,47 @@ fn render_exec_args(entry: &CatalogEntry, paths: &Paths) -> Vec<String> {
                 String::new(),
                 "--appendonly".into(),
                 "no".into(),
+            ]
+        }
+        "mariadb" => {
+            let data_path = paths.service_data("mariadb");
+            let datadir = data_path.display().to_string();
+            let sock = paths.service_run("mariadb").join("mariadb.sock").display().to_string();
+            // InnoDB writes temporaries during startup. The sandbox
+            // hides /tmp (default systemd-style ProtectSystem), so
+            // pin them under the already-RW datadir. Best-effort
+            // create — mariadbd would create it too, but doing it
+            // ahead of time avoids a noisy log line.
+            let tmpdir = data_path.join("tmp");
+            let _ = std::fs::create_dir_all(&tmpdir);
+            // `basedir` is the install root the tarball extracted into;
+            // mariadbd reads `share/mariadb/english/errmsg.sys` etc.
+            // from there.
+            let basedir = store_layout::basedir(paths, entry)
+                .map(|p| p.display().to_string())
+                .unwrap_or_default();
+            vec![
+                // Ignore the host's /etc/my.cnf — on CI runners it
+                // typically contains MySQL-8-only settings that our
+                // bundled mariadbd rejects ("unknown variable
+                // 'mysqlx-bind-address=...'"). The only options
+                // mariadbd should see are the ones bougied passes
+                // explicitly.
+                "--no-defaults".into(),
+                format!("--basedir={basedir}"),
+                format!("--datadir={datadir}"),
+                format!("--socket={sock}"),
+                format!("--tmpdir={}", tmpdir.display()),
+                // Bougie services bind unix sockets only — see
+                // SERVICES.md §6. `--skip-networking` ensures mariadbd
+                // doesn't also bind 0.0.0.0:3306 by default.
+                "--skip-networking".into(),
+                // mariadbd writes a slow-query / general-query log
+                // into the data dir by default; the dev workflow
+                // doesn't need either, and skipping them keeps the
+                // datadir small.
+                "--general-log=0".into(),
+                "--slow-query-log=0".into(),
             ]
         }
         _ => Vec::new(),
