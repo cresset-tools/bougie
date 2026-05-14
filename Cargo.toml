@@ -59,14 +59,14 @@ default-features = false
 features = ["std", "tls12", "ring"]
 
 [dependencies.sha2]
-version = "0.10"
+version = "0.11"
 
 # Composer's `Locker::getContentHash` is MD5 of a canonicalized
 # composer.json subset. MD5 isn't in `sha2`; pull the RustCrypto MD5
 # crate. Hash-collision risk is irrelevant here — the algorithm is
 # composer's published contract and we have to match it.
 [dependencies.md-5]
-version = "0.10"
+version = "0.11"
 
 # Sigstore root signature verification.
 [dependencies.sigstore]
@@ -119,7 +119,7 @@ version = "0.11"
 
 # Output
 [dependencies.anstream]
-version = "0.6"
+version = "1.0"
 
 [dependencies.anstyle]
 version = "1.0"
