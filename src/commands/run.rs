@@ -70,6 +70,19 @@ pub fn run(
     if xdebug_flag && !env_session_set {
         cmd.env("XDEBUG_SESSION", "1");
     }
+    // Layer in any per-tenant `BOUGIE_SERVICE_*` env vars the daemon
+    // knows about. Only when `bougied` is already running — `bougie
+    // run` deliberately does NOT auto-spawn the daemon (the user
+    // explicitly chose `bougie services up` for that). When the
+    // daemon isn't there the vars are absent; PHP code that depends
+    // on them gets a connection error, which is the right surface.
+    if let Ok(paths) = Paths::from_env() {
+        if paths.bougied_sock().exists() {
+            for (k, v) in fetch_service_env(&paths, &project_root) {
+                cmd.env(k, v);
+            }
+        }
+    }
     let err = cmd.exec();
     Err(BougieError::Filesystem {
         operation: format!("execve {program}"),
@@ -100,6 +113,40 @@ fn install_xdebug_into_overlay(project_root: &Path) -> Result<()> {
         installed.load,
     )?;
     Ok(())
+}
+
+/// Best-effort IPC call to `bougied` for the project's
+/// `BOUGIE_SERVICE_*` env vars. Returns an empty Vec if anything goes
+/// wrong — `bougie run` must never fail because the daemon was down,
+/// slow, or speaking an old protocol. A connection error here is a
+/// signal to the user (PHP gets no DSN); not a CLI-level error.
+fn fetch_service_env(
+    paths: &Paths,
+    project: &Path,
+) -> Vec<(String, String)> {
+    use serde::Deserialize;
+    #[derive(Deserialize)]
+    struct EnvReply {
+        #[serde(default)]
+        vars: std::collections::BTreeMap<String, serde_json::Value>,
+    }
+    let args = serde_json::json!({"project": project});
+    let reply: Result<EnvReply> =
+        crate::commands::services::client::call(paths, "service.env", args);
+    match reply {
+        Ok(r) => r
+            .vars
+            .into_iter()
+            .filter_map(|(k, v)| {
+                let s = match v {
+                    serde_json::Value::String(s) => s,
+                    other => other.to_string(),
+                };
+                Some((k, s))
+            })
+            .collect(),
+        Err(_) => Vec::new(),
+    }
 }
 
 /// True iff the project's resolved markers point at on-disk artifacts
