@@ -63,6 +63,8 @@ pub enum Request {
     /// Used by `bougie run` to pick up tenant-derived env vars to
     /// inject into the child PHP process. Idempotent + side-effect-free.
     ServiceEnv(ServiceEnvArgs),
+    /// Tail (and optionally follow) a service's log.
+    ServiceLogs(ServiceLogsArgs),
 }
 
 #[derive(Debug, Deserialize)]
@@ -82,6 +84,19 @@ pub struct ServiceDownArgs {
 #[derive(Debug, Deserialize)]
 pub struct ServiceEnvArgs {
     pub project: std::path::PathBuf,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ServiceLogsArgs {
+    pub service: String,
+    #[serde(default = "default_lines")]
+    pub lines: usize,
+    #[serde(default)]
+    pub follow: bool,
+}
+
+fn default_lines() -> usize {
+    50
 }
 
 #[derive(Debug, Deserialize)]
@@ -172,19 +187,36 @@ pub async fn handle_connection(stream: UnixStream, state: Arc<DaemonState>) {
         return;
     }
 
-    let frame = match parse_request(line.trim()) {
-        Ok(req) => dispatch(req, &state).await,
-        Err(e) => ResultFrame::err("bad_request", e),
-    };
+    match parse_request(line.trim()) {
+        // service.logs is the only streaming method today: it writes
+        // its own progress frames + a terminal frame (or never sends a
+        // terminal in follow-mode, in which case the client closes the
+        // connection).
+        Ok(Request::ServiceLogs(args)) => {
+            dispatch_logs(&mut write_half, &state, args).await;
+        }
+        Ok(req) => {
+            let frame = dispatch(req, &state).await;
+            write_terminal(&mut write_half, &frame).await;
+        }
+        Err(e) => {
+            let frame = ResultFrame::err("bad_request", e);
+            write_terminal(&mut write_half, &frame).await;
+        }
+    }
+}
 
-    let bytes = match serde_json::to_vec(&frame) {
+async fn write_terminal(
+    write_half: &mut tokio::net::unix::OwnedWriteHalf,
+    frame: &ResultFrame,
+) {
+    let bytes = match serde_json::to_vec(frame) {
         Ok(b) => b,
         Err(e) => {
             tracing::error!(error = %e, "bougied: serializing response");
             return;
         }
     };
-
     if let Err(e) = write_half.write_all(&bytes).await {
         tracing::warn!(error = %e, "bougied: writing response");
         return;
@@ -218,6 +250,9 @@ fn parse_request(line: &str) -> Result<Request, String> {
         "service.env" => serde_json::from_value::<ServiceEnvArgs>(env.args)
             .map(Request::ServiceEnv)
             .map_err(|e| format!("service.env args: {e}")),
+        "service.logs" => serde_json::from_value::<ServiceLogsArgs>(env.args)
+            .map(Request::ServiceLogs)
+            .map_err(|e| format!("service.logs args: {e}")),
         other => Err(format!("unknown method `{other}`")),
     }
 }
@@ -247,7 +282,95 @@ async fn dispatch(req: Request, state: &Arc<DaemonState>) -> ResultFrame {
             dispatch_down(state, args.project, args.services, args.purge).await
         }
         Request::ServiceEnv(args) => dispatch_env(state, args.project).await,
+        Request::ServiceLogs(_) => unreachable!("handled in handle_connection"),
     }
+}
+
+/// Streaming `service.logs` handler. Reads the initial tail, then
+/// either sends a terminal `result` (tail-only) or enters follow-mode
+/// — a 250ms poll loop that streams new bytes as `progress` frames.
+/// Follow-mode never sends a terminal; the client closing the socket
+/// is the signal to exit.
+async fn dispatch_logs(
+    write_half: &mut tokio::net::unix::OwnedWriteHalf,
+    state: &Arc<DaemonState>,
+    args: ServiceLogsArgs,
+) {
+    use crate::daemon::{catalog, logs};
+
+    let Some(entry) = catalog::find(&args.service) else {
+        let frame = ResultFrame::err("unknown_service", format!("`{}` not in catalog", args.service));
+        write_terminal(write_half, &frame).await;
+        return;
+    };
+    let log_path = state
+        .paths
+        .service_log(entry.name)
+        .join(format!("{}.log", entry.name));
+
+    // 1. Tail.
+    let tail = logs::tail_lines(&log_path, args.lines).unwrap_or_default();
+    let joined = tail.concat();
+    if !joined.is_empty() {
+        if !write_progress(write_half, "stdout", &joined).await {
+            return;
+        }
+    }
+
+    if !args.follow {
+        let frame = ResultFrame::ok(serde_json::json!({"lines_tailed": tail.len()}));
+        write_terminal(write_half, &frame).await;
+        return;
+    }
+
+    // 2. Follow: seek to current end-of-file, poll for growth, stream
+    // new bytes. Buffer reused across iterations to avoid alloc churn.
+    use tokio::io::{AsyncReadExt as _, AsyncSeekExt as _};
+    let mut f = match tokio::fs::OpenOptions::new().read(true).open(&log_path).await {
+        Ok(f) => f,
+        Err(e) => {
+            let frame = ResultFrame::err("log_open_failed", e.to_string());
+            write_terminal(write_half, &frame).await;
+            return;
+        }
+    };
+    if f.seek(std::io::SeekFrom::End(0)).await.is_err() {
+        return;
+    }
+    let mut buf = vec![0u8; 8 * 1024];
+    loop {
+        match f.read(&mut buf).await {
+            Ok(0) => {
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            }
+            Ok(n) => {
+                let chunk = String::from_utf8_lossy(&buf[..n]);
+                if !write_progress(write_half, "stdout", &chunk).await {
+                    return;
+                }
+            }
+            Err(_) => return,
+        }
+    }
+}
+
+async fn write_progress(
+    write_half: &mut tokio::net::unix::OwnedWriteHalf,
+    stream: &str,
+    data: &str,
+) -> bool {
+    let frame = ProgressFrame::new(stream, data);
+    let bytes = match serde_json::to_vec(&frame) {
+        Ok(b) => b,
+        Err(_) => return false,
+    };
+    if write_half.write_all(&bytes).await.is_err() {
+        return false;
+    }
+    if write_half.write_all(b"\n").await.is_err() {
+        return false;
+    }
+    write_half.flush().await.is_ok()
 }
 
 /// Build the `BOUGIE_SERVICE_*` env map for this project's tenants.

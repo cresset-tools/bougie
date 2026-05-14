@@ -219,6 +219,9 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
         Command::Services(ServicesCommand::Status { name }) => {
             commands::services::status::run(format, field, name)
         }
+        Command::Services(ServicesCommand::Logs { name, follow, lines }) => {
+            commands::services::logs::run(format, field, name, follow, lines)
+        }
         Command::Services(ServicesCommand::Daemon(ServicesDaemonCommand::Status)) => {
             commands::services::daemon::status(format, field)
         }

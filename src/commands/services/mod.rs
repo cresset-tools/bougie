@@ -11,6 +11,7 @@ pub mod config_mut;
 pub mod daemon;
 pub mod down;
 pub mod list;
+pub mod logs;
 pub mod remove;
 pub mod status;
 pub mod up;
