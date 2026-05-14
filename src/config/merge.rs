@@ -2,9 +2,10 @@
 //! plus the loader that orchestrates reading both files from disk.
 
 use super::{
-    read_bougie_toml, BougieConfig, ComposerConfig, ComposerJson, ExtensionPin, IndexEntry,
-    PhpConfig,
+    read_bougie_toml, BougieConfig, ComposerConfig, ComposerJson, IndexEntry, PhpConfig,
 };
+#[cfg(test)]
+use super::{ExtensionPin, ServicePin};
 use eyre::{Result, WrapErr};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -26,15 +27,16 @@ pub fn merge(toml_cfg: BougieConfig, extra_cfg: BougieConfig) -> BougieConfig {
         composer: ComposerConfig {
             version: toml_cfg.composer.version.or(extra_cfg.composer.version),
         },
-        extensions: deep_merge_extensions(extra_cfg.extensions, toml_cfg.extensions),
+        extensions: deep_merge_map(extra_cfg.extensions, toml_cfg.extensions),
+        services: deep_merge_map(extra_cfg.services, toml_cfg.services),
         index: replace_if_nonempty(extra_cfg.index, toml_cfg.index),
     }
 }
 
-fn deep_merge_extensions(
-    base: BTreeMap<String, ExtensionPin>,
-    over: BTreeMap<String, ExtensionPin>,
-) -> BTreeMap<String, ExtensionPin> {
+fn deep_merge_map<V>(
+    base: BTreeMap<String, V>,
+    over: BTreeMap<String, V>,
+) -> BTreeMap<String, V> {
     let mut out = base;
     out.extend(over);
     out
@@ -198,5 +200,47 @@ mod tests {
         let merged = merge(toml_cfg, extra_cfg);
         assert_eq!(merged.index.len(), 1);
         assert_eq!(merged.index[0].host, "https://e");
+    }
+
+    // -------------------- services merge --------------------
+
+    #[test]
+    fn service_tables_deep_merge_with_toml_winning() {
+        let mut toml_svcs = BTreeMap::new();
+        toml_svcs.insert("redis".into(), ServicePin::Version("8.6".into()));
+        let mut extra_svcs = BTreeMap::new();
+        extra_svcs.insert("mariadb".into(), ServicePin::Version("11.4".into()));
+        // Shadowed by toml:
+        extra_svcs.insert("redis".into(), ServicePin::Version("7.4".into()));
+        let merged = merge(
+            BougieConfig { services: toml_svcs, ..Default::default() },
+            BougieConfig { services: extra_svcs, ..Default::default() },
+        );
+        assert_eq!(merged.services.len(), 2);
+        assert_eq!(merged.services.get("redis").and_then(ServicePin::version), Some("8.6"));
+        assert_eq!(merged.services.get("mariadb").and_then(ServicePin::version), Some("11.4"));
+    }
+
+    #[test]
+    fn service_detail_overrides_extra_bare_pin() {
+        // bougie.toml `[services.mariadb] version = "11.4"; tenant = "foo"`
+        // wins over `extra.bougie.services.mariadb = "10.6"`.
+        let mut toml_svcs = BTreeMap::new();
+        toml_svcs.insert(
+            "mariadb".into(),
+            ServicePin::Detail(super::super::ServicePinDetail {
+                version: Some("11.4".into()),
+                tenant: Some("foo".into()),
+            }),
+        );
+        let mut extra_svcs = BTreeMap::new();
+        extra_svcs.insert("mariadb".into(), ServicePin::Version("10.6".into()));
+        let merged = merge(
+            BougieConfig { services: toml_svcs, ..Default::default() },
+            BougieConfig { services: extra_svcs, ..Default::default() },
+        );
+        let m = merged.services.get("mariadb").unwrap();
+        assert_eq!(m.version(), Some("11.4"));
+        assert_eq!(m.tenant(), Some("foo"));
     }
 }

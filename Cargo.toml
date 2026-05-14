@@ -1,15 +1,35 @@
+[workspace]
+# `crates/sandbox-run` and its sibling `macos-sandbox-sys` are vendored
+# (rather than path-deped from a sibling repo) so that the bougie repo
+# is self-contained for build and audit. Both crates are EUPL-1.2,
+# matching bougie's license.
+members = ["crates/macos-sandbox-sys", "crates/sandbox-run"]
+
+[workspace.package]
+edition = "2024"
+license = "EUPL-1.2"
+authors = ["Jelle Besseling <jelle@pingiun.com>"]
+
 [package]
 name = "bougie"
 version = "0.3.0"
 edition = "2024"
 description = "PHP toolchain management the luxury way."
-license = "Apache-2.0 OR MIT"
+license = "EUPL-1.2"
 repository = "https://github.com/cresset-tools/bougie"
 rust-version = "1.95"
 
 [[bin]]
 name = "bougie"
 path = "src/main.rs"
+
+# Phase 3 integration-test fixture. Stands in for a real redis-server
+# in the supervisor tests: parses `--unixsocket <path>` and binds the
+# socket, satisfying the daemon's health probe. Not used at runtime;
+# ships only because the test harness `cargo_bin`s it.
+[[bin]]
+name = "fake-redis"
+path = "tests/fixtures/fake_redis.rs"
 
 [features]
 default = ["dev-trust-root"]
@@ -96,11 +116,19 @@ version = "3.10"
 
 # Direct flock(2) for the timeout-aware ExclusiveLock in src/lock.rs;
 # also `geteuid()` for the $XDG_RUNTIME_DIR fallback path inside
-# `bougie server`.
+# `bougie server`, and the `bougied.pid` singleton lock in
+# `src/daemon/`.
 [dependencies.rustix]
 version = "1.0"
 default-features = false
 features = ["std", "fs", "process"]
+
+# Process sandboxing for managed dev services (`bougied`).
+# Cross-platform: Linux Landlock (kernel 5.13+), macOS SBPL via
+# `sandbox_init_with_parameters`. Vendored as workspace member at
+# `crates/sandbox-run/` so this repo is self-contained.
+[dependencies.sandbox-run]
+path = "crates/sandbox-run"
 
 # URL joining for relative manifest URLs in the index protocol.
 [dependencies.url]
@@ -228,7 +256,12 @@ strip = "symbols"
 # Default; mostly here so developers don't get surprised by a tuned profile.
 
 [lints.rust]
-unsafe_code = "forbid"
+# `deny` rather than `forbid` so the daemon's process-supervisor can
+# allow a single, well-justified unsafe block: applying a sandbox
+# policy via `std::os::unix::process::CommandExt::pre_exec` (see
+# `src/daemon/supervisor.rs`). Every other site stays safe by default;
+# adding a new `#[allow(unsafe_code)]` should require explicit review.
+unsafe_code = "deny"
 missing_debug_implementations = "warn"
 
 [lints.clippy]

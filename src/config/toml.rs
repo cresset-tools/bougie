@@ -97,4 +97,27 @@ version = "2.8.5"
         let cfg = read_bougie_toml(&write_bougie_toml_skeleton()).unwrap();
         assert_eq!(cfg, BougieConfig::default());
     }
+
+    #[test]
+    fn services_bare_and_table_forms_coexist() {
+        let cfg = read_bougie_toml(
+            r#"
+[services]
+redis = "8.6"
+
+[services.mariadb]
+version = "11.4"
+tenant = "myapp"
+"#,
+        )
+        .unwrap();
+        assert_eq!(cfg.services.len(), 2);
+        assert_eq!(
+            cfg.services.get("redis").and_then(super::super::ServicePin::version),
+            Some("8.6")
+        );
+        let m = cfg.services.get("mariadb").unwrap();
+        assert_eq!(m.version(), Some("11.4"));
+        assert_eq!(m.tenant(), Some("myapp"));
+    }
 }

@@ -4,6 +4,7 @@ pub mod commands;
 pub mod composer;
 pub mod conf_d;
 pub mod config;
+pub mod daemon;
 pub mod errors;
 pub mod fetch;
 pub mod index;
@@ -27,7 +28,7 @@ pub use target::Triple;
 
 use cli::{
     CacheCommand, ComposerCommand, PhpCommand, SelfCommand, ServerCommand, ServerHostsCommand,
-    ServerTlsCommand,
+    ServerTlsCommand, ServicesCommand, ServicesDaemonCommand,
 };
 use eyre::Result;
 use std::process::ExitCode;
@@ -197,6 +198,36 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
         }
         Command::Server(ServerCommand::Tls(ServerTlsCommand::Uninstall)) => {
             commands::server::tls::uninstall(format, field)
+        }
+        Command::Services(ServicesCommand::Add { names }) => {
+            commands::services::add::run(format, field, names)
+        }
+        Command::Services(ServicesCommand::Remove { names, purge }) => {
+            commands::services::remove::run(format, field, names, purge)
+        }
+        Command::Services(ServicesCommand::List { all }) => {
+            commands::services::list::run(format, field, all)
+        }
+        Command::Services(ServicesCommand::Catalog) => {
+            commands::services::catalog::run(format, field)
+        }
+        Command::Services(ServicesCommand::Up { names }) => {
+            commands::services::up::run(format, field, names)
+        }
+        Command::Services(ServicesCommand::Down { names, purge }) => {
+            commands::services::down::run(format, field, names, purge)
+        }
+        Command::Services(ServicesCommand::Status { name }) => {
+            commands::services::status::run(format, field, name)
+        }
+        Command::Services(ServicesCommand::Daemon(ServicesDaemonCommand::Status)) => {
+            commands::services::daemon::status(format, field)
+        }
+        Command::Services(ServicesCommand::Daemon(ServicesDaemonCommand::Stop)) => {
+            commands::services::daemon::stop(format, field)
+        }
+        Command::Services(ServicesCommand::Daemon(ServicesDaemonCommand::Version)) => {
+            commands::services::daemon::version(format, field)
         }
     }
 }

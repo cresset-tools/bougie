@@ -102,6 +102,75 @@ pub enum Command {
     /// the foreground server. See SERVER.md.
     #[command(subcommand)]
     Server(ServerCommand),
+
+    /// Manage project-scoped dev services (mariadb, redis, …). See
+    /// SERVICES.md and CLI.md §3.8.
+    #[command(subcommand)]
+    Services(ServicesCommand),
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ServicesCommand {
+    /// Declare a service in the project. Errors if the name isn't in
+    /// the catalog. Use `bougie services catalog` to discover names.
+    Add {
+        /// One or more service names, each optionally `@<version>`.
+        names: Vec<String>,
+    },
+    /// Remove a service declaration from the project.
+    Remove {
+        /// Service names to remove. `--purge` is reserved for the
+        /// future tenant-data-destruction path; today it has no effect.
+        names: Vec<String>,
+        /// Reserved — see CLI.md §3.8.2. Today this only echoes back.
+        #[arg(long)]
+        purge: bool,
+    },
+    /// List the services declared in the current project.
+    List {
+        /// Reserved for cross-project listing in Phase 3+. Today this
+        /// degrades silently to per-project output.
+        #[arg(long)]
+        all: bool,
+    },
+    /// Print the built-in service catalog (no daemon required).
+    Catalog,
+    /// Start the named services (or every declared service) and
+    /// provision the project's tenant in each.
+    Up {
+        /// Service names to bring up. Empty = every declared service.
+        names: Vec<String>,
+    },
+    /// Stop the named services (or every declared service) for the
+    /// current project. The global service stops only when no other
+    /// project's tenant remains.
+    Down {
+        names: Vec<String>,
+        /// Destroy persisted tenant data (e.g. FLUSHDB on redis). Off
+        /// by default — re-adding the service should restore state.
+        #[arg(long)]
+        purge: bool,
+    },
+    /// Per-service status for the current project.
+    Status {
+        /// Limit to a single service.
+        name: Option<String>,
+    },
+    /// Inspect and control the `bougied` daemon.
+    #[command(subcommand)]
+    Daemon(ServicesDaemonCommand),
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ServicesDaemonCommand {
+    /// Print daemon PID, socket path, and managed-service count. The
+    /// daemon is auto-spawned if not already running.
+    Status,
+    /// Send a graceful shutdown to the running daemon.
+    Stop,
+    /// Print the daemon's reported version (used by the CLI to detect
+    /// post-`self update` daemon-binary mismatches).
+    Version,
 }
 
 #[derive(Subcommand, Debug)]
