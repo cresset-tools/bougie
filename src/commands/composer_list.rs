@@ -15,6 +15,7 @@ pub struct ListResult {
     pub installed: Vec<String>,
     pub stable: Vec<String>,
     pub preview: Vec<String>,
+    pub lts: Vec<String>,
 }
 
 impl Render for ListResult {
@@ -26,7 +27,11 @@ impl Render for ListResult {
         if self.installed.is_empty() {
             writeln!(w, "no composer versions installed")?;
         }
-        if self.installed.is_empty() && self.stable.is_empty() && self.preview.is_empty() {
+        if self.installed.is_empty()
+            && self.stable.is_empty()
+            && self.preview.is_empty()
+            && self.lts.is_empty()
+        {
             return Ok(());
         }
 
@@ -35,23 +40,44 @@ impl Render for ListResult {
         // text-mode suffix.
         let paths = Paths::from_env().ok();
         let installed_set: BTreeSet<&str> = self.installed.iter().map(String::as_str).collect();
+        let stable_set: BTreeSet<&str> = self.stable.iter().map(String::as_str).collect();
+        let lts_set: BTreeSet<&str> = self.lts.iter().map(String::as_str).collect();
+
+        // A version reachable via the LTS channel is always rendered as
+        // `-lts`; one reachable via stable wins over preview when both
+        // list it. This makes "preview duplicates stable" collapse to a
+        // single stable row, and surfaces the 2.2 LTS line distinctly.
+        let show_stable =
+            |v: &str| !installed_set.contains(v) && !lts_set.contains(v);
+        let show_preview = |v: &str| {
+            !installed_set.contains(v) && !lts_set.contains(v) && !stable_set.contains(v)
+        };
+        let show_lts = |v: &str| !installed_set.contains(v);
 
         let mut pad = 0;
         for v in &self.installed {
-            pad = pad.max(KeyParts { version: v, ..KeyParts::default() }.plain_len());
+            let flavor = if lts_set.contains(v.as_str()) { Some("lts") } else { None };
+            pad = pad.max(KeyParts { version: v, flavor, ..KeyParts::default() }.plain_len());
         }
-        for v in self.stable.iter().chain(self.preview.iter()) {
-            if installed_set.contains(v.as_str()) {
-                continue;
+        for v in &self.stable {
+            if show_stable(v) {
+                pad = pad.max(channel_key(v, "stable").plain_len());
             }
-            // Stable and preview share the same key shape; only the
-            // channel name differs, and both are 6/7 chars — measure
-            // once with the longer.
-            pad = pad.max(channel_key(v, "preview").plain_len());
+        }
+        for v in &self.preview {
+            if show_preview(v) {
+                pad = pad.max(channel_key(v, "preview").plain_len());
+            }
+        }
+        for v in &self.lts {
+            if show_lts(v) {
+                pad = pad.max(channel_key(v, "lts").plain_len());
+            }
         }
 
         for v in &self.installed {
-            let key = KeyParts { version: v, ..KeyParts::default() };
+            let flavor = if lts_set.contains(v.as_str()) { Some("lts") } else { None };
+            let key = KeyParts { version: v, flavor, ..KeyParts::default() };
             match &paths {
                 Some(p) => {
                     let phar = p.composer_phar(v);
@@ -64,16 +90,22 @@ impl Render for ListResult {
             }
         }
         for v in &self.stable {
-            if installed_set.contains(v.as_str()) {
+            if !show_stable(v) {
                 continue;
             }
             write_row(w, &channel_key(v, "stable"), pad, &Suffix::Placeholder, None)?;
         }
         for v in &self.preview {
-            if installed_set.contains(v.as_str()) {
+            if !show_preview(v) {
                 continue;
             }
             write_row(w, &channel_key(v, "preview"), pad, &Suffix::Placeholder, None)?;
+        }
+        for v in &self.lts {
+            if !show_lts(v) {
+                continue;
+            }
+            write_row(w, &channel_key(v, "lts"), pad, &Suffix::Placeholder, None)?;
         }
         Ok(())
     }
@@ -94,9 +126,10 @@ pub fn run(format: OutputFormat, field: Option<&str>) -> Result<ExitCode> {
 
     // The available view is best-effort: failure to reach getcomposer.org
     // (or a stale cache) shouldn't make `bougie composer list` unusable.
-    let (stable, preview) = fetch_available(&paths).unwrap_or((Vec::new(), Vec::new()));
+    let (stable, preview, lts) =
+        fetch_available(&paths).unwrap_or_else(|_| (Vec::new(), Vec::new(), Vec::new()));
 
-    let result = ListResult { schema_version: 1, installed, stable, preview };
+    let result = ListResult { schema_version: 1, installed, stable, preview, lts };
     emit_paged(format, field, &result)?;
     Ok(ExitCode::SUCCESS)
 }
@@ -124,11 +157,12 @@ fn list_installed(paths: &Paths) -> Result<Vec<String>> {
     Ok(out.into_iter().collect())
 }
 
-fn fetch_available(paths: &Paths) -> Result<(Vec<String>, Vec<String>)> {
+fn fetch_available(paths: &Paths) -> Result<(Vec<String>, Vec<String>, Vec<String>)> {
     let client = build_client()?;
     let channels = fetch_channels(&client, paths)?;
     Ok((
         channels.stable.into_iter().map(|e| e.version).collect(),
         channels.preview.into_iter().map(|e| e.version).collect(),
+        channels.lts.into_iter().map(|e| e.version).collect(),
     ))
 }

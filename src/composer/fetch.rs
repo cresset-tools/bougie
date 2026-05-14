@@ -25,6 +25,13 @@ const VERSIONS_PATH: &str = "/versions";
 pub struct Channels {
     pub stable: Vec<ChannelEntry>,
     pub preview: Vec<ChannelEntry>,
+    // getcomposer.org publishes the 2.2 long-term-support line under a
+    // top-level `"2.2"` key alongside `stable` / `preview`. There's no
+    // generic `lts` key — the LTS branch happens to be named after its
+    // version. If upstream ever introduces a new LTS line they'll likely
+    // add a parallel `"3.x"` key; revisit then.
+    #[serde(rename = "2.2")]
+    pub lts: Vec<ChannelEntry>,
 }
 
 /// One row from `getcomposer.org/versions`. We deliberately ignore
