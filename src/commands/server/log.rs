@@ -7,6 +7,7 @@
 //! same schema and are emitted by phase-2+ code calling
 //! [`emit_event`].
 
+use anstyle::{AnsiColor, Color, Style};
 use serde::Serialize;
 use std::io::{self, Write};
 use std::sync::OnceLock;
@@ -108,22 +109,77 @@ impl<'a> RequestRow<'a> {
 
 pub fn emit_request(row: &RequestRow<'_>) {
     let stderr = io::stderr();
-    let mut w = stderr.lock();
+    let w = stderr.lock();
+    // AutoStream strips ANSI when stderr isn't a TTY (or NO_COLOR is set),
+    // so redirection still produces clean plain-text logs.
+    let mut w = anstream::AutoStream::auto(w);
     let _ = match format() {
         LogFormat::Text => write_request_text(&mut w, row),
         LogFormat::JsonV1 => write_event_json(&mut w, row),
     };
 }
 
+const DIM: Style = Style::new().dimmed();
+
+fn ansi(c: AnsiColor) -> Style {
+    Style::new().fg_color(Some(Color::Ansi(c))).bold()
+}
+
+fn method_style(method: &str) -> Style {
+    let c = match method {
+        "GET" => AnsiColor::Green,
+        "POST" => AnsiColor::Cyan,
+        "PUT" | "PATCH" => AnsiColor::Yellow,
+        "DELETE" => AnsiColor::Red,
+        "HEAD" | "OPTIONS" => AnsiColor::Magenta,
+        _ => AnsiColor::White,
+    };
+    ansi(c)
+}
+
+fn status_style(status: u16) -> Style {
+    let c = match status / 100 {
+        2 => AnsiColor::Green,
+        3 => AnsiColor::Cyan,
+        4 => AnsiColor::Yellow,
+        5 => AnsiColor::Red,
+        _ => AnsiColor::White,
+    };
+    ansi(c)
+}
+
+fn duration_style(ms: u64) -> Style {
+    if ms >= 500 {
+        ansi(AnsiColor::Red)
+    } else if ms >= 100 {
+        ansi(AnsiColor::Yellow)
+    } else {
+        DIM
+    }
+}
+
+fn short_time(ts: &str) -> &str {
+    // RFC3339 like "2026-05-14T15:30:45.123Z" → "15:30:45.123".
+    // Fall back to the whole stamp if the layout doesn't match.
+    ts.get(11..23).unwrap_or(ts)
+}
+
 fn write_request_text<W: Write>(w: &mut W, r: &RequestRow<'_>) -> io::Result<()> {
-    // Stay close to nginx-ish access log shape so the line is at-a-glance
-    // scannable in dev. ANSI is intentionally off here — `bougie server`
-    // already uses `--format` to colour stdout; stderr stays plain to
-    // play nicely with redirection.
+    // nginx-ish access shape, colourised for at-a-glance scanning.
+    // AutoStream in `emit_request` keeps redirected output plain.
+    let m = method_style(r.method);
+    let s = status_style(r.status);
+    let d = duration_style(r.duration_ms);
     writeln!(
         w,
-        "{} {} {} {} -> {} ({} bytes, {}ms)",
-        r.ts, r.method, r.host, r.path, r.status, r.bytes_out, r.duration_ms
+        "{DIM}{ts}{DIM:#} {m}{method:<6}{m:#} {DIM}{host}{DIM:#} {path} {DIM}→{DIM:#} {s}{status}{s:#} {DIM}({bytes} B,{DIM:#} {d}{dur}ms{d:#}{DIM}){DIM:#}",
+        ts = short_time(&r.ts),
+        method = r.method,
+        host = r.host,
+        path = r.path,
+        status = r.status,
+        bytes = r.bytes_out,
+        dur = r.duration_ms,
     )
 }
 
@@ -136,14 +192,15 @@ fn write_event_json<W: Write, T: Serialize>(w: &mut W, value: &T) -> io::Result<
 #[allow(dead_code)]
 pub fn emit_event<T: Serialize + std::fmt::Debug>(event: &T) {
     let stderr = io::stderr();
-    let mut w = stderr.lock();
+    let w = stderr.lock();
+    let mut w = anstream::AutoStream::auto(w);
     match format() {
         LogFormat::Text => {
             // Best-effort text rendering: re-serialize to JSON then
-            // print as a single line. Phase-2 lifecycle events have
+            // print as a single dim line. Phase-2 lifecycle events have
             // varied shapes; we don't try to format each one specially.
             if let Ok(s) = serde_json::to_string(event) {
-                let _ = writeln!(w, "{s}");
+                let _ = writeln!(w, "{DIM}{s}{DIM:#}");
             }
         }
         LogFormat::JsonV1 => {
