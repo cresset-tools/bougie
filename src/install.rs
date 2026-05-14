@@ -3,7 +3,7 @@
 
 use crate::baseline::{BaselineFilter, BASELINE_EXTENSIONS, PREINSTALLED_EXTENSIONS};
 use crate::errors::BougieError;
-use crate::fetch::{aggregate_progress_bar, fetch_blob, BlobSpec};
+use crate::fetch::{fetch_blob, BlobSpec, DownloadBar};
 use crate::index::{
     build_verifier,
     fetch::{fetch_manifest, fetch_root, fetch_section},
@@ -110,13 +110,16 @@ pub fn install_php(
             strip_prefix: "install",
         };
         // Interpreter is a monolithic blob (no closure walk here),
-        // so the aggregate's total is just the one tarball's size.
-        // `size == 0` from a pre-`size` publisher falls through to
-        // a spinner-style bar inside `aggregate_progress_bar`.
-        let total = (manifest.blob.size > 0).then_some(manifest.blob.size);
-        let progress = aggregate_progress_bar(total, "downloading");
-        fetch_blob(&client, &blob_spec, &progress)?;
-        progress.finish_and_clear();
+        // so the bar grows by exactly the tarball's size. A
+        // pre-`size` publisher emits `size: 0` which `add_planned`
+        // silently drops; the bar still ticks bytes received but
+        // can't fill — same trade-off as before, but using the
+        // unified bar style.
+        let bar = DownloadBar::new("downloading");
+        bar.add_planned(manifest.blob.size);
+        bar.set_current(format!("php-{}", selected.version));
+        fetch_blob(&client, &blob_spec, &bar)?;
+        bar.finish();
     }
 
     Ok(InstalledPhp {
@@ -168,6 +171,11 @@ pub struct InstalledExt {
 /// The destination is `$BOUGIE_HOME/store/ext-<name>-<version>+php<minor>-<flavor>-<sha8>/`,
 /// content-addressed by the first 8 hex chars of the blob sha256 so
 /// different ABI builds of the same `<name>-<version>` don't collide.
+///
+/// Single-extension entry point: creates its own [`DownloadBar`] for
+/// this call. Use [`install_extension_with_bar`] when multiple
+/// extensions are being installed in a loop and you want one bar
+/// across all of them.
 pub fn install_extension(
     paths: &Paths,
     name: &str,
@@ -175,6 +183,26 @@ pub fn install_extension(
     php_minor: PartialVersion,
     flavor: Flavor,
     opts: ResolveOptions,
+) -> Result<InstalledExt> {
+    let bar = DownloadBar::new("downloading");
+    let out = install_extension_with_bar(paths, name, version_pin, php_minor, flavor, opts, &bar);
+    bar.finish();
+    out
+}
+
+/// Same as [`install_extension`] but draws progress against a caller-
+/// owned bar so the orchestrator (e.g. [`install_baseline_into`],
+/// [`preinstall_into`], `sync::install_required_extensions`) can show
+/// a single combined bar across many extensions instead of one bar
+/// per artifact.
+pub fn install_extension_with_bar(
+    paths: &Paths,
+    name: &str,
+    version_pin: Option<&str>,
+    php_minor: PartialVersion,
+    flavor: Flavor,
+    opts: ResolveOptions,
+    bar: &DownloadBar,
 ) -> Result<InstalledExt> {
     let target = Triple::detect()?.to_string();
     let host = std::env::var("BOUGIE_INDEX_URL").unwrap_or_else(|_| DEFAULT_INDEX_URL.into());
@@ -244,30 +272,26 @@ pub fn install_extension(
     let dest = paths.store().join(&dirname);
     let already_present = dest.exists();
 
-    // Pre-compute the aggregate download size: the main `.so` blob
-    // (if not already on disk) plus every closure entry whose
-    // store_path is missing. Sizes come from the manifest so we
-    // don't pay a HEAD round-trip per file. A `size: 0` from an
-    // older publisher contributes nothing here, and if *every*
-    // contributor is zero the bar falls through to a spinner.
-    let mut total_bytes: u64 = 0;
+    // Grow the shared bar's planned total by this extension's bytes:
+    // the main `.so` blob (if not already on disk) plus every closure
+    // entry whose store_path is missing. Sizes come from the manifest
+    // so we don't pay a HEAD round-trip per file. A `size: 0` from
+    // an older publisher contributes nothing — the bar still ticks
+    // bytes received but can't fill for that artifact.
     if !already_present {
-        total_bytes = total_bytes.saturating_add(manifest.blob.size);
+        bar.add_planned(manifest.blob.size);
     }
     let mut missing_closures: Vec<(PathBuf, String)> = Vec::with_capacity(manifest.closure.len());
     for closure in &manifest.closure {
         let store_path = store_dir_for_closure(paths, &closure.name, &closure.version, &closure.hash);
         if !store_path.exists() {
-            total_bytes = total_bytes.saturating_add(closure.size);
+            bar.add_planned(closure.size);
             let storename = format!("{}-{}-{}", closure.name, closure.version, closure.hash);
             missing_closures.push((store_path, storename));
         } else {
             missing_closures.push((store_path, String::new()));
         }
     }
-
-    let progress =
-        aggregate_progress_bar((total_bytes > 0).then_some(total_bytes), "downloading");
 
     if !already_present {
         let blob_spec = BlobSpec {
@@ -279,7 +303,8 @@ pub fn install_extension(
             // at the top level — no wrapping directory to strip.
             strip_prefix: "",
         };
-        fetch_blob(&client, &blob_spec, &progress)?;
+        bar.set_current(format!("{}-{}", manifest.name, manifest.version));
+        fetch_blob(&client, &blob_spec, bar)?;
     }
 
     // Walk the manifest's bundled-C-lib closure and fetch any
@@ -313,7 +338,8 @@ pub fn install_extension(
                 // RPATHs were compiled to expect).
                 strip_prefix: storename,
             };
-            fetch_blob(&client, &blob_spec, &progress).wrap_err_with(|| {
+            bar.set_current(format!("{} ({})", manifest.name, closure.name));
+            fetch_blob(&client, &blob_spec, bar).wrap_err_with(|| {
                 format!(
                     "fetching closure entry `{}-{}-{}` for {}",
                     closure.name, closure.version, closure.hash, manifest.tag
@@ -328,7 +354,6 @@ pub fn install_extension(
                 )
             })?;
     }
-    progress.finish_and_clear();
 
     let so_path = dest.join(&ext_ref.path);
     if !so_path.exists() {
@@ -415,11 +440,24 @@ pub fn install_baseline_into(
             .push(("<conf.d-cleanup>".into(), format!("{e:#}")));
     }
 
+    // One shared download bar across the whole baseline loop. The
+    // bar's planned-total grows as each extension's manifest reveals
+    // its blob+closure sizes, so the user sees a single combined bar
+    // instead of one per extension.
+    let bar = DownloadBar::new("downloading");
     for &name in BASELINE_EXTENSIONS {
         if !filter.includes(name) {
             continue;
         }
-        match install_extension(paths, name, None, php_minor, flavor, resolve_opts) {
+        match install_extension_with_bar(
+            paths,
+            name,
+            None,
+            php_minor,
+            flavor,
+            resolve_opts,
+            &bar,
+        ) {
             Ok(installed) => {
                 if let Err(e) = write_install_conf_d(&conf_d, &installed) {
                     report
@@ -432,6 +470,7 @@ pub fn install_baseline_into(
             Err(e) => report.failed.push((name.into(), format!("{e:#}"))),
         }
     }
+    bar.finish();
     report
 }
 
@@ -465,12 +504,23 @@ pub fn preinstall_into(
     resolve_opts: ResolveOptions,
 ) -> PreinstallReport {
     let mut report = PreinstallReport::default();
+    // Same single-bar pattern as install_baseline_into.
+    let bar = DownloadBar::new("downloading");
     for &name in PREINSTALLED_EXTENSIONS {
-        match install_extension(paths, name, None, php_minor, flavor, resolve_opts) {
+        match install_extension_with_bar(
+            paths,
+            name,
+            None,
+            php_minor,
+            flavor,
+            resolve_opts,
+            &bar,
+        ) {
             Ok(_) => report.installed.push(name.into()),
             Err(e) => report.failed.push((name.into(), format!("{e:#}"))),
         }
     }
+    bar.finish();
     report
 }
 
