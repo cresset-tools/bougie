@@ -7,6 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/cresset-tools/bougie/compare/v0.1.0...v0.2.0) - 2026-05-14
+
+### Added
+
+- *(server)* colourise text-mode request log on TTY stderr
+
+### Fixed
+
+- *(ci)* switch release-plz to git_only mode
+
+### Other
+
+- *(release-plz)* authenticate via GitHub App instead of PR_BOT PAT
+- refresh lockfile and bump sha2, md-5, anstream to latest majors
+- prune stale per-project runtime dirs at startup + shutdown
+- make `ext add`, `run --xdebug`, and server routing all work
+- pre-download xdebug into the store without enabling it
+- split conf.d into conf.d-debug; auto-activate xdebug on first request
+- make project arg optional, auto-detect from composer.json
+- warn on missing web root / missing index at add + run
+- filter notify Access events in watcher to fix reload loop
+- sudo-aware server.toml resolution
+- canonicalize project path on `server add`
+- phase 6 — control socket + live `server list`
+- phase 5 — /etc/hosts auto-sync via manage_etc_hosts flag
+- phase 4 — pool lifecycle (idle-out, LRU cap, watch reload)
+- phase 3 — per-request xdebug pool routing
+- phase 2 — FastCGI dispatch to per-project php-fpm pools
+- phase 1 — foreground HTTP server with static-file dispatch
+- phase 0 — config schema + add/remove/list helpers
+- phased build order for bougie server
+- one aggregate progress bar per orchestrator call
+- strip storeName prefix on closure tarballs, link store/ peer
+- walk manifest closure + fix conf.d prefix ordering
+- Improve wording
+- auto-install composer.json's require.ext-* (CLI.md §3.3 step 4(c))
+- install and auto-enable a default extension set per CLI.md §3.5.1.1
+- ext list: --only-available keeps the `installed` marker visible
+- honor config.sort-packages when editing require maps
+- ext add/remove: drop composer subprocess; do the work ourselves
+- manifest LoadDirective + install_extension + conf.d fragment writer
+- lockfile + composer.json IO and editing primitives
+- byte-exact PHP json_encode + Locker::getContentHash port
+- add unzip role so composer's ZipDownloader prefers our extractor
+- php list: colorize output uv-style, honoring NO_COLOR and pagers
+- release v0.1.0
+- use PR_BOT PAT for release-plz so it can open PRs and fan out
+
 ## [0.1.0](https://github.com/cresset-tools/bougie/releases/tag/v0.1.0) - 2026-05-10
 
 ### Other
