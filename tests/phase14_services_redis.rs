@@ -1,0 +1,361 @@
+//! Phase 14: end-to-end services-up/down/status with a fake-redis
+//! fixture. Covers the contract `bougie services up redis` promises:
+//!
+//! - the daemon spawns the binary at the catalog tarball path,
+//! - the unix socket the supervisor health-probes ends up bound,
+//! - a tenant record lands in tenants.json with a redis DB number,
+//! - a second project gets a distinct DB number,
+//! - hitting the 16-tenant cap surfaces a redis_db_exhausted error,
+//! - `services down` removes the tenant and stops the service when
+//!   the last tenant goes away.
+//!
+//! Sandbox confinement isn't exercised here — that needs an actual
+//! redis (`redis-cli SELECT` etc.). It's a follow-up integration test
+//! once the bougie index can serve the redis-8.6.3 tarball.
+
+mod common;
+
+use assert_cmd::cargo::cargo_bin;
+use common::TestEnv;
+use std::fs;
+use std::path::Path;
+use std::time::Duration;
+use tempfile::TempDir;
+
+const STEP_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Put the fake-redis binary at the catalog's expected store path so
+/// the supervisor finds it.
+fn install_fake_redis(env: &TestEnv) {
+    let store = env.home_path().join("store").join("redis-8.6.3").join("bin");
+    fs::create_dir_all(&store).expect("mkdir store");
+    let dst = store.join("redis-server");
+    fs::copy(cargo_bin("fake-redis"), &dst).expect("copy fake-redis");
+    // make it executable (cargo_bin already is, but make it explicit
+    // in case the test env strips perms).
+    let mut perms = fs::metadata(&dst).unwrap().permissions();
+    use std::os::unix::fs::PermissionsExt;
+    perms.set_mode(0o755);
+    fs::set_permissions(&dst, perms).unwrap();
+}
+
+fn project_with_composer(name: &str) -> TempDir {
+    let dir = TempDir::new().expect("project tempdir");
+    let json = format!(r#"{{"name":"{name}"}}"#);
+    fs::write(dir.path().join("composer.json"), json).unwrap();
+    dir
+}
+
+fn wait_for(path: &Path, timeout: Duration) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    while !path.exists() {
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    true
+}
+
+fn stop_daemon(env: &TestEnv) {
+    let _ = env
+        .bougie()
+        .args(["services", "daemon", "stop"])
+        .timeout(STEP_TIMEOUT)
+        .assert();
+}
+
+// -------------------- the happy path --------------------
+
+#[test]
+fn up_starts_fake_redis_and_provisions_a_tenant() {
+    let env = TestEnv::new();
+    install_fake_redis(&env);
+    let proj = project_with_composer("acme/blog");
+
+    env.bougie()
+        .args(["services", "add", "redis"])
+        .current_dir(proj.path())
+        .timeout(STEP_TIMEOUT)
+        .assert()
+        .success();
+
+    env.bougie()
+        .args(["services", "up", "--format", "json-v1"])
+        .current_dir(proj.path())
+        .timeout(STEP_TIMEOUT)
+        .assert()
+        .success();
+
+    // Socket should exist.
+    let sock = env
+        .home_path()
+        .join("state/services/redis/run/redis.sock");
+    assert!(sock.exists(), "expected socket at {}", sock.display());
+
+    // tenants.json should have one entry for our project with a db_number alloc.
+    let tenants = env.home_path().join("state/services/redis/tenants.json");
+    assert!(tenants.exists(), "tenants.json should exist");
+    let ledger = fs::read_to_string(&tenants).unwrap();
+    let line = ledger.lines().next().unwrap();
+    let v: serde_json::Value = serde_json::from_str(line).unwrap();
+    assert_eq!(v["tenant"], "acme_blog");
+    assert_eq!(v["project"], proj.path().to_str().unwrap());
+    assert_eq!(v["alloc"]["db_number"], 0);
+
+    stop_daemon(&env);
+}
+
+#[test]
+fn status_after_up_reports_redis_running() {
+    let env = TestEnv::new();
+    install_fake_redis(&env);
+    let proj = project_with_composer("acme/blog");
+    env.bougie()
+        .args(["services", "add", "redis"])
+        .current_dir(proj.path())
+        .timeout(STEP_TIMEOUT)
+        .assert()
+        .success();
+    env.bougie()
+        .args(["services", "up"])
+        .current_dir(proj.path())
+        .timeout(STEP_TIMEOUT)
+        .assert()
+        .success();
+    let out = env
+        .bougie()
+        .args(["services", "status", "--format", "json-v1"])
+        .current_dir(proj.path())
+        .timeout(STEP_TIMEOUT)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    let services = v["services"].as_array().unwrap();
+    assert_eq!(services.len(), 1, "{v}");
+    assert_eq!(services[0]["name"], "redis");
+    assert_eq!(services[0]["state"], "running");
+    assert!(services[0]["pid"].as_u64().unwrap() > 0);
+    stop_daemon(&env);
+}
+
+// -------------------- multi-project tenancy --------------------
+
+#[test]
+fn two_projects_share_one_redis_with_distinct_db_numbers() {
+    let env = TestEnv::new();
+    install_fake_redis(&env);
+    let a = project_with_composer("acme/blog");
+    let b = project_with_composer("acme/store");
+    for p in [&a, &b] {
+        env.bougie()
+            .args(["services", "add", "redis"])
+            .current_dir(p.path())
+            .timeout(STEP_TIMEOUT)
+            .assert()
+            .success();
+        env.bougie()
+            .args(["services", "up"])
+            .current_dir(p.path())
+            .timeout(STEP_TIMEOUT)
+            .assert()
+            .success();
+    }
+    let tenants_path = env.home_path().join("state/services/redis/tenants.json");
+    let ledger = fs::read_to_string(&tenants_path).unwrap();
+    let entries: Vec<serde_json::Value> = ledger
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(entries.len(), 2, "{ledger}");
+    let db_numbers: Vec<u64> = entries
+        .iter()
+        .map(|e| e["alloc"]["db_number"].as_u64().unwrap())
+        .collect();
+    assert_eq!(db_numbers, vec![0, 1]);
+    stop_daemon(&env);
+}
+
+#[test]
+fn down_in_one_project_keeps_redis_running_for_the_other() {
+    let env = TestEnv::new();
+    install_fake_redis(&env);
+    let a = project_with_composer("acme/blog");
+    let b = project_with_composer("acme/store");
+    for p in [&a, &b] {
+        env.bougie()
+            .args(["services", "add", "redis"])
+            .current_dir(p.path())
+            .timeout(STEP_TIMEOUT)
+            .assert()
+            .success();
+        env.bougie()
+            .args(["services", "up"])
+            .current_dir(p.path())
+            .timeout(STEP_TIMEOUT)
+            .assert()
+            .success();
+    }
+    env.bougie()
+        .args(["services", "down"])
+        .current_dir(a.path())
+        .timeout(STEP_TIMEOUT)
+        .assert()
+        .success();
+
+    // Socket still alive — b's tenant remains.
+    let sock = env
+        .home_path()
+        .join("state/services/redis/run/redis.sock");
+    assert!(sock.exists(), "socket must still exist after one project goes down");
+
+    // Now drop b too; redis should stop.
+    env.bougie()
+        .args(["services", "down"])
+        .current_dir(b.path())
+        .timeout(STEP_TIMEOUT)
+        .assert()
+        .success();
+
+    // The supervisor's stop() removes the child but the socket file
+    // is left behind by the fake-redis fixture on SIGTERM (real redis
+    // cleans up). What matters is that the daemon reports stopped.
+    let out = env
+        .bougie()
+        .args(["services", "daemon", "status", "--format", "json-v1"])
+        .timeout(STEP_TIMEOUT)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    let services = v["services"].as_array().unwrap();
+    let redis = services
+        .iter()
+        .find(|s| s["name"] == "redis")
+        .expect("redis row");
+    assert_eq!(redis["state"], "stopped");
+    stop_daemon(&env);
+}
+
+// -------------------- redis_db_exhausted --------------------
+
+#[test]
+fn seventeenth_project_hits_redis_db_exhausted() {
+    let env = TestEnv::new();
+    install_fake_redis(&env);
+    // 16 projects fit; the 17th must error.
+    let mut projects = Vec::with_capacity(17);
+    for i in 0..16 {
+        let p = project_with_composer(&format!("acme/p{i}"));
+        env.bougie()
+            .args(["services", "add", "redis"])
+            .current_dir(p.path())
+            .timeout(STEP_TIMEOUT)
+            .assert()
+            .success();
+        env.bougie()
+            .args(["services", "up"])
+            .current_dir(p.path())
+            .timeout(STEP_TIMEOUT)
+            .assert()
+            .success();
+        projects.push(p);
+    }
+    let last = project_with_composer("acme/overflow");
+    env.bougie()
+        .args(["services", "add", "redis"])
+        .current_dir(last.path())
+        .timeout(STEP_TIMEOUT)
+        .assert()
+        .success();
+    let out = env
+        .bougie()
+        .args(["services", "up"])
+        .current_dir(last.path())
+        .timeout(STEP_TIMEOUT)
+        .assert()
+        .failure()
+        .get_output()
+        .stderr
+        .clone();
+    let s = String::from_utf8(out).unwrap();
+    assert!(s.contains("16"), "{s}");
+    assert!(s.contains("--purge"), "{s}");
+    stop_daemon(&env);
+}
+
+// -------------------- idempotence --------------------
+
+#[test]
+fn up_is_idempotent_for_the_same_project() {
+    let env = TestEnv::new();
+    install_fake_redis(&env);
+    let proj = project_with_composer("acme/blog");
+    env.bougie()
+        .args(["services", "add", "redis"])
+        .current_dir(proj.path())
+        .timeout(STEP_TIMEOUT)
+        .assert()
+        .success();
+    for _ in 0..3 {
+        env.bougie()
+            .args(["services", "up"])
+            .current_dir(proj.path())
+            .timeout(STEP_TIMEOUT)
+            .assert()
+            .success();
+    }
+    let tenants = env.home_path().join("state/services/redis/tenants.json");
+    let entries: Vec<&str> = fs::read_to_string(&tenants)
+        .unwrap()
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .collect::<Vec<_>>()
+        .into_iter()
+        .map(|l| Box::leak(l.to_string().into_boxed_str()) as &str)
+        .collect();
+    assert_eq!(entries.len(), 1, "{:?}", entries);
+    stop_daemon(&env);
+}
+
+// -------------------- a tarball-missing error path --------------------
+
+#[test]
+fn up_with_no_tarball_errors_with_helpful_message() {
+    let env = TestEnv::new();
+    // Deliberately do NOT install_fake_redis.
+    let proj = project_with_composer("acme/blog");
+    env.bougie()
+        .args(["services", "add", "redis"])
+        .current_dir(proj.path())
+        .timeout(STEP_TIMEOUT)
+        .assert()
+        .success();
+    let out = env
+        .bougie()
+        .args(["services", "up"])
+        .current_dir(proj.path())
+        .timeout(STEP_TIMEOUT)
+        .assert()
+        .failure()
+        .get_output()
+        .stderr
+        .clone();
+    let s = String::from_utf8(out).unwrap();
+    assert!(s.contains("tarball"), "{s}");
+    assert!(s.contains("redis-8.6.3"), "{s}");
+    stop_daemon(&env);
+}
+
+// Suppress dead-code warning on wait_for which is reserved for future
+// log-rotation tests.
+#[allow(dead_code)]
+fn _ensure_wait_for_used() {
+    let _ = wait_for;
+}

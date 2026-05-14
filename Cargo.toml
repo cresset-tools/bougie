@@ -23,6 +23,14 @@ rust-version = "1.95"
 name = "bougie"
 path = "src/main.rs"
 
+# Phase 3 integration-test fixture. Stands in for a real redis-server
+# in the supervisor tests: parses `--unixsocket <path>` and binds the
+# socket, satisfying the daemon's health probe. Not used at runtime;
+# ships only because the test harness `cargo_bin`s it.
+[[bin]]
+name = "fake-redis"
+path = "tests/fixtures/fake_redis.rs"
+
 [features]
 default = ["dev-trust-root"]
 # Compile in the `BOUGIE_TRUST_ROOT_PATH` override: when set, the
