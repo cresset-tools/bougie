@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0](https://github.com/cresset-tools/bougie/compare/v0.2.0...v0.3.0) - 2026-05-14
+
+### Added
+
+- *(composer)* add lts channel as a version request
+- *(cli)* unify list commands with shared coloured renderer
+
+### Other
+
+- Merge pull request #7 from cresset-tools/worktree-unified-list
+
 ## [0.2.0](https://github.com/cresset-tools/bougie/compare/v0.1.0...v0.2.0) - 2026-05-14
 
 ### Added
