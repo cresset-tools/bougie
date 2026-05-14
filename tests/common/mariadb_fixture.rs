@@ -25,9 +25,36 @@ use std::path::{Path, PathBuf};
 /// lands on the extracted directory.
 pub const MARIADB_TARBALL: &str = "mariadb-11.4.4";
 
+// Per-target blob coordinates. Pulled from
+// `https://index.bougie.tools/versions/r25813121006/targets/<TRIPLE>/sections/tool/mariadb.json`
+// — bump both URL and sha together when the index publishes a new tag.
+// The CI matrix is `{ubuntu-latest, macos-latest}` so we only need
+// `x86_64-unknown-linux-gnu` and `aarch64-apple-darwin`. If a third
+// runner triple gets added (musl, x86_64-apple-darwin), thread it
+// through here.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 const BLOB_URL: &str =
     "https://blobs.bougie.tools/blobs/0b/0b46049fea5e057fc23d639225623fb36a6a7d52969d351823d883f409e4bb1f";
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 const BLOB_SHA256: &str = "0b46049fea5e057fc23d639225623fb36a6a7d52969d351823d883f409e4bb1f";
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+const BLOB_URL: &str =
+    "https://blobs.bougie.tools/blobs/98/98d449051d2e1e155c037e1c03c0aaa34693c5927c0601156eae64e7ead0f1f0";
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+const BLOB_SHA256: &str = "98d449051d2e1e155c037e1c03c0aaa34693c5927c0601156eae64e7ead0f1f0";
+
+// Compile-fail guard for targets the bougie index doesn't yet publish.
+#[cfg(not(any(
+    all(target_os = "linux", target_arch = "x86_64"),
+    all(target_os = "macos", target_arch = "aarch64"),
+)))]
+compile_error!(
+    "phase17 mariadb fixture: no mariadb-11.4.4 tarball published for this \
+     (os, arch) pair in the bougie index. Add the blob URL + sha256 to \
+     tests/common/mariadb_fixture.rs, or set BOUGIE_SKIP_REAL_MARIADB=1 \
+     to skip phase17 entirely on this target."
+);
 
 /// Materialise `<bougie_home>/store/mariadb-11.4.4/...` from the cached
 /// tarball, downloading it on first call.
