@@ -10,7 +10,7 @@
 
 use super::resolve::Resolved;
 use crate::errors::BougieError;
-use crate::fetch::{aggregate_progress_bar, fetch_file, BlobSpec};
+use crate::fetch::{fetch_file, BlobSpec, DownloadBar};
 use crate::paths::Paths;
 use eyre::{Result, WrapErr};
 use serde::Deserialize;
@@ -150,12 +150,14 @@ pub fn fetch_phar(
     };
     // `getcomposer.org/versions` doesn't carry a `size` field and
     // the .sha256sum sidecar only carries the hash, so we have no
-    // pre-known byte count for the phar. Fall through to a
-    // spinner-style aggregate bar (`None` total) — phars are
-    // typically a couple of MB, so a sized bar would flash by anyway.
-    let progress = aggregate_progress_bar(None, "downloading");
-    fetch_file(client, &spec, &progress)?;
-    progress.finish_and_clear();
+    // pre-known byte count for the phar. The bar stays at planned-
+    // length 0 and renders unfilled while bytes tick on the right;
+    // phars are typically a couple of MB so this finishes quickly
+    // anyway.
+    let bar = DownloadBar::new("downloading");
+    bar.set_current(format!("composer-{}", resolved.version));
+    fetch_file(client, &spec, &bar)?;
+    bar.finish();
     Ok(())
 }
 

@@ -14,6 +14,27 @@ use std::io::{copy, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+/// Aggregate download progress bar shared across many `fetch_blob`/
+/// `fetch_file` calls. Renders a single bar with the running label of
+/// the part currently in flight; orchestrators (e.g. baseline install,
+/// composer-required extensions) drive *one* `DownloadBar` across the
+/// whole loop so the user sees a single combined bar instead of one
+/// per artifact.
+///
+/// The bar starts with length 0; callers grow the planned total via
+/// [`Self::add_planned`] as each manifest reveals more bytes (the
+/// index ships `size` on every blob, so no HEAD round-trips are
+/// needed). [`Self::set_current`] sets the right-hand-side label
+/// shown for the artifact currently downloading.
+///
+/// Hidden bars (non-TTY stderr, `--quiet`, `--format json-v1`) accept
+/// every method as a no-op so the byte-copy loop in `fetch.rs` stays
+/// branch-free.
+#[derive(Debug)]
+pub struct DownloadBar {
+    pb: ProgressBar,
+}
+
 const RETRY_BUDGET: u32 = 1;
 
 #[derive(Debug, Clone)]
@@ -39,17 +60,18 @@ pub enum BlobOutcome {
 
 /// Fetch + extract one tar.zst blob. No-op if `dest` exists.
 ///
-/// `progress` is the caller-owned aggregate bar that this call
-/// `inc()`s as bytes arrive. Pass [`hidden_progress`] when the caller
-/// doesn't want any UI; the byte-copy loop stays the same shape
-/// either way (indicatif clamps an under-/over-driven hidden bar to
-/// a no-op).
+/// `bar` is the caller-owned aggregate bar that this call advances as
+/// bytes arrive. Set the part label via [`DownloadBar::set_current`]
+/// *before* calling so the right-hand `{msg}` shows the artifact name
+/// for the duration of the transfer. Pass [`DownloadBar::hidden`] when
+/// the caller has no UI of its own — the byte-copy loop stays the
+/// same shape either way.
 pub fn fetch_blob(
     client: &reqwest::blocking::Client,
     spec: &BlobSpec<'_>,
-    progress: &ProgressBar,
+    bar: &DownloadBar,
 ) -> Result<BlobOutcome> {
-    fetch_with_retry(client, spec, progress, try_once_blob)
+    fetch_with_retry(client, spec, bar, try_once_blob)
 }
 
 /// Fetch a single bare file (e.g. a `.phar`) into `dest`, verifying its
@@ -58,16 +80,16 @@ pub fn fetch_blob(
 pub fn fetch_file(
     client: &reqwest::blocking::Client,
     spec: &BlobSpec<'_>,
-    progress: &ProgressBar,
+    bar: &DownloadBar,
 ) -> Result<BlobOutcome> {
-    fetch_with_retry(client, spec, progress, try_once_file)
+    fetch_with_retry(client, spec, bar, try_once_file)
 }
 
 fn fetch_with_retry(
     client: &reqwest::blocking::Client,
     spec: &BlobSpec<'_>,
-    progress: &ProgressBar,
-    once: fn(&reqwest::blocking::Client, &BlobSpec<'_>, &ProgressBar) -> Result<()>,
+    bar: &DownloadBar,
+    once: fn(&reqwest::blocking::Client, &BlobSpec<'_>, &DownloadBar) -> Result<()>,
 ) -> Result<BlobOutcome> {
     if spec.dest.exists() {
         return Ok(BlobOutcome::AlreadyPresent);
@@ -81,7 +103,7 @@ fn fetch_with_retry(
 
     let mut attempts = 0;
     loop {
-        match once(client, spec, progress) {
+        match once(client, spec, bar) {
             Ok(()) => return Ok(BlobOutcome::Downloaded),
             Err(e) if attempts < RETRY_BUDGET => {
                 attempts += 1;
@@ -98,7 +120,7 @@ fn fetch_with_retry(
 fn fetch_to_partial(
     client: &reqwest::blocking::Client,
     spec: &BlobSpec<'_>,
-    progress: &ProgressBar,
+    bar: &DownloadBar,
 ) -> Result<PathBuf> {
     let tmp = spec.partial_dir.join(format!("{}.partial", spec.sha256));
 
@@ -114,10 +136,6 @@ fn fetch_to_partial(
         .into());
     }
 
-    // Surface which file is currently being downloaded in the shared
-    // bar's label. A hidden bar accepts the message no-op.
-    progress.set_message(short_url_label(spec.url));
-
     let mut file = File::create(&tmp).wrap_err_with(|| format!("creating {}", tmp.display()))?;
     let mut hasher = Sha256::new();
     let mut buf = vec![0u8; 64 * 1024];
@@ -132,7 +150,7 @@ fn fetch_to_partial(
         hasher.update(&buf[..n]);
         file.write_all(&buf[..n])
             .wrap_err_with(|| format!("writing {}", tmp.display()))?;
-        progress.inc(n as u64);
+        bar.inc(n as u64);
     }
     file.flush().wrap_err("flushing partial blob")?;
 
@@ -152,9 +170,9 @@ fn fetch_to_partial(
 fn try_once_blob(
     client: &reqwest::blocking::Client,
     spec: &BlobSpec<'_>,
-    progress: &ProgressBar,
+    bar: &DownloadBar,
 ) -> Result<()> {
-    let tmp = fetch_to_partial(client, spec, progress)?;
+    let tmp = fetch_to_partial(client, spec, bar)?;
 
     let incoming = sibling_with_suffix(spec.dest, ".incoming");
     let _ = fs::remove_dir_all(&incoming);
@@ -171,9 +189,9 @@ fn try_once_blob(
 fn try_once_file(
     client: &reqwest::blocking::Client,
     spec: &BlobSpec<'_>,
-    progress: &ProgressBar,
+    bar: &DownloadBar,
 ) -> Result<()> {
-    let tmp = fetch_to_partial(client, spec, progress)?;
+    let tmp = fetch_to_partial(client, spec, bar)?;
 
     // Stage the verified bytes as a sibling of `dest` so the rename is
     // always intra-filesystem, even when `partial_dir` is on a different
@@ -265,79 +283,73 @@ fn sibling_with_suffix(p: &Path, suffix: &str) -> PathBuf {
     parent.join(format!("{name}{suffix}"))
 }
 
-/// Build the aggregate progress bar for one orchestrator call.
-///
-/// `total` is the sum of expected byte sizes across every URL the
-/// caller is about to fetch (computed up front from manifest
-/// `blob.size` + `closure[].size` so no HEAD round-trips are
-/// needed). Pass `None` when the total isn't known — the bar
-/// falls back to a steady-tick spinner that still reports running
-/// total bytes + throughput.
-///
-/// When `crate::output::progress_visible()` is false (non-TTY
-/// stderr, `--quiet`, or `--format json-v1`) a hidden bar is
-/// returned. Callers drive the same `inc()` / `finish_and_clear()`
-/// dance regardless, so the byte-copy loop stays branch-free.
-pub fn aggregate_progress_bar(total: Option<u64>, label: &str) -> ProgressBar {
-    if !crate::output::progress_visible() {
-        let pb = ProgressBar::new(total.unwrap_or(0));
+impl DownloadBar {
+    /// Build an aggregate download bar that renders on stderr (when
+    /// the global progress-visible flag is set) or stays hidden
+    /// otherwise. Length starts at 0; call [`Self::add_planned`] as
+    /// each manifest is parsed and the next chunk of expected bytes
+    /// becomes known. Set the per-artifact label via
+    /// [`Self::set_current`] before each `fetch_blob`/`fetch_file`.
+    pub fn new(label: &str) -> Self {
+        if !crate::output::progress_visible() {
+            return Self::hidden();
+        }
+        let pb = ProgressBar::new(0);
+        pb.set_draw_target(ProgressDrawTarget::stderr_with_hz(15));
+        // Template-with-fallback: `indicatif`'s template parser is
+        // pinned at build time, so a malformed template is a bug,
+        // not a user-visible failure mode. `unwrap_or_else` keeps
+        // us off the panic path even if a future edit breaks it.
+        //
+        // `progress_chars("--")` paints the entire bar with `-`; the
+        // foreground/background colors in the `{bar}` token split it
+        // into a magenta filled portion and a dim-grey unfilled tail.
+        let style = ProgressStyle::with_template(
+            "  {prefix:<12} {bar:32.magenta/white.dim} {bytes}/{total_bytes} ({bytes_per_sec}, {eta}) {msg}",
+        )
+        .unwrap_or_else(|_| ProgressStyle::default_bar())
+        .progress_chars("--");
+        pb.set_style(style);
+        pb.set_prefix(label.to_owned());
+        pb.enable_steady_tick(Duration::from_millis(120));
+        Self { pb }
+    }
+
+    /// A no-op bar. Use when a caller has no aggregate of its own but
+    /// still needs to satisfy [`fetch_blob`] / [`fetch_file`].
+    pub fn hidden() -> Self {
+        let pb = ProgressBar::new(0);
         pb.set_draw_target(ProgressDrawTarget::hidden());
-        return pb;
+        Self { pb }
     }
-    match total {
-        Some(t) if t > 0 => {
-            let pb = ProgressBar::new(t);
-            pb.set_draw_target(ProgressDrawTarget::stderr_with_hz(15));
-            // Template-with-fallback: `indicatif`'s template parser is
-            // pinned at build time, so a malformed template is a bug,
-            // not a user-visible failure mode. `unwrap_or_else` keeps
-            // us off the panic path even if a future edit breaks it.
-            let style = ProgressStyle::with_template(
-                "  {prefix:<12} {bar:32.cyan/blue} {bytes}/{total_bytes} ({bytes_per_sec}, {eta}) {msg}",
-            )
-            .unwrap_or_else(|_| ProgressStyle::default_bar())
-            .progress_chars("█▉▊▋▌▍▎▏ ");
-            pb.set_style(style);
-            pb.set_prefix(label.to_owned());
-            pb
-        }
-        _ => {
-            let pb = ProgressBar::new_spinner();
-            pb.set_draw_target(ProgressDrawTarget::stderr_with_hz(15));
-            let style = ProgressStyle::with_template(
-                "  {prefix:<12} {spinner:.cyan} {bytes} ({bytes_per_sec}) {msg}",
-            )
-            .unwrap_or_else(|_| ProgressStyle::default_spinner());
-            pb.set_style(style);
-            pb.set_prefix(label.to_owned());
-            pb.enable_steady_tick(Duration::from_millis(120));
-            pb
+
+    /// Grow the planned total. Safe to call repeatedly as each manifest
+    /// reveals the next batch of bytes; calling with `0` is a no-op
+    /// (older publishers may emit `size: 0` for backwards-compat —
+    /// such contributions just don't extend the bar).
+    pub fn add_planned(&self, bytes: u64) {
+        if bytes > 0 {
+            self.pb.inc_length(bytes);
         }
     }
-}
 
-/// A no-op progress bar. Use when a caller has no aggregate bar of
-/// its own but still needs to satisfy the `fetch_blob` /
-/// `fetch_file` signature.
-pub fn hidden_progress() -> ProgressBar {
-    let pb = ProgressBar::new(0);
-    pb.set_draw_target(ProgressDrawTarget::hidden());
-    pb
-}
+    /// Set the right-hand-side label showing which artifact is
+    /// currently downloading. Overwrites any previous label.
+    pub fn set_current(&self, name: impl Into<String>) {
+        self.pb.set_message(name.into());
+    }
 
-/// Squeeze a download URL down to something readable for the
-/// progress-bar message. Takes the last non-empty path segment and
-/// drops any query string, so
-/// `https://blobs.bougie.tools/php/8.3.12/install.tar.zst?x=1`
-/// renders as `install.tar.zst`. Falls back to the full URL when
-/// there's no usable segment (rare; mostly paranoia for bare hosts).
-fn short_url_label(url: &str) -> String {
-    let no_query = url.split('?').next().unwrap_or(url);
-    no_query
-        .rsplit('/')
-        .find(|s| !s.is_empty())
-        .unwrap_or(url)
-        .to_owned()
+    /// Final flush — clears the bar from the terminal.
+    pub fn finish(&self) {
+        self.pb.finish_and_clear();
+    }
+
+    /// Advance the bar by `n` freshly-downloaded bytes. Called from
+    /// the byte-copy loop in `fetch_to_partial`; not part of the
+    /// public surface.
+    fn inc(&self, n: u64) {
+        self.pb.inc(n);
+    }
 }
 
 /// Discard a partial download — used on cancellation / error
@@ -367,20 +379,16 @@ mod tests {
     }
 
     #[test]
-    fn short_url_label_picks_last_segment_without_query() {
-        assert_eq!(
-            short_url_label("https://blobs.example.com/php/8.3.12/install.tar.zst"),
-            "install.tar.zst"
-        );
-        assert_eq!(
-            short_url_label("https://example.com/a/b/c.phar?x=1&y=2"),
-            "c.phar"
-        );
-        // Trailing slash: skip it and take the segment behind.
-        assert_eq!(
-            short_url_label("https://example.com/dir/"),
-            "dir"
-        );
+    fn download_bar_hidden_accepts_all_methods() {
+        // Smoke test: a hidden bar must accept the full driver API
+        // without panicking, so the byte-copy loop in non-TTY contexts
+        // stays branch-free.
+        let bar = DownloadBar::hidden();
+        bar.add_planned(0);
+        bar.add_planned(1024);
+        bar.set_current("php-8.3.12");
+        bar.inc(512);
+        bar.finish();
     }
 
     #[test]

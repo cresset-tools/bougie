@@ -4,8 +4,9 @@ use crate::composer::{self, default_request as default_composer_request, parse_r
 use crate::conf_d;
 use crate::config::{load_project, ExtensionPin, ProjectConfig};
 use crate::errors::BougieError;
+use crate::fetch::DownloadBar;
 use crate::install::{
-    install_baseline_into, install_extension, install_php, preinstall_into, InstalledExt,
+    install_baseline_into, install_extension_with_bar, install_php, preinstall_into, InstalledExt,
     InstalledPhp,
 };
 use crate::output::{emit, Render};
@@ -202,6 +203,10 @@ fn install_required_extensions(
     };
     let project_conf_d = project_root.join(".bougie").join("conf.d");
     let mut installed_names = Vec::new();
+    // One shared bar across every composer-required extension so the
+    // user sees a single combined download bar even when the project
+    // pulls in several non-baseline extensions.
+    let bar = DownloadBar::new("downloading");
     for name in &composer.require_extensions {
         if baseline::is_builtin(name) {
             continue;
@@ -221,13 +226,14 @@ fn install_required_extensions(
             .get(name)
             .and_then(ExtensionPin::as_version);
 
-        let installed: InstalledExt = install_extension(
+        let installed: InstalledExt = install_extension_with_bar(
             paths,
             name,
             version_pin,
             php_minor,
             flavor,
             ResolveOptions::default(),
+            &bar,
         )?;
         conf_d::write_ext_fragment(
             project_root,
@@ -237,6 +243,7 @@ fn install_required_extensions(
         )?;
         installed_names.push(installed.name);
     }
+    bar.finish();
     Ok(installed_names)
 }
 
