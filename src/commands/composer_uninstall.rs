@@ -1,5 +1,5 @@
 use crate::cli::OutputFormat;
-use crate::composer::{parse_request, ComposerRequest};
+use crate::composer::{fetch, parse_request, resolve_request, ComposerRequest};
 use crate::errors::BougieError;
 use crate::output::{emit, Render};
 use crate::paths::Paths;
@@ -44,6 +44,15 @@ pub fn run(format: OutputFormat, field: Option<&str>, request_str: &str) -> Resu
 fn locate_install_dir(paths: &Paths, request: &ComposerRequest) -> Result<PathBuf> {
     match request {
         ComposerRequest::Exact(v) => Ok(paths.composer_root().join(v)),
+        ComposerRequest::Channel(_) | ComposerRequest::Partial(_) => {
+            // Resolve via the channels snapshot so the user can write
+            // `bougie composer uninstall lts` (or `2.2`, `stable`, ...)
+            // and remove whichever exact version that currently points at.
+            let client = fetch::build_client()?;
+            let channels = fetch::fetch_channels(&client, paths)?;
+            let resolved = resolve_request(&channels, request)?;
+            Ok(paths.composer_root().join(resolved.version))
+        }
         ComposerRequest::Path(p) => {
             let canon = std::fs::canonicalize(p).unwrap_or_else(|_| p.clone());
             if !canon.starts_with(paths.composer_root()) {
@@ -63,12 +72,6 @@ fn locate_install_dir(paths: &Paths, request: &ComposerRequest) -> Result<PathBu
                     .ok_or_else(|| eyre!("path {} has no parent", p.display()))
             }
         }
-        _ => Err(BougieError::Resolution {
-            kind: "composer/uninstall".into(),
-            detail: "uninstall requires an exact version (e.g. `2.8.5`) or an absolute path"
-                .into(),
-        }
-        .into()),
     }
 }
 

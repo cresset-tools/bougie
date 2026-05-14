@@ -25,6 +25,10 @@ pub fn resolve_request(channels: &Channels, request: &ComposerRequest) -> Result
             .first()
             .or_else(|| channels.stable.first())
             .ok_or_else(|| resolution_error("preview", "no preview or stable releases listed"))?,
+        ComposerRequest::Channel(Channel::Lts) => channels
+            .lts
+            .first()
+            .ok_or_else(|| resolution_error("lts", "channel is empty"))?,
         ComposerRequest::Exact(v) => find_exact(channels, v)
             .ok_or_else(|| resolution_error("exact", &format!("no version {v} in stable+preview")))?,
         ComposerRequest::Partial(prefix) => find_highest_with_prefix(channels, prefix)
@@ -54,6 +58,7 @@ fn find_exact<'a>(channels: &'a Channels, v: &str) -> Option<&'a ChannelEntry> {
         .stable
         .iter()
         .chain(channels.preview.iter())
+        .chain(channels.lts.iter())
         .find(|e| e.version == v)
 }
 
@@ -64,6 +69,7 @@ fn find_highest_with_prefix<'a>(channels: &'a Channels, prefix: &str) -> Option<
         .stable
         .iter()
         .chain(channels.preview.iter())
+        .chain(channels.lts.iter())
         .find(|e| version_has_prefix(&e.version, prefix))
 }
 
@@ -98,7 +104,24 @@ mod tests {
         Channels {
             stable: vec![entry("2.8.5"), entry("2.8.4"), entry("2.7.9"), entry("2.6.6")],
             preview: vec![entry("2.9.0-RC1")],
+            lts: vec![entry("2.2.28")],
         }
+    }
+
+    #[test]
+    fn lts_picks_first_lts() {
+        let r = resolve_request(&fixture(), &ComposerRequest::Channel(Channel::Lts)).unwrap();
+        assert_eq!(r.version, "2.2.28");
+    }
+
+    #[test]
+    fn lts_errors_when_channel_empty() {
+        let ch = Channels {
+            stable: fixture().stable,
+            ..Channels::default()
+        };
+        let err = resolve_request(&ch, &ComposerRequest::Channel(Channel::Lts)).unwrap_err();
+        assert!(err.to_string().contains("composer/lts"));
     }
 
     #[test]
@@ -112,7 +135,10 @@ mod tests {
         let r = resolve_request(&fixture(), &ComposerRequest::Channel(Channel::Preview)).unwrap();
         assert_eq!(r.version, "2.9.0-RC1");
 
-        let only_stable = Channels { stable: fixture().stable, preview: vec![] };
+        let only_stable = Channels {
+            stable: fixture().stable,
+            ..Channels::default()
+        };
         let r = resolve_request(&only_stable, &ComposerRequest::Channel(Channel::Preview)).unwrap();
         assert_eq!(r.version, "2.8.5");
     }
@@ -158,7 +184,7 @@ mod tests {
 
     #[test]
     fn empty_stable_channel_errors_with_useful_message() {
-        let ch = Channels { stable: vec![], preview: vec![] };
+        let ch = Channels::default();
         let err = resolve_request(&ch, &ComposerRequest::Channel(Channel::Stable)).unwrap_err();
         assert!(err.to_string().contains("composer/stable"));
     }

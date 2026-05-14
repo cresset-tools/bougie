@@ -3,6 +3,7 @@
 //! Accepted forms:
 //!   - `latest` / `stable`               → `Channel::Stable`
 //!   - `preview`                         → `Channel::Preview`
+//!   - `lts`                             → `Channel::Lts`
 //!   - exact `2.8.5`                     → Exact
 //!   - partial `2`, `2.8`                → Partial
 //!   - absolute path (starts with `/` or `~`) → Path
@@ -17,6 +18,7 @@ use std::path::PathBuf;
 pub enum Channel {
     Stable,
     Preview,
+    Lts,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,6 +41,7 @@ pub fn parse_request(s: &str) -> Result<ComposerRequest> {
     match trimmed {
         "latest" | "stable" => return Ok(ComposerRequest::Channel(Channel::Stable)),
         "preview" => return Ok(ComposerRequest::Channel(Channel::Preview)),
+        "lts" => return Ok(ComposerRequest::Channel(Channel::Lts)),
         _ => {}
     }
     if let Some(kind) = classify_version(trimmed) {
@@ -46,7 +49,7 @@ pub fn parse_request(s: &str) -> Result<ComposerRequest> {
     }
     Err(eyre!(
         "unrecognized composer version request: {trimmed:?} \
-         (expected stable | preview | latest | <major> | <major>.<minor> | <major>.<minor>.<patch> | /abs/path)"
+         (expected stable | preview | lts | latest | <major> | <major>.<minor> | <major>.<minor>.<patch> | /abs/path)"
     ))
 }
 
@@ -81,6 +84,10 @@ mod tests {
         assert_eq!(
             parse_request("preview").unwrap(),
             ComposerRequest::Channel(Channel::Preview)
+        );
+        assert_eq!(
+            parse_request("lts").unwrap(),
+            ComposerRequest::Channel(Channel::Lts)
         );
     }
 
