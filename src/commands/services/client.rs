@@ -66,6 +66,18 @@ pub fn call<R: DeserializeOwned>(paths: &Paths, method: &str, args: Value) -> Re
     issue(stream, &request)
 }
 
+/// Streaming variant of `call` for methods like `service.logs` where
+/// the daemon emits indefinite progress frames (with no terminal
+/// result, in follow mode). Forwards progress frames straight to
+/// stdout/stderr and returns when the daemon either sends a terminal
+/// frame or closes the connection. Auto-spawns the daemon.
+pub fn call_streaming(paths: &Paths, method: &str, args: Value) -> Result<()> {
+    let sock = paths.bougied_sock();
+    let stream = connect_with_autospawn(&sock)?;
+    let request = serde_json::json!({"v": 1, "method": method, "args": args});
+    issue_streaming(stream, &request)
+}
+
 fn connect_with_autospawn(sock: &Path) -> Result<UnixStream> {
     match UnixStream::connect(sock) {
         Ok(s) => Ok(s),
@@ -124,6 +136,49 @@ fn wait_for_socket(sock: &Path, timeout: Duration) -> Result<()> {
             ));
         }
         std::thread::sleep(SPAWN_POLL);
+    }
+}
+
+fn issue_streaming(stream: UnixStream, request: &Value) -> Result<()> {
+    {
+        let mut writer = &stream;
+        let payload = serde_json::to_vec(request).wrap_err("serializing request")?;
+        writer.write_all(&payload).wrap_err("writing request")?;
+        writer.write_all(b"\n").wrap_err("writing terminator")?;
+        writer.flush().wrap_err("flushing request")?;
+    }
+    let mut reader = BufReader::new(&stream);
+    let mut line = String::new();
+    loop {
+        line.clear();
+        let n = reader
+            .read_line(&mut line)
+            .wrap_err("reading streaming response")?;
+        if n == 0 {
+            return Ok(());
+        }
+        let frame: ResponseFrame = serde_json::from_str(line.trim())
+            .wrap_err_with(|| format!("parsing frame: {}", line.trim()))?;
+        match frame {
+            ResponseFrame::Progress { stream, data } => match stream.as_str() {
+                "stdout" => {
+                    let _ = std::io::stdout().write_all(data.as_bytes());
+                    let _ = std::io::stdout().flush();
+                }
+                _ => {
+                    let _ = std::io::stderr().write_all(data.as_bytes());
+                    let _ = std::io::stderr().flush();
+                }
+            },
+            ResponseFrame::Result { ok: true, .. } => return Ok(()),
+            ResponseFrame::Result { ok: false, error, .. } => {
+                let e = error.unwrap_or(ErrorBody {
+                    code: "unknown".into(),
+                    message: "bougied returned an error without a body".into(),
+                });
+                return Err(eyre!("bougied: {} ({})", e.message, e.code));
+            }
+        }
     }
 }
 

@@ -6,6 +6,7 @@
 //! dispatch land in subsequent phases (5–10).
 
 use super::catalog::{self, Binding, CatalogEntry};
+use super::logs::LogWriter;
 use super::sandbox;
 use crate::Paths;
 use eyre::{eyre, Context, Result};
@@ -15,6 +16,7 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tokio::io::AsyncReadExt;
 use tokio::process::Child;
 use tokio::sync::Mutex;
 
@@ -184,17 +186,20 @@ impl Supervisor {
             .paths
             .service_log(entry.name)
             .join(format!("{}.log", entry.name));
-        let log_file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&log_path)
-            .wrap_err_with(|| format!("opening log {}", log_path.display()))?;
+        // Open the LogWriter eagerly — confirms the parent dir is
+        // writable before we fork a child. Wrap in Arc<Mutex<…>> so
+        // the two stdio forwarder tasks (stdout, stderr) can share
+        // it; rotation under live writes is then serialised by the
+        // mutex.
+        let log_writer = LogWriter::open(log_path)
+            .wrap_err_with(|| format!("opening log writer for {}", entry.name))?;
+        let log_writer = Arc::new(Mutex::new(log_writer));
 
         let mut cmd = tokio::process::Command::new(&binary);
         cmd.args(&args)
             .stdin(Stdio::null())
-            .stdout(Stdio::from(log_file.try_clone().wrap_err("dup log fd")?))
-            .stderr(Stdio::from(log_file))
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
             .kill_on_drop(false);
         // SAFETY: `pre_exec` runs in the child after fork and before
         // exec. `sandbox_run::apply_sandbox` is documented for exactly
@@ -207,10 +212,20 @@ impl Supervisor {
                     .map_err(|e| std::io::Error::other(format!("sandbox: {e}")))
             });
         }
-        let child = cmd.spawn().wrap_err_with(|| {
+        let mut child = cmd.spawn().wrap_err_with(|| {
             format!("spawning {} via {}", entry.name, binary.display())
         })?;
         let pid = child.id();
+        // Take the piped fds before we hand the child to the
+        // supervisor map; spawn a forwarder per stream so writes land
+        // in the LogWriter (which handles rotation). Forwarders exit
+        // on EOF when the child closes its pipes.
+        if let Some(out) = child.stdout.take() {
+            spawn_log_forwarder(out, Arc::clone(&log_writer), entry.name);
+        }
+        if let Some(err) = child.stderr.take() {
+            spawn_log_forwarder(err, Arc::clone(&log_writer), entry.name);
+        }
 
         // Now stamp the running state under a fresh mutable borrow.
         {
@@ -335,6 +350,37 @@ fn render_exec_args(entry: &CatalogEntry, paths: &Paths) -> Vec<String> {
         }
         _ => Vec::new(),
     }
+}
+
+/// Read everything the child writes to one of its pipes; for each
+/// chunk, lock the shared `LogWriter` and append. Exits on EOF (child
+/// closed the pipe) or on any non-Interrupted read error. Errors
+/// surface only as `tracing::warn!` since the child is the source of
+/// truth — failing the forwarder shouldn't fail the service.
+fn spawn_log_forwarder<R>(mut reader: R, log: Arc<Mutex<LogWriter>>, service: &'static str)
+where
+    R: AsyncReadExt + Unpin + Send + 'static,
+{
+    tokio::spawn(async move {
+        let mut buf = vec![0u8; 8 * 1024];
+        loop {
+            match reader.read(&mut buf).await {
+                Ok(0) => return, // EOF
+                Ok(n) => {
+                    let mut w = log.lock().await;
+                    if let Err(e) = w.write(&buf[..n]) {
+                        tracing::warn!(service, error = %e, "writing log chunk");
+                        return;
+                    }
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(e) => {
+                    tracing::warn!(service, error = %e, "reading from child pipe");
+                    return;
+                }
+            }
+        }
+    });
 }
 
 async fn wait_for_health(binding: &Binding, name: &str, paths: &Paths) -> Result<()> {
