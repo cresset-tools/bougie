@@ -19,7 +19,8 @@ jobs:
   # version and updates CHANGELOG.md from the commits since the last
   # release. Merging that PR is the signal to publish.
   #
-  # Uses the `PR_BOT` PAT instead of `GITHUB_TOKEN` so the PR it opens
+  # Uses a GitHub App installation token (minted from BOT_APP_ID +
+  # BOT_APP_PRIVATE_KEY) instead of `GITHUB_TOKEN` so the PR it opens
   # is authored by an account that *can* trigger other workflows —
   # PRs opened by `GITHUB_TOKEN` are silenced by GitHub's anti-recursion
   # rule, which would mean `ci.yml` never runs on release PRs.
@@ -27,24 +28,30 @@ jobs:
     name: release-plz / release-pr
     runs-on: ubuntu-latest
     steps:
+      - name: Mint app token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
-          token: ${{ secrets.PR_BOT }}
+          token: ${{ steps.app-token.outputs.token }}
       - uses: MarcoIeni/release-plz-action@v0.5
         with:
           command: release-pr
         env:
-          GITHUB_TOKEN: ${{ secrets.PR_BOT }}
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
 
   # On every push to main: if Cargo.toml's version is ahead of the
   # latest tag (i.e. a release PR has just landed, or someone bumped
   # manually), tag and publish a GitHub release. Idempotent — does
   # nothing when there's nothing new to release.
   #
-  # Also uses `PR_BOT` so the `release: published` event is authored by
-  # a non-`GITHUB_TOKEN` actor and can fan out to a future binary-build
-  # workflow that listens for it.
+  # Also uses the app-installation token so the `release: published`
+  # event is authored by a non-`GITHUB_TOKEN` actor and can fan out to
+  # a future binary-build workflow that listens for it.
   #
   # `cargo publish` is disabled in release-plz.toml since bougie isn't
   # on crates.io.
@@ -52,12 +59,18 @@ jobs:
     name: release-plz / release
     runs-on: ubuntu-latest
     steps:
+      - name: Mint app token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
-          token: ${{ secrets.PR_BOT }}
+          token: ${{ steps.app-token.outputs.token }}
       - uses: MarcoIeni/release-plz-action@v0.5
         with:
           command: release
         env:
-          GITHUB_TOKEN: ${{ secrets.PR_BOT }}
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
