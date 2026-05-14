@@ -11,6 +11,7 @@
 //! (`status`, `daemon.version`, `daemon.shutdown`). Service
 //! supervision lands in Phase 3.
 
+pub mod catalog;
 pub mod ipc;
 mod state;
 

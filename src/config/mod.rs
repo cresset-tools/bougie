@@ -24,6 +24,7 @@ pub struct BougieConfig {
     pub php: PhpConfig,
     pub composer: ComposerConfig,
     pub extensions: BTreeMap<String, ExtensionPin>,
+    pub services: BTreeMap<String, ServicePin>,
     pub index: Vec<IndexEntry>,
 }
 
@@ -78,4 +79,46 @@ pub struct ComposerConfig {
 pub struct IndexEntry {
     pub host: String,
     pub fingerprint: String,
+}
+
+/// A value in the `[services]` table — either a bare version pin
+/// (string) or a table with per-service options. See CLI.md §4.2 and
+/// SERVICES.md §3.1.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(untagged)]
+pub enum ServicePin {
+    /// `redis = "11.4"` or `redis = "*"`. The version is intersected
+    /// against the catalog's `version`; `"*"` means "use the catalog
+    /// default".
+    Version(String),
+    /// `[services.mariadb] version = "11.4"; tenant = "myapp"`.
+    Detail(ServicePinDetail),
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct ServicePinDetail {
+    pub version: Option<String>,
+    /// Override the default tenant name (composer.json `name`, or cwd
+    /// basename if no composer.json). See SERVICES.md §3.1.
+    pub tenant: Option<String>,
+}
+
+impl ServicePin {
+    /// The version pin if one was set. `"*"` is returned as-is; the
+    /// resolver translates it to the catalog default at sync time.
+    pub fn version(&self) -> Option<&str> {
+        match self {
+            Self::Version(v) => Some(v),
+            Self::Detail(d) => d.version.as_deref(),
+        }
+    }
+
+    /// The user-provided tenant override, if any.
+    pub fn tenant(&self) -> Option<&str> {
+        match self {
+            Self::Version(_) => None,
+            Self::Detail(d) => d.tenant.as_deref(),
+        }
+    }
 }

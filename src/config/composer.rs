@@ -153,4 +153,48 @@ mod tests {
     fn malformed_json_errors() {
         assert!(read_composer_json("{not json").is_err());
     }
+
+    #[test]
+    fn services_bare_string_pin_parses() {
+        let c = read_composer_json(
+            r#"{
+                "extra": {
+                    "bougie": {
+                        "services": {"redis": "8.6", "mariadb": "*"}
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+        let cfg = c.extra_bougie.unwrap();
+        assert_eq!(cfg.services.len(), 2);
+        assert_eq!(
+            cfg.services.get("redis").and_then(crate::config::ServicePin::version),
+            Some("8.6")
+        );
+        assert_eq!(
+            cfg.services.get("mariadb").and_then(crate::config::ServicePin::version),
+            Some("*")
+        );
+    }
+
+    #[test]
+    fn services_table_form_parses_with_tenant() {
+        let c = read_composer_json(
+            r#"{
+                "extra": {
+                    "bougie": {
+                        "services": {
+                            "mariadb": {"version": "11.4", "tenant": "myapp"}
+                        }
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+        let cfg = c.extra_bougie.unwrap();
+        let m = cfg.services.get("mariadb").unwrap();
+        assert_eq!(m.version(), Some("11.4"));
+        assert_eq!(m.tenant(), Some("myapp"));
+    }
 }
