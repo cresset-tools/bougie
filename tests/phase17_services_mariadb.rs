@@ -144,7 +144,10 @@ fn up_bootstraps_mariadb_and_provisions_a_tenant() {
     assert_eq!(pw.len(), 32, "password should be 32-char hex");
 
     // The provisioned user can actually log in and see its database.
+    // `--no-defaults` for the same reason the daemon's client uses it:
+    // CI runners ship a system /etc/my.cnf full of MySQL-8-only options.
     let out = Command::new(mariadb_client(&env))
+        .arg("--no-defaults")
         .arg(format!("--socket={}", sock.display()))
         .arg("--user=acme_blog")
         .arg(format!("--password={pw}"))
@@ -257,6 +260,7 @@ fn two_projects_get_isolated_databases() {
     };
     let other_db = if names[0] == "acme_blog" { "acme_store" } else { "acme_blog" };
     let out = Command::new(mariadb_client(&env))
+        .arg("--no-defaults")
         .arg(format!("--socket={}", mariadb_socket(&env).display()))
         .arg(format!("--user={}", names[0]))
         .arg(format!("--password={pw_a}"))
@@ -305,6 +309,7 @@ fn down_purge_drops_database_and_user() {
     let mariadb = mariadb_client(&env);
     let sock = mariadb_socket(&env);
     let out = Command::new(&mariadb)
+        .arg("--no-defaults")
         .arg(format!("--socket={}", sock.display()))
         .arg("--user=acme_blog")
         .arg(format!("--password={pw}"))
@@ -352,6 +357,7 @@ fn down_purge_drops_database_and_user() {
         .or_else(|_| std::env::var("LOGNAME"))
         .unwrap_or_else(|_| "bougie".into());
     let out = Command::new(&mariadb)
+        .arg("--no-defaults")
         .arg(format!("--socket={}", sock.display()))
         .arg(format!("--user={os_user}"))
         .arg("--batch")

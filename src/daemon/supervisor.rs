@@ -328,6 +328,13 @@ fn render_exec_args(entry: &CatalogEntry, paths: &Paths) -> Vec<String> {
                 .map(|p| p.display().to_string())
                 .unwrap_or_default();
             vec![
+                // Ignore the host's /etc/my.cnf — on CI runners it
+                // typically contains MySQL-8-only settings that our
+                // bundled mariadbd rejects ("unknown variable
+                // 'mysqlx-bind-address=...'"). The only options
+                // mariadbd should see are the ones bougied passes
+                // explicitly.
+                "--no-defaults".into(),
                 format!("--basedir={basedir}"),
                 format!("--datadir={datadir}"),
                 format!("--socket={sock}"),

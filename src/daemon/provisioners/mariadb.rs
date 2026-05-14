@@ -57,7 +57,15 @@ pub fn pre_start(paths: &Paths) -> Result<()> {
 
     let user = current_user();
     let mut cmd = Command::new(&install_db);
-    cmd.arg(format!("--basedir={}", basedir.display()))
+    cmd
+        // CI runners (and some dev hosts) ship a system /etc/my.cnf
+        // intended for the OS-vendored MySQL/mariadb. It can set
+        // `user=mysql`, inject `mysqlx-*` options our bundled mariadbd
+        // doesn't know, etc. `--no-defaults` makes mariadb-install-db
+        // ignore every option file; the only inputs it considers are
+        // the ones we pass explicitly below.
+        .arg("--no-defaults")
+        .arg(format!("--basedir={}", basedir.display()))
         .arg(format!("--datadir={}", datadir.display()))
         .arg(format!("--user={user}"))
         // No anonymous test DB; we control the tenant model.
@@ -192,6 +200,10 @@ fn run_sql(mariadb_bin: &Path, socket: &Path, sql: &str) -> Result<()> {
     // bootstrap time.
     let os_user = current_user();
     let out = Command::new(mariadb_bin)
+        // Same `/etc/my.cnf` poison risk as the install-db / mariadbd
+        // invocations: skip every option file and use only the args
+        // we hand the client explicitly.
+        .arg("--no-defaults")
         .arg(format!("--socket={}", socket.display()))
         .arg(format!("--user={os_user}"))
         .arg("--batch")
