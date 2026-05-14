@@ -4,6 +4,7 @@ pub mod commands;
 pub mod composer;
 pub mod conf_d;
 pub mod config;
+pub mod daemon;
 pub mod errors;
 pub mod fetch;
 pub mod index;

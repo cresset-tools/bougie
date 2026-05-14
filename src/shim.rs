@@ -3,6 +3,12 @@
 //! `<project>/.bougie/bin/`. The `unzip` role exists because Composer's
 //! `ZipDownloader` prefers a PATH `unzip` over PHP's `ZipArchive`; see
 //! `commands::unzip` for the invocation surface.
+//!
+//! `bougied` is also a role on the same binary: when invoked under
+//! `argv[0] == "bougied"`, the process becomes the long-lived service
+//! supervisor daemon. The CLI auto-spawns it on first
+//! `bougie services …` invocation by exec'ing `current_exe()` with the
+//! `bougied` argv[0] override.
 
 use crate::commands::unzip;
 use crate::paths::Paths;
@@ -19,6 +25,7 @@ pub enum Role {
     PhpFpm,
     Composer,
     Unzip,
+    Bougied,
 }
 
 impl Role {
@@ -28,6 +35,7 @@ impl Role {
             Self::PhpFpm => "php-fpm",
             Self::Composer => "composer",
             Self::Unzip => "unzip",
+            Self::Bougied => "bougied",
         }
     }
 }
@@ -39,6 +47,7 @@ pub fn role_from_argv0(argv0: &OsStr) -> Option<Role> {
         "php-fpm" => Some(Role::PhpFpm),
         "composer" => Some(Role::Composer),
         "unzip" => Some(Role::Unzip),
+        "bougied" => Some(Role::Bougied),
         _ => None,
     }
 }
@@ -58,6 +67,14 @@ pub fn exec(role: Role) -> Result<ExitCode> {
     // archive extraction. Skip project resolution entirely.
     if role == Role::Unzip {
         return unzip::run(args);
+    }
+
+    // The bougied role is also project-agnostic: it's a per-user
+    // long-lived supervisor, not bound to any single project. The CLI
+    // auto-spawns it via `current_exe()` with argv[0] = "bougied".
+    if role == Role::Bougied {
+        let paths = Paths::from_env()?;
+        return crate::daemon::run(paths);
     }
 
     let project_root = locate_project_root(&argv0)?;
@@ -146,6 +163,7 @@ pub fn exec(role: Role) -> Result<ExitCode> {
             Err(err.into())
         }
         Role::Unzip => unreachable!("unzip role handled above"),
+        Role::Bougied => unreachable!("bougied role handled above"),
     }
 }
 
@@ -254,6 +272,15 @@ mod tests {
     fn ignores_bougie_basename() {
         assert_eq!(role_from_argv0(&OsString::from("/usr/bin/bougie")), None);
         assert_eq!(role_from_argv0(&OsString::from("bougie")), None);
+    }
+
+    #[test]
+    fn detects_bougied_role() {
+        assert_eq!(role_from_argv0(&OsString::from("bougied")), Some(Role::Bougied));
+        assert_eq!(
+            role_from_argv0(&OsString::from("/usr/local/bin/bougied")),
+            Some(Role::Bougied)
+        );
     }
 
     #[test]

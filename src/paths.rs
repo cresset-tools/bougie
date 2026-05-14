@@ -103,6 +103,49 @@ impl Paths {
     pub fn cache_blobs(&self) -> PathBuf {
         self.cache.join("blobs")
     }
+
+    // ---------- `bougied` daemon + service supervisor paths ----------
+    //
+    // See SERVICES.md and CLI.md §2.1 in the php-build-standalone repo
+    // for the canonical layout. Socket and pid file live directly under
+    // `state/`; everything else hangs under `state/services/<name>/`.
+
+    /// Unix socket the `bougied` daemon listens on (mode 0600).
+    pub fn bougied_sock(&self) -> PathBuf {
+        self.state().join("bougied.sock")
+    }
+    /// Pid file for the running daemon (also flock'd for singleton).
+    pub fn bougied_pid(&self) -> PathBuf {
+        self.state().join("bougied.pid")
+    }
+    /// Root for all per-service state (`$BOUGIE_HOME/state/services/`).
+    pub fn services_dir(&self) -> PathBuf {
+        self.state().join("services")
+    }
+    /// Per-service root: `$BOUGIE_HOME/state/services/<name>/`.
+    pub fn service_dir(&self, name: &str) -> PathBuf {
+        self.services_dir().join(name)
+    }
+    /// Per-service durable data (mariadb datadir, redis dump, …).
+    pub fn service_data(&self, name: &str) -> PathBuf {
+        self.service_dir(name).join("data")
+    }
+    /// Per-service runtime dir (unix socket, pid file).
+    pub fn service_run(&self, name: &str) -> PathBuf {
+        self.service_dir(name).join("run")
+    }
+    /// Per-service log dir (rotated logs land here).
+    pub fn service_log(&self, name: &str) -> PathBuf {
+        self.service_dir(name).join("log")
+    }
+    /// Per-service rendered config (read-only to the service via sandbox).
+    pub fn service_conf(&self, name: &str) -> PathBuf {
+        self.service_dir(name).join("conf")
+    }
+    /// Per-service tenant ledger (JSON Lines, see SERVICES.md §3.3).
+    pub fn service_tenants(&self, name: &str) -> PathBuf {
+        self.service_dir(name).join("tenants.json")
+    }
 }
 
 #[cfg(test)]
@@ -152,5 +195,22 @@ mod tests {
         assert_eq!(p.composer_root(), Path::new("/h/composer"));
         assert_eq!(p.composer_phar("2.8.5"), Path::new("/h/composer/2.8.5/composer.phar"));
         assert_eq!(p.composer_channels_json(), Path::new("/h/composer/channels.json"));
+    }
+
+    #[test]
+    fn bougied_and_service_paths_compose() {
+        let p = Paths::new(PathBuf::from("/h"), PathBuf::from("/c"));
+        assert_eq!(p.bougied_sock(), Path::new("/h/state/bougied.sock"));
+        assert_eq!(p.bougied_pid(), Path::new("/h/state/bougied.pid"));
+        assert_eq!(p.services_dir(), Path::new("/h/state/services"));
+        assert_eq!(p.service_dir("redis"), Path::new("/h/state/services/redis"));
+        assert_eq!(p.service_data("redis"), Path::new("/h/state/services/redis/data"));
+        assert_eq!(p.service_run("redis"), Path::new("/h/state/services/redis/run"));
+        assert_eq!(p.service_log("redis"), Path::new("/h/state/services/redis/log"));
+        assert_eq!(p.service_conf("redis"), Path::new("/h/state/services/redis/conf"));
+        assert_eq!(
+            p.service_tenants("redis"),
+            Path::new("/h/state/services/redis/tenants.json")
+        );
     }
 }

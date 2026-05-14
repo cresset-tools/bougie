@@ -1,3 +1,15 @@
+[workspace]
+# `crates/sandbox-run` and its sibling `macos-sandbox-sys` are vendored
+# (rather than path-deped from a sibling repo) so that the bougie repo
+# is self-contained for build and audit. Both crates are EUPL-1.2,
+# matching bougie's license.
+members = ["crates/macos-sandbox-sys", "crates/sandbox-run"]
+
+[workspace.package]
+edition = "2024"
+license = "EUPL-1.2"
+authors = ["Jelle Besseling <jelle@pingiun.com>"]
+
 [package]
 name = "bougie"
 version = "0.1.0"
@@ -96,11 +108,19 @@ version = "3.10"
 
 # Direct flock(2) for the timeout-aware ExclusiveLock in src/lock.rs;
 # also `geteuid()` for the $XDG_RUNTIME_DIR fallback path inside
-# `bougie server`.
+# `bougie server`, and the `bougied.pid` singleton lock in
+# `src/daemon/`.
 [dependencies.rustix]
 version = "1.0"
 default-features = false
 features = ["std", "fs", "process"]
+
+# Process sandboxing for managed dev services (`bougied`).
+# Cross-platform: Linux Landlock (kernel 5.13+), macOS SBPL via
+# `sandbox_init_with_parameters`. Vendored as workspace member at
+# `crates/sandbox-run/` so this repo is self-contained.
+[dependencies.sandbox-run]
+path = "crates/sandbox-run"
 
 # URL joining for relative manifest URLs in the index protocol.
 [dependencies.url]
