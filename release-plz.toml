@@ -18,3 +18,12 @@ git_release_body = """
 {% if version.is_prerelease %}_Prerelease._{% endif %}
 {{ changelog }}
 """
+
+# With `publish = false`, release-plz can't compare against a crates.io
+# version, which means its default flow leaves `registry_package_exists`
+# at false and `should_update_version()` always returns false — no PR is
+# ever opened. `git_only = true` switches to the git-tag-driven flow,
+# which is the right mode for git-release-only projects.
+[[package]]
+name = "bougie"
+git_only = true
