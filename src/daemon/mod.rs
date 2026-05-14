@@ -13,7 +13,10 @@
 
 pub mod catalog;
 pub mod ipc;
+pub mod sandbox;
 mod state;
+pub mod supervisor;
+pub mod tenants;
 
 use crate::Paths;
 use eyre::{Result, WrapErr};
