@@ -67,80 +67,12 @@ fn strings_to_cstrings(strings: &[&str]) -> Vec<CString> {
         .collect()
 }
 
-#[cfg(test)]
-mod test {
-    use std::{fs::File, io::ErrorKind};
-
-    use crate::create_sandbox_with_parameters;
-
-    #[test]
-    fn test_empty_profile() {
-        let res =
-            create_sandbox_with_parameters("(version 1)\n(allow default)\n".to_string(), 0, &[]);
-        assert!(res.is_ok());
-
-        // try to read file
-        let _file = File::open("./Cargo.toml").unwrap();
-
-        let _file = File::open("./src/lib.rs").unwrap();
-    }
-
-    #[test]
-    fn test_basic_deny_profile() {
-        let res =
-            create_sandbox_with_parameters("(version 1)\n(deny default)\n".to_string(), 0, &[]);
-        assert!(res.is_ok());
-    }
-
-    #[test]
-    fn test_deny_subpath() {
-        let mut src_dir = std::env::current_dir().unwrap();
-        src_dir.push("src");
-        let res = create_sandbox_with_parameters(
-            format!(
-                r#"
-(version 1)
-(allow default)
-
-(deny file-read* file-write*
-    (subpath "{}"))"#,
-                src_dir.display()
-            ),
-            0,
-            &[],
-        );
-        assert!(res.is_ok());
-
-        // try to read file
-        assert!(File::open("./Cargo.toml").is_ok());
-
-        let err = File::open("./src/lib.rs").unwrap_err();
-        assert!(err.kind() == ErrorKind::PermissionDenied);
-    }
-
-    #[test]
-    fn test_parameters_substitution() {
-        let mut src_dir = std::env::current_dir().unwrap();
-        src_dir.push("src");
-        let src_str = src_dir.display().to_string();
-
-        let profile = format!(
-            r#"
-(version 1)
-(allow default)
-
-(deny file-read* file-write*
-    (subpath (param "_SUBPATH_DENY")))"#
-        );
-
-        let res = create_sandbox_with_parameters(profile, 0, &["_SUBPATH_DENY", &src_str]);
-        assert!(res.is_ok());
-
-        // try to read a file outside the denied path
-        assert!(File::open("./Cargo.toml").is_ok());
-
-        // access inside the denied path should be denied
-        let err = File::open("./src/lib.rs").unwrap_err();
-        assert!(err.kind() == ErrorKind::PermissionDenied);
-    }
-}
+// Tests live under `tests/` rather than as a `#[cfg(test)] mod test`
+// inside this file. Apple's `sandbox_init_with_parameters` is a
+// process-once API: the first call applies, every subsequent call in
+// the same process returns EPERM. The lib's test runner runs all
+// `#[test]`s inside the same binary, so a `mod tests` here would only
+// ever see one test pass and the others fail at random depending on
+// thread scheduling. Cargo's integration tests get one binary per
+// `tests/*.rs` file, which gives each test its own process — the
+// only sound isolation for an API like this.

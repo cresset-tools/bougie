@@ -100,7 +100,11 @@ fn up_starts_fake_redis_and_provisions_a_tenant() {
     let line = ledger.lines().next().unwrap();
     let v: serde_json::Value = serde_json::from_str(line).unwrap();
     assert_eq!(v["tenant"], "acme_blog");
-    assert_eq!(v["project"], proj.path().to_str().unwrap());
+    // macOS's `current_dir`-via-spawn resolves /var/folders → /private/var/folders;
+    // the daemon stores the symlink-resolved path. Compare against the canonical
+    // form on both sides so the assertion works on Linux and macOS alike.
+    let expected = fs::canonicalize(proj.path()).unwrap();
+    assert_eq!(v["project"], expected.to_str().unwrap());
     assert_eq!(v["alloc"]["db_number"], 0);
 
     stop_daemon(&env);
