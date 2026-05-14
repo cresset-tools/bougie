@@ -102,6 +102,30 @@ pub enum Command {
     /// the foreground server. See SERVER.md.
     #[command(subcommand)]
     Server(ServerCommand),
+
+    /// Manage project-scoped dev services (mariadb, redis, …). See
+    /// SERVICES.md and CLI.md §3.8.
+    #[command(subcommand)]
+    Services(ServicesCommand),
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ServicesCommand {
+    /// Inspect and control the `bougied` daemon.
+    #[command(subcommand)]
+    Daemon(ServicesDaemonCommand),
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ServicesDaemonCommand {
+    /// Print daemon PID, socket path, and managed-service count. The
+    /// daemon is auto-spawned if not already running.
+    Status,
+    /// Send a graceful shutdown to the running daemon.
+    Stop,
+    /// Print the daemon's reported version (used by the CLI to detect
+    /// post-`self update` daemon-binary mismatches).
+    Version,
 }
 
 #[derive(Subcommand, Debug)]

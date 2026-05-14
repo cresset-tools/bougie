@@ -27,7 +27,7 @@ pub use target::Triple;
 
 use cli::{
     CacheCommand, ComposerCommand, PhpCommand, SelfCommand, ServerCommand, ServerHostsCommand,
-    ServerTlsCommand,
+    ServerTlsCommand, ServicesCommand, ServicesDaemonCommand,
 };
 use eyre::Result;
 use std::process::ExitCode;
@@ -197,6 +197,15 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
         }
         Command::Server(ServerCommand::Tls(ServerTlsCommand::Uninstall)) => {
             commands::server::tls::uninstall(format, field)
+        }
+        Command::Services(ServicesCommand::Daemon(ServicesDaemonCommand::Status)) => {
+            commands::services::daemon::status(format, field)
+        }
+        Command::Services(ServicesCommand::Daemon(ServicesDaemonCommand::Stop)) => {
+            commands::services::daemon::stop(format, field)
+        }
+        Command::Services(ServicesCommand::Daemon(ServicesDaemonCommand::Version)) => {
+            commands::services::daemon::version(format, field)
         }
     }
 }
