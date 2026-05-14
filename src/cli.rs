@@ -111,6 +111,30 @@ pub enum Command {
 
 #[derive(Subcommand, Debug)]
 pub enum ServicesCommand {
+    /// Declare a service in the project. Errors if the name isn't in
+    /// the catalog. Use `bougie services catalog` to discover names.
+    Add {
+        /// One or more service names, each optionally `@<version>`.
+        names: Vec<String>,
+    },
+    /// Remove a service declaration from the project.
+    Remove {
+        /// Service names to remove. `--purge` is reserved for the
+        /// future tenant-data-destruction path; today it has no effect.
+        names: Vec<String>,
+        /// Reserved — see CLI.md §3.8.2. Today this only echoes back.
+        #[arg(long)]
+        purge: bool,
+    },
+    /// List the services declared in the current project.
+    List {
+        /// Reserved for cross-project listing in Phase 3+. Today this
+        /// degrades silently to per-project output.
+        #[arg(long)]
+        all: bool,
+    },
+    /// Print the built-in service catalog (no daemon required).
+    Catalog,
     /// Inspect and control the `bougied` daemon.
     #[command(subcommand)]
     Daemon(ServicesDaemonCommand),

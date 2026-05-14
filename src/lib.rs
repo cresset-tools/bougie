@@ -198,6 +198,18 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
         Command::Server(ServerCommand::Tls(ServerTlsCommand::Uninstall)) => {
             commands::server::tls::uninstall(format, field)
         }
+        Command::Services(ServicesCommand::Add { names }) => {
+            commands::services::add::run(format, field, names)
+        }
+        Command::Services(ServicesCommand::Remove { names, purge }) => {
+            commands::services::remove::run(format, field, names, purge)
+        }
+        Command::Services(ServicesCommand::List { all }) => {
+            commands::services::list::run(format, field, all)
+        }
+        Command::Services(ServicesCommand::Catalog) => {
+            commands::services::catalog::run(format, field)
+        }
         Command::Services(ServicesCommand::Daemon(ServicesDaemonCommand::Status)) => {
             commands::services::daemon::status(format, field)
         }

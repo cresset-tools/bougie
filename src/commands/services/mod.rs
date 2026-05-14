@@ -1,8 +1,13 @@
 //! `bougie services …` — the client-side subcommands.
 //!
 //! Most of this surface is a thin IPC client over `bougied`. The
-//! exception is `catalog` (lands in Phase 2), which is a pure read of
-//! the built-in catalog and needs no running daemon.
+//! offline subcommands (`catalog`, `add`, `remove`, `list`) need no
+//! running daemon.
 
+pub mod add;
+pub mod catalog;
 pub mod client;
+pub mod config_mut;
 pub mod daemon;
+pub mod list;
+pub mod remove;
