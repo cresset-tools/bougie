@@ -621,17 +621,10 @@ async fn dispatch_up(
         let Some(entry) = catalog::find(name) else { continue };
         // One-shot bootstrap (e.g. mariadb-install-db on first run).
         // Idempotent — safe even when the service is already running.
-        // `spawn_blocking` so subprocess I/O and `reqwest::blocking`
-        // (opensearch HTTP) don't panic from inside the tokio
-        // runtime.
-        let paths_for_blocking = state.paths.clone();
-        let entry_static = entry;
-        let pre_res = tokio::task::spawn_blocking(move || {
-            provisioners::pre_start(entry_static, &paths_for_blocking)
-        })
-        .await
-        .map_err(|join_err| eyre::eyre!("pre_start task panicked: {join_err}"))
-        .and_then(|inner| inner);
+        // The dispatcher owns the sync/async bridge: mariadb and the
+        // other sync provisioners run on the blocking pool internally;
+        // opensearch is natively async.
+        let pre_res = provisioners::pre_start(entry, &state.paths).await;
         if let Err(e) = pre_res {
             return ResultFrame::err(
                 "pre_start_failed",
@@ -658,21 +651,14 @@ async fn dispatch_up(
                 None => continue, // dep ordered in but not in the request
             };
             let tenants_path = state.paths.service_tenants(name);
-            // Same `spawn_blocking` shield as `pre_start` above.
-            let paths_for_blocking = state.paths.clone();
-            let project_for_blocking = project.clone();
-            let prov_res = tokio::task::spawn_blocking(move || {
-                provisioners::provision(
-                    entry_static,
-                    &paths_for_blocking,
-                    &tenants_path,
-                    &tenant_name,
-                    &project_for_blocking,
-                )
-            })
-            .await
-            .map_err(|join_err| eyre::eyre!("provision task panicked: {join_err}"))
-            .and_then(|inner| inner);
+            let prov_res = provisioners::provision(
+                entry,
+                &state.paths,
+                &tenants_path,
+                &tenant_name,
+                &project,
+            )
+            .await;
             match prov_res {
                 Ok(t) => {
                     tenants_map.insert(name.to_string(), Value::String(t.tenant));
@@ -716,29 +702,15 @@ async fn dispatch_down(
             if let Some(t) = project_tenant {
                 let sock_default = state.paths.service_run(entry.name).join(format!("{}.sock", entry.name));
                 let sock_opt = sock_default.exists().then_some(sock_default);
-                // Same `spawn_blocking` shield as `dispatch_up`: the
-                // deprovisioner uses blocking I/O (reqwest::blocking
-                // for opensearch, std::process::Command for mariadb)
-                // which would panic if called from inside the runtime.
-                let paths_for_blocking = state.paths.clone();
-                let tenants_path_b = tenants_path.clone();
-                let tenant_for_blocking = t.tenant.clone();
-                let entry_static = entry;
-                let deprov_res = tokio::task::spawn_blocking(move || {
-                    provisioners::deprovision(
-                        entry_static,
-                        &paths_for_blocking,
-                        &tenants_path_b,
-                        &tenant_for_blocking,
-                        sock_opt.as_deref(),
-                        purge,
-                    )
-                })
-                .await
-                .map_err(|join_err| {
-                    eyre::eyre!("deprovision task panicked: {join_err}")
-                })
-                .and_then(|inner| inner);
+                let deprov_res = provisioners::deprovision(
+                    entry,
+                    &state.paths,
+                    &tenants_path,
+                    &t.tenant,
+                    sock_opt.as_deref(),
+                    purge,
+                )
+                .await;
                 if let Err(e) = deprov_res {
                     return ResultFrame::err(
                         "deprovision_failed",

@@ -10,15 +10,14 @@
 //! convention-based (index-prefix). Real auth lands when bougie
 //! starts treating opensearch as a multi-process catalog entry that
 //! some users would run alongside a security-plugin install.
-//!
-//! All HTTP interaction goes through `reqwest::blocking`, which is
-//! already a bougie dep (used by `src/fetch.rs`).
 
 use crate::daemon::{store_layout, tenants::{self, Tenant}};
 use crate::Paths;
 use eyre::{eyre, Result, WrapErr};
 use std::path::Path;
-use std::time::{Duration, Instant};
+use std::sync::OnceLock;
+use std::time::Duration;
+use tokio::time::Instant;
 
 /// Loopback URL the supervisor binds opensearch to. The catalog pins
 /// the port at 9200 (`Binding::Tcp { port: 9200 }`); keep this in
@@ -54,7 +53,7 @@ const PROVISION_READY_TIMEOUT: Duration = Duration::from_secs(30);
 ///    `OPENSEARCH_PATH_CONF` at our copy (see `render_exec_env`).
 /// 3. **`<datadir>/data`** — for `path.data` and the JVM's
 ///    `-XX:HeapDumpPath=data` (also relative).
-pub fn pre_start(paths: &Paths) -> Result<()> {
+pub async fn pre_start(paths: &Paths) -> Result<()> {
     let data = paths.service_data("opensearch");
     let conf = paths.service_conf("opensearch");
     for sub in ["tmp", "logs", "data"] {
@@ -146,7 +145,7 @@ fn rewrite_jvm_options(path: &Path, data_dir: &Path) -> Result<()> {
 
 /// Provision a tenant. Idempotent — repeated calls for the same
 /// project re-use the existing index template.
-pub fn provision(tenants_path: &Path, tenant_name: &str, project: &Path) -> Result<Tenant> {
+pub async fn provision(tenants_path: &Path, tenant_name: &str, project: &Path) -> Result<Tenant> {
     let existing = tenants::load_all(tenants_path)?;
     if let Some(existing_t) = existing.iter().find(|t| t.project == project) {
         return Ok(existing_t.clone());
@@ -161,9 +160,11 @@ pub fn provision(tenants_path: &Path, tenant_name: &str, project: &Path) -> Resu
     }
 
     wait_for_cluster(PROVISION_READY_TIMEOUT)
+        .await
         .wrap_err("opensearch cluster never became HTTP-ready")?;
 
     put_index_template(tenant_name)
+        .await
         .wrap_err_with(|| format!("provisioning opensearch tenant `{tenant_name}`"))?;
 
     let mut tenant = Tenant::new(tenant_name, project.to_path_buf());
@@ -178,7 +179,7 @@ pub fn provision(tenants_path: &Path, tenant_name: &str, project: &Path) -> Resu
 /// and every index that matched `<tenant>-*`. Without `purge`, only
 /// the local ledger entry goes away; opensearch state survives a
 /// `services down` so a later `up` re-uses it (matches redis/mariadb).
-pub fn deprovision(tenants_path: &Path, tenant_name: &str, purge: bool) -> Result<()> {
+pub async fn deprovision(tenants_path: &Path, tenant_name: &str, purge: bool) -> Result<()> {
     let existing = tenants::load_all(tenants_path)?;
     let Some(_target) = existing.iter().find(|t| t.tenant == tenant_name).cloned() else {
         return Ok(());
@@ -192,8 +193,8 @@ pub fn deprovision(tenants_path: &Path, tenant_name: &str, purge: bool) -> Resul
         // Best-effort: the live cluster might be down (e.g. `down`
         // races against the supervisor stop), in which case the user
         // intends to discard the ledger entry regardless.
-        let _ = delete_indices(tenant_name);
-        let _ = delete_index_template(tenant_name);
+        let _ = delete_indices(tenant_name).await;
+        let _ = delete_index_template(tenant_name).await;
     }
     tenants::rewrite(tenants_path, |t| t.tenant != tenant_name)?;
     Ok(())
@@ -201,14 +202,19 @@ pub fn deprovision(tenants_path: &Path, tenant_name: &str, purge: bool) -> Resul
 
 // -------------------- HTTP helpers --------------------
 
-fn http_client() -> Result<reqwest::blocking::Client> {
-    reqwest::blocking::Client::builder()
-        .timeout(PROVISION_HTTP_TIMEOUT)
-        .build()
-        .map_err(|e| eyre!("building reqwest client: {e}"))
+// Build only fails on TLS-config errors, which can't apply to our
+// HTTP-only localhost client.
+fn http_client() -> &'static reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .timeout(PROVISION_HTTP_TIMEOUT)
+            .build()
+            .expect("reqwest::Client::builder() for HTTP-only localhost cannot fail")
+    })
 }
 
-fn put_index_template(tenant: &str) -> Result<()> {
+async fn put_index_template(tenant: &str) -> Result<()> {
     let body = serde_json::json!({
         "index_patterns": [format!("{tenant}-*")],
         // `priority` ensures user-specified templates with the
@@ -231,30 +237,32 @@ fn put_index_template(tenant: &str) -> Result<()> {
         }
     });
     let url = format!("{OPENSEARCH_BASE_URL}/_index_template/{tenant}");
-    let resp = http_client()?
+    let resp = http_client()
         .put(&url)
         .header("Content-Type", "application/json")
         .body(body.to_string())
         .send()
+        .await
         .map_err(|e| eyre!("PUT {url}: {e}"))?;
     if !resp.status().is_success() {
         let status = resp.status();
-        let text = resp.text().unwrap_or_default();
+        let text = resp.text().await.unwrap_or_default();
         return Err(eyre!("PUT {url} returned {status}: {text}"));
     }
     Ok(())
 }
 
-fn delete_index_template(tenant: &str) -> Result<()> {
+async fn delete_index_template(tenant: &str) -> Result<()> {
     let url = format!("{OPENSEARCH_BASE_URL}/_index_template/{tenant}");
-    let resp = http_client()?
+    let resp = http_client()
         .delete(&url)
         .send()
+        .await
         .map_err(|e| eyre!("DELETE {url}: {e}"))?;
     // 404 is fine — template might have been wiped already.
     if !(resp.status().is_success() || resp.status() == reqwest::StatusCode::NOT_FOUND) {
         let status = resp.status();
-        let text = resp.text().unwrap_or_default();
+        let text = resp.text().await.unwrap_or_default();
         return Err(eyre!("DELETE {url} returned {status}: {text}"));
     }
     Ok(())
@@ -264,15 +272,16 @@ fn delete_index_template(tenant: &str) -> Result<()> {
 /// Opensearch refuses the wildcard unless the URL itself is allowed-
 /// to-be-destructive — we send `?expand_wildcards=open,closed`
 /// explicitly.
-fn delete_indices(tenant: &str) -> Result<()> {
+async fn delete_indices(tenant: &str) -> Result<()> {
     let url = format!("{OPENSEARCH_BASE_URL}/{tenant}-*?expand_wildcards=open,closed");
-    let resp = http_client()?
+    let resp = http_client()
         .delete(&url)
         .send()
+        .await
         .map_err(|e| eyre!("DELETE {url}: {e}"))?;
     if !(resp.status().is_success() || resp.status() == reqwest::StatusCode::NOT_FOUND) {
         let status = resp.status();
-        let text = resp.text().unwrap_or_default();
+        let text = resp.text().await.unwrap_or_default();
         return Err(eyre!("DELETE {url} returned {status}: {text}"));
     }
     Ok(())
@@ -282,12 +291,12 @@ fn delete_indices(tenant: &str) -> Result<()> {
 /// probe is satisfied the moment Netty binds, but cluster bootstrap
 /// keeps the HTTP layer rejecting requests for another second or two
 /// while it initialises the cluster state.
-fn wait_for_cluster(timeout: Duration) -> Result<()> {
-    let client = http_client()?;
+async fn wait_for_cluster(timeout: Duration) -> Result<()> {
+    let client = http_client();
     let deadline = Instant::now() + timeout;
     let url = format!("{OPENSEARCH_BASE_URL}/");
     loop {
-        if let Ok(r) = client.get(&url).send() {
+        if let Ok(r) = client.get(&url).send().await {
             if r.status().is_success() {
                 return Ok(());
             }
@@ -297,7 +306,7 @@ fn wait_for_cluster(timeout: Duration) -> Result<()> {
                 "opensearch HTTP root never returned 200 within {timeout:?}"
             ));
         }
-        std::thread::sleep(Duration::from_millis(250));
+        tokio::time::sleep(Duration::from_millis(250)).await;
     }
 }
 
