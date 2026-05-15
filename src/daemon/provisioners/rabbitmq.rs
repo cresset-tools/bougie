@@ -19,8 +19,9 @@ use crate::daemon::{store_layout, tenants::{self, Tenant}};
 use crate::Paths;
 use eyre::{eyre, Result, WrapErr};
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use tokio::process::Command;
+use tokio::time::Instant;
 
 /// How long to wait for rabbitmq to come fully online before the
 /// first rabbitmqctl call. The supervisor's TCP probe wins as soon
@@ -32,7 +33,7 @@ const RABBITMQCTL_READY_TIMEOUT: Duration = Duration::from_secs(60);
 /// rabbitmq pre-start hook. Creates the directories rabbitmq writes
 /// to under our RW allowlist. No bootstrap step — rabbitmq creates
 /// its own mnesia + log files on first start.
-pub fn pre_start(paths: &Paths) -> Result<()> {
+pub async fn pre_start(paths: &Paths) -> Result<()> {
     for p in [
         paths.service_data("rabbitmq"),
         paths.service_data("rabbitmq").join("mnesia"),
@@ -41,7 +42,8 @@ pub fn pre_start(paths: &Paths) -> Result<()> {
         paths.service_run("rabbitmq"),
         paths.service_conf("rabbitmq"),
     ] {
-        std::fs::create_dir_all(&p)
+        tokio::fs::create_dir_all(&p)
+            .await
             .wrap_err_with(|| format!("creating {}", p.display()))?;
     }
     Ok(())
@@ -50,13 +52,13 @@ pub fn pre_start(paths: &Paths) -> Result<()> {
 /// Provision a tenant. Idempotent — re-running for the same project
 /// re-uses the existing vhost/user (rabbitmqctl returns non-zero on
 /// "already exists", which we treat as success).
-pub fn provision(
+pub async fn provision(
     paths: &Paths,
     tenants_path: &Path,
     tenant_name: &str,
     project: &Path,
 ) -> Result<Tenant> {
-    let existing = tenants::load_all(tenants_path)?;
+    let existing = tenants::load_all(tenants_path).await?;
     if let Some(existing_t) = existing.iter().find(|t| t.project == project) {
         return Ok(existing_t.clone());
     }
@@ -70,32 +72,25 @@ pub fn provision(
 
     let ctl = ctl_binary(paths)?;
     wait_for_ctl_ready(&ctl, paths, RABBITMQCTL_READY_TIMEOUT)
+        .await
         .wrap_err("rabbitmq node never became rabbitmqctl-ready")?;
 
-    let password = generate_password();
+    let password = generate_password().await;
 
     // `add_vhost` is idempotent in v4 (`--ignore-duplicate`); the
     // user creation isn't. Treat "already exists" as success so a
     // re-run after a partial failure (vhost created, user-add
     // crashed mid-call) converges.
-    run_ctl(&ctl, paths, &["add_vhost", tenant_name])
-        .or_else(|e| {
-            if e.to_string().contains("already") || e.to_string().contains("exists") {
-                Ok(())
-            } else {
-                Err(e)
-            }
-        })
-        .wrap_err_with(|| format!("rabbitmqctl add_vhost {tenant_name}"))?;
-    run_ctl(&ctl, paths, &["add_user", tenant_name, &password])
-        .or_else(|e| {
-            if e.to_string().contains("already") || e.to_string().contains("exists") {
-                Ok(())
-            } else {
-                Err(e)
-            }
-        })
-        .wrap_err_with(|| format!("rabbitmqctl add_user {tenant_name}"))?;
+    match run_ctl(&ctl, paths, &["add_vhost", tenant_name]).await {
+        Ok(()) => {}
+        Err(e) if e.to_string().contains("already") || e.to_string().contains("exists") => {}
+        Err(e) => return Err(e).wrap_err_with(|| format!("rabbitmqctl add_vhost {tenant_name}")),
+    }
+    match run_ctl(&ctl, paths, &["add_user", tenant_name, &password]).await {
+        Ok(()) => {}
+        Err(e) if e.to_string().contains("already") || e.to_string().contains("exists") => {}
+        Err(e) => return Err(e).wrap_err_with(|| format!("rabbitmqctl add_user {tenant_name}")),
+    }
     run_ctl(
         &ctl,
         paths,
@@ -109,6 +104,7 @@ pub fn provision(
             ".*",
         ],
     )
+    .await
     .wrap_err_with(|| format!("rabbitmqctl set_permissions for {tenant_name}"))?;
 
     let mut tenant = Tenant::new(tenant_name, project.to_path_buf());
@@ -121,7 +117,7 @@ pub fn provision(
     tenant
         .secrets
         .insert("password".into(), password);
-    tenants::append(tenants_path, &tenant)?;
+    tenants::append(tenants_path, &tenant).await?;
     Ok(tenant)
 }
 
@@ -129,13 +125,13 @@ pub fn provision(
 /// the live broker; without it, the tenants ledger entry goes away
 /// but the broker keeps the state for a later `up` (matches mariadb
 /// + opensearch).
-pub fn deprovision(
+pub async fn deprovision(
     paths: &Paths,
     tenants_path: &Path,
     tenant_name: &str,
     purge: bool,
 ) -> Result<()> {
-    let existing = tenants::load_all(tenants_path)?;
+    let existing = tenants::load_all(tenants_path).await?;
     if !existing.iter().any(|t| t.tenant == tenant_name) {
         return Ok(());
     }
@@ -148,11 +144,11 @@ pub fn deprovision(
         // Best-effort: the broker may already be down. Either way the
         // ledger entry is dropped below.
         if let Ok(ctl) = ctl_binary(paths) {
-            let _ = run_ctl(&ctl, paths, &["delete_vhost", tenant_name]);
-            let _ = run_ctl(&ctl, paths, &["delete_user", tenant_name]);
+            let _ = run_ctl(&ctl, paths, &["delete_vhost", tenant_name]).await;
+            let _ = run_ctl(&ctl, paths, &["delete_user", tenant_name]).await;
         }
     }
-    tenants::rewrite(tenants_path, |t| t.tenant != tenant_name)?;
+    tenants::rewrite(tenants_path, |t| t.tenant != tenant_name).await?;
     Ok(())
 }
 
@@ -176,11 +172,11 @@ fn ctl_binary(paths: &Paths) -> Result<PathBuf> {
 /// `env_clear()` and rebuild from scratch — that way a stale
 /// `RABBITMQ_NODENAME` in the operator's shell can't point us at
 /// the wrong broker.
-fn run_ctl(ctl: &Path, paths: &Paths, args: &[&str]) -> Result<()> {
+async fn run_ctl(ctl: &Path, paths: &Paths, args: &[&str]) -> Result<()> {
     let mut cmd = Command::new(ctl);
     cmd.args(args);
     build_ctl_env(&mut cmd, paths);
-    let output = cmd.output().map_err(|e| eyre!("spawning rabbitmqctl: {e}"))?;
+    let output = cmd.output().await.map_err(|e| eyre!("spawning rabbitmqctl: {e}"))?;
     if !output.status.success() {
         return Err(eyre!(
             "rabbitmqctl {} failed (exit {}): {}",
@@ -207,13 +203,13 @@ fn build_ctl_env(cmd: &mut Command, paths: &Paths) {
 /// satisfied the moment the inet listener bound, but mnesia + boot
 /// modules need another second or two to load before ctl calls
 /// stop returning "node not running."
-fn wait_for_ctl_ready(ctl: &Path, paths: &Paths, timeout: Duration) -> Result<()> {
+async fn wait_for_ctl_ready(ctl: &Path, paths: &Paths, timeout: Duration) -> Result<()> {
     let deadline = Instant::now() + timeout;
     loop {
         let mut cmd = Command::new(ctl);
         cmd.args(["status", "--quiet"]);
         build_ctl_env(&mut cmd, paths);
-        let last_err = match cmd.output() {
+        let last_err = match cmd.output().await {
             Ok(o) if o.status.success() => return Ok(()),
             Ok(o) => String::from_utf8_lossy(&o.stderr).trim().to_string(),
             Err(e) => e.to_string(),
@@ -223,7 +219,7 @@ fn wait_for_ctl_ready(ctl: &Path, paths: &Paths, timeout: Duration) -> Result<()
                 "rabbitmqctl never reported running within {timeout:?}; last error: {last_err}"
             ));
         }
-        std::thread::sleep(Duration::from_millis(500));
+        tokio::time::sleep(Duration::from_millis(500)).await;
     }
 }
 
@@ -287,12 +283,14 @@ fn is_safe_identifier(s: &str) -> bool {
 
 /// 24 bytes from `/dev/urandom`, hex-encoded → 48-char password.
 /// Matches mariadb's password generator.
-fn generate_password() -> String {
-    use std::fs::File;
-    use std::io::Read;
+async fn generate_password() -> String {
+    use tokio::io::AsyncReadExt;
     let mut buf = [0u8; 24];
-    File::open("/dev/urandom")
-        .and_then(|mut f| f.read_exact(&mut buf))
+    let mut f = tokio::fs::File::open("/dev/urandom")
+        .await
+        .expect("/dev/urandom should be openable for password generation");
+    f.read_exact(&mut buf)
+        .await
         .expect("/dev/urandom should be readable for password generation");
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut out = String::with_capacity(48);
@@ -323,9 +321,9 @@ mod tests {
         assert!(!is_safe_identifier(&"x".repeat(129)));
     }
 
-    #[test]
-    fn generated_password_is_48_hex_chars() {
-        let pw = generate_password();
+    #[tokio::test]
+    async fn generated_password_is_48_hex_chars() {
+        let pw = generate_password().await;
         assert_eq!(pw.len(), 48);
         assert!(pw.chars().all(|c| c.is_ascii_hexdigit()));
     }

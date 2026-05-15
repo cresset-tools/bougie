@@ -16,10 +16,11 @@ use crate::daemon::store_layout;
 use crate::daemon::tenants::{self, Tenant};
 use crate::Paths;
 use eyre::{eyre, Result, WrapErr};
-use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use tokio::io::AsyncReadExt;
+use tokio::process::Command;
+use tokio::time::Instant;
 
 /// Wait up to this long for mariadbd to start accepting socket
 /// connections after `mariadb-install-db` (or after the supervisor
@@ -33,15 +34,16 @@ const PROVISION_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 /// the per-service data dir when it has no system tables yet. The
 /// resulting datadir is what `mariadbd --datadir=...` reads at
 /// supervisor start time.
-pub fn pre_start(paths: &Paths) -> Result<()> {
+pub async fn pre_start(paths: &Paths) -> Result<()> {
     let entry = crate::daemon::catalog::find("mariadb")
         .ok_or_else(|| eyre!("BUG: mariadb missing from catalog"))?;
     let datadir = paths.service_data("mariadb");
-    std::fs::create_dir_all(&datadir)
+    tokio::fs::create_dir_all(&datadir)
+        .await
         .wrap_err_with(|| format!("creating {}", datadir.display()))?;
     // The `mysql/db.MAD` table is created by `mariadb-install-db` and
     // is the cheapest sentinel that the datadir is initialised.
-    if datadir.join("mysql/db.MAD").exists() {
+    if tokio::fs::try_exists(datadir.join("mysql/db.MAD")).await.unwrap_or(false) {
         return Ok(());
     }
 
@@ -80,6 +82,7 @@ pub fn pre_start(paths: &Paths) -> Result<()> {
 
     let out = cmd
         .output()
+        .await
         .wrap_err_with(|| format!("running {}", install_db.display()))?;
     if !out.status.success() {
         return Err(eyre!(
@@ -93,14 +96,14 @@ pub fn pre_start(paths: &Paths) -> Result<()> {
 
 /// Provision a tenant. Idempotent — repeated calls for the same
 /// project re-use the existing database, user, and password.
-pub fn provision(
+pub async fn provision(
     paths: &Paths,
     tenants_path: &Path,
     tenant_name: &str,
     project: &Path,
     socket: &Path,
 ) -> Result<Tenant> {
-    let existing = tenants::load_all(tenants_path)?;
+    let existing = tenants::load_all(tenants_path).await?;
     if let Some(existing_t) = existing.iter().find(|t| t.project == project) {
         return Ok(existing_t.clone());
     }
@@ -117,10 +120,11 @@ pub fn provision(
         ));
     }
 
-    let password = generate_password();
+    let password = generate_password().await;
     let mariadb_bin = mariadb_client_binary(paths)?;
 
     wait_for_socket(socket, PROVISION_CONNECT_TIMEOUT)
+        .await
         .wrap_err("mariadb socket never became connectable")?;
 
     let name = tenant_name;
@@ -134,25 +138,26 @@ pub fn provision(
          FLUSH PRIVILEGES;",
     );
     run_sql(&mariadb_bin, socket, &sql)
+        .await
         .wrap_err_with(|| format!("provisioning mariadb tenant `{tenant_name}`"))?;
 
     let mut tenant = Tenant::new(tenant_name, project.to_path_buf());
     tenant.secrets.insert("password".into(), password);
-    tenants::append(tenants_path, &tenant)?;
+    tenants::append(tenants_path, &tenant).await?;
     Ok(tenant)
 }
 
 /// Release a tenant. With `purge`, also `DROP DATABASE` + `DROP USER`.
 /// Without `purge`, the data survives a `services down` so a later
 /// `services up` reuses it (matches redis's behaviour).
-pub fn deprovision(
+pub async fn deprovision(
     paths: &Paths,
     tenants_path: &Path,
     tenant_name: &str,
     socket: Option<&Path>,
     purge: bool,
 ) -> Result<()> {
-    let existing = tenants::load_all(tenants_path)?;
+    let existing = tenants::load_all(tenants_path).await?;
     let Some(_target) = existing.iter().find(|t| t.tenant == tenant_name).cloned() else {
         return Ok(());
     };
@@ -169,9 +174,10 @@ pub fn deprovision(
              DROP USER IF EXISTS '{name}'@'localhost';",
         );
         run_sql(&mariadb_bin, sock, &sql)
+            .await
             .wrap_err_with(|| format!("purging mariadb tenant `{tenant_name}`"))?;
     }
-    tenants::rewrite(tenants_path, |t| t.tenant != tenant_name)?;
+    tenants::rewrite(tenants_path, |t| t.tenant != tenant_name).await?;
     Ok(())
 }
 
@@ -191,7 +197,7 @@ fn mariadb_client_binary(paths: &Paths) -> Result<PathBuf> {
     Ok(bin)
 }
 
-fn run_sql(mariadb_bin: &Path, socket: &Path, sql: &str) -> Result<()> {
+async fn run_sql(mariadb_bin: &Path, socket: &Path, sql: &str) -> Result<()> {
     // `mariadb-install-db --auth-root-authentication-method=socket`
     // makes mariadbd accept the OS-uid owner as a passwordless root,
     // not the literal user `root`. Connect as the daemon's effective
@@ -211,6 +217,7 @@ fn run_sql(mariadb_bin: &Path, socket: &Path, sql: &str) -> Result<()> {
         .arg("--execute")
         .arg(sql)
         .output()
+        .await
         .wrap_err_with(|| format!("invoking {}", mariadb_bin.display()))?;
     if !out.status.success() {
         return Err(eyre!(
@@ -222,10 +229,10 @@ fn run_sql(mariadb_bin: &Path, socket: &Path, sql: &str) -> Result<()> {
     Ok(())
 }
 
-fn wait_for_socket(path: &Path, timeout: Duration) -> Result<()> {
+async fn wait_for_socket(path: &Path, timeout: Duration) -> Result<()> {
     let deadline = Instant::now() + timeout;
     loop {
-        if std::os::unix::net::UnixStream::connect(path).is_ok() {
+        if tokio::net::UnixStream::connect(path).await.is_ok() {
             return Ok(());
         }
         if Instant::now() >= deadline {
@@ -234,20 +241,20 @@ fn wait_for_socket(path: &Path, timeout: Duration) -> Result<()> {
                 path.display()
             ));
         }
-        std::thread::sleep(Duration::from_millis(100));
+        tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }
 
 /// 32-character hex password from `/dev/urandom`. 128 bits of entropy
 /// is more than enough for a local-only dev account, and hex keeps
 /// the password safe to interpolate into SQL without further escaping.
-fn generate_password() -> String {
+async fn generate_password() -> String {
     let mut buf = [0u8; 16];
     // /dev/urandom is the canonical source on every Unix bougie runs on.
     // Falls back to a coarse SystemTime mix if it's somehow unreadable,
     // which is non-cryptographic but vanishingly unlikely to hit.
-    if let Ok(mut f) = std::fs::File::open("/dev/urandom")
-        && f.read_exact(&mut buf).is_ok()
+    if let Ok(mut f) = tokio::fs::File::open("/dev/urandom").await
+        && f.read_exact(&mut buf).await.is_ok()
     {
         return hex_encode(&buf);
     }
@@ -301,9 +308,9 @@ mod tests {
         assert_eq!(hex_encode(&[0x00, 0x0f, 0xff, 0xab]), "000fffab");
     }
 
-    #[test]
-    fn generate_password_is_32_hex_chars() {
-        let p = generate_password();
+    #[tokio::test]
+    async fn generate_password_is_32_hex_chars() {
+        let p = generate_password().await;
         assert_eq!(p.len(), 32);
         assert!(p.chars().all(|c| c.is_ascii_hexdigit()));
     }
