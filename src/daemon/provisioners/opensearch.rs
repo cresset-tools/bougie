@@ -58,10 +58,12 @@ pub async fn pre_start(paths: &Paths) -> Result<()> {
     let conf = paths.service_conf("opensearch");
     for sub in ["tmp", "logs", "data"] {
         let p = data.join(sub);
-        std::fs::create_dir_all(&p)
+        tokio::fs::create_dir_all(&p)
+            .await
             .wrap_err_with(|| format!("creating {}", p.display()))?;
     }
-    std::fs::create_dir_all(&conf)
+    tokio::fs::create_dir_all(&conf)
+        .await
         .wrap_err_with(|| format!("creating {}", conf.display()))?;
 
     let entry = crate::daemon::catalog::find("opensearch")
@@ -69,39 +71,50 @@ pub async fn pre_start(paths: &Paths) -> Result<()> {
     let basedir = store_layout::basedir(paths, entry)
         .wrap_err("resolving opensearch basedir")?;
     let src_config = basedir.join("config");
-    if !src_config.is_dir() {
+    if !tokio::fs::metadata(&src_config).await.map(|m| m.is_dir()).unwrap_or(false) {
         return Err(eyre!(
             "opensearch tarball missing config/ at {}",
             src_config.display()
         ));
     }
     copy_dir_tree(&src_config, &conf)
+        .await
         .wrap_err_with(|| format!("copying config/ to {}", conf.display()))?;
     rewrite_jvm_options(&conf.join("jvm.options"), &data)
+        .await
         .wrap_err_with(|| format!("rewriting {}", conf.join("jvm.options").display()))?;
     Ok(())
 }
 
 /// Recursive copy. opensearch's config/ has ~4 files + jvm.options.d/;
 /// no symlinks, no hardlinks — a basic `read + write` walk is fine.
-fn copy_dir_tree(src: &Path, dst: &Path) -> Result<()> {
-    for entry in std::fs::read_dir(src)
-        .wrap_err_with(|| format!("reading {}", src.display()))?
-    {
-        let entry = entry?;
-        let from = entry.path();
-        let to = dst.join(entry.file_name());
-        let ft = entry.file_type()?;
-        if ft.is_dir() {
-            std::fs::create_dir_all(&to)?;
-            copy_dir_tree(&from, &to)?;
-        } else if ft.is_file() {
-            std::fs::copy(&from, &to)
-                .wrap_err_with(|| format!("copy {} → {}", from.display(), to.display()))?;
+///
+/// Recursive async fn requires boxing: we return a `BoxFuture` so the
+/// function's future type doesn't have to contain itself.
+fn copy_dir_tree<'a>(
+    src: &'a Path,
+    dst: &'a Path,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
+    Box::pin(async move {
+        let mut rd = tokio::fs::read_dir(src)
+            .await
+            .wrap_err_with(|| format!("reading {}", src.display()))?;
+        while let Some(entry) = rd.next_entry().await? {
+            let from = entry.path();
+            let to = dst.join(entry.file_name());
+            let ft = entry.file_type().await?;
+            if ft.is_dir() {
+                tokio::fs::create_dir_all(&to).await?;
+                copy_dir_tree(&from, &to).await?;
+            } else if ft.is_file() {
+                tokio::fs::copy(&from, &to)
+                    .await
+                    .wrap_err_with(|| format!("copy {} → {}", from.display(), to.display()))?;
+            }
+            // Symlinks shouldn't appear in opensearch's config/. Skip.
         }
-        // Symlinks shouldn't appear in opensearch's config/. Skip.
-    }
-    Ok(())
+        Ok(())
+    })
 }
 
 /// Replace `logs/...` and `data` relative paths in `jvm.options` with
@@ -111,10 +124,11 @@ fn copy_dir_tree(src: &Path, dst: &Path) -> Result<()> {
 ///   - `-Xlog:gc*,...:file=logs/gc.log:...`
 ///   - `-XX:ErrorFile=logs/hs_err_pid%p.log`
 ///   - `-XX:HeapDumpPath=data`
-fn rewrite_jvm_options(path: &Path, data_dir: &Path) -> Result<()> {
+async fn rewrite_jvm_options(path: &Path, data_dir: &Path) -> Result<()> {
     let logs = data_dir.join("logs");
     let data_sub = data_dir.join("data");
-    let content = std::fs::read_to_string(path)
+    let content = tokio::fs::read_to_string(path)
+        .await
         .wrap_err_with(|| format!("reading {}", path.display()))?;
     let mut out = String::with_capacity(content.len());
     for line in content.lines() {
@@ -138,7 +152,8 @@ fn rewrite_jvm_options(path: &Path, data_dir: &Path) -> Result<()> {
         }
         out.push('\n');
     }
-    std::fs::write(path, out)
+    tokio::fs::write(path, out)
+        .await
         .wrap_err_with(|| format!("writing {}", path.display()))?;
     Ok(())
 }
