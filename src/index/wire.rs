@@ -63,6 +63,12 @@ pub struct Section {
 pub enum SectionKind {
     Interpreter,
     Extension,
+    /// Service / tool tarball (mariadb, redis, opensearch, rabbitmq,
+    /// plus runtime-only deps like jdk and erlang). Distinguished
+    /// from `Extension` because the manifest carries no PHP `abi`
+    /// block and no `extension` field — it's a self-contained
+    /// install-shaped tree consumed by `bougied`'s service supervisor.
+    Tool,
 }
 
 /// One row in a section. Lean: only the fields a resolver needs.
@@ -104,7 +110,11 @@ pub struct Manifest {
     pub version: String,
     pub target: String,
     pub flavor: String,
-    pub abi: Abi,
+    /// Optional: only interpreter / extension manifests carry the PHP
+    /// ABI block. Tool / service manifests (mariadb, redis, jdk, …)
+    /// omit it because they're not loaded into a PHP process.
+    #[serde(default)]
+    pub abi: Option<Abi>,
     pub libc: Libc,
     pub blob: Blob,
     #[serde(default)]
@@ -403,6 +413,59 @@ mod tests {
         assert_eq!(m.sapis.as_deref(), Some(&["cli".to_string(), "fpm".to_string()][..]));
         assert!(m.extension.is_none());
         assert!(m.closure.is_empty());
+    }
+
+    #[test]
+    fn parse_tool_section() {
+        // Service / tool sections (rabbit, redis, mariadb, …) use
+        // `kind: "tool"` and omit `php_minor` on every artifact.
+        let json = r#"{
+            "schema": 1,
+            "name": "redis",
+            "kind": "tool",
+            "target": "x86_64-unknown-linux-gnu",
+            "artifacts": [{
+                "tag": "redis-8.6.3-x86_64-unknown-linux-gnu-default",
+                "version": "8.6.3",
+                "flavor": "default",
+                "manifest": {
+                    "path": "/versions/v1/targets/x86_64-unknown-linux-gnu/manifests/tool/redis/8.6.3/redis-8.6.3-x86_64-unknown-linux-gnu-default.json",
+                    "sha256": "deadbeef"
+                },
+                "yanked": false,
+                "frozen": false
+            }]
+        }"#;
+        let s: Section = serde_json::from_str(json).unwrap();
+        assert_eq!(s.kind, SectionKind::Tool);
+        assert!(s.artifacts[0].php_minor.is_none());
+    }
+
+    #[test]
+    fn parse_tool_manifest_without_abi() {
+        // Tool manifests carry no PHP `abi` block — they aren't loaded
+        // into a PHP process. Unknown fields like `binaries`,
+        // `build_info`, `bundled_libraries` ride along in the wire
+        // format and are ignored.
+        let json = r#"{
+            "schema": 1,
+            "kind": "tool",
+            "name": "redis",
+            "tag": "redis-8.6.3-x86_64-unknown-linux-gnu-default",
+            "version": "8.6.3",
+            "target": "x86_64-unknown-linux-gnu",
+            "flavor": "default",
+            "libc": {"family":"gnu","min":"2.17"},
+            "binaries": ["redis-server","redis-cli"],
+            "blob": {"url":"https://blobs.example.com/blobs/ff/ffff","sha256":"ffff"},
+            "closure": []
+        }"#;
+        let m: Manifest = serde_json::from_str(json).unwrap();
+        assert_eq!(m.kind, SectionKind::Tool);
+        assert!(m.abi.is_none());
+        assert!(m.extension.is_none());
+        assert!(m.sapis.is_none());
+        assert_eq!(m.blob.sha256, "ffff");
     }
 
     #[test]
