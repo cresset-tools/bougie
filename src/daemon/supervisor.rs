@@ -228,7 +228,22 @@ impl Supervisor {
         let probe_paths = self.paths.clone();
         let entry_name = entry.name;
         let binding = entry.binding;
-        match wait_for_health(&binding, entry_name, &probe_paths).await {
+        // Hand the child over to wait_for_health so it can short-
+        // circuit on early exit (e.g. port-conflict EADDRINUSE) and
+        // surface the exit status instead of pretending success
+        // because some other process happens to be on the catalog
+        // port.
+        let mut child_handle = self
+            .services
+            .get_mut(entry_name)
+            .unwrap()
+            .child
+            .take()
+            .expect("BUG: child was just set above");
+        let probe_result = wait_for_health(&binding, entry_name, &probe_paths, &mut child_handle).await;
+        // Put the child back so check_all / stop can find it.
+        self.services.get_mut(entry_name).unwrap().child = Some(child_handle);
+        match probe_result {
             Ok(()) => {
                 self.services.get_mut(entry_name).unwrap().state = ServiceState::Running;
                 Ok(true)
@@ -318,7 +333,19 @@ fn render_exec_env(entry: &CatalogEntry, paths: &Paths) -> Vec<(String, String)>
         "opensearch" => {
             let tmp = paths.service_data("opensearch").join("tmp");
             let conf = paths.service_conf("opensearch");
+            // Explicit `OPENSEARCH_JAVA_HOME` short-circuits the
+            // platform sniff in `bin/opensearch-env`. Without it,
+            // the launcher's `darwin` branch hard-codes
+            // `OPENSEARCH_HOME/jdk.app/Contents/Home/bin/java` (the
+            // macOS .app-bundle layout) and exits with
+            // "could not find java in bundled jdk at ...". Our PBS
+            // tarball lays the JDK out at `install/jdk/bin/java`
+            // on every platform.
+            let java_home = store_layout::basedir(paths, entry)
+                .map(|p| p.join("jdk"))
+                .unwrap_or_default();
             vec![
+                ("OPENSEARCH_JAVA_HOME".into(), java_home.display().to_string()),
                 // JNA native-lib extraction + `java.io.tmpdir` write
                 // here. `/tmp` is hidden by `ProtectSystem::Strict`.
                 ("OPENSEARCH_TMPDIR".into(), tmp.display().to_string()),
@@ -463,10 +490,25 @@ where
     });
 }
 
-async fn wait_for_health(binding: &Binding, name: &str, paths: &Paths) -> Result<()> {
+async fn wait_for_health(
+    binding: &Binding,
+    name: &str,
+    paths: &Paths,
+    child: &mut Child,
+) -> Result<()> {
     let timeout = health_timeout_for(name);
     let deadline = Instant::now() + timeout;
     loop {
+        // Short-circuit on early child exit BEFORE the TCP/socket
+        // probe — otherwise a port-collision (opensearch can't bind
+        // 9200 because someone else is on it) would look "Running"
+        // to us simply because *some* server answers on 9200.
+        if let Ok(Some(status)) = child.try_wait() {
+            return Err(eyre!(
+                "service `{name}` exited during startup (status {status}); \
+                 check `bougie services logs {name}` for the reason"
+            ));
+        }
         let ok = match binding {
             Binding::UnixSocket { sockname } => {
                 let path = paths.service_run(name).join(sockname);
