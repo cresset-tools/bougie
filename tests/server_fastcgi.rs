@@ -78,23 +78,29 @@ struct ServerHandle {
 }
 
 impl ServerHandle {
-    fn spawn(env: &TestEnv, xdg_config: &Path, bougie_home: &Path) -> Self {
-        Self::spawn_with_extra_env(env, xdg_config, bougie_home, &[])
+    fn spawn(env: &TestEnv, config_path: &Path, bougie_home: &Path) -> Self {
+        Self::spawn_with_extra_env(env, config_path, bougie_home, &[])
     }
 
     fn spawn_with_extra_env(
         env: &TestEnv,
-        xdg_config: &Path,
+        config_path: &Path,
         bougie_home: &Path,
         extra: &[(&str, &str)],
     ) -> Self {
         let runtime = TempDir::new().expect("tempdir for XDG_RUNTIME_DIR");
         let bin = assert_cmd::cargo::cargo_bin("bougie");
         let mut cmd = StdCommand::new(bin);
-        cmd.args(["server", "run", "--listen", "127.0.0.1:0"])
+        cmd.args([
+            "server",
+            "run",
+            "--config",
+            config_path.to_str().unwrap(),
+            "--listen",
+            "127.0.0.1:0",
+        ])
             .env("BOUGIE_HOME", bougie_home)
             .env("BOUGIE_CACHE", env.cache_path())
-            .env("XDG_CONFIG_HOME", xdg_config)
             .env("XDG_RUNTIME_DIR", runtime.path())
             .env_remove("RUST_LOG");
         for (k, v) in extra {
@@ -226,20 +232,8 @@ echo "BODY=" . file_get_contents('php://input') . "\n";
     .unwrap();
     std::fs::write(proj.path().join(".bougie/state/resolved"), &resolved).unwrap();
 
-    env.bougie()
-        .env("XDG_CONFIG_HOME", xdg.path())
-        .args([
-            "server",
-            "add",
-            "fcgi-test.bougie.run",
-            proj.path().to_str().unwrap(),
-            "--root",
-            "public",
-        ])
-        .assert()
-        .success();
-
-    let server = ServerHandle::spawn(&env, xdg.path(), &bougie_home);
+    let cfg = seed_single_host(xdg.path(), "fcgi-test.bougie.run", proj.path());
+    let server = ServerHandle::spawn(&env, &cfg, &bougie_home);
 
     // GET front-controller fallthrough.
     let (status, headers, body) =
@@ -284,20 +278,8 @@ fn xdebug_session_cookie_routes_to_xdebug_pool() {
     std::fs::write(proj.path().join("public/index.php"), "<?php echo 'ok';").unwrap();
     std::fs::write(proj.path().join(".bougie/state/resolved"), &resolved).unwrap();
 
-    env.bougie()
-        .env("XDG_CONFIG_HOME", xdg.path())
-        .args([
-            "server",
-            "add",
-            "xdebug-test.bougie.run",
-            proj.path().to_str().unwrap(),
-            "--root",
-            "public",
-        ])
-        .assert()
-        .success();
-
-    let server = ServerHandle::spawn(&env, xdg.path(), &bougie_home);
+    let cfg = seed_single_host(xdg.path(), "xdebug-test.bougie.run", proj.path());
+    let server = ServerHandle::spawn(&env, &cfg, &bougie_home);
 
     // No cookie → normal pool.
     let (status, headers, _) =
@@ -349,8 +331,9 @@ fn make_php_project(resolved: &str) -> TempDir {
 }
 
 /// Write a `[server]` block so a test can pin idle/max overrides
-/// before the bougie subprocess starts.
-fn write_server_toml(xdg: &Path, body: &str, hosts: &[(&str, &Path)]) {
+/// before the bougie subprocess starts. Returns the written-to path
+/// so callers can pass it as `--config`.
+fn write_server_toml(xdg: &Path, body: &str, hosts: &[(&str, &Path)]) -> PathBuf {
     let cfg = xdg.join("bougie/server.toml");
     std::fs::create_dir_all(cfg.parent().unwrap()).unwrap();
     let mut s = body.to_string();
@@ -362,6 +345,18 @@ fn write_server_toml(xdg: &Path, body: &str, hosts: &[(&str, &Path)]) {
         ));
     }
     std::fs::write(&cfg, s).unwrap();
+    cfg
+}
+
+/// Convenience for the common "default `[server]` block + one
+/// `[[host]]` with root=public" shape that the retired
+/// `bougie server add` CLI used to produce.
+fn seed_single_host(xdg: &Path, hostname: &str, project: &Path) -> PathBuf {
+    write_server_toml(
+        xdg,
+        "[server]\nlisten = \"127.0.0.1:7080\"\nlog_format = \"text\"\n",
+        &[(hostname, project)],
+    )
 }
 
 #[test]
@@ -376,7 +371,7 @@ fn lru_evicts_oldest_when_cap_hit() {
     let proj_a = make_php_project(&resolved);
     let proj_b = make_php_project(&resolved);
 
-    write_server_toml(
+    let cfg = write_server_toml(
         xdg.path(),
         "[server]\nmax_concurrent_pools = 1\nidle_pool_timeout = \"1h\"\n",
         &[
@@ -385,7 +380,7 @@ fn lru_evicts_oldest_when_cap_hit() {
         ],
     );
 
-    let server = ServerHandle::spawn(&env, xdg.path(), &bougie_home);
+    let server = ServerHandle::spawn(&env, &cfg, &bougie_home);
 
     let (s, _, _) = http("GET", &server.url("/index.php"), "a.bougie.run", None);
     assert_eq!(s, 200);
@@ -411,7 +406,7 @@ fn idle_pool_is_reaped() {
     let xdg = TempDir::new().unwrap();
     let proj = make_php_project(&resolved);
 
-    write_server_toml(
+    let cfg = write_server_toml(
         xdg.path(),
         // 1s idle timeout, paired with a fast reaper period so the
         // test doesn't sit for 10s.
@@ -421,7 +416,7 @@ fn idle_pool_is_reaped() {
 
     let server = ServerHandle::spawn_with_extra_env(
         &env,
-        xdg.path(),
+        &cfg,
         &bougie_home,
         &[("BOUGIE_SERVER_REAPER_PERIOD_MS", "200")],
     );
@@ -453,20 +448,8 @@ fn confd_change_triggers_reload() {
     let xdg = TempDir::new().unwrap();
     let proj = make_php_project(&resolved);
 
-    env.bougie()
-        .env("XDG_CONFIG_HOME", xdg.path())
-        .args([
-            "server",
-            "add",
-            "reload.bougie.run",
-            proj.path().to_str().unwrap(),
-            "--root",
-            "public",
-        ])
-        .assert()
-        .success();
-
-    let server = ServerHandle::spawn(&env, xdg.path(), &bougie_home);
+    let cfg = seed_single_host(xdg.path(), "reload.bougie.run", proj.path());
+    let server = ServerHandle::spawn(&env, &cfg, &bougie_home);
 
     let (s, _, _) = http("GET", &server.url("/index.php"), "reload.bougie.run", None);
     assert_eq!(s, 200);
@@ -510,20 +493,8 @@ fn xdebug_query_param_routes_to_xdebug_pool() {
     std::fs::write(proj.path().join("public/index.php"), "<?php echo 'ok';").unwrap();
     std::fs::write(proj.path().join(".bougie/state/resolved"), &resolved).unwrap();
 
-    env.bougie()
-        .env("XDG_CONFIG_HOME", xdg.path())
-        .args([
-            "server",
-            "add",
-            "xdebug-q.bougie.run",
-            proj.path().to_str().unwrap(),
-            "--root",
-            "public",
-        ])
-        .assert()
-        .success();
-
-    let server = ServerHandle::spawn(&env, xdg.path(), &bougie_home);
+    let cfg = seed_single_host(xdg.path(), "xdebug-q.bougie.run", proj.path());
+    let server = ServerHandle::spawn(&env, &cfg, &bougie_home);
 
     let (status, headers, _) = http(
         "GET",

@@ -2,16 +2,40 @@
 //! Spawns bougie server, hits the unix control socket directly with a
 //! `status` request, then runs `bougie server list` as a separate
 //! process and confirms it picks up the live block.
+//!
+//! Test setup writes `server.toml` directly to the per-test XDG path
+//! rather than going through a CLI mutator — `bougie server add` was
+//! retired in favour of the bougied-managed tenancy provisioner, and
+//! pre-seeding the file keeps the test focused on the control-socket
+//! behaviour without depending on the daemon.
 
 mod common;
 
 use common::TestEnv;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command as StdCommand, Stdio};
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
+
+/// Write a minimal `server.toml` under `<xdg>/bougie/server.toml` with
+/// one `[[host]]` block. Mirrors the on-disk shape `bougie server add`
+/// used to produce; isolated here so each test can pre-seed config
+/// without spawning bougied.
+fn seed_server_toml(xdg: &Path, hostname: &str, project: &Path, root: Option<&str>) -> PathBuf {
+    let cfg_dir = xdg.join("bougie");
+    std::fs::create_dir_all(&cfg_dir).expect("mkdir xdg/bougie");
+    let path = cfg_dir.join("server.toml");
+    let project = std::fs::canonicalize(project).expect("canonicalize project");
+    let root_line = root.map(|r| format!("root = \"{r}\"\n")).unwrap_or_default();
+    let body = format!(
+        "[server]\nlisten = \"127.0.0.1:7080\"\nlog_format = \"text\"\n\n[[host]]\nhostname = \"{hostname}\"\nproject = \"{project}\"\n{root_line}",
+        project = project.display(),
+    );
+    std::fs::write(&path, body).expect("write server.toml");
+    path
+}
 
 fn wait_for_listening(stderr: &mut Box<dyn BufRead + Send>) -> String {
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -47,22 +71,18 @@ fn control_socket_status_returns_listen_port_and_hosts() {
     std::fs::create_dir_all(proj.path().join("public")).unwrap();
     std::fs::write(proj.path().join("public/index.html"), "<h1>hi</h1>").unwrap();
 
-    env.bougie()
-        .env("XDG_CONFIG_HOME", xdg.path())
-        .args([
-            "server",
-            "add",
-            "ctrl.bougie.run",
-            proj.path().to_str().unwrap(),
-            "--root",
-            "public",
-        ])
-        .assert()
-        .success();
+    let cfg = seed_server_toml(xdg.path(), "ctrl.bougie.run", proj.path(), Some("public"));
 
     let bin = assert_cmd::cargo::cargo_bin("bougie");
     let mut child = StdCommand::new(&bin)
-        .args(["server", "run", "--listen", "127.0.0.1:0"])
+        .args([
+            "server",
+            "run",
+            "--config",
+            cfg.to_str().unwrap(),
+            "--listen",
+            "127.0.0.1:0",
+        ])
         .env("BOUGIE_HOME", env.home_path())
         .env("BOUGIE_CACHE", env.cache_path())
         .env("XDG_CONFIG_HOME", xdg.path())
@@ -142,16 +162,7 @@ fn list_falls_back_when_no_server_running() {
     let runtime = TempDir::new().unwrap();
     let proj = TempDir::new().unwrap();
 
-    env.bougie()
-        .env("XDG_CONFIG_HOME", xdg.path())
-        .args([
-            "server",
-            "add",
-            "alone.bougie.run",
-            proj.path().to_str().unwrap(),
-        ])
-        .assert()
-        .success();
+    let _cfg = seed_server_toml(xdg.path(), "alone.bougie.run", proj.path(), None);
 
     // No running server → list still works, just no live block.
     let out = env
@@ -177,22 +188,18 @@ fn invalid_request_returns_error_response() {
     let proj = TempDir::new().unwrap();
     std::fs::create_dir_all(proj.path().join("public")).unwrap();
 
-    env.bougie()
-        .env("XDG_CONFIG_HOME", xdg.path())
-        .args([
-            "server",
-            "add",
-            "x.bougie.run",
-            proj.path().to_str().unwrap(),
-            "--root",
-            "public",
-        ])
-        .assert()
-        .success();
+    let cfg = seed_server_toml(xdg.path(), "x.bougie.run", proj.path(), Some("public"));
 
     let bin = assert_cmd::cargo::cargo_bin("bougie");
     let mut child = StdCommand::new(&bin)
-        .args(["server", "run", "--listen", "127.0.0.1:0"])
+        .args([
+            "server",
+            "run",
+            "--config",
+            cfg.to_str().unwrap(),
+            "--listen",
+            "127.0.0.1:0",
+        ])
         .env("BOUGIE_HOME", env.home_path())
         .env("BOUGIE_CACHE", env.cache_path())
         .env("XDG_CONFIG_HOME", xdg.path())
