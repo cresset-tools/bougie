@@ -156,6 +156,17 @@ pub enum ServicesCommand {
         /// Limit to a single service.
         name: Option<String>,
     },
+    /// Tail (and optionally follow) a service's log.
+    Logs {
+        /// Service name.
+        name: String,
+        /// Follow the log; runs until interrupted (Ctrl-C).
+        #[arg(short = 'f', long)]
+        follow: bool,
+        /// Number of trailing lines to print before any follow.
+        #[arg(short = 'n', long, default_value_t = 50)]
+        lines: usize,
+    },
     /// Inspect and control the `bougied` daemon.
     #[command(subcommand)]
     Daemon(ServicesDaemonCommand),

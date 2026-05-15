@@ -6,23 +6,37 @@
 //! dispatch land in subsequent phases (5–10).
 
 use super::catalog::{self, Binding, CatalogEntry};
+use super::logs::LogWriter;
 use super::sandbox;
+use super::store_layout;
 use crate::Paths;
 use eyre::{eyre, Context, Result};
 use serde::Serialize;
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tokio::io::AsyncReadExt;
 use tokio::process::Child;
 use tokio::sync::Mutex;
 
-/// Hard upper bound on how long we wait for a freshly-spawned service
-/// to start accepting connections. Redis comes up in <100ms; mariadb
-/// can take a few seconds on first run. 60s is generous.
-const HEALTH_TIMEOUT: Duration = Duration::from_secs(60);
+/// Default per-service health-probe budget. Redis comes up in
+/// <100ms; mariadb cold-starts in ~3-5s; opensearch needs
+/// significantly more because the JVM has to JIT-compile + bootstrap
+/// the cluster state. `health_timeout_for` overrides this per
+/// service for the slow ones.
+const HEALTH_TIMEOUT_DEFAULT: Duration = Duration::from_secs(60);
 const HEALTH_POLL: Duration = Duration::from_millis(250);
+
+/// Per-service health-probe deadline. JVM-based services (opensearch
+/// today, rabbitmq via erlang/JIT later) need a longer window because
+/// JIT compilation + cluster bootstrap dominate cold-start time.
+fn health_timeout_for(name: &str) -> Duration {
+    match name {
+        "opensearch" => Duration::from_secs(90),
+        _ => HEALTH_TIMEOUT_DEFAULT,
+    }
+}
 
 /// Default grace window before escalating SIGTERM → SIGKILL. Matches
 /// SERVICES.md §5.3.
@@ -108,49 +122,11 @@ impl Supervisor {
         out
     }
 
-    /// Resolve the on-disk path of a service's main binary, scanning
-    /// `\$BOUGIE_HOME/store/` for any directory starting with the
-    /// catalog's `tarball` prefix. Phase 3 expects the tarball to be
-    /// present already; auto-fetch via `fetch::fetch_blob` lands in a
-    /// follow-up.
-    fn binary_path(&self, entry: &CatalogEntry) -> Result<PathBuf> {
-        if entry.tarball.is_empty() {
-            // `server` re-uses the bougie binary itself.
-            let exe = std::env::current_exe().wrap_err("locating current bougie binary")?;
-            return Ok(exe);
-        }
-        let store = self.paths.store();
-        let prefix = format!("{}-", entry.tarball);
-        // Exact-name match (no hash suffix) is also valid — common in
-        // tests that lay out a fixture tarball without the deterministic
-        // hash flow.
-        let exact = store.join(entry.tarball);
-        if exact.is_dir() {
-            return Ok(exact.join(entry.binary));
-        }
-        let mut found = None;
-        if let Ok(rd) = std::fs::read_dir(&store) {
-            for ent in rd.flatten() {
-                let name = ent.file_name();
-                if name
-                    .to_str()
-                    .is_some_and(|s| s.starts_with(&prefix))
-                {
-                    found = Some(ent.path());
-                    break;
-                }
-            }
-        }
-        let dir = found.ok_or_else(|| {
-            eyre!(
-                "service `{}`: tarball `{}` not found under {}. \
-                 Tarball auto-fetch is not yet wired (Phase 3 follow-up).",
-                entry.name,
-                entry.tarball,
-                store.display(),
-            )
-        })?;
-        Ok(dir.join(entry.binary))
+    /// Resolve the on-disk path of a service's main binary. Thin
+    /// wrapper over `store_layout::binary` so the supervisor and the
+    /// per-service provisioners agree on where each service lives.
+    fn binary_path(&self, entry: &CatalogEntry) -> Result<std::path::PathBuf> {
+        store_layout::binary(&self.paths, entry)
     }
 
     /// Spawn a service if it isn't already running. Walks
@@ -184,18 +160,28 @@ impl Supervisor {
             .paths
             .service_log(entry.name)
             .join(format!("{}.log", entry.name));
-        let log_file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&log_path)
-            .wrap_err_with(|| format!("opening log {}", log_path.display()))?;
+        // Open the LogWriter eagerly — confirms the parent dir is
+        // writable before we fork a child. Wrap in Arc<Mutex<…>> so
+        // the two stdio forwarder tasks (stdout, stderr) can share
+        // it; rotation under live writes is then serialised by the
+        // mutex.
+        let log_writer = LogWriter::open(log_path)
+            .wrap_err_with(|| format!("opening log writer for {}", entry.name))?;
+        let log_writer = Arc::new(Mutex::new(log_writer));
+
+        let env = render_exec_env(entry, &self.paths);
+        let cwd = render_exec_cwd(entry, &self.paths);
 
         let mut cmd = tokio::process::Command::new(&binary);
         cmd.args(&args)
+            .envs(env)
             .stdin(Stdio::null())
-            .stdout(Stdio::from(log_file.try_clone().wrap_err("dup log fd")?))
-            .stderr(Stdio::from(log_file))
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
             .kill_on_drop(false);
+        if let Some(dir) = cwd {
+            cmd.current_dir(dir);
+        }
         // SAFETY: `pre_exec` runs in the child after fork and before
         // exec. `sandbox_run::apply_sandbox` is documented for exactly
         // that call site (no allocations after fork, no signal-unsafe
@@ -207,10 +193,20 @@ impl Supervisor {
                     .map_err(|e| std::io::Error::other(format!("sandbox: {e}")))
             });
         }
-        let child = cmd.spawn().wrap_err_with(|| {
+        let mut child = cmd.spawn().wrap_err_with(|| {
             format!("spawning {} via {}", entry.name, binary.display())
         })?;
         let pid = child.id();
+        // Take the piped fds before we hand the child to the
+        // supervisor map; spawn a forwarder per stream so writes land
+        // in the LogWriter (which handles rotation). Forwarders exit
+        // on EOF when the child closes its pipes.
+        if let Some(out) = child.stdout.take() {
+            spawn_log_forwarder(out, Arc::clone(&log_writer), entry.name);
+        }
+        if let Some(err) = child.stderr.take() {
+            spawn_log_forwarder(err, Arc::clone(&log_writer), entry.name);
+        }
 
         // Now stamp the running state under a fresh mutable borrow.
         {
@@ -232,7 +228,22 @@ impl Supervisor {
         let probe_paths = self.paths.clone();
         let entry_name = entry.name;
         let binding = entry.binding;
-        match wait_for_health(&binding, entry_name, &probe_paths).await {
+        // Hand the child over to wait_for_health so it can short-
+        // circuit on early exit (e.g. port-conflict EADDRINUSE) and
+        // surface the exit status instead of pretending success
+        // because some other process happens to be on the catalog
+        // port.
+        let mut child_handle = self
+            .services
+            .get_mut(entry_name)
+            .unwrap()
+            .child
+            .take()
+            .expect("BUG: child was just set above");
+        let probe_result = wait_for_health(&binding, entry_name, &probe_paths, &mut child_handle).await;
+        // Put the child back so check_all / stop can find it.
+        self.services.get_mut(entry_name).unwrap().child = Some(child_handle);
+        match probe_result {
             Ok(()) => {
                 self.services.get_mut(entry_name).unwrap().state = ServiceState::Running;
                 Ok(true)
@@ -301,10 +312,60 @@ impl Supervisor {
 
 // -------------------- helpers --------------------
 
-/// Render `exec_args` for a service. Phase 3 only renders redis args
-/// because redis is the only Phase-3 provisioner; other services will
-/// have their own arg templates in later phases. The fallback is `[]`
-/// (run the binary with no args).
+/// Per-service current_dir override. Returns `None` to inherit
+/// bougied's CWD. Today only opensearch uses this — its bundled
+/// `config/jvm.options` writes the GC log to a relative `logs/`
+/// path that the JVM resolves *before* opensearch.yml's `path.logs`
+/// is read, so we anchor CWD to the writable data dir so `logs/`
+/// resolves under our RW allowlist.
+fn render_exec_cwd(entry: &CatalogEntry, paths: &Paths) -> Option<std::path::PathBuf> {
+    match entry.name {
+        "opensearch" => Some(paths.service_data("opensearch")),
+        _ => None,
+    }
+}
+
+/// Per-service env injected into the child before spawn. Returns an
+/// empty map when the service runs with no extras. Pinned to a small
+/// list of keys so the table is auditable at a glance.
+fn render_exec_env(entry: &CatalogEntry, paths: &Paths) -> Vec<(String, String)> {
+    match entry.name {
+        "opensearch" => {
+            let tmp = paths.service_data("opensearch").join("tmp");
+            let conf = paths.service_conf("opensearch");
+            // Explicit `OPENSEARCH_JAVA_HOME` short-circuits the
+            // platform sniff in `bin/opensearch-env`. Without it,
+            // the launcher's `darwin` branch hard-codes
+            // `OPENSEARCH_HOME/jdk.app/Contents/Home/bin/java` (the
+            // macOS .app-bundle layout) and exits with
+            // "could not find java in bundled jdk at ...". Our PBS
+            // tarball lays the JDK out at `install/jdk/bin/java`
+            // on every platform.
+            let java_home = store_layout::basedir(paths, entry)
+                .map(|p| p.join("jdk"))
+                .unwrap_or_default();
+            vec![
+                ("OPENSEARCH_JAVA_HOME".into(), java_home.display().to_string()),
+                // JNA native-lib extraction + `java.io.tmpdir` write
+                // here. `/tmp` is hidden by `ProtectSystem::Strict`.
+                ("OPENSEARCH_TMPDIR".into(), tmp.display().to_string()),
+                // `opensearch-env` defaults `OPENSEARCH_PATH_CONF` to
+                // `$OPENSEARCH_HOME/config`, which is read-only in
+                // the store. The provisioner's pre_start hook copies
+                // the tarball's config/ into our writable conf dir
+                // and rewrites jvm.options to absolute paths; point
+                // opensearch at our copy.
+                ("OPENSEARCH_PATH_CONF".into(), conf.display().to_string()),
+            ]
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// Render `exec_args` for a service. Each entry's argv is hand-rolled
+/// here rather than templated — services have idiosyncratic flags
+/// (mariadb's `--skip-networking`, redis's `--unixsocketperm`, etc.)
+/// and the table is short. Fallback `[]` runs the binary with no args.
 fn render_exec_args(entry: &CatalogEntry, paths: &Paths) -> Vec<String> {
     match entry.name {
         "redis" => {
@@ -333,13 +394,121 @@ fn render_exec_args(entry: &CatalogEntry, paths: &Paths) -> Vec<String> {
                 "no".into(),
             ]
         }
+        "opensearch" => {
+            let data = paths.service_data("opensearch").display().to_string();
+            let log = paths.service_log("opensearch").display().to_string();
+            // OpenSearch writes JNA-extracted native libs + assorted
+            // temporaries under `OPENSEARCH_TMPDIR`. The sandbox hides
+            // /tmp (ProtectSystem::Strict), so pin it under the data
+            // dir which is already RW. Created by `pre_start`.
+            vec![
+                format!("-Epath.data={data}"),
+                format!("-Epath.logs={log}"),
+                // Loopback only — bougie services never bind public
+                // addresses (SERVICES.md §6).
+                "-Enetwork.host=127.0.0.1".into(),
+                // Catalog binding pins :9200. Keep the two in lockstep.
+                "-Ehttp.port=9200".into(),
+                // No cluster bootstrap — single-node dev mode skips
+                // discovery + initial_cluster_manager_nodes ceremony.
+                "-Ediscovery.type=single-node".into(),
+            ]
+        }
+        "mariadb" => {
+            let data_path = paths.service_data("mariadb");
+            let datadir = data_path.display().to_string();
+            let sock = paths.service_run("mariadb").join("mariadb.sock").display().to_string();
+            // InnoDB writes temporaries during startup. The sandbox
+            // hides /tmp (default systemd-style ProtectSystem), so
+            // pin them under the already-RW datadir. Best-effort
+            // create — mariadbd would create it too, but doing it
+            // ahead of time avoids a noisy log line.
+            let tmpdir = data_path.join("tmp");
+            let _ = std::fs::create_dir_all(&tmpdir);
+            // `basedir` is the install root the tarball extracted into;
+            // mariadbd reads `share/mariadb/english/errmsg.sys` etc.
+            // from there.
+            let basedir = store_layout::basedir(paths, entry)
+                .map(|p| p.display().to_string())
+                .unwrap_or_default();
+            vec![
+                // Ignore the host's /etc/my.cnf — on CI runners it
+                // typically contains MySQL-8-only settings that our
+                // bundled mariadbd rejects ("unknown variable
+                // 'mysqlx-bind-address=...'"). The only options
+                // mariadbd should see are the ones bougied passes
+                // explicitly.
+                "--no-defaults".into(),
+                format!("--basedir={basedir}"),
+                format!("--datadir={datadir}"),
+                format!("--socket={sock}"),
+                format!("--tmpdir={}", tmpdir.display()),
+                // Bougie services bind unix sockets only — see
+                // SERVICES.md §6. `--skip-networking` ensures mariadbd
+                // doesn't also bind 0.0.0.0:3306 by default.
+                "--skip-networking".into(),
+                // mariadbd writes a slow-query / general-query log
+                // into the data dir by default; the dev workflow
+                // doesn't need either, and skipping them keeps the
+                // datadir small.
+                "--general-log=0".into(),
+                "--slow-query-log=0".into(),
+            ]
+        }
         _ => Vec::new(),
     }
 }
 
-async fn wait_for_health(binding: &Binding, name: &str, paths: &Paths) -> Result<()> {
-    let deadline = Instant::now() + HEALTH_TIMEOUT;
+/// Read everything the child writes to one of its pipes; for each
+/// chunk, lock the shared `LogWriter` and append. Exits on EOF (child
+/// closed the pipe) or on any non-Interrupted read error. Errors
+/// surface only as `tracing::warn!` since the child is the source of
+/// truth — failing the forwarder shouldn't fail the service.
+fn spawn_log_forwarder<R>(mut reader: R, log: Arc<Mutex<LogWriter>>, service: &'static str)
+where
+    R: AsyncReadExt + Unpin + Send + 'static,
+{
+    tokio::spawn(async move {
+        let mut buf = vec![0u8; 8 * 1024];
+        loop {
+            match reader.read(&mut buf).await {
+                Ok(0) => return, // EOF
+                Ok(n) => {
+                    let mut w = log.lock().await;
+                    if let Err(e) = w.write(&buf[..n]) {
+                        tracing::warn!(service, error = %e, "writing log chunk");
+                        return;
+                    }
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(e) => {
+                    tracing::warn!(service, error = %e, "reading from child pipe");
+                    return;
+                }
+            }
+        }
+    });
+}
+
+async fn wait_for_health(
+    binding: &Binding,
+    name: &str,
+    paths: &Paths,
+    child: &mut Child,
+) -> Result<()> {
+    let timeout = health_timeout_for(name);
+    let deadline = Instant::now() + timeout;
     loop {
+        // Short-circuit on early child exit BEFORE the TCP/socket
+        // probe — otherwise a port-collision (opensearch can't bind
+        // 9200 because someone else is on it) would look "Running"
+        // to us simply because *some* server answers on 9200.
+        if let Ok(Some(status)) = child.try_wait() {
+            return Err(eyre!(
+                "service `{name}` exited during startup (status {status}); \
+                 check `bougie services logs {name}` for the reason"
+            ));
+        }
         let ok = match binding {
             Binding::UnixSocket { sockname } => {
                 let path = paths.service_run(name).join(sockname);
@@ -356,7 +525,7 @@ async fn wait_for_health(binding: &Binding, name: &str, paths: &Paths) -> Result
         }
         if Instant::now() >= deadline {
             return Err(eyre!(
-                "service `{name}` did not start accepting connections within {HEALTH_TIMEOUT:?}"
+                "service `{name}` did not start accepting connections within {timeout:?}"
             ));
         }
         tokio::time::sleep(HEALTH_POLL).await;

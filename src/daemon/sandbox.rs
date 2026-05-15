@@ -18,7 +18,7 @@ use sandbox_run::{ProtectHome, ProtectSystem, Sandbox, SandboxPolicy};
 
 /// Build the policy for the given service. Creates the per-service
 /// data/run/log/conf directories as a side effect so the
-/// read_write_paths references resolve at spawn time.
+/// `read_write_paths` references resolve at spawn time.
 pub fn build_policy(entry: &CatalogEntry, paths: &Paths) -> Result<SandboxPolicy> {
     let data = paths.service_data(entry.name);
     let run = paths.service_run(entry.name);
@@ -29,30 +29,79 @@ pub fn build_policy(entry: &CatalogEntry, paths: &Paths) -> Result<SandboxPolicy
             .wrap_err_with(|| format!("creating {}", p.display()))?;
     }
 
-    let (limit_nofile, limit_nproc) = rlimits_for(entry.name);
+    let limit_nofile = nofile_for(entry.name);
 
-    Sandbox::new()
+    // Baseline writable device nodes. ProtectSystem::Strict makes the
+    // entire FS read-only except for explicit RW additions, but POSIX
+    // services expect to be able to write to `/dev/null` (shell `>/dev/null`,
+    // `redirect-stderr` in launcher scripts, opensearch-env line 92) and
+    // read from `/dev/{urandom,random}` (every TLS-using service).
+    // Including them as RW is safe — these are char devices with kernel-
+    // enforced semantics that don't honour write data, and Landlock
+    // gates access at the path layer rather than the byte stream.
+    // Per-service `conf` is rendered + owned by bougied; the original
+    // read-only mode was defence-in-depth but breaks opensearch (its
+    // launcher writes to `config/opensearch.keystore` and similar on
+    // first start). Promote it to RW — the boundary against
+    // user-input poisoning is still ProtectHome + the store being RO.
+    let rw_paths = vec![
+        data.clone(),
+        run.clone(),
+        log.clone(),
+        conf.clone(),
+        std::path::PathBuf::from("/dev/null"),
+        std::path::PathBuf::from("/dev/zero"),
+        std::path::PathBuf::from("/dev/full"),
+        std::path::PathBuf::from("/dev/random"),
+        std::path::PathBuf::from("/dev/urandom"),
+    ];
+
+    let mut policy = Sandbox::new()
         .protect_system(ProtectSystem::Strict)
         .protect_home(ProtectHome::Yes)
-        .read_write_paths([data.as_path(), run.as_path(), log.as_path()])
-        .read_only_paths([paths.store().as_path(), conf.as_path()])
+        .read_write_paths(rw_paths.iter().map(std::path::PathBuf::as_path))
+        .read_only_paths([paths.store().as_path()])
         .private_network(false)
         .no_new_privileges(true)
         .limit_nofile(limit_nofile)
-        .limit_nproc(limit_nproc)
-        .limit_core(0)
+        .limit_core(0);
+
+    // Deliberately do NOT cap NPROC. On Linux, RLIMIT_NPROC counts the
+    // calling user's *total* live processes, not this service's
+    // descendants — setting it lower than the user's current process
+    // count causes mariadbd's `timer_create()` (and InnoDB threads, and
+    // Erlang's scheduler) to fail with EAGAIN on workstations where the
+    // desktop session is already over a few hundred processes. The
+    // upstream sandbox-run README warns about this. cgroups `pids.max`
+    // is the right knob if we ever need it; setrlimit isn't.
+    if let Some(nproc) = nproc_for(entry.name) {
+        policy = policy.limit_nproc(nproc);
+    }
+
+    policy
         .build()
         .map_err(|e| eyre::eyre!("building sandbox policy for {}: {e}", entry.name))
 }
 
-/// Per-service rlimit overrides (SERVICES.md §4).
-fn rlimits_for(name: &str) -> (u64, u64) {
+/// Per-service open-file limit. `mariadb` 11.4 computes
+/// `open_files_limit = max_connections + table_open_cache*2 + 10` at
+/// startup, which lands above 32k with stock settings — give it 65k
+/// so we don't spam "Could not increase number of max_open_files"
+/// into the log. `opensearch`'s many index shards also push past
+/// the default cap.
+fn nofile_for(name: &str) -> u64 {
     match name {
-        "opensearch" => (65_536, 256),
-        "rabbitmq" => (4_096, 8_192),
-        "mariadb" => (16_384, 256),
-        _ => (4_096, 256),
+        "opensearch" | "mariadb" => 65_536,
+        _ => 4_096,
     }
+}
+
+/// Per-service NPROC cap. Returns `None` (no cap applied) for every
+/// service that uses threads or timers, which is most of them on
+/// Linux. Kept as a hook so a future ulimit-aware mode can re-introduce
+/// a cap if it ever becomes useful.
+fn nproc_for(_name: &str) -> Option<u64> {
+    None
 }
 
 #[cfg(test)]
@@ -74,18 +123,29 @@ mod tests {
 
     #[test]
     fn opensearch_gets_high_nofile_limit() {
-        // Sanity check on the rlimits_for table — the daemon would
-        // surface OOM on opensearch indices if this regressed.
-        assert_eq!(rlimits_for("opensearch").0, 65_536);
+        // Sanity check — opensearch's many index shards each chew a
+        // descriptor; regressing this would surface as IOErrors.
+        assert_eq!(nofile_for("opensearch"), 65_536);
     }
 
     #[test]
-    fn rabbitmq_gets_high_nproc_limit() {
-        assert_eq!(rlimits_for("rabbitmq").1, 8_192);
+    fn mariadb_gets_elevated_nofile_limit() {
+        assert_eq!(nofile_for("mariadb"), 65_536);
     }
 
     #[test]
-    fn default_service_gets_baseline_rlimits() {
-        assert_eq!(rlimits_for("redis"), (4_096, 256));
+    fn default_service_gets_baseline_nofile() {
+        assert_eq!(nofile_for("redis"), 4_096);
+    }
+
+    #[test]
+    fn nproc_cap_is_disabled_for_every_service() {
+        // RLIMIT_NPROC counts the calling user's total processes, not
+        // a per-service budget — capping it on a desktop session
+        // breaks mariadb/erlang/opensearch threading. Keep this off
+        // until we have a cgroup-based pids.max story.
+        for name in ["redis", "mariadb", "opensearch", "rabbitmq", "server"] {
+            assert!(nproc_for(name).is_none(), "{name} should not cap nproc");
+        }
     }
 }

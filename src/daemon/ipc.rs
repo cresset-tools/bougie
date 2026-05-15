@@ -51,8 +51,8 @@ pub struct RequestEnvelope {
 }
 
 /// Method-specific deserialized request. `Status` / `DaemonVersion` /
-/// `DaemonShutdown` carry no args; `ServiceUp` / `ServiceDown` pull
-/// their fields out of the envelope's `args` object.
+/// `DaemonShutdown` carry no args; the others pull their fields out
+/// of the envelope's `args` object.
 #[derive(Debug)]
 pub enum Request {
     Status,
@@ -60,6 +60,11 @@ pub enum Request {
     DaemonShutdown,
     ServiceUp(ServiceUpArgs),
     ServiceDown(ServiceDownArgs),
+    /// Used by `bougie run` to pick up tenant-derived env vars to
+    /// inject into the child PHP process. Idempotent + side-effect-free.
+    ServiceEnv(ServiceEnvArgs),
+    /// Tail (and optionally follow) a service's log.
+    ServiceLogs(ServiceLogsArgs),
 }
 
 #[derive(Debug, Deserialize)]
@@ -74,6 +79,24 @@ pub struct ServiceDownArgs {
     pub services: Vec<String>,
     #[serde(default)]
     pub purge: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ServiceEnvArgs {
+    pub project: std::path::PathBuf,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ServiceLogsArgs {
+    pub service: String,
+    #[serde(default = "default_lines")]
+    pub lines: usize,
+    #[serde(default)]
+    pub follow: bool,
+}
+
+fn default_lines() -> usize {
+    50
 }
 
 #[derive(Debug, Deserialize)]
@@ -164,19 +187,36 @@ pub async fn handle_connection(stream: UnixStream, state: Arc<DaemonState>) {
         return;
     }
 
-    let frame = match parse_request(line.trim()) {
-        Ok(req) => dispatch(req, &state).await,
-        Err(e) => ResultFrame::err("bad_request", e),
-    };
+    match parse_request(line.trim()) {
+        // service.logs is the only streaming method today: it writes
+        // its own progress frames + a terminal frame (or never sends a
+        // terminal in follow-mode, in which case the client closes the
+        // connection).
+        Ok(Request::ServiceLogs(args)) => {
+            dispatch_logs(&mut write_half, &state, args).await;
+        }
+        Ok(req) => {
+            let frame = dispatch(req, &state).await;
+            write_terminal(&mut write_half, &frame).await;
+        }
+        Err(e) => {
+            let frame = ResultFrame::err("bad_request", e);
+            write_terminal(&mut write_half, &frame).await;
+        }
+    }
+}
 
-    let bytes = match serde_json::to_vec(&frame) {
+async fn write_terminal(
+    write_half: &mut tokio::net::unix::OwnedWriteHalf,
+    frame: &ResultFrame,
+) {
+    let bytes = match serde_json::to_vec(frame) {
         Ok(b) => b,
         Err(e) => {
             tracing::error!(error = %e, "bougied: serializing response");
             return;
         }
     };
-
     if let Err(e) = write_half.write_all(&bytes).await {
         tracing::warn!(error = %e, "bougied: writing response");
         return;
@@ -207,6 +247,12 @@ fn parse_request(line: &str) -> Result<Request, String> {
         "service.down" => serde_json::from_value::<ServiceDownArgs>(env.args)
             .map(Request::ServiceDown)
             .map_err(|e| format!("service.down args: {e}")),
+        "service.env" => serde_json::from_value::<ServiceEnvArgs>(env.args)
+            .map(Request::ServiceEnv)
+            .map_err(|e| format!("service.env args: {e}")),
+        "service.logs" => serde_json::from_value::<ServiceLogsArgs>(env.args)
+            .map(Request::ServiceLogs)
+            .map_err(|e| format!("service.logs args: {e}")),
         other => Err(format!("unknown method `{other}`")),
     }
 }
@@ -235,7 +281,168 @@ async fn dispatch(req: Request, state: &Arc<DaemonState>) -> ResultFrame {
         Request::ServiceDown(args) => {
             dispatch_down(state, args.project, args.services, args.purge).await
         }
+        Request::ServiceEnv(args) => dispatch_env(state, args.project).await,
+        Request::ServiceLogs(_) => unreachable!("handled in handle_connection"),
     }
+}
+
+/// Streaming `service.logs` handler. Reads the initial tail, then
+/// either sends a terminal `result` (tail-only) or enters follow-mode
+/// — a 250ms poll loop that streams new bytes as `progress` frames.
+/// Follow-mode never sends a terminal; the client closing the socket
+/// is the signal to exit.
+async fn dispatch_logs(
+    write_half: &mut tokio::net::unix::OwnedWriteHalf,
+    state: &Arc<DaemonState>,
+    args: ServiceLogsArgs,
+) {
+    use crate::daemon::{catalog, logs};
+
+    let Some(entry) = catalog::find(&args.service) else {
+        let frame = ResultFrame::err("unknown_service", format!("`{}` not in catalog", args.service));
+        write_terminal(write_half, &frame).await;
+        return;
+    };
+    let log_path = state
+        .paths
+        .service_log(entry.name)
+        .join(format!("{}.log", entry.name));
+
+    // 1. Tail.
+    let tail = logs::tail_lines(&log_path, args.lines).unwrap_or_default();
+    let joined = tail.concat();
+    if !joined.is_empty() {
+        if !write_progress(write_half, "stdout", &joined).await {
+            return;
+        }
+    }
+
+    if !args.follow {
+        let frame = ResultFrame::ok(serde_json::json!({"lines_tailed": tail.len()}));
+        write_terminal(write_half, &frame).await;
+        return;
+    }
+
+    // 2. Follow: seek to current end-of-file, poll for growth, stream
+    // new bytes. Buffer reused across iterations to avoid alloc churn.
+    use tokio::io::{AsyncReadExt as _, AsyncSeekExt as _};
+    let mut f = match tokio::fs::OpenOptions::new().read(true).open(&log_path).await {
+        Ok(f) => f,
+        Err(e) => {
+            let frame = ResultFrame::err("log_open_failed", e.to_string());
+            write_terminal(write_half, &frame).await;
+            return;
+        }
+    };
+    if f.seek(std::io::SeekFrom::End(0)).await.is_err() {
+        return;
+    }
+    let mut buf = vec![0u8; 8 * 1024];
+    loop {
+        match f.read(&mut buf).await {
+            Ok(0) => {
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            }
+            Ok(n) => {
+                let chunk = String::from_utf8_lossy(&buf[..n]);
+                if !write_progress(write_half, "stdout", &chunk).await {
+                    return;
+                }
+            }
+            Err(_) => return,
+        }
+    }
+}
+
+async fn write_progress(
+    write_half: &mut tokio::net::unix::OwnedWriteHalf,
+    stream: &str,
+    data: &str,
+) -> bool {
+    let frame = ProgressFrame::new(stream, data);
+    let bytes = match serde_json::to_vec(&frame) {
+        Ok(b) => b,
+        Err(_) => return false,
+    };
+    if write_half.write_all(&bytes).await.is_err() {
+        return false;
+    }
+    if write_half.write_all(b"\n").await.is_err() {
+        return false;
+    }
+    write_half.flush().await.is_ok()
+}
+
+/// Build the `BOUGIE_SERVICE_*` env map for this project's tenants.
+/// Reads each catalog entry's `tenants.json` and emits per-service
+/// vars per SERVICES.md §3.4. Side-effect free.
+async fn dispatch_env(state: &Arc<DaemonState>, project: std::path::PathBuf) -> ResultFrame {
+    use crate::daemon::{catalog, tenants};
+
+    let mut vars: serde_json::Map<String, Value> = serde_json::Map::new();
+    for entry in catalog::CATALOG {
+        if !entry.user_facing {
+            continue;
+        }
+        let tenants_path = state.paths.service_tenants(entry.name);
+        let Ok(all) = tenants::load_all(&tenants_path) else {
+            continue;
+        };
+        let Some(tenant) = all.into_iter().find(|t| t.project == project) else {
+            continue;
+        };
+        let prefix = format!("BOUGIE_SERVICE_{}_", entry.name.to_ascii_uppercase());
+        match entry.name {
+            "redis" => {
+                let sock = state
+                    .paths
+                    .service_run("redis")
+                    .join("redis.sock")
+                    .display()
+                    .to_string();
+                vars.insert(format!("{prefix}SOCKET"), Value::String(sock));
+                if let Some(db) = tenant.alloc.get("db_number") {
+                    vars.insert(format!("{prefix}DB"), db.clone());
+                }
+            }
+            "mariadb" => {
+                let sock = state
+                    .paths
+                    .service_run("mariadb")
+                    .join("mariadb.sock")
+                    .display()
+                    .to_string();
+                vars.insert(format!("{prefix}SOCKET"), Value::String(sock));
+                vars.insert(
+                    format!("{prefix}DATABASE"),
+                    Value::String(tenant.tenant.clone()),
+                );
+                vars.insert(
+                    format!("{prefix}USER"),
+                    Value::String(tenant.tenant.clone()),
+                );
+                if let Some(pw) = tenant.secrets.get("password") {
+                    vars.insert(format!("{prefix}PASSWORD"), Value::String(pw.clone()));
+                }
+            }
+            "opensearch" => {
+                // Catalog binding pins :9200 (loopback only). Surface
+                // both the base URL and the tenant's reserved index
+                // prefix so apps build `<prefix>articles` etc.
+                vars.insert(
+                    format!("{prefix}URL"),
+                    Value::String("http://127.0.0.1:9200".into()),
+                );
+                if let Some(p) = tenant.alloc.get("index_prefix") {
+                    vars.insert(format!("{prefix}INDEX_PREFIX"), p.clone());
+                }
+            }
+            // rabbitmq / server env shapes land with their provisioners
+            // (Phases 10 / 8).
+            _ => {}
+        }
+    }
+    ResultFrame::ok(serde_json::json!({"vars": Value::Object(vars)}))
 }
 
 async fn dispatch_up(
@@ -256,6 +463,25 @@ async fn dispatch_up(
     for name in order {
         // Skip transitive runtime deps; not all are real services.
         let Some(entry) = catalog::find(name) else { continue };
+        // One-shot bootstrap (e.g. mariadb-install-db on first run).
+        // Idempotent — safe even when the service is already running.
+        // `spawn_blocking` so subprocess I/O and `reqwest::blocking`
+        // (opensearch HTTP) don't panic from inside the tokio
+        // runtime.
+        let paths_for_blocking = state.paths.clone();
+        let entry_static = entry;
+        let pre_res = tokio::task::spawn_blocking(move || {
+            provisioners::pre_start(entry_static, &paths_for_blocking)
+        })
+        .await
+        .map_err(|join_err| eyre::eyre!("pre_start task panicked: {join_err}"))
+        .and_then(|inner| inner);
+        if let Err(e) = pre_res {
+            return ResultFrame::err(
+                "pre_start_failed",
+                format!("{}: {}", name, e),
+            );
+        }
         // Start (idempotent).
         let start_res = state.supervisor.lock().await.start(name).await;
         match start_res {
@@ -276,7 +502,22 @@ async fn dispatch_up(
                 None => continue, // dep ordered in but not in the request
             };
             let tenants_path = state.paths.service_tenants(name);
-            match provisioners::provision(entry, &tenants_path, &tenant_name, &project) {
+            // Same `spawn_blocking` shield as `pre_start` above.
+            let paths_for_blocking = state.paths.clone();
+            let project_for_blocking = project.clone();
+            let prov_res = tokio::task::spawn_blocking(move || {
+                provisioners::provision(
+                    entry_static,
+                    &paths_for_blocking,
+                    &tenants_path,
+                    &tenant_name,
+                    &project_for_blocking,
+                )
+            })
+            .await
+            .map_err(|join_err| eyre::eyre!("provision task panicked: {join_err}"))
+            .and_then(|inner| inner);
+            match prov_res {
                 Ok(t) => {
                     tenants_map.insert(name.to_string(), Value::String(t.tenant));
                 }
@@ -318,8 +559,31 @@ async fn dispatch_down(
                 .and_then(|all| all.into_iter().find(|t| t.project == project));
             if let Some(t) = project_tenant {
                 let sock_default = state.paths.service_run(entry.name).join(format!("{}.sock", entry.name));
-                let sock = if sock_default.exists() { Some(sock_default.as_path()) } else { None };
-                if let Err(e) = provisioners::deprovision(entry, &tenants_path, &t.tenant, sock, purge) {
+                let sock_opt = sock_default.exists().then_some(sock_default);
+                // Same `spawn_blocking` shield as `dispatch_up`: the
+                // deprovisioner uses blocking I/O (reqwest::blocking
+                // for opensearch, std::process::Command for mariadb)
+                // which would panic if called from inside the runtime.
+                let paths_for_blocking = state.paths.clone();
+                let tenants_path_b = tenants_path.clone();
+                let tenant_for_blocking = t.tenant.clone();
+                let entry_static = entry;
+                let deprov_res = tokio::task::spawn_blocking(move || {
+                    provisioners::deprovision(
+                        entry_static,
+                        &paths_for_blocking,
+                        &tenants_path_b,
+                        &tenant_for_blocking,
+                        sock_opt.as_deref(),
+                        purge,
+                    )
+                })
+                .await
+                .map_err(|join_err| {
+                    eyre::eyre!("deprovision task panicked: {join_err}")
+                })
+                .and_then(|inner| inner);
+                if let Err(e) = deprov_res {
                     return ResultFrame::err(
                         "deprovision_failed",
                         format!("{}: {}", entry.name, e),

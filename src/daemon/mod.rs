@@ -13,9 +13,11 @@
 
 pub mod catalog;
 pub mod ipc;
+pub mod logs;
 pub mod provisioners;
 pub mod sandbox;
 mod state;
+pub mod store_layout;
 pub mod supervisor;
 pub mod tenants;
 

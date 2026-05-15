@@ -104,8 +104,10 @@ pub const CATALOG: &[CatalogEntry] = &[
     },
     CatalogEntry {
         name: "mariadb",
-        version: "11.4.10",
-        tarball: "mariadb-11.4.10",
+        // 11.4.4 matches the tag published by the bougie index today;
+        // bump when the index ships a newer 11.4.x.
+        version: "11.4.4",
+        tarball: "mariadb-11.4.4",
         binary: "bin/mariadbd",
         binding: Binding::UnixSocket { sockname: "mariadb.sock" },
         tenancy: Tenancy::Mariadb,
@@ -124,7 +126,12 @@ pub const CATALOG: &[CatalogEntry] = &[
         tenancy: Tenancy::Opensearch,
         requires: &[],
         after: &[],
-        runtime_deps: &["jdk"],
+        // The bougie-index opensearch tarball ships a Temurin JDK at
+        // `install/jdk/` already. `bin/opensearch-env` autoresolves
+        // `OPENSEARCH_HOME/jdk/bin/java`, so no PATH wiring needed.
+        // The `jdk` entry below is kept for users that want to install
+        // a standalone Temurin via `bougie services add` (advanced).
+        runtime_deps: &[],
         user_facing: true,
         summary: "OpenSearch 2.x search engine; per-tenant index template.",
     },
@@ -280,9 +287,13 @@ mod tests {
     }
 
     #[test]
-    fn opensearch_runtime_deps_include_jdk() {
+    fn opensearch_has_no_external_runtime_deps() {
+        // The tarball bundles its own Temurin JDK at install/jdk/,
+        // so opensearch is self-contained. Tracked as a separate
+        // catalog entry only so users can install a standalone
+        // Temurin if they need it elsewhere.
         let os = find("opensearch").unwrap();
-        assert!(os.runtime_deps.contains(&"jdk"));
+        assert!(os.runtime_deps.is_empty(), "{:?}", os.runtime_deps);
     }
 
     #[test]
