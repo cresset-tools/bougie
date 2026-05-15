@@ -18,7 +18,8 @@ use axum::Router;
 use http_body_util::BodyExt;
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::path::PathBuf;
+use std::sync::{Arc, RwLock};
 use std::time::Instant;
 use tokio::io::AsyncReadExt;
 
@@ -37,8 +38,12 @@ const MAX_REQUEST_BODY: usize = 32 * 1024 * 1024;
 #[derive(Debug)]
 pub struct AppState {
     /// Maps every configured hostname (canonical + aliases) to its
-    /// `[[host]]` block. Populated once at startup.
-    pub hosts: HashMap<String, Arc<HostBlock>>,
+    /// `[[host]]` block. Wrapped in `RwLock` so the control socket's
+    /// `reload-config` handler can swap a freshly-read map in while
+    /// requests continue to serve from the old map until the new one
+    /// is installed. Reads are short, parallelism-friendly; writes are
+    /// rare (only on config reload).
+    pub hosts: RwLock<HashMap<String, Arc<HostBlock>>>,
     pub pools: Arc<PoolManager>,
     /// Bound listen port. Read by `serve_php` for `SERVER_PORT` and
     /// by the control socket's status response. Wrapped in an
@@ -46,26 +51,25 @@ pub struct AppState {
     /// `TcpListener::bind` resolves an ephemeral request — by then
     /// state is already inside an `Arc`.
     pub listen_port: std::sync::atomic::AtomicU16,
+    /// Where `reload-config` reads from. Captured at startup so the
+    /// reload path doesn't have to rerun the `config::resolve_path`
+    /// resolution (which can change behaviour with sudo-origin home).
+    pub config_path: PathBuf,
 }
 
 impl AppState {
     pub fn build(
         config: &ServerConfig,
+        config_path: PathBuf,
         pools: Arc<PoolManager>,
         listen_port: u16,
     ) -> eyre::Result<Self> {
-        let mut hosts = HashMap::new();
-        for block in &config.hosts {
-            let shared = Arc::new(block.clone());
-            insert_unique(&mut hosts, &block.hostname, &shared)?;
-            for alias in &block.aliases {
-                insert_unique(&mut hosts, &alias.hostname, &shared)?;
-            }
-        }
+        let hosts = build_hosts_map(config)?;
         Ok(Self {
-            hosts,
+            hosts: RwLock::new(hosts),
             pools,
             listen_port: std::sync::atomic::AtomicU16::new(listen_port),
+            config_path,
         })
     }
 
@@ -79,6 +83,33 @@ impl AppState {
     pub fn listen_port(&self) -> u16 {
         self.listen_port.load(std::sync::atomic::Ordering::Relaxed)
     }
+
+    /// Replace the in-memory hostname → host map. Atomic swap under
+    /// the RwLock: in-flight requests holding read guards continue
+    /// against the old map; new lookups see the new one. Used by the
+    /// control socket's `reload-config` method.
+    pub fn replace_hosts(&self, config: &ServerConfig) -> eyre::Result<usize> {
+        let new_hosts = build_hosts_map(config)?;
+        let count = new_hosts.len();
+        let mut guard = self
+            .hosts
+            .write()
+            .map_err(|_| eyre::eyre!("hosts lock poisoned"))?;
+        *guard = new_hosts;
+        Ok(count)
+    }
+}
+
+fn build_hosts_map(config: &ServerConfig) -> eyre::Result<HashMap<String, Arc<HostBlock>>> {
+    let mut hosts = HashMap::new();
+    for block in &config.hosts {
+        let shared = Arc::new(block.clone());
+        insert_unique(&mut hosts, &block.hostname, &shared)?;
+        for alias in &block.aliases {
+            insert_unique(&mut hosts, &alias.hostname, &shared)?;
+        }
+    }
+    Ok(hosts)
 }
 
 fn insert_unique(
@@ -115,9 +146,18 @@ async fn dispatch(
         Variant::Normal
     };
 
-    let resp = match state.hosts.get(&host_key) {
+    // Clone the Arc out under the read lock so the request handler
+    // doesn't keep the lock held across the FastCGI roundtrip — a
+    // concurrent reload-config would otherwise block all requests.
+    let host_opt = state
+        .hosts
+        .read()
+        .expect("hosts lock poisoned")
+        .get(&host_key)
+        .map(Arc::clone);
+    let resp = match host_opt {
         None => unknown_host(&host_header),
-        Some(host) => serve(&state, host, &host_header, &path, &query, peer, variant, req).await,
+        Some(host) => serve(&state, &host, &host_header, &path, &query, peer, variant, req).await,
     };
 
     let (status, bytes_out) = response_summary(&resp);
@@ -544,7 +584,7 @@ mod tests {
             std::time::Duration::from_secs(600),
             16,
         ));
-        AppState::build(cfg, pm, 7080)
+        AppState::build(cfg, PathBuf::from("/dev/null"), pm, 7080)
     }
 
     #[test]
@@ -554,8 +594,9 @@ mod tests {
             hosts: vec![block("a.bougie.run", &["b.bougie.run"])],
         };
         let state = empty_state(&cfg).unwrap();
-        assert!(state.hosts.contains_key("a.bougie.run"));
-        assert!(state.hosts.contains_key("b.bougie.run"));
+        let hosts = state.hosts.read().unwrap();
+        assert!(hosts.contains_key("a.bougie.run"));
+        assert!(hosts.contains_key("b.bougie.run"));
     }
 
     #[test]
@@ -586,7 +627,7 @@ mod tests {
             hosts: vec![block("Case.Bougie.Run", &[])],
         };
         let state = empty_state(&cfg).unwrap();
-        assert!(state.hosts.contains_key("case.bougie.run"));
+        assert!(state.hosts.read().unwrap().contains_key("case.bougie.run"));
     }
 
     #[test]

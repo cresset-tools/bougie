@@ -45,6 +45,29 @@ pub struct CatalogEntry {
     pub user_facing: bool,
     /// One-line summary used by `bougie services catalog` (text form).
     pub summary: &'static str,
+    /// Sandbox stance. Default `Strict`: full Landlock/SBPL allowlist
+    /// confinement. `LightHome` is the loose mode used by services
+    /// that need normal user-level FS access (the bougie-server
+    /// catalog entry spawns php-fpm, reads project files, writes
+    /// `$XDG_RUNTIME_DIR`); it still blocks sensitive home subdirs
+    /// (`~/.ssh`, `~/.aws`, `~/.gnupg`) on macOS via SBPL deny rules.
+    /// On Linux it's effectively unsandboxed because Landlock is
+    /// allow-list-only and can't compose a permissive baseline with
+    /// fine-grained denies.
+    pub sandbox: SandboxKind,
+}
+
+/// Sandbox stance for a catalog entry. See `CatalogEntry::sandbox`.
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SandboxKind {
+    /// `ProtectSystem::Strict` + `ProtectHome::Yes` + explicit RW
+    /// allowlist. Default for every tarball-shipped service.
+    Strict,
+    /// Permissive base + macOS-only deny rules for `~/.ssh` etc.
+    /// Linux currently runs unsandboxed under this mode (Landlock
+    /// limitation); revisit if/when we get LSM or eBPF hooks.
+    LightHome,
 }
 
 /// How a service exposes itself to PHP clients. Unix socket is the
@@ -101,6 +124,7 @@ pub const CATALOG: &[CatalogEntry] = &[
         runtime_deps: &[],
         user_facing: true,
         summary: "Redis in-memory data store; one tenant per logical DB (0..15).",
+        sandbox: SandboxKind::Strict,
     },
     CatalogEntry {
         name: "mariadb",
@@ -116,6 +140,7 @@ pub const CATALOG: &[CatalogEntry] = &[
         runtime_deps: &[],
         user_facing: true,
         summary: "MariaDB 11.4 LTS; one database + user per project tenant.",
+        sandbox: SandboxKind::Strict,
     },
     CatalogEntry {
         name: "opensearch",
@@ -134,6 +159,7 @@ pub const CATALOG: &[CatalogEntry] = &[
         runtime_deps: &[],
         user_facing: true,
         summary: "OpenSearch 2.x search engine; per-tenant index template.",
+        sandbox: SandboxKind::Strict,
     },
     CatalogEntry {
         name: "rabbitmq",
@@ -147,6 +173,7 @@ pub const CATALOG: &[CatalogEntry] = &[
         runtime_deps: &["erlang"],
         user_facing: true,
         summary: "RabbitMQ 4.x AMQP broker; per-tenant vhost + user.",
+        sandbox: SandboxKind::Strict,
     },
     CatalogEntry {
         name: "server",
@@ -164,6 +191,12 @@ pub const CATALOG: &[CatalogEntry] = &[
         runtime_deps: &[],
         user_facing: true,
         summary: "Bougie dev HTTP server with per-request xdebug routing.",
+        // Server reads project files, spawns php-fpm masters, writes
+        // `$XDG_RUNTIME_DIR/bougie/server/<project-hash>/` — the
+        // things ProtectSystem::Strict actively blocks. Run it under
+        // the loose stance with sensitive home subdirs denied
+        // (macOS-only effect today; see `SandboxKind` docs).
+        sandbox: SandboxKind::LightHome,
     },
     // ---------- Runtime-only deps ----------
     CatalogEntry {
@@ -178,6 +211,7 @@ pub const CATALOG: &[CatalogEntry] = &[
         runtime_deps: &[],
         user_facing: false,
         summary: "Eclipse Temurin JDK 21 (runtime dep of opensearch).",
+        sandbox: SandboxKind::Strict,
     },
     CatalogEntry {
         name: "erlang",
@@ -191,6 +225,7 @@ pub const CATALOG: &[CatalogEntry] = &[
         runtime_deps: &[],
         user_facing: false,
         summary: "Erlang/OTP 27 runtime (runtime dep of rabbitmq).",
+        sandbox: SandboxKind::Strict,
     },
 ];
 

@@ -59,9 +59,14 @@ pub fn run(
 
     // Hostname-collision check happens here so config errors surface
     // before we bind a port (§spec implementation note).
-    let state = Arc::new(AppState::build(&cfg, Arc::clone(&pools), listen.port())?);
+    let state = Arc::new(AppState::build(
+        &cfg,
+        config_path.clone(),
+        Arc::clone(&pools),
+        listen.port(),
+    )?);
 
-    if state.hosts.is_empty() {
+    if state.hosts.read().expect("hosts lock poisoned").is_empty() {
         eprintln!(
             "bougie: no hosts configured in {} — run `bougie server add` first.",
             config_path.display()
@@ -126,7 +131,8 @@ async fn serve(
     let bound = listener
         .local_addr()
         .map_or_else(|_| listen.to_string(), |a| a.to_string());
-    eprintln!("bougie server listening on http://{bound} ({} hosts)", state.hosts.len());
+    let host_count = state.hosts.read().expect("hosts lock poisoned").len();
+    eprintln!("bougie server listening on http://{bound} ({host_count} hosts)");
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
