@@ -186,12 +186,19 @@ impl Supervisor {
         // exec. `sandbox_run::apply_sandbox` is documented for exactly
         // that call site (no allocations after fork, no signal-unsafe
         // code beyond what Landlock / SBPL syscalls themselves use).
-        #[allow(unsafe_code)]
-        unsafe {
-            cmd.pre_exec(move || {
-                sandbox_run::apply_sandbox(&policy)
-                    .map_err(|e| std::io::Error::other(format!("sandbox: {e}")))
-            });
+        //
+        // `policy` is `None` for catalog entries whose sandbox kind
+        // can't be implemented on this platform (today: server's
+        // `LightHome` on Linux). Skip pre_exec in that case so the
+        // child runs with the daemon's own (user-level) privileges.
+        if let Some(policy) = policy {
+            #[allow(unsafe_code)]
+            unsafe {
+                cmd.pre_exec(move || {
+                    sandbox_run::apply_sandbox(&policy)
+                        .map_err(|e| std::io::Error::other(format!("sandbox: {e}")))
+                });
+            }
         }
         let mut child = cmd.spawn().wrap_err_with(|| {
             format!("spawning {} via {}", entry.name, binary.display())
@@ -392,6 +399,24 @@ fn render_exec_args(entry: &CatalogEntry, paths: &Paths) -> Vec<String> {
                 String::new(),
                 "--appendonly".into(),
                 "no".into(),
+            ]
+        }
+        "server" => {
+            // bougied keeps the per-service server.toml under the
+            // service's conf/ dir rather than relying on the user's
+            // XDG default — that way `bougie services add server` is
+            // a self-contained subsystem that doesn't fight a hand-
+            // authored ~/.config/bougie/server.toml. The provisioner
+            // (`provisioners::bougie_server`) writes hosts to the
+            // same path.
+            let cfg = paths.service_conf("server").join("server.toml");
+            vec![
+                "server".into(),
+                "run".into(),
+                "--config".into(),
+                cfg.display().to_string(),
+                "--listen".into(),
+                "127.0.0.1:7080".into(),
             ]
         }
         "opensearch" => {

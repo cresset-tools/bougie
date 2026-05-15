@@ -437,8 +437,20 @@ async fn dispatch_env(state: &Arc<DaemonState>, project: std::path::PathBuf) -> 
                     vars.insert(format!("{prefix}INDEX_PREFIX"), p.clone());
                 }
             }
-            // rabbitmq / server env shapes land with their provisioners
-            // (Phases 10 / 8).
+            "server" => {
+                // Catalog binding pins 127.0.0.1:7080. Surface the
+                // root URL alongside the tenant's reserved hostname
+                // so apps can build absolute redirects without
+                // re-encoding the suffix.
+                vars.insert(
+                    format!("{prefix}URL"),
+                    Value::String("http://127.0.0.1:7080".into()),
+                );
+                if let Some(h) = tenant.alloc.get("hostname") {
+                    vars.insert(format!("{prefix}HOSTNAME"), h.clone());
+                }
+            }
+            // rabbitmq env shape lands with its provisioner (Phase 10).
             _ => {}
         }
     }

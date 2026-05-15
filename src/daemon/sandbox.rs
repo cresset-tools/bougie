@@ -11,15 +11,27 @@
 //! .md §4 explicitly). When richer per-entry overrides are needed,
 //! extend `CatalogEntry` with a `SandboxOverrides` struct.
 
-use super::catalog::CatalogEntry;
+use super::catalog::{CatalogEntry, SandboxKind};
 use crate::Paths;
 use eyre::{Result, WrapErr};
 use sandbox_run::{ProtectHome, ProtectSystem, Sandbox, SandboxPolicy};
 
-/// Build the policy for the given service. Creates the per-service
-/// data/run/log/conf directories as a side effect so the
-/// `read_write_paths` references resolve at spawn time.
-pub fn build_policy(entry: &CatalogEntry, paths: &Paths) -> Result<SandboxPolicy> {
+/// Build the policy for the given service. Returns `None` when the
+/// catalog asks for a policy that this platform can't implement
+/// meaningfully (today: `SandboxKind::LightHome` on Linux, because
+/// Landlock is allow-list-only and can't compose a permissive
+/// baseline with fine-grained denies).
+///
+/// Creates the per-service data/run/log/conf directories as a side
+/// effect so the `read_write_paths` references resolve at spawn time.
+pub fn build_policy(entry: &CatalogEntry, paths: &Paths) -> Result<Option<SandboxPolicy>> {
+    match entry.sandbox {
+        SandboxKind::Strict => build_strict(entry, paths).map(Some),
+        SandboxKind::LightHome => build_light_home(entry, paths),
+    }
+}
+
+fn build_strict(entry: &CatalogEntry, paths: &Paths) -> Result<SandboxPolicy> {
     let data = paths.service_data(entry.name);
     let run = paths.service_run(entry.name);
     let log = paths.service_log(entry.name);
@@ -81,6 +93,63 @@ pub fn build_policy(entry: &CatalogEntry, paths: &Paths) -> Result<SandboxPolicy
     policy
         .build()
         .map_err(|e| eyre::eyre!("building sandbox policy for {}: {e}", entry.name))
+}
+
+/// Loose sandbox: keep the user's normal FS access so the service
+/// can read project files / spawn helper processes, but deny the
+/// sensitive home subdirs (`~/.ssh`, `~/.aws`, `~/.gnupg`,
+/// `~/.gitconfig`).
+///
+/// On macOS this maps to SBPL deny rules and Just Works™. On Linux
+/// it's a no-op (returns `None`) because Landlock is allow-list-only
+/// — the only way to "block a subpath" is to enumerate every other
+/// path as allowed, which we can't do for an arbitrary user home.
+/// Code that needs cross-platform deny semantics should switch to a
+/// cgroups + LSM-hook approach when we have it.
+#[cfg(not(target_os = "macos"))]
+fn build_light_home(entry: &CatalogEntry, paths: &Paths) -> Result<Option<SandboxPolicy>> {
+    // Still create the per-service dirs so paths the supervisor
+    // assumes (data/run/log/conf) are present.
+    for p in [
+        paths.service_data(entry.name),
+        paths.service_run(entry.name),
+        paths.service_log(entry.name),
+        paths.service_conf(entry.name),
+    ] {
+        std::fs::create_dir_all(&p)
+            .wrap_err_with(|| format!("creating {}", p.display()))?;
+    }
+    Ok(None)
+}
+
+#[cfg(target_os = "macos")]
+fn build_light_home(entry: &CatalogEntry, paths: &Paths) -> Result<Option<SandboxPolicy>> {
+    for p in [
+        paths.service_data(entry.name),
+        paths.service_run(entry.name),
+        paths.service_log(entry.name),
+        paths.service_conf(entry.name),
+    ] {
+        std::fs::create_dir_all(&p)
+            .wrap_err_with(|| format!("creating {}", p.display()))?;
+    }
+    let home = std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .ok_or_else(|| eyre::eyre!("HOME not set; can't compute light-home deny paths"))?;
+    let denied: Vec<std::path::PathBuf> = [".ssh", ".aws", ".gnupg", ".gitconfig", ".netrc"]
+        .iter()
+        .map(|sub| home.join(sub))
+        .collect();
+    let policy = Sandbox::new()
+        .protect_system(ProtectSystem::No)
+        .protect_home(ProtectHome::No)
+        .inaccessible_paths(denied.iter().map(std::path::PathBuf::as_path))
+        .private_network(false)
+        .no_new_privileges(true)
+        .limit_core(0)
+        .build()
+        .map_err(|e| eyre::eyre!("building light-home sandbox policy for {}: {e}", entry.name))?;
+    Ok(Some(policy))
 }
 
 /// Per-service open-file limit. `mariadb` 11.4 computes

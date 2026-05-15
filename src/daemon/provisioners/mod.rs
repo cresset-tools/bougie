@@ -13,6 +13,7 @@
 //! Phase 6 wires mariadb. opensearch / rabbitmq / bougie-server land
 //! in Phases 7 / 10 / 8 respectively.
 
+pub mod bougie_server;
 pub mod mariadb;
 pub mod opensearch;
 pub mod redis;
@@ -31,7 +32,8 @@ pub fn pre_start(entry: &CatalogEntry, paths: &Paths) -> Result<()> {
     match entry.tenancy {
         Tenancy::Mariadb => mariadb::pre_start(paths),
         Tenancy::Opensearch => opensearch::pre_start(paths),
-        Tenancy::Redis | Tenancy::Rabbitmq | Tenancy::BougieServer | Tenancy::None => Ok(()),
+        Tenancy::BougieServer => bougie_server::pre_start(paths),
+        Tenancy::Redis | Tenancy::Rabbitmq | Tenancy::None => Ok(()),
     }
 }
 
@@ -53,7 +55,10 @@ pub fn provision(
             mariadb::provision(paths, tenants_path, tenant_name, project, &socket)
         }
         Tenancy::Opensearch => opensearch::provision(tenants_path, tenant_name, project),
-        Tenancy::Rabbitmq | Tenancy::BougieServer => Err(eyre!(
+        Tenancy::BougieServer => {
+            bougie_server::provision(paths, tenants_path, tenant_name, project)
+        }
+        Tenancy::Rabbitmq => Err(eyre!(
             "{} provisioner not yet implemented",
             entry.name
         )),
@@ -76,7 +81,10 @@ pub fn deprovision(
             mariadb::deprovision(paths, tenants_path, tenant_name, socket_path, purge)
         }
         Tenancy::Opensearch => opensearch::deprovision(tenants_path, tenant_name, purge),
-        Tenancy::Rabbitmq | Tenancy::BougieServer => Err(eyre!(
+        Tenancy::BougieServer => {
+            bougie_server::deprovision(paths, tenants_path, tenant_name, purge)
+        }
+        Tenancy::Rabbitmq => Err(eyre!(
             "{} deprovisioner not yet implemented",
             entry.name
         )),

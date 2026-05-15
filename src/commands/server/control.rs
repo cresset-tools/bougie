@@ -32,10 +32,17 @@ use super::router::AppState;
 const MAX_REQUEST_BYTES: usize = 4096;
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(tag = "method", rename_all = "lowercase")]
+#[serde(tag = "method", rename_all = "kebab-case")]
 pub enum Request {
     Status,
     Reload { project: PathBuf },
+    /// Re-read `server.toml` from disk and rebuild the in-memory
+    /// hostname → host map. Called by `bougied` after it mutates
+    /// `server.toml` to provision or de-provision a project's
+    /// `[[host]]` block (Phase 8). In-flight requests continue
+    /// against the old map until the swap completes; new requests
+    /// see the new map.
+    ReloadConfig,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -62,6 +69,13 @@ pub struct ReloadResponse {
     pub schema_version: u32,
     pub ok: bool,
     pub reloaded_variants: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ReloadConfigResponse {
+    pub schema_version: u32,
+    pub ok: bool,
+    pub hosts: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -167,7 +181,11 @@ async fn dispatch(req: Request, state: &Arc<AppState>) -> String {
     match req {
         Request::Status => {
             let rows = state.pools.status_snapshot().await;
-            let mut hosts: Vec<String> = state.hosts.keys().cloned().collect();
+            let mut hosts: Vec<String> = state
+                .hosts
+                .read()
+                .map(|h| h.keys().cloned().collect())
+                .unwrap_or_default();
             hosts.sort();
             let resp = StatusResponse {
                 schema_version: 1,
@@ -197,7 +215,25 @@ async fn dispatch(req: Request, state: &Arc<AppState>) -> String {
             .unwrap_or_default(),
             Err(e) => serde_json::to_string(&ErrorResponse::new(e.to_string())).unwrap_or_default(),
         },
+        Request::ReloadConfig => match reload_config(state) {
+            Ok(hosts) => serde_json::to_string(&ReloadConfigResponse {
+                schema_version: 1,
+                ok: true,
+                hosts,
+            })
+            .unwrap_or_default(),
+            Err(e) => serde_json::to_string(&ErrorResponse::new(e.to_string())).unwrap_or_default(),
+        },
     }
+}
+
+fn reload_config(state: &Arc<AppState>) -> Result<usize> {
+    let cfg = super::config::load(&state.config_path)
+        .wrap_err_with(|| format!("re-reading {}", state.config_path.display()))?;
+    let count = state
+        .replace_hosts(&cfg)
+        .wrap_err("swapping in reloaded host map")?;
+    Ok(count)
 }
 
 fn set_socket_mode(path: &Path, mode: u32) -> Result<()> {
@@ -279,8 +315,14 @@ mod tests {
         .unwrap();
         match r {
             Request::Reload { project } => assert_eq!(project, PathBuf::from("/tmp/p")),
-            Request::Status => panic!("expected Reload"),
+            other => panic!("expected Reload, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn request_reload_config_parses() {
+        let r: Request = serde_json::from_str(r#"{"v":1,"method":"reload-config"}"#).unwrap();
+        assert!(matches!(r, Request::ReloadConfig));
     }
 
     #[test]
