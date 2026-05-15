@@ -31,6 +31,19 @@ pub struct ServiceRow {
     pub uptime_ms: Option<u64>,
     pub binding: Value,
     pub declared: bool,
+    /// Consecutive failure count from the supervisor's backoff
+    /// tracker. `0` for healthy services; surfaced so users can
+    /// inspect crash-loop state.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub failure_count: u64,
+    /// Milliseconds until the supervisor will auto-respawn after a
+    /// crash. `None` for services that aren't pending a restart.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_restart_ms: Option<u64>,
+}
+
+fn is_zero_u64(n: &u64) -> bool {
+    *n == 0
 }
 
 #[derive(Debug, Deserialize)]
@@ -90,6 +103,8 @@ pub fn run(format: OutputFormat, field: Option<&str>, name: Option<String>) -> R
                 pid: v.get("pid").and_then(Value::as_u64),
                 uptime_ms: v.get("uptime_ms").and_then(Value::as_u64),
                 binding: v.get("binding").cloned().unwrap_or(Value::Null),
+                failure_count: v.get("failure_count").and_then(Value::as_u64).unwrap_or(0),
+                next_restart_ms: v.get("next_restart_ms").and_then(Value::as_u64),
                 name,
             })
         })
