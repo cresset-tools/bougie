@@ -34,6 +34,10 @@ const HEALTH_POLL: Duration = Duration::from_millis(250);
 fn health_timeout_for(name: &str) -> Duration {
     match name {
         "opensearch" => Duration::from_secs(90),
+        // Erlang VM boot + mnesia bootstrap + plugin discovery puts
+        // rabbitmq's cold-start time well past the 60s default on
+        // slower CI runners.
+        "rabbitmq" => Duration::from_secs(90),
         _ => HEALTH_TIMEOUT_DEFAULT,
     }
 }
@@ -337,6 +341,17 @@ fn render_exec_cwd(entry: &CatalogEntry, paths: &Paths) -> Option<std::path::Pat
 /// list of keys so the table is auditable at a glance.
 fn render_exec_env(entry: &CatalogEntry, paths: &Paths) -> Vec<(String, String)> {
     match entry.name {
+        "rabbitmq" => {
+            // Reuse the provisioner's env-builder so rabbitmqctl and
+            // rabbitmq-server agree on RABBITMQ_NODENAME etc. Plus
+            // HOME so the Erlang VM can write its `.erlang.cookie`.
+            let mut env = super::provisioners::rabbitmq::rabbitmq_env(paths);
+            env.push((
+                "HOME".into(),
+                paths.service_data("rabbitmq").join("home").display().to_string(),
+            ));
+            env
+        }
         "opensearch" => {
             let tmp = paths.service_data("opensearch").join("tmp");
             let conf = paths.service_conf("opensearch");
