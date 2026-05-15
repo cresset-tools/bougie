@@ -7,7 +7,7 @@
 //! stays in this process and is used both to read the `pgid=` line
 //! the babysit emits and to simulate "bougied died" by dropping it.
 
-use std::io::{BufRead, BufReader, Read};
+use std::io::Read;
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::symlink;
 use std::os::unix::net::UnixStream;
@@ -79,12 +79,29 @@ fn libc_dup2(src: i32, dst: i32) -> i32 {
     unsafe { dup2(src, dst) }
 }
 
+/// Read one `\n`-terminated line from the socket WITHOUT a BufReader.
+/// A BufReader would issue an 8 KiB read on the underlying fd and
+/// buffer everything it got — when the function returns and the
+/// BufReader is dropped, any bytes past the first newline are
+/// silently discarded. Under GHA load the babysit frequently writes
+/// `pgid=…\nexited=…\n` back-to-back before this thread is scheduled
+/// to read, so a BufReader-based reader would consume both lines in
+/// one syscall and lose the `exited=` line — which is exactly the
+/// `"expected exited= line, got """` flake reported in issue #34.
+/// Read byte-by-byte instead so the kernel buffer keeps any
+/// subsequent lines visible to the next reader on this socket.
 fn read_pgid_line(sock: &mut UnixStream) -> i32 {
-    sock.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-    let mut reader = BufReader::new(sock);
-    let mut line = String::new();
-    reader.read_line(&mut line).expect("reading pgid line");
-    let line = line.trim();
+    sock.set_read_timeout(Some(Duration::from_secs(15))).unwrap();
+    let mut line = Vec::new();
+    let mut byte = [0u8; 1];
+    loop {
+        sock.read_exact(&mut byte).expect("reading pgid line");
+        if byte[0] == b'\n' {
+            break;
+        }
+        line.push(byte[0]);
+    }
+    let line = std::str::from_utf8(&line).expect("pgid line is utf-8");
     let pgid = line
         .strip_prefix("pgid=")
         .unwrap_or_else(|| panic!("expected pgid= line, got {line:?}"))
@@ -136,8 +153,11 @@ fn babysit_reports_pgid_then_exit_on_clean_service_exit() {
     assert!(pgid > 0, "pgid should be positive, got {pgid}");
 
     // Continue reading the socket: babysit should also report exit.
+    // 15s read timeout — generous enough that a heavily contended
+    // GHA runner doesn't EOF us before the babysit's tokio runtime
+    // sees child.wait() return and emits the `exited=` line. (issue #34)
     let mut rest = String::new();
-    sock.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    sock.set_read_timeout(Some(Duration::from_secs(15))).unwrap();
     sock.read_to_string(&mut rest).ok();
     assert!(
         rest.contains("exited="),
@@ -168,7 +188,13 @@ fn babysit_kills_group_on_socket_close() {
     // Drop the parent socket — babysit should see EOF and tear down.
     drop(sock);
 
-    let died = wait_until(|| !pgrp_alive(pgid), Duration::from_secs(6));
+    // 30s deadline: grace_secs is 2, so on any healthy host the group
+    // is dead in well under a second. The generous bound is for
+    // contended CI runners where the babysit's tokio thread may not
+    // be scheduled promptly between EOF detection and killpg. Still
+    // bounds correctness — a real regression (deadlocked babysit,
+    // missing killpg) won't sneak past 30s. (issue #34)
+    let died = wait_until(|| !pgrp_alive(pgid), Duration::from_secs(30));
     assert!(died, "process group {pgid} still alive after socket close + grace");
 
     let status = child.wait().expect("waiting on babysit");
@@ -189,7 +215,9 @@ fn babysit_kills_group_on_sigterm() {
     let bpid = child.id() as i32;
     assert_eq!(kill_pid(bpid, 15), 0, "kill(babysit, SIGTERM) failed");
 
-    let died = wait_until(|| !pgrp_alive(pgid), Duration::from_secs(6));
+    // 30s deadline for SIGTERM-propagation + group teardown — see the
+    // matching comment on the socket-close test above. (issue #34)
+    let died = wait_until(|| !pgrp_alive(pgid), Duration::from_secs(30));
     assert!(died, "process group {pgid} still alive after SIGTERM");
 
     let status = child.wait().expect("waiting on babysit");
@@ -216,6 +244,6 @@ fn babysit_service_runs_in_its_own_pgid() {
 
     // Clean up.
     drop(sock);
-    let _ = wait_until(|| !pgrp_alive(pgid), Duration::from_secs(6));
+    let _ = wait_until(|| !pgrp_alive(pgid), Duration::from_secs(30));
     let _ = child.wait();
 }
