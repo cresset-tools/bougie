@@ -157,12 +157,19 @@ impl Supervisor {
             .wrap_err_with(|| format!("opening log writer for {}", entry.name))?;
         let log_writer = Arc::new(Mutex::new(log_writer));
 
+        let env = render_exec_env(entry, &self.paths);
+        let cwd = render_exec_cwd(entry, &self.paths);
+
         let mut cmd = tokio::process::Command::new(&binary);
         cmd.args(&args)
+            .envs(env)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(false);
+        if let Some(dir) = cwd {
+            cmd.current_dir(dir);
+        }
         // SAFETY: `pre_exec` runs in the child after fork and before
         // exec. `sandbox_run::apply_sandbox` is documented for exactly
         // that call site (no allocations after fork, no signal-unsafe
@@ -278,6 +285,44 @@ impl Supervisor {
 
 // -------------------- helpers --------------------
 
+/// Per-service current_dir override. Returns `None` to inherit
+/// bougied's CWD. Today only opensearch uses this — its bundled
+/// `config/jvm.options` writes the GC log to a relative `logs/`
+/// path that the JVM resolves *before* opensearch.yml's `path.logs`
+/// is read, so we anchor CWD to the writable data dir so `logs/`
+/// resolves under our RW allowlist.
+fn render_exec_cwd(entry: &CatalogEntry, paths: &Paths) -> Option<std::path::PathBuf> {
+    match entry.name {
+        "opensearch" => Some(paths.service_data("opensearch")),
+        _ => None,
+    }
+}
+
+/// Per-service env injected into the child before spawn. Returns an
+/// empty map when the service runs with no extras. Pinned to a small
+/// list of keys so the table is auditable at a glance.
+fn render_exec_env(entry: &CatalogEntry, paths: &Paths) -> Vec<(String, String)> {
+    match entry.name {
+        "opensearch" => {
+            let tmp = paths.service_data("opensearch").join("tmp");
+            let conf = paths.service_conf("opensearch");
+            vec![
+                // JNA native-lib extraction + `java.io.tmpdir` write
+                // here. `/tmp` is hidden by `ProtectSystem::Strict`.
+                ("OPENSEARCH_TMPDIR".into(), tmp.display().to_string()),
+                // `opensearch-env` defaults `OPENSEARCH_PATH_CONF` to
+                // `$OPENSEARCH_HOME/config`, which is read-only in
+                // the store. The provisioner's pre_start hook copies
+                // the tarball's config/ into our writable conf dir
+                // and rewrites jvm.options to absolute paths; point
+                // opensearch at our copy.
+                ("OPENSEARCH_PATH_CONF".into(), conf.display().to_string()),
+            ]
+        }
+        _ => Vec::new(),
+    }
+}
+
 /// Render `exec_args` for a service. Each entry's argv is hand-rolled
 /// here rather than templated — services have idiosyncratic flags
 /// (mariadb's `--skip-networking`, redis's `--unixsocketperm`, etc.)
@@ -308,6 +353,26 @@ fn render_exec_args(entry: &CatalogEntry, paths: &Paths) -> Vec<String> {
                 String::new(),
                 "--appendonly".into(),
                 "no".into(),
+            ]
+        }
+        "opensearch" => {
+            let data = paths.service_data("opensearch").display().to_string();
+            let log = paths.service_log("opensearch").display().to_string();
+            // OpenSearch writes JNA-extracted native libs + assorted
+            // temporaries under `OPENSEARCH_TMPDIR`. The sandbox hides
+            // /tmp (ProtectSystem::Strict), so pin it under the data
+            // dir which is already RW. Created by `pre_start`.
+            vec![
+                format!("-Epath.data={data}"),
+                format!("-Epath.logs={log}"),
+                // Loopback only — bougie services never bind public
+                // addresses (SERVICES.md §6).
+                "-Enetwork.host=127.0.0.1".into(),
+                // Catalog binding pins :9200. Keep the two in lockstep.
+                "-Ehttp.port=9200".into(),
+                // No cluster bootstrap — single-node dev mode skips
+                // discovery + initial_cluster_manager_nodes ceremony.
+                "-Ediscovery.type=single-node".into(),
             ]
         }
         "mariadb" => {

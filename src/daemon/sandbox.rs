@@ -31,11 +31,36 @@ pub fn build_policy(entry: &CatalogEntry, paths: &Paths) -> Result<SandboxPolicy
 
     let limit_nofile = nofile_for(entry.name);
 
+    // Baseline writable device nodes. ProtectSystem::Strict makes the
+    // entire FS read-only except for explicit RW additions, but POSIX
+    // services expect to be able to write to `/dev/null` (shell `>/dev/null`,
+    // `redirect-stderr` in launcher scripts, opensearch-env line 92) and
+    // read from `/dev/{urandom,random}` (every TLS-using service).
+    // Including them as RW is safe — these are char devices with kernel-
+    // enforced semantics that don't honour write data, and Landlock
+    // gates access at the path layer rather than the byte stream.
+    // Per-service `conf` is rendered + owned by bougied; the original
+    // read-only mode was defence-in-depth but breaks opensearch (its
+    // launcher writes to `config/opensearch.keystore` and similar on
+    // first start). Promote it to RW — the boundary against
+    // user-input poisoning is still ProtectHome + the store being RO.
+    let rw_paths = vec![
+        data.clone(),
+        run.clone(),
+        log.clone(),
+        conf.clone(),
+        std::path::PathBuf::from("/dev/null"),
+        std::path::PathBuf::from("/dev/zero"),
+        std::path::PathBuf::from("/dev/full"),
+        std::path::PathBuf::from("/dev/random"),
+        std::path::PathBuf::from("/dev/urandom"),
+    ];
+
     let mut policy = Sandbox::new()
         .protect_system(ProtectSystem::Strict)
         .protect_home(ProtectHome::Yes)
-        .read_write_paths([data.as_path(), run.as_path(), log.as_path()])
-        .read_only_paths([paths.store().as_path(), conf.as_path()])
+        .read_write_paths(rw_paths.iter().map(std::path::PathBuf::as_path))
+        .read_only_paths([paths.store().as_path()])
         .private_network(false)
         .no_new_privileges(true)
         .limit_nofile(limit_nofile)

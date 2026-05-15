@@ -425,8 +425,20 @@ async fn dispatch_env(state: &Arc<DaemonState>, project: std::path::PathBuf) -> 
                     vars.insert(format!("{prefix}PASSWORD"), Value::String(pw.clone()));
                 }
             }
-            // opensearch / rabbitmq / server env shapes land with their
-            // provisioners (Phases 7 / 10 / 8).
+            "opensearch" => {
+                // Catalog binding pins :9200 (loopback only). Surface
+                // both the base URL and the tenant's reserved index
+                // prefix so apps build `<prefix>articles` etc.
+                vars.insert(
+                    format!("{prefix}URL"),
+                    Value::String("http://127.0.0.1:9200".into()),
+                );
+                if let Some(p) = tenant.alloc.get("index_prefix") {
+                    vars.insert(format!("{prefix}INDEX_PREFIX"), p.clone());
+                }
+            }
+            // rabbitmq / server env shapes land with their provisioners
+            // (Phases 10 / 8).
             _ => {}
         }
     }
@@ -453,7 +465,18 @@ async fn dispatch_up(
         let Some(entry) = catalog::find(name) else { continue };
         // One-shot bootstrap (e.g. mariadb-install-db on first run).
         // Idempotent — safe even when the service is already running.
-        if let Err(e) = provisioners::pre_start(entry, &state.paths) {
+        // `spawn_blocking` so subprocess I/O and `reqwest::blocking`
+        // (opensearch HTTP) don't panic from inside the tokio
+        // runtime.
+        let paths_for_blocking = state.paths.clone();
+        let entry_static = entry;
+        let pre_res = tokio::task::spawn_blocking(move || {
+            provisioners::pre_start(entry_static, &paths_for_blocking)
+        })
+        .await
+        .map_err(|join_err| eyre::eyre!("pre_start task panicked: {join_err}"))
+        .and_then(|inner| inner);
+        if let Err(e) = pre_res {
             return ResultFrame::err(
                 "pre_start_failed",
                 format!("{}: {}", name, e),
@@ -479,13 +502,22 @@ async fn dispatch_up(
                 None => continue, // dep ordered in but not in the request
             };
             let tenants_path = state.paths.service_tenants(name);
-            match provisioners::provision(
-                entry,
-                &state.paths,
-                &tenants_path,
-                &tenant_name,
-                &project,
-            ) {
+            // Same `spawn_blocking` shield as `pre_start` above.
+            let paths_for_blocking = state.paths.clone();
+            let project_for_blocking = project.clone();
+            let prov_res = tokio::task::spawn_blocking(move || {
+                provisioners::provision(
+                    entry_static,
+                    &paths_for_blocking,
+                    &tenants_path,
+                    &tenant_name,
+                    &project_for_blocking,
+                )
+            })
+            .await
+            .map_err(|join_err| eyre::eyre!("provision task panicked: {join_err}"))
+            .and_then(|inner| inner);
+            match prov_res {
                 Ok(t) => {
                     tenants_map.insert(name.to_string(), Value::String(t.tenant));
                 }
@@ -527,15 +559,31 @@ async fn dispatch_down(
                 .and_then(|all| all.into_iter().find(|t| t.project == project));
             if let Some(t) = project_tenant {
                 let sock_default = state.paths.service_run(entry.name).join(format!("{}.sock", entry.name));
-                let sock = if sock_default.exists() { Some(sock_default.as_path()) } else { None };
-                if let Err(e) = provisioners::deprovision(
-                    entry,
-                    &state.paths,
-                    &tenants_path,
-                    &t.tenant,
-                    sock,
-                    purge,
-                ) {
+                let sock_opt = sock_default.exists().then_some(sock_default);
+                // Same `spawn_blocking` shield as `dispatch_up`: the
+                // deprovisioner uses blocking I/O (reqwest::blocking
+                // for opensearch, std::process::Command for mariadb)
+                // which would panic if called from inside the runtime.
+                let paths_for_blocking = state.paths.clone();
+                let tenants_path_b = tenants_path.clone();
+                let tenant_for_blocking = t.tenant.clone();
+                let entry_static = entry;
+                let deprov_res = tokio::task::spawn_blocking(move || {
+                    provisioners::deprovision(
+                        entry_static,
+                        &paths_for_blocking,
+                        &tenants_path_b,
+                        &tenant_for_blocking,
+                        sock_opt.as_deref(),
+                        purge,
+                    )
+                })
+                .await
+                .map_err(|join_err| {
+                    eyre::eyre!("deprovision task panicked: {join_err}")
+                })
+                .and_then(|inner| inner);
+                if let Err(e) = deprov_res {
                     return ResultFrame::err(
                         "deprovision_failed",
                         format!("{}: {}", entry.name, e),
