@@ -50,15 +50,27 @@ pub struct ExtItem {
     pub conf_d_path: Option<PathBuf>,
     pub composer_lock_updated: bool,
     pub already_present: bool,
+    /// `true` when the extension is already loaded by the install's
+    /// bundled conf.d (a `00-*-<name>.ini` fragment is present, sync
+    /// having mirrored it from `<install>/etc/php/conf.d/`). In that
+    /// case `bougie ext add` skips the `.so` install and the would-be-
+    /// duplicate `20-<name>.ini` write; only composer.json is updated.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub bundled: bool,
 }
 
 impl Render for ExtAddRemoveResult {
     fn render_text(&self, w: &mut dyn Write) -> io::Result<()> {
         for it in &self.items {
-            match (self.action, &it.version) {
-                ("add", Some(v)) => writeln!(w, "add ext-{} ({v})", it.name)?,
-                ("add", None) => writeln!(w, "add ext-{}", it.name)?,
-                ("remove", _) => writeln!(w, "remove ext-{}", it.name)?,
+            match (self.action, it.bundled, &it.version) {
+                ("add", true, _) => writeln!(
+                    w,
+                    "add ext-{} (already provided by php install; recorded in composer.json)",
+                    it.name
+                )?,
+                ("add", false, Some(v)) => writeln!(w, "add ext-{} ({v})", it.name)?,
+                ("add", false, None) => writeln!(w, "add ext-{}", it.name)?,
+                ("remove", _, _) => writeln!(w, "remove ext-{}", it.name)?,
                 _ => writeln!(w, "{} ext-{}", self.action, it.name)?,
             }
         }
@@ -99,6 +111,36 @@ pub fn add(
     for raw in &names {
         let (name, version_pin) = parse_name_with_optional_version(raw)?;
 
+        // If sync has already replicated a bundled `00-*-<name>.ini`
+        // from the install's `etc/php/conf.d/`, the extension is
+        // already loaded — installing again and writing a second
+        // `20-<name>.ini` would yield PHP's "Module already loaded"
+        // warning on every CLI invocation (issue #28). Skip the .so
+        // install and the conf.d write; just record the requirement
+        // in composer.json so the lockfile/platform check stay
+        // accurate. Also drop any stale `<NN>-<name>.ini` left
+        // behind by a buggy older bougie.
+        if conf_d::installed_fragment_present(&project_root, &name) {
+            conf_d::remove_user_ext_fragment(&project_root, &name)?;
+            let applied = apply_require_change(
+                &project_root,
+                &RequireChange::Add {
+                    key: format!("ext-{name}"),
+                    constraint: version_pin.clone().unwrap_or_else(|| "*".into()),
+                    dev: false,
+                },
+            )?;
+            items.push(ExtItem {
+                name,
+                version: None,
+                conf_d_path: None,
+                composer_lock_updated: applied.composer_lock_path.is_some(),
+                already_present: true,
+                bundled: true,
+            });
+            continue;
+        }
+
         let installed = install_extension(
             &paths,
             &name,
@@ -130,6 +172,7 @@ pub fn add(
             conf_d_path: Some(conf_d_path),
             composer_lock_updated: applied.composer_lock_path.is_some(),
             already_present: installed.already_present,
+            bundled: false,
         });
     }
 
@@ -184,6 +227,7 @@ pub fn remove(
             // We don't reuse the `already_present` field semantically
             // here — set it to true when nothing was actually touched.
             already_present: !applied.change_applied && !fragment_removed,
+            bundled: false,
         });
     }
 

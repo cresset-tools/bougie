@@ -192,6 +192,63 @@ fn remove_fragment_in(dir: &Path, name: &str) -> Result<bool> {
     Ok(removed)
 }
 
+/// `true` if a baseline-replicated `00-*-<name>.ini` fragment is
+/// present in the project's regular conf.d. Sync writes those when
+/// it mirrors the install's `etc/php/conf.d/` (see
+/// `commands::sync::replicate_install_conf_d`), so this is the direct
+/// observable signal that the install already loads `<name>` without
+/// any user-written fragment. `bougie ext add` uses it to skip the
+/// would-be-duplicate `20-<name>.ini` write that produced PHP's
+/// "Module already loaded" warning.
+pub fn installed_fragment_present(project_root: &Path, name: &str) -> bool {
+    let dir = project_confd_dir(project_root);
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return false;
+    };
+    let suffix = format!("-{name}.ini");
+    for entry in entries.flatten() {
+        if let Some(fname) = entry.file_name().to_str()
+            && fname.starts_with("00-")
+            && fname.ends_with(&suffix)
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// Remove any user-written `<NN>-<name>.ini` fragment from the
+/// regular conf.d/ where `<NN>` is not the baseline-replication `00`
+/// prefix. Used by `bougie ext add` to clean up duplicates left
+/// behind by an older bougie that wrote `20-<name>.ini` alongside the
+/// install's bundled `00-20-<name>.ini` — see GitHub issue #28.
+/// Returns `Ok(true)` when at least one file was removed.
+pub fn remove_user_ext_fragment(project_root: &Path, name: &str) -> Result<bool> {
+    let dir = project_confd_dir(project_root);
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(e) => e,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(eyre!("reading {}: {e}", dir.display())),
+    };
+    let target_suffix = format!("-{name}.ini");
+    let mut removed = false;
+    for entry in entries.flatten() {
+        let fname = entry.file_name();
+        let Some(fname_str) = fname.to_str() else { continue };
+        if fname_str.starts_with("00-") {
+            continue;
+        }
+        if fname_str.ends_with(&target_suffix) && has_numeric_prefix(fname_str) {
+            match std::fs::remove_file(entry.path()) {
+                Ok(()) => removed = true,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(eyre!("removing {}: {e}", entry.path().display())),
+            }
+        }
+    }
+    Ok(removed)
+}
+
 /// `true` if `<NN>-<name>.ini` already exists in either the regular
 /// or the debug-overlay conf.d. Used by the server's lazy xdebug
 /// activator to skip when the user already installed xdebug
@@ -516,6 +573,74 @@ mod tests {
     fn php_ini_scan_dir_overlay_joins_both_with_colon() {
         let s = php_ini_scan_dir(Path::new("/p"), true);
         assert_eq!(s.to_str().unwrap(), "/p/.bougie/conf.d:/p/.bougie/conf.d-debug");
+    }
+
+    #[test]
+    fn installed_fragment_present_detects_baseline_replicated_file() {
+        // Sync mirrors `<install>/etc/php/conf.d/20-intl.ini` to
+        // `.bougie/conf.d/00-20-intl.ini`. `bougie ext add intl`
+        // must see that and skip the duplicate write — see issue #28.
+        let td = TempDir::new().unwrap();
+        let dir = td.path().join(".bougie/conf.d");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("00-20-intl.ini"), "extension=intl\n").unwrap();
+        assert!(installed_fragment_present(td.path(), "intl"));
+        assert!(!installed_fragment_present(td.path(), "redis"));
+    }
+
+    #[test]
+    fn installed_fragment_present_ignores_user_fragments() {
+        // A user-written `20-redis.ini` is not a "bundled" fragment —
+        // it's the user-add path, which must still install on a fresh
+        // re-add. Only `00-`-prefixed files count.
+        let td = TempDir::new().unwrap();
+        let dir = td.path().join(".bougie/conf.d");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("20-redis.ini"), "extension=/path/redis.so\n").unwrap();
+        assert!(!installed_fragment_present(td.path(), "redis"));
+    }
+
+    #[test]
+    fn installed_fragment_present_handles_missing_dir() {
+        let td = TempDir::new().unwrap();
+        assert!(!installed_fragment_present(td.path(), "intl"));
+    }
+
+    #[test]
+    fn remove_user_ext_fragment_drops_duplicate_but_keeps_baseline() {
+        // Pre-fix bougie wrote `20-intl.ini` alongside the baseline-
+        // replicated `00-20-intl.ini`. After the fix, `ext add intl`
+        // must remove the user-written duplicate while leaving the
+        // baseline mirror in place — that's the file PHP actually
+        // loads from.
+        let td = TempDir::new().unwrap();
+        let dir = td.path().join(".bougie/conf.d");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("00-20-intl.ini"), "extension=intl\n").unwrap();
+        std::fs::write(dir.join("20-intl.ini"), "extension=/dup/intl.so\n").unwrap();
+
+        let removed = remove_user_ext_fragment(td.path(), "intl").unwrap();
+        assert!(removed);
+        assert!(dir.join("00-20-intl.ini").exists());
+        assert!(!dir.join("20-intl.ini").exists());
+    }
+
+    #[test]
+    fn remove_user_ext_fragment_noop_when_only_baseline_present() {
+        let td = TempDir::new().unwrap();
+        let dir = td.path().join(".bougie/conf.d");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("00-20-intl.ini"), "extension=intl\n").unwrap();
+
+        let removed = remove_user_ext_fragment(td.path(), "intl").unwrap();
+        assert!(!removed);
+        assert!(dir.join("00-20-intl.ini").exists());
+    }
+
+    #[test]
+    fn remove_user_ext_fragment_handles_missing_dir() {
+        let td = TempDir::new().unwrap();
+        assert!(!remove_user_ext_fragment(td.path(), "intl").unwrap());
     }
 
     #[test]
