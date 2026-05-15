@@ -114,6 +114,17 @@ async fn serve(cfg: Config) -> Result<ExitCode> {
     let mut control = tokio::net::UnixStream::from_std(control)
         .wrap_err("wrapping control fd as tokio stream")?;
 
+    // Install the SIGTERM handler BEFORE spawning the service. Bougied
+    // (or a test harness) is free to send SIGTERM at any point after
+    // we report `pgid=`; if the handler isn't yet installed, SIGTERM's
+    // default disposition takes the babysit down without cleanup and
+    // leaves the service running as an orphan in its own pgrp. This
+    // race was the root cause of the `babysit_kills_group_on_sigterm`
+    // flake reported in issue #34.
+    let mut sigterm =
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .wrap_err("installing SIGTERM handler")?;
+
     let mut cmd = tokio::process::Command::new(&cfg.exec);
     cmd.args(&cfg.argv)
         .stdin(Stdio::null())
@@ -154,10 +165,6 @@ async fn serve(cfg: Config) -> Result<ExitCode> {
         .await
         .wrap_err("reporting pgid to bougied")?;
     control.flush().await.ok();
-
-    let mut sigterm =
-        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .wrap_err("installing SIGTERM handler")?;
 
     tokio::select! {
         // Service exited on its own.
