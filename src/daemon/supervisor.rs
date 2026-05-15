@@ -28,6 +28,20 @@ use tokio::sync::Mutex;
 const HEALTH_TIMEOUT_DEFAULT: Duration = Duration::from_secs(60);
 const HEALTH_POLL: Duration = Duration::from_millis(250);
 
+/// Auto-restart on failure. Exponential backoff, capped, with a
+/// "reset on sustained run" rule so a service that briefly health-
+/// passes then dies 2s later doesn't masquerade as a first failure
+/// each cycle. See SERVICES.md §5.1.
+const BASE_BACKOFF: Duration = Duration::from_secs(1);
+const MAX_BACKOFF: Duration = Duration::from_secs(300);
+/// If the previous successful Running window exceeded this, treat
+/// the next failure as "first failure" again (`failure_count = 1`).
+const FAILURE_RESET_THRESHOLD: Duration = Duration::from_secs(60);
+/// After this many consecutive failures, stop respawning. The
+/// service is conclusively broken; the operator can `bougie
+/// services up <name>` to retry manually.
+const MAX_RESTART_ATTEMPTS: u32 = 10;
+
 /// Per-service health-probe deadline. JVM-based services (opensearch
 /// today, rabbitmq via erlang/JIT later) need a longer window because
 /// JIT compilation + cluster bootstrap dominate cold-start time.
@@ -70,11 +84,32 @@ pub struct ManagedService {
     pub child: Option<Child>,
     pub pid: Option<u32>,
     pub started_at: Option<Instant>,
+    /// Consecutive crash count for backoff purposes. Reset to 0 when
+    /// the next start succeeds AND the previous Running window was
+    /// at least `FAILURE_RESET_THRESHOLD` (handled at Failed time
+    /// using `started_at`).
+    pub failure_count: u32,
+    /// When the most recent transition into Failed happened.
+    /// Diagnostic only; backoff math uses `restart_at` directly.
+    pub last_failure_at: Option<Instant>,
+    /// Deadline for the next auto-respawn. `Some` only while
+    /// state == Failed and `failure_count <= MAX_RESTART_ATTEMPTS`.
+    /// The 1s ticker checks this and calls `start` when due.
+    pub restart_at: Option<Instant>,
 }
 
 impl ManagedService {
     fn new(name: &'static str) -> Self {
-        Self { name, state: ServiceState::Stopped, child: None, pid: None, started_at: None }
+        Self {
+            name,
+            state: ServiceState::Stopped,
+            child: None,
+            pid: None,
+            started_at: None,
+            failure_count: 0,
+            last_failure_at: None,
+            restart_at: None,
+        }
     }
 }
 
@@ -87,6 +122,20 @@ pub struct ServiceStatus {
     pub pid: Option<u32>,
     pub uptime_ms: Option<u64>,
     pub binding: Binding,
+    /// Consecutive failure count. `0` when the service hasn't
+    /// crashed recently. Inspected by `bougie services daemon
+    /// status` so users can see backoff state.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub failure_count: u32,
+    /// Milliseconds until the supervisor will respawn this service.
+    /// `Some` only while state == Failed and a respawn is scheduled
+    /// (i.e. failure_count <= MAX_RESTART_ATTEMPTS).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_restart_ms: Option<u64>,
+}
+
+fn is_zero_u32(n: &u32) -> bool {
+    *n == 0
 }
 
 #[derive(Debug)]
@@ -106,11 +155,15 @@ impl Supervisor {
 
     /// Snapshot every service for the `status` IPC method.
     pub fn snapshot(&self) -> Vec<ServiceStatus> {
+        let now = Instant::now();
         let mut out: Vec<_> = self
             .services
             .values()
             .filter_map(|svc| {
                 let entry = catalog::find(svc.name)?;
+                let next_restart_ms = svc.restart_at.map(|deadline| {
+                    deadline.saturating_duration_since(now).as_millis() as u64
+                });
                 Some(ServiceStatus {
                     name: svc.name.to_string(),
                     state: svc.state,
@@ -119,6 +172,8 @@ impl Supervisor {
                         .started_at
                         .map(|t| t.elapsed().as_millis() as u64),
                     binding: entry.binding,
+                    failure_count: svc.failure_count,
+                    next_restart_ms,
                 })
             })
             .collect();
@@ -152,6 +207,14 @@ impl Supervisor {
             ) {
                 return Ok(false);
             }
+        }
+        // Clear any pending auto-restart deadline — we're starting
+        // now, either from operator action or from the ticker firing
+        // a due restart. `failure_count` carries over until either a
+        // successful sustained run resets it (handled in check_all)
+        // or another failure increments it.
+        if let Some(svc) = self.services.get_mut(entry.name) {
+            svc.restart_at = None;
         }
 
         // All immutable-self work first so we can later take a single
@@ -297,20 +360,54 @@ impl Supervisor {
         Ok(true)
     }
 
-    /// Reap any service whose child has exited. Called by the 1-second
-    /// ticker. Transitions Running → Failed on unexpected exit.
+    /// Reap any service whose child has exited, then start any
+    /// services whose backoff deadline is due.
+    ///
+    /// Called once per second by the daemon's ticker. Two passes:
+    /// first reap+schedule, then respawn — combined under the same
+    /// `&mut self` borrow so concurrent IPC handlers see a
+    /// consistent supervisor state across the cycle.
     pub async fn check_all(&mut self) {
+        // Pass 1: reap exited children, transition Failed, schedule
+        // the next restart deadline with exponential backoff.
+        let now = Instant::now();
         for svc in self.services.values_mut() {
             let Some(child) = svc.child.as_mut() else {
                 continue;
             };
             match child.try_wait() {
                 Ok(Some(_status)) => {
-                    // Child exited. For Phase 3 just transition to
-                    // Failed; Phase 5+ adds deadline-driven restart.
+                    let prev_run = svc.started_at.map(|t| now - t);
+                    // Reset rule: a Running window of at least
+                    // FAILURE_RESET_THRESHOLD means the service is
+                    // basically healthy; treat the next failure as
+                    // "first." Otherwise this is a continued crash
+                    // loop and we keep escalating.
+                    let next_count = match prev_run {
+                        Some(d) if d >= FAILURE_RESET_THRESHOLD => 1,
+                        _ => svc.failure_count.saturating_add(1),
+                    };
+                    svc.failure_count = next_count;
+                    svc.last_failure_at = Some(now);
                     svc.state = ServiceState::Failed;
                     svc.child = None;
                     svc.pid = None;
+                    svc.started_at = None;
+                    // Schedule a respawn unless we've hit the
+                    // attempt cap. Past the cap, leave restart_at
+                    // None — the service stays Failed until the
+                    // operator manually `services up`s it.
+                    svc.restart_at = if next_count <= MAX_RESTART_ATTEMPTS {
+                        Some(now + compute_backoff(next_count))
+                    } else {
+                        None
+                    };
+                    tracing::warn!(
+                        service = svc.name,
+                        failure_count = next_count,
+                        backoff_ms = svc.restart_at.map(|t| (t - now).as_millis() as u64),
+                        "service crashed; respawn scheduled"
+                    );
                 }
                 Ok(None) => {} // still running
                 Err(e) => {
@@ -318,7 +415,55 @@ impl Supervisor {
                 }
             }
         }
+
+        // Pass 2: collect names of services that are Failed with a
+        // due restart_at. We can't call self.start() while iterating
+        // self.services, so capture names first then act.
+        let due_now = Instant::now();
+        let due: Vec<&'static str> = self
+            .services
+            .values()
+            .filter(|s| {
+                s.state == ServiceState::Failed
+                    && s.restart_at.is_some_and(|d| d <= due_now)
+            })
+            .map(|s| s.name)
+            .collect();
+        for name in due {
+            if let Err(e) = self.start(name).await {
+                tracing::warn!(service = name, error = %e, "auto-restart failed; will try again on next backoff tick");
+                // start() failed, but it cleared restart_at. Treat
+                // this like a fresh crash so backoff keeps growing.
+                if let Some(svc) = self.services.get_mut(name) {
+                    let now = Instant::now();
+                    svc.failure_count = svc.failure_count.saturating_add(1);
+                    svc.last_failure_at = Some(now);
+                    svc.restart_at = if svc.failure_count <= MAX_RESTART_ATTEMPTS {
+                        Some(now + compute_backoff(svc.failure_count))
+                    } else {
+                        None
+                    };
+                    svc.state = ServiceState::Failed;
+                }
+            }
+        }
     }
+}
+
+/// Exponential backoff: `BASE_BACKOFF * 2^(failure_count - 1)`,
+/// capped at `MAX_BACKOFF`. `failure_count` is 1-based (the first
+/// failure waits `BASE_BACKOFF`).
+fn compute_backoff(failure_count: u32) -> Duration {
+    if failure_count == 0 {
+        return BASE_BACKOFF;
+    }
+    let shift = (failure_count - 1).min(32);
+    let factor = 1u64.checked_shl(shift).unwrap_or(u64::MAX);
+    let secs = BASE_BACKOFF
+        .as_secs()
+        .saturating_mul(factor)
+        .min(MAX_BACKOFF.as_secs());
+    Duration::from_secs(secs)
 }
 
 // -------------------- helpers --------------------
@@ -737,5 +882,43 @@ mod tests {
         assert!(snap.iter().any(|s| s.name == "redis" && s.state == ServiceState::Stopped));
         assert!(snap.iter().any(|s| s.name == "mariadb"));
         assert!(snap.iter().any(|s| s.name == "jdk"));
+    }
+
+    #[test]
+    fn backoff_doubles_each_consecutive_failure() {
+        // 1, 2, 4, 8, ... — capped at MAX_BACKOFF.
+        assert_eq!(compute_backoff(1), Duration::from_secs(1));
+        assert_eq!(compute_backoff(2), Duration::from_secs(2));
+        assert_eq!(compute_backoff(3), Duration::from_secs(4));
+        assert_eq!(compute_backoff(4), Duration::from_secs(8));
+        assert_eq!(compute_backoff(5), Duration::from_secs(16));
+    }
+
+    #[test]
+    fn backoff_is_capped_at_max() {
+        // 2^30 * 1s would overflow real-world patience; cap at MAX_BACKOFF.
+        assert_eq!(compute_backoff(20), MAX_BACKOFF);
+        assert_eq!(compute_backoff(100), MAX_BACKOFF);
+        assert_eq!(compute_backoff(u32::MAX), MAX_BACKOFF);
+    }
+
+    #[test]
+    fn backoff_for_zero_returns_base() {
+        // Edge case — compute_backoff(0) shouldn't panic. It's
+        // technically unreachable because we increment to >= 1 before
+        // calling, but defending against the off-by-one is cheap.
+        assert_eq!(compute_backoff(0), BASE_BACKOFF);
+    }
+
+    #[test]
+    fn fresh_service_has_no_failure_or_restart_bookkeeping() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let paths = Paths::new(tmp.path().into(), tmp.path().into());
+        let supervisor = Supervisor::new(paths);
+        let snap = supervisor.snapshot();
+        for s in &snap {
+            assert_eq!(s.failure_count, 0, "{}: failure_count should be 0", s.name);
+            assert!(s.next_restart_ms.is_none(), "{}: no respawn pending", s.name);
+        }
     }
 }
