@@ -21,6 +21,7 @@ use assert_cmd::cargo::cargo_bin;
 use common::opensearch_fixture;
 use common::TestEnv;
 use std::fs;
+use std::path::Path;
 use std::process::Command;
 use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
@@ -63,6 +64,53 @@ fn stop_daemon(env: &TestEnv) {
     // Give opensearch a chance to wind down before the next test's
     // BOUGIE_HOME (and its 9200 port) tries to come up.
     std::thread::sleep(Duration::from_millis(1500));
+}
+
+/// Run `bougie services up` for the project and panic on failure
+/// AFTER dumping opensearch.log + the bougied call's stderr — so a
+/// CI failure surfaces the real JVM/sandbox error instead of just
+/// the supervisor's "TCP-connect never won" rollup.
+fn services_up_or_dump(env: &TestEnv, proj_path: &Path, extra_args: &[&str]) {
+    let mut args = vec!["services", "up"];
+    args.extend_from_slice(extra_args);
+    let res = env
+        .bougie()
+        .args(&args)
+        .current_dir(proj_path)
+        .timeout(STEP_TIMEOUT)
+        .output()
+        .expect("running bougie services up");
+    if !res.status.success() {
+        dump_opensearch_log(env, "services up failure");
+        panic!(
+            "services up failed (exit {:?}):\n--- stdout ---\n{}\n--- stderr ---\n{}",
+            res.status.code(),
+            String::from_utf8_lossy(&res.stdout),
+            String::from_utf8_lossy(&res.stderr),
+        );
+    }
+}
+
+/// Dump opensearch.log to stderr so a `... did not start accepting
+/// connections within ...` failure on CI shows the actual JVM error
+/// (sandbox denial, JNA extraction failure, etc.) rather than just
+/// the supervisor's "TCP-connect never won" rollup. Best-effort.
+fn dump_opensearch_log(env: &TestEnv, label: &str) {
+    let p = env.home_path().join("state/services/opensearch/log/opensearch.log");
+    eprintln!("\n===== opensearch.log [{label}] @ {} =====", p.display());
+    match fs::read_to_string(&p) {
+        Ok(s) => {
+            // Limit to the last ~8 KB so test output stays readable.
+            let tail = if s.len() > 8 * 1024 {
+                &s[s.len() - 8 * 1024..]
+            } else {
+                &s[..]
+            };
+            eprintln!("{tail}");
+        }
+        Err(e) => eprintln!("(could not read: {e})"),
+    }
+    eprintln!("===== end opensearch.log =====\n");
 }
 
 fn http_get(url: &str) -> (u16, String) {
@@ -126,17 +174,12 @@ fn up_starts_opensearch_and_provisions_index_template() {
         .timeout(STEP_TIMEOUT)
         .assert()
         .success();
-    env.bougie()
-        .args(["services", "up", "--format", "json-v1"])
-        .current_dir(proj.path())
-        .timeout(STEP_TIMEOUT)
-        .assert()
-        .success();
+    services_up_or_dump(&env, proj.path(), &["--format", "json-v1"]);
 
-    assert!(
-        wait_for_http_root(Duration::from_secs(60)),
-        "opensearch HTTP root never responded on 127.0.0.1:9200"
-    );
+    if !wait_for_http_root(Duration::from_secs(60)) {
+        dump_opensearch_log(&env, "wait_for_http_root timeout");
+        panic!("opensearch HTTP root never responded on 127.0.0.1:9200");
+    }
 
     // Cluster identity sanity check.
     let (status, body) = http_get("http://127.0.0.1:9200/");
@@ -178,18 +221,8 @@ fn second_up_is_idempotent() {
         .timeout(STEP_TIMEOUT)
         .assert()
         .success();
-    env.bougie()
-        .args(["services", "up"])
-        .current_dir(proj.path())
-        .timeout(STEP_TIMEOUT)
-        .assert()
-        .success();
-    env.bougie()
-        .args(["services", "up"])
-        .current_dir(proj.path())
-        .timeout(STEP_TIMEOUT)
-        .assert()
-        .success();
+    services_up_or_dump(&env, proj.path(), &[]);
+    services_up_or_dump(&env, proj.path(), &[]);
 
     let ledger = fs::read_to_string(
         env.home_path().join("state/services/opensearch/tenants.json"),
@@ -220,14 +253,12 @@ fn two_projects_have_separate_index_prefixes() {
             .timeout(STEP_TIMEOUT)
             .assert()
             .success();
-        env.bougie()
-            .args(["services", "up"])
-            .current_dir(p)
-            .timeout(STEP_TIMEOUT)
-            .assert()
-            .success();
+        services_up_or_dump(&env, p, &[]);
     }
-    assert!(wait_for_http_root(Duration::from_secs(60)));
+    if !wait_for_http_root(Duration::from_secs(60)) {
+        dump_opensearch_log(&env, "wait_for_http_root timeout (two_projects)");
+        panic!("opensearch HTTP root never responded");
+    }
 
     // Two templates exist.
     for tenant in ["acme_blog", "acme_store"] {
@@ -271,13 +302,11 @@ fn down_purge_drops_template_and_indices() {
         .timeout(STEP_TIMEOUT)
         .assert()
         .success();
-    env.bougie()
-        .args(["services", "up"])
-        .current_dir(proj.path())
-        .timeout(STEP_TIMEOUT)
-        .assert()
-        .success();
-    assert!(wait_for_http_root(Duration::from_secs(60)));
+    services_up_or_dump(&env, proj.path(), &[]);
+    if !wait_for_http_root(Duration::from_secs(60)) {
+        dump_opensearch_log(&env, "wait_for_http_root timeout (down_purge)");
+        panic!("opensearch HTTP root never responded");
+    }
 
     // Seed an index so we can confirm purge actually deletes it.
     let (s, b) = http_put_json(
@@ -312,13 +341,11 @@ fn down_purge_drops_template_and_indices() {
         .timeout(STEP_TIMEOUT)
         .assert()
         .success();
-    env.bougie()
-        .args(["services", "up"])
-        .current_dir(proj2.path())
-        .timeout(STEP_TIMEOUT)
-        .assert()
-        .success();
-    assert!(wait_for_http_root(Duration::from_secs(60)));
+    services_up_or_dump(&env, proj2.path(), &[]);
+    if !wait_for_http_root(Duration::from_secs(60)) {
+        dump_opensearch_log(&env, "wait_for_http_root timeout (post-purge re-up)");
+        panic!("opensearch HTTP root never responded");
+    }
 
     let (s, _) = http_get("http://127.0.0.1:9200/acme_blog-posts");
     assert_eq!(s, 404, "index should be gone after --purge");
@@ -344,12 +371,7 @@ fn bougie_run_exports_opensearch_env_vars() {
         .timeout(STEP_TIMEOUT)
         .assert()
         .success();
-    env.bougie()
-        .args(["services", "up"])
-        .current_dir(proj.path())
-        .timeout(STEP_TIMEOUT)
-        .assert()
-        .success();
+    services_up_or_dump(&env, proj.path(), &[]);
 
     let bougie_bin = cargo_bin("bougie");
     let out = Command::new(&bougie_bin)

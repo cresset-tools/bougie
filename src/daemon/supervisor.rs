@@ -20,11 +20,23 @@ use tokio::io::AsyncReadExt;
 use tokio::process::Child;
 use tokio::sync::Mutex;
 
-/// Hard upper bound on how long we wait for a freshly-spawned service
-/// to start accepting connections. Redis comes up in <100ms; mariadb
-/// can take a few seconds on first run. 60s is generous.
-const HEALTH_TIMEOUT: Duration = Duration::from_secs(60);
+/// Default per-service health-probe budget. Redis comes up in
+/// <100ms; mariadb cold-starts in ~3-5s; opensearch needs
+/// significantly more because the JVM has to JIT-compile + bootstrap
+/// the cluster state. `health_timeout_for` overrides this per
+/// service for the slow ones.
+const HEALTH_TIMEOUT_DEFAULT: Duration = Duration::from_secs(60);
 const HEALTH_POLL: Duration = Duration::from_millis(250);
+
+/// Per-service health-probe deadline. JVM-based services (opensearch
+/// today, rabbitmq via erlang/JIT later) need a longer window because
+/// JIT compilation + cluster bootstrap dominate cold-start time.
+fn health_timeout_for(name: &str) -> Duration {
+    match name {
+        "opensearch" => Duration::from_secs(90),
+        _ => HEALTH_TIMEOUT_DEFAULT,
+    }
+}
 
 /// Default grace window before escalating SIGTERM → SIGKILL. Matches
 /// SERVICES.md §5.3.
@@ -452,7 +464,8 @@ where
 }
 
 async fn wait_for_health(binding: &Binding, name: &str, paths: &Paths) -> Result<()> {
-    let deadline = Instant::now() + HEALTH_TIMEOUT;
+    let timeout = health_timeout_for(name);
+    let deadline = Instant::now() + timeout;
     loop {
         let ok = match binding {
             Binding::UnixSocket { sockname } => {
@@ -470,7 +483,7 @@ async fn wait_for_health(binding: &Binding, name: &str, paths: &Paths) -> Result
         }
         if Instant::now() >= deadline {
             return Err(eyre!(
-                "service `{name}` did not start accepting connections within {HEALTH_TIMEOUT:?}"
+                "service `{name}` did not start accepting connections within {timeout:?}"
             ));
         }
         tokio::time::sleep(HEALTH_POLL).await;
