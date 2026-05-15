@@ -173,22 +173,10 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
             commands::server::run::run(
                 format,
                 field,
-                config.as_deref(),
+                &config,
                 listen.as_deref(),
                 log_format.as_deref(),
             )
-        }
-        Command::Server(ServerCommand::Add { hostname, project, root }) => {
-            commands::server::helpers::add(
-                format,
-                field,
-                &hostname,
-                project.as_deref(),
-                root.as_deref(),
-            )
-        }
-        Command::Server(ServerCommand::Remove { hostname }) => {
-            commands::server::helpers::remove(format, field, &hostname)
         }
         Command::Server(ServerCommand::List) => commands::server::helpers::list(format, field),
         Command::Server(ServerCommand::Hosts(ServerHostsCommand::Apply { config })) => {

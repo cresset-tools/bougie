@@ -35,13 +35,19 @@ struct ServerHandle {
 }
 
 impl ServerHandle {
-    fn spawn(env: &TestEnv, xdg_config: &std::path::Path) -> Self {
+    fn spawn(env: &TestEnv, config_path: &std::path::Path) -> Self {
         let bin = assert_cmd::cargo::cargo_bin("bougie");
         let mut child = StdCommand::new(bin)
-            .args(["server", "run", "--listen", "127.0.0.1:0"])
+            .args([
+                "server",
+                "run",
+                "--config",
+                config_path.to_str().unwrap(),
+                "--listen",
+                "127.0.0.1:0",
+            ])
             .env("BOUGIE_HOME", env.home_path())
             .env("BOUGIE_CACHE", env.cache_path())
-            .env("XDG_CONFIG_HOME", xdg_config)
             .env_remove("RUST_LOG")
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
@@ -117,6 +123,28 @@ fn write_fixture(proj: &std::path::Path) {
     std::fs::write(proj.join("secret.txt"), "shh").unwrap();
 }
 
+/// Pre-seed a minimal `server.toml` in `<dir>/server.toml` with one
+/// `[[host]]` block, returning the file path. Replaces the
+/// retired `bougie server add` CLI in test setup. `root` is optional;
+/// when `None` we omit the field (server defaults to `.`).
+fn seed_server_toml(
+    dir: &std::path::Path,
+    hostname: &str,
+    project: &std::path::Path,
+    root: Option<&str>,
+) -> std::path::PathBuf {
+    std::fs::create_dir_all(dir).expect("mkdir config dir");
+    let project = std::fs::canonicalize(project).expect("canonicalize project");
+    let root_line = root.map(|r| format!("root = \"{r}\"\n")).unwrap_or_default();
+    let body = format!(
+        "[server]\nlisten = \"127.0.0.1:7080\"\nlog_format = \"text\"\n\n[[host]]\nhostname = \"{hostname}\"\nproject = \"{project}\"\n{root_line}",
+        project = project.display(),
+    );
+    let path = dir.join("server.toml");
+    std::fs::write(&path, body).expect("write server.toml");
+    path
+}
+
 fn http_get(url: &str, host: &str) -> (u16, std::collections::HashMap<String, String>, Vec<u8>) {
     // Use a blocking reqwest client. The crate is already in bougie's
     // deps for the production code.
@@ -138,24 +166,13 @@ fn http_get(url: &str, host: &str) -> (u16, std::collections::HashMap<String, St
 #[test]
 fn static_file_round_trip() {
     let env = TestEnv::new();
-    let xdg = TempDir::new().unwrap();
+    let cfg_dir = TempDir::new().unwrap();
     let proj = TempDir::new().unwrap();
     write_fixture(proj.path());
 
-    env.bougie()
-        .env("XDG_CONFIG_HOME", xdg.path())
-        .args([
-            "server",
-            "add",
-            "myapp.bougie.run",
-            proj.path().to_str().unwrap(),
-            "--root",
-            "public",
-        ])
-        .assert()
-        .success();
+    let cfg = seed_server_toml(cfg_dir.path(), "myapp.bougie.run", proj.path(), Some("public"));
 
-    let server = ServerHandle::spawn(&env, xdg.path());
+    let server = ServerHandle::spawn(&env, &cfg);
 
     let (status, headers, body) = http_get(&server.url("/"), "myapp.bougie.run");
     assert_eq!(status, 200);
@@ -174,22 +191,11 @@ fn static_file_round_trip() {
 #[test]
 fn missing_file_is_404() {
     let env = TestEnv::new();
-    let xdg = TempDir::new().unwrap();
+    let cfg_dir = TempDir::new().unwrap();
     let proj = TempDir::new().unwrap();
     write_fixture(proj.path());
-    env.bougie()
-        .env("XDG_CONFIG_HOME", xdg.path())
-        .args([
-            "server",
-            "add",
-            "myapp.bougie.run",
-            proj.path().to_str().unwrap(),
-            "--root",
-            "public",
-        ])
-        .assert()
-        .success();
-    let server = ServerHandle::spawn(&env, xdg.path());
+    let cfg = seed_server_toml(cfg_dir.path(), "myapp.bougie.run", proj.path(), Some("public"));
+    let server = ServerHandle::spawn(&env, &cfg);
     let (status, _, body) = http_get(&server.url("/nope.txt"), "myapp.bougie.run");
     assert_eq!(status, 404);
     assert!(String::from_utf8_lossy(&body).contains("not found"));
@@ -199,15 +205,11 @@ fn missing_file_is_404() {
 #[test]
 fn unknown_host_is_404() {
     let env = TestEnv::new();
-    let xdg = TempDir::new().unwrap();
+    let cfg_dir = TempDir::new().unwrap();
     let proj = TempDir::new().unwrap();
     write_fixture(proj.path());
-    env.bougie()
-        .env("XDG_CONFIG_HOME", xdg.path())
-        .args(["server", "add", "myapp.bougie.run", proj.path().to_str().unwrap()])
-        .assert()
-        .success();
-    let server = ServerHandle::spawn(&env, xdg.path());
+    let cfg = seed_server_toml(cfg_dir.path(), "myapp.bougie.run", proj.path(), None);
+    let server = ServerHandle::spawn(&env, &cfg);
     let (status, _, body) = http_get(&server.url("/"), "ghost.bougie.run");
     assert_eq!(status, 404);
     assert!(String::from_utf8_lossy(&body).contains("unknown host"));
@@ -221,22 +223,11 @@ fn php_request_without_resolved_php_returns_502() {
     // the pool manager can't find a php-fpm binary and surfaces the
     // failure as 502 — actionable for the user.
     let env = TestEnv::new();
-    let xdg = TempDir::new().unwrap();
+    let cfg_dir = TempDir::new().unwrap();
     let proj = TempDir::new().unwrap();
     write_fixture(proj.path());
-    env.bougie()
-        .env("XDG_CONFIG_HOME", xdg.path())
-        .args([
-            "server",
-            "add",
-            "myapp.bougie.run",
-            proj.path().to_str().unwrap(),
-            "--root",
-            "public",
-        ])
-        .assert()
-        .success();
-    let server = ServerHandle::spawn(&env, xdg.path());
+    let cfg = seed_server_toml(cfg_dir.path(), "myapp.bougie.run", proj.path(), Some("public"));
+    let server = ServerHandle::spawn(&env, &cfg);
     let (status, _, body) = http_get(&server.url("/script.php"), "myapp.bougie.run");
     assert_eq!(status, 502);
     let body_str = String::from_utf8_lossy(&body).to_lowercase();
@@ -250,22 +241,11 @@ fn php_request_without_resolved_php_returns_502() {
 #[test]
 fn sigint_drains_and_exits_cleanly() {
     let env = TestEnv::new();
-    let xdg = TempDir::new().unwrap();
+    let cfg_dir = TempDir::new().unwrap();
     let proj = TempDir::new().unwrap();
     write_fixture(proj.path());
-    env.bougie()
-        .env("XDG_CONFIG_HOME", xdg.path())
-        .args([
-            "server",
-            "add",
-            "myapp.bougie.run",
-            proj.path().to_str().unwrap(),
-            "--root",
-            "public",
-        ])
-        .assert()
-        .success();
-    let server = ServerHandle::spawn(&env, xdg.path());
+    let cfg = seed_server_toml(cfg_dir.path(), "myapp.bougie.run", proj.path(), Some("public"));
+    let server = ServerHandle::spawn(&env, &cfg);
     // Serve one request before shutting down so we exercise the drain
     // path with real in-flight state.
     let (status, _, _) = http_get(&server.url("/"), "myapp.bougie.run");
