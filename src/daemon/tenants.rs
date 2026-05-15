@@ -11,9 +11,9 @@ use eyre::{eyre, Result, WrapErr};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
-use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
+use tokio::io::AsyncWriteExt;
 
 /// One tenant entry. Schema-versioned for forward compat.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -52,19 +52,18 @@ impl Tenant {
 /// Load every tenant from disk in insertion order. Lines that fail to
 /// parse are returned as an error rather than skipped — silent skips
 /// would mask a corruption that should surface to the operator.
-pub fn load_all(path: &Path) -> Result<Vec<Tenant>> {
-    if !path.exists() {
-        return Ok(Vec::new());
-    }
-    let file = std::fs::File::open(path)
-        .wrap_err_with(|| format!("opening {}", path.display()))?;
+pub async fn load_all(path: &Path) -> Result<Vec<Tenant>> {
+    let contents = match tokio::fs::read_to_string(path).await {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(eyre!("reading {}: {e}", path.display())),
+    };
     let mut out = Vec::new();
-    for (i, line) in BufReader::new(file).lines().enumerate() {
-        let line = line.wrap_err_with(|| format!("reading line {} of {}", i + 1, path.display()))?;
+    for (i, line) in contents.lines().enumerate() {
         if line.trim().is_empty() {
             continue;
         }
-        let t: Tenant = serde_json::from_str(&line)
+        let t: Tenant = serde_json::from_str(line)
             .map_err(|e| eyre!("parsing line {} of {}: {e}", i + 1, path.display()))?;
         out.push(t);
     }
@@ -73,22 +72,26 @@ pub fn load_all(path: &Path) -> Result<Vec<Tenant>> {
 
 /// Append a tenant record. fsync between write and close so a crash
 /// after this call leaves the ledger consistent on disk.
-pub fn append(path: &Path, tenant: &Tenant) -> Result<()> {
+pub async fn append(path: &Path, tenant: &Tenant) -> Result<()> {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
+        tokio::fs::create_dir_all(parent)
+            .await
             .wrap_err_with(|| format!("creating {}", parent.display()))?;
     }
     let mut json = serde_json::to_vec(tenant)
         .wrap_err("serialising tenant record")?;
     json.push(b'\n');
-    let mut f = std::fs::OpenOptions::new()
+    let mut f = tokio::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(path)
+        .await
         .wrap_err_with(|| format!("opening {} for append", path.display()))?;
     f.write_all(&json)
+        .await
         .wrap_err_with(|| format!("appending to {}", path.display()))?;
     f.sync_all()
+        .await
         .wrap_err_with(|| format!("fsync {}", path.display()))?;
     Ok(())
 }
@@ -96,8 +99,8 @@ pub fn append(path: &Path, tenant: &Tenant) -> Result<()> {
 /// Rewrite the ledger with the predicate-passing records only. Used
 /// by `service.down` to remove a project's tenant. Atomic via
 /// tempfile + rename.
-pub fn rewrite(path: &Path, keep: impl Fn(&Tenant) -> bool) -> Result<usize> {
-    let all = load_all(path)?;
+pub async fn rewrite(path: &Path, keep: impl Fn(&Tenant) -> bool) -> Result<usize> {
+    let all = load_all(path).await?;
     let kept: Vec<&Tenant> = all.iter().filter(|t| keep(t)).collect();
     let removed = all.len() - kept.len();
     if removed == 0 {
@@ -107,22 +110,42 @@ pub fn rewrite(path: &Path, keep: impl Fn(&Tenant) -> bool) -> Result<usize> {
         .parent()
         .ok_or_else(|| eyre!("path {} has no parent", path.display()))?;
     let dir = if parent.as_os_str().is_empty() {
-        Path::new(".")
+        Path::new(".").to_path_buf()
     } else {
-        std::fs::create_dir_all(parent)
+        tokio::fs::create_dir_all(parent)
+            .await
             .wrap_err_with(|| format!("creating {}", parent.display()))?;
-        parent
+        parent.to_path_buf()
     };
-    let mut tf = tempfile::NamedTempFile::new_in(dir)
-        .wrap_err_with(|| format!("creating tempfile in {}", dir.display()))?;
+    // Use a manual temp-file + rename instead of `tempfile::NamedTempFile`:
+    // the latter is sync and owns a `std::fs::File`. The two
+    // `tokio::fs::rename` consumers below would otherwise need a
+    // `spawn_blocking` bridge — cheaper to just inline the pattern.
+    let tmp_name = format!(
+        "{}.tmp.{}",
+        path.file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "tenants".into()),
+        std::process::id(),
+    );
+    let tmp_path = dir.join(tmp_name);
+    let mut f = tokio::fs::OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(&tmp_path)
+        .await
+        .wrap_err_with(|| format!("creating tempfile {}", tmp_path.display()))?;
     for t in &kept {
         let bytes = serde_json::to_vec(t).wrap_err("serialising tenant on rewrite")?;
-        tf.as_file_mut().write_all(&bytes).wrap_err("writing tempfile")?;
-        tf.as_file_mut().write_all(b"\n").wrap_err("writing newline")?;
+        f.write_all(&bytes).await.wrap_err("writing tempfile")?;
+        f.write_all(b"\n").await.wrap_err("writing newline")?;
     }
-    tf.as_file_mut().sync_all().wrap_err("fsync tempfile")?;
-    tf.persist(path)
-        .map_err(|e| eyre!("renaming temp to {}: {e}", path.display()))?;
+    f.sync_all().await.wrap_err("fsync tempfile")?;
+    drop(f);
+    tokio::fs::rename(&tmp_path, path)
+        .await
+        .wrap_err_with(|| format!("renaming {} → {}", tmp_path.display(), path.display()))?;
     Ok(removed)
 }
 
@@ -172,69 +195,69 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    #[test]
-    fn load_all_handles_missing_file() {
+    #[tokio::test]
+    async fn load_all_handles_missing_file() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("tenants.json");
-        assert!(load_all(&path).unwrap().is_empty());
+        assert!(load_all(&path).await.unwrap().is_empty());
     }
 
-    #[test]
-    fn append_then_load_roundtrips() {
+    #[tokio::test]
+    async fn append_then_load_roundtrips() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("tenants.json");
         let mut t = Tenant::new("acme_blog", "/work/blog");
         t.alloc.insert("db_number".into(), serde_json::json!(3));
-        append(&path, &t).unwrap();
-        let loaded = load_all(&path).unwrap();
+        append(&path, &t).await.unwrap();
+        let loaded = load_all(&path).await.unwrap();
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].tenant, "acme_blog");
         assert_eq!(loaded[0].project, std::path::Path::new("/work/blog"));
         assert_eq!(loaded[0].alloc["db_number"], 3);
     }
 
-    #[test]
-    fn append_two_records_preserves_order() {
+    #[tokio::test]
+    async fn append_two_records_preserves_order() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("tenants.json");
-        append(&path, &Tenant::new("first", "/a")).unwrap();
-        append(&path, &Tenant::new("second", "/b")).unwrap();
-        let loaded = load_all(&path).unwrap();
+        append(&path, &Tenant::new("first", "/a")).await.unwrap();
+        append(&path, &Tenant::new("second", "/b")).await.unwrap();
+        let loaded = load_all(&path).await.unwrap();
         assert_eq!(loaded.len(), 2);
         assert_eq!(loaded[0].tenant, "first");
         assert_eq!(loaded[1].tenant, "second");
     }
 
-    #[test]
-    fn rewrite_drops_predicate_failures() {
+    #[tokio::test]
+    async fn rewrite_drops_predicate_failures() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("tenants.json");
-        append(&path, &Tenant::new("keep_me", "/a")).unwrap();
-        append(&path, &Tenant::new("drop_me", "/b")).unwrap();
-        append(&path, &Tenant::new("keep_me_too", "/c")).unwrap();
-        let removed = rewrite(&path, |t| !t.tenant.starts_with("drop")).unwrap();
+        append(&path, &Tenant::new("keep_me", "/a")).await.unwrap();
+        append(&path, &Tenant::new("drop_me", "/b")).await.unwrap();
+        append(&path, &Tenant::new("keep_me_too", "/c")).await.unwrap();
+        let removed = rewrite(&path, |t| !t.tenant.starts_with("drop")).await.unwrap();
         assert_eq!(removed, 1);
-        let loaded = load_all(&path).unwrap();
+        let loaded = load_all(&path).await.unwrap();
         assert_eq!(loaded.len(), 2);
         assert_eq!(loaded[0].tenant, "keep_me");
         assert_eq!(loaded[1].tenant, "keep_me_too");
     }
 
-    #[test]
-    fn rewrite_skips_io_when_nothing_to_remove() {
+    #[tokio::test]
+    async fn rewrite_skips_io_when_nothing_to_remove() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("tenants.json");
-        append(&path, &Tenant::new("keep", "/a")).unwrap();
-        let removed = rewrite(&path, |_| true).unwrap();
+        append(&path, &Tenant::new("keep", "/a")).await.unwrap();
+        let removed = rewrite(&path, |_| true).await.unwrap();
         assert_eq!(removed, 0);
     }
 
-    #[test]
-    fn malformed_line_surfaces_error() {
+    #[tokio::test]
+    async fn malformed_line_surfaces_error() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("tenants.json");
         std::fs::write(&path, "not json\n").unwrap();
-        assert!(load_all(&path).is_err());
+        assert!(load_all(&path).await.is_err());
     }
 
     #[test]
