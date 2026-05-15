@@ -4,6 +4,7 @@
 
 pub mod mariadb_fixture;
 pub mod opensearch_fixture;
+pub mod rabbitmq_fixture;
 
 use assert_cmd::Command;
 use std::path::Path;

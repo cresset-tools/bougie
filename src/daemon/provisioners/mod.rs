@@ -16,6 +16,7 @@
 pub mod bougie_server;
 pub mod mariadb;
 pub mod opensearch;
+pub mod rabbitmq;
 pub mod redis;
 
 use super::catalog::{CatalogEntry, Tenancy};
@@ -32,8 +33,9 @@ pub fn pre_start(entry: &CatalogEntry, paths: &Paths) -> Result<()> {
     match entry.tenancy {
         Tenancy::Mariadb => mariadb::pre_start(paths),
         Tenancy::Opensearch => opensearch::pre_start(paths),
+        Tenancy::Rabbitmq => rabbitmq::pre_start(paths),
         Tenancy::BougieServer => bougie_server::pre_start(paths),
-        Tenancy::Redis | Tenancy::Rabbitmq | Tenancy::None => Ok(()),
+        Tenancy::Redis | Tenancy::None => Ok(()),
     }
 }
 
@@ -58,10 +60,7 @@ pub fn provision(
         Tenancy::BougieServer => {
             bougie_server::provision(paths, tenants_path, tenant_name, project)
         }
-        Tenancy::Rabbitmq => Err(eyre!(
-            "{} provisioner not yet implemented",
-            entry.name
-        )),
+        Tenancy::Rabbitmq => rabbitmq::provision(paths, tenants_path, tenant_name, project),
         Tenancy::None => Err(eyre!("{} has no user-facing tenancy", entry.name)),
     }
 }
@@ -84,10 +83,7 @@ pub fn deprovision(
         Tenancy::BougieServer => {
             bougie_server::deprovision(paths, tenants_path, tenant_name, purge)
         }
-        Tenancy::Rabbitmq => Err(eyre!(
-            "{} deprovisioner not yet implemented",
-            entry.name
-        )),
+        Tenancy::Rabbitmq => rabbitmq::deprovision(paths, tenants_path, tenant_name, purge),
         Tenancy::None => Ok(()),
     }
 }

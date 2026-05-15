@@ -384,6 +384,23 @@ async fn write_progress(
     write_half.flush().await.is_ok()
 }
 
+/// Percent-encode the AMQP-DSN-significant characters. Tenant names
+/// and passwords today are constrained to `[a-z0-9_]+` and hex
+/// respectively, so the encoder is a no-op on the happy path; it's
+/// defence-in-depth against a future widening of those validators.
+fn urlencode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char);
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
 /// Build the `BOUGIE_SERVICE_*` env map for this project's tenants.
 /// Reads each catalog entry's `tenants.json` and emits per-service
 /// vars per SERVICES.md §3.4. Side-effect free.
@@ -461,7 +478,35 @@ async fn dispatch_env(state: &Arc<DaemonState>, project: std::path::PathBuf) -> 
                     vars.insert(format!("{prefix}HOSTNAME"), h.clone());
                 }
             }
-            // rabbitmq env shape lands with its provisioner (Phase 10).
+            "rabbitmq" => {
+                // Catalog binding pins 127.0.0.1:5672. Compose the
+                // full AMQP DSN so apps don't have to assemble the
+                // pieces; vhost lives in the path component, user
+                // and password in the authority.
+                let user = tenant
+                    .alloc
+                    .get("username")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(&tenant.tenant);
+                let vhost = tenant
+                    .alloc
+                    .get("vhost")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(&tenant.tenant);
+                let pw = tenant.secrets.get("password").cloned().unwrap_or_default();
+                let url = format!(
+                    "amqp://{}:{}@127.0.0.1:5672/{}",
+                    urlencode(user),
+                    urlencode(&pw),
+                    urlencode(vhost),
+                );
+                vars.insert(format!("{prefix}URL"), Value::String(url));
+                vars.insert(format!("{prefix}VHOST"), Value::String(vhost.to_string()));
+                vars.insert(format!("{prefix}USER"), Value::String(user.to_string()));
+                if !pw.is_empty() {
+                    vars.insert(format!("{prefix}PASSWORD"), Value::String(pw));
+                }
+            }
             _ => {}
         }
     }

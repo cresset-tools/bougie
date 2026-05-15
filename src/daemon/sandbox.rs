@@ -160,7 +160,10 @@ fn build_light_home(entry: &CatalogEntry, paths: &Paths) -> Result<Option<Sandbo
 /// the default cap.
 fn nofile_for(name: &str) -> u64 {
     match name {
-        "opensearch" | "mariadb" => 65_536,
+        // rabbitmq joins this list because Erlang's port driver
+        // pre-allocates 65k port slots and chokes on EMFILE if the
+        // soft limit is below that ceiling.
+        "opensearch" | "mariadb" | "rabbitmq" => 65_536,
         _ => 4_096,
     }
 }
