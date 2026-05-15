@@ -16,7 +16,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncBufReadExt, AsyncReadExt};
 use tokio::process::Child;
 use tokio::sync::Mutex;
 
@@ -46,6 +46,20 @@ fn health_timeout_for(name: &str) -> Duration {
 /// SERVICES.md §5.3.
 const STOP_GRACE: Duration = Duration::from_secs(10);
 
+/// Per-babysit grace window. Strictly less than [`STOP_GRACE`] so the
+/// supervisor's outer wait outlives the inner SIGTERM→SIGKILL escalation
+/// the babysit performs.
+const BABYSIT_GRACE_SECS: u64 = 7;
+
+/// Max time the supervisor waits for the babysit to report the
+/// service's `pgid=` line over the control socket. If the babysit
+/// failed before writing it, this collapses to "spawn failed."
+const BABYSIT_READY_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// Fd number on which the babysit expects its end of the control
+/// socketpair after `dup2` in pre_exec.
+const BABYSIT_CONTROL_FD: i32 = 3;
+
 /// Lifecycle states. The same shape as project-supervisor's
 /// `ManagedService` but with `HealthChecking` broken out — the daemon
 /// shouldn't claim a service is `Running` until something can actually
@@ -63,18 +77,41 @@ pub enum ServiceState {
 
 /// One supervised service. The `child` is `None` whenever the state
 /// is `Stopped` or `Failed`.
+///
+/// `child` is the *babysit* process (see `crate::babysit`); the
+/// service binary itself is `child`'s grandchild via `fork+exec` into
+/// a fresh process group. `service_pgid` is the babysit-reported
+/// pgid we use for group-wide signals (`kill(-pgid, ...)`).
+/// `control_sock` is held open for the full supervised lifetime —
+/// dropping it before stop would EOF the babysit and trigger an
+/// unintended self-stop.
 #[derive(Debug)]
 pub struct ManagedService {
     pub name: &'static str,
     pub state: ServiceState,
     pub child: Option<Child>,
+    /// PID of the babysit shim.
     pub pid: Option<u32>,
+    /// Process group id of the service the babysit owns.
+    pub service_pgid: Option<i32>,
+    /// Parent end of the bougied↔babysit socketpair. Holding this
+    /// open keeps the babysit alive; dropping it tells the babysit
+    /// (via socket EOF) to clean up the group.
+    pub control_sock: Option<tokio::net::UnixStream>,
     pub started_at: Option<Instant>,
 }
 
 impl ManagedService {
     fn new(name: &'static str) -> Self {
-        Self { name, state: ServiceState::Stopped, child: None, pid: None, started_at: None }
+        Self {
+            name,
+            state: ServiceState::Stopped,
+            child: None,
+            pid: None,
+            service_pgid: None,
+            control_sock: None,
+            started_at: None,
+        }
     }
 }
 
@@ -176,8 +213,37 @@ impl Supervisor {
         let env = render_exec_env(entry, &self.paths);
         let cwd = render_exec_cwd(entry, &self.paths);
 
-        let mut cmd = tokio::process::Command::new(&binary);
-        cmd.args(&args)
+        // bougied does not exec the service directly: it spawns a
+        // `bougie-babysit` shim (same binary, argv[0] override) that
+        // re-execs the service into its own process group. The
+        // socketpair gives the babysit a death-detection signal —
+        // when bougied exits, the parent end EOFs and the babysit
+        // tears its group down.
+        let (parent_sock, child_sock) = std::os::unix::net::UnixStream::pair()
+            .wrap_err("creating babysit socketpair")?;
+        let bougie_bin = std::env::current_exe()
+            .wrap_err("locating current_exe for bougie-babysit")?;
+        let child_sock_fd = {
+            use std::os::fd::AsRawFd;
+            child_sock.as_raw_fd()
+        };
+
+        let mut babysit_argv: Vec<std::ffi::OsString> = Vec::with_capacity(args.len() + 9);
+        babysit_argv.push("--service-name".into());
+        babysit_argv.push(entry.name.into());
+        babysit_argv.push("--grace-secs".into());
+        babysit_argv.push(BABYSIT_GRACE_SECS.to_string().into());
+        babysit_argv.push("--control-fd".into());
+        babysit_argv.push(BABYSIT_CONTROL_FD.to_string().into());
+        babysit_argv.push("--".into());
+        babysit_argv.push(binary.clone().into_os_string());
+        for a in &args {
+            babysit_argv.push(a.into());
+        }
+
+        let mut cmd = tokio::process::Command::new(&bougie_bin);
+        cmd.args(&babysit_argv)
+            .arg0("bougie-babysit")
             .envs(env)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -187,27 +253,77 @@ impl Supervisor {
             cmd.current_dir(dir);
         }
         // SAFETY: `pre_exec` runs in the child after fork and before
-        // exec. `sandbox_run::apply_sandbox` is documented for exactly
-        // that call site (no allocations after fork, no signal-unsafe
-        // code beyond what Landlock / SBPL syscalls themselves use).
+        // exec. We do two things, both async-signal-safe: `dup2` the
+        // socketpair end onto the babysit's fd 3, then apply the
+        // sandbox policy (inherited across the babysit→service exec).
         //
         // `policy` is `None` for catalog entries whose sandbox kind
         // can't be implemented on this platform (today: server's
-        // `LightHome` on Linux). Skip pre_exec in that case so the
-        // child runs with the daemon's own (user-level) privileges.
-        if let Some(policy) = policy {
-            #[allow(unsafe_code)]
-            unsafe {
-                cmd.pre_exec(move || {
-                    sandbox_run::apply_sandbox(&policy)
-                        .map_err(|e| std::io::Error::other(format!("sandbox: {e}")))
-                });
-            }
+        // `LightHome` on Linux). Skip the sandbox call in that case
+        // so the child runs with the daemon's own privileges.
+        #[allow(unsafe_code)]
+        unsafe {
+            let policy = policy.clone();
+            cmd.pre_exec(move || {
+                // dup2 also clears CLOEXEC on the destination, so
+                // fd 3 survives exec.
+                let rc = libc_dup2(child_sock_fd, BABYSIT_CONTROL_FD);
+                if rc < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                if let Some(policy) = policy.as_ref() {
+                    sandbox_run::apply_sandbox(policy)
+                        .map_err(|e| std::io::Error::other(format!("sandbox: {e}")))?;
+                }
+                Ok(())
+            });
         }
         let mut child = cmd.spawn().wrap_err_with(|| {
-            format!("spawning {} via {}", entry.name, binary.display())
+            format!(
+                "spawning bougie-babysit for {} via {}",
+                entry.name,
+                binary.display()
+            )
         })?;
+        // Parent no longer needs the child end; closing it locally
+        // means the child holds the only ref. (Doesn't affect the
+        // already-dup2'd fd 3 in the child.)
+        drop(child_sock);
         let pid = child.id();
+
+        // Read the babysit's first line: `pgid=<n>\n`. Treat any
+        // failure (timeout, parse error, EOF before line) as a spawn
+        // failure: SIGKILL the babysit and surface the error.
+        parent_sock
+            .set_nonblocking(true)
+            .wrap_err("setting parent socket non-blocking")?;
+        let mut control_sock = tokio::net::UnixStream::from_std(parent_sock)
+            .wrap_err("wrapping parent socket as tokio stream")?;
+        let service_pgid = match tokio::time::timeout(
+            BABYSIT_READY_TIMEOUT,
+            read_pgid_line(&mut control_sock),
+        )
+        .await
+        {
+            Ok(Ok(pgid)) => pgid,
+            Ok(Err(e)) => {
+                let _ = child.start_kill();
+                let _ = child.wait().await;
+                return Err(eyre!(
+                    "babysit for `{}` failed before reporting pgid: {e}",
+                    entry.name
+                ));
+            }
+            Err(_) => {
+                let _ = child.start_kill();
+                let _ = child.wait().await;
+                return Err(eyre!(
+                    "babysit for `{}` did not report pgid within {:?}",
+                    entry.name,
+                    BABYSIT_READY_TIMEOUT
+                ));
+            }
+        };
         // Take the piped fds before we hand the child to the
         // supervisor map; spawn a forwarder per stream so writes land
         // in the LogWriter (which handles rotation). Forwarders exit
@@ -229,6 +345,8 @@ impl Supervisor {
             svc.started_at = Some(Instant::now());
             svc.pid = pid;
             svc.child = Some(child);
+            svc.service_pgid = Some(service_pgid);
+            svc.control_sock = Some(control_sock);
         }
 
         // Health-probe with the lock-equivalent (`&mut self`) still
@@ -279,19 +397,28 @@ impl Supervisor {
         if !matches!(svc.state, ServiceState::Running | ServiceState::HealthChecking | ServiceState::Starting) {
             return Ok(false);
         }
-        let (child, pid) = {
+        let (child, pid, control_sock) = {
             svc.state = ServiceState::Stopping;
-            (svc.child.take(), svc.pid)
+            (svc.child.take(), svc.pid, svc.control_sock.take())
         };
         // `svc` goes out of scope here; re-borrow below.
 
         if let Some(mut child) = child {
+            // SIGTERM goes to the babysit, which proxies to the
+            // service's pgrp and waits its own grace window. The
+            // outer `STOP_GRACE` is sized to outlast `BABYSIT_GRACE_SECS`.
             stop_child(&mut child, pid).await;
         }
+        // Drop the control socket only after the babysit has been
+        // joined: dropping earlier would EOF the babysit and race
+        // with the SIGTERM path above. Dropping after is a no-op for
+        // the now-dead babysit.
+        drop(control_sock);
 
         if let Some(svc) = self.services.get_mut(entry.name) {
             svc.state = ServiceState::Stopped;
             svc.pid = None;
+            svc.service_pgid = None;
             svc.started_at = None;
         }
         Ok(true)
@@ -306,11 +433,19 @@ impl Supervisor {
             };
             match child.try_wait() {
                 Ok(Some(_status)) => {
-                    // Child exited. For Phase 3 just transition to
-                    // Failed; Phase 5+ adds deadline-driven restart.
+                    // The babysit exited. If it crashed (e.g. SIGKILL
+                    // from outside) before cleaning up, the service's
+                    // process group may still be alive. Probe the
+                    // stored pgid and reap before transitioning state
+                    // so a future restart doesn't double-spawn.
+                    if let Some(pgid) = svc.service_pgid {
+                        reap_orphan_group(svc.name, pgid);
+                    }
                     svc.state = ServiceState::Failed;
                     svc.child = None;
                     svc.pid = None;
+                    svc.service_pgid = None;
+                    svc.control_sock = None;
                 }
                 Ok(None) => {} // still running
                 Err(e) => {
@@ -569,6 +704,77 @@ async fn wait_for_health(
             ));
         }
         tokio::time::sleep(HEALTH_POLL).await;
+    }
+}
+
+/// Read one `pgid=<n>\n` line from the babysit's control socket. Used
+/// during start to learn the service's process-group id; bookended by
+/// a tokio timeout in the caller.
+async fn read_pgid_line(sock: &mut tokio::net::UnixStream) -> std::io::Result<i32> {
+    let mut reader = tokio::io::BufReader::new(sock);
+    let mut line = String::new();
+    let n = reader.read_line(&mut line).await?;
+    if n == 0 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "babysit closed control socket before reporting pgid",
+        ));
+    }
+    let trimmed = line.trim_end_matches('\n');
+    let pgid = trimmed.strip_prefix("pgid=").ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("expected `pgid=<n>`, got {trimmed:?}"),
+        )
+    })?;
+    pgid.parse::<i32>().map_err(|e| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("parsing pgid `{pgid}`: {e}"),
+        )
+    })
+}
+
+/// `dup2` via the libc extern. We avoid pulling `libc` as a direct
+/// dependency (rustix already covers what bougie needs), so a single
+/// `extern "C"` is the cheapest path.
+#[allow(unsafe_code)]
+fn libc_dup2(src: i32, dst: i32) -> i32 {
+    unsafe extern "C" {
+        fn dup2(oldfd: i32, newfd: i32) -> i32;
+    }
+    unsafe { dup2(src, dst) }
+}
+
+/// Best-effort cleanup of a service's process group when the
+/// babysit shim has already exited. Called from `check_all` after the
+/// supervisor notices an unexpected babysit exit.
+///
+/// If the group still has members (babysit died before completing its
+/// own cleanup), SIGTERM the group, sleep briefly, then SIGKILL.
+/// We're inside a 1-second supervisor tick, so the sleep is short by
+/// necessity — services that don't shut down on SIGTERM within ~250ms
+/// will be killed outright. That's acceptable because the babysit's
+/// grace window already gave them their chance under normal flow.
+fn reap_orphan_group(service: &str, pgid: i32) {
+    let Some(pgrp) = rustix::process::Pid::from_raw(pgid) else {
+        return;
+    };
+    // `kill(pgid, 0)` — existence check. `Errno::SRCH` means no
+    // members left, which is the normal path (babysit cleaned up
+    // before exiting).
+    match rustix::process::test_kill_process_group(pgrp) {
+        Ok(()) => {
+            tracing::warn!(
+                service,
+                pgid,
+                "babysit exited with live process group; reaping"
+            );
+            let _ = rustix::process::kill_process_group(pgrp, rustix::process::Signal::TERM);
+            std::thread::sleep(Duration::from_millis(250));
+            let _ = rustix::process::kill_process_group(pgrp, rustix::process::Signal::KILL);
+        }
+        Err(_) => { /* group already empty — normal path */ }
     }
 }
 

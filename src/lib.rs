@@ -1,3 +1,4 @@
+pub mod babysit;
 pub mod baseline;
 pub mod cli;
 pub mod commands;

@@ -26,6 +26,7 @@ pub enum Role {
     Composer,
     Unzip,
     Bougied,
+    Babysit,
 }
 
 impl Role {
@@ -36,6 +37,7 @@ impl Role {
             Self::Composer => "composer",
             Self::Unzip => "unzip",
             Self::Bougied => "bougied",
+            Self::Babysit => "bougie-babysit",
         }
     }
 }
@@ -48,6 +50,7 @@ pub fn role_from_argv0(argv0: &OsStr) -> Option<Role> {
         "composer" => Some(Role::Composer),
         "unzip" => Some(Role::Unzip),
         "bougied" => Some(Role::Bougied),
+        "bougie-babysit" => Some(Role::Babysit),
         _ => None,
     }
 }
@@ -75,6 +78,13 @@ pub fn exec(role: Role) -> Result<ExitCode> {
     if role == Role::Bougied {
         let paths = Paths::from_env()?;
         return crate::daemon::run(paths);
+    }
+
+    // The babysit role is the per-service supervisor shim that
+    // bougied spawns to own a service's process group and clean it
+    // up on parent death. Project-agnostic.
+    if role == Role::Babysit {
+        return crate::babysit::run(args);
     }
 
     let project_root = locate_project_root(&argv0)?;
@@ -164,6 +174,7 @@ pub fn exec(role: Role) -> Result<ExitCode> {
         }
         Role::Unzip => unreachable!("unzip role handled above"),
         Role::Bougied => unreachable!("bougied role handled above"),
+        Role::Babysit => unreachable!("babysit role handled above"),
     }
 }
 
@@ -280,6 +291,18 @@ mod tests {
         assert_eq!(
             role_from_argv0(&OsString::from("/usr/local/bin/bougied")),
             Some(Role::Bougied)
+        );
+    }
+
+    #[test]
+    fn detects_babysit_role() {
+        assert_eq!(
+            role_from_argv0(&OsString::from("bougie-babysit")),
+            Some(Role::Babysit)
+        );
+        assert_eq!(
+            role_from_argv0(&OsString::from("/usr/local/bin/bougie-babysit")),
+            Some(Role::Babysit)
         );
     }
 
