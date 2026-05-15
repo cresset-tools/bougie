@@ -25,16 +25,38 @@ use crate::Paths;
 use eyre::{eyre, Result};
 use std::path::Path;
 
+/// Helper: run a sync provisioner closure on the blocking pool. Owns
+/// the `reqwest::blocking` / `std::process` bridge in one place so
+/// callers in the IPC layer can stay pure-async.
+async fn run_blocking<F, T>(f: F) -> Result<T>
+where
+    F: FnOnce() -> Result<T> + Send + 'static,
+    T: Send + 'static,
+{
+    tokio::task::spawn_blocking(f)
+        .await
+        .map_err(|join_err| eyre!("provisioner task panicked: {join_err}"))?
+}
+
 /// One-shot bootstrap hook. Runs after sandbox setup but before the
 /// supervisor spawns the service binary. Idempotent — safe to call on
 /// every `service.up` invocation. `Ok(())` for services that need no
 /// bootstrap.
-pub fn pre_start(entry: &CatalogEntry, paths: &Paths) -> Result<()> {
+pub async fn pre_start(entry: &CatalogEntry, paths: &Paths) -> Result<()> {
     match entry.tenancy {
-        Tenancy::Mariadb => mariadb::pre_start(paths),
-        Tenancy::Opensearch => opensearch::pre_start(paths),
-        Tenancy::Rabbitmq => rabbitmq::pre_start(paths),
-        Tenancy::BougieServer => bougie_server::pre_start(paths),
+        Tenancy::Mariadb => {
+            let paths = paths.clone();
+            run_blocking(move || mariadb::pre_start(&paths)).await
+        }
+        Tenancy::Opensearch => opensearch::pre_start(paths).await,
+        Tenancy::Rabbitmq => {
+            let paths = paths.clone();
+            run_blocking(move || rabbitmq::pre_start(&paths)).await
+        }
+        Tenancy::BougieServer => {
+            let paths = paths.clone();
+            run_blocking(move || bougie_server::pre_start(&paths)).await
+        }
         Tenancy::Redis | Tenancy::None => Ok(()),
     }
 }
@@ -43,7 +65,7 @@ pub fn pre_start(entry: &CatalogEntry, paths: &Paths) -> Result<()> {
 /// Returns a `Tenant` ready to be appended to `tenants.json`. For
 /// mariadb the append is performed inside the provisioner (it has to
 /// stash a generated password); for redis the caller appends.
-pub fn provision(
+pub async fn provision(
     entry: &CatalogEntry,
     paths: &Paths,
     tenants_path: &Path,
@@ -51,22 +73,52 @@ pub fn provision(
     project: &Path,
 ) -> Result<Tenant> {
     match entry.tenancy {
-        Tenancy::Redis => redis::provision(tenants_path, tenant_name, project),
+        Tenancy::Redis => {
+            let tenants_path = tenants_path.to_path_buf();
+            let tenant_name = tenant_name.to_string();
+            let project = project.to_path_buf();
+            run_blocking(move || redis::provision(&tenants_path, &tenant_name, &project)).await
+        }
         Tenancy::Mariadb => {
-            let socket = paths.service_run("mariadb").join("mariadb.sock");
-            mariadb::provision(paths, tenants_path, tenant_name, project, &socket)
+            let paths = paths.clone();
+            let tenants_path = tenants_path.to_path_buf();
+            let tenant_name = tenant_name.to_string();
+            let project = project.to_path_buf();
+            run_blocking(move || {
+                let socket = paths.service_run("mariadb").join("mariadb.sock");
+                mariadb::provision(&paths, &tenants_path, &tenant_name, &project, &socket)
+            })
+            .await
         }
-        Tenancy::Opensearch => opensearch::provision(tenants_path, tenant_name, project),
+        Tenancy::Opensearch => {
+            opensearch::provision(tenants_path, tenant_name, project).await
+        }
         Tenancy::BougieServer => {
-            bougie_server::provision(paths, tenants_path, tenant_name, project)
+            let paths = paths.clone();
+            let tenants_path = tenants_path.to_path_buf();
+            let tenant_name = tenant_name.to_string();
+            let project = project.to_path_buf();
+            run_blocking(move || {
+                bougie_server::provision(&paths, &tenants_path, &tenant_name, &project)
+            })
+            .await
         }
-        Tenancy::Rabbitmq => rabbitmq::provision(paths, tenants_path, tenant_name, project),
+        Tenancy::Rabbitmq => {
+            let paths = paths.clone();
+            let tenants_path = tenants_path.to_path_buf();
+            let tenant_name = tenant_name.to_string();
+            let project = project.to_path_buf();
+            run_blocking(move || {
+                rabbitmq::provision(&paths, &tenants_path, &tenant_name, &project)
+            })
+            .await
+        }
         Tenancy::None => Err(eyre!("{} has no user-facing tenancy", entry.name)),
     }
 }
 
 /// Inverse of `provision` — symmetric dispatch.
-pub fn deprovision(
+pub async fn deprovision(
     entry: &CatalogEntry,
     paths: &Paths,
     tenants_path: &Path,
@@ -75,15 +127,52 @@ pub fn deprovision(
     purge: bool,
 ) -> Result<()> {
     match entry.tenancy {
-        Tenancy::Redis => redis::deprovision(tenants_path, tenant_name, socket_path, purge),
+        Tenancy::Redis => {
+            let tenants_path = tenants_path.to_path_buf();
+            let tenant_name = tenant_name.to_string();
+            let socket_path = socket_path.map(Path::to_path_buf);
+            run_blocking(move || {
+                redis::deprovision(&tenants_path, &tenant_name, socket_path.as_deref(), purge)
+            })
+            .await
+        }
         Tenancy::Mariadb => {
-            mariadb::deprovision(paths, tenants_path, tenant_name, socket_path, purge)
+            let paths = paths.clone();
+            let tenants_path = tenants_path.to_path_buf();
+            let tenant_name = tenant_name.to_string();
+            let socket_path = socket_path.map(Path::to_path_buf);
+            run_blocking(move || {
+                mariadb::deprovision(
+                    &paths,
+                    &tenants_path,
+                    &tenant_name,
+                    socket_path.as_deref(),
+                    purge,
+                )
+            })
+            .await
         }
-        Tenancy::Opensearch => opensearch::deprovision(tenants_path, tenant_name, purge),
+        Tenancy::Opensearch => {
+            opensearch::deprovision(tenants_path, tenant_name, purge).await
+        }
         Tenancy::BougieServer => {
-            bougie_server::deprovision(paths, tenants_path, tenant_name, purge)
+            let paths = paths.clone();
+            let tenants_path = tenants_path.to_path_buf();
+            let tenant_name = tenant_name.to_string();
+            run_blocking(move || {
+                bougie_server::deprovision(&paths, &tenants_path, &tenant_name, purge)
+            })
+            .await
         }
-        Tenancy::Rabbitmq => rabbitmq::deprovision(paths, tenants_path, tenant_name, purge),
+        Tenancy::Rabbitmq => {
+            let paths = paths.clone();
+            let tenants_path = tenants_path.to_path_buf();
+            let tenant_name = tenant_name.to_string();
+            run_blocking(move || {
+                rabbitmq::deprovision(&paths, &tenants_path, &tenant_name, purge)
+            })
+            .await
+        }
         Tenancy::None => Ok(()),
     }
 }
