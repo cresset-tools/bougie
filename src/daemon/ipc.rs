@@ -619,6 +619,16 @@ async fn dispatch_up(
     for name in order {
         // Skip transitive runtime deps; not all are real services.
         let Some(entry) = catalog::find(name) else { continue };
+        // Backstop the tarball: pre_start and supervisor.start both
+        // resolve `store_layout::basedir` and bail if it's missing.
+        // No-op once the tarball is on disk, so re-runs only pay
+        // an `is_dir` check.
+        if let Err(e) = super::store_fetch::ensure_tarball(&state.paths, entry).await {
+            return ResultFrame::err(
+                "service_tarball_fetch_failed",
+                format!("{}: {:#}", name, e),
+            );
+        }
         // One-shot bootstrap (e.g. mariadb-install-db on first run).
         // Idempotent — safe even when the service is already running.
         // The dispatcher owns the sync/async bridge: mariadb and the

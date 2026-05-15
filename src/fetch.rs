@@ -228,28 +228,72 @@ fn extract_tar_zst(tar_zst: &Path, into: &Path, strip_prefix: &str) -> Result<()
             .path()
             .wrap_err("reading entry path")?
             .into_owned();
-        let rewritten = if strip_prefix.is_empty() {
-            path.clone()
-        } else {
-            match path.strip_prefix(strip_prefix) {
-                Ok(rest) => rest.to_path_buf(),
-                Err(_) => path.clone(),
-            }
-        };
-        if rewritten.as_os_str().is_empty() {
+        let Some(rewritten) = rewrite_archive_path(&path, strip_prefix) else {
             // The prefix directory entry itself; skip — `into` exists.
             continue;
-        }
+        };
         let dest = into.join(&rewritten);
         if let Some(parent) = dest.parent() {
             fs::create_dir_all(parent)
                 .wrap_err_with(|| format!("creating {}", parent.display()))?;
+        }
+        // Hardlink entries need their target rewritten by `strip_prefix`
+        // too: the tar header records the link source as e.g.
+        // `install/escript/rabbitmq-diagnostics`, but on disk the file
+        // actually lives at `<into>/escript/rabbitmq-diagnostics` once
+        // the prefix has been stripped. Letting `entry.unpack(&dest)`
+        // handle the link would try to resolve the archive-internal
+        // path relative to CWD and fail with ENOENT.
+        if entry.header().entry_type().is_hard_link() {
+            let link_name = entry
+                .link_name()
+                .wrap_err("reading hardlink target")?
+                .ok_or_else(|| eyre::eyre!("hardlink entry for {} has no link name", path.display()))?
+                .into_owned();
+            let link_dest_rel = rewrite_archive_path(&link_name, strip_prefix)
+                .ok_or_else(|| eyre::eyre!("hardlink target {} resolves to the strip prefix root", link_name.display()))?;
+            let link_dest = into.join(&link_dest_rel);
+            // Idempotency under `--overwrite`-style retries: a
+            // previous half-finished extract may have left the link
+            // already in place. Removing first matches what tar's
+            // own unpack does (it sets overwrite=true by default in
+            // 0.4).
+            let _ = fs::remove_file(&dest);
+            fs::hard_link(&link_dest, &dest).wrap_err_with(|| {
+                format!(
+                    "linking {} → {} (for archive entry {})",
+                    dest.display(),
+                    link_dest.display(),
+                    path.display(),
+                )
+            })?;
+            continue;
         }
         entry
             .unpack(&dest)
             .wrap_err_with(|| format!("unpacking {} → {}", path.display(), dest.display()))?;
     }
     Ok(())
+}
+
+/// Apply `strip_prefix` to a tar-internal path. Returns `None` when the
+/// rewrite produces an empty path (the prefix directory entry itself
+/// — caller skips it because the destination already exists). Entries
+/// that don't start with the prefix are left alone.
+fn rewrite_archive_path(path: &Path, strip_prefix: &str) -> Option<PathBuf> {
+    let rewritten = if strip_prefix.is_empty() {
+        path.to_path_buf()
+    } else {
+        match path.strip_prefix(strip_prefix) {
+            Ok(rest) => rest.to_path_buf(),
+            Err(_) => path.to_path_buf(),
+        }
+    };
+    if rewritten.as_os_str().is_empty() {
+        None
+    } else {
+        Some(rewritten)
+    }
 }
 
 /// Stream `from` into `into` and verify its sha256. Used by callers
@@ -525,5 +569,90 @@ mod tests {
 
         assert!(into.join("lib/libcurl.so.4").is_file());
         assert!(!into.join("libcurl-8.20.0-aaaa").exists());
+    }
+
+    #[test]
+    fn extract_rewrites_hardlink_targets_with_strip_prefix() {
+        // Mirrors the rabbitmq tarball shape that previously broke
+        // `services up`: a regular file at `install/escript/rabbitmq-
+        // diagnostics` followed by several hardlinks whose tar header
+        // records the link target with the `install/` prefix.
+        // Without rewriting, the link target dangled because we only
+        // wrote the file at `<into>/escript/rabbitmq-diagnostics`.
+        let dir = tempfile::TempDir::new().unwrap();
+        let archive_path = dir.path().join("rmq.tar.zst");
+
+        let body = b"escript-stub";
+        let mut tar_buf: Vec<u8> = Vec::new();
+        {
+            let mut builder = tar::Builder::new(&mut tar_buf);
+            // The original file.
+            let mut header = tar::Header::new_gnu();
+            header.set_size(body.len() as u64);
+            header.set_mode(0o755);
+            header.set_entry_type(tar::EntryType::Regular);
+            header.set_cksum();
+            builder
+                .append_data(&mut header, "install/escript/rabbitmq-diagnostics", &body[..])
+                .unwrap();
+            // Hardlinks share the entry-type code with the regular
+            // GNU header; size is zero and link_name carries the
+            // source path (still prefixed by `install/` here).
+            let mut link_header = tar::Header::new_gnu();
+            link_header.set_size(0);
+            link_header.set_mode(0o755);
+            link_header.set_entry_type(tar::EntryType::Link);
+            link_header
+                .set_link_name("install/escript/rabbitmq-diagnostics")
+                .unwrap();
+            link_header.set_cksum();
+            builder
+                .append_data(&mut link_header, "install/escript/rabbitmqctl", std::io::empty())
+                .unwrap();
+            builder.finish().unwrap();
+        }
+        let zst = zstd::encode_all(&tar_buf[..], 0).unwrap();
+        std::fs::write(&archive_path, zst).unwrap();
+
+        let into = dir.path().join("out");
+        std::fs::create_dir_all(&into).unwrap();
+        extract_tar_zst(&archive_path, &into, "install").unwrap();
+
+        let orig = into.join("escript/rabbitmq-diagnostics");
+        let linked = into.join("escript/rabbitmqctl");
+        assert!(orig.is_file());
+        assert!(linked.is_file());
+        // Same inode → same hardlink target, same contents.
+        let m1 = std::fs::metadata(&orig).unwrap();
+        let m2 = std::fs::metadata(&linked).unwrap();
+        use std::os::unix::fs::MetadataExt;
+        assert_eq!(m1.ino(), m2.ino());
+        assert_eq!(std::fs::read(&linked).unwrap(), body);
+    }
+
+    #[test]
+    fn rewrite_archive_path_strips_when_prefixed() {
+        let out = rewrite_archive_path(Path::new("install/bin/php"), "install").unwrap();
+        assert_eq!(out, Path::new("bin/php"));
+    }
+
+    #[test]
+    fn rewrite_archive_path_passes_through_when_unprefixed() {
+        let out = rewrite_archive_path(Path::new("bin/php"), "install").unwrap();
+        assert_eq!(out, Path::new("bin/php"));
+    }
+
+    #[test]
+    fn rewrite_archive_path_handles_empty_prefix() {
+        let out = rewrite_archive_path(Path::new("bin/php"), "").unwrap();
+        assert_eq!(out, Path::new("bin/php"));
+    }
+
+    #[test]
+    fn rewrite_archive_path_returns_none_for_prefix_directory_entry() {
+        // The prefix dir entry itself (`install/`) rewrites to an
+        // empty path. Caller skips the entry because the destination
+        // root already exists.
+        assert!(rewrite_archive_path(Path::new("install"), "install").is_none());
     }
 }

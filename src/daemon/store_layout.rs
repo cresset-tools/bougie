@@ -15,10 +15,11 @@
 //!   lib/...                 # bundled deps
 //! ```
 //!
-//! Phase 6 expects the tarball directory to already exist; the
-//! auto-fetch flow is a follow-up. Tests pre-populate it via
-//! `tests/common/mariadb_fixture.rs` (real tarball) or by laying
-//! out fake binaries (fake-redis fixture).
+//! The first-use auto-fetch lives in [`super::store_fetch`]; the
+//! daemon's `service.up` dispatcher pre-populates the store via
+//! that path before reaching `basedir()`. Tests pre-populate the
+//! tarball directory directly via `tests/common/mariadb_fixture.rs`
+//! (real tarball) or by laying out fake binaries (fake-redis fixture).
 
 use super::catalog::CatalogEntry;
 use crate::Paths;
@@ -55,10 +56,13 @@ pub fn basedir(paths: &Paths, entry: &CatalogEntry) -> Result<PathBuf> {
     }
     Err(eyre!(
         "service `{}`: tarball `{}` not found under {}. \
-         Tarball auto-fetch is not yet wired (Phase 3 follow-up).",
+         The daemon's auto-fetch path should have populated this \
+         before any basedir() call — reaching here means the fetch \
+         was skipped or its sibling rename to `{}` was rolled back.",
         entry.name,
         entry.tarball,
         store.display(),
+        entry.tarball,
     ))
 }
 

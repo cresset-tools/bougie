@@ -17,6 +17,7 @@ pub mod logs;
 pub mod provisioners;
 pub mod sandbox;
 mod state;
+pub mod store_fetch;
 pub mod store_layout;
 pub mod supervisor;
 pub mod tenants;
