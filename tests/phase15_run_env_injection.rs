@@ -52,7 +52,7 @@ fn run_exports_service_env_after_services_up() {
         .assert()
         .success();
     env.bougie()
-        .args(["services", "up"])
+        .args(["up"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
@@ -120,13 +120,13 @@ fn run_after_services_down_no_longer_exports_redis_vars() {
         .assert()
         .success();
     env.bougie()
-        .args(["services", "up"])
+        .args(["up"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
         .success();
     env.bougie()
-        .args(["services", "down"])
+        .args(["down"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
@@ -164,7 +164,7 @@ fn two_projects_get_distinct_redis_db_numbers_in_env() {
             .assert()
             .success();
         env.bougie()
-            .args(["services", "up"])
+            .args(["up"])
             .current_dir(p.path())
             .timeout(STEP_TIMEOUT)
             .assert()

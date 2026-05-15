@@ -1,4 +1,8 @@
-//! `bougie services up [<name>…]`. CLI.md §3.8.4.
+//! `bougie up [<name>…]` — promoted to a top-level verb from its
+//! original home as `bougie services up`. The module path keeps the
+//! `services::up` name because the handler still belongs to the
+//! services subsystem semantically; only the user-facing CLI surface
+//! moved. See CLI.md §3.8.4.
 
 use super::client;
 use super::config_mut::locate_project_root;

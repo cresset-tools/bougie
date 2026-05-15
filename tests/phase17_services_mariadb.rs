@@ -123,7 +123,7 @@ fn up_bootstraps_mariadb_and_provisions_a_tenant() {
         .success();
 
     env.bougie()
-        .args(["services", "up", "--format", "json-v1"])
+        .args(["up", "--format", "json-v1"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
@@ -189,13 +189,13 @@ fn second_up_is_idempotent_no_duplicate_tenant() {
         .assert()
         .success();
     env.bougie()
-        .args(["services", "up"])
+        .args(["up"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
         .success();
     env.bougie()
-        .args(["services", "up"])
+        .args(["up"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
@@ -230,7 +230,7 @@ fn two_projects_get_isolated_databases() {
             .assert()
             .success();
         env.bougie()
-            .args(["services", "up"])
+            .args(["up"])
             .current_dir(p)
             .timeout(STEP_TIMEOUT)
             .assert()
@@ -296,7 +296,7 @@ fn down_purge_drops_database_and_user() {
         .assert()
         .success();
     env.bougie()
-        .args(["services", "up"])
+        .args(["up"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
@@ -321,7 +321,7 @@ fn down_purge_drops_database_and_user() {
     assert!(out.status.success(), "create+insert: {}", String::from_utf8_lossy(&out.stderr));
 
     env.bougie()
-        .args(["services", "down", "--purge"])
+        .args(["down", "--purge"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
@@ -344,7 +344,7 @@ fn down_purge_drops_database_and_user() {
         .assert()
         .success();
     env.bougie()
-        .args(["services", "up"])
+        .args(["up"])
         .current_dir(proj2.path())
         .timeout(STEP_TIMEOUT)
         .assert()
@@ -393,7 +393,7 @@ fn bougie_run_exports_mariadb_env_vars() {
         .assert()
         .success();
     env.bougie()
-        .args(["services", "up"])
+        .args(["up"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()

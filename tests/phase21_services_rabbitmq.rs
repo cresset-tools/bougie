@@ -69,7 +69,7 @@ fn stop_daemon(env: &TestEnv) {
 }
 
 fn services_up_or_dump(env: &TestEnv, proj_path: &Path, extra_args: &[&str]) {
-    let mut args = vec!["services", "up"];
+    let mut args = vec!["up"];
     args.extend_from_slice(extra_args);
     let res = env
         .bougie()
@@ -255,7 +255,7 @@ fn down_purge_drops_vhost_and_user() {
     }
 
     env.bougie()
-        .args(["services", "down", "--purge"])
+        .args(["down", "--purge"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()

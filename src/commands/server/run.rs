@@ -69,7 +69,7 @@ pub fn run(
     if state.hosts.read().expect("hosts lock poisoned").is_empty() {
         eprintln!(
             "bougie: no hosts configured in {} — add `[[host]]` blocks to that file, \
-             or run via `bougie services up server` so bougied manages it for you.",
+             or run via `bougie up server` so bougied manages it for you.",
             config_path.display()
         );
     }

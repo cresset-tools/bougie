@@ -121,7 +121,7 @@ fn up_brings_server_online_and_registers_host() {
         .assert()
         .success();
     env.bougie()
-        .args(["services", "up"])
+        .args(["up"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
@@ -185,7 +185,7 @@ fn two_projects_share_one_server_with_distinct_hosts() {
             .assert()
             .success();
         env.bougie()
-            .args(["services", "up"])
+            .args(["up"])
             .current_dir(p)
             .timeout(STEP_TIMEOUT)
             .assert()
@@ -220,7 +220,7 @@ fn down_purge_drops_host_block() {
         .assert()
         .success();
     env.bougie()
-        .args(["services", "up"])
+        .args(["up"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
@@ -228,7 +228,7 @@ fn down_purge_drops_host_block() {
     assert!(wait_for_tcp("127.0.0.1:7080", Duration::from_secs(10)));
 
     env.bougie()
-        .args(["services", "down", "--purge"])
+        .args(["down", "--purge"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
@@ -272,7 +272,7 @@ fn bougie_run_exports_server_env_vars() {
         .assert()
         .success();
     env.bougie()
-        .args(["services", "up"])
+        .args(["up"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
