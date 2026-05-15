@@ -67,6 +67,14 @@ struct ServerHandle {
     // Phase 4 tests inspect this to verify pool_reload / pool_idle_out
     // events fired without having to wait for full shutdown.
     live_stderr: Arc<std::sync::Mutex<Vec<String>>>,
+    // Per-server XDG_RUNTIME_DIR. Owns the TempDir so `$XDG_RUNTIME_DIR/
+    // bougie/server/{<project-hash>/...,control.sock}` are isolated
+    // across tests run in parallel. Without this, `ServerPaths::from_env`
+    // lands every parallel server in the same runtime root, and the
+    // startup/shutdown `prune_project_dirs` calls in `server/run.rs`
+    // delete peers' live pool dirs. Kept after shutdown so post-mortem
+    // inspections of pool sockets stay possible.
+    _runtime: TempDir,
 }
 
 impl ServerHandle {
@@ -80,12 +88,14 @@ impl ServerHandle {
         bougie_home: &Path,
         extra: &[(&str, &str)],
     ) -> Self {
+        let runtime = TempDir::new().expect("tempdir for XDG_RUNTIME_DIR");
         let bin = assert_cmd::cargo::cargo_bin("bougie");
         let mut cmd = StdCommand::new(bin);
         cmd.args(["server", "run", "--listen", "127.0.0.1:0"])
             .env("BOUGIE_HOME", bougie_home)
             .env("BOUGIE_CACHE", env.cache_path())
             .env("XDG_CONFIG_HOME", xdg_config)
+            .env("XDG_RUNTIME_DIR", runtime.path())
             .env_remove("RUST_LOG");
         for (k, v) in extra {
             cmd.env(*k, *v);
@@ -108,7 +118,7 @@ impl ServerHandle {
             }
             lines
         });
-        Self { child, addr, stderr: Some(stderr_thread), live_stderr }
+        Self { child, addr, stderr: Some(stderr_thread), live_stderr, _runtime: runtime }
     }
 
     fn live_stderr_contains(&self, needle: &str) -> bool {
