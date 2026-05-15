@@ -151,6 +151,13 @@ pub enum ServicesCommand {
         #[arg(long)]
         purge: bool,
     },
+    /// Restart the named services (or every declared service). Stops
+    /// then starts the underlying global process; the tenant ledger
+    /// is preserved, so generated passwords / DB numbers survive.
+    /// Affects every project sharing the same service.
+    Restart {
+        names: Vec<String>,
+    },
     /// Per-service status for the current project.
     Status {
         /// Limit to a single service.
