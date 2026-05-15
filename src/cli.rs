@@ -193,11 +193,17 @@ pub enum ServicesDaemonCommand {
 
 #[derive(Subcommand, Debug)]
 pub enum ServerCommand {
-    /// Run the server in the foreground.
+    /// Run the server in the foreground. `--config` is mandatory: the
+    /// CLI no longer ships an `add`/`remove` mutator pair against an
+    /// XDG-default `server.toml`, so every invocation explicitly names
+    /// the file to read. The bougied-managed path
+    /// (`bougie services up server`) supplies its own service-scoped
+    /// `server.toml`; users running the server by hand point at one
+    /// they wrote themselves.
     Run {
-        /// Alternate server.toml path.
+        /// `server.toml` path. Required.
         #[arg(long, value_name = "PATH")]
-        config: Option<std::path::PathBuf>,
+        config: std::path::PathBuf,
         /// CLI override of `[server].listen` (e.g. `127.0.0.1:7080`).
         #[arg(long, value_name = "ADDR")]
         listen: Option<String>,
@@ -205,24 +211,7 @@ pub enum ServerCommand {
         #[arg(long, value_name = "FMT")]
         log_format: Option<String>,
     },
-    /// Add a `[[host]]` block to server.toml.
-    Add {
-        /// Hostname (e.g. `myapp.bougie.run`).
-        hostname: String,
-        /// Project root. When omitted, bougie walks up from cwd
-        /// looking for `composer.json`, `bougie.toml`, or `.bougie/`
-        /// and uses the first match.
-        project: Option<std::path::PathBuf>,
-        /// Web root, relative to the project (default `.`).
-        #[arg(long)]
-        root: Option<String>,
-    },
-    /// Remove a `[[host]]` block by hostname.
-    Remove {
-        /// Hostname to remove (matches `hostname` or any `[[host.alias]]`).
-        hostname: String,
-    },
-    /// List configured hosts.
+    /// List hosts configured in a `server.toml`.
     List,
     /// Manage `/etc/hosts` overrides (phase 5).
     #[command(subcommand)]
@@ -236,9 +225,6 @@ pub enum ServerCommand {
 pub enum ServerHostsCommand {
     /// Rewrite the bougie sentinel block in /etc/hosts to match
     /// server.toml. Requires root — runs via sudo.
-    ///
-    /// With `[server].manage_etc_hosts = true`, `bougie server
-    /// add/remove` invoke this automatically after every mutation.
     Apply {
         /// Alternate server.toml path. Required when invoking via
         /// sudo because sudo strips XDG_CONFIG_HOME by default.

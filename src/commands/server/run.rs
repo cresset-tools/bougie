@@ -29,11 +29,11 @@ const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 pub fn run(
     _format: OutputFormat,
     _field: Option<&str>,
-    config_override: Option<&Path>,
+    config_path: &Path,
     listen_override: Option<&str>,
     log_format_override: Option<&str>,
 ) -> Result<ExitCode> {
-    let config_path = config::resolve_path(config_override)?;
+    let config_path = config_path.to_path_buf();
     let cfg = config::load(&config_path)?;
 
     let listen_str = listen_override.unwrap_or(&cfg.server.listen);
@@ -68,7 +68,8 @@ pub fn run(
 
     if state.hosts.read().expect("hosts lock poisoned").is_empty() {
         eprintln!(
-            "bougie: no hosts configured in {} — run `bougie server add` first.",
+            "bougie: no hosts configured in {} — add `[[host]]` blocks to that file, \
+             or run via `bougie services up server` so bougied manages it for you.",
             config_path.display()
         );
     }
