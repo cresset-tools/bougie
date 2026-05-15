@@ -28,7 +28,17 @@ jobs:
       # macos-latest runners no longer ship a usable cargo on PATH, so
       # install the toolchain explicitly. rust-toolchain.toml pins the
       # channel + components and is read by this action.
+      #
+      # `cache-bin: false` is the workaround for a recurring macOS
+      # failure where the runner's `~/.cargo/bin/cargo` got cached
+      # as the rustup-init multiplexer rather than the cargo proxy.
+      # Subsequent restores broke with "error: unexpected argument
+      # 'build' found" because rustup-init doesn't speak cargo
+      # subcommands. The action's bin cache only saves ~5–10s; the
+      # toolchain itself is still cached by Swatinem/rust-cache.
       - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache-bin: false
 
       - uses: Swatinem/rust-cache@v2
 
