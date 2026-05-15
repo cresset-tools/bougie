@@ -18,6 +18,7 @@ description = "PHP toolchain management the luxury way."
 license = "EUPL-1.2"
 repository = "https://github.com/cresset-tools/bougie"
 rust-version = "1.95"
+default-run = "bougie"
 
 [[bin]]
 name = "bougie"
