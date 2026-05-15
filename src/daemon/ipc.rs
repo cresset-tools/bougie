@@ -32,6 +32,17 @@ use super::state::DaemonState;
 /// breaking changes to existing method shapes.
 pub const SCHEMA_VERSION: u32 = 1;
 
+/// What `daemon.version` reports as the daemon's running version.
+/// Honors `BOUGIE_VERSION_OVERRIDE` so the integration test suite
+/// can stage a CLI-vs-daemon mismatch without rebuilding the binary;
+/// production users would never set this.
+fn daemon_version_string() -> String {
+    std::env::var("BOUGIE_VERSION_OVERRIDE")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string())
+}
+
 /// Max bytes a single request line may contain. Generous because
 /// future `service.up` calls carry project paths and service lists.
 const MAX_REQUEST_BYTES: u64 = 64 * 1024;
@@ -267,7 +278,7 @@ async fn dispatch(req: Request, state: &Arc<DaemonState>) -> ResultFrame {
             )
         }
         Request::DaemonVersion => ResultFrame::ok(serde_json::json!({
-            "version": env!("CARGO_PKG_VERSION"),
+            "version": daemon_version_string(),
             "build_hash": option_env!("BOUGIE_BUILD_HASH").unwrap_or(""),
         })),
         Request::DaemonShutdown => {
