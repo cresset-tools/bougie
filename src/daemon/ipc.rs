@@ -62,8 +62,8 @@ pub struct RequestEnvelope {
 }
 
 /// Method-specific deserialized request. `Status` / `DaemonVersion` /
-/// `DaemonShutdown` carry no args; the others pull their fields out
-/// of the envelope's `args` object.
+/// `DaemonShutdown` / `Catalog` carry no args; the others pull
+/// their fields out of the envelope's `args` object.
 #[derive(Debug)]
 pub enum Request {
     Status,
@@ -71,11 +71,18 @@ pub enum Request {
     DaemonShutdown,
     ServiceUp(ServiceUpArgs),
     ServiceDown(ServiceDownArgs),
+    /// Stop + start the named services without touching the tenant
+    /// ledger. SERVICES.md §7.2.
+    ServiceRestart(ServiceRestartArgs),
     /// Used by `bougie run` to pick up tenant-derived env vars to
     /// inject into the child PHP process. Idempotent + side-effect-free.
     ServiceEnv(ServiceEnvArgs),
     /// Tail (and optionally follow) a service's log.
     ServiceLogs(ServiceLogsArgs),
+    /// Read-only: returns the in-binary catalog as JSON. Mirrors what
+    /// `bougie services catalog` shows locally; exposed via IPC for
+    /// external tooling.
+    Catalog,
 }
 
 #[derive(Debug, Deserialize)]
@@ -90,6 +97,16 @@ pub struct ServiceDownArgs {
     pub services: Vec<String>,
     #[serde(default)]
     pub purge: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ServiceRestartArgs {
+    pub project: std::path::PathBuf,
+    /// Same shape as `service.down`: a list of catalog names. Empty
+    /// means "every declared service" — but the CLI resolves that
+    /// against the project's config before the IPC call, so an empty
+    /// vec on the daemon side is a no-op.
+    pub services: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -258,6 +275,10 @@ fn parse_request(line: &str) -> Result<Request, String> {
         "service.down" => serde_json::from_value::<ServiceDownArgs>(env.args)
             .map(Request::ServiceDown)
             .map_err(|e| format!("service.down args: {e}")),
+        "service.restart" => serde_json::from_value::<ServiceRestartArgs>(env.args)
+            .map(Request::ServiceRestart)
+            .map_err(|e| format!("service.restart args: {e}")),
+        "catalog" => Ok(Request::Catalog),
         "service.env" => serde_json::from_value::<ServiceEnvArgs>(env.args)
             .map(Request::ServiceEnv)
             .map_err(|e| format!("service.env args: {e}")),
@@ -292,9 +313,76 @@ async fn dispatch(req: Request, state: &Arc<DaemonState>) -> ResultFrame {
         Request::ServiceDown(args) => {
             dispatch_down(state, args.project, args.services, args.purge).await
         }
+        Request::ServiceRestart(args) => dispatch_restart(state, args.services).await,
         Request::ServiceEnv(args) => dispatch_env(state, args.project).await,
         Request::ServiceLogs(_) => unreachable!("handled in handle_connection"),
+        Request::Catalog => dispatch_catalog(),
     }
+}
+
+/// Render the in-binary catalog as a JSON value.
+///
+/// The CLI's `bougie services catalog` reads `catalog::CATALOG`
+/// directly (it's a `const`) — auto-spawning bougied just to print
+/// a static list would be terrible UX. This method exists for
+/// external tooling consumers and SERVICES.md §7.2 spec compliance.
+fn dispatch_catalog() -> ResultFrame {
+    let entries = super::catalog::CATALOG;
+    match serde_json::to_value(entries) {
+        Ok(v) => ResultFrame::ok(serde_json::json!({"catalog": v})),
+        Err(e) => ResultFrame::err("serialize", format!("catalog: {e}")),
+    }
+}
+
+/// Restart each service in topological order. Each is `stop` then
+/// `start` — both supervisor methods are idempotent and the
+/// `Mutex<Supervisor>` serialises the pair so no concurrent
+/// `service.up` can wedge in. The tenant ledger is left alone.
+async fn dispatch_restart(
+    state: &Arc<DaemonState>,
+    services: Vec<String>,
+) -> ResultFrame {
+    use crate::daemon::catalog;
+    let names: Vec<&str> = services.iter().map(|s| s.as_str()).collect();
+    // Re-order to respect after/requires graph. Same topology used
+    // by `service.up` so a `restart` of dependents lines up the same
+    // way as a fresh boot.
+    let order = match super::supervisor::compute_start_order(&names) {
+        Ok(o) => o,
+        Err(e) => return ResultFrame::err("bad_request", e.to_string()),
+    };
+    let mut restarted = Vec::new();
+    for name in order {
+        // Skip transitively-pulled runtime deps that aren't real
+        // managed processes (jdk, erlang).
+        if !catalog::find(name).map(|e| e.user_facing).unwrap_or(false) {
+            continue;
+        }
+        let mut sup = state.supervisor.lock().await;
+        // `stop` returns Ok(false) when the service wasn't running;
+        // skip those — `restart` of a stopped service is a no-op,
+        // matching `systemctl restart` semantics.
+        let was_running = match sup.stop(name).await {
+            Ok(true) => true,
+            Ok(false) => false,
+            Err(e) => {
+                return ResultFrame::err(
+                    "service_stop_failed",
+                    format!("{}: {}", name, e),
+                );
+            }
+        };
+        if was_running {
+            if let Err(e) = sup.start(name).await {
+                return ResultFrame::err(
+                    "service_start_failed",
+                    format!("{}: {}", name, e),
+                );
+            }
+            restarted.push(name.to_string());
+        }
+    }
+    ResultFrame::ok(serde_json::json!({"restarted": restarted}))
 }
 
 /// Streaming `service.logs` handler. Reads the initial tail, then
@@ -724,6 +812,40 @@ mod tests {
         assert_eq!(args.services.len(), 1);
         assert_eq!(args.services[0].name, "redis");
         assert_eq!(args.services[0].tenant, "acme");
+    }
+
+    #[test]
+    fn parses_service_restart_request() {
+        let r = parse_request(
+            r#"{"v": 1, "method": "service.restart", "args": {"project": "/p", "services": ["redis", "mariadb"]}}"#,
+        )
+        .unwrap();
+        let Request::ServiceRestart(args) = r else {
+            panic!("expected ServiceRestart");
+        };
+        assert_eq!(args.project, std::path::Path::new("/p"));
+        assert_eq!(args.services, vec!["redis".to_string(), "mariadb".to_string()]);
+    }
+
+    #[test]
+    fn parses_catalog_request() {
+        let r = parse_request(r#"{"v": 1, "method": "catalog"}"#).unwrap();
+        assert!(matches!(r, Request::Catalog));
+    }
+
+    #[test]
+    fn dispatch_catalog_returns_known_service_names() {
+        let frame = dispatch_catalog();
+        assert!(frame.ok);
+        let val = frame.result.unwrap();
+        let entries = val["catalog"].as_array().expect("catalog array");
+        let names: Vec<&str> = entries
+            .iter()
+            .filter_map(|e| e["name"].as_str())
+            .collect();
+        assert!(names.contains(&"redis"), "{names:?}");
+        assert!(names.contains(&"mariadb"), "{names:?}");
+        assert!(names.contains(&"rabbitmq"), "{names:?}");
     }
 
     #[test]

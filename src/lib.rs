@@ -217,6 +217,9 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
         Command::Services(ServicesCommand::Down { names, purge }) => {
             commands::services::down::run(format, field, names, purge)
         }
+        Command::Services(ServicesCommand::Restart { names }) => {
+            commands::services::restart::run(format, field, names)
+        }
         Command::Services(ServicesCommand::Status { name }) => {
             commands::services::status::run(format, field, name)
         }
