@@ -1,10 +1,15 @@
 //! Host-target triple detection per CLI.md §7.2.
 
 use crate::errors::BougieError;
-use eyre::{Result, WrapErr};
+use eyre::Result;
+#[cfg(unix)]
+use eyre::WrapErr;
 use std::fmt;
+#[cfg(unix)]
 use std::fs::File;
+#[cfg(unix)]
 use std::io::{Read, Seek, SeekFrom};
+#[cfg(unix)]
 use std::path::Path;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -17,19 +22,23 @@ pub enum Arch {
 pub enum Os {
     Linux,
     Darwin,
+    Windows,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Vendor {
     Unknown,
     Apple,
+    Pc,
 }
 
-/// libc family. `None` for darwin (the field is omitted from the triple).
+/// libc / ABI family. `None` for darwin (the field is omitted from
+/// the triple); `Msvc` for windows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Env {
     Gnu,
     Musl,
+    Msvc,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -54,6 +63,7 @@ impl fmt::Display for Os {
         f.write_str(match self {
             Self::Linux => "linux",
             Self::Darwin => "darwin",
+            Self::Windows => "windows",
         })
     }
 }
@@ -63,6 +73,7 @@ impl fmt::Display for Vendor {
         f.write_str(match self {
             Self::Unknown => "unknown",
             Self::Apple => "apple",
+            Self::Pc => "pc",
         })
     }
 }
@@ -72,6 +83,7 @@ impl fmt::Display for Env {
         f.write_str(match self {
             Self::Gnu => "gnu",
             Self::Musl => "musl",
+            Self::Msvc => "msvc",
         })
     }
 }
@@ -87,18 +99,24 @@ impl fmt::Display for Triple {
 
 impl Triple {
     /// Detect the host's triple. Compile-time OS/arch + runtime libc probe
-    /// on Linux.
+    /// on Linux. Windows hosts always classify as `pc-windows-msvc`; the
+    /// libc-detection branch is `cfg(unix)`-gated because Windows has no
+    /// equivalent to `PT_INTERP`-based libc discovery.
     pub fn detect() -> Result<Self> {
         let arch = detect_arch()?;
         match std::env::consts::OS {
+            #[cfg(target_os = "linux")]
             "linux" => {
                 let env = detect_linux_libc()?;
                 Ok(Self { arch, vendor: Vendor::Unknown, os: Os::Linux, env: Some(env) })
             }
+            #[cfg(target_os = "macos")]
             "macos" => Ok(Self { arch, vendor: Vendor::Apple, os: Os::Darwin, env: None }),
+            #[cfg(target_os = "windows")]
+            "windows" => Ok(Self { arch, vendor: Vendor::Pc, os: Os::Windows, env: Some(Env::Msvc) }),
             other => Err(BougieError::UnknownTarget {
                 triple: format!("os={other}"),
-                hint: "bougie supports linux and macos; other operating systems would need new build authority targets".into(),
+                hint: "bougie supports linux, macos, and windows; other operating systems would need new build authority targets".into(),
             }
             .into()),
         }
@@ -117,6 +135,7 @@ fn detect_arch() -> Result<Arch> {
     }
 }
 
+#[cfg(unix)]
 fn detect_linux_libc() -> Result<Env> {
     let interp = read_pt_interp(Path::new("/bin/sh"))
         .or_else(|_| read_pt_interp(Path::new("/usr/bin/env")))
@@ -131,6 +150,7 @@ fn detect_linux_libc() -> Result<Env> {
 }
 
 /// Classify a dynamic linker path string per CLI.md §7.2.
+#[cfg(unix)]
 pub(crate) fn classify_libc(interp: &str) -> Option<Env> {
     let stem = Path::new(interp).file_name()?.to_str()?;
     if stem.starts_with("ld-linux") {
@@ -143,6 +163,7 @@ pub(crate) fn classify_libc(interp: &str) -> Option<Env> {
 }
 
 /// Read `PT_INTERP` from an ELF64 file. Returns the null-stripped path.
+#[cfg(unix)]
 pub(crate) fn read_pt_interp(path: &Path) -> Result<String> {
     let mut f = File::open(path).wrap_err_with(|| format!("opening {}", path.display()))?;
     let mut ehdr = [0u8; 64];
@@ -196,18 +217,21 @@ pub(crate) fn read_pt_interp(path: &Path) -> Result<String> {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
     #[test]
     fn classify_known_glibc_paths() {
         assert_eq!(classify_libc("/lib64/ld-linux-x86-64.so.2"), Some(Env::Gnu));
         assert_eq!(classify_libc("/lib/ld-linux-aarch64.so.1"), Some(Env::Gnu));
     }
 
+    #[cfg(unix)]
     #[test]
     fn classify_known_musl_paths() {
         assert_eq!(classify_libc("/lib/ld-musl-x86_64.so.1"), Some(Env::Musl));
         assert_eq!(classify_libc("/lib/ld-musl-aarch64.so.1"), Some(Env::Musl));
     }
 
+    #[cfg(unix)]
     #[test]
     fn classify_unknown_returns_none() {
         assert_eq!(classify_libc("/lib/ld-bsd.so.1"), None);
@@ -236,6 +260,37 @@ mod tests {
         assert_eq!(t.to_string(), "aarch64-apple-darwin");
     }
 
+    #[test]
+    fn triple_format_windows_emits_msvc_env() {
+        let t = Triple {
+            arch: Arch::X86_64,
+            vendor: Vendor::Pc,
+            os: Os::Windows,
+            env: Some(Env::Msvc),
+        };
+        assert_eq!(t.to_string(), "x86_64-pc-windows-msvc");
+        let arm = Triple {
+            arch: Arch::Aarch64,
+            vendor: Vendor::Pc,
+            os: Os::Windows,
+            env: Some(Env::Msvc),
+        };
+        assert_eq!(arm.to_string(), "aarch64-pc-windows-msvc");
+    }
+
+    /// On Windows hosts, `Triple::detect()` returns
+    /// `<arch>-pc-windows-msvc` unconditionally — no libc probe (Windows
+    /// has no `PT_INTERP`-equivalent), no Developer-Mode preflight.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn detect_on_windows_classifies_as_pc_windows_msvc() {
+        let t = Triple::detect().expect("detect on Windows host");
+        assert_eq!(t.os, Os::Windows);
+        assert_eq!(t.vendor, Vendor::Pc);
+        assert_eq!(t.env, Some(Env::Msvc));
+    }
+
+    #[cfg(unix)]
     #[test]
     fn read_pt_interp_on_bin_sh() {
         // This test only runs on Linux where /bin/sh is ELF.
