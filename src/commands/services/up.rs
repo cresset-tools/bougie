@@ -8,6 +8,7 @@ use super::client;
 use super::config_mut::locate_project_root;
 use crate::cli::OutputFormat;
 use crate::config::{load_project, ServicePin};
+use crate::daemon::store_fetch::ResolvedTool;
 use crate::output::{Render, emit};
 use crate::paths::Paths;
 use eyre::{eyre, Result};
@@ -22,6 +23,17 @@ pub struct ServicesUpResult {
     pub schema_version: u32,
     pub started: Vec<String>,
     pub tenants: BTreeMap<String, String>,
+    /// Per-service inventory of resolved tool dependencies. Populated
+    /// for services whose auto-fetch path walked a non-empty
+    /// `requires_tools[]`; empty (or absent at the JSON layer when
+    /// serialized via `skip_serializing_if`) for services that were
+    /// already on disk or have no inner-tool deps.
+    ///
+    /// Per `UNBUNDLE_PLAN.md` Phase 4. Schema bumped to 2 because the
+    /// envelope shape grew this field; other CLI command results stay
+    /// at `schema_version=1`.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub dependencies: BTreeMap<String, Vec<ResolvedTool>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -30,6 +42,8 @@ struct DaemonReply {
     started: Vec<String>,
     #[serde(default)]
     tenants: BTreeMap<String, String>,
+    #[serde(default)]
+    dependencies: BTreeMap<String, Vec<ResolvedTool>>,
 }
 
 impl Render for ServicesUpResult {
@@ -78,9 +92,10 @@ pub fn run(format: OutputFormat, field: Option<&str>, names: Vec<String>) -> Res
     };
     if selected.is_empty() {
         emit(format, field, &ServicesUpResult {
-            schema_version: 1,
+            schema_version: 2,
             started: vec![],
             tenants: BTreeMap::new(),
+            dependencies: BTreeMap::new(),
         })?;
         return Ok(ExitCode::SUCCESS);
     }
@@ -108,9 +123,10 @@ pub fn run(format: OutputFormat, field: Option<&str>, names: Vec<String>) -> Res
     let paths = Paths::from_env()?;
     let reply: DaemonReply = client::call(&paths, "service.up", args)?;
     let result = ServicesUpResult {
-        schema_version: 1,
+        schema_version: 2,
         started: reply.started,
         tenants: reply.tenants,
+        dependencies: reply.dependencies,
     };
     emit(format, field, &result)?;
     Ok(ExitCode::SUCCESS)

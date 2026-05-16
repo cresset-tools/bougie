@@ -616,6 +616,7 @@ async fn dispatch_up(
 
     let mut started = Vec::new();
     let mut tenants_map = serde_json::Map::new();
+    let mut dependencies = serde_json::Map::new();
     for name in order {
         // Skip transitive runtime deps; not all are real services.
         let Some(entry) = catalog::find(name) else { continue };
@@ -623,11 +624,24 @@ async fn dispatch_up(
         // resolve `store_layout::basedir` and bail if it's missing.
         // No-op once the tarball is on disk, so re-runs only pay
         // an `is_dir` check.
-        if let Err(e) = super::store_fetch::ensure_tarball(&state.paths, entry).await {
-            return ResultFrame::err(
-                "service_tarball_fetch_failed",
-                format!("{}: {:#}", name, e),
-            );
+        let deps_for_service =
+            match super::store_fetch::ensure_tarball(&state.paths, entry).await {
+                Ok(deps) => deps,
+                Err(e) => {
+                    return ResultFrame::err(
+                        "service_tarball_fetch_failed",
+                        format!("{}: {:#}", name, e),
+                    );
+                }
+            };
+        if !deps_for_service.is_empty() {
+            // Per UNBUNDLE_PLAN.md Phase 4: only services that
+            // actually walked `requires_tools[]` contribute to the
+            // inventory. A no-op `ensure_tarball` (outer already on
+            // disk) reports nothing.
+            if let Ok(v) = serde_json::to_value(&deps_for_service) {
+                dependencies.insert(name.to_string(), v);
+            }
         }
         // One-shot bootstrap (e.g. mariadb-install-db on first run).
         // Idempotent — safe even when the service is already running.
@@ -686,6 +700,7 @@ async fn dispatch_up(
     ResultFrame::ok(serde_json::json!({
         "started": started,
         "tenants": Value::Object(tenants_map),
+        "dependencies": Value::Object(dependencies),
     }))
 }
 

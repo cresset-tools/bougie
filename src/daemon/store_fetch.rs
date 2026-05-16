@@ -37,9 +37,43 @@ use crate::lock::ExclusiveGuard;
 use crate::paths::Paths;
 use crate::target::Triple;
 use eyre::{eyre, Result, WrapErr};
+use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+
+/// Kind discriminator for [`ResolvedTool`]. Today only `tool` exists
+/// (an entry resolved from a manifest's `requires_tools[]`); the enum
+/// shape reserves room for `closure` if a future Phase decides to
+/// surface closure peers in the JSON inventory too.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ResolvedKind {
+    Tool,
+}
+
+/// One entry in `bougie up --format json-v1`'s per-service
+/// `dependencies` inventory. Records each `requires_tools[]` entry
+/// the resolver walked, whether it was fetched anew or already on
+/// disk, and where it landed in the shared store.
+///
+/// Closure peers (the openssl/zlib/ncurses tarballs) are intentionally
+/// not surfaced here today — they're an implementation detail of the
+/// store layout, not a thing users typically need to debug. If a
+/// future Phase wants closure-level granularity, add a
+/// [`ResolvedKind::Closure`] variant.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ResolvedTool {
+    pub kind: ResolvedKind,
+    pub name: String,
+    pub version: String,
+    /// `true` if `fetch_blocking` downloaded this in the current call;
+    /// `false` if it was already on disk from a prior install. Useful
+    /// for CI dashboards verifying dedup worked.
+    pub fetched: bool,
+    /// Path relative to `$BOUGIE_HOME/store/` (e.g. `"jdk-21.0.11+10"`).
+    pub install_path: String,
+}
 
 const LOCK_TIMEOUT: Duration = Duration::from_mins(1);
 
@@ -50,15 +84,18 @@ const LOCK_TIMEOUT: Duration = Duration::from_mins(1);
 /// Runs the blocking fetch + extract on the tokio blocking pool so
 /// the daemon's main reactor isn't stalled across what can be a
 /// multi-hundred-MB download.
-pub async fn ensure_tarball(paths: &Paths, entry: &'static CatalogEntry) -> Result<()> {
+pub async fn ensure_tarball(
+    paths: &Paths,
+    entry: &'static CatalogEntry,
+) -> Result<Vec<ResolvedTool>> {
     // The `server` catalog entry reuses the bougie binary itself —
     // nothing to fetch. Same fast-path as `store_layout::basedir`'s
     // empty-tarball check.
     if entry.tarball.is_empty() {
-        return Ok(());
+        return Ok(Vec::new());
     }
     if store_layout::basedir(paths, entry).is_ok() {
-        return Ok(());
+        return Ok(Vec::new());
     }
     let paths = paths.clone();
     tokio::task::spawn_blocking(move || fetch_blocking(&paths, entry))
@@ -66,7 +103,7 @@ pub async fn ensure_tarball(paths: &Paths, entry: &'static CatalogEntry) -> Resu
         .wrap_err("joining tarball-fetch task")?
 }
 
-fn fetch_blocking(paths: &Paths, entry: &CatalogEntry) -> Result<()> {
+fn fetch_blocking(paths: &Paths, entry: &CatalogEntry) -> Result<Vec<ResolvedTool>> {
     let target = Triple::detect()?.to_string();
     let host = std::env::var("BOUGIE_INDEX_URL").unwrap_or_else(|_| DEFAULT_INDEX_URL.into());
 
@@ -77,7 +114,7 @@ fn fetch_blocking(paths: &Paths, entry: &CatalogEntry) -> Result<()> {
     // it, in which case there's nothing left to do and skipping the
     // network round-trip is the polite choice.
     if store_layout::basedir(paths, entry).is_ok() {
-        return Ok(());
+        return Ok(Vec::new());
     }
 
     let client = reqwest::blocking::Client::builder()
@@ -153,6 +190,7 @@ fn fetch_blocking(paths: &Paths, entry: &CatalogEntry) -> Result<()> {
     let mut visited = HashSet::new();
     visited.insert((manifest.name.clone(), manifest.version.clone()));
 
+    let mut report: Vec<ResolvedTool> = Vec::new();
     install_into(
         &client,
         paths,
@@ -164,10 +202,11 @@ fn fetch_blocking(paths: &Paths, entry: &CatalogEntry) -> Result<()> {
         &cache_root,
         &target,
         &mut visited,
+        &mut report,
     )?;
 
     bar.finish();
-    Ok(())
+    Ok(report)
 }
 
 /// The common install body: grow the bar's planned total, fetch the
@@ -189,6 +228,7 @@ fn install_into(
     cache_root: &Path,
     target: &str,
     visited: &mut HashSet<(String, String)>,
+    report: &mut Vec<ResolvedTool>,
 ) -> Result<()> {
     bar.add_planned(manifest.blob.size);
     plan_closure_bytes(paths, manifest, bar);
@@ -209,7 +249,7 @@ fn install_into(
 
     for rt in &manifest.requires_tools {
         let inner_root = install_required_tool(
-            client, paths, rt, bar, fetched, host, cache_root, target, visited,
+            client, paths, rt, bar, fetched, host, cache_root, target, visited, report,
         )?;
         store_layout::create_link_into(install_root, &rt.link_into, &inner_root)?;
     }
@@ -247,12 +287,21 @@ fn install_required_tool(
     cache_root: &Path,
     target: &str,
     visited: &mut HashSet<(String, String)>,
+    report: &mut Vec<ResolvedTool>,
 ) -> Result<PathBuf> {
-    let install_root = paths.store().join(format!("{}-{}", rt.name, rt.version));
+    let install_path_rel = format!("{}-{}", rt.name, rt.version);
+    let install_root = paths.store().join(&install_path_rel);
     if install_root.is_dir() {
         // Fully installed, or — under the global lock — at minimum
         // safely past `fetch_blob`'s atomic rename. Either way, the
         // caller can link into it. Skip the recursive walk entirely.
+        report.push(ResolvedTool {
+            kind: ResolvedKind::Tool,
+            name: rt.name.clone(),
+            version: rt.version.clone(),
+            fetched: false,
+            install_path: install_path_rel,
+        });
         return Ok(install_root);
     }
 
@@ -315,7 +364,15 @@ fn install_required_tool(
         cache_root,
         target,
         visited,
+        report,
     )?;
+    report.push(ResolvedTool {
+        kind: ResolvedKind::Tool,
+        name: rt.name.clone(),
+        version: rt.version.clone(),
+        fetched: true,
+        install_path: install_path_rel,
+    });
     Ok(install_root)
 }
 
@@ -548,6 +605,7 @@ mod tests {
         let rt = valid_requires_tool();
         let fetched = empty_fetched_root();
         let mut visited = HashSet::new();
+        let mut report = Vec::new();
         let inner_root = install_required_tool(
             &client,
             &paths,
@@ -558,6 +616,7 @@ mod tests {
             &tmp.path().join("cache"),
             "x86_64-unknown-linux-gnu",
             &mut visited,
+            &mut report,
         )
         .expect("early-return path should succeed without HTTP");
 
@@ -565,6 +624,13 @@ mod tests {
         // Crucially, visited must NOT have grown — the function
         // bailed before the cycle-detection insert.
         assert!(visited.is_empty(), "visited grew unexpectedly: {visited:?}");
+        // The early-return path still records the dep with fetched=false
+        // so the JSON inventory surfaces dedup hits.
+        assert_eq!(report.len(), 1);
+        assert_eq!(report[0].name, "jdk");
+        assert_eq!(report[0].version, "21.0.11+10");
+        assert!(!report[0].fetched);
+        assert_eq!(report[0].install_path, "jdk-21.0.11+10");
     }
 
     // ---------- audit_catalog_drift (Phase 3) ----------
@@ -615,6 +681,28 @@ mod tests {
             summary: "test",
             sandbox: SandboxKind::Strict,
         }
+    }
+
+    #[test]
+    fn resolved_tool_serializes_kind_as_lowercase_tool() {
+        // The plan's JSON example specifies `"kind": "tool"`. Locking
+        // in the wire shape so a future rename of the enum variant
+        // doesn't silently break the CLI's `--format json-v1`
+        // consumers.
+        let r = ResolvedTool {
+            kind: ResolvedKind::Tool,
+            name: "jdk".into(),
+            version: "21.0.11+10".into(),
+            fetched: true,
+            install_path: "jdk-21.0.11+10".into(),
+        };
+        let v = serde_json::to_value(&r).unwrap();
+        assert_eq!(v["kind"], "tool");
+        assert_eq!(v["fetched"], true);
+        assert_eq!(v["install_path"], "jdk-21.0.11+10");
+        // And the same JSON round-trips into a ResolvedTool again.
+        let parsed: ResolvedTool = serde_json::from_value(v).unwrap();
+        assert_eq!(parsed, r);
     }
 
     #[test]
@@ -682,6 +770,7 @@ mod tests {
         let fetched = empty_fetched_root();
         let mut visited = HashSet::new();
         visited.insert(("jdk".into(), "21.0.11+10".into()));
+        let mut report = Vec::new();
 
         let err = install_required_tool(
             &client,
@@ -693,6 +782,7 @@ mod tests {
             &tmp.path().join("cache"),
             "x86_64-unknown-linux-gnu",
             &mut visited,
+            &mut report,
         )
         .expect_err("expected cycle detection to fire");
         let msg = err.to_string();
