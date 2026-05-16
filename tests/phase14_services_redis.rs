@@ -81,7 +81,7 @@ fn up_starts_fake_redis_and_provisions_a_tenant() {
         .success();
 
     env.bougie()
-        .args(["services", "up", "--format", "json-v1"])
+        .args(["up", "--format", "json-v1"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
@@ -122,7 +122,7 @@ fn status_after_up_reports_redis_running() {
         .assert()
         .success();
     env.bougie()
-        .args(["services", "up"])
+        .args(["up"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
@@ -162,7 +162,7 @@ fn two_projects_share_one_redis_with_distinct_db_numbers() {
             .assert()
             .success();
         env.bougie()
-            .args(["services", "up"])
+            .args(["up"])
             .current_dir(p.path())
             .timeout(STEP_TIMEOUT)
             .assert()
@@ -198,14 +198,14 @@ fn down_in_one_project_keeps_redis_running_for_the_other() {
             .assert()
             .success();
         env.bougie()
-            .args(["services", "up"])
+            .args(["up"])
             .current_dir(p.path())
             .timeout(STEP_TIMEOUT)
             .assert()
             .success();
     }
     env.bougie()
-        .args(["services", "down"])
+        .args(["down"])
         .current_dir(a.path())
         .timeout(STEP_TIMEOUT)
         .assert()
@@ -219,7 +219,7 @@ fn down_in_one_project_keeps_redis_running_for_the_other() {
 
     // Now drop b too; redis should stop.
     env.bougie()
-        .args(["services", "down"])
+        .args(["down"])
         .current_dir(b.path())
         .timeout(STEP_TIMEOUT)
         .assert()
@@ -264,7 +264,7 @@ fn seventeenth_project_hits_redis_db_exhausted() {
             .assert()
             .success();
         env.bougie()
-            .args(["services", "up"])
+            .args(["up"])
             .current_dir(p.path())
             .timeout(STEP_TIMEOUT)
             .assert()
@@ -280,7 +280,7 @@ fn seventeenth_project_hits_redis_db_exhausted() {
         .success();
     let out = env
         .bougie()
-        .args(["services", "up"])
+        .args(["up"])
         .current_dir(last.path())
         .timeout(STEP_TIMEOUT)
         .assert()
@@ -309,7 +309,7 @@ fn up_is_idempotent_for_the_same_project() {
         .success();
     for _ in 0..3 {
         env.bougie()
-            .args(["services", "up"])
+            .args(["up"])
             .current_dir(proj.path())
             .timeout(STEP_TIMEOUT)
             .assert()
@@ -351,7 +351,7 @@ fn up_with_no_tarball_falls_back_to_index_fetch() {
         // Loopback :1 is unbound on Linux runners; the connect
         // returns ECONNREFUSED in milliseconds.
         .env("BOUGIE_INDEX_URL", "http://127.0.0.1:1")
-        .args(["services", "up"])
+        .args(["up"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()

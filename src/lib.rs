@@ -52,6 +52,8 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
     match cli.command {
         Command::Init { toml } => commands::init::run(format, field, toml),
         Command::Sync { offline: _, dry_run } => commands::sync::run(format, field, dry_run),
+        Command::Up { names } => commands::services::up::run(format, field, names),
+        Command::Down { names, purge } => commands::services::down::run(format, field, names, purge),
         Command::Run { with, no_sync, xdebug, argv } => {
             commands::run::run(&with, &argv, format, field, no_sync, xdebug)
         }
@@ -199,12 +201,6 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
         }
         Command::Services(ServicesCommand::Catalog) => {
             commands::services::catalog::run(format, field)
-        }
-        Command::Services(ServicesCommand::Up { names }) => {
-            commands::services::up::run(format, field, names)
-        }
-        Command::Services(ServicesCommand::Down { names, purge }) => {
-            commands::services::down::run(format, field, names, purge)
         }
         Command::Services(ServicesCommand::Restart { names }) => {
             commands::services::restart::run(format, field, names)

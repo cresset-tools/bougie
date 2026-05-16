@@ -63,6 +63,27 @@ pub enum Command {
         dry_run: bool,
     },
 
+    /// Start the project's declared services (or every service in
+    /// `names`) and provision the project's tenant in each. Equivalent
+    /// to the former `bougie services up` — promoted to a top-level
+    /// verb because it's the most common project-startup step.
+    Up {
+        /// Service names to bring up. Empty = every declared service.
+        names: Vec<String>,
+    },
+
+    /// Stop the project's declared services (or every service in
+    /// `names`). The shared global process stays up while any other
+    /// project's tenant remains. Equivalent to the former
+    /// `bougie services down`.
+    Down {
+        names: Vec<String>,
+        /// Destroy persisted tenant data (e.g. FLUSHDB on redis). Off
+        /// by default — re-adding the service should restore state.
+        #[arg(long)]
+        purge: bool,
+    },
+
     /// Run a command in the project environment.
     Run {
         /// Add a temporary extension for this invocation.
@@ -135,22 +156,6 @@ pub enum ServicesCommand {
     },
     /// Print the built-in service catalog (no daemon required).
     Catalog,
-    /// Start the named services (or every declared service) and
-    /// provision the project's tenant in each.
-    Up {
-        /// Service names to bring up. Empty = every declared service.
-        names: Vec<String>,
-    },
-    /// Stop the named services (or every declared service) for the
-    /// current project. The global service stops only when no other
-    /// project's tenant remains.
-    Down {
-        names: Vec<String>,
-        /// Destroy persisted tenant data (e.g. FLUSHDB on redis). Off
-        /// by default — re-adding the service should restore state.
-        #[arg(long)]
-        purge: bool,
-    },
     /// Restart the named services (or every declared service). Stops
     /// then starts the underlying global process; the tenant ledger
     /// is preserved, so generated passwords / DB numbers survive.

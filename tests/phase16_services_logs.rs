@@ -54,7 +54,7 @@ fn logs_tail_shows_lines_the_service_wrote() {
         .assert()
         .success();
     env.bougie()
-        .args(["services", "up"])
+        .args(["up"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
@@ -99,7 +99,7 @@ fn logs_n_truncates_to_requested_lines() {
         .assert()
         .success();
     env.bougie()
-        .args(["services", "up"])
+        .args(["up"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
@@ -177,7 +177,7 @@ fn logs_follow_streams_new_bytes_then_ends_on_disconnect() {
         .assert()
         .success();
     env.bougie()
-        .args(["services", "up"])
+        .args(["up"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()

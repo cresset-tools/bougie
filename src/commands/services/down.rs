@@ -1,4 +1,6 @@
-//! `bougie services down [<name>…] [--purge]`. CLI.md §3.8.5.
+//! `bougie down [<name>…] [--purge]` — promoted from the former
+//! `bougie services down`. Handler path is unchanged; only the
+//! user-facing CLI verb moved. See CLI.md §3.8.5.
 
 use super::client;
 use super::config_mut::locate_project_root;

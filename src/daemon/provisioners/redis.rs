@@ -36,7 +36,7 @@ pub fn provision(tenants_path: &Path, tenant_name: &str, project: &Path) -> Resu
         .ok_or_else(|| {
             eyre!(
                 "redis: all {} logical DB slots are in use; remove an unused tenant \
-                 with `bougie services down redis --purge` from one of the holding projects",
+                 with `bougie down redis --purge` from one of the holding projects",
                 REDIS_DB_COUNT
             )
         })?;

@@ -71,7 +71,7 @@ fn stop_daemon(env: &TestEnv) {
 /// CI failure surfaces the real JVM/sandbox error instead of just
 /// the supervisor's "TCP-connect never won" rollup.
 fn services_up_or_dump(env: &TestEnv, proj_path: &Path, extra_args: &[&str]) {
-    let mut args = vec!["services", "up"];
+    let mut args = vec!["up"];
     args.extend_from_slice(extra_args);
     let res = env
         .bougie()
@@ -318,7 +318,7 @@ fn down_purge_drops_template_and_indices() {
     assert_eq!(s, 200, "sentinel index should exist before purge");
 
     env.bougie()
-        .args(["services", "down", "--purge"])
+        .args(["down", "--purge"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
