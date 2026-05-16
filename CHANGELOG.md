@@ -7,6 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0](https://github.com/cresset-tools/bougie/compare/v0.3.0...v0.4.0) - 2026-05-16
+
+### Added
+
+- *(up)* surface resolved tool dependencies in json-v1
+- *(daemon)* warn on catalog vs requires_tools drift
+- *(daemon)* recursively install requires_tools[] inner tools
+- *(daemon)* walk closure[] when auto-fetching tool tarballs
+- *(index)* add requires_tools to manifest schema
+- *(services)* auto-detect supervised server docroot
+- *(cli)* [**breaking**] promote `services up`/`services down` to top-level `up`/`down`
+- *(services)* auto-fetch service tarballs on first `services up`
+- *(services)* babysit shim for crash-safe process-group supervision
+- *(services)* rabbitmq provisioner (Phase 10)
+- *(services)* bougied self-restart on version mismatch (Phase 9)
+- *(services)* bougie server as a managed service
+- *(services)* opensearch provisioner with per-tenant index templates
+- *(services)* mariadb provisioner + integration tests against real binary
+- *(services)* log rotation + `bougie services logs [-f] [-n N]`
+- *(services)* inject BOUGIE_SERVICE_* env into `bougie run`
+- *(services)* redis provisioner + service.{up,down,status} IPC + CLI
+- *(daemon)* supervisor state machine, sandbox compilation, tenants ledger
+- *(services)* offline subcommands — add/remove/list/catalog
+- *(services)* built-in catalog + [services] config schema
+- *(services)* bougie services daemon {status,stop,version}
+- *(daemon)* bougied entry point + JSON IPC dispatcher
+- *(daemon)* vendor sandbox-run + wire bougied shim role and paths
+
+### Fixed
+
+- *(services)* re-sync rabbitmq password to broker after `bougie down` ([#31](https://github.com/cresset-tools/bougie/pull/31))
+- *(babysit)* install SIGTERM handler before spawning the service
+- *(opensearch)* pin OPENSEARCH_JAVA_HOME + detect early child exit in health probe
+- *(services/mariadb)* pass --no-defaults to every mariadb invocation
+
+### Other
+
+- *(index)* drop RequiresTool.manifest_sha256
+- [**breaking**] Debian-faithful baseline + --bare / --without flags
+- *(services)* convert opensearch pre_start file I/O to tokio::fs
+- *(services)* make opensearch provisioner async
+- Merge remote-tracking branch 'origin/main' into feat/services-babysit
+- Set default binary
+- Merge pull request #14 from cresset-tools/feat/services-opensearch
+- *(opensearch)* dump opensearch.log on services-up failure
+- *(services/mariadb)* pick per-target tarball for the test fixture
+- fix macOS-specific failures surfaced in PR #8 validation
+- *(services)* end-to-end redis up/down/status integration tests
+- *(services)* integration tests for bougied auto-spawn + IPC roundtrip
+- [**breaking**] relicense from Apache-2.0 OR MIT to EUPL-1.2
+
 ## [0.3.0](https://github.com/cresset-tools/bougie/compare/v0.2.0...v0.3.0) - 2026-05-14
 
 ### Added
