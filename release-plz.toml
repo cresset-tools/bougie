@@ -27,3 +27,14 @@ git_release_body = """
 [[package]]
 name = "bougie"
 git_only = true
+
+# Vendored helper crates — not released independently. Skipping them
+# also avoids `cargo package` failing on the path-only intra-workspace
+# dependency between `sandbox-run` and `macos-sandbox-sys`.
+[[package]]
+name = "sandbox-run"
+release = false
+
+[[package]]
+name = "macos-sandbox-sys"
+release = false
