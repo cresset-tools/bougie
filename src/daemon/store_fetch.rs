@@ -127,6 +127,15 @@ fn fetch_blocking(paths: &Paths, entry: &CatalogEntry) -> Result<()> {
         .validate()
         .wrap_err_with(|| format!("validating manifest for {}", manifest.tag))?;
 
+    // Surface any drift between the compiled-in catalog's runtime_deps
+    // and the upstream manifest's requires_tools. Non-fatal — the
+    // manifest is authoritative for the actual install — but warning
+    // here means we notice when a bougie release lags behind the
+    // index, and vice-versa.
+    for w in audit_catalog_drift(entry, &manifest) {
+        tracing::warn!(service = entry.name, "{w}");
+    }
+
     std::fs::create_dir_all(paths.store())
         .wrap_err_with(|| format!("creating {}", paths.store().display()))?;
     let dest = paths.store().join(entry.tarball);
@@ -350,6 +359,63 @@ fn fetch_tool_section(
     )
 }
 
+/// Compare the outer tool's compiled-in catalog `runtime_deps` against
+/// the manifest's `requires_tools[]`. Returns one human-readable
+/// warning per drift point (extra entry on either side, or matching
+/// name with diverging version). Never fails — the manifest is the
+/// authoritative source of truth at install time; this is purely a
+/// drift signal so a stale catalog gets noticed before it confuses a
+/// user.
+///
+/// Phase 3 of `UNBUNDLE_PLAN.md`. The catalog keeps its own
+/// `runtime_deps` field (the supervisor uses it for ordering /
+/// availability checks); the manifest gets `requires_tools[]` (the
+/// installer uses it to lay down peer trees). They answer different
+/// questions and should both exist, but they're describing the same
+/// underlying tool-to-tool relationship and shouldn't diverge.
+pub(crate) fn audit_catalog_drift(entry: &CatalogEntry, manifest: &Manifest) -> Vec<String> {
+    let catalog: HashSet<&str> = entry.runtime_deps.iter().copied().collect();
+    let from_manifest: HashSet<&str> = manifest
+        .requires_tools
+        .iter()
+        .map(|rt| rt.name.as_str())
+        .collect();
+    let mut warnings = Vec::new();
+
+    for missing in catalog.difference(&from_manifest) {
+        warnings.push(format!(
+            "catalog `runtime_deps` for `{outer}` lists `{missing}` but the upstream \
+             manifest's `requires_tools[]` doesn't — bougie's catalog is likely ahead of \
+             the index, or the index dropped the dep without a coordinated client release.",
+            outer = entry.name,
+        ));
+    }
+    for extra in from_manifest.difference(&catalog) {
+        warnings.push(format!(
+            "upstream manifest for `{outer}` declares `requires_tools[]` entry `{extra}` but \
+             bougie's catalog doesn't list it under `runtime_deps` — install will still \
+             succeed (the manifest is authoritative), but the supervisor's ordering / \
+             availability checks won't see it.",
+            outer = entry.name,
+        ));
+    }
+    for rt in &manifest.requires_tools {
+        if let Some(inner_entry) = crate::daemon::catalog::find(&rt.name)
+            && inner_entry.version != rt.version
+        {
+            warnings.push(format!(
+                "catalog pins inner tool `{name}` to `{cv}` but outer manifest's \
+                 `requires_tools[]` pins it to `{mv}` — the actual install will use the \
+                 manifest's pin; refresh the catalog if `{mv}` is the new target.",
+                name = rt.name,
+                cv = inner_entry.version,
+                mv = rt.version,
+            ));
+        }
+    }
+    warnings
+}
+
 /// Pick the artifact whose `version` equals the catalog pin. Yanked
 /// artifacts are skipped; on ties between frozen + unfrozen, frozen
 /// wins (the publisher's stamp of intent that this exact build is
@@ -499,6 +565,105 @@ mod tests {
         // Crucially, visited must NOT have grown — the function
         // bailed before the cycle-detection insert.
         assert!(visited.is_empty(), "visited grew unexpectedly: {visited:?}");
+    }
+
+    // ---------- audit_catalog_drift (Phase 3) ----------
+
+    fn tool_manifest_with_requires(outer_name: &str, inners: &[(&str, &str)]) -> Manifest {
+        let rts: Vec<_> = inners
+            .iter()
+            .map(|(n, v)| {
+                serde_json::json!({
+                    "name": n,
+                    "version": v,
+                    "tag": format!("{n}-{v}-x86_64-unknown-linux-gnu-default"),
+                    "manifest_url": format!("https://example.invalid/{n}.json"),
+                    "link_into": n.to_string(),
+                })
+            })
+            .collect();
+        serde_json::from_value(serde_json::json!({
+            "schema": 1, "kind": "tool", "name": outer_name,
+            "tag": format!("{outer_name}-1.0.0-x86_64-unknown-linux-gnu-default"),
+            "version": "1.0.0",
+            "target": "x86_64-unknown-linux-gnu",
+            "flavor": "default",
+            "libc": {"family":"gnu","min":"2.17"},
+            "blob": {"url":"https://example.invalid/o","sha256":"aa","size":0},
+            "closure": [],
+            "requires_tools": rts,
+        }))
+        .unwrap()
+    }
+
+    fn synthetic_entry(
+        name: &'static str,
+        runtime_deps: &'static [&'static str],
+    ) -> CatalogEntry {
+        use crate::daemon::catalog::{Binding, SandboxKind, Tenancy};
+        CatalogEntry {
+            name,
+            version: "1.0.0",
+            tarball: name,
+            binary: "bin/x",
+            binding: Binding::None,
+            tenancy: Tenancy::None,
+            requires: &[],
+            after: &[],
+            runtime_deps,
+            user_facing: true,
+            summary: "test",
+            sandbox: SandboxKind::Strict,
+        }
+    }
+
+    #[test]
+    fn audit_drift_quiet_when_sets_match() {
+        let entry = synthetic_entry("rabbitmq", &["erlang"]);
+        // The catalog's `erlang` entry pins 27.3.4.11 — match it in
+        // the manifest to avoid a spurious version-drift warning.
+        let manifest = tool_manifest_with_requires("rabbitmq", &[("erlang", "27.3.4.11")]);
+        let warnings = audit_catalog_drift(&entry, &manifest);
+        assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
+    #[test]
+    fn audit_drift_warns_when_catalog_has_extra_runtime_dep() {
+        // Catalog claims an inner tool the manifest doesn't ask for.
+        // Typical cause: bougie release shipped ahead of an index
+        // republish that dropped the dep.
+        let entry = synthetic_entry("opensearch", &["jdk"]);
+        let manifest = tool_manifest_with_requires("opensearch", &[]);
+        let warnings = audit_catalog_drift(&entry, &manifest);
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("catalog"), "{}", warnings[0]);
+        assert!(warnings[0].contains("jdk"), "{}", warnings[0]);
+    }
+
+    #[test]
+    fn audit_drift_warns_when_manifest_has_extra_requires_tool() {
+        // Manifest declares an inner the catalog doesn't list. Install
+        // still succeeds (manifest is authoritative); the supervisor
+        // just won't include it in startup ordering.
+        let entry = synthetic_entry("opensearch", &[]);
+        let manifest = tool_manifest_with_requires("opensearch", &[("jdk", "21.0.11+10")]);
+        let warnings = audit_catalog_drift(&entry, &manifest);
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("manifest"), "{}", warnings[0]);
+        assert!(warnings[0].contains("jdk"), "{}", warnings[0]);
+    }
+
+    #[test]
+    fn audit_drift_warns_on_version_pin_divergence() {
+        // Both sides agree on the inner's name (no set-diff warning),
+        // but pin it to different versions. The catalog's `jdk` entry
+        // pins 21.0.11+10; declare 21.0.12 in the manifest.
+        let entry = synthetic_entry("opensearch", &["jdk"]);
+        let manifest = tool_manifest_with_requires("opensearch", &[("jdk", "21.0.12")]);
+        let warnings = audit_catalog_drift(&entry, &manifest);
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("21.0.11+10"), "{}", warnings[0]);
+        assert!(warnings[0].contains("21.0.12"), "{}", warnings[0]);
     }
 
     #[test]
