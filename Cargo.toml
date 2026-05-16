@@ -231,7 +231,7 @@ version = "8"
 # Cross-platform: Linux Landlock (kernel 5.13+), macOS SBPL via
 # `sandbox_init_with_parameters`. Vendored as workspace member at
 # `crates/sandbox-run/` so this repo is self-contained.
-sandbox-run = { path = "crates/sandbox-run" }
+sandbox-run = { path = "crates/sandbox-run", version = "0.1.0" }
 
 [dev-dependencies]
 assert_cmd = "2.0"        # spawn the bougie binary in integration tests
