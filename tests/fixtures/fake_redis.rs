@@ -3,10 +3,23 @@
 //! on that path, and waits for SIGTERM. Speaks just enough of the
 //! RESP protocol to acknowledge a SELECT+FLUSHDB sequence from
 //! `provisioners::redis::deprovision --purge`.
+//!
+//! Unix-only — the supervisor tests it backs don't run on Windows in
+//! Phase 1 (no Unix domain sockets, no SIGTERM). On Windows this
+//! compiles to a stub `main` that errors out so misuse is loud.
 
+#[cfg(not(unix))]
+fn main() {
+    eprintln!("fake-redis: this test fixture only runs on Unix");
+    std::process::exit(1);
+}
+
+#[cfg(unix)]
 use std::io::{Read, Write};
+#[cfg(unix)]
 use std::os::unix::net::{UnixListener, UnixStream};
 
+#[cfg(unix)]
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let mut socket_path: Option<String> = None;
@@ -39,6 +52,7 @@ fn main() {
     }
 }
 
+#[cfg(unix)]
 fn handle(stream: &mut UnixStream) {
     let mut buf = [0u8; 1024];
     while let Ok(n) = stream.read(&mut buf) {

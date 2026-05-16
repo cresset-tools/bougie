@@ -5,9 +5,15 @@ use crate::errors::BougieError;
 use crate::paths::Paths;
 use crate::state::{read_project_resolved, read_project_resolved_composer};
 use eyre::{eyre, Result, WrapErr};
+#[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::ExitCode;
+
+#[cfg(unix)]
+const PATH_SEP: &str = ":";
+#[cfg(not(unix))]
+const PATH_SEP: &str = ";";
 
 /// `bougie run [--] <cmd> [args...]` — set `PATH` and `PHP_INI_SCAN_DIR`,
 /// then exec the requested command. Per CLI.md §3.4, implicitly runs
@@ -56,7 +62,7 @@ pub fn run(
 
     let prev_path = std::env::var("PATH").unwrap_or_default();
     let new_path = if bougie_bin.exists() {
-        format!("{}:{prev_path}", bougie_bin.display())
+        format!("{}{PATH_SEP}{prev_path}", bougie_bin.display())
     } else {
         prev_path
     };
@@ -76,6 +82,9 @@ pub fn run(
     // explicitly chose `bougie services up` for that). When the
     // daemon isn't there the vars are absent; PHP code that depends
     // on them gets a connection error, which is the right surface.
+    //
+    // Unix-only: the daemon doesn't run on Windows in Phase 1.
+    #[cfg(unix)]
     if let Ok(paths) = Paths::from_env() {
         if paths.bougied_sock().exists() {
             for (k, v) in fetch_service_env(&paths, &project_root) {
@@ -83,12 +92,29 @@ pub fn run(
             }
         }
     }
-    let err = cmd.exec();
-    Err(BougieError::Filesystem {
-        operation: format!("execve {program}"),
-        detail: err.to_string(),
+
+    #[cfg(unix)]
+    {
+        // execve replaces this process; the only return is an error.
+        let err = cmd.exec();
+        Err(BougieError::Filesystem {
+            operation: format!("execve {program}"),
+            detail: err.to_string(),
+        }
+        .into())
     }
-    .into())
+    #[cfg(not(unix))]
+    {
+        // Windows has no execve; spawn the child, wait, and propagate
+        // its exit code so callers (and shells) see the same outcome.
+        let status = cmd.status().map_err(|e| BougieError::Filesystem {
+            operation: format!("spawning {program}"),
+            detail: e.to_string(),
+        })?;
+        let code = status.code().unwrap_or(1);
+        let code = u8::try_from(code).unwrap_or(1);
+        Ok(ExitCode::from(code))
+    }
 }
 
 fn install_xdebug_into_overlay(project_root: &Path) -> Result<()> {
@@ -120,6 +146,9 @@ fn install_xdebug_into_overlay(project_root: &Path) -> Result<()> {
 /// wrong — `bougie run` must never fail because the daemon was down,
 /// slow, or speaking an old protocol. A connection error here is a
 /// signal to the user (PHP gets no DSN); not a CLI-level error.
+///
+/// Unix-only — the daemon isn't built on Windows in Phase 1.
+#[cfg(unix)]
 fn fetch_service_env(
     paths: &Paths,
     project: &Path,

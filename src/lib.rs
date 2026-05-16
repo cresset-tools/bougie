@@ -1,3 +1,4 @@
+#[cfg(unix)]
 pub mod babysit;
 pub mod baseline;
 pub mod cli;
@@ -5,6 +6,7 @@ pub mod commands;
 pub mod composer;
 pub mod conf_d;
 pub mod config;
+#[cfg(unix)]
 pub mod daemon;
 pub mod errors;
 pub mod fetch;
@@ -27,12 +29,22 @@ pub use errors::{exit_code_for, BougieError};
 pub use paths::Paths;
 pub use target::Triple;
 
+use cli::{CacheCommand, ComposerCommand, PhpCommand, SelfCommand};
+#[cfg(unix)]
 use cli::{
-    CacheCommand, ComposerCommand, PhpCommand, SelfCommand, ServerCommand, ServerHostsCommand,
-    ServerTlsCommand, ServicesCommand, ServicesDaemonCommand,
+    ServerCommand, ServerHostsCommand, ServerTlsCommand, ServicesCommand, ServicesDaemonCommand,
 };
 use eyre::Result;
 use std::process::ExitCode;
+
+#[cfg(not(unix))]
+fn unsupported_on_windows(feature: &str) -> Result<ExitCode> {
+    Err(eyre::eyre!(
+        "{feature} is not supported on Windows yet — see SERVICES.md / SERVER.md.\n\
+         hint:    bougie's daemon and server features require Unix domain sockets and POSIX\n\
+                  signals; the CLI subset (php, composer, sync, run, ext, cache, self) works."
+    ))
+}
 
 pub fn run(cli: Cli) -> Result<ExitCode> {
     let format = cli.format;
@@ -52,8 +64,14 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
     match cli.command {
         Command::Init { toml } => commands::init::run(format, field, toml),
         Command::Sync { offline: _, dry_run } => commands::sync::run(format, field, dry_run),
+        #[cfg(unix)]
         Command::Up { names } => commands::services::up::run(format, field, names),
+        #[cfg(not(unix))]
+        Command::Up { names: _ } => unsupported_on_windows("bougie up"),
+        #[cfg(unix)]
         Command::Down { names, purge } => commands::services::down::run(format, field, names, purge),
+        #[cfg(not(unix))]
+        Command::Down { names: _, purge: _ } => unsupported_on_windows("bougie down"),
         Command::Run { with, no_sync, xdebug, argv } => {
             commands::run::run(&with, &argv, format, field, no_sync, xdebug)
         }
@@ -171,6 +189,7 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
         Command::SelfCmd(SelfCommand::Version { short }) => {
             commands::self_version::run(format, field, short)
         }
+        #[cfg(unix)]
         Command::Server(ServerCommand::Run { config, listen, log_format }) => {
             commands::server::run::run(
                 format,
@@ -180,45 +199,63 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
                 log_format.as_deref(),
             )
         }
+        #[cfg(unix)]
         Command::Server(ServerCommand::List) => commands::server::helpers::list(format, field),
+        #[cfg(unix)]
         Command::Server(ServerCommand::Hosts(ServerHostsCommand::Apply { config })) => {
             commands::server::hosts::apply(format, field, config.as_deref())
         }
+        #[cfg(unix)]
         Command::Server(ServerCommand::Tls(ServerTlsCommand::Install)) => {
             commands::server::tls::install(format, field)
         }
+        #[cfg(unix)]
         Command::Server(ServerCommand::Tls(ServerTlsCommand::Uninstall)) => {
             commands::server::tls::uninstall(format, field)
         }
+        #[cfg(not(unix))]
+        Command::Server(_) => unsupported_on_windows("bougie server"),
+        #[cfg(unix)]
         Command::Services(ServicesCommand::Add { names }) => {
             commands::services::add::run(format, field, names)
         }
+        #[cfg(unix)]
         Command::Services(ServicesCommand::Remove { names, purge }) => {
             commands::services::remove::run(format, field, names, purge)
         }
+        #[cfg(unix)]
         Command::Services(ServicesCommand::List { all }) => {
             commands::services::list::run(format, field, all)
         }
+        #[cfg(unix)]
         Command::Services(ServicesCommand::Catalog) => {
             commands::services::catalog::run(format, field)
         }
+        #[cfg(unix)]
         Command::Services(ServicesCommand::Restart { names }) => {
             commands::services::restart::run(format, field, names)
         }
+        #[cfg(unix)]
         Command::Services(ServicesCommand::Status { name }) => {
             commands::services::status::run(format, field, name)
         }
+        #[cfg(unix)]
         Command::Services(ServicesCommand::Logs { name, follow, lines }) => {
             commands::services::logs::run(format, field, name, follow, lines)
         }
+        #[cfg(unix)]
         Command::Services(ServicesCommand::Daemon(ServicesDaemonCommand::Status)) => {
             commands::services::daemon::status(format, field)
         }
+        #[cfg(unix)]
         Command::Services(ServicesCommand::Daemon(ServicesDaemonCommand::Stop)) => {
             commands::services::daemon::stop(format, field)
         }
+        #[cfg(unix)]
         Command::Services(ServicesCommand::Daemon(ServicesDaemonCommand::Version)) => {
             commands::services::daemon::version(format, field)
         }
+        #[cfg(not(unix))]
+        Command::Services(_) => unsupported_on_windows("bougie services"),
     }
 }

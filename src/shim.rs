@@ -15,6 +15,7 @@ use crate::paths::Paths;
 use crate::state::{read_project_resolved, read_project_resolved_composer};
 use eyre::{eyre, Result, WrapErr};
 use std::ffi::OsStr;
+#[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -25,7 +26,9 @@ pub enum Role {
     PhpFpm,
     Composer,
     Unzip,
+    #[cfg(unix)]
     Bougied,
+    #[cfg(unix)]
     Babysit,
 }
 
@@ -36,7 +39,9 @@ impl Role {
             Self::PhpFpm => "php-fpm",
             Self::Composer => "composer",
             Self::Unzip => "unzip",
+            #[cfg(unix)]
             Self::Bougied => "bougied",
+            #[cfg(unix)]
             Self::Babysit => "bougie-babysit",
         }
     }
@@ -44,12 +49,18 @@ impl Role {
 
 pub fn role_from_argv0(argv0: &OsStr) -> Option<Role> {
     let stem = Path::new(argv0).file_name()?.to_str()?;
+    // On Windows the symlink/hardlink shims carry the `.exe` suffix
+    // (see `commands::sync::write_shims`); strip it so the basename
+    // comparison matches the same role names as on Unix.
+    let stem = stem.strip_suffix(".exe").unwrap_or(stem);
     match stem {
         "php" => Some(Role::Php),
         "php-fpm" => Some(Role::PhpFpm),
         "composer" => Some(Role::Composer),
         "unzip" => Some(Role::Unzip),
+        #[cfg(unix)]
         "bougied" => Some(Role::Bougied),
+        #[cfg(unix)]
         "bougie-babysit" => Some(Role::Babysit),
         _ => None,
     }
@@ -75,6 +86,7 @@ pub fn exec(role: Role) -> Result<ExitCode> {
     // The bougied role is also project-agnostic: it's a per-user
     // long-lived supervisor, not bound to any single project. The CLI
     // auto-spawns it via `current_exe()` with argv[0] = "bougied".
+    #[cfg(unix)]
     if role == Role::Bougied {
         let paths = Paths::from_env()?;
         return crate::daemon::run(paths);
@@ -83,6 +95,7 @@ pub fn exec(role: Role) -> Result<ExitCode> {
     // The babysit role is the per-service supervisor shim that
     // bougied spawns to own a service's process group and clean it
     // up on parent death. Project-agnostic.
+    #[cfg(unix)]
     if role == Role::Babysit {
         return crate::babysit::run(args);
     }
@@ -110,7 +123,9 @@ pub fn exec(role: Role) -> Result<ExitCode> {
 
     match role {
         Role::Php | Role::PhpFpm => {
-            let bin = install.join("bin").join(role.name());
+            // On Windows, the per-version PHP install ships `php.exe` /
+            // `php-fpm.exe`; on Unix it's bare `php` / `php-fpm`.
+            let bin = install.join("bin").join(exe_name(role.name()));
             if !bin.exists() {
                 return Err(eyre!(
                     "{}: install at {} is missing — re-run `bougie sync`",
@@ -118,14 +133,13 @@ pub fn exec(role: Role) -> Result<ExitCode> {
                     install.display()
                 ));
             }
-            // execve replaces this process; the only return is an error.
-            let err = std::process::Command::new(&bin)
-                .args(&args)
-                .arg0(&bin)
+            let mut cmd = std::process::Command::new(&bin);
+            cmd.args(&args)
                 .env("PHP_INI_SCAN_DIR", &scan_dir)
-                .env("PHP_BINARY", &bin)
-                .exec();
-            Err(err.into())
+                .env("PHP_BINARY", &bin);
+            #[cfg(unix)]
+            cmd.arg0(&bin);
+            run_and_propagate(cmd, role.name())
         }
         Role::Composer => {
             let composer_version =
@@ -142,7 +156,7 @@ pub fn exec(role: Role) -> Result<ExitCode> {
                     phar.display()
                 ));
             }
-            let php_bin = install.join("bin").join("php");
+            let php_bin = install.join("bin").join(exe_name("php"));
             if !php_bin.exists() {
                 return Err(eyre!(
                     "composer: php at {} is missing — re-run `bougie sync`",
@@ -163,33 +177,75 @@ pub fn exec(role: Role) -> Result<ExitCode> {
             // PHP_BINARY env var pins the interpreter for child `@php`
             // scripts: without it, Symfony's PhpExecutableFinder falls
             // through to a PATH search and finds the bougie shim.
-            let err = std::process::Command::new(&php_bin)
-                .args(&composer_args)
-                .arg0("composer")
+            let mut cmd = std::process::Command::new(&php_bin);
+            cmd.args(&composer_args)
                 .env("PATH", new_path)
                 .env("PHP_INI_SCAN_DIR", &scan_dir)
-                .env("PHP_BINARY", &php_bin)
-                .exec();
-            Err(err.into())
+                .env("PHP_BINARY", &php_bin);
+            #[cfg(unix)]
+            cmd.arg0("composer");
+            run_and_propagate(cmd, "composer")
         }
         Role::Unzip => unreachable!("unzip role handled above"),
+        #[cfg(unix)]
         Role::Bougied => unreachable!("bougied role handled above"),
+        #[cfg(unix)]
         Role::Babysit => unreachable!("babysit role handled above"),
     }
 }
 
-/// Prepend `dir` to a colon-separated `PATH` value, preserving the
-/// existing entries. Returns just `dir` if `prev` is empty.
+/// On Unix, append the target executable name verbatim (`php`).
+/// On Windows, append `.exe` so the file actually exists on disk.
+fn exe_name(stem: &str) -> String {
+    #[cfg(unix)]
+    {
+        stem.to_owned()
+    }
+    #[cfg(not(unix))]
+    {
+        format!("{stem}.exe")
+    }
+}
+
+/// On Unix, replace the current process with `cmd` via `execve`. The
+/// only return is an error.
+/// On Windows there is no execve; spawn the child, wait, and propagate
+/// its exit code.
+fn run_and_propagate(mut cmd: std::process::Command, label: &str) -> Result<ExitCode> {
+    #[cfg(unix)]
+    {
+        let err = cmd.exec();
+        Err(err).wrap_err_with(|| format!("exec {label}"))
+    }
+    #[cfg(not(unix))]
+    {
+        let status = cmd
+            .status()
+            .wrap_err_with(|| format!("spawning {label}"))?;
+        let code = status.code().unwrap_or(1);
+        let code = u8::try_from(code).unwrap_or(1);
+        Ok(ExitCode::from(code))
+    }
+}
+
+/// Prepend `dir` to a `PATH` value (`:`-separated on Unix, `;`-separated
+/// on Windows), preserving the existing entries. Returns just `dir` if
+/// `prev` is empty.
 fn prepend_path(dir: &Path, prev: &std::ffi::OsStr) -> std::ffi::OsString {
     use std::ffi::OsString;
     let mut out = OsString::new();
     out.push(dir.as_os_str());
     if !prev.is_empty() {
-        out.push(":");
+        out.push(PATH_SEP);
         out.push(prev);
     }
     out
 }
+
+#[cfg(unix)]
+const PATH_SEP: &str = ":";
+#[cfg(not(unix))]
+const PATH_SEP: &str = ";";
 
 /// Resolve the project root the shim should read state from. In order:
 ///
@@ -274,9 +330,11 @@ mod tests {
     }
 
     #[test]
-    fn prepend_path_joins_with_colon() {
-        let out = prepend_path(Path::new("/a/b"), std::ffi::OsStr::new("/usr/bin:/bin"));
-        assert_eq!(out, std::ffi::OsString::from("/a/b:/usr/bin:/bin"));
+    fn prepend_path_joins_with_platform_separator() {
+        let prev = format!("/usr/bin{PATH_SEP}/bin");
+        let expected = format!("/a/b{PATH_SEP}/usr/bin{PATH_SEP}/bin");
+        let out = prepend_path(Path::new("/a/b"), std::ffi::OsStr::new(&prev));
+        assert_eq!(out, std::ffi::OsString::from(expected));
     }
 
     #[test]
@@ -285,6 +343,7 @@ mod tests {
         assert_eq!(role_from_argv0(&OsString::from("bougie")), None);
     }
 
+    #[cfg(unix)]
     #[test]
     fn detects_bougied_role() {
         assert_eq!(role_from_argv0(&OsString::from("bougied")), Some(Role::Bougied));
@@ -294,6 +353,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn detects_babysit_role() {
         assert_eq!(
