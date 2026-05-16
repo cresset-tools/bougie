@@ -90,15 +90,15 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
         Command::Php(PhpCommand::Install {
             requests,
             flavor,
-            no_baseline,
-            baseline_only,
+            bare,
+            without,
         }) => commands::php_install::run(
             format,
             field,
             &requests,
             flavor.as_deref(),
-            no_baseline,
-            baseline_only.as_deref(),
+            bare,
+            &without,
         ),
         Command::Php(PhpCommand::Uninstall { requests, flavor }) => commands::php_uninstall::run(
             format,

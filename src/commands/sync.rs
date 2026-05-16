@@ -433,12 +433,12 @@ mod tests {
     fn fragment_name_parsed_only_for_baseline_extensions() {
         // Only filenames in `<digits>-<name>.ini` shape with a name
         // that's in the baseline set return Some — core fragments
-        // (e.g. `20-openssl.ini`) deliberately return None so they
-        // can't be opted out.
-        assert_eq!(ext_name_from_fragment("20-mbstring.ini"), Some("mbstring"));
-        assert_eq!(ext_name_from_fragment("20-mysqli.ini"), Some("mysqli"));
-        assert_eq!(ext_name_from_fragment("20-openssl.ini"), None); // core
-        assert_eq!(ext_name_from_fragment("10-opcache.ini"), None); // core
+        // (statically built into bin/php — e.g. openssl) deliberately
+        // return None so they can't be opted out via `ext-X = false`.
+        assert_eq!(ext_name_from_fragment("20-readline.ini"), Some("readline"));
+        assert_eq!(ext_name_from_fragment("20-ctype.ini"), Some("ctype"));
+        assert_eq!(ext_name_from_fragment("20-openssl.ini"), None); // static core
+        assert_eq!(ext_name_from_fragment("20-mbstring.ini"), None); // per-ext, not baseline
         assert_eq!(ext_name_from_fragment("notfragment.txt"), None);
         assert_eq!(ext_name_from_fragment("custom.ini"), None);
     }
@@ -446,17 +446,17 @@ mod tests {
     #[test]
     fn baseline_opt_outs_filters_to_baseline_disabled_only() {
         let mut exts = BTreeMap::new();
-        exts.insert("mysqli".into(), ExtensionPin::Disabled(false));
+        exts.insert("readline".into(), ExtensionPin::Disabled(false));
         exts.insert("redis".into(), ExtensionPin::Disabled(false)); // not baseline
-        exts.insert("mbstring".into(), ExtensionPin::Version("1.0".into())); // pinned, not disabled
+        exts.insert("ctype".into(), ExtensionPin::Version("1.0".into())); // pinned, not disabled
         let project = ProjectConfig {
             composer: None,
             bougie: BougieConfig { extensions: exts, ..Default::default() },
         };
         let out = baseline_opt_outs(&project);
-        assert!(out.contains("mysqli"));
+        assert!(out.contains("readline"));
         assert!(!out.contains("redis"));
-        assert!(!out.contains("mbstring"));
+        assert!(!out.contains("ctype"));
     }
 
     #[test]
@@ -496,18 +496,21 @@ mod tests {
         let project = TempDir::new().unwrap();
         let src = install.path().join("etc/php/conf.d");
         std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("20-readline.ini"), "extension=readline\n").unwrap();
+        std::fs::write(src.join("20-ctype.ini"), "extension=ctype\n").unwrap();
         std::fs::write(src.join("20-mbstring.ini"), "extension=mbstring\n").unwrap();
-        std::fs::write(src.join("20-mysqli.ini"), "extension=mysqli\n").unwrap();
-        std::fs::write(src.join("20-openssl.ini"), "extension=openssl\n").unwrap();
 
         let mut opt_out = BTreeSet::new();
-        opt_out.insert("mysqli".into());
+        opt_out.insert("readline".into());
         replicate_install_conf_d(install.path(), project.path(), &opt_out).unwrap();
 
         let dst = project.path().join(".bougie/conf.d");
+        assert!(dst.join("00-20-ctype.ini").exists());
+        // mbstring isn't baseline, so it can't be opted out via this
+        // path — replicate copies it through. (User-added per-ext
+        // fragments are out of scope for baseline opt-out.)
         assert!(dst.join("00-20-mbstring.ini").exists());
-        assert!(dst.join("00-20-openssl.ini").exists()); // core, can't be opted out
-        assert!(!dst.join("00-20-mysqli.ini").exists());
+        assert!(!dst.join("00-20-readline.ini").exists());
     }
 }
 
