@@ -292,11 +292,16 @@ pub struct RequiresTool {
     /// Manifest URL — absolute, same convention as [`Closure::url`]. The
     /// index publisher substitutes `{INDEX_BASE}` at publish time so the
     /// client never has to reconstruct paths.
+    ///
+    /// **No `manifest_sha256` companion field.** The inner manifest's
+    /// sha256 is verified via the section row for the inner tool
+    /// (`tool/<name>.json`), which already carries the authoritative
+    /// `manifest.sha256` for every artifact in the publish. Computing
+    /// the sha at tarball.nix build time would require a two-pass
+    /// substitution in `index.nix` (substitute → hash → re-substitute
+    /// cross-refs → re-hash); the section round-trip is the simpler
+    /// trade. See `UNBUNDLE_PLAN.md` §"Note on inner-manifest verification".
     pub manifest_url: String,
-    /// sha256 of the depended-on manifest's body. Lets the client
-    /// pin-verify the recursive lookup without an extra round-trip
-    /// through the section file.
-    pub manifest_sha256: String,
     /// Path relative to the outer tool's install root where the inner
     /// tool's install root must be symlinked. Example: opensearch sets
     /// `link_into = "jdk"` so its scripts find `${ES_HOME}/jdk/bin/java`.
@@ -325,13 +330,6 @@ impl RequiresTool {
                 "requires_tool {} manifest_url must be absolute (the index publisher substitutes {{INDEX_BASE}}): {:?}",
                 self.name,
                 self.manifest_url
-            ));
-        }
-        if !is_hex_exact(&self.manifest_sha256, 64) {
-            return Err(eyre!(
-                "requires_tool {} manifest_sha256 must be 64 hex chars: {:?}",
-                self.name,
-                self.manifest_sha256
             ));
         }
         // Empty link_into is the explicit "install but don't link" case.
@@ -654,7 +652,6 @@ mod tests {
             version: "21.0.11+10".into(),
             tag: "jdk-21.0.11_10-x86_64-unknown-linux-gnu-default".into(),
             manifest_url: "https://index.example.com/versions/v1/targets/x86_64-unknown-linux-gnu/manifests/tool/jdk/21.0.11+10/jdk-21.0.11_10-x86_64-unknown-linux-gnu-default.json".into(),
-            manifest_sha256: "a".repeat(64),
             link_into: "jdk".into(),
         }
     }
@@ -682,7 +679,6 @@ mod tests {
                     "version":"27.3.4.11",
                     "tag":"erlang-27.3.4.11-x86_64-unknown-linux-gnu-default",
                     "manifest_url":"https://index.example.com/versions/v1/targets/x86_64-unknown-linux-gnu/manifests/tool/erlang/27.3.4.11/erlang-27.3.4.11-x86_64-unknown-linux-gnu-default.json",
-                    "manifest_sha256":"1111111111111111111111111111111111111111111111111111111111111111",
                     "link_into":"erlang"
                 }
             ]
@@ -764,13 +760,6 @@ mod tests {
     }
 
     #[test]
-    fn requires_tool_validate_rejects_short_sha256() {
-        let mut r = valid_requires_tool();
-        r.manifest_sha256 = "abc".into();
-        assert!(r.validate().unwrap_err().to_string().contains("64 hex"));
-    }
-
-    #[test]
     fn requires_tool_validate_rejects_link_into_dotdot() {
         let mut r = valid_requires_tool();
         r.link_into = "foo/../bar".into();
@@ -807,14 +796,12 @@ mod tests {
                     "name":"jdk","version":"21.0.11+10",
                     "tag":"jdk-21.0.11_10-x86_64-unknown-linux-gnu-default",
                     "manifest_url":"https://x/j.json",
-                    "manifest_sha256":"1111111111111111111111111111111111111111111111111111111111111111",
                     "link_into":"runtime"
                 },
                 {
                     "name":"erlang","version":"27.3.4.11",
                     "tag":"erlang-27.3.4.11-x86_64-unknown-linux-gnu-default",
                     "manifest_url":"https://x/e.json",
-                    "manifest_sha256":"2222222222222222222222222222222222222222222222222222222222222222",
                     "link_into":"runtime"
                 }
             ]
@@ -843,14 +830,12 @@ mod tests {
                     "name":"jdk","version":"21.0.11+10",
                     "tag":"jdk-21.0.11_10-x86_64-unknown-linux-gnu-default",
                     "manifest_url":"https://x/j.json",
-                    "manifest_sha256":"1111111111111111111111111111111111111111111111111111111111111111",
                     "link_into":""
                 },
                 {
                     "name":"erlang","version":"27.3.4.11",
                     "tag":"erlang-27.3.4.11-x86_64-unknown-linux-gnu-default",
                     "manifest_url":"https://x/e.json",
-                    "manifest_sha256":"2222222222222222222222222222222222222222222222222222222222222222",
                     "link_into":""
                 }
             ]

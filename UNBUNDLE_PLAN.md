@@ -79,10 +79,6 @@ pub struct RequiresTool {
     /// index publisher substitutes {INDEX_BASE}/{BLOB_BASE} at publish
     /// time so the client never has to reconstruct paths.
     pub manifest_url: String,
-    /// sha256 of the depended-on manifest's body. Lets the client
-    /// pin-verify the recursive lookup without an extra round-trip
-    /// through the section file.
-    pub manifest_sha256: String,
     /// Path relative to the outer tool's install root where the inner
     /// tool's install root must be linked. Example: opensearch sets
     /// link_into = "jdk" so its scripts find `${ES_HOME}/jdk/bin/java`.
@@ -101,8 +97,31 @@ pub struct Manifest {
 ```
 
 `RequiresTool::validate()` mirrors `Closure::validate()`: reject empty
-name, empty version, non-absolute manifest_url, non-64-hex sha256,
-and `link_into` containing `..` / starting with `/`.
+name, empty version, non-absolute manifest_url, and `link_into`
+containing `..` / starting with `/`.
+
+### Note on inner-manifest verification
+
+The wire format deliberately omits `manifest_sha256` on `RequiresTool`
+entries. Reason: at tarball.nix build time, the inner tool's
+substituted manifest sha256 isn't known yet — index.nix substitutes
+`{BLOB_BASE}` during publish, which changes the bytes. Computing it
+ahead of time would require a two-pass substitution in `index.nix`
+(stage all manifests → hash them → re-substitute cross-references →
+re-hash), which is real work.
+
+For v1 the client falls back to verifying the inner manifest via the
+**section row** for `<inner-tool>` — section rows already carry the
+authoritative `manifest.sha256` for every manifest in the publish.
+The recursive walk fetches the index root → inner tool's section →
+picks the row whose `tag` matches the outer manifest's
+`requires_tools[].tag` → uses the section row's sha256 to verify the
+manifest body. One extra section fetch per recursive step, but
+section files are small and cache-friendly.
+
+If a future wire-format revision wants to skip the section round-trip
+on requires-tools resolution, add `manifest_sha256` then and grow
+index.nix to do the two-pass substitution.
 
 ## Server-side layout (recap)
 
@@ -296,9 +315,10 @@ creates the `opensearch-…/jdk` link, and `bin/opensearch` finds Java.
      `paths.store().join(format!("{}-{}", requires_tool.name, requires_tool.version))`.
   2. If that path already exists as a directory, returns early —
      the inner tool is already installed.
-  3. Otherwise fetches `requires_tool.manifest_url` with sha256 =
-     `requires_tool.manifest_sha256`, validates, then runs the same
-     blob + closure flow as Phase 1.
+  3. Otherwise fetches `requires_tool.manifest_url`, validates the
+     body against the inner tool's section-row sha256 (resolved via
+     the same target's `tool/<inner-name>` section), then runs the
+     same blob + closure flow as Phase 1.
   4. The inner tool's own `requires_tools[]` is walked recursively.
      Cycle prevention is a visited-set keyed by `(name, version)` —
      in practice no cycles exist (tool deps form a DAG: opensearch →
@@ -427,7 +447,8 @@ trace through the existing + new code paths.
      - Computes inner install root:
        `$BOUGIE_HOME/store/jdk-21.0.11+10`. Not present.
      - Fetches the manifest at `entry.manifest_url`, verifies against
-       `entry.manifest_sha256`.
+       the section-row sha256 for jdk in this target's
+       `tool/jdk.json` section.
      - Validates: `jdk` manifest has `closure=[]`, `requires_tools=[]`.
      - Recurses into the same install flow:
        - `fetch_blob` for the JDK tarball → `$BOUGIE_HOME/store/jdk-21.0.11+10/`.
