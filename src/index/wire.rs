@@ -249,9 +249,17 @@ impl Closure {
         if self.version.is_empty() {
             return Err(eyre!("closure {} has empty version", self.name));
         }
-        if !is_hex_min(&self.hash, 8) {
+        // The closure hash field carries the Nix store-path hash for the
+        // bundled-dep store path (chars 11..19 of the 32-char base32 store
+        // hash — see php-build-standalone shared/mkDep.nix
+        // `passthru.storeName`). Nix's base32 alphabet is
+        // `[a-z0-9]` minus `e`/`o`/`t`/`u`, so e.g. `jbmj2bcm` (zlib),
+        // `99hgd6kn` (openssl), `grpadm5y` (ncurses) are all valid. The
+        // earlier hex-only check rejected anything with `g`-`z` and
+        // wedged tool installs at the manifest-validate step.
+        if !is_nix_base32_min(&self.hash, 8) {
             return Err(eyre!(
-                "closure {} hash is not ≥8 hex chars: {:?}",
+                "closure {} hash is not ≥8 Nix-base32 chars: {:?}",
                 self.name,
                 self.hash
             ));
@@ -364,8 +372,14 @@ fn is_kebab_lower(s: &str) -> bool {
     chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '-'))
 }
 
-fn is_hex_min(s: &str, n: usize) -> bool {
-    s.len() >= n && s.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+/// `true` if `s` is at least `n` characters long and uses only the Nix
+/// base32 store-hash alphabet — i.e. `[a-z0-9]`. Note we accept the
+/// broader lowercase-alnum set rather than the strict Nix base32 set
+/// (which excludes `e`/`o`/`t`/`u`); the publisher emits hashes Nix
+/// already validated, and false positives would just be slightly-too-
+/// permissive on noise the publisher couldn't produce anyway.
+fn is_nix_base32_min(s: &str, n: usize) -> bool {
+    s.len() >= n && s.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
 }
 
 fn is_hex_exact(s: &str, n: usize) -> bool {
@@ -582,6 +596,41 @@ mod tests {
             name: "libffi".into(),
             version: "1".into(),
             hash: "abc".into(),
+            sha256: "0".repeat(64),
+            url: "https://x".into(),
+            size: 0,
+        };
+        assert!(c.validate().unwrap_err().to_string().contains("hash"));
+    }
+
+    /// Regression: php-build-standalone emits Nix-base32 store hashes
+    /// (`jbmj2bcm` for zlib, `99hgd6kn` for openssl, `grpadm5y` for
+    /// ncurses) which contain alphabetic characters outside `[a-f]`.
+    /// The previous `is_hex_min` check rejected every real-world tool
+    /// closure entry, wedging `bougie up` at the manifest-validate step.
+    #[test]
+    fn validate_accepts_nix_base32_hash() {
+        for hash in ["jbmj2bcm", "99hgd6kn", "grpadm5y", "a2wsf4nv"] {
+            let c = Closure {
+                name: "openssl".into(),
+                version: "3.5.6".into(),
+                hash: hash.into(),
+                sha256: "0".repeat(64),
+                url: "https://x".into(),
+                size: 0,
+            };
+            c.validate().unwrap_or_else(|e| {
+                panic!("rejected real Nix-base32 hash {hash:?}: {e}")
+            });
+        }
+    }
+
+    #[test]
+    fn validate_rejects_uppercase_hash() {
+        let c = Closure {
+            name: "libffi".into(),
+            version: "1".into(),
+            hash: "JBMJ2BCM".into(),
             sha256: "0".repeat(64),
             url: "https://x".into(),
             size: 0,
