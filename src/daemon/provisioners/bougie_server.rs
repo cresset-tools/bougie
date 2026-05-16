@@ -57,13 +57,20 @@ pub fn provision(paths: &Paths, tenants_path: &Path, tenant_name: &str, project:
         // previous up/down cycle might have removed the [[host]]
         // before the daemon was restarted; we re-add idempotently.
         let hostname = derive_hostname(tenant_name);
-        let _ = ensure_host_block(paths, &hostname, project);
+        // Best-effort on re-add: if web-root resolution fails the
+        // ledger entry is still authoritative and the user can fix
+        // the project later. Skip the [[host]] rewrite in that case.
+        if let Ok(root) = resolve_web_root(project) {
+            let _ = ensure_host_block(paths, &hostname, project, &root);
+        }
         let _ = ping_reload_config(paths);
         return Ok(existing_t.clone());
     }
 
     let hostname = derive_hostname(tenant_name);
-    ensure_host_block(paths, &hostname, project)
+    let root = resolve_web_root(project)
+        .wrap_err_with(|| format!("resolving web root for {}", project.display()))?;
+    ensure_host_block(paths, &hostname, project, &root)
         .wrap_err_with(|| format!("adding [[host]] for {hostname}"))?;
     ping_reload_config(paths).wrap_err("notifying running server about new host")?;
 
@@ -139,7 +146,7 @@ fn derive_hostname(tenant_name: &str) -> String {
 /// Ensure `[[host]]` exists for the given hostname/project. Wraps
 /// `commands::server::config::add_host` so the daemon writes
 /// through the same atomic-temp-then-rename code path the CLI uses.
-fn ensure_host_block(paths: &Paths, hostname: &str, project: &Path) -> Result<()> {
+fn ensure_host_block(paths: &Paths, hostname: &str, project: &Path, root: &str) -> Result<()> {
     let cfg = server_toml_path(paths);
     let parent = cfg.parent().ok_or_else(|| eyre!("config path has no parent"))?;
     std::fs::create_dir_all(parent)
@@ -147,9 +154,49 @@ fn ensure_host_block(paths: &Paths, hostname: &str, project: &Path) -> Result<()
     // Per `bougie server add` behaviour, `add_host` returns
     // `Ok(None)` when the hostname is already present — idempotent
     // by design.
-    crate::commands::server::config::add_host(&cfg, hostname, project, None)
+    crate::commands::server::config::add_host(&cfg, hostname, project, Some(root))
         .wrap_err_with(|| format!("adding host {hostname} to {}", cfg.display()))?;
     Ok(())
+}
+
+/// Resolve the project's web-root subdirectory.
+///
+/// Precedence:
+///   1. Explicit `extra.bougie.server.root` (composer.json) or
+///      `[server] root` (bougie.toml) — wins when set so users with
+///      unusual layouts (e.g. a `pub/` directory that *isn't* the
+///      docroot) keep control.
+///   2. Auto-detect `pub` — Magento + a handful of legacy projects.
+///   3. Auto-detect `public` — Laravel, Symfony, Drupal, most modern
+///      frameworks.
+///   4. Error with an actionable hint pointing at both config sites.
+///
+/// Missing `composer.json` and `bougie.toml` are fine; the loader
+/// returns a default config in that case so step 1 just becomes a
+/// no-op.
+fn resolve_web_root(project: &Path) -> Result<String> {
+    let cfg = crate::config::load_project(project)
+        .wrap_err_with(|| format!("loading project config from {}", project.display()))?;
+    if let Some(explicit) = cfg.bougie.server.root.as_deref() {
+        if explicit.is_empty() {
+            return Err(eyre!(
+                "server.root is set to an empty string in the project config; \
+                 remove the field or point it at a subdirectory like \"public\""
+            ));
+        }
+        return Ok(explicit.to_string());
+    }
+    for candidate in ["pub", "public"] {
+        if project.join(candidate).is_dir() {
+            return Ok(candidate.into());
+        }
+    }
+    Err(eyre!(
+        "could not auto-detect a web root in {}: neither `pub` nor `public` exists. \
+         Set `[server] root = \"<dir>\"` in bougie.toml or \
+         `extra.bougie.server.root` in composer.json to point at the docroot.",
+        project.display()
+    ))
 }
 
 /// Send `{"v":1,"method":"reload-config"}` to the running server.
@@ -263,6 +310,67 @@ mod tests {
     fn derive_hostname_preserves_already_dns_safe_names() {
         assert_eq!(derive_hostname("foo"), "foo.bougie.run");
         assert_eq!(derive_hostname("my-app"), "my-app.bougie.run");
+    }
+
+    #[test]
+    fn resolve_root_prefers_pub_over_public() {
+        let td = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(td.path().join("pub")).unwrap();
+        std::fs::create_dir_all(td.path().join("public")).unwrap();
+        assert_eq!(resolve_web_root(td.path()).unwrap(), "pub");
+    }
+
+    #[test]
+    fn resolve_root_falls_back_to_public() {
+        let td = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(td.path().join("public")).unwrap();
+        assert_eq!(resolve_web_root(td.path()).unwrap(), "public");
+    }
+
+    #[test]
+    fn resolve_root_errors_when_neither_exists() {
+        let td = tempfile::TempDir::new().unwrap();
+        let err = resolve_web_root(td.path()).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("pub"));
+        assert!(msg.contains("public"));
+        assert!(msg.contains("bougie.toml") || msg.contains("composer.json"), "{msg}");
+    }
+
+    #[test]
+    fn resolve_root_explicit_config_wins_over_pub() {
+        let td = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(td.path().join("pub")).unwrap();
+        std::fs::create_dir_all(td.path().join("web")).unwrap();
+        std::fs::write(
+            td.path().join("bougie.toml"),
+            "[server]\nroot = \"web\"\n",
+        )
+        .unwrap();
+        assert_eq!(resolve_web_root(td.path()).unwrap(), "web");
+    }
+
+    #[test]
+    fn resolve_root_reads_extra_bougie_server_from_composer() {
+        let td = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            td.path().join("composer.json"),
+            r#"{"name":"acme/blog","extra":{"bougie":{"server":{"root":"site"}}}}"#,
+        )
+        .unwrap();
+        assert_eq!(resolve_web_root(td.path()).unwrap(), "site");
+    }
+
+    #[test]
+    fn resolve_root_rejects_empty_explicit_value() {
+        let td = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            td.path().join("bougie.toml"),
+            "[server]\nroot = \"\"\n",
+        )
+        .unwrap();
+        let err = resolve_web_root(td.path()).unwrap_err();
+        assert!(format!("{err:#}").contains("empty"));
     }
 
     #[test]

@@ -26,6 +26,7 @@ pub struct BougieConfig {
     pub extensions: BTreeMap<String, ExtensionPin>,
     pub services: BTreeMap<String, ServicePin>,
     pub index: Vec<IndexEntry>,
+    pub server: ServerConfig,
 }
 
 /// A value in the `[extensions]` table — either an exact version pin
@@ -73,6 +74,20 @@ pub struct PhpConfig {
 #[serde(default)]
 pub struct ComposerConfig {
     pub version: Option<String>,
+}
+
+/// Project-level overrides for the supervised `bougie server` host
+/// block. Today the only knob is `root`, used to escape the
+/// `pub` → `public` → error auto-detection. Lives under
+/// `[server]` in `bougie.toml` or `extra.bougie.server` in
+/// `composer.json`.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct ServerConfig {
+    /// Project-relative docroot. When unset, the provisioner picks
+    /// `pub` if present, else `public`, else errors with a hint to
+    /// set this field.
+    pub root: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]

@@ -49,6 +49,10 @@ fn project_with_composer(name: &str) -> TempDir {
         format!(r#"{{"name":"{name}"}}"#),
     )
     .unwrap();
+    // bougie up server auto-detects `pub`/`public`. Most Laravel/
+    // Symfony projects (the realistic shape) carry `public/`, so
+    // seed that as the test fixture.
+    fs::create_dir_all(dir.path().join("public")).unwrap();
     dir
 }
 
@@ -256,6 +260,93 @@ fn down_purge_drops_host_block() {
             "host block should be gone: {body}"
         );
     }
+
+    stop_daemon(&env);
+}
+
+#[test]
+fn up_fails_with_actionable_hint_when_no_docroot() {
+    // Project has neither `pub` nor `public` and no project config:
+    // `bougie up` must surface a clear error pointing at the two
+    // configurable escape hatches.
+    let _guard = server_test_lock();
+    let env = TestEnv::new();
+    let proj = TempDir::new().expect("project tempdir");
+    fs::write(
+        proj.path().join("composer.json"),
+        r#"{"name":"acme/blog"}"#,
+    )
+    .unwrap();
+    // Deliberately no `public/` or `pub/` directory.
+
+    env.bougie()
+        .args(["services", "add", "server"])
+        .current_dir(proj.path())
+        .timeout(STEP_TIMEOUT)
+        .assert()
+        .success();
+    let assert = env
+        .bougie()
+        .args(["up"])
+        .current_dir(proj.path())
+        .timeout(STEP_TIMEOUT)
+        .assert()
+        .failure();
+    let out = assert.get_output();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let combined = format!("{stderr}\n{stdout}");
+    assert!(
+        combined.contains("pub") && combined.contains("public"),
+        "error should mention both candidate dirs; got:\n{combined}"
+    );
+    assert!(
+        combined.contains("bougie.toml") || combined.contains("composer.json"),
+        "error should point at where to configure root; got:\n{combined}"
+    );
+
+    stop_daemon(&env);
+}
+
+#[test]
+fn explicit_root_in_composer_extra_overrides_autodetect() {
+    // `extra.bougie.server.root` wins over both auto-detect
+    // candidates. Project has `pub/` (highest auto-detect priority)
+    // but the config points at `web/`; the host block must take the
+    // configured value.
+    let _guard = server_test_lock();
+    let env = TestEnv::new();
+    let proj = TempDir::new().expect("project tempdir");
+    fs::write(
+        proj.path().join("composer.json"),
+        r#"{"name":"acme/blog","extra":{"bougie":{"server":{"root":"web"}}}}"#,
+    )
+    .unwrap();
+    fs::create_dir_all(proj.path().join("pub")).unwrap();
+    fs::create_dir_all(proj.path().join("web")).unwrap();
+
+    env.bougie()
+        .args(["services", "add", "server"])
+        .current_dir(proj.path())
+        .timeout(STEP_TIMEOUT)
+        .assert()
+        .success();
+    env.bougie()
+        .args(["up"])
+        .current_dir(proj.path())
+        .timeout(STEP_TIMEOUT)
+        .assert()
+        .success();
+    assert!(wait_for_tcp("127.0.0.1:7080", Duration::from_secs(10)));
+
+    let cfg = env
+        .home_path()
+        .join("state/services/server/conf/server.toml");
+    let body = fs::read_to_string(&cfg).expect("server.toml should exist");
+    assert!(
+        body.contains("root = \"web\""),
+        "expected explicit root in server.toml: {body}"
+    );
 
     stop_daemon(&env);
 }

@@ -3,6 +3,7 @@
 
 use super::{
     read_bougie_toml, BougieConfig, ComposerConfig, ComposerJson, IndexEntry, PhpConfig,
+    ServerConfig,
 };
 #[cfg(test)]
 use super::{ExtensionPin, ServicePin};
@@ -30,6 +31,9 @@ pub fn merge(toml_cfg: BougieConfig, extra_cfg: BougieConfig) -> BougieConfig {
         extensions: deep_merge_map(extra_cfg.extensions, toml_cfg.extensions),
         services: deep_merge_map(extra_cfg.services, toml_cfg.services),
         index: replace_if_nonempty(extra_cfg.index, toml_cfg.index),
+        server: ServerConfig {
+            root: toml_cfg.server.root.or(extra_cfg.server.root),
+        },
     }
 }
 
@@ -219,6 +223,33 @@ mod tests {
         assert_eq!(merged.services.len(), 2);
         assert_eq!(merged.services.get("redis").and_then(ServicePin::version), Some("8.6"));
         assert_eq!(merged.services.get("mariadb").and_then(ServicePin::version), Some("11.4"));
+    }
+
+    // -------------------- server merge --------------------
+
+    #[test]
+    fn server_root_toml_wins_over_extra() {
+        let toml_cfg = BougieConfig {
+            server: ServerConfig { root: Some("pub".into()) },
+            ..Default::default()
+        };
+        let extra_cfg = BougieConfig {
+            server: ServerConfig { root: Some("web".into()) },
+            ..Default::default()
+        };
+        let merged = merge(toml_cfg, extra_cfg);
+        assert_eq!(merged.server.root.as_deref(), Some("pub"));
+    }
+
+    #[test]
+    fn server_root_unset_in_toml_falls_back_to_extra() {
+        let toml_cfg = BougieConfig::default();
+        let extra_cfg = BougieConfig {
+            server: ServerConfig { root: Some("public".into()) },
+            ..Default::default()
+        };
+        let merged = merge(toml_cfg, extra_cfg);
+        assert_eq!(merged.server.root.as_deref(), Some("public"));
     }
 
     #[test]
