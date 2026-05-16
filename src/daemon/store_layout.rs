@@ -23,8 +23,8 @@
 
 use super::catalog::CatalogEntry;
 use crate::Paths;
-use eyre::{eyre, Result};
-use std::path::PathBuf;
+use eyre::{eyre, Result, WrapErr};
+use std::path::{Path, PathBuf};
 
 /// Locate the service's basedir under `$BOUGIE_HOME/store/`. Prefers
 /// the exact `<tarball>` name; falls back to any directory starting
@@ -64,6 +64,63 @@ pub fn basedir(paths: &Paths, entry: &CatalogEntry) -> Result<PathBuf> {
         store.display(),
         entry.tarball,
     ))
+}
+
+/// Create `outer_root/<link_into>` as a relative symlink pointing at
+/// `inner_root`. Mirrors the posture of `materialize_closure_peer`:
+/// idempotent (existing correct symlinks are left alone) and refuses
+/// to overwrite a regular file.
+///
+/// `link_into = ""` is the explicit "install but don't link" case
+/// — returns Ok without touching the filesystem. `link_into` may
+/// contain `/` separators (e.g. `"runtime/jdk"`); the number of
+/// `..` segments in the symlink target scales with the depth so
+/// the link still resolves into the shared store sibling.
+///
+/// Both `outer_root` and `inner_root` are expected to be direct
+/// children of `$BOUGIE_HOME/store/`, so the relative target is
+/// `../<inner-dirname>` for a one-segment `link_into`.
+///
+/// Used by `requires_tools` resolution per `UNBUNDLE_PLAN.md` Phase 2:
+/// opensearch's `bin/opensearch` invokes `${ES_HOME}/jdk/bin/java`,
+/// so the outer install root needs a `jdk` symlink absorbing the
+/// redirection into `$BOUGIE_HOME/store/jdk-<version>/`.
+pub fn create_link_into(outer_root: &Path, link_into: &str, inner_root: &Path) -> Result<()> {
+    if link_into.is_empty() {
+        return Ok(());
+    }
+    let inner_name = inner_root
+        .file_name()
+        .ok_or_else(|| eyre!("inner_root has no file name component: {}", inner_root.display()))?;
+
+    // Climb out of `link_into`'s segments and back into the shared
+    // store. For `link_into = "jdk"`, depth=1 → target = `../<inner>`.
+    // For `"runtime/jdk"`, depth=2 → `../../<inner>`.
+    let depth = link_into.split('/').filter(|s| !s.is_empty()).count();
+    let mut target = PathBuf::new();
+    for _ in 0..depth {
+        target.push("..");
+    }
+    target.push(inner_name);
+
+    let link = outer_root.join(link_into);
+    if let Some(parent) = link.parent() {
+        std::fs::create_dir_all(parent)
+            .wrap_err_with(|| format!("creating {}", parent.display()))?;
+    }
+    match std::fs::symlink_metadata(&link) {
+        Ok(meta) if meta.file_type().is_symlink() => Ok(()),
+        Ok(_) => Err(eyre!(
+            "{} exists but isn't a symlink — refusing to overwrite",
+            link.display()
+        )),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            std::os::unix::fs::symlink(&target, &link).wrap_err_with(|| {
+                format!("symlinking {} → {}", link.display(), target.display())
+            })
+        }
+        Err(e) => Err(eyre!("stat {}: {e}", link.display())),
+    }
 }
 
 /// Locate the main binary inside the service's store directory.
@@ -121,5 +178,94 @@ mod tests {
         let entry = catalog::find("mariadb").unwrap();
         let bin = binary(&paths, entry).unwrap();
         assert!(bin.ends_with("mariadb-11.4.4/bin/mariadbd"));
+    }
+
+    // ---------- create_link_into (Phase 2) ----------
+
+    #[test]
+    fn create_link_into_links_inner_at_one_segment() {
+        let td = tempfile::TempDir::new().unwrap();
+        let store = td.path();
+        let outer = store.join("opensearch-2.19.5");
+        let inner = store.join("jdk-21.0.11+10");
+        std::fs::create_dir_all(&outer).unwrap();
+        std::fs::create_dir_all(inner.join("bin")).unwrap();
+        std::fs::write(inner.join("bin/java"), "fake-java").unwrap();
+
+        create_link_into(&outer, "jdk", &inner).unwrap();
+
+        let link = outer.join("jdk");
+        let meta = std::fs::symlink_metadata(&link).unwrap();
+        assert!(meta.file_type().is_symlink());
+        let target = std::fs::read_link(&link).unwrap();
+        assert_eq!(target, std::path::PathBuf::from("../jdk-21.0.11+10"));
+        // And it actually resolves into the inner install.
+        assert!(link.join("bin/java").exists());
+    }
+
+    #[test]
+    fn create_link_into_handles_nested_link_path() {
+        // `link_into = "runtime/jdk"` → link lives two levels deep
+        // inside the outer install root, so the relative target needs
+        // two `..` segments to climb back to the shared store.
+        let td = tempfile::TempDir::new().unwrap();
+        let store = td.path();
+        let outer = store.join("weirdtool-1.0.0");
+        let inner = store.join("jdk-21.0.11+10");
+        std::fs::create_dir_all(&outer).unwrap();
+        std::fs::create_dir_all(inner.join("bin")).unwrap();
+        std::fs::write(inner.join("bin/java"), "fake").unwrap();
+
+        create_link_into(&outer, "runtime/jdk", &inner).unwrap();
+
+        let link = outer.join("runtime/jdk");
+        let meta = std::fs::symlink_metadata(&link).unwrap();
+        assert!(meta.file_type().is_symlink());
+        let target = std::fs::read_link(&link).unwrap();
+        assert_eq!(target, std::path::PathBuf::from("../../jdk-21.0.11+10"));
+        assert!(link.join("bin/java").exists());
+    }
+
+    #[test]
+    fn create_link_into_skips_empty_link() {
+        let td = tempfile::TempDir::new().unwrap();
+        let outer = td.path().join("outer");
+        let inner = td.path().join("inner");
+        std::fs::create_dir_all(&outer).unwrap();
+        std::fs::create_dir_all(&inner).unwrap();
+        create_link_into(&outer, "", &inner).unwrap();
+        // No symlink, no directory side-effects on the outer root.
+        let count = std::fs::read_dir(&outer).unwrap().count();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn create_link_into_is_idempotent() {
+        let td = tempfile::TempDir::new().unwrap();
+        let store = td.path();
+        let outer = store.join("opensearch-2.19.5");
+        let inner = store.join("jdk-21.0.11+10");
+        std::fs::create_dir_all(&outer).unwrap();
+        std::fs::create_dir_all(&inner).unwrap();
+        create_link_into(&outer, "jdk", &inner).unwrap();
+        create_link_into(&outer, "jdk", &inner).unwrap();
+        let entries: Vec<_> = std::fs::read_dir(&outer)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(entries.len(), 1);
+    }
+
+    #[test]
+    fn create_link_into_refuses_to_overwrite_regular_file() {
+        let td = tempfile::TempDir::new().unwrap();
+        let outer = td.path().join("outer");
+        let inner = td.path().join("inner");
+        std::fs::create_dir_all(&outer).unwrap();
+        std::fs::create_dir_all(&inner).unwrap();
+        // A plain file occupies the path we'd want to symlink.
+        std::fs::write(outer.join("jdk"), "junk").unwrap();
+        let err = create_link_into(&outer, "jdk", &inner).unwrap_err();
+        assert!(err.to_string().contains("isn't a symlink"), "got: {err}");
     }
 }
