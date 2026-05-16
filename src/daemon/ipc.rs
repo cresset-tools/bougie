@@ -676,7 +676,7 @@ async fn dispatch_up(
                 Err(e) => {
                     return ResultFrame::err(
                         "provision_failed",
-                        format!("{}: {}", name, e),
+                        format!("{}: {:#}", name, e),
                     );
                 }
             }
@@ -724,7 +724,7 @@ async fn dispatch_down(
                 if let Err(e) = deprov_res {
                     return ResultFrame::err(
                         "deprovision_failed",
-                        format!("{}: {}", entry.name, e),
+                        format!("{}: {:#}", entry.name, e),
                     );
                 }
                 deprovisioned.push(entry.name.to_string());
