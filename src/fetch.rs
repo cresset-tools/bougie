@@ -377,6 +377,14 @@ impl DownloadBar {
         }
     }
 
+    /// Current planned total. Returns 0 for a fresh / hidden bar that
+    /// has never been planned against. Used in tests to assert
+    /// planning correctness; not part of the user-facing UX.
+    #[cfg(test)]
+    pub(crate) fn planned(&self) -> u64 {
+        self.pb.length().unwrap_or(0)
+    }
+
     /// Set the right-hand-side label showing which artifact is
     /// currently downloading. Overwrites any previous label.
     pub fn set_current(&self, name: impl Into<String>) {

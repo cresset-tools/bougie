@@ -32,7 +32,7 @@ use crate::index::{
     fetch::{fetch_manifest, fetch_root, fetch_section},
     wire::Artifact,
 };
-use crate::install::{host_to_dirname, DEFAULT_INDEX_URL};
+use crate::install::{host_to_dirname, install_closure_peers, DEFAULT_INDEX_URL};
 use crate::lock::ExclusiveGuard;
 use crate::paths::Paths;
 use crate::target::Triple;
@@ -141,6 +141,12 @@ fn fetch_blocking(paths: &Paths, entry: &CatalogEntry) -> Result<()> {
         &artifact.manifest.path,
         &artifact.manifest.sha256,
     )?;
+    // Reject malformed closure / requires_tools entries up front, before
+    // we fetch the main blob. A bad closure URL is cheaper to surface
+    // here than after a 100MB download.
+    manifest
+        .validate()
+        .wrap_err_with(|| format!("validating manifest for {}", manifest.tag))?;
 
     std::fs::create_dir_all(paths.store())
         .wrap_err_with(|| format!("creating {}", paths.store().display()))?;
@@ -164,6 +170,14 @@ fn fetch_blocking(paths: &Paths, entry: &CatalogEntry) -> Result<()> {
         strip_prefix: "install",
     };
     fetch_blob(&client, &spec, &bar)?;
+
+    // Walk the closure: tool tarballs published after the
+    // UNBUNDLE_PLAN.md Phase-1 server split drop their bundled
+    // `install/store/<lib>/` subtree and declare a non-empty
+    // `closure[]` instead. Pre-split tarballs have an empty `closure[]`
+    // and this loop is a no-op — backward compatible.
+    install_closure_peers(&client, paths, &manifest, &dest, &bar)?;
+
     bar.finish();
     Ok(())
 }
