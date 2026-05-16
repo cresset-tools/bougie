@@ -10,7 +10,7 @@
 
 use super::resolve::Resolved;
 use crate::errors::BougieError;
-use crate::fetch::{fetch_file, BlobSpec, DownloadBar};
+use crate::fetch::{fetch_file, ArchiveKind, BlobSpec, DownloadBar};
 use crate::paths::Paths;
 use eyre::{Result, WrapErr};
 use serde::Deserialize;
@@ -152,8 +152,9 @@ pub fn fetch_phar(
         dest: &dest,
         // fetch_file doesn't extract, so the prefix is irrelevant —
         // keep it stable to avoid surprises if someone refactors
-        // this call onto fetch_blob.
+        // this call onto fetch_blob. Same logic for `archive`.
         strip_prefix: "",
+        archive: ArchiveKind::TarZst,
     };
     // `getcomposer.org/versions` doesn't carry a `size` field and
     // the .sha256sum sidecar only carries the hash, so we have no

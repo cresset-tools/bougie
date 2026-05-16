@@ -5,7 +5,7 @@ use crate::baseline::{
     skip_for_platform, BaselineFilter, BASELINE_EXTENSIONS, PREINSTALLED_EXTENSIONS,
 };
 use crate::errors::BougieError;
-use crate::fetch::{fetch_blob, BlobSpec, DownloadBar};
+use crate::fetch::{fetch_blob, ArchiveKind, BlobSpec, DownloadBar};
 use crate::index::{
     build_verifier,
     fetch::{fetch_manifest, fetch_root, fetch_section},
@@ -110,6 +110,7 @@ pub fn install_php(
             dest: &dest,
             // Interpreter tarballs wrap their contents in `install/`.
             strip_prefix: "install",
+            archive: ArchiveKind::TarZst,
         };
         // Interpreter is a monolithic blob (no closure walk here),
         // so the bar grows by exactly the tarball's size. A
@@ -294,6 +295,7 @@ pub fn install_extension_with_bar(
             // Per-extension tarballs ship `lib/extensions/<api>/<name>.so`
             // at the top level — no wrapping directory to strip.
             strip_prefix: "",
+            archive: ArchiveKind::TarZst,
         };
         bar.set_current(format!("{}-{}", manifest.name, manifest.version));
         fetch_blob(&client, &blob_spec, bar)?;
@@ -625,6 +627,7 @@ pub(crate) fn install_closure_peers(
                 partial_dir: &paths.cache_blobs(),
                 dest: &store_path,
                 strip_prefix: &storename,
+                archive: ArchiveKind::TarZst,
             };
             bar.set_current(format!("{} ({})", manifest.name, closure.name));
             fetch_blob(client, &blob_spec, bar).wrap_err_with(|| {
