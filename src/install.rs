@@ -1,7 +1,9 @@
 //! Orchestrates a PHP interpreter installation: refresh index, resolve,
 //! fetch + extract. Shared by `bougie php install` and `bougie sync`.
 
-use crate::baseline::{BaselineFilter, BASELINE_EXTENSIONS, PREINSTALLED_EXTENSIONS};
+use crate::baseline::{
+    skip_for_platform, BaselineFilter, BASELINE_EXTENSIONS, PREINSTALLED_EXTENSIONS,
+};
 use crate::errors::BougieError;
 use crate::fetch::{fetch_blob, BlobSpec, DownloadBar};
 use crate::index::{
@@ -447,6 +449,14 @@ pub fn install_baseline_into(
     let bar = DownloadBar::new("downloading");
     for &name in BASELINE_EXTENSIONS {
         if !filter.includes(name) {
+            continue;
+        }
+        if skip_for_platform(name) {
+            // gettext on macOS is the canonical case — Apple's libc has
+            // no real libintl, so php-build-standalone emits no
+            // gettext.so on Darwin and the index has no entry to fetch.
+            // Silently skip; the conf.d cleanup loop above won't try
+            // to delete a fragment that was never written.
             continue;
         }
         match install_extension_with_bar(

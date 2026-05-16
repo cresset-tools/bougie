@@ -1,4 +1,4 @@
-use crate::baseline::{parse_baseline_only, BaselineFilter};
+use crate::baseline::{parse_without, BaselineFilter};
 use crate::cli::OutputFormat;
 use crate::install::{
     install_baseline_into, install_php, preinstall_into, BaselineReport, InstalledPhp,
@@ -28,14 +28,14 @@ pub struct InstallEntry {
     pub path: PathBuf,
     pub already_present: bool,
     /// Names of baseline extensions installed alongside this
-    /// interpreter (CLI.md §3.5.1.1). Empty when `--no-baseline`.
+    /// interpreter (CLI.md §3.5.1.1). Empty when `--bare`.
     pub baseline: Vec<String>,
     /// Per-name failure detail for baseline extensions that didn't
     /// install. The interpreter is still considered installed; the
     /// next `bougie sync` retries.
     pub baseline_failed: Vec<BaselineFailure>,
     /// Names of extensions pre-downloaded into the store but not
-    /// enabled (currently: xdebug). Empty when `--no-baseline`.
+    /// enabled (currently: xdebug). Empty when `--bare`.
     pub preinstalled: Vec<String>,
     /// Per-name failure detail for preinstall, matching `baseline_failed`.
     pub preinstall_failed: Vec<BaselineFailure>,
@@ -92,14 +92,14 @@ pub fn run(
     field: Option<&str>,
     request_strs: &[String],
     flavor_arg: Option<&str>,
-    no_baseline: bool,
-    baseline_only: Option<&str>,
+    bare: bool,
+    without: &[String],
 ) -> Result<ExitCode> {
     let flavor = match flavor_arg {
         Some(s) => Some(parse_flavor(s)?),
         None => None,
     };
-    let baseline_filter = resolve_baseline_filter(no_baseline, baseline_only)?;
+    let baseline_filter = resolve_baseline_filter(bare, without)?;
     let paths = Paths::from_env()?;
 
     let requests: Vec<Request> = if request_strs.is_empty() {
@@ -134,7 +134,7 @@ pub fn run(
         );
         // Pre-download (without enabling) extensions like xdebug so
         // the first server-side debug request doesn't stall on a
-        // download. Skipped under `--no-baseline` so that flag still
+        // download. Skipped under `--bare` so that flag still
         // produces a minimal install.
         let preinstall: PreinstallReport =
             if matches!(baseline_filter, BaselineFilter::None) {
@@ -174,17 +174,19 @@ pub fn run(
 }
 
 fn resolve_baseline_filter(
-    no_baseline: bool,
-    baseline_only: Option<&str>,
+    bare: bool,
+    without: &[String],
 ) -> Result<BaselineFilter> {
-    match (no_baseline, baseline_only) {
-        (true, Some(_)) => Err(eyre!(
-            "--no-baseline and --baseline-only are mutually exclusive"
-        )),
-        (true, None) => Ok(BaselineFilter::None),
-        (false, Some(spec)) => parse_baseline_only(spec).map_err(|m| eyre!("{m}")),
-        (false, None) => Ok(BaselineFilter::All),
+    if bare && !without.is_empty() {
+        // clap's conflicts_with usually catches this, but the resolver
+        // is the second line of defense — callers pass slices directly
+        // from tests.
+        return Err(eyre!("--bare and --without are mutually exclusive"));
     }
+    if bare {
+        return Ok(BaselineFilter::None);
+    }
+    parse_without(without).map_err(|m| eyre!("{m}"))
 }
 
 /// `>= 0` — match anything (highest non-yanked overall). Used when the
@@ -215,34 +217,36 @@ mod tests {
 
     #[test]
     fn baseline_filter_defaults_to_all() {
-        match resolve_baseline_filter(false, None).unwrap() {
+        match resolve_baseline_filter(false, &[]).unwrap() {
             BaselineFilter::All => {}
             other => panic!("expected All, got {other:?}"),
         }
     }
 
     #[test]
-    fn no_baseline_flag_disables_set() {
-        match resolve_baseline_filter(true, None).unwrap() {
+    fn bare_flag_disables_set() {
+        match resolve_baseline_filter(true, &[]).unwrap() {
             BaselineFilter::None => {}
             other => panic!("expected None, got {other:?}"),
         }
     }
 
     #[test]
-    fn baseline_only_parses_subset() {
-        match resolve_baseline_filter(false, Some("mbstring,curl")).unwrap() {
-            BaselineFilter::Only(set) => {
-                assert!(set.contains("mbstring"));
-                assert!(set.contains("curl"));
-                assert!(!set.contains("intl"));
+    fn without_excludes_named() {
+        match resolve_baseline_filter(false, &["opcache".into(), "readline".into()])
+            .unwrap()
+        {
+            BaselineFilter::Without(set) => {
+                assert!(set.contains("opcache"));
+                assert!(set.contains("readline"));
+                assert!(!set.contains("calendar"));
             }
-            other => panic!("expected Only(..), got {other:?}"),
+            other => panic!("expected Without(..), got {other:?}"),
         }
     }
 
     #[test]
-    fn no_baseline_and_baseline_only_conflict() {
-        assert!(resolve_baseline_filter(true, Some("mbstring")).is_err());
+    fn bare_and_without_conflict() {
+        assert!(resolve_baseline_filter(true, &["opcache".into()]).is_err());
     }
 }

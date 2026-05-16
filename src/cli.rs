@@ -293,12 +293,15 @@ pub enum PhpCommand {
         /// Build flavor to install [possible values: nts, nts-debug, zts, zts-debug].
         #[arg(long)]
         flavor: Option<String>,
-        /// Skip the baseline extension set; install only the Debian-aligned core.
-        #[arg(long, conflicts_with = "baseline_only")]
-        no_baseline: bool,
-        /// Install only the listed baseline extensions (comma-separated).
-        #[arg(long, value_name = "EXT[,EXT…]")]
-        baseline_only: Option<String>,
+        /// Skip the entire baseline extension set; install only the bare
+        /// Debian-aligned interpreter (REFACTOR_DEBIAN_ALIGNED.md).
+        #[arg(long, conflicts_with = "without")]
+        bare: bool,
+        /// Skip a specific baseline extension. Repeatable: `--without opcache
+        /// --without readline`. The named extensions must already be in the
+        /// baseline set; use `bougie ext remove` after install for anything else.
+        #[arg(long, value_name = "EXT", action = clap::ArgAction::Append)]
+        without: Vec<String>,
     },
     /// Remove a PHP version.
     Uninstall {

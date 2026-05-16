@@ -1,29 +1,71 @@
 //! The baseline extension set per CLI.md §3.5.1.1.
 //!
-//! These extensions are installed and enabled on every interpreter
-//! without the user having to ask. The list is compiled into the
-//! bougie binary — a bougie release changes the baseline, not an
-//! index publication — which keeps `bougie php install` deterministic
-//! per bougie version even if the index later advertises new
-//! extensions.
+//! After REFACTOR_DEBIAN_ALIGNED.md (php-build-standalone), the bougie
+//! baseline mirrors Debian's `apt install php8.2-cli` transitive
+//! closure: it is exactly the set of `.so` extensions that
+//! `php8.2-common`, `php8.2-opcache`, and `php8.2-readline` add on top
+//! of the bare interpreter. The interpreter tarball itself ships zero
+//! `.so` files; baseline is what makes `bougie php install <ver>`
+//! reproduce the "I just installed PHP and it behaves the way I expect"
+//! experience.
+//!
+//! The list is compiled into the bougie binary — a bougie release
+//! changes the baseline, not an index publication — which keeps
+//! `bougie php install` deterministic per bougie version even if the
+//! index later advertises new extensions.
 
 use std::collections::BTreeSet;
 
-/// Ordered list of baseline extension names. Order is observable
-/// (it's the order conf.d fragments and the JSON `baseline` array
-/// appear in) but PHP's alphabetic conf.d scan re-orders fragments
-/// at load time, so this is purely cosmetic.
+/// Ordered list of baseline extension names — Debian's `php8.2-cli`
+/// transitive closure. Order is observable (it's the order conf.d
+/// fragments and the JSON `baseline` array appear in) but PHP's
+/// alphabetic conf.d scan re-orders fragments at load time, so this
+/// is purely cosmetic.
+///
+/// Platform notes (applied at install time via [`skip_for_platform`]):
+/// - `gettext`: Linux only. Apple's libc lacks a real libintl
+///   implementation; the php-build-standalone Darwin build emits no
+///   gettext.so, so the index has no entry to fetch.
+///
+/// Per-PHP-minor notes (currently surfaced as a baseline_failed entry,
+/// not silently skipped):
+/// - `opcache`: ships as a .so on 8.1–8.4 only. PHP 8.5+ builds
+///   opcache statically into bin/php — `extension_loaded("Zend
+///   OPcache")` returns true already, so the failed index lookup is
+///   benign; the conf.d fragment is just unnecessary.
 pub const BASELINE_EXTENSIONS: &[&str] = &[
-    "mbstring",
-    "curl",
-    "intl",
-    "zip",
-    "bcmath",
-    "sqlite3",
-    "pdo_sqlite",
-    "pdo_mysql",
-    "mysqli",
+    // php8.2-common transitive closure
+    "calendar",
+    "ctype",
+    "exif",
+    "ffi",
+    "fileinfo",
+    "ftp",
+    "gettext",
+    "iconv",
+    "pdo",
+    "phar",
+    "posix",
+    "shmop",
+    "sockets",
+    "sysvmsg",
+    "sysvsem",
+    "sysvshm",
+    "tokenizer",
+    // php8.2-opcache (8.1–8.4 only; static on 8.5+)
+    "opcache",
+    // php8.2-readline
+    "readline",
 ];
+
+/// `true` when the named baseline extension is not available on the
+/// current target OS and should be skipped silently by
+/// [`crate::install::install_baseline_into`]. The set is intentionally
+/// hardcoded — these are upstream-library facts (Apple's libc), not
+/// runtime probes.
+pub fn skip_for_platform(name: &str) -> bool {
+    matches!(name, "gettext") && !cfg!(target_os = "linux")
+}
 
 /// Extensions to pre-download into the content-addressed store as part
 /// of a default `bougie php install` / `bougie sync`, but NOT enable
@@ -39,8 +81,8 @@ pub const BASELINE_EXTENSIONS: &[&str] = &[
 /// - `bougie ext add xdebug` makes the activation explicit and
 ///   permanent (also lands in `conf.d-debug/`).
 ///
-/// Skipped when `--no-baseline` is set on `bougie php install` (the
-/// same flag that strips the baseline set down to nothing).
+/// Skipped when `--bare` is set on `bougie php install` (the same flag
+/// that strips the baseline set down to nothing).
 pub const PREINSTALLED_EXTENSIONS: &[&str] = &["xdebug"];
 
 /// Extensions that are *statically compiled into the PHP binary* and
@@ -52,34 +94,45 @@ pub const PREINSTALLED_EXTENSIONS: &[&str] = &["xdebug"];
 ///
 /// Derived from PHP's default `get_loaded_extensions()` set on a
 /// stock build plus the configure-time-static deps our
-/// `php-build-standalone` pipeline links in (`libxml`). Keep
-/// lowercase — `composer.json` keys are case-sensitive and the
+/// `php-build-standalone` pipeline links in. After
+/// REFACTOR_DEBIAN_ALIGNED.md (Phase A), this matches Debian's
+/// `php8.2-cli` static set: openssl, sodium, session, filter, pcntl
+/// joined the always-built core (Core, date, hash, json, libxml,
+/// pcre, random, Reflection, SPL, standard, zlib).
+///
+/// Keep lowercase — `composer.json` keys are case-sensitive and the
 /// idiomatic spelling is lowercase.
 pub const BUILTIN_EXTENSIONS: &[&str] = &[
     "core",
     "date",
+    "filter",
     "hash",
     "json",
     "libxml",
+    "openssl",
+    "pcntl",
     "pcre",
     "random",
     "reflection",
+    "session",
+    "sodium",
     "spl",
     "standard",
+    "zlib",
 ];
 
-/// Per-invocation narrowing applied by `bougie php install`'s
-/// `--no-baseline` / `--baseline-only` flags. Project-level opt-out
-/// (the `false` sentinel in `[extensions]`) is a separate concern
-/// handled at sync time.
+/// Per-invocation narrowing applied by `bougie php install`'s `--bare`
+/// / `--without` flags. Project-level opt-out (the `false` sentinel
+/// in `[extensions]`) is a separate concern handled at sync time.
 #[derive(Debug, Clone)]
 pub enum BaselineFilter {
     /// Install the full baseline set. Default.
     All,
-    /// Install nothing from the baseline. `--no-baseline`.
+    /// Install nothing from the baseline. `--bare`.
     None,
-    /// Install only the named subset. `--baseline-only=a,b,c`.
-    Only(BTreeSet<String>),
+    /// Install the baseline set MINUS the named subset. `--without
+    /// <name>` (repeatable).
+    Without(BTreeSet<String>),
 }
 
 impl BaselineFilter {
@@ -88,13 +141,13 @@ impl BaselineFilter {
         match self {
             Self::All => true,
             Self::None => false,
-            Self::Only(set) => set.contains(name),
+            Self::Without(set) => !set.contains(name),
         }
     }
 }
 
 /// `true` if `name` is in [`BASELINE_EXTENSIONS`]. Used by `sync` to
-/// decide whether a `mysqli = false` opt-out actually applies (only
+/// decide whether an `ext-foo = false` opt-out actually applies (only
 /// baseline extensions are opt-outable; core is non-negotiable).
 pub fn is_baseline(name: &str) -> bool {
     BASELINE_EXTENSIONS.contains(&name)
@@ -109,30 +162,29 @@ pub fn is_builtin(name: &str) -> bool {
     BUILTIN_EXTENSIONS.contains(&name)
 }
 
-/// Parse `--baseline-only=a,b,c` into a [`BaselineFilter::Only`].
-/// Empty list maps to [`BaselineFilter::None`] for symmetry with
-/// `--no-baseline`. Names not in [`BASELINE_EXTENSIONS`] are
-/// rejected — the flag is a narrowing filter, not a way to install
-/// arbitrary extensions through `php install`.
-pub fn parse_baseline_only(spec: &str) -> Result<BaselineFilter, String> {
-    let set: BTreeSet<String> = spec
-        .split(',')
-        .map(str::trim)
+/// Validate `--without <name>` arguments against the baseline set and
+/// return the filter. Names not in [`BASELINE_EXTENSIONS`] are
+/// rejected — `--without` is a baseline-narrowing flag, not a
+/// general-purpose exclusion list. An empty `names` slice maps to
+/// [`BaselineFilter::All`] (no narrowing).
+pub fn parse_without(names: &[String]) -> Result<BaselineFilter, String> {
+    let set: BTreeSet<String> = names
+        .iter()
+        .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
-        .map(String::from)
         .collect();
     for name in &set {
         if !is_baseline(name) {
             return Err(format!(
-                "`--baseline-only={spec}` lists `{name}`, which isn't in the baseline set; \
-                 use `bougie ext add {name}` instead",
+                "`--without {name}` names an extension that isn't in the baseline set; \
+                 use `bougie ext remove {name}` after install instead"
             ));
         }
     }
     if set.is_empty() {
-        Ok(BaselineFilter::None)
+        Ok(BaselineFilter::All)
     } else {
-        Ok(BaselineFilter::Only(set))
+        Ok(BaselineFilter::Without(set))
     }
 }
 
@@ -141,9 +193,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn baseline_membership() {
-        assert!(is_baseline("mbstring"));
-        assert!(is_baseline("pdo_mysql"));
+    fn baseline_is_debian_faithful_closure() {
+        // Spot-check the spec-required entries from
+        // REFACTOR_DEBIAN_ALIGNED.md §"Default-install set".
+        assert!(is_baseline("calendar"));
+        assert!(is_baseline("ctype"));
+        assert!(is_baseline("opcache"));
+        assert!(is_baseline("readline"));
+        assert!(is_baseline("ffi"));
+        // The pre-Phase-A Composer-focused baseline names must NOT be
+        // in the new set (they ship as per-ext tarballs available via
+        // `bougie ext add` but are not in the default-install closure).
+        assert!(!is_baseline("mbstring"));
+        assert!(!is_baseline("curl"));
+        assert!(!is_baseline("intl"));
+        assert!(!is_baseline("zip"));
+        // PECL exts that are never baseline.
         assert!(!is_baseline("xdebug"));
         assert!(!is_baseline("redis"));
     }
@@ -174,9 +239,15 @@ mod tests {
         assert!(is_builtin("spl"));
         assert!(is_builtin("json"));
         assert!(is_builtin("standard"));
-        assert!(!is_builtin("redis"));
-        assert!(!is_builtin("mbstring")); // shared in our build, baseline territory
-        assert!(!is_builtin("openssl")); // shared, core territory
+        // Post-Phase-A static additions.
+        assert!(is_builtin("openssl"));
+        assert!(is_builtin("sodium"));
+        assert!(is_builtin("session"));
+        assert!(is_builtin("filter"));
+        assert!(is_builtin("pcntl"));
+        // Things that are loaded but via per-ext.
+        assert!(!is_builtin("mbstring"));
+        assert!(!is_builtin("opcache")); // 8.1–8.4 per-ext; on 8.5 static, but never user-visible as `ext-opcache`
     }
 
     #[test]
@@ -196,24 +267,36 @@ mod tests {
     }
 
     #[test]
-    fn parse_baseline_only_accepts_subset() {
-        let f = parse_baseline_only("mbstring, curl").unwrap();
-        assert!(f.includes("mbstring"));
-        assert!(f.includes("curl"));
-        assert!(!f.includes("intl"));
+    fn parse_without_excludes_named() {
+        let f = parse_without(&["opcache".into(), "readline".into()]).unwrap();
+        assert!(f.includes("calendar"));
+        assert!(!f.includes("opcache"));
+        assert!(!f.includes("readline"));
     }
 
     #[test]
-    fn parse_baseline_only_rejects_non_baseline() {
-        let err = parse_baseline_only("mbstring,redis").unwrap_err();
+    fn parse_without_rejects_non_baseline() {
+        let err = parse_without(&["redis".into()]).unwrap_err();
         assert!(err.contains("redis"), "got: {err}");
     }
 
     #[test]
-    fn parse_baseline_only_empty_yields_none() {
-        match parse_baseline_only("").unwrap() {
-            BaselineFilter::None => {}
-            other => panic!("expected None, got {other:?}"),
+    fn parse_without_empty_yields_all() {
+        match parse_without(&[]).unwrap() {
+            BaselineFilter::All => {}
+            other => panic!("expected All, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn gettext_skipped_off_linux() {
+        if cfg!(target_os = "linux") {
+            assert!(!skip_for_platform("gettext"));
+        } else {
+            assert!(skip_for_platform("gettext"));
+        }
+        // Non-gettext names always pass.
+        assert!(!skip_for_platform("ffi"));
+        assert!(!skip_for_platform("opcache"));
     }
 }
