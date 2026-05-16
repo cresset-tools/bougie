@@ -12,7 +12,7 @@
 
 use eyre::{eyre, Result};
 use serde::Deserialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Root {
@@ -119,12 +119,41 @@ pub struct Manifest {
     pub blob: Blob,
     #[serde(default)]
     pub closure: Vec<Closure>,
+    /// Tool manifests only. Inner tools the outer tool needs co-installed
+    /// (opensearch → jdk, rabbitmq → erlang). Empty on interpreter /
+    /// extension manifests and on self-contained tools. See
+    /// `UNBUNDLE_PLAN.md` §"Wire-format additions".
+    #[serde(default)]
+    pub requires_tools: Vec<RequiresTool>,
     /// Extension manifests only.
     #[serde(default)]
     pub extension: Option<ExtensionRef>,
     /// Interpreter manifests only.
     #[serde(default)]
     pub sapis: Option<Vec<String>>,
+}
+
+impl Manifest {
+    /// Cross-field validation that can only be checked once the whole
+    /// manifest has parsed. Per-entry checks (`closure`, `requires_tools`)
+    /// are delegated to those types' own `validate()`.
+    pub fn validate(&self) -> Result<()> {
+        for c in &self.closure {
+            c.validate()?;
+        }
+        let mut seen_link_into: HashSet<&str> = HashSet::new();
+        for r in &self.requires_tools {
+            r.validate()?;
+            if !r.link_into.is_empty() && !seen_link_into.insert(r.link_into.as_str()) {
+                return Err(eyre!(
+                    "manifest {} has duplicate requires_tools link_into: {:?}",
+                    self.tag,
+                    r.link_into
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -240,6 +269,87 @@ impl Closure {
                 self.name,
                 self.url
             ));
+        }
+        Ok(())
+    }
+}
+
+/// Tool-on-tool dependency entry. Says: the outer tool needs an inner
+/// tool (`name`, pinned at `version` / `tag`) installed alongside it,
+/// and possibly symlinked at `link_into` inside the outer install root.
+///
+/// See `UNBUNDLE_PLAN.md` §"Wire-format additions" for the full design.
+#[derive(Debug, Clone, Deserialize)]
+pub struct RequiresTool {
+    /// Catalog short name of the depended-on tool (e.g. `"jdk"`, `"erlang"`).
+    pub name: String,
+    /// Exact upstream version of the depended-on tool. Pinned, not a range.
+    pub version: String,
+    /// Full tag of the depended-on artifact
+    /// (e.g. `"jdk-21.0.11_10-x86_64-unknown-linux-gnu-default"`).
+    /// Identifies one row in the depended-on tool's section.
+    pub tag: String,
+    /// Manifest URL — absolute, same convention as [`Closure::url`]. The
+    /// index publisher substitutes `{INDEX_BASE}` at publish time so the
+    /// client never has to reconstruct paths.
+    pub manifest_url: String,
+    /// sha256 of the depended-on manifest's body. Lets the client
+    /// pin-verify the recursive lookup without an extra round-trip
+    /// through the section file.
+    pub manifest_sha256: String,
+    /// Path relative to the outer tool's install root where the inner
+    /// tool's install root must be symlinked. Example: opensearch sets
+    /// `link_into = "jdk"` so its scripts find `${ES_HOME}/jdk/bin/java`.
+    /// Empty string means "install the inner tool but don't link it"
+    /// (rare; reserved for the case where the outer tool only needs the
+    /// inner installed, not visible at a fixed path).
+    pub link_into: String,
+}
+
+impl RequiresTool {
+    /// Per `UNBUNDLE_PLAN.md` §"Wire-format additions". Mirrors
+    /// [`Closure::validate`].
+    pub fn validate(&self) -> Result<()> {
+        if !is_kebab_lower(&self.name) {
+            return Err(eyre!("invalid requires_tool name: {:?}", self.name));
+        }
+        if self.version.is_empty() {
+            return Err(eyre!("requires_tool {} has empty version", self.name));
+        }
+        if self.tag.is_empty() {
+            return Err(eyre!("requires_tool {} has empty tag", self.name));
+        }
+        if !(self.manifest_url.starts_with("http://") || self.manifest_url.starts_with("https://"))
+        {
+            return Err(eyre!(
+                "requires_tool {} manifest_url must be absolute (the index publisher substitutes {{INDEX_BASE}}): {:?}",
+                self.name,
+                self.manifest_url
+            ));
+        }
+        if !is_hex_exact(&self.manifest_sha256, 64) {
+            return Err(eyre!(
+                "requires_tool {} manifest_sha256 must be 64 hex chars: {:?}",
+                self.name,
+                self.manifest_sha256
+            ));
+        }
+        // Empty link_into is the explicit "install but don't link" case.
+        if !self.link_into.is_empty() {
+            if self.link_into.starts_with('/') {
+                return Err(eyre!(
+                    "requires_tool {} link_into must be relative, got {:?}",
+                    self.name,
+                    self.link_into
+                ));
+            }
+            if self.link_into.split('/').any(|comp| comp == "..") {
+                return Err(eyre!(
+                    "requires_tool {} link_into must not contain `..` components: {:?}",
+                    self.name,
+                    self.link_into
+                ));
+            }
         }
         Ok(())
     }
@@ -534,5 +644,218 @@ mod tests {
             size: 0,
         };
         assert!(c.validate().is_err());
+    }
+
+    // ---------- requires_tools (Phase 0) ----------
+
+    fn valid_requires_tool() -> RequiresTool {
+        RequiresTool {
+            name: "jdk".into(),
+            version: "21.0.11+10".into(),
+            tag: "jdk-21.0.11_10-x86_64-unknown-linux-gnu-default".into(),
+            manifest_url: "https://index.example.com/versions/v1/targets/x86_64-unknown-linux-gnu/manifests/tool/jdk/21.0.11+10/jdk-21.0.11_10-x86_64-unknown-linux-gnu-default.json".into(),
+            manifest_sha256: "a".repeat(64),
+            link_into: "jdk".into(),
+        }
+    }
+
+    #[test]
+    fn parse_tool_manifest_with_closure_and_requires_tools() {
+        // mariadb-shaped manifest: split-closure (non-empty `closure[]`)
+        // and an inner tool dep (non-empty `requires_tools[]`).
+        let json = r#"{
+            "schema": 1,
+            "kind": "tool",
+            "name": "rabbitmq",
+            "tag": "rabbitmq-4.2.6-x86_64-unknown-linux-gnu-default",
+            "version": "4.2.6",
+            "target": "x86_64-unknown-linux-gnu",
+            "flavor": "default",
+            "libc": {"family":"gnu","min":"2.17"},
+            "blob": {"url":"https://blobs.example.com/blobs/aa/aaaa","sha256":"aaaa"},
+            "closure": [
+                {"name":"openssl","version":"3.5.6","hash":"99c0f6e8","sha256":"00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff","url":"https://b/o"}
+            ],
+            "requires_tools": [
+                {
+                    "name":"erlang",
+                    "version":"27.3.4.11",
+                    "tag":"erlang-27.3.4.11-x86_64-unknown-linux-gnu-default",
+                    "manifest_url":"https://index.example.com/versions/v1/targets/x86_64-unknown-linux-gnu/manifests/tool/erlang/27.3.4.11/erlang-27.3.4.11-x86_64-unknown-linux-gnu-default.json",
+                    "manifest_sha256":"1111111111111111111111111111111111111111111111111111111111111111",
+                    "link_into":"erlang"
+                }
+            ]
+        }"#;
+        let m: Manifest = serde_json::from_str(json).unwrap();
+        assert_eq!(m.kind, SectionKind::Tool);
+        assert_eq!(m.closure.len(), 1);
+        assert_eq!(m.requires_tools.len(), 1);
+        assert_eq!(m.requires_tools[0].name, "erlang");
+        assert_eq!(m.requires_tools[0].link_into, "erlang");
+        m.validate().unwrap();
+    }
+
+    #[test]
+    fn parse_tool_manifest_defaults_requires_tools_to_empty() {
+        // Pre-split tarballs (no `requires_tools` field) keep parsing.
+        // This is the backward-compat hinge that lets the bougie client
+        // ship before the index does.
+        let json = r#"{
+            "schema": 1,
+            "kind": "tool",
+            "name": "redis",
+            "tag": "redis-8.6.3-x86_64-unknown-linux-gnu-default",
+            "version": "8.6.3",
+            "target": "x86_64-unknown-linux-gnu",
+            "flavor": "default",
+            "libc": {"family":"gnu","min":"2.17"},
+            "blob": {"url":"https://blobs.example.com/blobs/ff/ffff","sha256":"ffff"},
+            "closure": []
+        }"#;
+        let m: Manifest = serde_json::from_str(json).unwrap();
+        assert!(m.requires_tools.is_empty());
+        m.validate().unwrap();
+    }
+
+    #[test]
+    fn requires_tool_validate_accepts_well_formed() {
+        valid_requires_tool().validate().unwrap();
+    }
+
+    #[test]
+    fn requires_tool_validate_accepts_empty_link_into() {
+        // Explicit "install but don't link at a fixed path" mode.
+        let mut r = valid_requires_tool();
+        r.link_into = String::new();
+        r.validate().unwrap();
+    }
+
+    #[test]
+    fn requires_tool_validate_rejects_empty_name() {
+        let mut r = valid_requires_tool();
+        r.name = String::new();
+        assert!(r.validate().unwrap_err().to_string().contains("name"));
+    }
+
+    #[test]
+    fn requires_tool_validate_rejects_empty_version() {
+        let mut r = valid_requires_tool();
+        r.version = String::new();
+        assert!(r.validate().unwrap_err().to_string().contains("version"));
+    }
+
+    #[test]
+    fn requires_tool_validate_rejects_empty_tag() {
+        let mut r = valid_requires_tool();
+        r.tag = String::new();
+        assert!(r.validate().unwrap_err().to_string().contains("tag"));
+    }
+
+    #[test]
+    fn requires_tool_validate_rejects_relative_manifest_url() {
+        let mut r = valid_requires_tool();
+        r.manifest_url = "/relative/path.json".into();
+        assert!(r
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("absolute"));
+    }
+
+    #[test]
+    fn requires_tool_validate_rejects_short_sha256() {
+        let mut r = valid_requires_tool();
+        r.manifest_sha256 = "abc".into();
+        assert!(r.validate().unwrap_err().to_string().contains("64 hex"));
+    }
+
+    #[test]
+    fn requires_tool_validate_rejects_link_into_dotdot() {
+        let mut r = valid_requires_tool();
+        r.link_into = "foo/../bar".into();
+        assert!(r.validate().unwrap_err().to_string().contains(".."));
+    }
+
+    #[test]
+    fn requires_tool_validate_rejects_link_into_absolute() {
+        let mut r = valid_requires_tool();
+        r.link_into = "/opt/jdk".into();
+        assert!(r
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("relative"));
+    }
+
+    #[test]
+    fn manifest_validate_rejects_duplicate_link_into() {
+        // Two requires_tools entries pointing at the same `link_into`
+        // would clobber each other on install — reject up front.
+        let json = r#"{
+            "schema": 1,
+            "kind": "tool",
+            "name": "weird",
+            "tag": "weird-1.0.0-x86_64-unknown-linux-gnu-default",
+            "version": "1.0.0",
+            "target": "x86_64-unknown-linux-gnu",
+            "flavor": "default",
+            "libc": {"family":"gnu","min":"2.17"},
+            "blob": {"url":"https://blobs.example.com/blobs/aa/aaaa","sha256":"aaaa"},
+            "requires_tools": [
+                {
+                    "name":"jdk","version":"21.0.11+10",
+                    "tag":"jdk-21.0.11_10-x86_64-unknown-linux-gnu-default",
+                    "manifest_url":"https://x/j.json",
+                    "manifest_sha256":"1111111111111111111111111111111111111111111111111111111111111111",
+                    "link_into":"runtime"
+                },
+                {
+                    "name":"erlang","version":"27.3.4.11",
+                    "tag":"erlang-27.3.4.11-x86_64-unknown-linux-gnu-default",
+                    "manifest_url":"https://x/e.json",
+                    "manifest_sha256":"2222222222222222222222222222222222222222222222222222222222222222",
+                    "link_into":"runtime"
+                }
+            ]
+        }"#;
+        let m: Manifest = serde_json::from_str(json).unwrap();
+        let err = m.validate().unwrap_err().to_string();
+        assert!(err.contains("duplicate"), "got: {err}");
+    }
+
+    #[test]
+    fn manifest_validate_allows_multiple_empty_link_into() {
+        // Empty link_into means "no symlink" — multiple such entries are
+        // fine (they don't conflict with each other on the filesystem).
+        let json = r#"{
+            "schema": 1,
+            "kind": "tool",
+            "name": "weird",
+            "tag": "weird-1.0.0-x86_64-unknown-linux-gnu-default",
+            "version": "1.0.0",
+            "target": "x86_64-unknown-linux-gnu",
+            "flavor": "default",
+            "libc": {"family":"gnu","min":"2.17"},
+            "blob": {"url":"https://blobs.example.com/blobs/aa/aaaa","sha256":"aaaa"},
+            "requires_tools": [
+                {
+                    "name":"jdk","version":"21.0.11+10",
+                    "tag":"jdk-21.0.11_10-x86_64-unknown-linux-gnu-default",
+                    "manifest_url":"https://x/j.json",
+                    "manifest_sha256":"1111111111111111111111111111111111111111111111111111111111111111",
+                    "link_into":""
+                },
+                {
+                    "name":"erlang","version":"27.3.4.11",
+                    "tag":"erlang-27.3.4.11-x86_64-unknown-linux-gnu-default",
+                    "manifest_url":"https://x/e.json",
+                    "manifest_sha256":"2222222222222222222222222222222222222222222222222222222222222222",
+                    "link_into":""
+                }
+            ]
+        }"#;
+        let m: Manifest = serde_json::from_str(json).unwrap();
+        m.validate().unwrap();
     }
 }
