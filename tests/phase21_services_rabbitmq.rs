@@ -328,3 +328,118 @@ fn bougie_run_exports_rabbitmq_env_vars() {
 
     stop_daemon(&env);
 }
+
+/// Regression for cresset-tools/bougie#31.
+///
+/// `bougie down` without `--purge` removes the tenant from the
+/// ledger but leaves the user/vhost in rabbitmq's mnesia store
+/// (matches the survives-down semantics of mariadb / opensearch).
+/// A subsequent `bougie up` re-provisions, which used to silently
+/// no-op on `add_user → "already exists"` while still writing a
+/// freshly-generated password into the ledger. The broker kept the
+/// *old* password; the ledger advertised the *new* one; AMQP login
+/// with `BOUGIE_SERVICE_RABBITMQ_PASSWORD` returned ACCESS_REFUSED.
+///
+/// Fix: when add_user errors duplicate, chain `change_password`
+/// against the new password so the broker and the ledger stay in
+/// sync. This test runs `down` (no purge) + `up` and verifies that
+/// `rabbitmqctl authenticate_user <tenant> <ledger_password>`
+/// succeeds — i.e. the broker took the new password.
+#[test]
+fn re_up_after_plain_down_resyncs_password_to_broker() {
+    if should_skip() {
+        eprintln!("skipping: BOUGIE_SKIP_REAL_RABBITMQ set");
+        return;
+    }
+    let _guard = rabbitmq_test_lock();
+    let env = TestEnv::new();
+    rabbitmq_fixture::install_into(env.home_path());
+    let proj = project_with_composer("acme/blog");
+
+    env.bougie()
+        .args(["services", "add", "rabbitmq"])
+        .current_dir(proj.path())
+        .timeout(STEP_TIMEOUT)
+        .assert()
+        .success();
+    services_up_or_dump(&env, proj.path(), &[]);
+    if !wait_for_tcp("127.0.0.1:5672", Duration::from_secs(120)) {
+        dump_rabbitmq_log(&env, "wait_for_tcp timeout (first up)");
+        panic!("rabbitmq listener never bound");
+    }
+
+    // Capture password A for sanity-checking the change later.
+    let tenants_path = env
+        .home_path()
+        .join("state/services/rabbitmq/tenants.json");
+    let first_ledger = fs::read_to_string(&tenants_path).expect("first tenants.json");
+    let first_line = first_ledger.lines().next().expect("first tenant line");
+    let pw_a = serde_json::from_str::<serde_json::Value>(first_line).unwrap()["secrets"]
+        ["password"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    // `bougie down` (no --purge) wipes the ledger and stops the
+    // broker (last-tenant-out shuts the global service down). The
+    // user/vhost are persisted in mnesia and survive — that's the
+    // precondition that triggers the bug. We can't query the broker
+    // while it's stopped; we verify the survives-down invariant
+    // implicitly via the duplicate `add_user` failure path that the
+    // re-up below exercises.
+    env.bougie()
+        .args(["down"])
+        .current_dir(proj.path())
+        .timeout(STEP_TIMEOUT)
+        .assert()
+        .success();
+
+    // Re-`up`: provision sees no ledger row, generates password B,
+    // calls add_user → duplicate (user persisted in mnesia) →
+    // must chain change_password.
+    services_up_or_dump(&env, proj.path(), &[]);
+    if !wait_for_tcp("127.0.0.1:5672", Duration::from_secs(120)) {
+        dump_rabbitmq_log(&env, "wait_for_tcp timeout (second up)");
+        panic!("rabbitmq listener never bound on re-up");
+    }
+    // Sanity-check the survives-down invariant now that the broker
+    // is reachable again: the user should still be present (we
+    // didn't `--purge`).
+    let (code, stdout, _) = rabbitmqctl(&env, &["list_users", "--no-table-headers"]);
+    assert_eq!(code, 0);
+    assert!(
+        stdout.contains("acme_blog"),
+        "user should survive a non-purge down; list_users was:\n{stdout}"
+    );
+
+    let second_ledger = fs::read_to_string(&tenants_path).expect("second tenants.json");
+    let second_line = second_ledger.lines().next().expect("second tenant line");
+    let pw_b = serde_json::from_str::<serde_json::Value>(second_line).unwrap()["secrets"]
+        ["password"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    // Sanity: the regen path actually picked a fresh password.
+    // If this ever stops being true (e.g. provision starts
+    // recovering the prior secret) the assertion below would still
+    // pass trivially, so guard against silent test rot.
+    assert_ne!(pw_a, pw_b, "expected provision to regenerate the password");
+
+    // The fix: the broker now authenticates the *new* password.
+    // Before the fix this would error with "invalid credentials".
+    let (code, stdout, stderr) =
+        rabbitmqctl(&env, &["authenticate_user", "acme_blog", &pw_b]);
+    assert_eq!(
+        code, 0,
+        "broker should accept the ledger's current password after re-up; stdout=`{stdout}` stderr=`{stderr}`"
+    );
+
+    // And paranoia: the *old* password must no longer work.
+    let (code, _, _) = rabbitmqctl(&env, &["authenticate_user", "acme_blog", &pw_a]);
+    assert_ne!(
+        code, 0,
+        "broker still accepts the pre-down password — change_password didn't take effect"
+    );
+
+    stop_daemon(&env);
+}

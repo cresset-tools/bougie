@@ -87,10 +87,25 @@ pub fn provision(
             }
         })
         .wrap_err_with(|| format!("rabbitmqctl add_vhost {tenant_name}"))?;
+    // `add_user` errors on duplicate. The user can already exist for
+    // two reasons: (1) recovery from a partial-failure run that got
+    // past add_vhost but crashed inside add_user, (2) a prior
+    // `bougie down` (without `--purge`) wiped the bougie tenant
+    // ledger but left rabbitmq's mnesia store intact, and we've
+    // since generated a fresh password.
+    //
+    // For (1) the existing password matches the one in `password`
+    // (we'd have written the same ledger row). For (2) the broker
+    // still has the *old* password while the ledger row we're about
+    // to write carries the new one — and any AMQP client picking up
+    // `BOUGIE_SERVICE_RABBITMQ_PASSWORD` would get ACCESS_REFUSED on
+    // login (cresset-tools/bougie#31). Always re-assert the password
+    // via `change_password` after a duplicate so the broker and the
+    // ledger never disagree. Idempotent on the (1) path.
     run_ctl(&ctl, paths, &["add_user", tenant_name, &password])
         .or_else(|e| {
             if e.to_string().contains("already") || e.to_string().contains("exists") {
-                Ok(())
+                run_ctl(&ctl, paths, &["change_password", tenant_name, &password])
             } else {
                 Err(e)
             }
