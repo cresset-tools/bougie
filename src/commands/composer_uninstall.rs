@@ -21,7 +21,7 @@ impl Render for UninstallResult {
     }
 }
 
-pub fn run(format: OutputFormat, field: Option<&str>, request_str: &str) -> Result<ExitCode> {
+pub fn run(format: OutputFormat, request_str: &str) -> Result<ExitCode> {
     let request = parse_request(request_str)?;
     let paths = Paths::from_env()?;
     let dest = locate_install_dir(&paths, &request)?;
@@ -37,7 +37,7 @@ pub fn run(format: OutputFormat, field: Option<&str>, request_str: &str) -> Resu
         detail: e.to_string(),
     })?;
     let result = UninstallResult { schema_version: 1, removed: dest };
-    emit(format, field, &result)?;
+    emit(format, &result)?;
     Ok(ExitCode::SUCCESS)
 }
 

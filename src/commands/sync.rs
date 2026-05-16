@@ -67,7 +67,7 @@ impl Render for SyncResult {
     }
 }
 
-pub fn run(format: OutputFormat, field: Option<&str>, dry_run: bool) -> Result<ExitCode> {
+pub fn run(format: OutputFormat, dry_run: bool) -> Result<ExitCode> {
     let paths = Paths::from_env()?;
     let project_root = std::env::current_dir()?;
 
@@ -81,7 +81,7 @@ pub fn run(format: OutputFormat, field: Option<&str>, dry_run: bool) -> Result<E
     }
 
     let result = ensure_synced(&paths, &project_root, &project, spec, flavor)?;
-    emit(format, field, &result)?;
+    emit(format, &result)?;
     Ok(ExitCode::SUCCESS)
 }
 

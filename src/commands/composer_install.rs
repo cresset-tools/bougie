@@ -30,8 +30,7 @@ impl Render for InstallResult {
 
 pub fn run(
     format: OutputFormat,
-    field: Option<&str>,
-    request_str: Option<&str>,
+        request_str: Option<&str>,
 ) -> Result<ExitCode> {
     let request = match request_str {
         Some(s) => parse_request(s)?,
@@ -45,6 +44,6 @@ pub fn run(
         path: installed.phar_path,
         already_present: installed.already_present,
     };
-    emit(format, field, &result)?;
+    emit(format, &result)?;
     Ok(ExitCode::SUCCESS)
 }

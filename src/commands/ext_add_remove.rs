@@ -81,8 +81,7 @@ impl Render for ExtAddRemoveResult {
 #[allow(clippy::needless_pass_by_value, reason = "wired from clap-parsed CLI; ownership crosses the function boundary")]
 pub fn add(
     format: OutputFormat,
-    field: Option<&str>,
-    names: Vec<String>,
+        names: Vec<String>,
     no_sync: bool,
 ) -> Result<ExitCode> {
     if names.is_empty() {
@@ -181,15 +180,14 @@ pub fn add(
         action: "add",
         items,
     };
-    emit(format, field, &result)?;
+    emit(format, &result)?;
     Ok(ExitCode::SUCCESS)
 }
 
 #[allow(clippy::needless_pass_by_value, reason = "wired from clap-parsed CLI; ownership crosses the function boundary")]
 pub fn remove(
     format: OutputFormat,
-    field: Option<&str>,
-    names: Vec<String>,
+        names: Vec<String>,
     no_sync: bool,
 ) -> Result<ExitCode> {
     if names.is_empty() {
@@ -236,7 +234,7 @@ pub fn remove(
         action: "remove",
         items,
     };
-    emit(format, field, &result)?;
+    emit(format, &result)?;
     Ok(ExitCode::SUCCESS)
 }
 

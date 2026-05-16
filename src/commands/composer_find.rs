@@ -24,8 +24,7 @@ impl Render for FindResult {
 
 pub fn run(
     format: OutputFormat,
-    field: Option<&str>,
-    request_str: Option<&str>,
+        request_str: Option<&str>,
 ) -> Result<ExitCode> {
     let paths = Paths::from_env()?;
     let phar = match request_str {
@@ -33,7 +32,7 @@ pub fn run(
         None => find_project_or_default(&paths)?,
     };
     let result = FindResult { schema_version: 1, path: phar };
-    emit(format, field, &result)?;
+    emit(format, &result)?;
     Ok(ExitCode::SUCCESS)
 }
 

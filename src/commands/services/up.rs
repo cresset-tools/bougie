@@ -62,7 +62,7 @@ impl Render for ServicesUpResult {
     }
 }
 
-pub fn run(format: OutputFormat, field: Option<&str>, names: Vec<String>) -> Result<ExitCode> {
+pub fn run(format: OutputFormat, names: Vec<String>) -> Result<ExitCode> {
     let project_root = locate_project_root()?;
     let project = load_project(&project_root)?;
 
@@ -91,7 +91,7 @@ pub fn run(format: OutputFormat, field: Option<&str>, names: Vec<String>) -> Res
         out
     };
     if selected.is_empty() {
-        emit(format, field, &ServicesUpResult {
+        emit(format, &ServicesUpResult {
             schema_version: 2,
             started: vec![],
             tenants: BTreeMap::new(),
@@ -128,7 +128,7 @@ pub fn run(format: OutputFormat, field: Option<&str>, names: Vec<String>) -> Res
         tenants: reply.tenants,
         dependencies: reply.dependencies,
     };
-    emit(format, field, &result)?;
+    emit(format, &result)?;
     Ok(ExitCode::SUCCESS)
 }
 

@@ -24,7 +24,6 @@ pub fn run(
     _with: &[String],
     argv: &[String],
     format: OutputFormat,
-    field: Option<&str>,
     no_sync: bool,
     xdebug_flag: bool,
 ) -> Result<ExitCode> {
@@ -33,7 +32,7 @@ pub fn run(
     }
     let project_root = std::env::current_dir()?;
     if !no_sync && !is_environment_present(&project_root)? {
-        sync::run(format, field, false)?;
+        sync::run(format, false)?;
     }
     let bougie_bin = project_root.join(".bougie").join("bin");
 

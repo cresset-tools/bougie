@@ -69,8 +69,7 @@ impl Render for ApplyResult {
 
 pub fn apply(
     format: OutputFormat,
-    field: Option<&str>,
-    config_override: Option<&Path>,
+        config_override: Option<&Path>,
 ) -> Result<ExitCode> {
     let target = etc_hosts_path();
     if requires_root(&target) && !is_root() {
@@ -96,7 +95,7 @@ pub fn apply(
         hostnames,
         changed,
     };
-    emit(format, field, &result)?;
+    emit(format, &result)?;
     Ok(ExitCode::SUCCESS)
 }
 

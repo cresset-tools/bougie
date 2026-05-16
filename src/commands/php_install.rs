@@ -89,8 +89,7 @@ impl Render for InstallResult {
 
 pub fn run(
     format: OutputFormat,
-    field: Option<&str>,
-    request_strs: &[String],
+        request_strs: &[String],
     flavor_arg: Option<&str>,
     bare: bool,
     without: &[String],
@@ -169,7 +168,7 @@ pub fn run(
     }
 
     let result = InstallResult { schema_version: 1, installed };
-    emit(format, field, &result)?;
+    emit(format, &result)?;
     Ok(ExitCode::SUCCESS)
 }
 

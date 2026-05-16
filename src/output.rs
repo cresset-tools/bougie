@@ -1,8 +1,8 @@
-//! Output discipline per CLI.md §9: `--format text|json-v1`, `--field`,
+//! Output discipline per CLI.md §9: `--format text|json-v1`
 //! and the NDJSON event stream on stderr.
 
 use crate::cli::OutputFormat;
-use eyre::{eyre, Result};
+use eyre::Result;
 use serde::Serialize;
 use std::io::{self, Write};
 use std::sync::OnceLock;
@@ -32,41 +32,37 @@ pub trait Render: Serialize {
     fn render_text(&self, w: &mut dyn Write) -> io::Result<()>;
 }
 
-/// Emit a command's final result to stdout. Honors `--field`, falling
-/// back to format-driven rendering.
+/// Emit a command's final result to stdout.
 ///
 /// Stdout is wrapped in [`anstream::AutoStream`] so commands that emit
 /// ANSI escape codes get them stripped automatically when stdout is
 /// not a terminal (or when `NO_COLOR` is set).
-pub fn emit<R: Render>(format: OutputFormat, field: Option<&str>, result: &R) -> Result<()> {
+pub fn emit<R: Render>(format: OutputFormat, result: &R) -> Result<()> {
     let stdout = io::stdout();
     let mut w = anstream::AutoStream::auto(stdout.lock());
-    write_result(&mut w, format, field, result)
+    write_result(&mut w, format, result)
 }
 
 /// Like `emit`, but pipes the rendered output through `$PAGER` (default
-/// `less`) when stdout is a terminal and the user isn't extracting a
-/// field or asking for JSON. Falls back to direct stdout if the pager
-/// can't be spawned.
-pub fn emit_paged<R: Render>(format: OutputFormat, field: Option<&str>, result: &R) -> Result<()> {
+/// `less`) when stdout is a terminal and the user isn't asking for JSON.
+/// Falls back to direct stdout if the pager can't be spawned.
+pub fn emit_paged<R: Render>(format: OutputFormat, result: &R) -> Result<()> {
     use std::io::IsTerminal;
 
-    let want_pager = field.is_none()
-        && matches!(format, OutputFormat::Text)
-        && io::stdout().is_terminal();
+    let want_pager = matches!(format, OutputFormat::Text) && io::stdout().is_terminal();
     if !want_pager {
-        return emit(format, field, result);
+        return emit(format, result);
     }
 
     let pager = std::env::var("PAGER").unwrap_or_else(|_| "less".into());
     let pager = pager.trim();
     if pager.is_empty() || pager == "cat" {
-        return emit(format, field, result);
+        return emit(format, result);
     }
 
     let mut parts = pager.split_whitespace();
     let Some(cmd) = parts.next() else {
-        return emit(format, field, result);
+        return emit(format, result);
     };
     let args: Vec<&str> = parts.collect();
 
@@ -81,7 +77,7 @@ pub fn emit_paged<R: Render>(format: OutputFormat, field: Option<&str>, result: 
     }
     let mut child = match child_cmd.spawn() {
         Ok(c) => c,
-        Err(_) => return emit(format, field, result),
+        Err(_) => return emit(format, result),
     };
     {
         let stdin = child.stdin.take().expect("piped stdin");
@@ -92,10 +88,10 @@ pub fn emit_paged<R: Render>(format: OutputFormat, field: Option<&str>, result: 
         let res = if no_color {
             let boxed: Box<dyn Write + Send> = Box::new(stdin);
             let mut w = anstream::StripStream::new(boxed);
-            write_result(&mut w, format, field, result)
+            write_result(&mut w, format, result)
         } else {
             let mut w = stdin;
-            write_result(&mut w, format, field, result)
+            write_result(&mut w, format, result)
         };
         // Ignore broken-pipe errors: the user may have quit the pager.
         if let Err(e) = res
@@ -113,36 +109,14 @@ pub fn emit_paged<R: Render>(format: OutputFormat, field: Option<&str>, result: 
 fn write_result<W: Write, R: Render>(
     w: &mut W,
     format: OutputFormat,
-    field: Option<&str>,
     result: &R,
 ) -> Result<()> {
-    if let Some(path) = field {
-        return write_field(w, result, path);
-    }
     match format {
         OutputFormat::Text => result.render_text(w)?,
         OutputFormat::JsonV1 => {
             serde_json::to_writer(&mut *w, result)?;
             writeln!(w)?;
         }
-    }
-    Ok(())
-}
-
-fn write_field<W: Write, R: Serialize>(w: &mut W, value: &R, path: &str) -> Result<()> {
-    let v = serde_json::to_value(value)?;
-    let mut cur = &v;
-    for seg in path.split('.') {
-        cur = cur
-            .get(seg)
-            .ok_or_else(|| eyre!("field not found: {path}"))?;
-    }
-    match cur {
-        serde_json::Value::String(s) => writeln!(w, "{s}")?,
-        serde_json::Value::Number(n) => writeln!(w, "{n}")?,
-        serde_json::Value::Bool(b) => writeln!(w, "{b}")?,
-        serde_json::Value::Null => writeln!(w)?,
-        _ => return Err(eyre!("field is not scalar: {path}")),
     }
     Ok(())
 }
@@ -215,68 +189,6 @@ fn write_event_json<W: Write>(w: &mut W, event: &Event<'_>) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[derive(Serialize)]
-    struct Sample {
-        schema_version: u32,
-        bougie: Inner,
-    }
-
-    #[derive(Serialize)]
-    struct Inner {
-        version: String,
-        active: bool,
-    }
-
-    impl Render for Sample {
-        fn render_text(&self, w: &mut dyn Write) -> io::Result<()> {
-            writeln!(w, "bougie {}", self.bougie.version)
-        }
-    }
-
-    #[test]
-    fn write_field_extracts_string() {
-        let s = Sample {
-            schema_version: 1,
-            bougie: Inner { version: "0.1.0".into(), active: true },
-        };
-        let mut buf = Vec::new();
-        write_field(&mut buf, &s, "bougie.version").unwrap();
-        assert_eq!(String::from_utf8(buf).unwrap(), "0.1.0\n");
-    }
-
-    #[test]
-    fn write_field_extracts_bool() {
-        let s = Sample {
-            schema_version: 1,
-            bougie: Inner { version: "0.1.0".into(), active: true },
-        };
-        let mut buf = Vec::new();
-        write_field(&mut buf, &s, "bougie.active").unwrap();
-        assert_eq!(String::from_utf8(buf).unwrap(), "true\n");
-    }
-
-    #[test]
-    fn write_field_missing_errors() {
-        let s = Sample {
-            schema_version: 1,
-            bougie: Inner { version: "0.1.0".into(), active: true },
-        };
-        let mut buf = Vec::new();
-        let err = write_field(&mut buf, &s, "bougie.nonsense").unwrap_err();
-        assert!(err.to_string().contains("not found"));
-    }
-
-    #[test]
-    fn write_field_non_scalar_errors() {
-        let s = Sample {
-            schema_version: 1,
-            bougie: Inner { version: "0.1.0".into(), active: true },
-        };
-        let mut buf = Vec::new();
-        let err = write_field(&mut buf, &s, "bougie").unwrap_err();
-        assert!(err.to_string().contains("not scalar"));
-    }
 
     #[test]
     fn event_json_envelope_carries_schema_version() {

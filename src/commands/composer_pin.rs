@@ -34,8 +34,7 @@ pub enum PinTarget {
 
 pub fn run(
     format: OutputFormat,
-    field: Option<&str>,
-    request: &str,
+        request: &str,
     pin_target: PinTarget,
 ) -> Result<ExitCode> {
     let project_root = std::env::current_dir()?;
@@ -66,7 +65,7 @@ pub fn run(
         target: written_path,
         written: request.to_owned(),
     };
-    emit(format, field, &result)?;
+    emit(format, &result)?;
     Ok(ExitCode::SUCCESS)
 }
 

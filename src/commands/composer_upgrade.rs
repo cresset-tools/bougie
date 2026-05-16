@@ -42,7 +42,7 @@ impl Render for UpgradeResult {
     }
 }
 
-pub fn run(format: OutputFormat, field: Option<&str>) -> Result<ExitCode> {
+pub fn run(format: OutputFormat) -> Result<ExitCode> {
     let paths = Paths::from_env()?;
     let mut rows = Vec::new();
     for (label, ch) in [("stable", Channel::Stable), ("preview", Channel::Preview)] {
@@ -60,6 +60,6 @@ pub fn run(format: OutputFormat, field: Option<&str>) -> Result<ExitCode> {
         }
     }
     let result = UpgradeResult { schema_version: 1, installed: rows };
-    emit(format, field, &result)?;
+    emit(format, &result)?;
     Ok(ExitCode::SUCCESS)
 }

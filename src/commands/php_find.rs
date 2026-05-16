@@ -26,8 +26,7 @@ impl Render for FindResult {
 
 pub fn run(
     format: OutputFormat,
-    field: Option<&str>,
-    request_str: Option<&str>,
+        request_str: Option<&str>,
 ) -> Result<ExitCode> {
     let paths = Paths::from_env()?;
     let php = match request_str {
@@ -35,7 +34,7 @@ pub fn run(
         None => find_first_installed(&paths)?,
     };
     let result = FindResult { schema_version: 1, path: php };
-    emit(format, field, &result)?;
+    emit(format, &result)?;
     Ok(ExitCode::SUCCESS)
 }
 

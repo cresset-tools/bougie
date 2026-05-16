@@ -49,7 +49,7 @@ impl Render for ServicesRestartResult {
     }
 }
 
-pub fn run(format: OutputFormat, field: Option<&str>, names: Vec<String>) -> Result<ExitCode> {
+pub fn run(format: OutputFormat, names: Vec<String>) -> Result<ExitCode> {
     let project_root = locate_project_root()?;
     let project = load_project(&project_root)?;
 
@@ -78,7 +78,7 @@ pub fn run(format: OutputFormat, field: Option<&str>, names: Vec<String>) -> Res
         out
     };
     if selected.is_empty() {
-        emit(format, field, &ServicesRestartResult {
+        emit(format, &ServicesRestartResult {
             schema_version: 1,
             restarted: vec![],
         })?;
@@ -95,6 +95,6 @@ pub fn run(format: OutputFormat, field: Option<&str>, names: Vec<String>) -> Res
         schema_version: 1,
         restarted: reply.restarted,
     };
-    emit(format, field, &result)?;
+    emit(format, &result)?;
     Ok(ExitCode::SUCCESS)
 }
