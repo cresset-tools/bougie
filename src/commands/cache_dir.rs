@@ -19,12 +19,12 @@ impl Render for CacheDirResult {
     }
 }
 
-pub fn run(format: OutputFormat, field: Option<&str>) -> Result<ExitCode> {
+pub fn run(format: OutputFormat) -> Result<ExitCode> {
     let paths = Paths::from_env()?;
     let result = CacheDirResult {
         schema_version: 1,
         path: paths.cache().to_path_buf(),
     };
-    emit(format, field, &result)?;
+    emit(format, &result)?;
     Ok(ExitCode::SUCCESS)
 }

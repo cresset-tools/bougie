@@ -28,7 +28,6 @@ const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 
 pub fn run(
     _format: OutputFormat,
-    _field: Option<&str>,
     config_path: &Path,
     listen_override: Option<&str>,
     log_format_override: Option<&str>,

@@ -58,7 +58,7 @@ impl Render for StatusResult {
     }
 }
 
-pub fn status(format: OutputFormat, field: Option<&str>) -> Result<ExitCode> {
+pub fn status(format: OutputFormat) -> Result<ExitCode> {
     let paths = Paths::from_env()?;
     let reply: DaemonStatusReply = client::call(&paths, "status", Value::Null)?;
     let pid = read_pid(&paths);
@@ -68,7 +68,7 @@ pub fn status(format: OutputFormat, field: Option<&str>) -> Result<ExitCode> {
         pid,
         services: reply.services,
     };
-    emit(format, field, &result)?;
+    emit(format, &result)?;
     Ok(ExitCode::SUCCESS)
 }
 
@@ -101,18 +101,18 @@ impl Render for StopResult {
     }
 }
 
-pub fn stop(format: OutputFormat, field: Option<&str>) -> Result<ExitCode> {
+pub fn stop(format: OutputFormat) -> Result<ExitCode> {
     let paths = Paths::from_env()?;
     // If the socket isn't there, bougied isn't running — return OK
     // (idempotent stop is the user-friendly behavior).
     if !paths.bougied_sock().exists() {
         let result = StopResult { schema_version: 1, ok: true };
-        emit(format, field, &result)?;
+        emit(format, &result)?;
         return Ok(ExitCode::SUCCESS);
     }
     let reply: DaemonShutdownReply = client::call(&paths, "daemon.shutdown", Value::Null)?;
     let result = StopResult { schema_version: 1, ok: reply.ok };
-    emit(format, field, &result)?;
+    emit(format, &result)?;
     if reply.ok {
         Ok(ExitCode::SUCCESS)
     } else {
@@ -145,10 +145,10 @@ impl Render for VersionResult {
     }
 }
 
-pub fn version(format: OutputFormat, field: Option<&str>) -> Result<ExitCode> {
+pub fn version(format: OutputFormat) -> Result<ExitCode> {
     let paths = Paths::from_env()?;
     let daemon: DaemonVersion = client::call(&paths, "daemon.version", Value::Null)?;
     let result = VersionResult { schema_version: 1, daemon };
-    emit(format, field, &result)?;
+    emit(format, &result)?;
     Ok(ExitCode::SUCCESS)
 }

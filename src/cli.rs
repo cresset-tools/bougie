@@ -27,10 +27,6 @@ pub struct Cli {
     /// Output format.
     #[arg(long, global = true, default_value = "text")]
     pub format: OutputFormat,
-
-    /// Extract a single scalar field from the result.
-    #[arg(long, global = true, value_name = "PATH")]
-    pub field: Option<String>,
 }
 
 #[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]

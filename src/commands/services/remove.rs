@@ -53,8 +53,7 @@ impl Render for ServicesRemoveResult {
 #[allow(clippy::needless_pass_by_value, reason = "owned strings from clap-parsed CLI")]
 pub fn run(
     format: OutputFormat,
-    field: Option<&str>,
-    names: Vec<String>,
+        names: Vec<String>,
     purge: bool,
 ) -> Result<ExitCode> {
     if names.is_empty() {
@@ -79,6 +78,6 @@ pub fn run(
         target: target_label,
         purge_requested: purge,
     };
-    emit(format, field, &result)?;
+    emit(format, &result)?;
     Ok(ExitCode::SUCCESS)
 }

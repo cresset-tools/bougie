@@ -50,8 +50,7 @@ impl Render for ServicesDownResult {
 
 pub fn run(
     format: OutputFormat,
-    field: Option<&str>,
-    names: Vec<String>,
+        names: Vec<String>,
     purge: bool,
 ) -> Result<ExitCode> {
     let project_root = locate_project_root()?;
@@ -77,6 +76,6 @@ pub fn run(
         deprovisioned: reply.deprovisioned,
         purged: purge,
     };
-    emit(format, field, &result)?;
+    emit(format, &result)?;
     Ok(ExitCode::SUCCESS)
 }

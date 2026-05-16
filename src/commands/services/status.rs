@@ -71,7 +71,7 @@ impl Render for ServicesStatusResult {
     }
 }
 
-pub fn run(format: OutputFormat, field: Option<&str>, name: Option<String>) -> Result<ExitCode> {
+pub fn run(format: OutputFormat, name: Option<String>) -> Result<ExitCode> {
     let project_root = locate_project_root()?;
     let project = load_project(&project_root)?;
     let declared: std::collections::BTreeSet<&str> = project
@@ -123,7 +123,7 @@ pub fn run(format: OutputFormat, field: Option<&str>, name: Option<String>) -> R
         project: project_root.display().to_string(),
         services,
     };
-    emit(format, field, &result)?;
+    emit(format, &result)?;
     Ok(ExitCode::SUCCESS)
 }
 

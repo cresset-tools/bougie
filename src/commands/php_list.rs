@@ -93,7 +93,7 @@ fn row_key(row: &Row, multi_target: bool) -> KeyParts<'_> {
     }
 }
 
-pub fn run(format: OutputFormat, field: Option<&str>, opts: Options<'_>) -> Result<ExitCode> {
+pub fn run(format: OutputFormat, opts: Options<'_>) -> Result<ExitCode> {
     if opts.only_installed && opts.only_available {
         return Err(BougieError::Resolution {
             kind: "list".into(),
@@ -163,7 +163,7 @@ pub fn run(format: OutputFormat, field: Option<&str>, opts: Options<'_>) -> Resu
     });
 
     let result = ListResult { schema_version: 1, items: rows };
-    emit(format, field, &result)?;
+    emit(format, &result)?;
     Ok(ExitCode::SUCCESS)
 }
 

@@ -32,7 +32,7 @@ impl Render for InitResult {
     }
 }
 
-pub fn run(format: OutputFormat, field: Option<&str>, with_toml: bool) -> Result<ExitCode> {
+pub fn run(format: OutputFormat, with_toml: bool) -> Result<ExitCode> {
     let cwd = std::env::current_dir().wrap_err("getting current directory")?;
     let mut created = Vec::new();
     let mut already = Vec::new();
@@ -77,7 +77,7 @@ pub fn run(format: OutputFormat, field: Option<&str>, with_toml: bool) -> Result
         created,
         already_present: already,
     };
-    emit(format, field, &result)?;
+    emit(format, &result)?;
     Ok(ExitCode::SUCCESS)
 }
 

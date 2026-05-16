@@ -22,12 +22,12 @@ impl Render for PruneResult {
 /// That ride-along arrives once `bougie ext` has a concrete enabled
 /// set per project. Until then, prune is a no-op so users don't
 /// accidentally remove store paths bougie still needs.
-pub fn run(format: OutputFormat, field: Option<&str>, _dry_run: bool) -> Result<ExitCode> {
+pub fn run(format: OutputFormat, _dry_run: bool) -> Result<ExitCode> {
     let result = PruneResult {
         schema_version: 1,
         message:
             "cache prune: nothing to do (reachability walk lands once `bougie ext` tracks per-project enabled extensions)",
     };
-    emit(format, field, &result)?;
+    emit(format, &result)?;
     Ok(ExitCode::SUCCESS)
 }

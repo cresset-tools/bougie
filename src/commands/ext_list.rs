@@ -137,7 +137,7 @@ fn write_key(w: &mut dyn Write, row: &Row) -> io::Result<()> {
 ///   `(php_minor, flavor)`.
 /// - `required`   — listed in `composer.json`'s `require.ext-*`. Tag, not
 ///   exclusive.
-pub fn run(format: OutputFormat, field: Option<&str>, opts: Options) -> Result<ExitCode> {
+pub fn run(format: OutputFormat, opts: Options) -> Result<ExitCode> {
     if opts.only_installed && opts.only_available {
         return Err(BougieError::Resolution {
             kind: "list".into(),
@@ -372,7 +372,7 @@ pub fn run(format: OutputFormat, field: Option<&str>, opts: Options) -> Result<E
     });
 
     let result = ListResult { schema_version: 1, items: rows };
-    emit(format, field, &result)?;
+    emit(format, &result)?;
     Ok(ExitCode::SUCCESS)
 }
 

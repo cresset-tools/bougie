@@ -25,7 +25,7 @@ impl Render for SizeResult {
     }
 }
 
-pub fn run(format: OutputFormat, field: Option<&str>) -> Result<ExitCode> {
+pub fn run(format: OutputFormat) -> Result<ExitCode> {
     let paths = Paths::from_env()?;
     let cache = dir_size(paths.cache());
     let store = dir_size(&paths.store());
@@ -37,7 +37,7 @@ pub fn run(format: OutputFormat, field: Option<&str>) -> Result<ExitCode> {
         installs_bytes: installs,
         total_bytes: cache.saturating_add(store).saturating_add(installs),
     };
-    emit(format, field, &result)?;
+    emit(format, &result)?;
     Ok(ExitCode::SUCCESS)
 }
 

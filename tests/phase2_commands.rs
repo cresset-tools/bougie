@@ -48,22 +48,6 @@ fn php_dir_text() {
 }
 
 #[test]
-fn php_dir_field_extraction() {
-    let env = TestEnv::new();
-    let expected = env.home_path().join("installs");
-    let out = env
-        .bougie()
-        .args(["php", "dir", "--field", "path"])
-        .assert()
-        .success()
-        .get_output()
-        .stdout
-        .clone();
-    let line = String::from_utf8(out).unwrap();
-    assert_eq!(line.trim(), expected.to_str().unwrap());
-}
-
-#[test]
 fn self_version_text_has_two_lines() {
     let env = TestEnv::new();
     env.bougie()
@@ -105,21 +89,6 @@ fn self_version_json_v1_carries_schema_version() {
     assert_eq!(v["bougie"]["version"], env!("CARGO_PKG_VERSION"));
     assert!(v["bougie"]["trust"]["kind"].is_string());
     assert!(v["bougie"]["trust"]["detail"].is_string());
-}
-
-#[test]
-fn self_version_field_extraction() {
-    let env = TestEnv::new();
-    let out = env
-        .bougie()
-        .args(["self", "version", "--field", "bougie.version"])
-        .assert()
-        .success()
-        .get_output()
-        .stdout
-        .clone();
-    let line = String::from_utf8(out).unwrap();
-    assert_eq!(line.trim(), env!("CARGO_PKG_VERSION"));
 }
 
 #[test]

@@ -120,7 +120,7 @@ fn channel_key<'a>(version: &'a str, channel: &'a str) -> KeyParts<'a> {
     }
 }
 
-pub fn run(format: OutputFormat, field: Option<&str>) -> Result<ExitCode> {
+pub fn run(format: OutputFormat) -> Result<ExitCode> {
     let paths = Paths::from_env()?;
     let installed = list_installed(&paths)?;
 
@@ -130,7 +130,7 @@ pub fn run(format: OutputFormat, field: Option<&str>) -> Result<ExitCode> {
         fetch_available(&paths).unwrap_or_else(|_| (Vec::new(), Vec::new(), Vec::new()));
 
     let result = ListResult { schema_version: 1, installed, stable, preview, lts };
-    emit_paged(format, field, &result)?;
+    emit_paged(format, &result)?;
     Ok(ExitCode::SUCCESS)
 }
 
