@@ -1,7 +1,7 @@
 //! Advisory file locks per CLI.md §10.
 //!
-//! - Global: `$BOUGIE_HOME/state/locks/global.lock` (BSD `flock(2)`).
-//!   Serializes mutating operations on the shared store.
+//! - Global: `$BOUGIE_HOME/state/locks/global.lock` (BSD `flock(2)` on
+//!   Unix, `LockFileEx` on Windows — both via `std::fs::File::try_lock`).
 //! - Per-project: `<project>/.bougie/.lock`. Serializes `sync` within
 //!   one project.
 //!
@@ -10,8 +10,7 @@
 
 use crate::errors::BougieError;
 use eyre::{Result, WrapErr};
-use rustix::fs::{flock, FlockOperation};
-use std::fs::{File, OpenOptions};
+use std::fs::{File, OpenOptions, TryLockError};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -41,8 +40,12 @@ impl ExclusiveGuard {
             .wrap_err_with(|| format!("opening {}", path.display()))?;
         let deadline = Instant::now() + timeout;
         loop {
-            if flock(&file, FlockOperation::NonBlockingLockExclusive).is_ok() {
-                break;
+            match file.try_lock() {
+                Ok(()) => break,
+                Err(TryLockError::WouldBlock) => {}
+                Err(TryLockError::Error(e)) => {
+                    return Err(eyre::eyre!("acquiring lock {}: {e}", path.display()));
+                }
             }
             if Instant::now() >= deadline {
                 let pid = read_holder_pid(path).unwrap_or(0);

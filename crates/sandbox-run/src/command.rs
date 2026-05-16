@@ -167,7 +167,13 @@ impl Command {
         Ok(())
     }
 
-    #[cfg(not(unix))]
+    #[cfg(target_os = "windows")]
+    fn apply_sandbox_pre_exec(&mut self, _policy: SandboxPolicy) -> io::Result<()> {
+        // Silently skip sandboxing on Windows.
+        Ok(())
+    }
+
+    #[cfg(not(any(unix, target_os = "windows")))]
     fn apply_sandbox_pre_exec(&mut self, _policy: SandboxPolicy) -> io::Result<()> {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,

@@ -710,9 +710,26 @@ fn materialize_closure_peer(ext_root: &Path, name: &str, version: &str, hash: &s
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(eyre!("stat {}: {e}", link.display())),
     }
-    std::os::unix::fs::symlink(&target, &link)
+    symlink_dir(&target, &link)
         .wrap_err_with(|| format!("symlinking {} → {}", link.display(), target.display()))?;
     Ok(())
+}
+
+/// Cross-platform directory symlink.
+///
+/// Unix: `std::os::unix::fs::symlink` (no perm requirement).
+/// Windows: `std::os::windows::fs::symlink_dir`. On Windows this
+/// requires either Developer Mode to be enabled (Windows 10 1703+) or
+/// the process to run with `SeCreateSymbolicLinkPrivilege` (typically
+/// an elevated/admin shell). The error message is propagated so the
+/// hint surfaces to the user.
+#[cfg(unix)]
+fn symlink_dir(target: &Path, link: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(target, link)
+}
+#[cfg(not(unix))]
+fn symlink_dir(target: &Path, link: &Path) -> std::io::Result<()> {
+    std::os::windows::fs::symlink_dir(target, link)
 }
 
 pub fn host_to_dirname(host: &str) -> String {

@@ -20,7 +20,6 @@ use eyre::{eyre, Result};
 use serde::Serialize;
 use std::collections::BTreeSet;
 use std::io::{self, Write};
-use std::os::unix::fs::symlink;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -644,11 +643,35 @@ fn write_shims(project_root: &std::path::Path) -> Result<PathBuf> {
     // commands::unzip). Materialising it as a sibling shim keeps the
     // composer subprocess discovery path inside `.bougie/bin/`.
     for name in ["php", "php-fpm", "composer", "unzip"] {
+        // On Windows, PATH resolution wants `.exe`; on Unix the bare
+        // name is what Composer's ExecutableFinder searches for.
+        #[cfg(unix)]
         let link = bin_dir.join(name);
+        #[cfg(not(unix))]
+        let link = bin_dir.join(format!("{name}.exe"));
         if link.exists() || link.symlink_metadata().is_ok() {
             std::fs::remove_file(&link)?;
         }
-        symlink(&bougie_bin, &link)?;
+        link_shim(&bougie_bin, &link)?;
     }
     Ok(bin_dir)
+}
+
+/// Materialize a shim that re-enters the bougie binary under a
+/// different `argv[0]` (see [`crate::shim`]).
+///
+/// Unix: symlink — cheap, role-detected from the link path's basename.
+/// Windows: hard link — `std::os::windows::fs::symlink_file` requires
+/// Developer Mode or admin, while NTFS hard links don't. The bougie
+/// binary uses `std::env::args_os().next()` to recover `argv[0]`, and
+/// Windows passes the invoked path (including `.exe`) verbatim — so
+/// hardlinking `php.exe` to `bougie.exe` is enough for the shim
+/// dispatcher to detect the `Role::Php` invocation.
+#[cfg(unix)]
+fn link_shim(target: &std::path::Path, link: &std::path::Path) -> io::Result<()> {
+    std::os::unix::fs::symlink(target, link)
+}
+#[cfg(not(unix))]
+fn link_shim(target: &std::path::Path, link: &std::path::Path) -> io::Result<()> {
+    std::fs::hard_link(target, link)
 }

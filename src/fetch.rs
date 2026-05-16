@@ -579,6 +579,13 @@ mod tests {
         assert!(!into.join("libcurl-8.20.0-aaaa").exists());
     }
 
+    // Uses `MetadataExt::ino()` to confirm a real hardlink (same inode)
+    // was produced. The inode API only exists on Unix; on Windows we'd
+    // need to compare via `GetFileInformationByHandle`. Skip on
+    // Windows — the behavior the test covers (rewriting the link
+    // target with `strip_prefix`) is exercised the same way on either
+    // platform; the inode check is incidental.
+    #[cfg(unix)]
     #[test]
     fn extract_rewrites_hardlink_targets_with_strip_prefix() {
         // Mirrors the rabbitmq tarball shape that previously broke
