@@ -1,9 +1,14 @@
 //! `BOUGIE_HOME` / `BOUGIE_CACHE` resolution and subpath helpers.
 //!
-//! Bougie uses XDG base dirs on every platform (including macOS) — see
-//! CLI.md §2.1. Override via `BOUGIE_HOME` / `BOUGIE_CACHE` env vars.
+//! Bougie uses native base dirs: XDG on Unix (including macOS) per
+//! CLI.md §2.1; on Windows, both `home` and `cache` anchor under
+//! `%LOCALAPPDATA%` (see `from_env` for why we skip `%APPDATA%`).
+//! Override via `BOUGIE_HOME` / `BOUGIE_CACHE` env vars.
 
+#[cfg(unix)]
 use etcetera::base_strategy::{BaseStrategy, Xdg};
+#[cfg(windows)]
+use etcetera::base_strategy::{BaseStrategy, Windows};
 use eyre::{Result, WrapErr};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -15,14 +20,27 @@ pub struct Paths {
 }
 
 impl Paths {
-    /// Resolve from environment + XDG defaults.
+    /// Resolve from environment + native base-dir defaults.
     pub fn from_env() -> Result<Self> {
-        let xdg = Xdg::new().wrap_err("could not resolve XDG base dirs")?;
+        #[cfg(unix)]
+        let (data, cache) = {
+            let xdg = Xdg::new().wrap_err("could not resolve XDG base dirs")?;
+            (xdg.data_dir(), xdg.cache_dir())
+        };
+        // On Windows, anchor both home and cache under %LOCALAPPDATA%
+        // (etcetera::Windows::cache_dir). The `data_dir` default
+        // (%APPDATA%/Roaming) would otherwise drag bougie's multi-GB
+        // installs/ tree into domain roaming profiles.
+        #[cfg(windows)]
+        let (data, cache) = {
+            let win = Windows::new().wrap_err("could not resolve Windows base dirs")?;
+            (win.cache_dir(), win.cache_dir())
+        };
         Ok(Self::resolve(
             std::env::var_os("BOUGIE_HOME"),
             std::env::var_os("BOUGIE_CACHE"),
-            &xdg.data_dir(),
-            &xdg.cache_dir(),
+            &data,
+            &cache,
         ))
     }
 

@@ -167,8 +167,12 @@ Touches: `src/target.rs`, `src/fetch.rs`, `Cargo.toml`.
   on `cfg(windows)` returns `x86_64-pc-windows-msvc` (or `aarch64-`).
 - `ArchiveKind { TarZst, Zip }`. Extract path in `fetch.rs` switches
   on it. The `zip` crate is already a dep (unzip-shim).
-- `Paths::from_env()` already uses `etcetera::Xdg` which gives
-  `%LOCALAPPDATA%\bougie` on Windows. Verify and pin via test.
+- `Paths::from_env()` picks the native `etcetera` strategy per
+  target (`Xdg` on Unix, `Windows` on Windows). On Windows both the
+  data and cache slots anchor under `%LOCALAPPDATA%` (via
+  `Windows::cache_dir`); `%APPDATA%/Roaming` is deliberately avoided
+  so bougie's multi-GB `installs/` tree doesn't get dragged into
+  domain roaming profiles.
 - `cfg(unix)` gate the `target.rs` `read_pt_interp` path; Windows
   doesn't need libc detection.
 
@@ -313,7 +317,11 @@ Touches: `src/conf_d.rs`, `tests/`.
 - `request.rs` request grammar.
 - `composer/` subdirectory (composer is platform-agnostic; the
   composer phar runs on any PHP).
-- `state.rs`, `lock.rs` (flock works on Windows via `rustix`).
+- `state.rs`, `lock.rs` (file locking uses `std::fs::File::try_lock`,
+  which is cross-platform — BSD `flock(2)` on Unix, `LockFileEx` on
+  Windows — so neither file needs a Windows port). The
+  `rustix::fs::flock` import in `src/daemon/mod.rs` is `bougied`-only
+  and stays `cfg(unix)`.
 - The CLI surface in `cli.rs`.
 
 The Backend trait is the only structural change; everything else
