@@ -1,13 +1,34 @@
 //! The baseline extension set per CLI.md §3.5.1.1.
 //!
 //! After REFACTOR_DEBIAN_ALIGNED.md (php-build-standalone), the bougie
-//! baseline mirrors Debian's `apt install php8.2-cli` transitive
-//! closure: it is exactly the set of `.so` extensions that
-//! `php8.2-common`, `php8.2-opcache`, and `php8.2-readline` add on top
-//! of the bare interpreter. The interpreter tarball itself ships zero
-//! `.so` files; baseline is what makes `bougie php install <ver>`
-//! reproduce the "I just installed PHP and it behaves the way I expect"
-//! experience.
+//! baseline starts from Debian's `apt install php8.2-cli` transitive
+//! closure — the `.so` extensions that `php8.2-common`,
+//! `php8.2-opcache`, and `php8.2-readline` add on top of the bare
+//! interpreter. The interpreter tarball ships zero `.so` files;
+//! baseline is what makes `bougie php install <ver>` reproduce the
+//! "I just installed PHP and it behaves the way I expect" experience.
+//!
+//! Two extensions to the Debian-strict set live here because we target
+//! the *Composer ecosystem* and not just "what the OS calls PHP":
+//!
+//! - **XML family** (`dom`, `simplexml`, `xml`, `xmlreader`,
+//!   `xmlwriter`). Debian splits these into `php-xml`, an explicit
+//!   opt-in. Every real-world Composer project's transitive tree
+//!   requires at least `ext-xml` — phpunit, phpmd, symfony/console,
+//!   monolog, doctrine all gate on it. Including the family in
+//!   baseline costs ~120KB of `.so` loaded per invocation and makes
+//!   `composer install` work first-shot for the median project.
+//!
+//! - **`mysqlnd`**. The php-build-standalone Debian-faithful build
+//!   compiles `--enable-mysqlnd=shared`, so `mysqlnd.so` is a
+//!   separate artifact. PHP's `pdo_mysql` and `mysqli` declare
+//!   `ZEND_MOD_REQUIRED("mysqlnd")` at MINIT time — `pdo_mysql.so`
+//!   refuses to initialize if `mysqlnd` isn't already loaded. Without
+//!   it in baseline, a project that pulls in `pdo_mysql` via
+//!   composer.json gets `Cannot load module "pdo_mysql" because
+//!   required module "mysqlnd" is not loaded` on every PHP
+//!   invocation. The numeric prefix on `20-mysqlnd.ini` keeps it
+//!   loading before `35-pdo_mysql.ini` and `40-mysqli.ini`.
 //!
 //! The list is compiled into the bougie binary — a bougie release
 //! changes the baseline, not an index publication — which keeps
@@ -56,6 +77,16 @@ pub const BASELINE_EXTENSIONS: &[&str] = &[
     "opcache",
     // php8.2-readline
     "readline",
+    // XML family — Debian splits into `php-xml`, we baseline because
+    // the Composer median project needs it. See module docs.
+    "dom",
+    "simplexml",
+    "xml",
+    "xmlreader",
+    "xmlwriter",
+    // mysqlnd — required for pdo_mysql / mysqli to initialize. See
+    // module docs.
+    "mysqlnd",
 ];
 
 /// `true` when the named baseline extension is not available on the
@@ -193,17 +224,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn baseline_is_debian_faithful_closure() {
-        // Spot-check the spec-required entries from
-        // REFACTOR_DEBIAN_ALIGNED.md §"Default-install set".
+    fn baseline_covers_debian_closure_plus_composer_essentials() {
+        // Debian's `php8.2-cli` transitive closure (from
+        // REFACTOR_DEBIAN_ALIGNED.md §"Default-install set").
         assert!(is_baseline("calendar"));
         assert!(is_baseline("ctype"));
         assert!(is_baseline("opcache"));
         assert!(is_baseline("readline"));
         assert!(is_baseline("ffi"));
-        // The pre-Phase-A Composer-focused baseline names must NOT be
-        // in the new set (they ship as per-ext tarballs available via
-        // `bougie ext add` but are not in the default-install closure).
+        // Composer-essential additions (see module docs):
+        // XML family — needed by phpunit/symfony/monolog/everything.
+        assert!(is_baseline("dom"));
+        assert!(is_baseline("simplexml"));
+        assert!(is_baseline("xml"));
+        assert!(is_baseline("xmlreader"));
+        assert!(is_baseline("xmlwriter"));
+        // mysqlnd — pdo_mysql / mysqli refuse to init without it
+        // loaded first (ZEND_MOD_REQUIRED).
+        assert!(is_baseline("mysqlnd"));
+        // Composer-domain exts that still ship as per-ext tarballs
+        // (loud on every PHP install if they were baselined; users add
+        // them explicitly via `bougie ext add` or implicitly via
+        // composer.json's `require.ext-*`).
         assert!(!is_baseline("mbstring"));
         assert!(!is_baseline("curl"));
         assert!(!is_baseline("intl"));
