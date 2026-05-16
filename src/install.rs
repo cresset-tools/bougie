@@ -9,7 +9,7 @@ use crate::fetch::{fetch_blob, BlobSpec, DownloadBar};
 use crate::index::{
     build_verifier,
     fetch::{fetch_manifest, fetch_root, fetch_section},
-    wire::LoadDirective,
+    wire::{LoadDirective, Manifest},
 };
 use crate::lock::ExclusiveGuard;
 use crate::paths::Paths;
@@ -283,17 +283,7 @@ pub fn install_extension_with_bar(
     if !already_present {
         bar.add_planned(manifest.blob.size);
     }
-    let mut missing_closures: Vec<(PathBuf, String)> = Vec::with_capacity(manifest.closure.len());
-    for closure in &manifest.closure {
-        let store_path = store_dir_for_closure(paths, &closure.name, &closure.version, &closure.hash);
-        if !store_path.exists() {
-            bar.add_planned(closure.size);
-            let storename = format!("{}-{}-{}", closure.name, closure.version, closure.hash);
-            missing_closures.push((store_path, storename));
-        } else {
-            missing_closures.push((store_path, String::new()));
-        }
-    }
+    plan_closure_bytes(paths, &manifest, bar);
 
     if !already_present {
         let blob_spec = BlobSpec {
@@ -310,52 +300,21 @@ pub fn install_extension_with_bar(
     }
 
     // Walk the manifest's bundled-C-lib closure and fetch any
-    // store-paths the consumer doesn't have yet. Mandatory: the
-    // extension `.so` was built with
-    // `$ORIGIN/../../../store/<storeName>/lib` RPATHs that assume an
-    // install-shaped layout (matching the interpreter tarball, whose
-    // `<install>/store/<storeName>/lib` directly resolves). Without
-    // these tarballs *and* the corresponding `store/` peer inside
-    // the ext root, dlopen falls back to the system loader and
-    // surfaces errors like `libicuuc.so.77: cannot open shared
-    // object file` for intl or `libcurl: undefined symbol:
-    // ENGINE_init` for curl (system libcurl against a different
-    // OpenSSL).
+    // store-paths the consumer doesn't have yet. Mandatory for ext:
+    // the `.so` was built with `$ORIGIN/../../../store/<storeName>/lib`
+    // RPATHs that assume an install-shaped layout (matching the
+    // interpreter tarball, whose `<install>/store/<storeName>/lib`
+    // directly resolves). Without these tarballs *and* the
+    // corresponding `store/` peer inside the ext root, dlopen falls
+    // back to the system loader and surfaces errors like
+    // `libicuuc.so.77: cannot open shared object file` for intl or
+    // `libcurl: undefined symbol: ENGINE_init` for curl (system
+    // libcurl against a different OpenSSL).
     //
     // Run unconditionally — `dest.exists()` only tells us the .so
     // blob is present; the closure may still be partial from an
     // earlier bougie release that didn't walk it.
-    for (closure, (store_path, storename)) in manifest.closure.iter().zip(&missing_closures) {
-        if !store_path.exists() {
-            let blob_spec = BlobSpec {
-                url: &closure.url,
-                sha256: &closure.sha256,
-                partial_dir: &paths.cache_blobs(),
-                dest: store_path,
-                // Closure tarballs wrap their contents in `<storeName>/`
-                // per shared/tarball-store-path.nix; strip it so the
-                // tarball's `<storeName>/lib/lib*.so` lands at
-                // `<store_path>/lib/lib*.so` (matching the interpreter's
-                // `<install>/store/<storeName>/lib/lib*.so` layout the
-                // RPATHs were compiled to expect).
-                strip_prefix: storename,
-            };
-            bar.set_current(format!("{} ({})", manifest.name, closure.name));
-            fetch_blob(&client, &blob_spec, bar).wrap_err_with(|| {
-                format!(
-                    "fetching closure entry `{}-{}-{}` for {}",
-                    closure.name, closure.version, closure.hash, manifest.tag
-                )
-            })?;
-        }
-        materialize_closure_peer(&dest, &closure.name, &closure.version, &closure.hash)
-            .wrap_err_with(|| {
-                format!(
-                    "linking closure peer `{}-{}-{}` for {}",
-                    closure.name, closure.version, closure.hash, manifest.tag
-                )
-            })?;
-    }
+    install_closure_peers(&client, paths, &manifest, &dest, bar)?;
 
     let so_path = dest.join(&ext_ref.path);
     if !so_path.exists() {
@@ -621,6 +580,85 @@ fn write_install_conf_d(conf_d: &Path, installed: &InstalledExt) -> Result<()> {
     Ok(())
 }
 
+/// Walk `manifest.closure[]`, fetching every missing shared store
+/// entry and materializing the install-shaped `store/<closureName>`
+/// peer symlinks inside `install_root`. Idempotent: closure entries
+/// already on disk are skipped; existing peer symlinks are left alone.
+///
+/// Used from two sites with the same semantics:
+///
+/// - [`install_extension_with_bar`] (extension installs): the .so was
+///   built with `$ORIGIN/../../../store/<storeName>/lib` RPATHs that
+///   need both the global shared-store entry AND the per-ext
+///   `store/<storeName>` peer.
+/// - [`crate::daemon::store_fetch::fetch_blocking`] (tool installs):
+///   tool tarballs (mariadb, redis, …) have the same RPATH shape, so
+///   the same machinery applies. Phase 1 of `UNBUNDLE_PLAN.md` flips
+///   these tarballs from "ships its closure under `install/store/`"
+///   to "publishes a non-empty `closure[]` and relies on this peer
+///   layout"; this helper is the client-side hinge.
+///
+/// Caller is responsible for pre-planning bytes on the bar via
+/// [`plan_closure_bytes`] if a visible progress total is wanted. The
+/// daemon path uses [`DownloadBar::hidden`] so it skips planning.
+pub(crate) fn install_closure_peers(
+    client: &reqwest::blocking::Client,
+    paths: &Paths,
+    manifest: &Manifest,
+    install_root: &Path,
+    bar: &DownloadBar,
+) -> Result<()> {
+    for closure in &manifest.closure {
+        let store_path =
+            store_dir_for_closure(paths, &closure.name, &closure.version, &closure.hash);
+        if !store_path.exists() {
+            // Closure tarballs wrap their contents in `<storeName>/`
+            // per shared/tarball-store-path.nix; strip it so the
+            // tarball's `<storeName>/lib/lib*.so` lands at
+            // `<store_path>/lib/lib*.so` (matching the interpreter's
+            // `<install>/store/<storeName>/lib/lib*.so` layout the
+            // RPATHs were compiled to expect).
+            let storename = format!("{}-{}-{}", closure.name, closure.version, closure.hash);
+            let blob_spec = BlobSpec {
+                url: &closure.url,
+                sha256: &closure.sha256,
+                partial_dir: &paths.cache_blobs(),
+                dest: &store_path,
+                strip_prefix: &storename,
+            };
+            bar.set_current(format!("{} ({})", manifest.name, closure.name));
+            fetch_blob(client, &blob_spec, bar).wrap_err_with(|| {
+                format!(
+                    "fetching closure entry `{}-{}-{}` for {}",
+                    closure.name, closure.version, closure.hash, manifest.tag
+                )
+            })?;
+        }
+        materialize_closure_peer(install_root, &closure.name, &closure.version, &closure.hash)
+            .wrap_err_with(|| {
+                format!(
+                    "linking closure peer `{}-{}-{}` for {}",
+                    closure.name, closure.version, closure.hash, manifest.tag
+                )
+            })?;
+    }
+    Ok(())
+}
+
+/// Grow `bar`'s planned-total by the byte size of every closure entry
+/// whose `store_path` is missing. Cheap stat-only loop; intended to be
+/// called immediately before the main blob fetch so the caller can
+/// show an accurate aggregate from the first byte.
+pub(crate) fn plan_closure_bytes(paths: &Paths, manifest: &Manifest, bar: &DownloadBar) {
+    for closure in &manifest.closure {
+        let store_path =
+            store_dir_for_closure(paths, &closure.name, &closure.version, &closure.hash);
+        if !store_path.exists() {
+            bar.add_planned(closure.size);
+        }
+    }
+}
+
 /// `$BOUGIE_HOME/store/<name>-<version>-<hash>/` for a closure entry.
 /// Thin wrapper over [`crate::store::store_dir`] kept here so callers
 /// don't need to import the store module just to compute closure
@@ -808,5 +846,174 @@ mod tests {
         std::fs::write(ext_root.join("store/libcurl-1.0-aaaa"), "junk").unwrap();
         let err = materialize_closure_peer(&ext_root, "libcurl", "1.0", "aaaa").unwrap_err();
         assert!(err.to_string().contains("isn't a symlink"), "got: {err}");
+    }
+
+    // ---------- install_closure_peers (Phase 1) ----------
+
+    /// Build a tool manifest with `entries` closure rows. URLs point at
+    /// `https://example.invalid/...` so any attempted network fetch
+    /// would fail noisily — the test must pre-populate every
+    /// `store_path` so the helper's fetch branch is never taken.
+    fn tool_manifest_with_closure(entries: &[(&str, &str, &str)]) -> crate::index::wire::Manifest {
+        let closure_json: Vec<_> = entries
+            .iter()
+            .enumerate()
+            .map(|(i, (name, ver, hash))| {
+                serde_json::json!({
+                    "name": name,
+                    "version": ver,
+                    "hash": hash,
+                    "sha256": format!("{:0>64}", i),
+                    "url": format!("https://example.invalid/{name}.tar.zst"),
+                    "size": 0,
+                })
+            })
+            .collect();
+        serde_json::from_value(serde_json::json!({
+            "schema": 1,
+            "kind": "tool",
+            "name": "mariadb",
+            "tag": "mariadb-11.4.10-x86_64-unknown-linux-gnu-default",
+            "version": "11.4.10",
+            "target": "x86_64-unknown-linux-gnu",
+            "flavor": "default",
+            "libc": {"family":"gnu","min":"2.17"},
+            "blob": {"url":"https://x/blob","sha256":"aa","size":0},
+            "closure": closure_json,
+        }))
+        .unwrap()
+    }
+
+    fn pre_create_store_entry(paths: &Paths, name: &str, ver: &str, hash: &str) {
+        // Pretend the closure blob has already been extracted into the
+        // global store. The helper's fetch branch should skip; only
+        // materialize_closure_peer should run.
+        std::fs::create_dir_all(
+            paths
+                .store()
+                .join(format!("{name}-{ver}-{hash}"))
+                .join("lib"),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn install_closure_peers_creates_one_symlink_per_entry() {
+        let td = tempfile::TempDir::new().unwrap();
+        let paths = Paths::new(td.path().into(), td.path().join("cache"));
+        // Three closure entries — a small but representative tool
+        // closure (openssl + zlib + ncurses is exactly what redis and
+        // mariadb need).
+        let entries = [
+            ("openssl", "3.5.6", "99c0f6e8"),
+            ("zlib", "1.3.2", "jbmj2bcm"),
+            ("ncurses", "6.6", "grpadm5y"),
+        ];
+        for (n, v, h) in &entries {
+            pre_create_store_entry(&paths, n, v, h);
+        }
+        let manifest = tool_manifest_with_closure(&entries);
+
+        let install_root = paths.store().join("mariadb-11.4.10");
+        std::fs::create_dir_all(&install_root).unwrap();
+
+        let client = reqwest::blocking::Client::new();
+        let bar = DownloadBar::hidden();
+        install_closure_peers(&client, &paths, &manifest, &install_root, &bar).unwrap();
+
+        for (n, v, h) in &entries {
+            let link = install_root.join("store").join(format!("{n}-{v}-{h}"));
+            let meta = std::fs::symlink_metadata(&link)
+                .unwrap_or_else(|e| panic!("expected symlink at {}: {e}", link.display()));
+            assert!(meta.file_type().is_symlink(), "{} not a symlink", link.display());
+            let target = std::fs::read_link(&link).unwrap();
+            assert_eq!(target, PathBuf::from("../..").join(format!("{n}-{v}-{h}")));
+            // And it actually resolves into the global store.
+            let canon = std::fs::canonicalize(&link).unwrap();
+            assert!(canon.ends_with(format!("{n}-{v}-{h}")), "canon = {}", canon.display());
+        }
+    }
+
+    #[test]
+    fn install_closure_peers_is_idempotent() {
+        // Second invocation must not error (the existing peer symlinks
+        // are left alone) and must not double-link.
+        let td = tempfile::TempDir::new().unwrap();
+        let paths = Paths::new(td.path().into(), td.path().join("cache"));
+        let entries = [("openssl", "3.5.6", "99c0f6e8")];
+        pre_create_store_entry(&paths, "openssl", "3.5.6", "99c0f6e8");
+        let manifest = tool_manifest_with_closure(&entries);
+
+        let install_root = paths.store().join("redis-8.6.3");
+        std::fs::create_dir_all(&install_root).unwrap();
+        let client = reqwest::blocking::Client::new();
+        let bar = DownloadBar::hidden();
+        install_closure_peers(&client, &paths, &manifest, &install_root, &bar).unwrap();
+        install_closure_peers(&client, &paths, &manifest, &install_root, &bar).unwrap();
+
+        // Exactly one entry under store/, still a symlink.
+        let entries: Vec<_> = std::fs::read_dir(install_root.join("store"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(entries.len(), 1);
+    }
+
+    #[test]
+    fn install_closure_peers_noop_on_empty_closure() {
+        // Pre-split tool tarballs ship empty closure[]; the helper must
+        // be a no-op so the daemon's fetch_blocking can call it
+        // unconditionally without breaking old artifacts. This is the
+        // backward-compat hinge in UNBUNDLE_PLAN.md §"Phase 1".
+        let td = tempfile::TempDir::new().unwrap();
+        let paths = Paths::new(td.path().into(), td.path().join("cache"));
+        let manifest = tool_manifest_with_closure(&[]);
+        let install_root = paths.store().join("mariadb-11.4.10");
+        std::fs::create_dir_all(&install_root).unwrap();
+
+        let client = reqwest::blocking::Client::new();
+        let bar = DownloadBar::hidden();
+        install_closure_peers(&client, &paths, &manifest, &install_root, &bar).unwrap();
+        // No `store/` subdir is created when there's nothing to link.
+        assert!(!install_root.join("store").exists());
+    }
+
+    #[test]
+    fn plan_closure_bytes_only_counts_missing() {
+        // The bar's planned total reflects what we'll actually need to
+        // download. If half the closure is already on disk from an
+        // earlier install (the dedup happy path), planning must skip
+        // those entries — otherwise the bar overshoots and never fills.
+        let td = tempfile::TempDir::new().unwrap();
+        let paths = Paths::new(td.path().into(), td.path().join("cache"));
+        let entries = [
+            ("openssl", "3.5.6", "99c0f6e8"),
+            ("zlib", "1.3.2", "jbmj2bcm"),
+        ];
+        // Only openssl is already on disk.
+        pre_create_store_entry(&paths, "openssl", "3.5.6", "99c0f6e8");
+
+        // Hand-build a manifest where each entry advertises a distinct
+        // non-zero size so we can assert exactly which one was counted.
+        let manifest: crate::index::wire::Manifest = serde_json::from_value(serde_json::json!({
+            "schema": 1, "kind": "tool", "name": "mariadb",
+            "tag": "mariadb-11.4.10-x", "version": "11.4.10",
+            "target": "x86_64-unknown-linux-gnu", "flavor": "default",
+            "libc": {"family":"gnu","min":"2.17"},
+            "blob": {"url":"https://x","sha256":"aa","size":0},
+            "closure": [
+                {"name":"openssl","version":"3.5.6","hash":"99c0f6e8",
+                 "sha256":format!("{:0>64}",0),"url":"https://x/o","size": 1_000},
+                {"name":"zlib","version":"1.3.2","hash":"jbmj2bcm",
+                 "sha256":format!("{:0>64}",1),"url":"https://x/z","size": 500},
+            ],
+        })).unwrap();
+
+        let bar = DownloadBar::hidden();
+        plan_closure_bytes(&paths, &manifest, &bar);
+        // openssl (1000) is on disk → skipped. zlib (500) is missing →
+        // counted. So planned == 500.
+        assert_eq!(bar.planned(), 500, "expected only the missing entry to be counted");
+        let _ = entries;
     }
 }
