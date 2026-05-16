@@ -173,7 +173,7 @@ impl Command {
         Ok(())
     }
 
-    #[cfg(all(not(target_os = "windows"), unix))]
+    #[cfg(not(any(unix, target_os = "windows")))]
     fn apply_sandbox_pre_exec(&mut self, _policy: SandboxPolicy) -> io::Result<()> {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
