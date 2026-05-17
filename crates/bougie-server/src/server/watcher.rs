@@ -25,7 +25,7 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 
 use super::pool::PoolManager;
-use crate::state::read_project_resolved;
+use bougie_fs::state::read_project_resolved;
 
 const DEBOUNCE_WINDOW: Duration = Duration::from_millis(250);
 
@@ -83,9 +83,9 @@ pub fn start(
         // `.bougie/conf.d-debug/` (xdebug et al.) feed pool variants;
         // either changing means the running pools need fresh symlinks.
         for sub in [
-            crate::conf_d::project_confd_dir(project),
-            crate::conf_d::project_confd_debug_dir(project),
-            crate::conf_d::project_confd_local_dir(project),
+            bougie_installer::conf_d::project_confd_dir(project),
+            bougie_installer::conf_d::project_confd_debug_dir(project),
+            bougie_installer::conf_d::project_confd_local_dir(project),
         ] {
             if sub.is_dir() {
                 if let Err(e) = watcher.watch(&sub, RecursiveMode::Recursive) {
@@ -192,9 +192,9 @@ type PathMap = Vec<(PathBuf, PathBuf, ChangeKind)>;
 fn build_path_map(projects: &[PathBuf]) -> PathMap {
     let mut out = PathMap::new();
     for project in projects {
-        out.push((crate::conf_d::project_confd_dir(project), project.clone(), ChangeKind::ConfD));
-        out.push((crate::conf_d::project_confd_debug_dir(project), project.clone(), ChangeKind::ConfD));
-        out.push((crate::conf_d::project_confd_local_dir(project), project.clone(), ChangeKind::ConfD));
+        out.push((bougie_installer::conf_d::project_confd_dir(project), project.clone(), ChangeKind::ConfD));
+        out.push((bougie_installer::conf_d::project_confd_debug_dir(project), project.clone(), ChangeKind::ConfD));
+        out.push((bougie_installer::conf_d::project_confd_local_dir(project), project.clone(), ChangeKind::ConfD));
         // Composer + bougie.toml share the version-input kind; we
         // distinguish their basenames inside `classify` so unrelated
         // files in the project root (README.md, src/, etc.) don't

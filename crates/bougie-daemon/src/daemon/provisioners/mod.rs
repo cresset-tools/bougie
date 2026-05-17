@@ -21,7 +21,7 @@ pub mod redis;
 
 use super::catalog::{CatalogEntry, Tenancy};
 use super::tenants::Tenant;
-use crate::Paths;
+use bougie_paths::Paths;
 use eyre::{eyre, Result};
 use std::path::Path;
 

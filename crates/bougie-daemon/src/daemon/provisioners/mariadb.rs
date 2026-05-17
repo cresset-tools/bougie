@@ -14,7 +14,7 @@
 
 use crate::daemon::store_layout;
 use crate::daemon::tenants::{self, Tenant};
-use crate::Paths;
+use bougie_paths::Paths;
 use eyre::{eyre, Result, WrapErr};
 use std::io::Read;
 use std::path::{Path, PathBuf};

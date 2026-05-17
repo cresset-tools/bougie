@@ -11,8 +11,8 @@
 //! `bougie server remove` invoke this automatically via `sudo`. See
 //! [`spawn_sudo_apply`].
 
-use crate::cli::OutputFormat;
-use crate::output::{emit, Render};
+use bougie_cli::OutputFormat;
+use bougie_output::output::{emit, Render};
 use eyre::{Result, WrapErr};
 use serde::Serialize;
 use std::io::{self, Write};
@@ -357,7 +357,7 @@ mod tests {
 
     #[test]
     fn hostnames_for_etc_hosts_includes_aliases() {
-        use crate::commands::server::config::{HostAlias, HostBlock, ServerSection};
+        use crate::server::config::{HostAlias, HostBlock, ServerSection};
         let cfg = ServerConfig {
             server: ServerSection::default(),
             hosts: vec![HostBlock {

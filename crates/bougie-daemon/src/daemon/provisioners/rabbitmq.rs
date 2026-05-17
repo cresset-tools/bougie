@@ -16,7 +16,7 @@
 //! install or symlink wiring is needed at the supervisor layer.
 
 use crate::daemon::{store_layout, tenants::{self, Tenant}};
-use crate::Paths;
+use bougie_paths::Paths;
 use eyre::{eyre, Result, WrapErr};
 use std::path::{Path, PathBuf};
 use std::process::Command;

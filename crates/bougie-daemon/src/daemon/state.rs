@@ -4,7 +4,7 @@
 
 use super::ipc::ShutdownTx;
 use super::supervisor::{Shared as SupervisorHandle, Supervisor};
-use crate::Paths;
+use bougie_paths::Paths;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 

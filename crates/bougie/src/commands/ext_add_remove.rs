@@ -275,27 +275,7 @@ fn parse_name_with_optional_version(raw: &str) -> Result<(String, Option<String>
 /// what frees us from having to compute a "dominant minor" from
 /// open-ended constraints like `>=8.3` — the resolver already picked
 /// a concrete patch + flavor at sync time.
-pub fn resolved_php_for_ext_install(project_root: &Path) -> Result<(PartialVersion, Flavor)> {
-    let (version_str, flavor_str) = read_project_resolved(project_root).wrap_err(
-        "project's resolved PHP isn't recorded yet — run `bougie sync` (or drop --no-sync) first",
-    )?;
-    let version = version_str
-        .parse::<crate::version::Version>()
-        .map_err(|e| eyre!("malformed .bougie/state/resolved: {version_str:?}: {e}"))?;
-    let flavor = match flavor_str.as_str() {
-        "nts" => Flavor::Nts,
-        "nts-debug" => Flavor::NtsDebug,
-        "zts" => Flavor::Zts,
-        "zts-debug" => Flavor::ZtsDebug,
-        other => return Err(eyre!("malformed .bougie/state/resolved flavor: {other:?}")),
-    };
-    let php_minor = PartialVersion {
-        major: version.major,
-        minor: Some(version.minor),
-        patch: None,
-    };
-    Ok((php_minor, flavor))
-}
+pub use bougie_installer::resolved_php_for_ext_install;
 
 /// Install a local `.so` file: ELF-probe it for the extension name
 /// and `zend_extension=` vs `extension=` kind, copy into the

@@ -24,6 +24,34 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 pub const DEFAULT_INDEX_URL: &str = "https://index.bougie.tools";
+
+/// Read a project's already-resolved PHP (minor + flavor) so callers
+/// that need to install an extension against the project's pinned
+/// runtime don't have to re-run the constraint resolver. Errors when
+/// `bougie sync` hasn't recorded a resolved PHP yet — the recovery
+/// path is to run sync.
+pub fn resolved_php_for_ext_install(project_root: &Path) -> Result<(PartialVersion, Flavor)> {
+    let (version_str, flavor_str) = bougie_fs::state::read_project_resolved(project_root)
+        .wrap_err(
+            "project's resolved PHP isn't recorded yet — run `bougie sync` (or drop --no-sync) first",
+        )?;
+    let version = version_str
+        .parse::<Version>()
+        .map_err(|e| eyre!("malformed .bougie/state/resolved: {version_str:?}: {e}"))?;
+    let flavor = match flavor_str.as_str() {
+        "nts" => Flavor::Nts,
+        "nts-debug" => Flavor::NtsDebug,
+        "zts" => Flavor::Zts,
+        "zts-debug" => Flavor::ZtsDebug,
+        other => return Err(eyre!("malformed .bougie/state/resolved flavor: {other:?}")),
+    };
+    let php_minor = PartialVersion {
+        major: version.major,
+        minor: Some(version.minor),
+        patch: None,
+    };
+    Ok((php_minor, flavor))
+}
 const SECTION_NAME: &str = "interpreter/php";
 const LOCK_TIMEOUT: Duration = Duration::from_mins(1);
 

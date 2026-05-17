@@ -25,8 +25,8 @@ use tokio::sync::Mutex;
 use super::conf_d::{self, PoolConf};
 use super::fastcgi;
 use super::paths::{create_dir_0700, ServerPaths};
-use crate::paths::Paths;
-use crate::state::read_project_resolved;
+use bougie_paths::Paths;
+use bougie_fs::state::read_project_resolved;
 
 const POOL_READY_TIMEOUT: Duration = Duration::from_secs(2);
 const POOL_READY_POLL: Duration = Duration::from_millis(25);
@@ -181,10 +181,10 @@ impl PoolManager {
     /// matters: the regular dir comes first so a primary entry would
     /// shadow a stale duplicate in the debug overlay.
     fn variant_source_dirs(variant: &str, project: &Path) -> Vec<PathBuf> {
-        let regular = crate::conf_d::project_confd_dir(project);
-        let local = crate::conf_d::project_confd_local_dir(project);
+        let regular = bougie_installer::conf_d::project_confd_dir(project);
+        let local = bougie_installer::conf_d::project_confd_local_dir(project);
         match variant {
-            "xdebug" => vec![regular, local, crate::conf_d::project_confd_debug_dir(project)],
+            "xdebug" => vec![regular, local, bougie_installer::conf_d::project_confd_debug_dir(project)],
             _ => vec![regular, local],
         }
     }
@@ -554,7 +554,7 @@ where
 /// fragment is written to `.bougie/conf.d-debug/` — the server's
 /// private overlay, invisible to `bougie run` and the normal pool.
 ///
-/// The install side uses [`crate::install::install_extension`], which
+/// The install side uses [`bougie_installer::install::install_extension`], which
 /// is blocking (uses `reqwest::blocking`), so we hand it to
 /// `spawn_blocking` to keep the tokio runtime responsive while a
 /// possibly-multi-MB download runs.
@@ -563,7 +563,7 @@ async fn ensure_debug_extension(
     name: &str,
     bougie_paths: &Paths,
 ) -> Result<()> {
-    if crate::conf_d::fragment_present_anywhere(project, name) {
+    if bougie_installer::conf_d::fragment_present_anywhere(project, name) {
         return Ok(());
     }
     let project = project.to_path_buf();
@@ -573,21 +573,21 @@ async fn ensure_debug_extension(
     let name_for_log = name_owned.clone();
     tokio::task::spawn_blocking(move || -> Result<()> {
         let (php_minor, flavor) =
-            crate::commands::ext_add_remove::resolved_php_for_ext_install(&project)?;
-        let installed = crate::install::install_extension(
+            bougie_installer::resolved_php_for_ext_install(&project)?;
+        let installed = bougie_installer::install::install_extension(
             &bougie_paths,
             &name_owned,
             None,
             php_minor,
             flavor,
-            crate::resolve::ResolveOptions::default(),
+            bougie_resolver::ResolveOptions::default(),
         )?;
         eprintln!(
             "bougie server: enabling {name_owned} for {} (first xdebug request{})",
             project.display(),
             if installed.already_present { "" } else { "; downloaded" },
         );
-        crate::conf_d::write_debug_overlay_fragment(
+        bougie_installer::conf_d::write_debug_overlay_fragment(
             &project,
             &installed.name,
             &installed.so_path,

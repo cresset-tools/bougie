@@ -7,8 +7,8 @@
 //! responses, short enough that `^C; bougie server` round-trips don't
 //! feel sluggish.
 
-use crate::cli::OutputFormat;
-use crate::paths::Paths;
+use bougie_cli::OutputFormat;
+use bougie_paths::Paths;
 use eyre::{Result, WrapErr};
 use std::net::SocketAddr;
 use std::path::Path;

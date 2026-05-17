@@ -108,7 +108,7 @@ pub fn resolve(host: &HostBlock, request_path: &str, query: &str) -> Resolution 
 ///  - `query_override = Some(q)` when the rewrite target carried a
 ///    `?query` suffix; `None` means "use the original query".
 fn apply_rewrites(
-    rewrites: &[crate::commands::server::config::RewriteRule],
+    rewrites: &[crate::server::config::RewriteRule],
     uri: &str,
 ) -> (Option<String>, Option<String>) {
     for rule in rewrites {
@@ -274,7 +274,7 @@ mod tests {
 
     #[test]
     fn rewrite_routes_missing_static_to_front_controller() {
-        use crate::commands::server::config::RewriteRule;
+        use crate::server::config::RewriteRule;
         let d = fixture(&[("pub/static.php", "<?php")]);
         let mut h = host(d.path(), "pub", &["$uri", "/static.php$is_args$args"], &[]);
         h.rewrites.push(RewriteRule {
@@ -296,7 +296,7 @@ mod tests {
 
     #[test]
     fn rewrite_only_fires_when_pattern_matches() {
-        use crate::commands::server::config::RewriteRule;
+        use crate::server::config::RewriteRule;
         let d = fixture(&[("pub/style.css", "x"), ("pub/static.php", "<?php")]);
         let mut h = host(d.path(), "pub", &["$uri"], &[]);
         h.rewrites.push(RewriteRule {
