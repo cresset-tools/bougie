@@ -61,11 +61,30 @@ pub fn run(
     let scan_dir = conf_d::php_ini_scan_dir(&project_root, debug_overlay);
 
     let prev_path = std::env::var("PATH").unwrap_or_default();
-    let new_path = if bougie_bin.exists() {
-        format!("{}{PATH_SEP}{prev_path}", bougie_bin.display())
-    } else {
-        prev_path
-    };
+    // Front-load the bougie shim dir, then any per-extension PATH
+    // extras the conf.d fragments asked for. Windows imagick is the
+    // canonical case: its store dir holds ~170 ImageMagick DLLs
+    // (`CORE_RL_*.dll`, `IM_MOD_RL_*.dll`) the Windows loader needs to
+    // find when `php_imagick.dll` initializes. Unix conf.d fragments
+    // don't emit `bougie-path:` markers (RPATH handles deps there),
+    // so the loop is a cheap no-op.
+    let path_extras = conf_d::read_path_extras(&project_root);
+    let mut new_path = String::new();
+    if bougie_bin.exists() {
+        new_path.push_str(&bougie_bin.display().to_string());
+    }
+    for extra in &path_extras {
+        if !new_path.is_empty() {
+            new_path.push_str(PATH_SEP);
+        }
+        new_path.push_str(&extra.display().to_string());
+    }
+    if !prev_path.is_empty() {
+        if !new_path.is_empty() {
+            new_path.push_str(PATH_SEP);
+        }
+        new_path.push_str(&prev_path);
+    }
 
     let (program, rest) = argv.split_first().ok_or_else(|| eyre!("argv missing"))?;
     let mut cmd = std::process::Command::new(program);
