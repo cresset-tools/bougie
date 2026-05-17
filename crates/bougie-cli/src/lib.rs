@@ -243,8 +243,14 @@ pub enum ServerCommand {
         #[arg(long, value_name = "FMT")]
         log_format: Option<String>,
     },
-    /// List hosts configured in a `server.toml`.
-    List,
+    /// List hosts configured in a `server.toml`. `--config` is
+    /// mandatory: there is no XDG-default fallback, every invocation
+    /// names the file to read.
+    List {
+        /// `server.toml` path. Required.
+        #[arg(long, value_name = "PATH")]
+        config: std::path::PathBuf,
+    },
     /// Manage `/etc/hosts` overrides (phase 5).
     #[command(subcommand)]
     Hosts(ServerHostsCommand),
@@ -258,10 +264,11 @@ pub enum ServerHostsCommand {
     /// Rewrite the bougie sentinel block in /etc/hosts to match
     /// server.toml. Requires root — runs via sudo.
     Apply {
-        /// Alternate server.toml path. Required when invoking via
-        /// sudo because sudo strips XDG_CONFIG_HOME by default.
+        /// `server.toml` path. Required: there is no XDG-default
+        /// fallback, and a sudo invocation would in any case strip the
+        /// env that one used to come from.
         #[arg(long, value_name = "PATH")]
-        config: Option<std::path::PathBuf>,
+        config: std::path::PathBuf,
     },
 }
 

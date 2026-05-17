@@ -110,10 +110,25 @@ pub fn run(
         .build()
         .wrap_err("building tokio runtime")?;
 
-    let control_socket = ServerPaths::from_env()?.control_socket();
+    let control_endpoint = control_endpoint_path()?;
     let exit = rt
-        .block_on(async move { serve(listen, state, projects, control_socket).await })?;
+        .block_on(async move { serve(listen, state, projects, control_endpoint).await })?;
     Ok(exit)
+}
+
+/// Path the control listener publishes/binds at. Unix: the unix socket
+/// file. Windows: the discovery file where the named-pipe name is
+/// written (the pipe itself lives in `\\.\pipe\`).
+fn control_endpoint_path() -> Result<std::path::PathBuf> {
+    let sp = ServerPaths::from_env()?;
+    #[cfg(unix)]
+    {
+        Ok(sp.control_socket())
+    }
+    #[cfg(windows)]
+    {
+        Ok(sp.control_pipe_discovery())
+    }
 }
 
 async fn serve(
@@ -220,6 +235,7 @@ async fn serve(
     Ok(ExitCode::SUCCESS)
 }
 
+#[cfg(unix)]
 async fn shutdown_signal() {
     use tokio::signal::unix::{signal, SignalKind};
     let mut sigint = signal(SignalKind::interrupt()).expect("install SIGINT handler");
@@ -228,4 +244,13 @@ async fn shutdown_signal() {
         _ = sigint.recv() => eprintln!("\nbougie server: SIGINT received, shutting down"),
         _ = sigterm.recv() => eprintln!("bougie server: SIGTERM received, shutting down"),
     }
+}
+
+/// Windows console apps don't get SIGTERM; Ctrl+C, Ctrl+Break, console
+/// close, logoff, and shutdown all fold into the CTRL_*_EVENT handler
+/// that tokio surfaces as `ctrl_c()`. For a dev tool that's enough.
+#[cfg(windows)]
+async fn shutdown_signal() {
+    let _ = tokio::signal::ctrl_c().await;
+    eprintln!("\nbougie server: Ctrl+C received, shutting down");
 }

@@ -503,8 +503,9 @@ mod tests {
         // return None so they can't be opted out via `ext-X = false`.
         assert_eq!(ext_name_from_fragment("20-readline.ini"), Some("readline"));
         assert_eq!(ext_name_from_fragment("20-ctype.ini"), Some("ctype"));
+        assert_eq!(ext_name_from_fragment("20-mbstring.ini"), Some("mbstring"));
         assert_eq!(ext_name_from_fragment("20-openssl.ini"), None); // static core
-        assert_eq!(ext_name_from_fragment("20-mbstring.ini"), None); // per-ext, not baseline
+        assert_eq!(ext_name_from_fragment("20-curl.ini"), None); // per-ext, not baseline
         assert_eq!(ext_name_from_fragment("notfragment.txt"), None);
         assert_eq!(ext_name_from_fragment("custom.ini"), None);
     }

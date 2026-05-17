@@ -278,8 +278,8 @@ async fn serve_php(
     let server_port = state.listen_port().to_string();
     let peer_addr = peer.ip().to_string();
     let peer_port = peer.port().to_string();
-    let script_fn_str = script_filename.display().to_string();
-    let doc_root_str = web_root_canonical.display().to_string();
+    let script_fn_str = super::paths::cgi_path_string(script_filename);
+    let doc_root_str = super::paths::cgi_path_string(&web_root_canonical);
     let request_uri_str = if query.is_empty() {
         // PATH_INFO carries the URI portion after the script for
         // front-controller dispatch; for direct hits it's empty and we
@@ -323,7 +323,7 @@ async fn serve_php(
         params.push((k.as_str(), v.as_str()));
     }
 
-    let result = match fastcgi::dispatch(pool.socket(), &params, &body).await {
+    let result = match fastcgi::dispatch(pool.transport(), &params, &body).await {
         Ok(r) => r,
         Err(e) => return bad_gateway(&format!("fastcgi dispatch failed: {e:#}")),
     };

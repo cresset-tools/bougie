@@ -98,11 +98,17 @@ version = "0.4.0"
 # the recipe engine all rely on Unix-only APIs (domain sockets, POSIX
 # signals, sandbox-run's Landlock/SBPL backends, utimensat, /bin/sh).
 # Gating the deps means Windows builds skip the crates entirely.
+# `bougie-server` is now cross-platform (Windows replaces php-fpm with
+# `php-cgi.exe -b 127.0.0.1:<port>` and uses named pipes for the
+# control endpoint) and stays in the regular [dependencies] block.
 [target.'cfg(unix)'.dependencies]
 bougie-daemon = { path = "../bougie-daemon", version = "0.4.0" }
 bougie-recipe = { path = "../bougie-recipe", version = "0.4.0" }
-bougie-server = { path = "../bougie-server", version = "0.4.0" }
 sandbox-run = { path = "../sandbox-run", version = "0.1.0" }
+
+[dependencies.bougie-server]
+path = "../bougie-server"
+version = "0.4.0"
 
 # --- External deps still used directly by the bin (CLI dispatch,
 #     commands/ handlers, the unzip-shim role, etc.) ---

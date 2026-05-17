@@ -21,10 +21,35 @@
 //! syscalls. We can revisit if a perf trace shows it dominating.
 
 use eyre::{eyre, Result, WrapErr};
-use std::path::Path;
+use std::net::SocketAddr;
+#[cfg(unix)]
+use std::path::PathBuf;
 use std::time::Duration;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::net::TcpStream;
+#[cfg(unix)]
 use tokio::net::UnixStream;
+
+/// Where to connect for FastCGI dispatch. Unix uses a per-pool socket
+/// (php-fpm convention); Windows uses TCP loopback because php-cgi.exe
+/// only supports `-b host:port` (no Unix sockets, no named pipes for
+/// `-b`).
+#[derive(Debug, Clone)]
+pub enum Transport {
+    #[cfg(unix)]
+    UnixSocket(PathBuf),
+    Tcp(SocketAddr),
+}
+
+impl std::fmt::Display for Transport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            #[cfg(unix)]
+            Self::UnixSocket(p) => write!(f, "{}", p.display()),
+            Self::Tcp(addr) => write!(f, "{addr}"),
+        }
+    }
+}
 
 const FCGI_VERSION_1: u8 = 1;
 const FCGI_HEADER_LEN: usize = 8;
@@ -178,7 +203,10 @@ pub struct Frame {
 }
 
 /// Read one full FastCGI record (header + body + padding).
-async fn read_frame(stream: &mut UnixStream) -> Result<Frame> {
+async fn read_frame<S>(stream: &mut S) -> Result<Frame>
+where
+    S: AsyncRead + Unpin,
+{
     let mut header = [0u8; FCGI_HEADER_LEN];
     stream
         .read_exact(&mut header)
@@ -217,14 +245,35 @@ async fn read_frame(stream: &mut UnixStream) -> Result<Frame> {
 /// splitting headers from body and merging them with bougie's
 /// `Content-Type` etc.
 pub async fn dispatch(
-    socket: &Path,
+    transport: &Transport,
     params: &[(&str, &str)],
     stdin: &[u8],
 ) -> Result<DispatchResult> {
-    let mut stream = UnixStream::connect(socket)
-        .await
-        .wrap_err_with(|| format!("connecting to {}", socket.display()))?;
+    match transport {
+        #[cfg(unix)]
+        Transport::UnixSocket(p) => {
+            let stream = UnixStream::connect(p)
+                .await
+                .wrap_err_with(|| format!("connecting to {}", p.display()))?;
+            dispatch_inner(stream, params, stdin).await
+        }
+        Transport::Tcp(addr) => {
+            let stream = TcpStream::connect(addr)
+                .await
+                .wrap_err_with(|| format!("connecting to {addr}"))?;
+            dispatch_inner(stream, params, stdin).await
+        }
+    }
+}
 
+async fn dispatch_inner<S>(
+    mut stream: S,
+    params: &[(&str, &str)],
+    stdin: &[u8],
+) -> Result<DispatchResult>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
     // Buffer the entire outbound message before writing — keeps the
     // socket interaction tight and gives the kernel a chance to send
     // everything in one syscall.
@@ -294,16 +343,34 @@ pub struct DispatchResult {
 /// Probe a freshly-spawned pool by issuing FCGI_GET_VALUES and parsing
 /// the response. 2s timeout (SERVER.md §7.6). The caller treats any
 /// error here as "pool failed to start" and returns 502 to the client.
-pub async fn probe(socket: &Path) -> Result<Vec<(String, String)>> {
-    tokio::time::timeout(HEALTH_PROBE_TIMEOUT, probe_inner(socket))
+pub async fn probe(transport: &Transport) -> Result<Vec<(String, String)>> {
+    tokio::time::timeout(HEALTH_PROBE_TIMEOUT, probe_outer(transport))
         .await
         .map_err(|_| eyre!("fastcgi probe timed out after {:?}", HEALTH_PROBE_TIMEOUT))?
 }
 
-async fn probe_inner(socket: &Path) -> Result<Vec<(String, String)>> {
-    let mut stream = UnixStream::connect(socket)
-        .await
-        .wrap_err_with(|| format!("connecting to {}", socket.display()))?;
+async fn probe_outer(transport: &Transport) -> Result<Vec<(String, String)>> {
+    match transport {
+        #[cfg(unix)]
+        Transport::UnixSocket(p) => {
+            let stream = UnixStream::connect(p)
+                .await
+                .wrap_err_with(|| format!("connecting to {}", p.display()))?;
+            probe_inner(stream).await
+        }
+        Transport::Tcp(addr) => {
+            let stream = TcpStream::connect(addr)
+                .await
+                .wrap_err_with(|| format!("connecting to {addr}"))?;
+            probe_inner(stream).await
+        }
+    }
+}
+
+async fn probe_inner<S>(mut stream: S) -> Result<Vec<(String, String)>>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
     let mut tx = Vec::with_capacity(64);
     // FCGI_GET_VALUES requests well-known variables; an empty-valued
     // pair is the spec'd way to ask "what's your X?".

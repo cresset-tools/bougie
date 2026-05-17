@@ -51,9 +51,6 @@ version = "0.8"
 default-features = false
 features = ["http1", "tokio"]
 
-[dependencies.etcetera]
-version = "0.11"
-
 [dependencies.eyre]
 version = "0.6"
 
@@ -79,11 +76,6 @@ features = ["std", "perf"]
 version = "0.13"
 default-features = false
 features = ["blocking", "rustls"]
-
-[dependencies.rustix]
-version = "1.0"
-default-features = false
-features = ["std", "fs", "process"]
 
 [dependencies.serde]
 version = "1.0"
@@ -113,6 +105,20 @@ features = ["serde"]
 
 [dependencies.tracing]
 version = "0.1"
+
+# Unix-only: SIGUSR2 to php-fpm for in-place reload, geteuid() for the
+# $XDG_RUNTIME_DIR fallback, sudo-aware config path resolution. No
+# direct Windows equivalents (Windows uses kill+respawn for reload and
+# %LOCALAPPDATA% for runtime root).
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1.0", default-features = false, features = ["std", "fs", "process"] }
+
+# Windows-only: random ephemeral-port selection for `php-cgi.exe -b
+# 127.0.0.1:<port>` (php-cgi.exe rejects port 0, so we can't ask the
+# kernel to autoselect — we pick a port, spawn, and retry on bind
+# collision).
+[target.'cfg(windows)'.dependencies]
+rand = { version = "0.8", default-features = false, features = ["std", "std_rng"] }
 
 [lints]
 workspace = true

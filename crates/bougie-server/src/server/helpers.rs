@@ -100,9 +100,8 @@ impl Render for ListResult {
     }
 }
 
-pub fn list(format: OutputFormat) -> Result<ExitCode> {
-    let path = config::resolve_path(None)?;
-    let cfg = config::load(&path)?;
+pub fn list(format: OutputFormat, config_path: &std::path::Path) -> Result<ExitCode> {
+    let cfg = config::load(config_path)?;
     let hosts = cfg
         .hosts
         .into_iter()
@@ -114,19 +113,31 @@ pub fn list(format: OutputFormat) -> Result<ExitCode> {
         })
         .collect();
     let live = query_live_status();
-    let result = ListResult { schema_version: 1, config: path, hosts, live };
+    let result = ListResult {
+        schema_version: 1,
+        config: config_path.to_path_buf(),
+        hosts,
+        live,
+    };
     emit(format, &result)?;
     Ok(ExitCode::SUCCESS)
 }
 
-/// Try to query the running server's control socket. Returns `None`
-/// silently when the socket is missing or the connect fails — the
+/// Try to query the running server's control endpoint. Returns `None`
+/// silently when no server is running or the connect fails — the
 /// `bougie server list` UX promises a graceful fallback to config-only
 /// output when no server is running.
+///
+/// The control endpoint is per-platform: Unix uses a unix socket at
+/// `<runtime_root>/control.sock`; Windows uses a named pipe whose name
+/// is published in a discovery file at `<runtime_root>/control.pipe`.
 fn query_live_status() -> Option<LiveBlock> {
     let server_paths = ServerPaths::from_env().ok()?;
-    let socket = server_paths.control_socket();
-    let status = control::try_query_status(&socket)?;
+    #[cfg(unix)]
+    let endpoint = server_paths.control_socket();
+    #[cfg(windows)]
+    let endpoint = server_paths.control_pipe_discovery();
+    let status = control::try_query_status(&endpoint)?;
     if !status.ok {
         return None;
     }
