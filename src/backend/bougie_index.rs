@@ -11,7 +11,7 @@
 //! cache root path, and a target-triple string. Re-use the same
 //! instance for back-to-back resolves to avoid re-fetching the root.
 
-use super::{BlobRef, PhpRecipe};
+use super::{build_http_client, BlobRef, PhpRecipe};
 use crate::errors::BougieError;
 use crate::fetch::ArchiveKind;
 use crate::index::{
@@ -40,12 +40,7 @@ impl BougieIndexBackend {
     /// under `$BOUGIE_CACHE/index/<host>/`. The triple is captured at
     /// construction so each `resolve_*` call doesn't re-derive it.
     pub fn new(paths: &Paths, host: &str, target: &str) -> Result<Self> {
-        let client = reqwest::blocking::Client::builder()
-            .build()
-            .map_err(|e| BougieError::Network {
-                operation: "building HTTP client".into(),
-                detail: e.to_string(),
-            })?;
+        let client = build_http_client("bougie index")?;
         let cache_root = paths.cache_index(&host_to_dirname(host));
         Ok(Self {
             client,
@@ -54,18 +49,13 @@ impl BougieIndexBackend {
             cache_root,
         })
     }
-
-    /// Borrow the underlying HTTP client so the install code can drive
-    /// `fetch::fetch_blob` directly. The backend owns the client
-    /// because Phase 3's `WindowsPhpNetBackend` will own a slightly
-    /// different one (different timeouts, no `If-None-Match` for the
-    /// blob URLs); exposing it keeps the install code uniform.
-    pub fn client(&self) -> &reqwest::blocking::Client {
-        &self.client
-    }
 }
 
 impl super::Backend for BougieIndexBackend {
+    fn client(&self) -> &reqwest::blocking::Client {
+        &self.client
+    }
+
     fn resolve_php(
         &self,
         spec: &VersionLike,

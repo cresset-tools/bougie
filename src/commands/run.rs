@@ -189,7 +189,11 @@ fn is_environment_present(project_root: &Path) -> Result<bool> {
         return Ok(false);
     };
     let install = paths.installs().join(format!("{version}-{flavor}"));
-    if !install.join("bin").join("php").exists() {
+    #[cfg(unix)]
+    let php_bin = install.join("bin").join("php");
+    #[cfg(not(unix))]
+    let php_bin = install.join("bin").join("php.exe");
+    if !php_bin.exists() {
         return Ok(false);
     }
 

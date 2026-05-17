@@ -21,29 +21,91 @@
 //! handling) rather than locked in by the bougie-index code path.
 
 pub mod bougie_index;
+pub mod windows_php_net;
 
 pub use bougie_index::BougieIndexBackend;
+pub use windows_php_net::WindowsPhpNetBackend;
 
-use crate::fetch::ArchiveKind;
+use crate::errors::BougieError;
+use crate::fetch::{fetch_blob, ArchiveKind, BlobOutcome, DownloadBar};
+use crate::paths::Paths;
 use crate::request::{Flavor, VersionLike};
 use crate::resolve::ResolveOptions;
+use crate::target::{Os, Triple};
 use crate::version::Version;
 use eyre::Result;
+use std::path::Path;
 
 /// A source of PHP interpreter artifacts. One concrete impl per
-/// distribution channel — bougie's own signed index today,
-/// windows.php.net in Phase 3.
+/// distribution channel — bougie's own signed index, windows.php.net.
 pub trait Backend {
     /// Resolve a user-facing request into a [`PhpRecipe`] ready to
     /// hand off to the extract pipeline. Network I/O happens here
-    /// (root + section + manifest fetches for `BougieIndexBackend`);
-    /// no filesystem state under `$BOUGIE_HOME` is mutated.
+    /// (root + section + manifest fetches for `BougieIndexBackend`;
+    /// `releases.json` fetch for `WindowsPhpNetBackend`); no filesystem
+    /// state under `$BOUGIE_HOME` is mutated.
     fn resolve_php(
         &self,
         spec: &VersionLike,
         flavor: Flavor,
         opts: ResolveOptions,
     ) -> Result<PhpRecipe>;
+
+    /// Borrow the backend's HTTP client. Exposed so [`fetch_into`]'s
+    /// default impl (and the test harness) can drive
+    /// [`crate::fetch::fetch_blob`] without re-building a client.
+    ///
+    /// [`fetch_into`]: Self::fetch_into
+    fn client(&self) -> &reqwest::blocking::Client;
+
+    /// Fetch the recipe's blob into `install_root` and extract.
+    ///
+    /// The default impl extracts directly into `install_root` — right
+    /// for backends whose blobs already wrap their contents into a
+    /// bougie-shaped tree (`install/bin/...`, stripped via the
+    /// recipe's `strip_prefix`). Backends whose blobs ship a different
+    /// shape override this to relocate the extracted tree (the
+    /// windows.php.net backend extracts into `install_root/bin/` so
+    /// `php.exe` and its colocated DLLs land where the rest of bougie
+    /// expects to find them).
+    fn fetch_into(
+        &self,
+        blob: &BlobRef,
+        install_root: &Path,
+        partial_dir: &Path,
+        bar: &DownloadBar,
+    ) -> Result<BlobOutcome> {
+        let spec = blob.as_blob_spec(partial_dir, install_root);
+        fetch_blob(self.client(), &spec, bar)
+    }
+}
+
+/// Pick the right backend for the host target.
+///
+/// `windows.*` triples go through [`WindowsPhpNetBackend`] regardless
+/// of `host` (`$BOUGIE_INDEX_URL` is a bougie-index concept). Everything
+/// else uses [`BougieIndexBackend`] pointed at `host`. Returning a
+/// boxed trait object lets `install_php` stay branch-free.
+pub fn select(target: &Triple, host: &str, paths: &Paths) -> Result<Box<dyn Backend>> {
+    if target.os == Os::Windows {
+        Ok(Box::new(WindowsPhpNetBackend::new(paths, target)?))
+    } else {
+        Ok(Box::new(BougieIndexBackend::new(
+            paths,
+            host,
+            &target.to_string(),
+        )?))
+    }
+}
+
+pub(crate) fn build_http_client(label: &'static str) -> Result<reqwest::blocking::Client> {
+    let client = reqwest::blocking::Client::builder()
+        .build()
+        .map_err(|e| BougieError::Network {
+            operation: format!("building HTTP client for {label}"),
+            detail: e.to_string(),
+        })?;
+    Ok(client)
 }
 
 /// One blob to fetch and extract.
