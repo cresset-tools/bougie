@@ -1,0 +1,53 @@
+[package]
+name = "bougie-index"
+version = "0.4.0"
+edition = "2024"
+description = "Package index wire protocol + Sigstore TUF verifier for bougie."
+license = "EUPL-1.2"
+repository = "https://github.com/cresset-tools/bougie"
+rust-version = "1.95"
+authors.workspace = true
+
+[features]
+default = ["dev-trust-root"]
+# When enabled, an env var (BOUGIE_TRUST_ROOT_PATH) can swap the
+# embedded Sigstore trust root for a local PEM. The integration-test
+# harness needs this; production releases compile without it.
+dev-trust-root = []
+
+[dependencies.bougie-errors]
+path = "../bougie-errors"
+version = "0.4.0"
+
+[dependencies.eyre]
+version = "0.6"
+
+[dependencies.reqwest]
+version = "0.13"
+default-features = false
+features = ["blocking", "rustls"]
+
+[dependencies.serde]
+version = "1.0"
+features = ["derive"]
+
+[dependencies.serde_json]
+version = "1.0"
+features = ["preserve_order"]
+
+[dependencies.sha2]
+version = "0.11"
+
+[dependencies.sigstore]
+version = "0.13"
+default-features = false
+features = ["cosign", "verify", "rustls-tls", "sigstore-trust-root"]
+
+[dev-dependencies.base64]
+version = "0.22"
+
+[dev-dependencies.tempfile]
+version = "3.10"
+
+[lints]
+workspace = true

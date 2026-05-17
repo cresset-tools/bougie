@@ -32,14 +32,18 @@ jobs:
           # integration test. The other integration tests pull in
           # Unix-only fixtures (mariadb/opensearch/rabbitmq tarball
           # tables, `pre_exec`, `PermissionsExt::set_mode`, …) — they
-          # are deliberately not built here. `cargo build` (without
-          # --all-targets) keeps the binary green; the lib+smoke test
-          # commands cover everything Windows is supposed to cover.
+          # are deliberately not built here. `cargo build -p bougie`
+          # (without --all-targets) keeps the binary green; the
+          # lib+smoke test commands cover everything Windows is
+          # supposed to cover. The `-p bougie` selector is required
+          # since the workspace also contains `sandbox-run`, which is
+          # deliberately Unix-only and `compile_error!`s under a plain
+          # `cargo build` on Windows.
           # The `test-fixtures` feature gates the fake-redis bin, which
           # is Unix-only test infrastructure — skip it on Windows.
           - os: windows-latest
-            build_cmd: cargo build
-            test_cmd: cargo test --lib --test windows_smoke
+            build_cmd: cargo build -p bougie
+            test_cmd: cargo test -p bougie --lib --test windows_smoke
     steps:
       - uses: actions/checkout@v5
 

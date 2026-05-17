@@ -1,0 +1,118 @@
+[package]
+name = "bougie-server"
+version = "0.4.0"
+edition = "2024"
+description = "Embedded HTTP / FastCGI dev server for bougie."
+license = "EUPL-1.2"
+repository = "https://github.com/cresset-tools/bougie"
+rust-version = "1.95"
+authors.workspace = true
+
+[dependencies.bougie-cli]
+path = "../bougie-cli"
+version = "0.4.0"
+
+[dependencies.bougie-config]
+path = "../bougie-config"
+version = "0.4.0"
+
+[dependencies.bougie-errors]
+path = "../bougie-errors"
+version = "0.4.0"
+
+[dependencies.bougie-fs]
+path = "../bougie-fs"
+version = "0.4.0"
+
+[dependencies.bougie-installer]
+path = "../bougie-installer"
+version = "0.4.0"
+
+[dependencies.bougie-output]
+path = "../bougie-output"
+version = "0.4.0"
+
+[dependencies.bougie-paths]
+path = "../bougie-paths"
+version = "0.4.0"
+
+[dependencies.bougie-resolver]
+path = "../bougie-resolver"
+version = "0.4.0"
+
+[dependencies.anstream]
+version = "1.0"
+
+[dependencies.anstyle]
+version = "1.0"
+
+[dependencies.axum]
+version = "0.8"
+default-features = false
+features = ["http1", "tokio"]
+
+[dependencies.etcetera]
+version = "0.11"
+
+[dependencies.eyre]
+version = "0.6"
+
+[dependencies.http-body-util]
+version = "0.1"
+
+[dependencies.mime_guess]
+version = "2"
+default-features = false
+
+[dependencies.notify]
+version = "8"
+
+[dependencies.percent-encoding]
+version = "2"
+
+[dependencies.regex]
+version = "1.11"
+default-features = false
+features = ["std", "perf"]
+
+[dependencies.reqwest]
+version = "0.13"
+default-features = false
+features = ["blocking", "rustls"]
+
+[dependencies.rustix]
+version = "1.0"
+default-features = false
+features = ["std", "fs", "process"]
+
+[dependencies.serde]
+version = "1.0"
+features = ["derive"]
+
+[dependencies.serde_json]
+version = "1.0"
+features = ["preserve_order"]
+
+[dependencies.sha2]
+version = "0.11"
+
+[dependencies.tempfile]
+version = "3.10"
+
+[dependencies.tokio]
+version = "1"
+default-features = false
+features = [
+    "rt-multi-thread", "net", "process", "signal", "fs",
+    "macros", "time", "sync", "io-util",
+]
+
+[dependencies.toml_edit]
+version = "0.25"
+features = ["serde"]
+
+[dependencies.tracing]
+version = "0.1"
+
+[lints]
+workspace = true

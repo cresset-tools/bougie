@@ -369,29 +369,32 @@ dependencies = [
 name = "bougie"
 version = "0.4.0"
 dependencies = [
- "anstream",
- "anstyle",
  "assert_cmd",
- "axum",
  "base64 0.22.1",
+ "bougie-backend",
+ "bougie-cli",
+ "bougie-composer",
+ "bougie-config",
+ "bougie-daemon",
+ "bougie-errors",
+ "bougie-fetch",
+ "bougie-fs",
+ "bougie-index",
+ "bougie-installer",
+ "bougie-output",
+ "bougie-paths",
+ "bougie-platform",
+ "bougie-recipe",
+ "bougie-resolver",
+ "bougie-server",
+ "bougie-version",
  "clap",
  "color-eyre",
- "etcetera",
  "eyre",
- "http-body-util",
- "hyper",
- "hyper-util",
- "indicatif",
  "insta",
- "md-5",
- "mime_guess",
- "notify",
- "percent-encoding",
  "predicates",
- "regex",
  "reqwest 0.13.3",
  "rustix",
- "rustls",
  "sandbox-run",
  "serde",
  "serde_json",
@@ -399,20 +402,257 @@ dependencies = [
  "sigstore",
  "tar",
  "tempfile",
- "thiserror 2.0.18",
  "tokio",
  "toml_edit",
- "tower",
- "tower-http",
- "tracing",
- "tracing-subscriber",
- "url",
  "walkdir",
- "which",
- "winnow",
  "wiremock",
  "zip",
  "zstd",
+]
+
+[[package]]
+name = "bougie-backend"
+version = "0.4.0"
+dependencies = [
+ "bougie-errors",
+ "bougie-fetch",
+ "bougie-index",
+ "bougie-paths",
+ "bougie-platform",
+ "bougie-resolver",
+ "bougie-version",
+ "eyre",
+ "reqwest 0.13.3",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "bougie-cli"
+version = "0.4.0"
+dependencies = [
+ "clap",
+]
+
+[[package]]
+name = "bougie-composer"
+version = "0.4.0"
+dependencies = [
+ "bougie-errors",
+ "bougie-fetch",
+ "bougie-fs",
+ "bougie-paths",
+ "eyre",
+ "md-5",
+ "reqwest 0.13.3",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "bougie-config"
+version = "0.4.0"
+dependencies = [
+ "eyre",
+ "serde",
+ "serde_json",
+ "toml_edit",
+]
+
+[[package]]
+name = "bougie-daemon"
+version = "0.4.0"
+dependencies = [
+ "bougie-backend",
+ "bougie-config",
+ "bougie-errors",
+ "bougie-fetch",
+ "bougie-fs",
+ "bougie-index",
+ "bougie-installer",
+ "bougie-output",
+ "bougie-paths",
+ "bougie-platform",
+ "bougie-server",
+ "eyre",
+ "reqwest 0.13.3",
+ "rustix",
+ "sandbox-run",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+ "tokio",
+ "toml_edit",
+ "tracing",
+]
+
+[[package]]
+name = "bougie-errors"
+version = "0.4.0"
+dependencies = [
+ "eyre",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "bougie-fetch"
+version = "0.4.0"
+dependencies = [
+ "bougie-errors",
+ "bougie-output",
+ "eyre",
+ "indicatif",
+ "reqwest 0.13.3",
+ "sha2 0.11.0",
+ "tar",
+ "tempfile",
+ "tracing",
+ "zip",
+ "zstd",
+]
+
+[[package]]
+name = "bougie-fs"
+version = "0.4.0"
+dependencies = [
+ "bougie-errors",
+ "bougie-paths",
+ "bougie-version",
+ "eyre",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "bougie-index"
+version = "0.4.0"
+dependencies = [
+ "base64 0.22.1",
+ "bougie-errors",
+ "eyre",
+ "reqwest 0.13.3",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "sigstore",
+ "tempfile",
+]
+
+[[package]]
+name = "bougie-installer"
+version = "0.4.0"
+dependencies = [
+ "bougie-backend",
+ "bougie-errors",
+ "bougie-fetch",
+ "bougie-fs",
+ "bougie-index",
+ "bougie-paths",
+ "bougie-platform",
+ "bougie-resolver",
+ "bougie-version",
+ "eyre",
+ "reqwest 0.13.3",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+ "tracing",
+]
+
+[[package]]
+name = "bougie-output"
+version = "0.4.0"
+dependencies = [
+ "anstream",
+ "anstyle",
+ "bougie-cli",
+ "eyre",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "bougie-paths"
+version = "0.4.0"
+dependencies = [
+ "etcetera",
+ "eyre",
+]
+
+[[package]]
+name = "bougie-platform"
+version = "0.4.0"
+dependencies = [
+ "bougie-errors",
+ "eyre",
+]
+
+[[package]]
+name = "bougie-recipe"
+version = "0.4.0"
+dependencies = [
+ "eyre",
+ "rustix",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "toml_edit",
+]
+
+[[package]]
+name = "bougie-resolver"
+version = "0.4.0"
+dependencies = [
+ "bougie-errors",
+ "bougie-index",
+ "bougie-version",
+ "eyre",
+]
+
+[[package]]
+name = "bougie-server"
+version = "0.4.0"
+dependencies = [
+ "anstream",
+ "anstyle",
+ "axum",
+ "bougie-cli",
+ "bougie-config",
+ "bougie-errors",
+ "bougie-fs",
+ "bougie-installer",
+ "bougie-output",
+ "bougie-paths",
+ "bougie-resolver",
+ "etcetera",
+ "eyre",
+ "http-body-util",
+ "mime_guess",
+ "notify",
+ "percent-encoding",
+ "regex",
+ "reqwest 0.13.3",
+ "rustix",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+ "tokio",
+ "toml_edit",
+ "tracing",
+]
+
+[[package]]
+name = "bougie-version"
+version = "0.4.0"
+dependencies = [
+ "eyre",
 ]
 
 [[package]]
@@ -2193,15 +2433,6 @@ name = "macos-sandbox-sys"
 version = "0.1.0"
 
 [[package]]
-name = "matchers"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d1525a2a28c7f4fa0fc98bb91ae755d1e2d1505079e05539e35bc876b5d65ae9"
-dependencies = [
- "regex-automata",
-]
-
-[[package]]
 name = "matchit"
 version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2320,15 +2551,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "42b8cfee0e339a0337359f3c88165702ac6e600dc01c0cc9579a92d62b08477a"
 dependencies = [
  "bitflags",
-]
-
-[[package]]
-name = "nu-ansi-term"
-version = "0.50.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
-dependencies = [
- "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4296,7 +4518,6 @@ dependencies = [
  "tower",
  "tower-layer",
  "tower-service",
- "tracing",
  "url",
 ]
 
@@ -4356,32 +4577,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "tracing-serde"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "704b1aeb7be0d0a84fc9828cae51dab5970fee5088f83d1dd7ee6f6246fc6ff1"
-dependencies = [
- "serde",
- "tracing-core",
-]
-
-[[package]]
 name = "tracing-subscriber"
 version = "0.3.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cb7f578e5945fb242538965c2d0b04418d38ec25c79d160cd279bf0731c8d319"
 dependencies = [
- "matchers",
- "nu-ansi-term",
- "once_cell",
- "regex-automata",
- "serde",
- "serde_json",
  "sharded-slab",
  "thread_local",
- "tracing",
  "tracing-core",
- "tracing-serde",
 ]
 
 [[package]]
