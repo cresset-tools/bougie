@@ -6,9 +6,9 @@
 //!   - `index.json.etag`    the matching `ETag` header value
 //!   - `index.json.sig`     the matching signature sidecar
 
-use crate::errors::BougieError;
-use crate::index::verify::Verifier;
-use crate::index::wire::{Manifest, Root, Section};
+use bougie_errors::BougieError;
+use crate::verify::Verifier;
+use crate::wire::{Manifest, Root, Section};
 use eyre::{Result, WrapErr};
 use sha2::{Digest, Sha256};
 use std::fs;

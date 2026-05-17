@@ -44,6 +44,10 @@ dev-trust-root = []
 path = "../bougie-cli"
 version = "0.4.0"
 
+[dependencies.bougie-composer]
+path = "../bougie-composer"
+version = "0.4.0"
+
 [dependencies.bougie-config]
 path = "../bougie-config"
 version = "0.4.0"
@@ -58,6 +62,10 @@ version = "0.4.0"
 
 [dependencies.bougie-fs]
 path = "../bougie-fs"
+version = "0.4.0"
+
+[dependencies.bougie-index]
+path = "../bougie-index"
 version = "0.4.0"
 
 [dependencies.bougie-output]

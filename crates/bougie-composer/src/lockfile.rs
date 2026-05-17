@@ -16,7 +16,7 @@
 //! See `Composer\Package\Locker::getContentHash` for the algorithm
 //! (`src/Composer/Package/Locker.php:89` in composer/composer).
 
-use crate::composer::php_json::{self, Mode};
+use crate::php_json::{self, Mode};
 use eyre::{eyre, Result, WrapErr};
 use md5::{Digest, Md5};
 use serde_json::{Map, Value};

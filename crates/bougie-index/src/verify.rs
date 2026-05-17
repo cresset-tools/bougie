@@ -18,7 +18,7 @@
 //!    root, and operators running a private index with their own key
 //!    can use it too.
 
-use crate::errors::BougieError;
+use bougie_errors::BougieError;
 use eyre::{Result, WrapErr};
 use sha2::{Digest, Sha256};
 use sigstore::bundle::Bundle;
@@ -39,7 +39,7 @@ pub const EXPECTED_ISSUER: &str = "https://token.actions.githubusercontent.com";
 /// detached-ECDSA test-override path consults this. Production verifies
 /// Sigstore Bundles and has no embedded long-lived key.
 #[cfg(test)]
-const EMBEDDED_TRUST_ROOT: &[u8] = include_bytes!("../../keys/trust-root.pub");
+const EMBEDDED_TRUST_ROOT: &[u8] = include_bytes!("../keys/trust-root.pub");
 
 /// Trait so callers can inject a stub during isolated tests.
 pub trait Verifier {

@@ -375,10 +375,12 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "bougie-cli",
+ "bougie-composer",
  "bougie-config",
  "bougie-errors",
  "bougie-fetch",
  "bougie-fs",
+ "bougie-index",
  "bougie-output",
  "bougie-paths",
  "bougie-platform",
@@ -432,6 +434,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "bougie-composer"
+version = "0.4.0"
+dependencies = [
+ "bougie-errors",
+ "bougie-fetch",
+ "bougie-fs",
+ "bougie-paths",
+ "eyre",
+ "md-5",
+ "reqwest 0.13.3",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "bougie-config"
 version = "0.4.0"
 dependencies = [
@@ -476,6 +494,21 @@ dependencies = [
  "eyre",
  "serde",
  "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "bougie-index"
+version = "0.4.0"
+dependencies = [
+ "base64 0.22.1",
+ "bougie-errors",
+ "eyre",
+ "reqwest 0.13.3",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "sigstore",
  "tempfile",
 ]
 
