@@ -1,0 +1,38 @@
+[package]
+name = "bougie-fs"
+version = "0.4.0"
+edition = "2024"
+description = "Filesystem primitives for bougie: file locks, on-disk state, install-tree layout."
+license = "EUPL-1.2"
+repository = "https://github.com/cresset-tools/bougie"
+rust-version = "1.95"
+authors.workspace = true
+
+[dependencies.bougie-errors]
+path = "../bougie-errors"
+version = "0.4.0"
+
+[dependencies.bougie-paths]
+path = "../bougie-paths"
+version = "0.4.0"
+
+[dependencies.bougie-version]
+path = "../bougie-version"
+version = "0.4.0"
+
+[dependencies.eyre]
+version = "0.6"
+
+[dependencies.serde]
+version = "1.0"
+features = ["derive"]
+
+[dependencies.serde_json]
+version = "1.0"
+features = ["preserve_order"]
+
+[dev-dependencies.tempfile]
+version = "3.10"
+
+[lints]
+workspace = true

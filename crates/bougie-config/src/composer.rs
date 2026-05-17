@@ -178,7 +178,7 @@ mod tests {
         assert_eq!(
             cfg.extensions
                 .get("xdebug")
-                .and_then(crate::config::ExtensionPin::as_version),
+                .and_then(crate::ExtensionPin::as_version),
             Some("3.5.1")
         );
         assert_eq!(cfg.index.len(), 1);
@@ -205,7 +205,7 @@ mod tests {
         assert_eq!(
             cfg.extensions
                 .get("redis")
-                .and_then(crate::config::ExtensionPin::as_version),
+                .and_then(crate::ExtensionPin::as_version),
             Some("6.0.2")
         );
     }
@@ -252,11 +252,11 @@ mod tests {
         let cfg = c.extra_bougie.unwrap();
         assert_eq!(cfg.services.len(), 2);
         assert_eq!(
-            cfg.services.get("redis").and_then(crate::config::ServicePin::version),
+            cfg.services.get("redis").and_then(crate::ServicePin::version),
             Some("8.6")
         );
         assert_eq!(
-            cfg.services.get("mariadb").and_then(crate::config::ServicePin::version),
+            cfg.services.get("mariadb").and_then(crate::ServicePin::version),
             Some("*")
         );
     }
