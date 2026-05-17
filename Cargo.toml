@@ -7,7 +7,10 @@ resolver = "3"
 members = [
     "crates/bougie",
     "crates/bougie-cli",
+    "crates/bougie-config",
     "crates/bougie-errors",
+    "crates/bougie-fetch",
+    "crates/bougie-fs",
     "crates/bougie-output",
     "crates/bougie-paths",
     "crates/bougie-platform",

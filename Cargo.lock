@@ -375,7 +375,10 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "bougie-cli",
+ "bougie-config",
  "bougie-errors",
+ "bougie-fetch",
+ "bougie-fs",
  "bougie-output",
  "bougie-paths",
  "bougie-platform",
@@ -429,11 +432,53 @@ dependencies = [
 ]
 
 [[package]]
+name = "bougie-config"
+version = "0.4.0"
+dependencies = [
+ "eyre",
+ "serde",
+ "serde_json",
+ "toml_edit",
+]
+
+[[package]]
 name = "bougie-errors"
 version = "0.4.0"
 dependencies = [
  "eyre",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "bougie-fetch"
+version = "0.4.0"
+dependencies = [
+ "bougie-errors",
+ "bougie-output",
+ "eyre",
+ "indicatif",
+ "reqwest 0.13.3",
+ "sha2 0.11.0",
+ "tar",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "wiremock",
+ "zstd",
+]
+
+[[package]]
+name = "bougie-fs"
+version = "0.4.0"
+dependencies = [
+ "bougie-errors",
+ "bougie-paths",
+ "bougie-version",
+ "eyre",
+ "rustix",
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]
