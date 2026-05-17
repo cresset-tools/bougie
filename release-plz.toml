@@ -8,6 +8,13 @@
 [workspace]
 # Don't run `cargo publish` — bougie isn't on crates.io.
 publish = false
+# Skip `cargo package`'s verify-by-build step. The verify step strips
+# `path` from intra-workspace deps and tries to re-resolve them from
+# crates.io, which fails because none of bougie's helper crates are
+# published. The version-detection step that release-plz runs
+# internally also invokes cargo package; without this knob it stops on
+# the first verify error.
+publish_no_verify = true
 # Create a tag + GitHub release when a release lands.
 git_release_enable = true
 # Match the project's commit-message conventions: a single CHANGELOG.md
@@ -35,4 +42,75 @@ release = false
 
 [[package]]
 name = "macos-sandbox-sys"
+release = false
+
+# Workspace-split helper crates introduced by the crates/* refactor.
+# Only the `bougie` bin gets tagged; the leaf crates ride along inside
+# the GitHub release artifacts.
+[[package]]
+name = "bougie-backend"
+release = false
+
+[[package]]
+name = "bougie-cli"
+release = false
+
+[[package]]
+name = "bougie-composer"
+release = false
+
+[[package]]
+name = "bougie-config"
+release = false
+
+[[package]]
+name = "bougie-daemon"
+release = false
+
+[[package]]
+name = "bougie-errors"
+release = false
+
+[[package]]
+name = "bougie-fetch"
+release = false
+
+[[package]]
+name = "bougie-fs"
+release = false
+
+[[package]]
+name = "bougie-index"
+release = false
+
+[[package]]
+name = "bougie-installer"
+release = false
+
+[[package]]
+name = "bougie-output"
+release = false
+
+[[package]]
+name = "bougie-paths"
+release = false
+
+[[package]]
+name = "bougie-platform"
+release = false
+
+[[package]]
+name = "bougie-recipe"
+release = false
+
+[[package]]
+name = "bougie-resolver"
+release = false
+
+[[package]]
+name = "bougie-server"
+release = false
+
+[[package]]
+name = "bougie-version"
 release = false
