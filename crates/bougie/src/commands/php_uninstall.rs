@@ -1,9 +1,9 @@
-use crate::cli::OutputFormat;
-use crate::errors::BougieError;
-use crate::output::{emit, Render};
-use crate::paths::Paths;
-use crate::request::{parse_request, Flavor, Request, VersionLike};
-use crate::store::install_dir;
+use bougie_cli::OutputFormat;
+use bougie_errors::BougieError;
+use bougie_output::output::{emit, Render};
+use bougie_paths::Paths;
+use bougie_version::request::{parse_request, Flavor, Request, VersionLike};
+use bougie_fs::store::install_dir;
 use eyre::{eyre, Result};
 use serde::Serialize;
 use std::io::{self, Write};

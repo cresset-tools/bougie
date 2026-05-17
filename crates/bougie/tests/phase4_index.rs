@@ -1,7 +1,7 @@
 //! Phase 4: index root fetch + signature verification.
 
 use base64::Engine;
-use bougie::index::{DetachedEcdsa, FetchOutcome, Verifier, fetch_root};
+use bougie_index::{DetachedEcdsa, FetchOutcome, Verifier, fetch_root};
 use eyre::Result;
 use sigstore::crypto::signing_key::ecdsa::{ECDSAKeys, EllipticCurve};
 use tempfile::TempDir;

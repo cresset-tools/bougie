@@ -1,11 +1,11 @@
-use crate::cli::OutputFormat;
-use crate::install::install_php;
-use crate::output::{emit, Render};
-use crate::paths::Paths;
-use crate::request::{Flavor, Request, VersionLike};
-use crate::resolve::ResolveOptions;
-use crate::store::list_installed;
-use crate::version::{Constraint, Op, PartialVersion};
+use bougie_cli::OutputFormat;
+use bougie_installer::install::install_php;
+use bougie_output::output::{emit, Render};
+use bougie_paths::Paths;
+use bougie_version::request::{Flavor, Request, VersionLike};
+use bougie_resolver::ResolveOptions;
+use bougie_fs::store::list_installed;
+use bougie_version::version::{Constraint, Op, PartialVersion};
 use eyre::{eyre, Result};
 use serde::Serialize;
 use std::io::{self, Write};
@@ -44,7 +44,7 @@ pub fn run(format: OutputFormat, minor_filter: Option<&str>) -> Result<ExitCode>
     let mut upgraded = Vec::new();
 
     for (version_str, flavor_str) in installed {
-        let Ok(v) = crate::version::Version::from_str(&version_str) else {
+        let Ok(v) = bougie_version::version::Version::from_str(&version_str) else {
             continue;
         };
         let flavor = parse_flavor(&flavor_str).ok_or_else(|| eyre!("unknown flavor: {flavor_str}"))?;

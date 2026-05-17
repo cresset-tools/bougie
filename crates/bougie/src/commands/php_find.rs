@@ -1,10 +1,10 @@
-use crate::cli::OutputFormat;
-use crate::errors::BougieError;
-use crate::output::{emit, Render};
-use crate::paths::Paths;
-use crate::request::{parse_request, Flavor, Request, VersionLike};
-use crate::store::{install_dir, list_installed};
-use crate::version::Version;
+use bougie_cli::OutputFormat;
+use bougie_errors::BougieError;
+use bougie_output::output::{emit, Render};
+use bougie_paths::Paths;
+use bougie_version::request::{parse_request, Flavor, Request, VersionLike};
+use bougie_fs::store::{install_dir, list_installed};
+use bougie_version::version::Version;
 use eyre::{eyre, Result};
 use serde::Serialize;
 use std::io::{self, Write};
@@ -97,7 +97,7 @@ fn find_first_installed(paths: &Paths) -> Result<PathBuf> {
         kind: "php".into(),
         detail: "no PHP interpreter installed yet; run `bougie php install` first".into(),
     })?;
-    let pv = crate::version::PartialVersion {
+    let pv = bougie_version::version::PartialVersion {
         major: v.major,
         minor: Some(v.minor),
         patch: Some(v.patch),

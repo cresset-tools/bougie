@@ -1,8 +1,8 @@
-use crate::cli::OutputFormat;
-use crate::composer::fetch::{build_client, fetch_channels};
-use crate::list_format::{write_row, KeyParts, Suffix};
-use crate::output::{emit_paged, Render};
-use crate::paths::Paths;
+use bougie_cli::OutputFormat;
+use bougie_composer::fetch::{build_client, fetch_channels};
+use bougie_output::list_format::{write_row, KeyParts, Suffix};
+use bougie_output::output::{emit_paged, Render};
+use bougie_paths::Paths;
 use eyre::{Result, WrapErr};
 use serde::Serialize;
 use std::collections::BTreeSet;

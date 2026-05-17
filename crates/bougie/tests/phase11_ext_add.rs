@@ -399,7 +399,7 @@ fn ext_add_redis_updates_lockfile_content_hash_when_present() {
     // update — that's what makes `composer install` accept the
     // result without complaining about lockfile staleness.
     let starting_hash =
-        bougie::composer::lockfile::content_hash(composer_json_body.as_bytes()).unwrap();
+        bougie_composer::lockfile::content_hash(composer_json_body.as_bytes()).unwrap();
     let lock_body = serde_json::json!({
         "_readme": ["Test lockfile"],
         "content-hash": starting_hash.clone(),
@@ -443,7 +443,7 @@ fn ext_add_redis_updates_lockfile_content_hash_when_present() {
         .to_string();
     assert_ne!(new_hash, starting_hash, "content-hash should have changed");
     let post_edit_json = std::fs::read(proj.path().join("composer.json")).unwrap();
-    let recomputed = bougie::composer::lockfile::content_hash(&post_edit_json).unwrap();
+    let recomputed = bougie_composer::lockfile::content_hash(&post_edit_json).unwrap();
     assert_eq!(
         new_hash, recomputed,
         "lockfile content-hash must equal content_hash(written composer.json)"

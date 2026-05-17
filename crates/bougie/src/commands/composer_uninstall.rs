@@ -1,8 +1,8 @@
-use crate::cli::OutputFormat;
-use crate::composer::{fetch, parse_request, resolve_request, ComposerRequest};
-use crate::errors::BougieError;
-use crate::output::{emit, Render};
-use crate::paths::Paths;
+use bougie_cli::OutputFormat;
+use bougie_composer::{fetch, parse_request, resolve_request, ComposerRequest};
+use bougie_errors::BougieError;
+use bougie_output::output::{emit, Render};
+use bougie_paths::Paths;
 use eyre::{eyre, Result};
 use serde::Serialize;
 use std::io::{self, Write};

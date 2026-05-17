@@ -1,21 +1,21 @@
-use crate::baseline::{self, BaselineFilter};
-use crate::cli::OutputFormat;
-use crate::composer::{self, default_request as default_composer_request, parse_request as parse_composer_request, Installed as InstalledComposer};
-use crate::conf_d;
-use crate::config::{load_project, ExtensionPin, ProjectConfig};
-use crate::errors::BougieError;
-use crate::fetch::DownloadBar;
-use crate::install::{
+use bougie_installer::baseline::{self, BaselineFilter};
+use bougie_cli::OutputFormat;
+use bougie_composer::{self, default_request as default_composer_request, parse_request as parse_composer_request, Installed as InstalledComposer};
+use bougie_installer::conf_d;
+use bougie_config::{load_project, ExtensionPin, ProjectConfig};
+use bougie_errors::BougieError;
+use bougie_fetch::DownloadBar;
+use bougie_installer::install::{
     install_baseline_into, install_extension_with_bar, install_php, preinstall_into, InstalledExt,
     InstalledPhp,
 };
-use crate::output::{emit, Render};
-use crate::paths::Paths;
-use crate::request::{Flavor, Request, VersionLike};
-use crate::resolve::{intersect_php, ResolveOptions};
-use crate::state::{write_project_resolved, write_project_resolved_composer, GlobalState};
-use crate::target::Triple;
-use crate::version::{Constraint, PartialVersion};
+use bougie_output::output::{emit, Render};
+use bougie_paths::Paths;
+use bougie_version::request::{Flavor, Request, VersionLike};
+use bougie_resolver::{intersect_php, ResolveOptions};
+use bougie_fs::state::{write_project_resolved, write_project_resolved_composer, GlobalState};
+use bougie_platform::target::Triple;
+use bougie_version::version::{Constraint, PartialVersion};
 use eyre::{eyre, Result};
 use serde::Serialize;
 use std::collections::BTreeSet;
@@ -125,7 +125,7 @@ pub fn ensure_synced(
     // Pre-download xdebug et al. into the store so the first
     // server-side debug request doesn't pay the download cost. No
     // conf.d fragment is written here — see
-    // `crate::baseline::PREINSTALLED_EXTENSIONS`.
+    // `bougie_installer::baseline::PREINSTALLED_EXTENSIONS`.
     let preinstall_report = preinstall_into(
         paths,
         &installed.install_path,
@@ -145,7 +145,7 @@ pub fn ensure_synced(
         None => default_composer_request(),
     };
     let composer_installed: InstalledComposer =
-        composer::install_composer(paths, &composer_request)?;
+        bougie_composer::install_composer(paths, &composer_request)?;
     write_project_resolved_composer(project_root, &composer_installed.version)?;
 
     let opt_out = baseline_opt_outs(project);
@@ -293,7 +293,7 @@ fn resolve_php_inputs(project: &ProjectConfig) -> Result<(VersionLike, Flavor)> 
         .map(|v| -> Result<VersionLike> {
             // Allow either a bare version or a constraint via the same
             // request grammar.
-            let r = crate::request::parse_request(v)?;
+            let r = bougie_version::request::parse_request(v)?;
             match r {
                 Request::VersionLike { spec, .. } => Ok(spec),
                 _ => Err(eyre!(
@@ -491,7 +491,7 @@ fn baseline_opt_outs(project: &ProjectConfig) -> BTreeSet<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::BougieConfig;
+    use bougie_config::BougieConfig;
     use std::collections::BTreeMap;
     use tempfile::TempDir;
 

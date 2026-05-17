@@ -1,6 +1,6 @@
-use crate::cli::OutputFormat;
-use crate::index::describe_trust;
-use crate::output::{Render, emit};
+use bougie_cli::OutputFormat;
+use bougie_index::describe_trust;
+use bougie_output::output::{Render, emit};
 use eyre::Result;
 use serde::Serialize;
 use std::io::{self, Write};

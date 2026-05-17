@@ -5,9 +5,9 @@
 //! `bougied` if it isn't already running (see `client::call`).
 
 use super::client;
-use crate::cli::OutputFormat;
-use crate::output::{Render, emit};
-use crate::paths::Paths;
+use bougie_cli::OutputFormat;
+use bougie_output::output::{Render, emit};
+use bougie_paths::Paths;
 use eyre::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -22,7 +22,7 @@ pub struct StatusResult {
     pub socket: String,
     /// PID of the daemon's primary process. Read from
     /// `$BOUGIE_HOME/state/bougied.pid` (which the daemon stamps at
-    /// startup; see `crate::daemon::run`).
+    /// startup; see `bougie_daemon::daemon::run`).
     pub pid: Option<u32>,
     pub services: Vec<ServiceRow>,
 }

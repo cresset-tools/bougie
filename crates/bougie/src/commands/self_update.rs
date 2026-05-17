@@ -1,4 +1,4 @@
-use crate::errors::BougieError;
+use bougie_errors::BougieError;
 use eyre::Result;
 use std::process::ExitCode;
 

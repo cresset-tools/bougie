@@ -1,14 +1,14 @@
-use crate::baseline::{parse_without, BaselineFilter};
-use crate::cli::OutputFormat;
-use crate::install::{
+use bougie_installer::baseline::{parse_without, BaselineFilter};
+use bougie_cli::OutputFormat;
+use bougie_installer::install::{
     install_baseline_into, install_php, preinstall_into, BaselineReport, InstalledPhp,
     PreinstallReport,
 };
-use crate::output::{emit, Render};
-use crate::paths::Paths;
-use crate::request::{parse_request, Flavor, Request, VersionLike};
-use crate::resolve::ResolveOptions;
-use crate::version::{Constraint, Op, PartialVersion};
+use bougie_output::output::{emit, Render};
+use bougie_paths::Paths;
+use bougie_version::request::{parse_request, Flavor, Request, VersionLike};
+use bougie_resolver::ResolveOptions;
+use bougie_version::version::{Constraint, Op, PartialVersion};
 use eyre::{eyre, Result};
 use serde::Serialize;
 use std::io::{self, Write};

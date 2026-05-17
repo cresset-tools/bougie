@@ -369,10 +369,7 @@ dependencies = [
 name = "bougie"
 version = "0.4.0"
 dependencies = [
- "anstream",
- "anstyle",
  "assert_cmd",
- "axum",
  "base64 0.22.1",
  "bougie-backend",
  "bougie-cli",
@@ -393,22 +390,11 @@ dependencies = [
  "bougie-version",
  "clap",
  "color-eyre",
- "etcetera",
  "eyre",
- "http-body-util",
- "hyper",
- "hyper-util",
- "indicatif",
  "insta",
- "md-5",
- "mime_guess",
- "notify",
- "percent-encoding",
  "predicates",
- "regex",
  "reqwest 0.13.3",
  "rustix",
- "rustls",
  "sandbox-run",
  "serde",
  "serde_json",
@@ -416,17 +402,9 @@ dependencies = [
  "sigstore",
  "tar",
  "tempfile",
- "thiserror 2.0.18",
  "tokio",
  "toml_edit",
- "tower",
- "tower-http",
- "tracing",
- "tracing-subscriber",
- "url",
  "walkdir",
- "which",
- "winnow",
  "wiremock",
  "zip",
  "zstd",
@@ -2455,15 +2433,6 @@ name = "macos-sandbox-sys"
 version = "0.1.0"
 
 [[package]]
-name = "matchers"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d1525a2a28c7f4fa0fc98bb91ae755d1e2d1505079e05539e35bc876b5d65ae9"
-dependencies = [
- "regex-automata",
-]
-
-[[package]]
 name = "matchit"
 version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2582,15 +2551,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "42b8cfee0e339a0337359f3c88165702ac6e600dc01c0cc9579a92d62b08477a"
 dependencies = [
  "bitflags",
-]
-
-[[package]]
-name = "nu-ansi-term"
-version = "0.50.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
-dependencies = [
- "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4558,7 +4518,6 @@ dependencies = [
  "tower",
  "tower-layer",
  "tower-service",
- "tracing",
  "url",
 ]
 
@@ -4618,32 +4577,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "tracing-serde"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "704b1aeb7be0d0a84fc9828cae51dab5970fee5088f83d1dd7ee6f6246fc6ff1"
-dependencies = [
- "serde",
- "tracing-core",
-]
-
-[[package]]
 name = "tracing-subscriber"
 version = "0.3.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cb7f578e5945fb242538965c2d0b04418d38ec25c79d160cd279bf0731c8d319"
 dependencies = [
- "matchers",
- "nu-ansi-term",
- "once_cell",
- "regex-automata",
- "serde",
- "serde_json",
  "sharded-slab",
  "thread_local",
- "tracing",
  "tracing-core",
- "tracing-serde",
 ]
 
 [[package]]

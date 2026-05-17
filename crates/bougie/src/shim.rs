@@ -11,8 +11,8 @@
 //! `bougied` argv[0] override.
 
 use crate::commands::unzip;
-use crate::paths::Paths;
-use crate::state::{read_project_resolved, read_project_resolved_composer};
+use bougie_paths::Paths;
+use bougie_fs::state::{read_project_resolved, read_project_resolved_composer};
 use eyre::{eyre, Result, WrapErr};
 use std::ffi::OsStr;
 #[cfg(unix)]
@@ -98,7 +98,7 @@ pub fn exec(role: Role) -> Result<ExitCode> {
     #[cfg(unix)]
     if role == Role::Bougied {
         let paths = Paths::from_env()?;
-        return crate::daemon::run(paths);
+        return bougie_daemon::daemon::run(paths);
     }
 
     // The babysit role is the per-service supervisor shim that
@@ -106,7 +106,7 @@ pub fn exec(role: Role) -> Result<ExitCode> {
     // up on parent death. Project-agnostic.
     #[cfg(unix)]
     if role == Role::Babysit {
-        return crate::babysit::run(args);
+        return bougie_daemon::babysit::run(args);
     }
 
     let project_root = locate_project_root(&argv0)?;
@@ -127,8 +127,8 @@ pub fn exec(role: Role) -> Result<ExitCode> {
     // `bougie run --xdebug` exports XDEBUG_SESSION=1 specifically so
     // this branch fires here in the shim — see
     // `commands::run::run`.
-    let debug_overlay = crate::conf_d::xdebug_session_env_active();
-    let scan_dir = crate::conf_d::php_ini_scan_dir(&project_root, debug_overlay);
+    let debug_overlay = bougie_installer::conf_d::xdebug_session_env_active();
+    let scan_dir = bougie_installer::conf_d::php_ini_scan_dir(&project_root, debug_overlay);
 
     match role {
         Role::Php | Role::PhpFpm => {

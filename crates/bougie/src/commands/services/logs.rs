@@ -1,8 +1,8 @@
 //! `bougie services logs [-f] [-n N] <name>`. CLI.md §3.8.8.
 
 use super::client;
-use crate::cli::OutputFormat;
-use crate::paths::Paths;
+use bougie_cli::OutputFormat;
+use bougie_paths::Paths;
 use eyre::Result;
 use serde_json::json;
 use std::process::ExitCode;
