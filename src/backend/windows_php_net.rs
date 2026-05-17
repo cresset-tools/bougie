@@ -417,6 +417,20 @@ struct WindowsPeclVersion {
     sha256: &'static str,
 }
 
+/// `true` when this extension's store dir must be on the PATH at run
+/// time so the Windows DLL loader can find its dependent DLLs. The
+/// imagick distribution is the canonical case — the ZIP bundles
+/// `CORE_RL_*.dll` (MagickWand, MagickCore, …) and `IM_MOD_RL_*.dll`
+/// (codec modules) alongside `php_imagick.dll`. Pointing PATH at the
+/// store dir is enough — ImageMagick's runtime conventions find both
+/// the link-time deps and the codec modules in that same directory,
+/// so no IM-specific env vars (`MAGICK_CODER_MODULE_PATH`,
+/// `MAGICK_CONFIGURE_PATH`) are needed. Verified empirically against
+/// imagick 3.8.1 / ImageMagick 7.1.1-46.
+fn pecl_needs_store_on_path(name: &str) -> bool {
+    matches!(name, "imagick")
+}
+
 /// Hand-curated table of `(name, php_minor, flavor, arch) → (version, sha256)`.
 /// Add a row when shipping support for a new extension/version combo;
 /// the version is the latest stable at the time of the bougie release.
@@ -474,6 +488,59 @@ const WINDOWS_PECL_VERSIONS: &[WindowsPeclVersion] = &[
         arch: "x64",
         sha256: "1f5a5ec509971c35bf738ff21ccf1e5652a223f2101ea9e3c66e79b647e06e2a",
     },
+    // imagick 3.8.1 — NTS x64 across PHP 8.0–8.5. The ZIP bundles
+    // ~50 MB of ImageMagick CORE_RL_*.dll + IM_MOD_RL_*.dll codec
+    // modules alongside php_imagick.dll; the store dir gets added
+    // to PATH at run-time so the Windows DLL loader and ImageMagick's
+    // codec loader both find them (see [`pecl_needs_store_on_path`]).
+    WindowsPeclVersion {
+        name: "imagick",
+        version: "3.8.1",
+        php_minor: "8.0",
+        flavor: "nts",
+        arch: "x64",
+        sha256: "6d57c741e338eed606bd239e44d6ec144e54b8ff65ccf99dbb09d4b1b76b9de3",
+    },
+    WindowsPeclVersion {
+        name: "imagick",
+        version: "3.8.1",
+        php_minor: "8.1",
+        flavor: "nts",
+        arch: "x64",
+        sha256: "7297bd599f58b26ed209f9ffa373f29a2bdf6a88cacd46573ed673fb90071dba",
+    },
+    WindowsPeclVersion {
+        name: "imagick",
+        version: "3.8.1",
+        php_minor: "8.2",
+        flavor: "nts",
+        arch: "x64",
+        sha256: "c15582bfbe19abad8a7894965e82f51d6e5c167d1fa3c0876e5dc64573a4daa9",
+    },
+    WindowsPeclVersion {
+        name: "imagick",
+        version: "3.8.1",
+        php_minor: "8.3",
+        flavor: "nts",
+        arch: "x64",
+        sha256: "6954c4cd93fb2844616baab9c04a0dd83f3fde19289563f8b693f613b4cc825c",
+    },
+    WindowsPeclVersion {
+        name: "imagick",
+        version: "3.8.1",
+        php_minor: "8.4",
+        flavor: "nts",
+        arch: "x64",
+        sha256: "98bd9e5d7355aa8fbc348774613c0ee9844447a3ba5f2565a7aa08486aead541",
+    },
+    WindowsPeclVersion {
+        name: "imagick",
+        version: "3.8.1",
+        php_minor: "8.5",
+        flavor: "nts",
+        arch: "x64",
+        sha256: "67ab8675e59cbbbefd3462c91be662670592f5d02d862f5ee480d9e4707b1fc0",
+    },
 ];
 
 /// A resolved PECL artifact ready to fetch + extract. Holds owned
@@ -490,6 +557,10 @@ pub struct WindowsPeclArtifact {
     /// `extension=` vs `zend_extension=`. Hardcoded per extension —
     /// the windows.php.net PECL surface doesn't carry this metadata.
     pub load: LoadDirective,
+    /// `true` when the extension's store dir needs to be on PATH at
+    /// run time so the Windows DLL loader can find its dependent DLLs.
+    /// imagick is the canonical case (see [`pecl_needs_store_on_path`]).
+    pub needs_store_on_path: bool,
 }
 
 /// PHP INI load directive for a PECL extension on Windows. The
@@ -564,6 +635,7 @@ impl WindowsPhpNetBackend {
             url: format!("{PECL_BASE}/{name}/{}/{filename}", entry.version),
             sha256: entry.sha256.to_owned(),
             load: pecl_load_directive(name),
+            needs_store_on_path: pecl_needs_store_on_path(name),
         })
     }
 }
@@ -726,6 +798,20 @@ mod tests {
         assert_eq!(pecl_load_directive("redis"), LoadDirective::Extension);
         assert_eq!(pecl_load_directive("apcu"), LoadDirective::Extension);
         assert_eq!(pecl_load_directive("mongodb"), LoadDirective::Extension);
+        assert_eq!(pecl_load_directive("imagick"), LoadDirective::Extension);
+    }
+
+    #[test]
+    fn pecl_needs_store_on_path_only_imagick() {
+        // imagick bundles ~170 CORE_RL_*.dll + IM_MOD_*.dll codec
+        // modules in its ZIP; pointing PATH at the store dir lets the
+        // Windows DLL loader and ImageMagick's codec loader find them.
+        assert!(pecl_needs_store_on_path("imagick"));
+        // Every other PECL extension we ship is single-DLL — no PATH
+        // augmentation needed.
+        assert!(!pecl_needs_store_on_path("xdebug"));
+        assert!(!pecl_needs_store_on_path("redis"));
+        assert!(!pecl_needs_store_on_path("apcu"));
     }
 
     /// Smoke-check the compile-time PECL table: every entry parses,
@@ -788,10 +874,35 @@ mod tests {
         assert_eq!(art.url,
             "https://windows.php.net/downloads/pecl/releases/xdebug/3.5.1/php_xdebug-3.5.1-8.4-nts-vs17-x64.zip");
         assert_eq!(art.load, LoadDirective::ZendExtension);
+        assert!(!art.needs_store_on_path);
         assert_eq!(
             art.sha256,
             "967cceb6aebbc5592f6aeb61e67ce2e1bef26e985a5b07efe3a622de090a70a9"
         );
+    }
+
+    #[test]
+    fn resolve_pecl_imagick_signals_needs_store_on_path() {
+        let td = tempfile::TempDir::new().unwrap();
+        let paths = crate::paths::Paths::new(td.path().into(), td.path().join("cache"));
+        let target = crate::target::Triple {
+            arch: Arch::X86_64,
+            vendor: crate::target::Vendor::Pc,
+            os: crate::target::Os::Windows,
+            env: Some(crate::target::Env::Msvc),
+        };
+        let backend = WindowsPhpNetBackend::new(&paths, &target).unwrap();
+        let art = backend
+            .resolve_pecl(
+                "imagick",
+                PartialVersion { major: 8, minor: Some(4), patch: None },
+                Flavor::Nts,
+            )
+            .unwrap();
+        assert_eq!(art.name, "imagick");
+        assert_eq!(art.version, Version::new(3, 8, 1));
+        assert_eq!(art.load, LoadDirective::Extension);
+        assert!(art.needs_store_on_path, "imagick must set needs_store_on_path");
     }
 
     #[test]

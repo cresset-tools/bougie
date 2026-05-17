@@ -239,6 +239,7 @@ fn install_required_extensions(
             &installed.name,
             &installed.so_path,
             installed.load,
+            &installed.path_extras,
         )?;
         installed_names.push(installed.name);
     }

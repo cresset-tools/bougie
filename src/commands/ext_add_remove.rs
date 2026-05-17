@@ -155,6 +155,7 @@ pub fn add(
             &installed.name,
             &installed.so_path,
             installed.load,
+            &installed.path_extras,
         )?;
 
         let applied = apply_require_change(

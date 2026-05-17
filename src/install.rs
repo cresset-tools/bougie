@@ -122,6 +122,16 @@ pub struct InstalledExt {
     pub load: LoadDirective,
     pub already_present: bool,
     pub frozen_warning: bool,
+    /// Extra directories that need to be on PATH at run-time so the
+    /// extension's dependent DLLs resolve. Empty on every Unix
+    /// installation (closures + RPATH handle deps there) and on every
+    /// single-DLL Windows PECL extension. Used by Windows imagick:
+    /// its ZIP bundles `CORE_RL_*.dll` (link-time) and `IM_MOD_RL_*.dll`
+    /// (codec modules) alongside `php_imagick.dll`, and the store dir
+    /// is the only directory that has the whole set. `bougie run`
+    /// reads the `; bougie-path: <dir>` comments these emit into the
+    /// conf.d fragment and prepends each dir to PATH.
+    pub path_extras: Vec<PathBuf>,
 }
 
 /// Install a PHP extension into the content-addressed store.
@@ -321,6 +331,11 @@ fn install_extension_with_bar_index(
         load: ext_ref.load,
         already_present,
         frozen_warning: selected.frozen_warning,
+        // bougie-index extensions have their dep closure handled by
+        // `install_closure_peers` + RPATHs; no PATH augmentation
+        // needed at run time. Reserve [`path_extras`] for the
+        // Windows imagick case.
+        path_extras: Vec::new(),
     })
 }
 
@@ -394,6 +409,12 @@ fn install_extension_windows_pecl(
         ));
     }
 
+    let path_extras = if artifact.needs_store_on_path {
+        vec![dest.clone()]
+    } else {
+        Vec::new()
+    };
+
     Ok(InstalledExt {
         name: artifact.name,
         version: artifact.version,
@@ -404,6 +425,7 @@ fn install_extension_windows_pecl(
         load: artifact.load,
         already_present,
         frozen_warning: false,
+        path_extras,
     })
 }
 
