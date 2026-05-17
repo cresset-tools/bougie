@@ -630,7 +630,6 @@ dependencies = [
  "bougie-output",
  "bougie-paths",
  "bougie-resolver",
- "etcetera",
  "eyre",
  "http-body-util",
  "mime_guess",

@@ -100,9 +100,8 @@ impl Render for ListResult {
     }
 }
 
-pub fn list(format: OutputFormat) -> Result<ExitCode> {
-    let path = config::resolve_path(None)?;
-    let cfg = config::load(&path)?;
+pub fn list(format: OutputFormat, config_path: &std::path::Path) -> Result<ExitCode> {
+    let cfg = config::load(config_path)?;
     let hosts = cfg
         .hosts
         .into_iter()
@@ -114,7 +113,12 @@ pub fn list(format: OutputFormat) -> Result<ExitCode> {
         })
         .collect();
     let live = query_live_status();
-    let result = ListResult { schema_version: 1, config: path, hosts, live };
+    let result = ListResult {
+        schema_version: 1,
+        config: config_path.to_path_buf(),
+        hosts,
+        live,
+    };
     emit(format, &result)?;
     Ok(ExitCode::SUCCESS)
 }

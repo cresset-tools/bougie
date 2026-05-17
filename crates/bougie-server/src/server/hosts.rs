@@ -67,25 +67,18 @@ impl Render for ApplyResult {
     }
 }
 
-pub fn apply(
-    format: OutputFormat,
-        config_override: Option<&Path>,
-) -> Result<ExitCode> {
+pub fn apply(format: OutputFormat, config_path: &Path) -> Result<ExitCode> {
     let target = etc_hosts_path();
     if requires_root(&target) && !is_root() {
         eprintln!(
             "bougie server hosts apply: {} can only be written by root.\n\
-             Run: sudo bougie server hosts apply{}",
+             Run: sudo bougie server hosts apply --config {}",
             target.display(),
-            match config_override {
-                Some(p) => format!(" --config {}", p.display()),
-                None => String::new(),
-            }
+            config_path.display(),
         );
         return Ok(ExitCode::from(1));
     }
-    let cfg_path = config::resolve_path(config_override)?;
-    let cfg = config::load(&cfg_path)?;
+    let cfg = config::load(config_path)?;
     let hostnames = hostnames_for_etc_hosts(&cfg);
 
     let changed = rewrite_sentinel_block(&target, &hostnames)?;

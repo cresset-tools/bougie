@@ -7,7 +7,6 @@
 //! Mutations (`add`/`remove`) go through `toml_edit` so hand-written
 //! comments and field order survive helper invocations.
 
-use etcetera::base_strategy::{BaseStrategy, Xdg};
 use eyre::{Result, WrapErr};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -240,60 +239,6 @@ fn default_index() -> Vec<String> {
 
 fn default_try_files() -> Vec<String> {
     vec!["$uri".into(), "$uri/".into(), "/index.php$is_args$args".into()]
-}
-
-/// Resolve the active `server.toml` path. Prefers `--config` (caller
-/// passes it in); otherwise `$XDG_CONFIG_HOME/bougie/server.toml`.
-///
-/// Sudo-aware: when running as root and `SUDO_USER` is set, the XDG
-/// resolution is re-anchored to the original user's `$HOME` (looked
-/// up via `/etc/passwd`). That makes plain
-/// `sudo bougie server hosts apply` find the user's real
-/// `~/.config/bougie/server.toml` instead of root's empty config dir.
-/// Without this, sudo's default env stripping would silently load
-/// `ServerConfig::default()` and the apply would be a confusing no-op.
-pub fn resolve_path(override_path: Option<&Path>) -> Result<PathBuf> {
-    if let Some(p) = override_path {
-        return Ok(p.to_path_buf());
-    }
-    #[cfg(unix)]
-    if let Some(home) = sudo_origin_home() {
-        return Ok(home.join(".config").join("bougie").join("server.toml"));
-    }
-    let xdg = Xdg::new().wrap_err("could not resolve XDG base dirs")?;
-    Ok(xdg.config_dir().join("bougie").join("server.toml"))
-}
-
-/// Return `Some(home)` when bougie is running as root via sudo and the
-/// original user's home directory can be looked up from `/etc/passwd`.
-/// All other situations return `None` so the caller falls through to
-/// the normal XDG resolution.
-#[cfg(unix)]
-fn sudo_origin_home() -> Option<PathBuf> {
-    if rustix::process::geteuid().as_raw() != 0 {
-        return None;
-    }
-    let sudo_user = std::env::var("SUDO_USER").ok()?;
-    if sudo_user.is_empty() || sudo_user == "root" {
-        return None;
-    }
-    let passwd = std::fs::read_to_string("/etc/passwd").ok()?;
-    home_from_passwd(&passwd, &sudo_user)
-}
-
-/// Pure parser, separated for testability. `/etc/passwd` rows are
-/// `name:passwd:uid:gid:gecos:home:shell` colon-separated.
-#[cfg(unix)]
-fn home_from_passwd(passwd: &str, user: &str) -> Option<PathBuf> {
-    for line in passwd.lines() {
-        let mut fields = line.split(':');
-        if fields.next() == Some(user) {
-            // After consuming `name`, we have 6 fields left;
-            // `home` is index 4 from here.
-            return fields.nth(4).map(PathBuf::from);
-        }
-    }
-    None
 }
 
 /// Load the config from `path`. Missing file returns `ServerConfig::default()`.

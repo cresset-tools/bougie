@@ -173,10 +173,12 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
                 log_format.as_deref(),
             )
         }
-        Command::Server(ServerCommand::List) => bougie_server::server::helpers::list(format),
+        Command::Server(ServerCommand::List { config }) => {
+            bougie_server::server::helpers::list(format, &config)
+        }
         #[cfg(unix)]
         Command::Server(ServerCommand::Hosts(ServerHostsCommand::Apply { config })) => {
-            bougie_server::server::hosts::apply(format, config.as_deref())
+            bougie_server::server::hosts::apply(format, &config)
         }
         #[cfg(unix)]
         Command::Server(ServerCommand::Tls(ServerTlsCommand::Install)) => {
