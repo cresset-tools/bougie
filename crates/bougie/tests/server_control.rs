@@ -123,9 +123,8 @@ fn control_socket_status_returns_listen_port_and_hosts() {
     // `bougie server list` should pick up the live block now.
     let out = env
         .bougie()
-        .env("XDG_CONFIG_HOME", xdg.path())
         .env("XDG_RUNTIME_DIR", runtime.path())
-        .args(["server", "list"])
+        .args(["server", "list", "--config", cfg.to_str().unwrap()])
         .assert()
         .success()
         .get_output()
@@ -138,9 +137,15 @@ fn control_socket_status_returns_listen_port_and_hosts() {
     // json-v1 list carries the `live` block.
     let json_out = env
         .bougie()
-        .env("XDG_CONFIG_HOME", xdg.path())
         .env("XDG_RUNTIME_DIR", runtime.path())
-        .args(["--format", "json-v1", "server", "list"])
+        .args([
+            "--format",
+            "json-v1",
+            "server",
+            "list",
+            "--config",
+            cfg.to_str().unwrap(),
+        ])
         .assert()
         .success()
         .get_output()
@@ -162,14 +167,13 @@ fn list_falls_back_when_no_server_running() {
     let runtime = TempDir::new().unwrap();
     let proj = TempDir::new().unwrap();
 
-    let _cfg = seed_server_toml(xdg.path(), "alone.bougie.run", proj.path(), None);
+    let cfg = seed_server_toml(xdg.path(), "alone.bougie.run", proj.path(), None);
 
     // No running server → list still works, just no live block.
     let out = env
         .bougie()
-        .env("XDG_CONFIG_HOME", xdg.path())
         .env("XDG_RUNTIME_DIR", runtime.path())
-        .args(["server", "list"])
+        .args(["server", "list", "--config", cfg.to_str().unwrap()])
         .assert()
         .success()
         .get_output()
