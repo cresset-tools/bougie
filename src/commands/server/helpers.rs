@@ -100,7 +100,7 @@ impl Render for ListResult {
     }
 }
 
-pub fn list(format: OutputFormat, field: Option<&str>) -> Result<ExitCode> {
+pub fn list(format: OutputFormat) -> Result<ExitCode> {
     let path = config::resolve_path(None)?;
     let cfg = config::load(&path)?;
     let hosts = cfg
@@ -115,7 +115,7 @@ pub fn list(format: OutputFormat, field: Option<&str>) -> Result<ExitCode> {
         .collect();
     let live = query_live_status();
     let result = ListResult { schema_version: 1, config: path, hosts, live };
-    emit(format, field, &result)?;
+    emit(format, &result)?;
     Ok(ExitCode::SUCCESS)
 }
 

@@ -37,7 +37,11 @@ impl Render for VersionResult {
     }
 }
 
-pub fn run(format: OutputFormat, field: Option<&str>, short: bool) -> Result<ExitCode> {
+pub fn run(format: OutputFormat, short: bool) -> Result<ExitCode> {
+    if short {
+        println!("{VERSION}");
+        return Ok(ExitCode::SUCCESS);
+    }
     let trust = describe_trust();
     let result = VersionResult {
         schema_version: 1,
@@ -46,10 +50,6 @@ pub fn run(format: OutputFormat, field: Option<&str>, short: bool) -> Result<Exi
             trust: TrustInfo { kind: trust.kind, detail: trust.detail },
         },
     };
-    if short {
-        emit(OutputFormat::Text, Some("bougie.version"), &result)?;
-    } else {
-        emit(format, field, &result)?;
-    }
+    emit(format, &result)?;
     Ok(ExitCode::SUCCESS)
 }

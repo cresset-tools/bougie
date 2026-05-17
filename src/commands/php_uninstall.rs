@@ -32,8 +32,7 @@ impl Render for UninstallResult {
 
 pub fn run(
     format: OutputFormat,
-    field: Option<&str>,
-    request_strs: &[String],
+        request_strs: &[String],
     flavor_arg: Option<&str>,
 ) -> Result<ExitCode> {
     let paths = Paths::from_env()?;
@@ -62,7 +61,7 @@ pub fn run(
     }
 
     let result = UninstallResult { schema_version: 1, removed };
-    emit(format, field, &result)?;
+    emit(format, &result)?;
     Ok(ExitCode::SUCCESS)
 }
 

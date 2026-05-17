@@ -23,7 +23,8 @@ use crate::commands::sync::{ensure_synced, project_php_inputs};
 use crate::composer::lockfile::{apply_require_change, RequireChange};
 use crate::conf_d;
 use crate::config::load_project;
-use crate::install::install_extension;
+use crate::index::wire::LoadDirective;
+use crate::install::{install_extension, install_local_so};
 use crate::output::{emit, Render};
 use crate::paths::Paths;
 use crate::request::Flavor;
@@ -81,11 +82,10 @@ impl Render for ExtAddRemoveResult {
 #[allow(clippy::needless_pass_by_value, reason = "wired from clap-parsed CLI; ownership crosses the function boundary")]
 pub fn add(
     format: OutputFormat,
-    field: Option<&str>,
-    names: Vec<String>,
+        args: Vec<String>,
     no_sync: bool,
 ) -> Result<ExitCode> {
-    if names.is_empty() {
+    if args.is_empty() {
         return Err(eyre!("no extensions specified"));
     }
     let project_root = locate_project_root()?;
@@ -107,8 +107,18 @@ pub fn add(
 
     let (php_minor, flavor) = resolved_php_for_ext_install(&project_root)?;
 
-    let mut items = Vec::with_capacity(names.len());
-    for raw in &names {
+    let mut items = Vec::with_capacity(args.len());
+    for raw in &args {
+        // Anything ending in `.so` is treated as a path to a local
+        // extension binary: copy into the store, auto-detect the name
+        // and kind from the ELF, write a fragment in `conf.d-local/`,
+        // do not touch composer.json. PHP extension names never
+        // contain a dot, so the `.so` suffix is an unambiguous
+        // discriminator from index names like `redis` or `redis@6.0.2`.
+        if raw.ends_with(".so") {
+            items.push(install_local_arg(&paths, &project_root, raw, php_minor, flavor)?);
+            continue;
+        }
         let (name, version_pin) = parse_name_with_optional_version(raw)?;
 
         // If sync has already replicated a bundled `00-*-<name>.ini`
@@ -182,15 +192,14 @@ pub fn add(
         action: "add",
         items,
     };
-    emit(format, field, &result)?;
+    emit(format, &result)?;
     Ok(ExitCode::SUCCESS)
 }
 
 #[allow(clippy::needless_pass_by_value, reason = "wired from clap-parsed CLI; ownership crosses the function boundary")]
 pub fn remove(
     format: OutputFormat,
-    field: Option<&str>,
-    names: Vec<String>,
+        names: Vec<String>,
     no_sync: bool,
 ) -> Result<ExitCode> {
     if names.is_empty() {
@@ -237,7 +246,7 @@ pub fn remove(
         action: "remove",
         items,
     };
-    emit(format, field, &result)?;
+    emit(format, &result)?;
     Ok(ExitCode::SUCCESS)
 }
 
@@ -287,6 +296,54 @@ pub fn resolved_php_for_ext_install(project_root: &Path) -> Result<(PartialVersi
         patch: None,
     };
     Ok((php_minor, flavor))
+}
+
+/// Install a local `.so` file: ELF-probe it for the extension name
+/// and `zend_extension=` vs `extension=` kind, copy into the
+/// content-addressed store, and write a fragment in
+/// `.bougie/conf.d-local/`. Does not modify `composer.json` — local
+/// extensions are ad-hoc tooling (profilers, vendor binaries) and not
+/// part of the portable project dependency set.
+fn install_local_arg(
+    paths: &Paths,
+    project_root: &Path,
+    raw_path: &str,
+    php_minor: PartialVersion,
+    flavor: Flavor,
+) -> Result<ExtItem> {
+    let source_so = PathBuf::from(raw_path);
+    if !source_so.is_file() {
+        return Err(eyre!(
+            "`{raw_path}` ends in `.so` but isn't a file — \
+             local `.so` installs need a path to an existing extension binary"
+        ));
+    }
+    let detected = crate::binfmt::detect_php_extension(&source_so).wrap_err_with(|| {
+        format!(
+            "couldn't read PHP extension metadata from {}",
+            source_so.display()
+        )
+    })?;
+    let load = if detected.zend {
+        LoadDirective::ZendExtension
+    } else {
+        LoadDirective::Extension
+    };
+    let installed = install_local_so(paths, &detected.name, &source_so, php_minor, flavor)?;
+    let conf_d_path = conf_d::write_local_ext_fragment(
+        project_root,
+        &detected.name,
+        &installed.so_path,
+        load,
+    )?;
+    Ok(ExtItem {
+        name: detected.name,
+        version: None,
+        conf_d_path: Some(conf_d_path),
+        composer_lock_updated: false,
+        already_present: installed.already_present,
+        bundled: false,
+    })
 }
 
 fn locate_project_root() -> Result<PathBuf> {

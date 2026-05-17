@@ -9,7 +9,6 @@ use std::process::ExitCode;
 
 pub fn run(
     _format: OutputFormat,
-    _field: Option<&str>,
     name: String,
     follow: bool,
     lines: usize,

@@ -26,14 +26,20 @@ path = "src/main.rs"
 
 # Phase 3 integration-test fixture. Stands in for a real redis-server
 # in the supervisor tests: parses `--unixsocket <path>` and binds the
-# socket, satisfying the daemon's health probe. Not used at runtime;
-# ships only because the test harness `cargo_bin`s it.
+# socket, satisfying the daemon's health probe. Gated behind the
+# non-default `test-fixtures` feature so `cargo install --path .` skips
+# it; CI and local `cargo test` enable the feature explicitly.
 [[bin]]
 name = "fake-redis"
 path = "tests/fixtures/fake_redis.rs"
+required-features = ["test-fixtures"]
 
 [features]
 default = ["dev-trust-root"]
+# Enables the `fake-redis` test-fixture bin. Off by default so
+# `cargo install` doesn't ship it; turn on with `cargo test --features
+# test-fixtures` (CI does this).
+test-fixtures = []
 # Compile in the `BOUGIE_TRUST_ROOT_PATH` override: when set, the
 # verifier swaps the production Sigstore Bundle path for a detached
 # ECDSA P-256 key at the pointed-to PEM. Used by the integration
@@ -67,6 +73,15 @@ features = ["preserve_order"]
 [dependencies.toml_edit]
 version = "0.25"
 features = ["serde"]
+
+# Compiled regex for `[[host.rewrite]]` patterns in the dev server.
+# `unicode` features are dropped — host-rewrite patterns are ASCII
+# URL paths, and the slim build cuts ~1 MB of unicode tables out of
+# the binary.
+[dependencies.regex]
+version = "1.11"
+default-features = false
+features = ["std", "perf"]
 
 # HTTP + signature path
 [dependencies.reqwest]

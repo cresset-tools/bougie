@@ -27,6 +27,11 @@ pub enum Resolution {
         script_filename: PathBuf,
         script_name: String,
         path_info: String,
+        /// Effective query string after any `[[host.rewrite]]` rule
+        /// fired. `None` means "use the original request query." A
+        /// rewrite that synthesises e.g. `?resource=foo` returns
+        /// `Some("resource=foo")` so it isn't lost.
+        rewritten_query: Option<String>,
     },
     /// No `try_files` entry resolved to a real file.
     NotFound,
@@ -48,19 +53,28 @@ pub fn resolve(host: &HostBlock, request_path: &str, query: &str) -> Resolution 
         return Resolution::NotFound;
     };
 
-    let Some(decoded) = percent_decode_str(request_path).decode_utf8().ok() else {
+    let Some(decoded_cow) = percent_decode_str(request_path).decode_utf8().ok() else {
         return Resolution::Forbidden;
     };
 
+    // Apply `[[host.rewrite]]` rules before `try_files`. First match
+    // wins; the rewritten path (and any embedded `?query`) flows
+    // through `try_files` as if the client had requested it. Bad
+    // regexes are skipped silently — the host validator should have
+    // surfaced them at config-load time.
+    let (decoded_owned, rewritten_query) = apply_rewrites(&host.rewrites, &decoded_cow);
+    let decoded: &str = decoded_owned.as_deref().unwrap_or(&decoded_cow);
+    let effective_query: &str = rewritten_query.as_deref().unwrap_or(query);
+
     for pattern in &host.try_files {
-        let expanded = expand_placeholders(pattern, &decoded, query);
+        let expanded = expand_placeholders(pattern, decoded, effective_query);
         // A "fallthrough" pattern is one whose path-part (before any
         // query suffix) doesn't equal the request URI: `$uri` patterns
         // produce identical candidates, literal-prefix patterns like
         // `/index.php$is_args$args` don't.
         let candidate_path = expanded.split('?').next().unwrap_or(&expanded);
         let fallthrough = candidate_path != decoded;
-        let original_uri_decoded: &str = &decoded;
+        let original_uri_decoded: &str = decoded;
         match resolve_candidate(
             &canonical_root,
             &expanded,
@@ -69,10 +83,49 @@ pub fn resolve(host: &HostBlock, request_path: &str, query: &str) -> Resolution 
             fallthrough,
         ) {
             Resolution::NotFound => {}
+            // Surface a rewritten query out to the router. Static
+            // resolutions don't carry one because they don't consume
+            // queries; Php gets the rewritten string so the FastCGI
+            // QUERY_STRING reflects the rewrite.
+            Resolution::Php { script_filename, script_name, path_info, .. } => {
+                return Resolution::Php {
+                    script_filename,
+                    script_name,
+                    path_info,
+                    rewritten_query: rewritten_query.clone(),
+                };
+            }
             other => return other,
         }
     }
     Resolution::NotFound
+}
+
+/// Apply the first matching rewrite. Returns `(path_override,
+/// query_override)`:
+///  - `path_override = Some(p)` when a rewrite fired and replaced the
+///    URI path; `None` means "use the original path".
+///  - `query_override = Some(q)` when the rewrite target carried a
+///    `?query` suffix; `None` means "use the original query".
+fn apply_rewrites(
+    rewrites: &[crate::commands::server::config::RewriteRule],
+    uri: &str,
+) -> (Option<String>, Option<String>) {
+    for rule in rewrites {
+        let Ok(re) = regex::Regex::new(&rule.pattern) else {
+            continue;
+        };
+        if !re.is_match(uri) {
+            continue;
+        }
+        let replaced = re.replace(uri, rule.target.as_str()).into_owned();
+        let (path_part, query_part) = match replaced.split_once('?') {
+            Some((p, q)) => (p.to_string(), Some(q.to_string())),
+            None => (replaced, None),
+        };
+        return (Some(path_part), query_part);
+    }
+    (None, None)
 }
 
 fn expand_placeholders(pattern: &str, uri: &str, query: &str) -> String {
@@ -150,7 +203,12 @@ fn classify(
     if canonical.extension().is_some_and(|e| e.eq_ignore_ascii_case("php")) {
         let script_name = format!("/{}", rel.display());
         let path_info = if fallthrough { original_uri.to_owned() } else { String::new() };
-        return Resolution::Php { script_filename: canonical, script_name, path_info };
+        return Resolution::Php {
+            script_filename: canonical,
+            script_name,
+            path_info,
+            rewritten_query: None,
+        };
     }
     Resolution::Static { path: canonical }
 }
@@ -210,6 +268,45 @@ mod tests {
             index: index.iter().map(|s| (*s).to_string()).collect(),
             try_files: try_files.iter().map(|s| (*s).to_string()).collect(),
             aliases: Vec::new(),
+            rewrites: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn rewrite_routes_missing_static_to_front_controller() {
+        use crate::commands::server::config::RewriteRule;
+        let d = fixture(&[("pub/static.php", "<?php")]);
+        let mut h = host(d.path(), "pub", &["$uri", "/static.php$is_args$args"], &[]);
+        h.rewrites.push(RewriteRule {
+            pattern: r"^/static/(?:version[^/]+/)?(.*)$".into(),
+            target: "/static.php?resource=$1".into(),
+        });
+        match resolve(&h, "/static/version123/css/styles.css", "") {
+            Resolution::Php { script_filename, path_info, rewritten_query, .. } => {
+                assert!(
+                    script_filename.ends_with("static.php"),
+                    "wrong script: {script_filename:?}"
+                );
+                assert_eq!(rewritten_query.as_deref(), Some("resource=css/styles.css"));
+                assert_eq!(path_info, "");
+            }
+            other => panic!("expected Php, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rewrite_only_fires_when_pattern_matches() {
+        use crate::commands::server::config::RewriteRule;
+        let d = fixture(&[("pub/style.css", "x"), ("pub/static.php", "<?php")]);
+        let mut h = host(d.path(), "pub", &["$uri"], &[]);
+        h.rewrites.push(RewriteRule {
+            pattern: r"^/static/(.*)$".into(),
+            target: "/static.php?resource=$1".into(),
+        });
+        // `/style.css` doesn't match `^/static/…` — must serve as-is.
+        match resolve(&h, "/style.css", "") {
+            Resolution::Static { path } => assert!(path.ends_with("style.css")),
+            other => panic!("expected Static, got {other:?}"),
         }
     }
 
@@ -264,7 +361,7 @@ mod tests {
             &["index.php"],
         );
         match resolve(&h, "/users/42", "page=1") {
-            Resolution::Php { script_filename, script_name, path_info } => {
+            Resolution::Php { script_filename, script_name, path_info, .. } => {
                 assert!(script_filename.ends_with("index.php"));
                 assert_eq!(script_name, "/index.php");
                 assert_eq!(path_info, "/users/42");
@@ -285,7 +382,7 @@ mod tests {
         let d = fixture(&[("public/info.php", "<?php phpinfo();")]);
         let h = host(d.path(), "public", &["$uri"], &[]);
         match resolve(&h, "/info.php", "") {
-            Resolution::Php { script_filename, script_name, path_info } => {
+            Resolution::Php { script_filename, script_name, path_info, .. } => {
                 assert!(script_filename.ends_with("info.php"));
                 assert_eq!(script_name, "/info.php");
                 assert_eq!(path_info, "");

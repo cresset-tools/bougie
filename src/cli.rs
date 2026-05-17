@@ -27,10 +27,6 @@ pub struct Cli {
     /// Output format.
     #[arg(long, global = true, default_value = "text")]
     pub format: OutputFormat,
-
-    /// Extract a single scalar field from the result.
-    #[arg(long, global = true, value_name = "PATH")]
-    pub field: Option<String>,
 }
 
 #[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
@@ -128,6 +124,37 @@ pub enum Command {
     /// SERVICES.md and CLI.md §3.8.
     #[command(subcommand)]
     Services(ServicesCommand),
+
+    /// Walk a project recipe's DAG, running tasks whose freshness
+    /// check fails. `bougie start` is a zero-arg alias for
+    /// `bougie make start`. See RECIPES.md.
+    #[command(alias = "start")]
+    Make {
+        /// Task to run. Defaults to `start` — so `bougie make` and
+        /// `bougie start` are equivalent.
+        task: Option<String>,
+        /// List available tasks instead of running.
+        #[arg(long, conflicts_with_all = ["dry_run", "explain", "print"])]
+        list: bool,
+        /// Show what would run, but don't execute.
+        #[arg(long)]
+        dry_run: bool,
+        /// Explain why each step runs or skips.
+        #[arg(long)]
+        explain: bool,
+        /// Skip the implicit `bougie sync` prologue.
+        #[arg(long)]
+        no_sync: bool,
+        /// Ignore the builtin recipe; use only `bougie.toml`.
+        #[arg(long)]
+        no_builtin: bool,
+        /// Force a specific builtin (e.g. `magento`).
+        #[arg(long, value_name = "NAME")]
+        recipe: Option<String>,
+        /// Print the merged recipe to stdout instead of running.
+        #[arg(long)]
+        print: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -248,10 +275,18 @@ pub enum ServerTlsCommand {
 
 #[derive(Subcommand, Debug)]
 pub enum ExtCommand {
-    /// Add an extension dependency.
+    /// Add an extension dependency. Each `<arg>` is either an
+    /// extension name (e.g. `redis`, `xdebug@3.5.1`) — fetched from
+    /// the index and recorded in composer.json — or a path to a local
+    /// `.so` file (e.g. `/opt/tideways/tideways-php-8.5.so`), in which
+    /// case bougie copies it into the store, auto-detects the
+    /// extension name and Zend-ness from the binary, and writes a
+    /// fragment to `.bougie/conf.d-local/` without touching
+    /// composer.json. Mix and match in one invocation.
     Add {
-        /// The extension(s) to add, optionally with `@<version>` pins.
-        names: Vec<String>,
+        /// Extension names or `.so` paths (anything ending in `.so` is
+        /// treated as a local file).
+        args: Vec<String>,
         /// Skip the implicit `bougie sync` after the composer call.
         #[arg(long)]
         no_sync: bool,

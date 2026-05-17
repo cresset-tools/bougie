@@ -43,7 +43,7 @@ impl Render for ServicesListResult {
     }
 }
 
-pub fn run(format: OutputFormat, field: Option<&str>, _all: bool) -> Result<ExitCode> {
+pub fn run(format: OutputFormat, _all: bool) -> Result<ExitCode> {
     let project_root = locate_project_root()?;
     let project = load_project(&project_root)?;
 
@@ -64,7 +64,7 @@ pub fn run(format: OutputFormat, field: Option<&str>, _all: bool) -> Result<Exit
         project: project_root.display().to_string(),
         services: rows,
     };
-    emit(format, field, &result)?;
+    emit(format, &result)?;
     Ok(ExitCode::SUCCESS)
 }
 

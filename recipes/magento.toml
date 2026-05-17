@@ -1,0 +1,62 @@
+# Builtin Magento recipe. Mirrors RECIPES.md §6.
+#
+# Assumes `server` is declared in the project (via `bougie services
+# add server` or `extra.bougie.services.server`); otherwise `bougie up
+# server` errors per SERVICES.md §3.2.
+
+[task.services]
+# `server` is added here too so the recipe is self-contained; users
+# who want a custom docroot can override the `[server]` block in
+# `bougie.toml` and the next `bougie up server` picks it up.
+run = """
+bougie services add mariadb redis opensearch rabbitmq server
+bougie up mariadb redis opensearch rabbitmq
+"""
+
+[task.vendor]
+# Gate on `vendor/autoload.php` rather than `vendor/` itself: the
+# Magento 2 monorepo commits an empty `vendor/.htaccess` so the bare
+# directory exists pre-install. `autoload.php` is the canonical
+# "composer install has run" marker.
+creates = "vendor/autoload.php"
+deps = ["composer.lock", "composer.json"]
+run = "bougie run -- composer install"
+
+[task.install]
+creates = "app/etc/env.php"
+deps = ["vendor", "services"]
+run = """
+bougie run -- php -d memory_limit=4G bin/magento setup:install \
+  --base-url="http://${BOUGIE_SERVICE_SERVER_HOSTNAME}:${BOUGIE_SERVICE_SERVER_PORT}/" \
+  --db-host="$BOUGIE_SERVICE_MARIADB_SOCKET" \
+  --db-name="$BOUGIE_SERVICE_MARIADB_DATABASE" \
+  --db-user="$BOUGIE_SERVICE_MARIADB_USER" \
+  --db-password="$BOUGIE_SERVICE_MARIADB_PASSWORD" \
+  --search-engine=opensearch \
+  --opensearch-host="$BOUGIE_SERVICE_OPENSEARCH_HOST" \
+  --opensearch-port="$BOUGIE_SERVICE_OPENSEARCH_PORT" \
+  --amqp-host="$BOUGIE_SERVICE_RABBITMQ_HOST" \
+  --amqp-port="$BOUGIE_SERVICE_RABBITMQ_PORT" \
+  --amqp-user="$BOUGIE_SERVICE_RABBITMQ_USER" \
+  --amqp-password="$BOUGIE_SERVICE_RABBITMQ_PASSWORD" \
+  --amqp-virtualhost="$BOUGIE_SERVICE_RABBITMQ_VHOST" \
+  --admin-firstname=Admin --admin-lastname=Admin \
+  --admin-email=admin@example.com --admin-user=admin \
+  --admin-password=admin123 --language=en_US --currency=USD \
+  --timezone=UTC --use-rewrites=1
+bougie run -- bin/magento deploy:mode:set developer
+"""
+
+[task.reindex]
+deps = ["install"]
+# Pre-gate on `app/etc/env.php`: bin/magento exits 0 with no stdout
+# when it can't reach the DB, which makes `grep -qv` falsely pass.
+check = """
+test -f app/etc/env.php || exit 1
+bougie run -- bin/magento indexer:status --no-ansi | grep -qv 'invalid\\|reindex required'
+"""
+run = "bougie run -- bin/magento indexer:reindex"
+
+[task.start]
+deps = ["reindex"]
+run = "bougie up server"

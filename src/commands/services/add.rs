@@ -38,7 +38,7 @@ impl Render for ServicesAddResult {
 }
 
 #[allow(clippy::needless_pass_by_value, reason = "owned strings from clap-parsed CLI")]
-pub fn run(format: OutputFormat, field: Option<&str>, names: Vec<String>) -> Result<ExitCode> {
+pub fn run(format: OutputFormat, names: Vec<String>) -> Result<ExitCode> {
     if names.is_empty() {
         return Err(eyre!("no services specified"));
     }
@@ -87,7 +87,7 @@ pub fn run(format: OutputFormat, field: Option<&str>, names: Vec<String>) -> Res
     }
 
     let result = ServicesAddResult { schema_version: 1, items, target: target_label };
-    emit(format, field, &result)?;
+    emit(format, &result)?;
     Ok(ExitCode::SUCCESS)
 }
 

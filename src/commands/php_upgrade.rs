@@ -38,7 +38,7 @@ impl Render for UpgradeResult {
     }
 }
 
-pub fn run(format: OutputFormat, field: Option<&str>, minor_filter: Option<&str>) -> Result<ExitCode> {
+pub fn run(format: OutputFormat, minor_filter: Option<&str>) -> Result<ExitCode> {
     let paths = Paths::from_env()?;
     let installed = list_installed(&paths)?;
     let mut upgraded = Vec::new();
@@ -72,7 +72,7 @@ pub fn run(format: OutputFormat, field: Option<&str>, minor_filter: Option<&str>
     }
 
     let result = UpgradeResult { schema_version: 1, upgraded };
-    emit(format, field, &result)?;
+    emit(format, &result)?;
     Ok(ExitCode::SUCCESS)
 }
 

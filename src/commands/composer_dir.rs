@@ -19,12 +19,12 @@ impl Render for ComposerDirResult {
     }
 }
 
-pub fn run(format: OutputFormat, field: Option<&str>) -> Result<ExitCode> {
+pub fn run(format: OutputFormat) -> Result<ExitCode> {
     let paths = Paths::from_env()?;
     let result = ComposerDirResult {
         schema_version: 1,
         path: paths.composer_root(),
     };
-    emit(format, field, &result)?;
+    emit(format, &result)?;
     Ok(ExitCode::SUCCESS)
 }

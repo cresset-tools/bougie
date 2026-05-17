@@ -12,10 +12,10 @@ fn unimplemented(verb: &str) -> Result<ExitCode> {
     ))
 }
 
-pub fn install(_format: OutputFormat, _field: Option<&str>) -> Result<ExitCode> {
+pub fn install(_format: OutputFormat) -> Result<ExitCode> {
     unimplemented("install")
 }
 
-pub fn uninstall(_format: OutputFormat, _field: Option<&str>) -> Result<ExitCode> {
+pub fn uninstall(_format: OutputFormat) -> Result<ExitCode> {
     unimplemented("uninstall")
 }

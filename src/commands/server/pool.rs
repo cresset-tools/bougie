@@ -182,9 +182,10 @@ impl PoolManager {
     /// shadow a stale duplicate in the debug overlay.
     fn variant_source_dirs(variant: &str, project: &Path) -> Vec<PathBuf> {
         let regular = crate::conf_d::project_confd_dir(project);
+        let local = crate::conf_d::project_confd_local_dir(project);
         match variant {
-            "xdebug" => vec![regular, crate::conf_d::project_confd_debug_dir(project)],
-            _ => vec![regular],
+            "xdebug" => vec![regular, local, crate::conf_d::project_confd_debug_dir(project)],
+            _ => vec![regular, local],
         }
     }
 

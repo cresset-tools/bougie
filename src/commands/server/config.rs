@@ -90,11 +90,29 @@ pub struct HostBlock {
     pub try_files: Vec<String>,
     #[serde(default, rename = "alias", skip_serializing_if = "Vec::is_empty")]
     pub aliases: Vec<HostAlias>,
+    /// Regex-based URI rewrites applied *before* `try_files`. First
+    /// match wins; the rewritten URI (which may include a `?query`)
+    /// then goes through `try_files` normally. Used by Magento to
+    /// route `/static/version<n>/<path>` through `static.php`.
+    #[serde(default, rename = "rewrite", skip_serializing_if = "Vec::is_empty")]
+    pub rewrites: Vec<RewriteRule>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct HostAlias {
     pub hostname: String,
+}
+
+/// One URI rewrite rule. The `pattern` is a regex matched against
+/// the decoded URI path (no query string). On a match, the `target`
+/// is the replacement — supports `$1`, `$2`, … capture-group
+/// references via the `regex` crate's standard syntax. The target
+/// may contain a `?query` suffix; both halves replace the original
+/// path/query.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct RewriteRule {
+    pub pattern: String,
+    pub target: String,
 }
 
 fn default_root() -> String {
@@ -299,6 +317,20 @@ pub fn add_host(
     project: &Path,
     root: Option<&str>,
 ) -> Result<Option<PathBuf>> {
+    add_host_with_rewrites(path, hostname, project, root, &[])
+}
+
+/// Variant of [`add_host`] that also seeds `[[host.rewrite]]` blocks.
+/// Used by the bougie-server provisioner when it auto-detects a
+/// framework that needs URL rewrites (today: Magento's
+/// `/static/version<n>/<path>` → `static.php?resource=<path>`).
+pub fn add_host_with_rewrites(
+    path: &Path,
+    hostname: &str,
+    project: &Path,
+    root: Option<&str>,
+    rewrites: &[RewriteRule],
+) -> Result<Option<PathBuf>> {
     validate_hostname(hostname)?;
     let project = canonicalize_project(project)?;
 
@@ -320,6 +352,16 @@ pub fn add_host(
     );
     if let Some(r) = root {
         table["root"] = toml_edit::value(r);
+    }
+    if !rewrites.is_empty() {
+        let mut rewrite_arr = toml_edit::ArrayOfTables::new();
+        for rule in rewrites {
+            let mut rt = toml_edit::Table::new();
+            rt["pattern"] = toml_edit::value(rule.pattern.as_str());
+            rt["target"] = toml_edit::value(rule.target.as_str());
+            rewrite_arr.push(rt);
+        }
+        table.insert("rewrite", toml_edit::Item::ArrayOfTables(rewrite_arr));
     }
 
     let host = doc
@@ -721,6 +763,7 @@ listen = "0.0.0.0:7080"  # bound everywhere
             index: index.iter().map(|s| (*s).to_string()).collect(),
             try_files: default_try_files(),
             aliases: Vec::new(),
+            rewrites: Vec::new(),
         }
     }
 

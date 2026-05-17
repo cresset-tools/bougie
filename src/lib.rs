@@ -2,6 +2,7 @@
 pub mod babysit;
 pub mod backend;
 pub mod baseline;
+pub mod binfmt;
 pub mod cli;
 pub mod commands;
 pub mod composer;
@@ -9,7 +10,9 @@ pub mod conf_d;
 pub mod config;
 #[cfg(unix)]
 pub mod daemon;
+pub mod elf;
 pub mod errors;
+pub mod macho;
 pub mod fetch;
 pub mod index;
 pub mod install;
@@ -17,6 +20,8 @@ pub mod list_format;
 pub mod lock;
 pub mod output;
 pub mod paths;
+#[cfg(unix)]
+pub mod recipe;
 pub mod request;
 pub mod resolve;
 pub mod shim;
@@ -49,7 +54,6 @@ fn unsupported_on_windows(feature: &str) -> Result<ExitCode> {
 
 pub fn run(cli: Cli) -> Result<ExitCode> {
     let format = cli.format;
-    let field = cli.field.as_deref();
 
     // Progress bars (rendered by `fetch::fetch_to_partial`) only make
     // sense for an interactive text-mode invocation: a JSON consumer
@@ -63,24 +67,24 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
     output::set_progress_visible(progress_visible);
 
     match cli.command {
-        Command::Init { toml } => commands::init::run(format, field, toml),
-        Command::Sync { offline: _, dry_run } => commands::sync::run(format, field, dry_run),
+        Command::Init { toml } => commands::init::run(format, toml),
+        Command::Sync { offline: _, dry_run } => commands::sync::run(format, dry_run),
         #[cfg(unix)]
-        Command::Up { names } => commands::services::up::run(format, field, names),
+        Command::Up { names } => commands::services::up::run(format, names),
         #[cfg(not(unix))]
         Command::Up { names: _ } => unsupported_on_windows("bougie up"),
         #[cfg(unix)]
-        Command::Down { names, purge } => commands::services::down::run(format, field, names, purge),
+        Command::Down { names, purge } => commands::services::down::run(format, names, purge),
         #[cfg(not(unix))]
         Command::Down { names: _, purge: _ } => unsupported_on_windows("bougie down"),
         Command::Run { with, no_sync, xdebug, argv } => {
-            commands::run::run(&with, &argv, format, field, no_sync, xdebug)
+            commands::run::run(&with, &argv, format, no_sync, xdebug)
         }
-        Command::Ext(cli::ExtCommand::Add { names, no_sync }) => {
-            commands::ext_add_remove::add(format, field, names, no_sync)
+        Command::Ext(cli::ExtCommand::Add { args, no_sync }) => {
+            commands::ext_add_remove::add(format, args, no_sync)
         }
         Command::Ext(cli::ExtCommand::Remove { names, no_sync }) => {
-            commands::ext_add_remove::remove(format, field, names, no_sync)
+            commands::ext_add_remove::remove(format, names, no_sync)
         }
         Command::Ext(cli::ExtCommand::List {
             only_installed,
@@ -90,7 +94,6 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
             show_urls,
         }) => commands::ext_list::run(
             format,
-            field,
             commands::ext_list::Options {
                 only_installed,
                 only_available,
@@ -99,13 +102,13 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
                 show_urls,
             },
         ),
-        Command::Cache(CacheCommand::Dir) => commands::cache_dir::run(format, field),
-        Command::Cache(CacheCommand::Clean) => commands::cache_clean::run(format, field),
-        Command::Cache(CacheCommand::Size) => commands::cache_size::run(format, field),
+        Command::Cache(CacheCommand::Dir) => commands::cache_dir::run(format),
+        Command::Cache(CacheCommand::Clean) => commands::cache_clean::run(format),
+        Command::Cache(CacheCommand::Size) => commands::cache_size::run(format),
         Command::Cache(CacheCommand::Prune { dry_run, prune_projects: _ }) => {
-            commands::cache_prune::run(format, field, dry_run)
+            commands::cache_prune::run(format, dry_run)
         }
-        Command::Php(PhpCommand::Dir) => commands::php_dir::run(format, field),
+        Command::Php(PhpCommand::Dir) => commands::php_dir::run(format),
         Command::Php(PhpCommand::Install {
             requests,
             flavor,
@@ -113,7 +116,6 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
             without,
         }) => commands::php_install::run(
             format,
-            field,
             &requests,
             flavor.as_deref(),
             bare,
@@ -121,7 +123,6 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
         ),
         Command::Php(PhpCommand::Uninstall { requests, flavor }) => commands::php_uninstall::run(
             format,
-            field,
             &requests,
             flavor.as_deref(),
         ),
@@ -135,7 +136,6 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
             show_urls,
         }) => commands::php_list::run(
             format,
-            field,
             commands::php_list::Options {
                 request: request.as_deref(),
                 only_installed,
@@ -147,7 +147,7 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
             },
         ),
         Command::Php(PhpCommand::Find { request }) => {
-            commands::php_find::run(format, field, request.as_deref())
+            commands::php_find::run(format, request.as_deref())
         }
         Command::Php(PhpCommand::Pin { request, toml, composer }) => {
             let target = if toml {
@@ -157,20 +157,20 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
             } else {
                 commands::php_pin::PinTarget::Auto
             };
-            commands::php_pin::run(format, field, &request, target)
+            commands::php_pin::run(format, &request, target)
         }
         Command::Php(PhpCommand::Upgrade { minor }) => {
-            commands::php_upgrade::run(format, field, minor.as_deref())
+            commands::php_upgrade::run(format, minor.as_deref())
         }
         Command::Composer(ComposerCommand::Install { request }) => {
-            commands::composer_install::run(format, field, request.as_deref())
+            commands::composer_install::run(format, request.as_deref())
         }
         Command::Composer(ComposerCommand::Uninstall { request }) => {
-            commands::composer_uninstall::run(format, field, &request)
+            commands::composer_uninstall::run(format, &request)
         }
-        Command::Composer(ComposerCommand::List) => commands::composer_list::run(format, field),
+        Command::Composer(ComposerCommand::List) => commands::composer_list::run(format),
         Command::Composer(ComposerCommand::Find { request }) => {
-            commands::composer_find::run(format, field, request.as_deref())
+            commands::composer_find::run(format, request.as_deref())
         }
         Command::Composer(ComposerCommand::Pin { request, toml, composer }) => {
             let target = if toml {
@@ -180,83 +180,107 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
             } else {
                 commands::composer_pin::PinTarget::Auto
             };
-            commands::composer_pin::run(format, field, &request, target)
+            commands::composer_pin::run(format, &request, target)
         }
-        Command::Composer(ComposerCommand::Dir) => commands::composer_dir::run(format, field),
+        Command::Composer(ComposerCommand::Dir) => commands::composer_dir::run(format),
         Command::Composer(ComposerCommand::Upgrade) => {
-            commands::composer_upgrade::run(format, field)
+            commands::composer_upgrade::run(format)
         }
         Command::SelfCmd(SelfCommand::Update) => commands::self_update::run(),
         Command::SelfCmd(SelfCommand::Version { short }) => {
-            commands::self_version::run(format, field, short)
+            commands::self_version::run(format, short)
         }
         #[cfg(unix)]
         Command::Server(ServerCommand::Run { config, listen, log_format }) => {
             commands::server::run::run(
                 format,
-                field,
                 &config,
                 listen.as_deref(),
                 log_format.as_deref(),
             )
         }
         #[cfg(unix)]
-        Command::Server(ServerCommand::List) => commands::server::helpers::list(format, field),
+        Command::Server(ServerCommand::List) => commands::server::helpers::list(format),
         #[cfg(unix)]
         Command::Server(ServerCommand::Hosts(ServerHostsCommand::Apply { config })) => {
-            commands::server::hosts::apply(format, field, config.as_deref())
+            commands::server::hosts::apply(format, config.as_deref())
         }
         #[cfg(unix)]
         Command::Server(ServerCommand::Tls(ServerTlsCommand::Install)) => {
-            commands::server::tls::install(format, field)
+            commands::server::tls::install(format)
         }
         #[cfg(unix)]
         Command::Server(ServerCommand::Tls(ServerTlsCommand::Uninstall)) => {
-            commands::server::tls::uninstall(format, field)
+            commands::server::tls::uninstall(format)
         }
         #[cfg(not(unix))]
         Command::Server(_) => unsupported_on_windows("bougie server"),
         #[cfg(unix)]
         Command::Services(ServicesCommand::Add { names }) => {
-            commands::services::add::run(format, field, names)
+            commands::services::add::run(format, names)
         }
         #[cfg(unix)]
         Command::Services(ServicesCommand::Remove { names, purge }) => {
-            commands::services::remove::run(format, field, names, purge)
+            commands::services::remove::run(format, names, purge)
         }
         #[cfg(unix)]
         Command::Services(ServicesCommand::List { all }) => {
-            commands::services::list::run(format, field, all)
+            commands::services::list::run(format, all)
         }
         #[cfg(unix)]
         Command::Services(ServicesCommand::Catalog) => {
-            commands::services::catalog::run(format, field)
+            commands::services::catalog::run(format)
         }
         #[cfg(unix)]
         Command::Services(ServicesCommand::Restart { names }) => {
-            commands::services::restart::run(format, field, names)
+            commands::services::restart::run(format, names)
         }
         #[cfg(unix)]
         Command::Services(ServicesCommand::Status { name }) => {
-            commands::services::status::run(format, field, name)
+            commands::services::status::run(format, name)
         }
         #[cfg(unix)]
         Command::Services(ServicesCommand::Logs { name, follow, lines }) => {
-            commands::services::logs::run(format, field, name, follow, lines)
+            commands::services::logs::run(format, name, follow, lines)
         }
         #[cfg(unix)]
         Command::Services(ServicesCommand::Daemon(ServicesDaemonCommand::Status)) => {
-            commands::services::daemon::status(format, field)
+            commands::services::daemon::status(format)
         }
         #[cfg(unix)]
         Command::Services(ServicesCommand::Daemon(ServicesDaemonCommand::Stop)) => {
-            commands::services::daemon::stop(format, field)
+            commands::services::daemon::stop(format)
         }
         #[cfg(unix)]
         Command::Services(ServicesCommand::Daemon(ServicesDaemonCommand::Version)) => {
-            commands::services::daemon::version(format, field)
+            commands::services::daemon::version(format)
         }
         #[cfg(not(unix))]
         Command::Services(_) => unsupported_on_windows("bougie services"),
+        #[cfg(unix)]
+        Command::Make {
+            task,
+            list,
+            dry_run,
+            explain,
+            no_sync,
+            no_builtin,
+            recipe,
+            print,
+        } => commands::make::run(
+            format,
+            commands::make::MakeOptions {
+                task,
+                list,
+                dry_run,
+                explain,
+                no_sync,
+                no_builtin,
+                recipe,
+                print,
+            },
+        ),
+        #[cfg(not(unix))]
+        Command::Make { .. } => unsupported_on_windows("bougie make"),
     }
 }

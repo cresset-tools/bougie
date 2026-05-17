@@ -82,7 +82,11 @@ pub fn start(
         // Both `.bougie/conf.d/` (regular extensions) and
         // `.bougie/conf.d-debug/` (xdebug et al.) feed pool variants;
         // either changing means the running pools need fresh symlinks.
-        for sub in [crate::conf_d::project_confd_dir(project), crate::conf_d::project_confd_debug_dir(project)] {
+        for sub in [
+            crate::conf_d::project_confd_dir(project),
+            crate::conf_d::project_confd_debug_dir(project),
+            crate::conf_d::project_confd_local_dir(project),
+        ] {
             if sub.is_dir() {
                 if let Err(e) = watcher.watch(&sub, RecursiveMode::Recursive) {
                     eprintln!(
@@ -190,6 +194,7 @@ fn build_path_map(projects: &[PathBuf]) -> PathMap {
     for project in projects {
         out.push((crate::conf_d::project_confd_dir(project), project.clone(), ChangeKind::ConfD));
         out.push((crate::conf_d::project_confd_debug_dir(project), project.clone(), ChangeKind::ConfD));
+        out.push((crate::conf_d::project_confd_local_dir(project), project.clone(), ChangeKind::ConfD));
         // Composer + bougie.toml share the version-input kind; we
         // distinguish their basenames inside `classify` so unrelated
         // files in the project root (README.md, src/, etc.) don't

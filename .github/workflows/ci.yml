@@ -23,11 +23,11 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            build_cmd: cargo build --all-targets
-            test_cmd: cargo test
+            build_cmd: cargo build --all-targets --features test-fixtures
+            test_cmd: cargo test --features test-fixtures
           - os: macos-latest
-            build_cmd: cargo build --all-targets
-            test_cmd: cargo test
+            build_cmd: cargo build --all-targets --features test-fixtures
+            test_cmd: cargo test --features test-fixtures
           # Windows runs lib unit tests + the dedicated windows_smoke
           # integration test. The other integration tests pull in
           # Unix-only fixtures (mariadb/opensearch/rabbitmq tarball
@@ -35,6 +35,8 @@ jobs:
           # are deliberately not built here. `cargo build` (without
           # --all-targets) keeps the binary green; the lib+smoke test
           # commands cover everything Windows is supposed to cover.
+          # The `test-fixtures` feature gates the fake-redis bin, which
+          # is Unix-only test infrastructure — skip it on Windows.
           - os: windows-latest
             build_cmd: cargo build
             test_cmd: cargo test --lib --test windows_smoke
