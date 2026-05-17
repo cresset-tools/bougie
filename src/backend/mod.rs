@@ -15,10 +15,12 @@
 //! so the install code is identical across backends — the only
 //! per-backend choice is which `Backend` impl to construct.
 //!
-//! Phase 4 will extend the trait with `resolve_extension` returning an
-//! `ExtRecipe`. Keeping that out of Phase 2 lets the PECL shape be
-//! informed by what windows.php.net actually needs (e.g. dependent-DLL
-//! handling) rather than locked in by the bougie-index code path.
+//! The trait grows symmetrically for extensions: `resolve_extension`
+//! returns an [`ExtRecipe`] that carries everything `install_extension`
+//! needs to drive the same fetch + place + conf.d dance regardless of
+//! backend. Closure peers (bougie-index only) ride on the recipe as a
+//! [`ClosureRef`] list — windows.php.net always returns an empty one,
+//! and the install code's closure-handling step is a no-op for it.
 
 pub mod bougie_index;
 pub mod windows_php_net;
@@ -28,13 +30,14 @@ pub use windows_php_net::WindowsPhpNetBackend;
 
 use crate::errors::BougieError;
 use crate::fetch::{fetch_blob, ArchiveKind, BlobOutcome, DownloadBar};
+use crate::index::wire::LoadDirective;
 use crate::paths::Paths;
 use crate::request::{Flavor, VersionLike};
 use crate::resolve::ResolveOptions;
 use crate::target::{Os, Triple};
-use crate::version::Version;
+use crate::version::{PartialVersion, Version};
 use eyre::Result;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// A source of PHP interpreter artifacts. One concrete impl per
 /// distribution channel — bougie's own signed index, windows.php.net.
@@ -50,6 +53,25 @@ pub trait Backend {
         flavor: Flavor,
         opts: ResolveOptions,
     ) -> Result<PhpRecipe>;
+
+    /// Resolve a user-facing extension request into an [`ExtRecipe`].
+    /// Same contract as [`resolve_php`]: network I/O lives here (index
+    /// section + manifest fetch for `BougieIndexBackend`; static table
+    /// lookup for `WindowsPhpNetBackend`), no filesystem mutation under
+    /// `$BOUGIE_HOME`. `version_pin` and `opts` are bougie-index
+    /// concepts; the windows.php.net backend ignores them (the
+    /// compile-time `WINDOWS_PECL_VERSIONS` table is the version oracle
+    /// — see WINDOWS_PLAN.md §Phase 4).
+    ///
+    /// [`resolve_php`]: Self::resolve_php
+    fn resolve_extension(
+        &self,
+        name: &str,
+        php_minor: PartialVersion,
+        flavor: Flavor,
+        version_pin: Option<&str>,
+        opts: ResolveOptions,
+    ) -> Result<ExtRecipe>;
 
     /// Borrow the backend's HTTP client. Exposed so [`fetch_into`]'s
     /// default impl (and the test harness) can drive
@@ -163,6 +185,71 @@ impl BlobRef {
             dest,
             strip_prefix: &self.strip_prefix,
             archive: self.archive,
+        }
+    }
+}
+
+/// A resolved PHP extension, ready to fetch + place into the
+/// content-addressed store.
+///
+/// `name`/`version`/`php_minor`/`flavor` round-trip from the request so
+/// `install_extension` doesn't have to thread them separately when
+/// computing the store directory. `blob` is the single archive to
+/// fetch; on bougie-index that's the per-extension `.so` tarball, on
+/// windows.php.net the flat PECL `.zip`. `artifact_rel` is the path of
+/// the loadable file relative to the extracted store dir (`lib/extensions/<api>/<name>.so`
+/// for bougie-index manifests, `php_<name>.dll` for PECL zips); the
+/// conf.d emitter joins it onto the store dir to get the absolute path
+/// it writes into the `extension=` / `zend_extension=` directive.
+///
+/// `closure` carries the bundled-library closure for bougie-index
+/// artifacts — see [`ClosureRef`]. windows.php.net always returns an
+/// empty vec; dependent DLLs ride inside the same PECL zip and are
+/// handled via `needs_store_on_path` (see [`super::WindowsPhpNetBackend`]).
+///
+/// `frozen_warning` propagates the bougie-index frozen flag; always
+/// false for non-index backends.
+#[derive(Debug, Clone)]
+pub struct ExtRecipe {
+    pub name: String,
+    pub version: Version,
+    pub php_minor: PartialVersion,
+    pub flavor: Flavor,
+    pub blob: BlobRef,
+    pub artifact_rel: PathBuf,
+    pub load: LoadDirective,
+    pub closure: Vec<ClosureRef>,
+    pub needs_store_on_path: bool,
+    pub frozen_warning: bool,
+}
+
+/// One bundled-library entry an extension `.so` depends on at runtime.
+///
+/// Mirrors [`crate::index::wire::Closure`] field-for-field, but lives
+/// here so the [`Backend`] trait can stay agnostic of the index wire
+/// schema (the windows.php.net backend depends on none of it). The
+/// install code uses these to materialize the install-shaped
+/// `store/<name>-<version>-<hash>/` peer layout the `.so`'s RPATH was
+/// compiled against — see [`crate::install::install_closure_peers`].
+#[derive(Debug, Clone)]
+pub struct ClosureRef {
+    pub name: String,
+    pub version: String,
+    pub hash: String,
+    pub sha256: String,
+    pub url: String,
+    pub size: u64,
+}
+
+impl From<&crate::index::wire::Closure> for ClosureRef {
+    fn from(c: &crate::index::wire::Closure) -> Self {
+        Self {
+            name: c.name.clone(),
+            version: c.version.clone(),
+            hash: c.hash.clone(),
+            sha256: c.sha256.clone(),
+            url: c.url.clone(),
+            size: c.size,
         }
     }
 }

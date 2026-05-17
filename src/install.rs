@@ -6,20 +6,16 @@ use crate::baseline::{BaselineFilter, BASELINE_EXTENSIONS};
 #[cfg(not(target_os = "windows"))]
 use crate::baseline::{skip_for_platform, PREINSTALLED_EXTENSIONS};
 use crate::errors::BougieError;
-use crate::fetch::{fetch_blob, ArchiveKind, BlobSpec, DownloadBar};
-use crate::index::wire::LoadDirective;
+use crate::fetch::{fetch_blob, BlobSpec, DownloadBar};
+// Closure-peer tarballs are bougie-index-only; the consuming code is
+// `cfg(not(target_os = "windows"))` so the import has to match.
 #[cfg(not(target_os = "windows"))]
-use crate::index::{
-    build_verifier,
-    fetch::{fetch_manifest, fetch_root, fetch_section},
-    wire::Manifest,
-};
+use crate::fetch::ArchiveKind;
+use crate::index::wire::LoadDirective;
 use crate::lock::ExclusiveGuard;
 use crate::paths::Paths;
 use crate::request::{Flavor, Request};
 use crate::resolve::ResolveOptions;
-#[cfg(not(target_os = "windows"))]
-use crate::resolve::{resolve_extension, Selected};
 use crate::store::install_dir;
 use crate::target::Triple;
 use crate::version::{PartialVersion, Version};
@@ -174,257 +170,107 @@ pub fn install_extension_with_bar(
     opts: ResolveOptions,
     bar: &DownloadBar,
 ) -> Result<InstalledExt> {
-    // Windows pulls extensions from windows.php.net's PECL surface
-    // (deterministic URL, sha256 baked in at compile time) instead of
-    // the bougie index. version_pin/opts are bougie-index concepts and
-    // ignored — the WINDOWS_PECL_VERSIONS table is the version oracle.
-    #[cfg(target_os = "windows")]
-    {
-        let _ = (version_pin, opts);
-        return install_extension_windows_pecl(paths, name, php_minor, flavor, bar);
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        install_extension_with_bar_index(paths, name, version_pin, php_minor, flavor, opts, bar)
-    }
-}
-
-#[cfg(not(target_os = "windows"))]
-fn install_extension_with_bar_index(
-    paths: &Paths,
-    name: &str,
-    version_pin: Option<&str>,
-    php_minor: PartialVersion,
-    flavor: Flavor,
-    opts: ResolveOptions,
-    bar: &DownloadBar,
-) -> Result<InstalledExt> {
-    let target = Triple::detect()?.to_string();
+    let target = Triple::detect()?;
     let host = std::env::var("BOUGIE_INDEX_URL").unwrap_or_else(|_| DEFAULT_INDEX_URL.into());
-    let section_name = format!("extension/{name}");
 
     let _guard = ExclusiveGuard::acquire(&paths.global_lock(), LOCK_TIMEOUT)?;
 
-    let client = reqwest::blocking::Client::builder()
-        .build()
-        .map_err(|e| BougieError::Network {
-            operation: "building HTTP client".into(),
-            detail: e.to_string(),
-        })?;
+    let backend = backend::select(&target, &host, paths)?;
+    let recipe = backend.resolve_extension(name, php_minor, flavor, version_pin, opts)?;
 
-    let cache_root = paths.cache_index(&host_to_dirname(&host));
-    let fetched = fetch_root(&client, &host, &cache_root, build_verifier)?;
-    let target_entry = fetched.root.targets.get(&target).ok_or_else(|| {
-        let available: Vec<String> = fetched.root.targets.keys().cloned().collect();
-        BougieError::UnknownTarget {
-            triple: target.clone(),
-            hint: format!("the index at {host} advertises: {}", available.join(", ")),
-        }
-    })?;
-    let section_ref = target_entry
-        .sections
-        .get(&section_name)
-        .ok_or_else(|| BougieError::Resolution {
-            kind: "extension".into(),
-            detail: format!(
-                "the index at {host} has no `{section_name}` section under target {target} — \
-                 run `bougie ext list --only-available` to see what's published"
-            ),
-        })?;
-    let section = fetch_section(
-        &client,
-        &host,
-        &cache_root,
-        &fetched.root.version,
-        &target,
-        &section_name,
-        &section_ref.sha256,
-    )?;
-
-    let selected: Selected<'_> = resolve_extension(&section, php_minor, flavor, version_pin, opts)?;
-
-    let manifest = fetch_manifest(
-        &client,
-        &host,
-        &cache_root,
-        &selected.artifact.manifest.path,
-        &selected.artifact.manifest.sha256,
-    )?;
-    let ext_ref = manifest.extension.as_ref().ok_or_else(|| {
-        eyre!(
-            "manifest for {} is missing the `extension` field — \
-             publisher bug: an extension-kind manifest must declare its `.so` path",
-            manifest.tag
-        )
-    })?;
-
-    let sha8: String = manifest.blob.sha256.chars().take(8).collect();
+    let sha8: String = recipe.blob.sha256.chars().take(8).collect();
     let php_minor_label = format!("php{}{}", php_minor.major, php_minor.minor.unwrap_or(0));
     let dirname = format!(
         "ext-{}-{}+{php_minor_label}-{flavor}-{sha8}",
-        manifest.name, manifest.version,
+        recipe.name, recipe.version,
     );
     let dest = paths.store().join(&dirname);
     let already_present = dest.exists();
 
     // Grow the shared bar's planned total by this extension's bytes:
-    // the main `.so` blob (if not already on disk) plus every closure
-    // entry whose store_path is missing. Sizes come from the manifest
-    // so we don't pay a HEAD round-trip per file. A `size: 0` from
-    // an older publisher contributes nothing — the bar still ticks
-    // bytes received but can't fill for that artifact.
+    // the main `.so`/`.dll` blob (if not already on disk) plus every
+    // closure entry whose store_path is missing. Sizes come from the
+    // recipe so we don't pay a HEAD round-trip per file. A `size: 0`
+    // — from an older publisher or from windows.php.net (which doesn't
+    // advertise size on the PECL surface) — contributes nothing, and
+    // the bar still ticks bytes received but can't fill for that
+    // artifact.
     if !already_present {
-        bar.add_planned(manifest.blob.size);
+        bar.add_planned(recipe.blob.size);
     }
-    plan_closure_bytes(paths, &manifest, bar);
+    #[cfg(not(target_os = "windows"))]
+    plan_closure_bytes(paths, &recipe.closure, bar);
 
     if !already_present {
         let blob_spec = BlobSpec {
-            url: &manifest.blob.url,
-            sha256: &manifest.blob.sha256,
+            url: &recipe.blob.url,
+            sha256: &recipe.blob.sha256,
             partial_dir: &paths.cache_blobs(),
             dest: &dest,
-            // Per-extension tarballs ship `lib/extensions/<api>/<name>.so`
-            // at the top level — no wrapping directory to strip.
-            strip_prefix: "",
-            archive: ArchiveKind::TarZst,
+            strip_prefix: &recipe.blob.strip_prefix,
+            archive: recipe.blob.archive,
         };
-        bar.set_current(format!("{}-{}", manifest.name, manifest.version));
-        fetch_blob(&client, &blob_spec, bar)?;
+        bar.set_current(format!("{}-{}", recipe.name, recipe.version));
+        fetch_blob(backend.client(), &blob_spec, bar)?;
     }
 
-    // Walk the manifest's bundled-C-lib closure and fetch any
-    // store-paths the consumer doesn't have yet. Mandatory for ext:
-    // the `.so` was built with `$ORIGIN/../../../store/<storeName>/lib`
+    // Walk the bundled-C-lib closure and fetch any store-paths the
+    // consumer doesn't have yet. Mandatory for bougie-index ext: the
+    // `.so` was built with `$ORIGIN/../../../store/<storeName>/lib`
     // RPATHs that assume an install-shaped layout (matching the
     // interpreter tarball, whose `<install>/store/<storeName>/lib`
     // directly resolves). Without these tarballs *and* the
     // corresponding `store/` peer inside the ext root, dlopen falls
     // back to the system loader and surfaces errors like
     // `libicuuc.so.77: cannot open shared object file` for intl or
-    // `libcurl: undefined symbol: ENGINE_init` for curl (system
-    // libcurl against a different OpenSSL).
+    // `libcurl: undefined symbol: ENGINE_init` for curl.
     //
-    // Run unconditionally — `dest.exists()` only tells us the .so
-    // blob is present; the closure may still be partial from an
-    // earlier bougie release that didn't walk it.
-    install_closure_peers(&client, paths, &manifest, &dest, bar)?;
+    // Run unconditionally on Unix — `dest.exists()` only tells us the
+    // .so blob is present; the closure may still be partial from an
+    // earlier bougie release that didn't walk it. Skipped on Windows:
+    // the windows.php.net backend always returns an empty closure
+    // (DLL deps ride inside the PECL ZIP) and the symlink machinery
+    // is unix-only anyway.
+    #[cfg(not(target_os = "windows"))]
+    install_closure_peers(
+        backend.client(),
+        paths,
+        &recipe.closure,
+        &recipe.name,
+        // The backend doesn't track an artifact tag string; the
+        // `<name>-<version>+php<minor>-<flavor>` dirname is the next
+        // best stable identifier for error context.
+        &dirname,
+        &dest,
+        bar,
+    )?;
 
-    let so_path = dest.join(&ext_ref.path);
+    let so_path = dest.join(&recipe.artifact_rel);
     if !so_path.exists() {
         return Err(eyre!(
-            "extracted ext bundle is missing the declared `.so` at {} \
-             — blob {} may be corrupt or the manifest is wrong",
+            "extracted ext bundle is missing the declared artifact at {} \
+             — blob {} may be corrupt or the recipe is wrong",
             so_path.display(),
-            manifest.tag
+            recipe.blob.url,
         ));
     }
 
-    Ok(InstalledExt {
-        name: manifest.name.clone(),
-        version: selected.version,
-        flavor,
-        php_minor,
-        store_path: dest,
-        so_path,
-        load: ext_ref.load,
-        already_present,
-        frozen_warning: selected.frozen_warning,
-        // bougie-index extensions have their dep closure handled by
-        // `install_closure_peers` + RPATHs; no PATH augmentation
-        // needed at run time. Reserve [`path_extras`] for the
-        // Windows imagick case.
-        path_extras: Vec::new(),
-    })
-}
-
-/// Windows ext install: looks up `WINDOWS_PECL_VERSIONS`, fetches the
-/// deterministic ZIP from windows.php.net, verifies it against the
-/// embedded sha256, and extracts into the content-addressed store at
-/// `<store>/ext-<name>-<ver>+php<minor>-<flavor>-<sha8>/`. The `.dll`
-/// inside (always named `php_<name>.dll` in this surface) becomes the
-/// `so_path` the conf.d emitter writes into the user fragment with an
-/// absolute `extension=` / `zend_extension=` directive.
-///
-/// `bougie ext add curl` etc. (extensions that ship bundled with PHP
-/// on Windows under `<install>/bin/ext/php_*.dll`) doesn't reach this
-/// function — `ext_add_remove::add` short-circuits via
-/// `conf_d::installed_fragment_present`, which sees the baseline
-/// fragment that `bougie sync` already mirrored from the install.
-#[cfg(target_os = "windows")]
-fn install_extension_windows_pecl(
-    paths: &Paths,
-    name: &str,
-    php_minor: PartialVersion,
-    flavor: Flavor,
-    bar: &DownloadBar,
-) -> Result<InstalledExt> {
-    let target = Triple::detect()?;
-    let _guard = ExclusiveGuard::acquire(&paths.global_lock(), LOCK_TIMEOUT)?;
-
-    // Backend trait must be in scope for `backend.client()` in the
-    // fetch_blob call below.
-    use crate::backend::Backend as _;
-    let backend = crate::backend::WindowsPhpNetBackend::new(paths, &target)?;
-    let artifact = backend.resolve_pecl(name, php_minor, flavor)?;
-
-    let sha8: String = artifact.sha256.chars().take(8).collect();
-    let php_minor_label = format!("php{}{}", php_minor.major, php_minor.minor.unwrap_or(0));
-    let dirname = format!(
-        "ext-{}-{}+{php_minor_label}-{flavor}-{sha8}",
-        artifact.name, artifact.version,
-    );
-    let dest = paths.store().join(&dirname);
-    let already_present = dest.exists();
-
-    if !already_present {
-        // windows.php.net doesn't advertise size on the PECL surface
-        // (no JSON index; the directory listing carries it but parsing
-        // HTML for one number isn't worth it). Bar stays unplanned —
-        // it ticks bytes received but can't fill, same fallback as a
-        // pre-`size` bougie-index publisher.
-        let blob_spec = BlobSpec {
-            url: &artifact.url,
-            sha256: &artifact.sha256,
-            partial_dir: &paths.cache_blobs(),
-            dest: &dest,
-            // PECL ZIPs are flat — `php_<name>.dll`, `<name>.ini`,
-            // LICENSE, contrib/ all at the root.
-            strip_prefix: "",
-            archive: ArchiveKind::Zip,
-        };
-        bar.set_current(format!("{}-{}", artifact.name, artifact.version));
-        fetch_blob(backend.client(), &blob_spec, bar)?;
-    }
-
-    let dll_name = format!("php_{name}.dll");
-    let so_path = dest.join(&dll_name);
-    if !so_path.exists() {
-        return Err(eyre!(
-            "extracted PECL bundle is missing the expected `{dll_name}` at {} \
-             — windows.php.net's ZIP at {} may have an unexpected layout",
-            so_path.display(),
-            artifact.url,
-        ));
-    }
-
-    let path_extras = if artifact.needs_store_on_path {
+    let path_extras = if recipe.needs_store_on_path {
         vec![dest.clone()]
     } else {
         Vec::new()
     };
 
     Ok(InstalledExt {
-        name: artifact.name,
-        version: artifact.version,
+        name: recipe.name,
+        version: recipe.version,
         flavor,
         php_minor,
         store_path: dest,
         so_path,
-        load: artifact.load,
+        load: recipe.load,
         already_present,
-        frozen_warning: false,
+        frozen_warning: recipe.frozen_warning,
         path_extras,
     })
 }
@@ -809,10 +655,10 @@ fn write_install_conf_d(conf_d: &Path, installed: &InstalledExt) -> Result<()> {
     Ok(())
 }
 
-/// Walk `manifest.closure[]`, fetching every missing shared store
-/// entry and materializing the install-shaped `store/<closureName>`
-/// peer symlinks inside `install_root`. Idempotent: closure entries
-/// already on disk are skipped; existing peer symlinks are left alone.
+/// Walk the closure list, fetching every missing shared store entry
+/// and materializing the install-shaped `store/<closureName>` peer
+/// symlinks inside `install_root`. Idempotent: closure entries already
+/// on disk are skipped; existing peer symlinks are left alone.
 ///
 /// Used from two sites with the same semantics:
 ///
@@ -827,6 +673,12 @@ fn write_install_conf_d(conf_d: &Path, installed: &InstalledExt) -> Result<()> {
 ///   to "publishes a non-empty `closure[]` and relies on this peer
 ///   layout"; this helper is the client-side hinge.
 ///
+/// `label` shows up in the progress bar (the name the caller would
+/// normally pass to `bar.set_current`); `tag` shows up in
+/// closure-fetch error messages (mirrors what `manifest.tag` carries
+/// for an index manifest — caller picks whatever string identifies
+/// the outer artifact unambiguously).
+///
 /// Caller is responsible for pre-planning bytes on the bar via
 /// [`plan_closure_bytes`] if a visible progress total is wanted. The
 /// daemon path uses [`DownloadBar::hidden`] so it skips planning.
@@ -840,13 +692,15 @@ fn write_install_conf_d(conf_d: &Path, installed: &InstalledExt) -> Result<()> {
 pub(crate) fn install_closure_peers(
     client: &reqwest::blocking::Client,
     paths: &Paths,
-    manifest: &Manifest,
+    closure: &[crate::backend::ClosureRef],
+    label: &str,
+    tag: &str,
     install_root: &Path,
     bar: &DownloadBar,
 ) -> Result<()> {
-    for closure in &manifest.closure {
+    for entry in closure {
         let store_path =
-            store_dir_for_closure(paths, &closure.name, &closure.version, &closure.hash);
+            store_dir_for_closure(paths, &entry.name, &entry.version, &entry.hash);
         if !store_path.exists() {
             // Closure tarballs wrap their contents in `<storeName>/`
             // per shared/tarball-store-path.nix; strip it so the
@@ -854,28 +708,28 @@ pub(crate) fn install_closure_peers(
             // `<store_path>/lib/lib*.so` (matching the interpreter's
             // `<install>/store/<storeName>/lib/lib*.so` layout the
             // RPATHs were compiled to expect).
-            let storename = format!("{}-{}-{}", closure.name, closure.version, closure.hash);
+            let storename = format!("{}-{}-{}", entry.name, entry.version, entry.hash);
             let blob_spec = BlobSpec {
-                url: &closure.url,
-                sha256: &closure.sha256,
+                url: &entry.url,
+                sha256: &entry.sha256,
                 partial_dir: &paths.cache_blobs(),
                 dest: &store_path,
                 strip_prefix: &storename,
                 archive: ArchiveKind::TarZst,
             };
-            bar.set_current(format!("{} ({})", manifest.name, closure.name));
+            bar.set_current(format!("{label} ({})", entry.name));
             fetch_blob(client, &blob_spec, bar).wrap_err_with(|| {
                 format!(
-                    "fetching closure entry `{}-{}-{}` for {}",
-                    closure.name, closure.version, closure.hash, manifest.tag
+                    "fetching closure entry `{}-{}-{}` for {tag}",
+                    entry.name, entry.version, entry.hash,
                 )
             })?;
         }
-        materialize_closure_peer(install_root, &closure.name, &closure.version, &closure.hash)
+        materialize_closure_peer(install_root, &entry.name, &entry.version, &entry.hash)
             .wrap_err_with(|| {
                 format!(
-                    "linking closure peer `{}-{}-{}` for {}",
-                    closure.name, closure.version, closure.hash, manifest.tag
+                    "linking closure peer `{}-{}-{}` for {tag}",
+                    entry.name, entry.version, entry.hash,
                 )
             })?;
     }
@@ -887,12 +741,16 @@ pub(crate) fn install_closure_peers(
 /// called immediately before the main blob fetch so the caller can
 /// show an accurate aggregate from the first byte.
 #[cfg(not(target_os = "windows"))]
-pub(crate) fn plan_closure_bytes(paths: &Paths, manifest: &Manifest, bar: &DownloadBar) {
-    for closure in &manifest.closure {
+pub(crate) fn plan_closure_bytes(
+    paths: &Paths,
+    closure: &[crate::backend::ClosureRef],
+    bar: &DownloadBar,
+) {
+    for entry in closure {
         let store_path =
-            store_dir_for_closure(paths, &closure.name, &closure.version, &closure.hash);
+            store_dir_for_closure(paths, &entry.name, &entry.version, &entry.hash);
         if !store_path.exists() {
-            bar.add_planned(closure.size);
+            bar.add_planned(entry.size);
         }
     }
 }
@@ -1109,39 +967,24 @@ mod tests {
 
     // ---------- install_closure_peers (Phase 1) ----------
 
-    /// Build a tool manifest with `entries` closure rows. URLs point at
+    /// Build a closure list of `entries`, with URLs pointing at
     /// `https://example.invalid/...` so any attempted network fetch
     /// would fail noisily — the test must pre-populate every
     /// `store_path` so the helper's fetch branch is never taken.
     #[cfg(not(target_os = "windows"))]
-    fn tool_manifest_with_closure(entries: &[(&str, &str, &str)]) -> crate::index::wire::Manifest {
-        let closure_json: Vec<_> = entries
+    fn closure_refs(entries: &[(&str, &str, &str)]) -> Vec<crate::backend::ClosureRef> {
+        entries
             .iter()
             .enumerate()
-            .map(|(i, (name, ver, hash))| {
-                serde_json::json!({
-                    "name": name,
-                    "version": ver,
-                    "hash": hash,
-                    "sha256": format!("{:0>64}", i),
-                    "url": format!("https://example.invalid/{name}.tar.zst"),
-                    "size": 0,
-                })
+            .map(|(i, (name, ver, hash))| crate::backend::ClosureRef {
+                name: (*name).to_string(),
+                version: (*ver).to_string(),
+                hash: (*hash).to_string(),
+                sha256: format!("{:0>64}", i),
+                url: format!("https://example.invalid/{name}.tar.zst"),
+                size: 0,
             })
-            .collect();
-        serde_json::from_value(serde_json::json!({
-            "schema": 1,
-            "kind": "tool",
-            "name": "mariadb",
-            "tag": "mariadb-11.4.10-x86_64-unknown-linux-gnu-default",
-            "version": "11.4.10",
-            "target": "x86_64-unknown-linux-gnu",
-            "flavor": "default",
-            "libc": {"family":"gnu","min":"2.17"},
-            "blob": {"url":"https://x/blob","sha256":"aa","size":0},
-            "closure": closure_json,
-        }))
-        .unwrap()
+            .collect()
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -1174,14 +1017,15 @@ mod tests {
         for (n, v, h) in &entries {
             pre_create_store_entry(&paths, n, v, h);
         }
-        let manifest = tool_manifest_with_closure(&entries);
+        let closure = closure_refs(&entries);
 
         let install_root = paths.store().join("mariadb-11.4.10");
         std::fs::create_dir_all(&install_root).unwrap();
 
         let client = reqwest::blocking::Client::new();
         let bar = DownloadBar::hidden();
-        install_closure_peers(&client, &paths, &manifest, &install_root, &bar).unwrap();
+        install_closure_peers(&client, &paths, &closure, "mariadb", "mariadb-11.4.10", &install_root, &bar)
+            .unwrap();
 
         for (n, v, h) in &entries {
             let link = install_root.join("store").join(format!("{n}-{v}-{h}"));
@@ -1205,14 +1049,16 @@ mod tests {
         let paths = Paths::new(td.path().into(), td.path().join("cache"));
         let entries = [("openssl", "3.5.6", "99c0f6e8")];
         pre_create_store_entry(&paths, "openssl", "3.5.6", "99c0f6e8");
-        let manifest = tool_manifest_with_closure(&entries);
+        let closure = closure_refs(&entries);
 
         let install_root = paths.store().join("redis-8.6.3");
         std::fs::create_dir_all(&install_root).unwrap();
         let client = reqwest::blocking::Client::new();
         let bar = DownloadBar::hidden();
-        install_closure_peers(&client, &paths, &manifest, &install_root, &bar).unwrap();
-        install_closure_peers(&client, &paths, &manifest, &install_root, &bar).unwrap();
+        install_closure_peers(&client, &paths, &closure, "redis", "redis-8.6.3", &install_root, &bar)
+            .unwrap();
+        install_closure_peers(&client, &paths, &closure, "redis", "redis-8.6.3", &install_root, &bar)
+            .unwrap();
 
         // Exactly one entry under store/, still a symlink.
         let entries: Vec<_> = std::fs::read_dir(install_root.join("store"))
@@ -1231,13 +1077,14 @@ mod tests {
         // backward-compat hinge in UNBUNDLE_PLAN.md §"Phase 1".
         let td = tempfile::TempDir::new().unwrap();
         let paths = Paths::new(td.path().into(), td.path().join("cache"));
-        let manifest = tool_manifest_with_closure(&[]);
+        let closure = closure_refs(&[]);
         let install_root = paths.store().join("mariadb-11.4.10");
         std::fs::create_dir_all(&install_root).unwrap();
 
         let client = reqwest::blocking::Client::new();
         let bar = DownloadBar::hidden();
-        install_closure_peers(&client, &paths, &manifest, &install_root, &bar).unwrap();
+        install_closure_peers(&client, &paths, &closure, "mariadb", "mariadb-11.4.10", &install_root, &bar)
+            .unwrap();
         // No `store/` subdir is created when there's nothing to link.
         assert!(!install_root.join("store").exists());
     }
@@ -1251,34 +1098,35 @@ mod tests {
         // those entries — otherwise the bar overshoots and never fills.
         let td = tempfile::TempDir::new().unwrap();
         let paths = Paths::new(td.path().into(), td.path().join("cache"));
-        let entries = [
-            ("openssl", "3.5.6", "99c0f6e8"),
-            ("zlib", "1.3.2", "jbmj2bcm"),
-        ];
         // Only openssl is already on disk.
         pre_create_store_entry(&paths, "openssl", "3.5.6", "99c0f6e8");
 
-        // Hand-build a manifest where each entry advertises a distinct
-        // non-zero size so we can assert exactly which one was counted.
-        let manifest: crate::index::wire::Manifest = serde_json::from_value(serde_json::json!({
-            "schema": 1, "kind": "tool", "name": "mariadb",
-            "tag": "mariadb-11.4.10-x", "version": "11.4.10",
-            "target": "x86_64-unknown-linux-gnu", "flavor": "default",
-            "libc": {"family":"gnu","min":"2.17"},
-            "blob": {"url":"https://x","sha256":"aa","size":0},
-            "closure": [
-                {"name":"openssl","version":"3.5.6","hash":"99c0f6e8",
-                 "sha256":format!("{:0>64}",0),"url":"https://x/o","size": 1_000},
-                {"name":"zlib","version":"1.3.2","hash":"jbmj2bcm",
-                 "sha256":format!("{:0>64}",1),"url":"https://x/z","size": 500},
-            ],
-        })).unwrap();
+        // Hand-build a closure list where each entry advertises a
+        // distinct non-zero size so we can assert exactly which one
+        // was counted.
+        let closure = vec![
+            crate::backend::ClosureRef {
+                name: "openssl".into(),
+                version: "3.5.6".into(),
+                hash: "99c0f6e8".into(),
+                sha256: format!("{:0>64}", 0),
+                url: "https://x/o".into(),
+                size: 1_000,
+            },
+            crate::backend::ClosureRef {
+                name: "zlib".into(),
+                version: "1.3.2".into(),
+                hash: "jbmj2bcm".into(),
+                sha256: format!("{:0>64}", 1),
+                url: "https://x/z".into(),
+                size: 500,
+            },
+        ];
 
         let bar = DownloadBar::hidden();
-        plan_closure_bytes(&paths, &manifest, &bar);
+        plan_closure_bytes(&paths, &closure, &bar);
         // openssl (1000) is on disk → skipped. zlib (500) is missing →
         // counted. So planned == 500.
         assert_eq!(bar.planned(), 500, "expected only the missing entry to be counted");
-        let _ = entries;
     }
 }
