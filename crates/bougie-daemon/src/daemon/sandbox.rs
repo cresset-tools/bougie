@@ -12,7 +12,7 @@
 //! extend `CatalogEntry` with a `SandboxOverrides` struct.
 
 use super::catalog::{CatalogEntry, SandboxKind};
-use crate::Paths;
+use bougie_paths::Paths;
 use eyre::{Result, WrapErr};
 use sandbox_run::{ProtectHome, ProtectSystem, Sandbox, SandboxPolicy};
 

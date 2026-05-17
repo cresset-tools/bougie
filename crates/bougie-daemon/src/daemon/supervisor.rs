@@ -9,7 +9,7 @@ use super::catalog::{self, Binding, CatalogEntry};
 use super::logs::LogWriter;
 use super::sandbox;
 use super::store_layout;
-use crate::Paths;
+use bougie_paths::Paths;
 use eyre::{eyre, Context, Result};
 use serde::Serialize;
 use std::collections::{BTreeMap, HashMap, HashSet};

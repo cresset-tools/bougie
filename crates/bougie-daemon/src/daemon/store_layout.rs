@@ -22,7 +22,7 @@
 //! (real tarball) or by laying out fake binaries (fake-redis fixture).
 
 use super::catalog::CatalogEntry;
-use crate::Paths;
+use bougie_paths::Paths;
 use eyre::{eyre, Result, WrapErr};
 use std::path::{Path, PathBuf};
 

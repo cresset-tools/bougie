@@ -10,8 +10,8 @@
 //! This module now only ships `list` (the read-only inspector) and a
 //! validation-warning helper shared with `server run`.
 
-use crate::cli::OutputFormat;
-use crate::output::{emit, Render};
+use bougie_cli::OutputFormat;
+use bougie_output::output::{emit, Render};
 use eyre::Result;
 use serde::Serialize;
 use std::io::{self, Write};

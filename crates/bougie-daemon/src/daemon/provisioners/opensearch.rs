@@ -12,7 +12,7 @@
 //! some users would run alongside a security-plugin install.
 
 use crate::daemon::{store_layout, tenants::{self, Tenant}};
-use crate::Paths;
+use bougie_paths::Paths;
 use eyre::{eyre, Result, WrapErr};
 use std::path::Path;
 use std::sync::OnceLock;

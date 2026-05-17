@@ -2,7 +2,7 @@
 //! bougie-distributed mkcert tool. Lands in phase 7. Stubs here so the
 //! command is discoverable via `--help` even before the implementation.
 
-use crate::cli::OutputFormat;
+use bougie_cli::OutputFormat;
 use eyre::Result;
 use std::process::ExitCode;
 

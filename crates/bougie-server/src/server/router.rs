@@ -561,8 +561,8 @@ fn response_summary(resp: &Response) -> (u16, u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::server::config::HostAlias;
-    use crate::commands::server::paths::ServerPaths;
+    use crate::server::config::HostAlias;
+    use crate::server::paths::ServerPaths;
     use std::path::PathBuf;
 
     fn block(host: &str, aliases: &[&str]) -> HostBlock {
@@ -578,7 +578,7 @@ mod tests {
     }
 
     fn empty_state(cfg: &ServerConfig) -> eyre::Result<AppState> {
-        let bp = crate::paths::Paths::new(PathBuf::from("/tmp/bh"), PathBuf::from("/tmp/bc"));
+        let bp = bougie_paths::Paths::new(PathBuf::from("/tmp/bh"), PathBuf::from("/tmp/bc"));
         let sp = ServerPaths::from_root(PathBuf::from("/tmp/sp"));
         let pm = Arc::new(PoolManager::new(
             bp,

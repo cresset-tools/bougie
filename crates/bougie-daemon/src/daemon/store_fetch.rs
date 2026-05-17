@@ -25,17 +25,17 @@
 
 use crate::daemon::catalog::CatalogEntry;
 use crate::daemon::store_layout;
-use crate::errors::BougieError;
-use crate::fetch::{fetch_blob, ArchiveKind, BlobSpec, DownloadBar};
-use crate::index::{
+use bougie_errors::BougieError;
+use bougie_fetch::{fetch_blob, ArchiveKind, BlobSpec, DownloadBar};
+use bougie_index::{
     build_verifier,
     fetch::{fetch_manifest, fetch_root, fetch_section, FetchedRoot},
     wire::{Artifact, Manifest, RequiresTool, Section},
 };
-use crate::install::{host_to_dirname, install_closure_peers, plan_closure_bytes, DEFAULT_INDEX_URL};
-use crate::lock::ExclusiveGuard;
-use crate::paths::Paths;
-use crate::target::Triple;
+use bougie_installer::install::{host_to_dirname, install_closure_peers, plan_closure_bytes, DEFAULT_INDEX_URL};
+use bougie_fs::lock::ExclusiveGuard;
+use bougie_paths::Paths;
+use bougie_platform::target::Triple;
 use eyre::{eyre, Result, WrapErr};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -233,8 +233,8 @@ fn install_into(
     // Adapt wire closures to the backend-neutral shape the install
     // helpers now take. Cheap clone — closure lists are small (≤ a
     // dozen entries for the heaviest tools).
-    let closure: Vec<crate::backend::ClosureRef> =
-        manifest.closure.iter().map(crate::backend::ClosureRef::from).collect();
+    let closure: Vec<bougie_backend::ClosureRef> =
+        manifest.closure.iter().map(bougie_backend::ClosureRef::from).collect();
 
     bar.add_planned(manifest.blob.size);
     plan_closure_bytes(paths, &closure, bar);
@@ -505,7 +505,7 @@ fn pick_pinned_artifact<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::index::wire::ManifestRef;
+    use bougie_index::wire::ManifestRef;
 
     fn art(version: &str, yanked: bool, frozen: bool) -> Artifact {
         Artifact {
@@ -574,8 +574,8 @@ mod tests {
     /// A minimal [`FetchedRoot`] for tests that exercise the
     /// early-return branch (no HTTP touched).
     fn empty_fetched_root() -> FetchedRoot {
-        use crate::index::fetch::FetchOutcome;
-        use crate::index::wire::Root;
+        use bougie_index::fetch::FetchOutcome;
+        use bougie_index::wire::Root;
         let json = r#"{
             "schema": 1,
             "version": "test",

@@ -378,6 +378,7 @@ dependencies = [
  "bougie-cli",
  "bougie-composer",
  "bougie-config",
+ "bougie-daemon",
  "bougie-errors",
  "bougie-fetch",
  "bougie-fs",
@@ -388,6 +389,7 @@ dependencies = [
  "bougie-platform",
  "bougie-recipe",
  "bougie-resolver",
+ "bougie-server",
  "bougie-version",
  "clap",
  "color-eyre",
@@ -479,6 +481,34 @@ dependencies = [
  "serde",
  "serde_json",
  "toml_edit",
+]
+
+[[package]]
+name = "bougie-daemon"
+version = "0.4.0"
+dependencies = [
+ "bougie-backend",
+ "bougie-config",
+ "bougie-errors",
+ "bougie-fetch",
+ "bougie-fs",
+ "bougie-index",
+ "bougie-installer",
+ "bougie-output",
+ "bougie-paths",
+ "bougie-platform",
+ "bougie-server",
+ "eyre",
+ "reqwest 0.13.3",
+ "rustix",
+ "sandbox-run",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+ "tokio",
+ "toml_edit",
+ "tracing",
 ]
 
 [[package]]
@@ -605,6 +635,39 @@ dependencies = [
  "bougie-index",
  "bougie-version",
  "eyre",
+]
+
+[[package]]
+name = "bougie-server"
+version = "0.4.0"
+dependencies = [
+ "anstream",
+ "anstyle",
+ "axum",
+ "bougie-cli",
+ "bougie-config",
+ "bougie-errors",
+ "bougie-fs",
+ "bougie-installer",
+ "bougie-output",
+ "bougie-paths",
+ "bougie-resolver",
+ "etcetera",
+ "eyre",
+ "http-body-util",
+ "mime_guess",
+ "notify",
+ "percent-encoding",
+ "regex",
+ "reqwest 0.13.3",
+ "rustix",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+ "tokio",
+ "toml_edit",
+ "tracing",
 ]
 
 [[package]]

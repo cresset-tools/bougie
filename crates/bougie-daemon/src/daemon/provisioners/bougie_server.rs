@@ -14,7 +14,7 @@
 //! `[[host]]` block → different project root."
 
 use crate::daemon::tenants::{self, Tenant};
-use crate::Paths;
+use bougie_paths::Paths;
 use eyre::{eyre, Result, WrapErr};
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
@@ -109,7 +109,7 @@ pub fn deprovision(
     // want the tenant ledger updated.
     let cfg = server_toml_path(paths);
     if cfg.exists() {
-        let _ = crate::commands::server::config::remove_host(&cfg, &hostname);
+        let _ = bougie_server::server::config::remove_host(&cfg, &hostname);
     }
     let _ = ping_reload_config(paths);
 
@@ -155,7 +155,7 @@ fn ensure_host_block(paths: &Paths, hostname: &str, project: &Path, root: &str) 
     // Per `bougie server add` behaviour, `add_host_with_rewrites`
     // returns `Ok(None)` when the hostname is already present —
     // idempotent by design.
-    crate::commands::server::config::add_host_with_rewrites(
+    bougie_server::server::config::add_host_with_rewrites(
         &cfg, hostname, project, Some(root), &rewrites,
     )
     .wrap_err_with(|| format!("adding host {hostname} to {}", cfg.display()))?;
@@ -172,8 +172,8 @@ fn ensure_host_block(paths: &Paths, hostname: &str, project: &Path, root: &str) 
 fn framework_rewrites(
     project: &Path,
     root: &str,
-) -> Vec<crate::commands::server::config::RewriteRule> {
-    use crate::commands::server::config::RewriteRule;
+) -> Vec<bougie_server::server::config::RewriteRule> {
+    use bougie_server::server::config::RewriteRule;
     let docroot = project.join(root);
     let mut out = Vec::new();
     if docroot.join("static.php").is_file() {
@@ -212,7 +212,7 @@ fn framework_rewrites(
 /// returns a default config in that case so step 1 just becomes a
 /// no-op.
 fn resolve_web_root(project: &Path) -> Result<String> {
-    let cfg = crate::config::load_project(project)
+    let cfg = bougie_config::load_project(project)
         .wrap_err_with(|| format!("loading project config from {}", project.display()))?;
     if let Some(explicit) = cfg.bougie.server.root.as_deref() {
         if explicit.is_empty() {
@@ -412,7 +412,7 @@ mod tests {
 
     #[test]
     fn default_toml_parses() {
-        let cfg: crate::commands::server::config::ServerConfig =
+        let cfg: bougie_server::server::config::ServerConfig =
             toml_edit::de::from_str(default_server_toml()).expect("default toml parses");
         assert_eq!(cfg.server.listen, "127.0.0.1:7080");
         assert!(cfg.hosts.is_empty());

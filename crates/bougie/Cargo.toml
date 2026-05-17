@@ -295,10 +295,14 @@ version = "0.1"
 version = "8"
 
 [target.'cfg(unix)'.dependencies]
-# Process sandboxing for managed dev services (`bougied`).
-# Cross-platform: Linux Landlock (kernel 5.13+), macOS SBPL via
-# `sandbox_init_with_parameters`. Vendored as workspace member at
-# `crates/sandbox-run/` so this repo is self-contained.
+# `bougied` (process supervisor) and the embedded HTTP/FastCGI server
+# both rely on Unix domain sockets, POSIX signals, and sandbox-run's
+# Landlock/SBPL backends — none of which exist on Windows.
+bougie-daemon = { path = "../bougie-daemon", version = "0.4.0" }
+bougie-server = { path = "../bougie-server", version = "0.4.0" }
+# Sandbox-run is vendored at `crates/sandbox-run/`; bougie-daemon
+# already depends on it transitively, but we also expose it directly
+# in case a future bin-side hook needs it.
 sandbox-run = { path = "../sandbox-run", version = "0.1.0" }
 
 [dev-dependencies]

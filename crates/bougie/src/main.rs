@@ -14,6 +14,12 @@ fn main() -> ExitCode {
         };
     }
 
+    // Register the bougie-recipe → bougied IPC bridge. Recipe and the
+    // bridge both live behind cfg(unix); on Windows the recipe crate is
+    // an empty lib and there's nothing to register.
+    #[cfg(unix)]
+    bougie_recipe::set_service_env_provider(bougie::commands::services::recipe_env_for_project);
+
     let cli = Cli::parse();
     match bougie::run(cli) {
         Ok(code) => code,
