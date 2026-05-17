@@ -2,9 +2,9 @@
 //! fetch + extract. Shared by `bougie php install` and `bougie sync`.
 
 use crate::backend;
-use crate::baseline::{
-    skip_for_platform, BaselineFilter, BASELINE_EXTENSIONS, PREINSTALLED_EXTENSIONS,
-};
+use crate::baseline::{BaselineFilter, BASELINE_EXTENSIONS};
+#[cfg(not(target_os = "windows"))]
+use crate::baseline::{skip_for_platform, PREINSTALLED_EXTENSIONS};
 use crate::errors::BougieError;
 use crate::fetch::{fetch_blob, ArchiveKind, BlobSpec, DownloadBar};
 use crate::index::{
@@ -335,67 +335,178 @@ pub fn install_baseline_into(
     filter: &BaselineFilter,
     resolve_opts: ResolveOptions,
 ) -> BaselineReport {
+    // Windows takes a different route: baseline extensions either ship
+    // statically built into `php.exe` (mysqlnd, dom, simplexml, xml*,
+    // tokenizer, readline, …) or land as DLLs in
+    // `<install>/bin/ext/php_*.dll` (opcache, exif, ffi, fileinfo, ftp,
+    // gettext, shmop, sockets, sysvshm, …). There's no per-extension
+    // tarball to fetch — the windows.php.net interpreter ZIP already
+    // carries everything. See [`install_baseline_from_bundled_windows`].
+    #[cfg(target_os = "windows")]
+    {
+        let _ = (paths, php_minor, flavor, resolve_opts);
+        return install_baseline_from_bundled_windows(install_root, filter);
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let mut report = BaselineReport::default();
+        let conf_d = install_root.join("etc").join("php").join("conf.d");
+        if let Err(e) = std::fs::create_dir_all(&conf_d) {
+            // If we can't even create conf.d, every entry will fail
+            // the same way — record one synthetic failure and bail.
+            report.failed.push((
+                "<conf.d>".into(),
+                format!("creating {}: {e}", conf_d.display()),
+            ));
+            return report;
+        }
+
+        if let Err(e) = clean_stale_baseline_fragments(&conf_d) {
+            // Non-fatal: leave the loop a chance to overwrite each
+            // canonical-prefix file. Surface as a synthetic failure so
+            // CI dashboards see something happened.
+            report
+                .failed
+                .push(("<conf.d-cleanup>".into(), format!("{e:#}")));
+        }
+
+        // One shared download bar across the whole baseline loop. The
+        // bar's planned-total grows as each extension's manifest reveals
+        // its blob+closure sizes, so the user sees a single combined
+        // bar instead of one per extension.
+        let bar = DownloadBar::new("downloading");
+        for &name in BASELINE_EXTENSIONS {
+            if !filter.includes(name) {
+                continue;
+            }
+            if skip_for_platform(name) {
+                // gettext on macOS is the canonical case — Apple's
+                // libc has no real libintl, so php-build-standalone
+                // emits no gettext.so on Darwin and the index has no
+                // entry to fetch. Silently skip; the conf.d cleanup
+                // loop above won't try to delete a fragment that was
+                // never written.
+                continue;
+            }
+            match install_extension_with_bar(
+                paths,
+                name,
+                None,
+                php_minor,
+                flavor,
+                resolve_opts,
+                &bar,
+            ) {
+                Ok(installed) => {
+                    if let Err(e) = write_install_conf_d(&conf_d, &installed) {
+                        report
+                            .failed
+                            .push((name.into(), format!("writing conf.d: {e:#}")));
+                    } else {
+                        report.installed.push(name.into());
+                    }
+                }
+                Err(e) => report.failed.push((name.into(), format!("{e:#}"))),
+            }
+        }
+        bar.finish();
+        report
+    }
+}
+
+/// Windows baseline path: for every name in [`BASELINE_EXTENSIONS`]
+/// that has a corresponding `<install>/bin/ext/php_<name>.dll`, write a
+/// conf.d fragment with an absolute `extension=` (or `zend_extension=`,
+/// for opcache) directive pointing at the bundled DLL. PHP on Windows
+/// accepts absolute paths for both directives.
+///
+/// Extensions that aren't present as DLLs are silently skipped — they
+/// either ship statically built into `php.exe` (e.g. `dom`, `mysqlnd`,
+/// `readline`, the xml family — `php -m` already lists them after a
+/// bare interpreter install) or have no Windows equivalent at all
+/// (`posix`, `sysvmsg`, `sysvsem`). Distinguishing the two would need
+/// a hardcoded "built-in on Windows" table; for now the user-visible
+/// outcome — "the extension is loadable" or "it isn't, and there's
+/// nothing bougie can do about it" — is the same.
+#[cfg(target_os = "windows")]
+fn install_baseline_from_bundled_windows(
+    install_root: &Path,
+    filter: &BaselineFilter,
+) -> BaselineReport {
     let mut report = BaselineReport::default();
     let conf_d = install_root.join("etc").join("php").join("conf.d");
     if let Err(e) = std::fs::create_dir_all(&conf_d) {
-        // If we can't even create conf.d, every entry will fail the
-        // same way — record one synthetic failure and bail.
         report.failed.push((
             "<conf.d>".into(),
             format!("creating {}: {e}", conf_d.display()),
         ));
         return report;
     }
-
     if let Err(e) = clean_stale_baseline_fragments(&conf_d) {
-        // Non-fatal: leave the loop a chance to overwrite each
-        // canonical-prefix file. Surface as a synthetic failure so
-        // CI dashboards see something happened.
         report
             .failed
             .push(("<conf.d-cleanup>".into(), format!("{e:#}")));
     }
 
-    // One shared download bar across the whole baseline loop. The
-    // bar's planned-total grows as each extension's manifest reveals
-    // its blob+closure sizes, so the user sees a single combined bar
-    // instead of one per extension.
-    let bar = DownloadBar::new("downloading");
+    let ext_dir = install_root.join("bin").join("ext");
     for &name in BASELINE_EXTENSIONS {
         if !filter.includes(name) {
             continue;
         }
-        if skip_for_platform(name) {
-            // gettext on macOS is the canonical case — Apple's libc has
-            // no real libintl, so php-build-standalone emits no
-            // gettext.so on Darwin and the index has no entry to fetch.
-            // Silently skip; the conf.d cleanup loop above won't try
-            // to delete a fragment that was never written.
+        let dll = ext_dir.join(format!("php_{name}.dll"));
+        if !dll.exists() {
+            // Built-in to php.exe, or not available on Windows.
             continue;
         }
-        match install_extension_with_bar(
-            paths,
-            name,
-            None,
-            php_minor,
-            flavor,
-            resolve_opts,
-            &bar,
-        ) {
-            Ok(installed) => {
-                if let Err(e) = write_install_conf_d(&conf_d, &installed) {
-                    report
-                        .failed
-                        .push((name.into(), format!("writing conf.d: {e:#}")));
-                } else {
-                    report.installed.push(name.into());
-                }
-            }
-            Err(e) => report.failed.push((name.into(), format!("{e:#}"))),
+        // opcache is the only baseline ext that's a Zend extension on
+        // Windows; everything else uses the regular `extension=` form.
+        let load = if name == "opcache" {
+            LoadDirective::ZendExtension
+        } else {
+            LoadDirective::Extension
+        };
+        match write_bundled_baseline_fragment(&conf_d, name, &dll, load) {
+            Ok(()) => report.installed.push(name.into()),
+            Err(e) => report
+                .failed
+                .push((name.into(), format!("writing conf.d: {e:#}"))),
         }
     }
-    bar.finish();
     report
+}
+
+/// Atomic write of a baseline conf.d fragment pointing at a bundled
+/// `php_<name>.dll`. Mirrors [`write_install_conf_d`]'s tempfile +
+/// rename dance so a `kill -9` mid-write can't wedge the next `php`
+/// invocation, and uses the same [`BASELINE_FRAGMENT_HEADER`] so
+/// [`clean_stale_baseline_fragments`] picks it up on the next
+/// re-install.
+#[cfg(target_os = "windows")]
+fn write_bundled_baseline_fragment(
+    conf_d: &Path,
+    name: &str,
+    dll: &Path,
+    load: LoadDirective,
+) -> Result<()> {
+    let prefix = conf_d_prefix_for(name);
+    let path = conf_d.join(format!("{prefix}-{name}.ini"));
+    let body = format!(
+        "{BASELINE_FRAGMENT_HEADER} {name} bundled\n\
+         {directive}={dll}\n",
+        directive = load.ini_directive(),
+        dll = dll.display(),
+    );
+    let mut tf = tempfile::NamedTempFile::new_in(conf_d)
+        .wrap_err_with(|| format!("creating tempfile in {}", conf_d.display()))?;
+    tf.as_file_mut()
+        .write_all(body.as_bytes())
+        .wrap_err_with(|| format!("writing {}", tf.path().display()))?;
+    tf.as_file_mut()
+        .sync_all()
+        .wrap_err_with(|| format!("fsyncing {}", tf.path().display()))?;
+    tf.persist(&path)
+        .map_err(|e| eyre!("renaming temp to {}: {e}", path.display()))?;
+    Ok(())
 }
 
 /// Outcome of [`preinstall_into`]. Same shape as
@@ -427,25 +538,38 @@ pub fn preinstall_into(
     flavor: Flavor,
     resolve_opts: ResolveOptions,
 ) -> PreinstallReport {
-    let mut report = PreinstallReport::default();
-    // Same single-bar pattern as install_baseline_into.
-    let bar = DownloadBar::new("downloading");
-    for &name in PREINSTALLED_EXTENSIONS {
-        match install_extension_with_bar(
-            paths,
-            name,
-            None,
-            php_minor,
-            flavor,
-            resolve_opts,
-            &bar,
-        ) {
-            Ok(_) => report.installed.push(name.into()),
-            Err(e) => report.failed.push((name.into(), format!("{e:#}"))),
-        }
+    // The current preinstall set is just `xdebug`, which is a PECL
+    // extension. PECL via windows.php.net is Phase 4b — until that
+    // lands the preinstall step would always fail on Windows with
+    // `unknown host target`. No-op so the install path stays quiet;
+    // Phase 4b restores the preinstall behavior.
+    #[cfg(target_os = "windows")]
+    {
+        let _ = (paths, _install_root, php_minor, flavor, resolve_opts);
+        return PreinstallReport::default();
     }
-    bar.finish();
-    report
+    #[cfg(not(target_os = "windows"))]
+    {
+        let mut report = PreinstallReport::default();
+        // Same single-bar pattern as install_baseline_into.
+        let bar = DownloadBar::new("downloading");
+        for &name in PREINSTALLED_EXTENSIONS {
+            match install_extension_with_bar(
+                paths,
+                name,
+                None,
+                php_minor,
+                flavor,
+                resolve_opts,
+                &bar,
+            ) {
+                Ok(_) => report.installed.push(name.into()),
+                Err(e) => report.failed.push((name.into(), format!("{e:#}"))),
+            }
+        }
+        bar.finish();
+        report
+    }
 }
 
 /// Numeric conf.d prefix for a baseline (or user) extension. Mirrors
@@ -505,6 +629,11 @@ fn clean_stale_baseline_fragments(conf_d: &Path) -> Result<()> {
 /// `<NN>` prefix is chosen by [`conf_d_prefix_for`] so the
 /// load-order dependencies PHP build conventions encode in the prefix
 /// (`30-pdo` → `35-pdo_*` → `40-mysqli/sqlite3/pgsql`) are preserved.
+///
+/// Unix-only: the Windows baseline path uses [`write_bundled_baseline_fragment`]
+/// instead (no [`InstalledExt`] to feed off — the DLL is shipped inside
+/// the interpreter ZIP, not as a content-addressed store entry).
+#[cfg(not(target_os = "windows"))]
 fn write_install_conf_d(conf_d: &Path, installed: &InstalledExt) -> Result<()> {
     let prefix = conf_d_prefix_for(&installed.name);
     let path = conf_d.join(format!("{prefix}-{}.ini", installed.name));
