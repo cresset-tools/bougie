@@ -1,5 +1,6 @@
 #[cfg(unix)]
 pub mod babysit;
+pub mod backend;
 pub mod baseline;
 pub mod cli;
 pub mod commands;
