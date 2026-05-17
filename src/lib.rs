@@ -17,6 +17,7 @@ pub mod list_format;
 pub mod lock;
 pub mod output;
 pub mod paths;
+pub mod recipe;
 pub mod request;
 pub mod resolve;
 pub mod shim;
@@ -217,5 +218,27 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
         Command::Services(ServicesCommand::Daemon(ServicesDaemonCommand::Version)) => {
             commands::services::daemon::version(format)
         }
+        Command::Start {
+            task,
+            list,
+            dry_run,
+            explain,
+            no_sync,
+            no_builtin,
+            recipe,
+            print,
+        } => commands::start::run(
+            format,
+            commands::start::StartOptions {
+                task,
+                list,
+                dry_run,
+                explain,
+                no_sync,
+                no_builtin,
+                recipe,
+                print,
+            },
+        ),
     }
 }

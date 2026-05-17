@@ -124,6 +124,33 @@ pub enum Command {
     /// SERVICES.md and CLI.md §3.8.
     #[command(subcommand)]
     Services(ServicesCommand),
+
+    /// Run a project recipe task (default: `start`). See RECIPES.md.
+    Start {
+        /// Task to run. Defaults to `start`.
+        task: Option<String>,
+        /// List available tasks instead of running.
+        #[arg(long, conflicts_with_all = ["dry_run", "explain", "print"])]
+        list: bool,
+        /// Show what would run, but don't execute.
+        #[arg(long)]
+        dry_run: bool,
+        /// Explain why each step runs or skips.
+        #[arg(long)]
+        explain: bool,
+        /// Skip the implicit `bougie sync` prologue.
+        #[arg(long)]
+        no_sync: bool,
+        /// Ignore the builtin recipe; use only `bougie.toml`.
+        #[arg(long)]
+        no_builtin: bool,
+        /// Force a specific builtin (e.g. `magento`).
+        #[arg(long, value_name = "NAME")]
+        recipe: Option<String>,
+        /// Print the merged recipe to stdout instead of running.
+        #[arg(long)]
+        print: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]

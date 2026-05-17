@@ -1,0 +1,11 @@
+# Builtin recipe for generic / unknown PHP projects. Just installs
+# vendor and brings up the project's declared server (if any).
+
+[task.vendor]
+creates = "vendor"
+deps = ["composer.lock", "composer.json"]
+run = "bougie run -- composer install"
+
+[task.start]
+deps = ["vendor"]
+run = "bougie up server"
