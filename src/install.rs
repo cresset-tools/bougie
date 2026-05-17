@@ -1,7 +1,7 @@
 //! Orchestrates a PHP interpreter installation: refresh index, resolve,
 //! fetch + extract. Shared by `bougie php install` and `bougie sync`.
 
-use crate::backend::{Backend, BougieIndexBackend};
+use crate::backend;
 use crate::baseline::{
     skip_for_platform, BaselineFilter, BASELINE_EXTENSIONS, PREINSTALLED_EXTENSIONS,
 };
@@ -42,7 +42,7 @@ pub fn install_php(
     flavor_override: Option<Flavor>,
     opts: ResolveOptions,
 ) -> Result<InstalledPhp> {
-    let target = Triple::detect()?.to_string();
+    let target = Triple::detect()?;
     let host = std::env::var("BOUGIE_INDEX_URL").unwrap_or_else(|_| DEFAULT_INDEX_URL.into());
 
     let (spec, in_request_flavor) = match request {
@@ -58,7 +58,7 @@ pub fn install_php(
     // Lock the global store before mutating anything.
     let _guard = ExclusiveGuard::acquire(&paths.global_lock(), LOCK_TIMEOUT)?;
 
-    let backend = BougieIndexBackend::new(paths, &host, &target)?;
+    let backend = backend::select(&target, &host, paths)?;
     let recipe = backend.resolve_php(&spec, flavor, opts)?;
     let dest = install_dir(paths, recipe.version, recipe.flavor);
     let already_present = dest.exists();
@@ -67,12 +67,14 @@ pub fn install_php(
         // bar grows by exactly the tarball's size. A pre-`size`
         // publisher emits `size: 0` which `add_planned` silently
         // drops; the bar still ticks bytes received but can't fill.
+        // windows.php.net publishes a string-shaped `size` field
+        // that we don't parse, so the Windows backend always falls
+        // through that path.
         let bar = DownloadBar::new("downloading");
         bar.add_planned(recipe.blob.size);
         bar.set_current(format!("php-{}", recipe.version));
         let cache_blobs = paths.cache_blobs();
-        let blob_spec = recipe.blob.as_blob_spec(&cache_blobs, &dest);
-        fetch_blob(backend.client(), &blob_spec, &bar)?;
+        backend.fetch_into(&recipe.blob, &dest, &cache_blobs, &bar)?;
         bar.finish();
     }
 
