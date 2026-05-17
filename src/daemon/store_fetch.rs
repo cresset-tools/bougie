@@ -26,7 +26,7 @@
 use crate::daemon::catalog::CatalogEntry;
 use crate::daemon::store_layout;
 use crate::errors::BougieError;
-use crate::fetch::{fetch_blob, BlobSpec, DownloadBar};
+use crate::fetch::{fetch_blob, ArchiveKind, BlobSpec, DownloadBar};
 use crate::index::{
     build_verifier,
     fetch::{fetch_manifest, fetch_root, fetch_section, FetchedRoot},
@@ -242,6 +242,7 @@ fn install_into(
         // Tool tarballs ship their tree under `install/` — same
         // convention as the interpreter tarball.
         strip_prefix: "install",
+        archive: ArchiveKind::TarZst,
     };
     fetch_blob(client, &spec, bar)?;
 
