@@ -74,6 +74,15 @@ features = ["preserve_order"]
 version = "0.25"
 features = ["serde"]
 
+# Compiled regex for `[[host.rewrite]]` patterns in the dev server.
+# `unicode` features are dropped — host-rewrite patterns are ASCII
+# URL paths, and the slim build cuts ~1 MB of unicode tables out of
+# the binary.
+[dependencies.regex]
+version = "1.11"
+default-features = false
+features = ["std", "perf"]
+
 # HTTP + signature path
 [dependencies.reqwest]
 version = "0.13"

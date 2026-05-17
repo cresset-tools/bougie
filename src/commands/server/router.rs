@@ -215,7 +215,8 @@ async fn serve(
 ) -> Response {
     match static_files::resolve(host, path, query) {
         Resolution::Static { path: file } => serve_static(&file).await,
-        Resolution::Php { script_filename, script_name, path_info } => {
+        Resolution::Php { script_filename, script_name, path_info, rewritten_query } => {
+            let effective_query = rewritten_query.as_deref().unwrap_or(query);
             serve_php(
                 state,
                 host,
@@ -223,7 +224,7 @@ async fn serve(
                 &script_filename,
                 &script_name,
                 &path_info,
-                query,
+                effective_query,
                 peer,
                 variant,
                 req,
@@ -572,6 +573,7 @@ mod tests {
             index: Vec::new(),
             try_files: Vec::new(),
             aliases: aliases.iter().map(|a| HostAlias { hostname: (*a).to_string() }).collect(),
+            rewrites: Vec::new(),
         }
     }
 
