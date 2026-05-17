@@ -354,13 +354,15 @@ pub struct InstalledLocalExt {
 }
 
 /// Copy a user-provided `.so` into the content-addressed store under
-/// `ext-<name>-local+php<minor>-<flavor>-<sha8>/<basename>`. The sha
+/// `ext-<name>-local+php<minor>-<flavor>-<sha8>/<name>.so`. The sha
 /// is over the .so bytes, so a different file produces a different
-/// dest; an identical re-add is a no-op.
+/// dest; an identical re-add (even with the source renamed) is a
+/// no-op. The on-disk basename is normalised to `<name>.so` so the
+/// store layout is stable across different source filenames.
 ///
 /// Does NOT walk a closure (there's no manifest) and does NOT touch
-/// composer.json — callers (today: `bougie ext add --so`) pair this
-/// with [`crate::conf_d::write_local_ext_fragment`].
+/// composer.json — callers (today: `bougie ext add <path>.so`) pair
+/// this with [`crate::conf_d::write_local_ext_fragment`].
 pub fn install_local_so(
     paths: &Paths,
     name: &str,
@@ -379,14 +381,14 @@ pub fn install_local_so(
     };
     let sha8: String = sha.chars().take(8).collect();
 
-    let basename = source_so
-        .file_name()
-        .ok_or_else(|| eyre!("source .so has no filename: {}", source_so.display()))?;
-
     let php_minor_label = format!("php{}{}", php_minor.major, php_minor.minor.unwrap_or(0));
     let dirname = format!("ext-{name}-local+{php_minor_label}-{flavor}-{sha8}");
     let dest_dir = paths.store().join(&dirname);
-    let dest_so = dest_dir.join(basename);
+    // Canonical on-disk filename — independent of how the user named
+    // the source. Keeps `dest_so.exists()` a reliable "is the install
+    // complete" check even after `cp tideways.so tw.so && ext add tw.so`.
+    let canonical_basename = format!("{name}.so");
+    let dest_so = dest_dir.join(&canonical_basename);
 
     if dest_so.exists() {
         return Ok(InstalledLocalExt {
@@ -404,9 +406,17 @@ pub fn install_local_so(
     let _ = std::fs::remove_dir_all(&tmp);
     std::fs::create_dir_all(&tmp)
         .wrap_err_with(|| format!("creating {}", tmp.display()))?;
-    let tmp_so = tmp.join(basename);
+    let tmp_so = tmp.join(&canonical_basename);
     std::fs::write(&tmp_so, &bytes)
         .wrap_err_with(|| format!("writing {}", tmp_so.display()))?;
+    // If a prior run left an empty/partial dest_dir behind (e.g. a
+    // basename mismatch from an older bougie that keyed dirs only on
+    // sha), clear it so the atomic rename can land. Same global lock
+    // means we're the only writer here.
+    if dest_dir.exists() {
+        std::fs::remove_dir_all(&dest_dir)
+            .wrap_err_with(|| format!("clearing stale {}", dest_dir.display()))?;
+    }
     std::fs::rename(&tmp, &dest_dir)
         .wrap_err_with(|| format!("renaming {} -> {}", tmp.display(), dest_dir.display()))?;
 
