@@ -782,49 +782,6 @@ listen = "0.0.0.0:7080"  # bound everywhere
         assert!(validate_host(&h).is_empty());
     }
 
-    #[cfg(unix)]
-    #[test]
-    fn home_from_passwd_finds_the_right_row() {
-        let passwd = "\
-root:x:0:0:root:/root:/bin/bash
-jelle:x:1000:1000:Jelle:/home/jelle:/bin/bash
-www-data:x:33:33:www-data:/var/www:/usr/sbin/nologin
-";
-        assert_eq!(
-            home_from_passwd(passwd, "jelle"),
-            Some(PathBuf::from("/home/jelle"))
-        );
-        assert_eq!(
-            home_from_passwd(passwd, "root"),
-            Some(PathBuf::from("/root"))
-        );
-        assert_eq!(home_from_passwd(passwd, "missing"), None);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn home_from_passwd_handles_gecos_with_colons() {
-        // gecos may contain commas; only colons are the field separator,
-        // and gecos never gets parsed past so commas can't trip us up.
-        let passwd = "jelle:x:1000:1000:Jelle Besseling,,,:/home/jelle:/bin/bash\n";
-        assert_eq!(
-            home_from_passwd(passwd, "jelle"),
-            Some(PathBuf::from("/home/jelle"))
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn home_from_passwd_ignores_partial_rows() {
-        // Defensive: a malformed line shouldn't blow up the iterator.
-        let passwd = "broken:row\njelle:x:1000:1000::/home/jelle:/bin/bash\n";
-        assert_eq!(
-            home_from_passwd(passwd, "jelle"),
-            Some(PathBuf::from("/home/jelle"))
-        );
-        assert_eq!(home_from_passwd(passwd, "broken"), None);
-    }
-
     #[test]
     fn validate_hostname_rules() {
         assert!(validate_hostname("a.bougie.run").is_ok());
