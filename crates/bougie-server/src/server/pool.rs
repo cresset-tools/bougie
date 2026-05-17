@@ -22,13 +22,18 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Child;
 use tokio::sync::Mutex;
 
+#[cfg(unix)]
 use super::conf_d::{self, PoolConf};
-use super::fastcgi;
+#[cfg(windows)]
+use super::conf_d;
+use super::fastcgi::{self, Transport};
 use super::paths::{create_dir_0700, ServerPaths};
 use bougie_paths::Paths;
 use bougie_fs::state::read_project_resolved;
 
+#[cfg(unix)]
 const POOL_READY_TIMEOUT: Duration = Duration::from_secs(2);
+#[cfg(unix)]
 const POOL_READY_POLL: Duration = Duration::from_millis(25);
 /// How often the idle reaper scans the pool map. The plan calls for
 /// ~10s — finer-grained doesn't help when idle timeouts are minutes.
@@ -76,14 +81,18 @@ impl PoolKey {
 #[derive(Debug)]
 pub struct Pool {
     pub key: PoolKey,
-    pub socket: PathBuf,
+    /// Where the router dispatches FastCGI requests. Unix: a per-pool
+    /// `php-fpm` Unix socket. Windows: a per-pool `php-cgi.exe -b`
+    /// TCP loopback endpoint.
+    transport: Transport,
     pub php_version: String,
     /// Started-at, for log decoration + the control socket's
     /// `started_ago_ms` field.
     pub started_at: Instant,
-    /// OS pid of the php-fpm master. Cached at spawn so we can SIGUSR2
-    /// the master from inside an immutable `&Pool` (no need to lock the
-    /// child Mutex on the hot reload path).
+    /// OS pid of the php-fpm master (unix) or php-cgi.exe worker
+    /// (windows). Cached at spawn so we can SIGUSR2 the master from
+    /// inside an immutable `&Pool` (no need to lock the child Mutex on
+    /// the hot reload path).
     pid: u32,
     /// Millis since UNIX_EPOCH when this pool last served a request
     /// (or was first marked dispatchable). The reaper compares this
@@ -93,8 +102,8 @@ pub struct Pool {
 }
 
 impl Pool {
-    pub fn socket(&self) -> &Path {
-        &self.socket
+    pub fn transport(&self) -> &Transport {
+        &self.transport
     }
 
     pub fn php_version(&self) -> &str {
@@ -129,18 +138,33 @@ impl Pool {
         let _ = guard.start_kill();
     }
 
-    /// SIGUSR2 the master. php-fpm catches this as "reload": it
-    /// rescans `PHP_INI_SCAN_DIR`, respawns workers, but keeps its PID
-    /// and listening socket so in-flight requests aren't disrupted.
+    /// Tell the pool to pick up a fresh `conf.d/`. Unix: SIGUSR2 the
+    /// php-fpm master so it rescans `PHP_INI_SCAN_DIR`, respawns
+    /// workers, but keeps its PID and listening socket so in-flight
+    /// requests aren't disrupted.
+    ///
+    /// Windows: php-cgi.exe has no reload signal and Windows has no
+    /// SIGUSR2 anyway; surface as unsupported so the watcher reports
+    /// the limitation rather than silently no-op'ing. PR 3 will swap
+    /// this for kill-and-respawn semantics.
     pub fn reload(&self) -> Result<()> {
-        let pid = rustix::process::Pid::from_raw(
-            i32::try_from(self.pid)
-                .map_err(|_| eyre::eyre!("pid {} does not fit in i32", self.pid))?,
-        )
-        .ok_or_else(|| eyre::eyre!("invalid pid {}", self.pid))?;
-        rustix::process::kill_process(pid, rustix::process::Signal::USR2)
-            .wrap_err_with(|| format!("SIGUSR2 -> pid {}", self.pid))?;
-        Ok(())
+        #[cfg(unix)]
+        {
+            let pid = rustix::process::Pid::from_raw(
+                i32::try_from(self.pid)
+                    .map_err(|_| eyre::eyre!("pid {} does not fit in i32", self.pid))?,
+            )
+            .ok_or_else(|| eyre::eyre!("invalid pid {}", self.pid))?;
+            rustix::process::kill_process(pid, rustix::process::Signal::USR2)
+                .wrap_err_with(|| format!("SIGUSR2 -> pid {}", self.pid))?;
+            Ok(())
+        }
+        #[cfg(windows)]
+        {
+            Err(eyre::eyre!(
+                "pool reload is not yet implemented on Windows — restart `bougie server` to pick up conf.d changes"
+            ))
+        }
     }
 }
 
@@ -364,11 +388,22 @@ impl PoolManager {
             .bougie_paths
             .installs()
             .join(format!("{}-{}", key.version, key.flavor));
-        let php_fpm = php_install.join("bin").join("php-fpm");
-        if !php_fpm.exists() {
+
+        // Per-platform PHP runtime. Unix uses `php-fpm` (master+workers,
+        // unix socket); Windows uses `php-cgi.exe -b 127.0.0.1:<port>`
+        // because php-fpm is not built for Windows.
+        #[cfg(unix)]
+        let binary = php_install.join("bin").join("php-fpm");
+        #[cfg(windows)]
+        let binary = php_install.join("bin").join("php-cgi.exe");
+        if !binary.exists() {
+            let label = binary
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("php runtime");
             return Err(eyre::eyre!(
-                "php-fpm not found at {} — has `bougie sync` been run for this project?",
-                php_fpm.display()
+                "{label} not found at {} — has `bougie sync` been run for this project?",
+                binary.display()
             ));
         }
 
@@ -390,41 +425,9 @@ impl PoolManager {
         let source_refs: Vec<&Path> = sources.iter().map(PathBuf::as_path).collect();
         conf_d::build_variant_confd(&confd_dir, &source_refs)?;
 
-        let socket = self.server_paths.pool_socket(project, &key.variant);
-        // A stale socket from a previous run blocks bind(); php-fpm
-        // does cleanup at startup but we belt-and-brace here.
-        let _ = std::fs::remove_file(&socket);
-
-        let conf_path = self.server_paths.pool_conf(project, &key.variant);
-        let pool_conf = PoolConf { listen_socket: &socket, php_ini_scan_dir: &confd_dir };
-        conf_d::write_pool_conf(&conf_path, &pool_conf)?;
-
-        let mut cmd = tokio::process::Command::new(&php_fpm);
-        cmd.arg("-y").arg(&conf_path)
-            .arg("-p").arg(&project_dir)
-            .arg("-F")
-            // PHP_INI_SCAN_DIR must be set on php-fpm's *own* process
-            // env: the master parses INI files at startup, before any
-            // worker is forked. The pool conf's `env[PHP_INI_SCAN_DIR]`
-            // only reaches workers (it lands in $_ENV/$_SERVER for the
-            // PHP script) and so doesn't influence which fragments
-            // get loaded. Without this, the merged `xdebug.confd/`
-            // (including the xdebug.ini symlink) is scanned but
-            // overridden by php-fpm's compiled-in default.
-            .env("PHP_INI_SCAN_DIR", &confd_dir)
-            // php-fpm's stderr carries the per-pool log; capture and
-            // forward through bougie's logger.
-            .stderr(std::process::Stdio::piped())
-            // stdout from php-fpm itself is rarely written to; pipe it
-            // anyway so the child doesn't block trying to write to a
-            // closed fd if there's something to say.
-            .stdout(std::process::Stdio::piped())
-            .stdin(std::process::Stdio::null())
-            .kill_on_drop(true);
-
-        let mut child = cmd
-            .spawn()
-            .wrap_err_with(|| format!("spawning {}", php_fpm.display()))?;
+        let (transport, mut child) =
+            spawn_runtime(&binary, &project_dir, &confd_dir, &self.server_paths, project, &key.variant)
+                .await?;
 
         // Capture stderr in a side task, line-prefix with
         // `[fpm:<project>:<variant>]`. Drains until the child exits.
@@ -445,19 +448,18 @@ impl PoolManager {
             tokio::spawn(forward_lines(stdout, prefix));
         }
 
-        wait_for_socket(&socket).await?;
         // Health probe: SERVER.md §7.6, 2s timeout. Probe failures
         // surface as 502 to the client.
-        fastcgi::probe(&socket)
+        fastcgi::probe(&transport)
             .await
             .wrap_err_with(|| format!("FastCGI health probe failed for pool {}", key.variant))?;
 
         let pid = child
             .id()
-            .ok_or_else(|| eyre::eyre!("php-fpm child exited before bougie captured its pid"))?;
+            .ok_or_else(|| eyre::eyre!("php worker exited before bougie captured its pid"))?;
         Ok(Pool {
             key: key.clone(),
-            socket,
+            transport,
             php_version: format!("{}-{}", key.version, key.flavor),
             started_at: Instant::now(),
             pid,
@@ -465,6 +467,133 @@ impl PoolManager {
             child: Mutex::new(child),
         })
     }
+}
+
+/// Platform-specific runtime spawn. Unix: write a php-fpm pool conf,
+/// launch php-fpm, wait for the unix socket. Windows: pick a random
+/// port in the dynamic range, launch php-cgi.exe with `-b 127.0.0.1:<port>`,
+/// retry on bind collision (php-cgi.exe rejects port 0, so we can't ask
+/// the kernel to pick one). The probe in the caller is the real
+/// "dispatchable" signal in both cases.
+#[cfg(unix)]
+async fn spawn_runtime(
+    binary: &Path,
+    project_dir: &Path,
+    confd_dir: &Path,
+    server_paths: &ServerPaths,
+    project: &Path,
+    variant: &str,
+) -> Result<(Transport, Child)> {
+    let socket = server_paths.pool_socket(project, variant);
+    // A stale socket from a previous run blocks bind(); php-fpm
+    // does cleanup at startup but we belt-and-brace here.
+    let _ = std::fs::remove_file(&socket);
+
+    let conf_path = server_paths.pool_conf(project, variant);
+    let pool_conf = PoolConf { listen_socket: &socket, php_ini_scan_dir: confd_dir };
+    conf_d::write_pool_conf(&conf_path, &pool_conf)?;
+
+    let mut cmd = tokio::process::Command::new(binary);
+    cmd.arg("-y").arg(&conf_path)
+        .arg("-p").arg(project_dir)
+        .arg("-F")
+        // PHP_INI_SCAN_DIR must be set on php-fpm's *own* process
+        // env: the master parses INI files at startup, before any
+        // worker is forked. The pool conf's `env[PHP_INI_SCAN_DIR]`
+        // only reaches workers (it lands in $_ENV/$_SERVER for the
+        // PHP script) and so doesn't influence which fragments
+        // get loaded. Without this, the merged `xdebug.confd/`
+        // (including the xdebug.ini symlink) is scanned but
+        // overridden by php-fpm's compiled-in default.
+        .env("PHP_INI_SCAN_DIR", confd_dir)
+        .stderr(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stdin(std::process::Stdio::null())
+        .kill_on_drop(true);
+
+    let child = cmd
+        .spawn()
+        .wrap_err_with(|| format!("spawning {}", binary.display()))?;
+
+    wait_for_socket(&socket).await?;
+    Ok((Transport::UnixSocket(socket), child))
+}
+
+#[cfg(windows)]
+async fn spawn_runtime(
+    binary: &Path,
+    project_dir: &Path,
+    confd_dir: &Path,
+    _server_paths: &ServerPaths,
+    _project: &Path,
+    _variant: &str,
+) -> Result<(Transport, Child)> {
+    use rand::Rng;
+    use tokio::io::AsyncReadExt;
+    const MAX_ATTEMPTS: usize = 20;
+    /// How long we wait after spawning before deciding the bind
+    /// succeeded. If the child exits within this window we treat it as
+    /// a bind failure (or other startup error) and classify via stderr.
+    const READY_WAIT: Duration = Duration::from_millis(200);
+
+    let mut last_err: Option<eyre::Report> = None;
+    for _ in 0..MAX_ATTEMPTS {
+        // Dynamic port range per Windows convention (also the BSD/IANA
+        // ephemeral range). 16384 candidates — collisions are vanishingly
+        // unlikely in practice for a dev tool.
+        let port: u16 = rand::thread_rng().gen_range(49152..=65535);
+        let mut cmd = tokio::process::Command::new(binary);
+        cmd.arg("-b")
+            .arg(format!("127.0.0.1:{port}"))
+            .env("PHP_INI_SCAN_DIR", confd_dir)
+            .current_dir(project_dir)
+            .stderr(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stdin(std::process::Stdio::null())
+            .kill_on_drop(true);
+        let mut child = cmd
+            .spawn()
+            .wrap_err_with(|| format!("spawning {}", binary.display()))?;
+        tokio::time::sleep(READY_WAIT).await;
+        match child.try_wait() {
+            Ok(None) => {
+                // Still running — assume bound. The caller's FastCGI
+                // probe is the real "is it accepting requests" signal.
+                let addr = format!("127.0.0.1:{port}")
+                    .parse::<std::net::SocketAddr>()
+                    .expect("constructed loopback addr is valid");
+                return Ok((Transport::Tcp(addr), child));
+            }
+            Ok(Some(status)) => {
+                let mut buf = Vec::new();
+                if let Some(mut stderr) = child.stderr.take() {
+                    let _ = stderr.read_to_end(&mut buf).await;
+                }
+                let msg = String::from_utf8_lossy(&buf).into_owned();
+                // php-cgi.exe's bind-failure message — the user's
+                // explicit retry signal. Anything else is treated as
+                // a non-retryable startup error so we don't silently
+                // loop on, e.g., a missing PHP extension or bad ini.
+                if msg.contains("Couldn't create FastCGI listen socket") {
+                    last_err = Some(eyre::eyre!(
+                        "port {port} unavailable: {}",
+                        msg.trim()
+                    ));
+                    continue;
+                }
+                return Err(eyre::eyre!(
+                    "php-cgi.exe exited with status {status:?}: {}",
+                    msg.trim(),
+                ));
+            }
+            Err(e) => return Err(e).wrap_err("polling php-cgi.exe"),
+        }
+    }
+    Err(last_err.unwrap_or_else(|| {
+        eyre::eyre!(
+            "could not bind a loopback port for php-cgi.exe after {MAX_ATTEMPTS} attempts"
+        )
+    }))
 }
 
 /// Spawn the periodic idle-out reaper. Returns a `JoinHandle` the
@@ -518,6 +647,7 @@ fn evict_lru(map: &mut HashMap<PoolKey, Arc<Pool>>) {
 /// (php-fpm creates it during startup). The follow-on FCGI_GET_VALUES
 /// probe then validates that the responder is actually accepting
 /// requests.
+#[cfg(unix)]
 async fn wait_for_socket(socket: &Path) -> Result<()> {
     let deadline = Instant::now() + POOL_READY_TIMEOUT;
     loop {

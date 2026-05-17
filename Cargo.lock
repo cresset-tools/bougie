@@ -636,6 +636,7 @@ dependencies = [
  "mime_guess",
  "notify",
  "percent-encoding",
+ "rand 0.8.6",
  "regex",
  "reqwest 0.13.3",
  "rustix",

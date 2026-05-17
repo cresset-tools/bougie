@@ -256,6 +256,7 @@ pub fn resolve_path(override_path: Option<&Path>) -> Result<PathBuf> {
     if let Some(p) = override_path {
         return Ok(p.to_path_buf());
     }
+    #[cfg(unix)]
     if let Some(home) = sudo_origin_home() {
         return Ok(home.join(".config").join("bougie").join("server.toml"));
     }
@@ -267,6 +268,7 @@ pub fn resolve_path(override_path: Option<&Path>) -> Result<PathBuf> {
 /// original user's home directory can be looked up from `/etc/passwd`.
 /// All other situations return `None` so the caller falls through to
 /// the normal XDG resolution.
+#[cfg(unix)]
 fn sudo_origin_home() -> Option<PathBuf> {
     if rustix::process::geteuid().as_raw() != 0 {
         return None;
@@ -281,6 +283,7 @@ fn sudo_origin_home() -> Option<PathBuf> {
 
 /// Pure parser, separated for testability. `/etc/passwd` rows are
 /// `name:passwd:uid:gid:gecos:home:shell` colon-separated.
+#[cfg(unix)]
 fn home_from_passwd(passwd: &str, user: &str) -> Option<PathBuf> {
     for line in passwd.lines() {
         let mut fields = line.split(':');
@@ -834,6 +837,7 @@ listen = "0.0.0.0:7080"  # bound everywhere
         assert!(validate_host(&h).is_empty());
     }
 
+    #[cfg(unix)]
     #[test]
     fn home_from_passwd_finds_the_right_row() {
         let passwd = "\
@@ -852,6 +856,7 @@ www-data:x:33:33:www-data:/var/www:/usr/sbin/nologin
         assert_eq!(home_from_passwd(passwd, "missing"), None);
     }
 
+    #[cfg(unix)]
     #[test]
     fn home_from_passwd_handles_gecos_with_colons() {
         // gecos may contain commas; only colons are the field separator,
@@ -863,6 +868,7 @@ www-data:x:33:33:www-data:/var/www:/usr/sbin/nologin
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn home_from_passwd_ignores_partial_rows() {
         // Defensive: a malformed line shouldn't blow up the iterator.

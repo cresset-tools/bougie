@@ -67,8 +67,8 @@ pub fn build_variant_confd(
                 continue;
             }
             let link = target_dir.join(fname);
-            std::os::unix::fs::symlink(&path, &link).wrap_err_with(|| {
-                format!("symlinking {} -> {}", link.display(), path.display())
+            link_fragment(&path, &link).wrap_err_with(|| {
+                format!("linking {} -> {}", link.display(), path.display())
             })?;
             linked.push(link);
         }
@@ -76,7 +76,31 @@ pub fn build_variant_confd(
     Ok(linked)
 }
 
+/// Materialize one ini fragment from `source` at `link`. Unix uses a
+/// symlink (cheap, points back to the user's `conf.d/`); Windows uses
+/// a hard link on NTFS (same inode-equivalent, no Dev Mode required —
+/// `symlink_file` would otherwise demand admin or developer mode). The
+/// fragments are small files inside the same volume, so a hard link is
+/// always feasible.
+#[cfg(unix)]
+fn link_fragment(source: &Path, link: &Path) -> Result<()> {
+    std::os::unix::fs::symlink(source, link)
+        .wrap_err_with(|| format!("symlink {} -> {}", link.display(), source.display()))?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn link_fragment(source: &Path, link: &Path) -> Result<()> {
+    std::fs::hard_link(source, link)
+        .wrap_err_with(|| format!("hardlink {} -> {}", link.display(), source.display()))?;
+    Ok(())
+}
+
 /// Pool config emitted to `<variant>.conf`. SERVER.md §7.3 schema.
+/// Unix-only: this is a php-fpm pool config, and php-fpm doesn't
+/// exist on Windows. The Windows runtime (`php-cgi.exe -b`) is
+/// configured purely via CLI args + environment.
+#[cfg(unix)]
 #[derive(Debug)]
 pub struct PoolConf<'a> {
     /// Path to the listen unix socket.
@@ -85,6 +109,7 @@ pub struct PoolConf<'a> {
     pub php_ini_scan_dir: &'a Path,
 }
 
+#[cfg(unix)]
 impl PoolConf<'_> {
     pub fn render(&self) -> String {
         format!(
@@ -110,7 +135,8 @@ impl PoolConf<'_> {
 
 /// Atomically write the pool conf at `path`. Tempfile + rename so a
 /// `kill -9` mid-write can't leave the pool with a half-written conf
-/// that php-fpm would reject on next spawn.
+/// that php-fpm would reject on next spawn. Unix-only (see [`PoolConf`]).
+#[cfg(unix)]
 pub fn write_pool_conf(path: &Path, conf: &PoolConf<'_>) -> Result<()> {
     let parent = path
         .parent()
@@ -185,6 +211,12 @@ mod tests {
         assert_eq!(names, vec!["20-redis.ini".to_string(), "30-xdebug.ini".to_string()]);
     }
 
+    /// Unix-only: the assertion uses `read_link` which is meaningful
+    /// for the symlink path. On Windows the fragments are hard-linked
+    /// (no Dev Mode requirement); `read_link` returns Err there. The
+    /// "earlier source wins" invariant is the same on both platforms —
+    /// this just exercises it via the symlink target.
+    #[cfg(unix)]
     #[test]
     fn variant_earlier_source_wins_on_collision() {
         let td = TempDir::new().unwrap();
@@ -198,6 +230,22 @@ mod tests {
         // Link should resolve through primary.
         let resolved = std::fs::read_link(target.join("30-xdebug.ini")).unwrap();
         assert!(resolved.starts_with(&primary));
+    }
+
+    /// Cross-platform equivalent: read the file content rather than
+    /// the link target, since hard-linked files don't expose origin.
+    #[test]
+    fn variant_earlier_source_wins_by_content() {
+        let td = TempDir::new().unwrap();
+        let primary = td.path().join("conf.d");
+        let overlay = td.path().join("conf.d-debug");
+        let target = td.path().join("xdebug.confd");
+        write_fragment(&primary, "30-xdebug.ini", "from-primary\n");
+        write_fragment(&overlay, "30-xdebug.ini", "from-overlay\n");
+
+        let _ = build_variant_confd(&target, &[&primary, &overlay]).unwrap();
+        let body = std::fs::read_to_string(target.join("30-xdebug.ini")).unwrap();
+        assert_eq!(body, "from-primary\n");
     }
 
     #[test]
@@ -236,6 +284,7 @@ mod tests {
         assert!(target.exists());
     }
 
+    #[cfg(unix)]
     #[test]
     fn pool_conf_render_matches_schema() {
         let conf = PoolConf {
@@ -251,6 +300,7 @@ mod tests {
         assert!(rendered.contains("clear_env = no"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn write_pool_conf_round_trip() {
         let td = TempDir::new().unwrap();

@@ -2,8 +2,15 @@
 //! query a running server for live pool state.
 //!
 //! Wire format is one JSON object per request and one JSON object per
-//! response, both terminated by `\n`. No framing, no auth — the socket
-//! is mode 0600 so only the owner can connect.
+//! response, both terminated by `\n`. No framing, no auth — the
+//! listener is bound to a per-user surface (Unix socket mode 0600, or
+//! a Windows named pipe under `\\.\pipe\bougie-server-<hash>` ACL'd
+//! to the current user by Windows defaults).
+//!
+//! Unix listens on a path under `$XDG_RUNTIME_DIR/bougie/server/`;
+//! Windows listens on a named pipe whose name is written to a
+//! discovery file at `<runtime_root>/control.pipe` so the list client
+//! can find it (named pipes have no filesystem rendezvous of their own).
 //!
 //! ```jsonc
 //! // request
@@ -21,8 +28,12 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
+
+#[cfg(unix)]
 use tokio::net::{UnixListener, UnixStream};
+#[cfg(windows)]
+use tokio::net::windows::named_pipe::{ClientOptions, NamedPipeServer, ServerOptions};
 
 use super::router::AppState;
 
@@ -91,10 +102,11 @@ impl ErrorResponse {
     }
 }
 
-/// Start the control socket listener. Returns a `JoinHandle` plus the
-/// socket path so the server's shutdown path can clean up. Aborting the
-/// handle stops the accept loop; any in-flight handlers see the socket
-/// closed mid-write.
+/// Start the control listener. The `path` argument is platform-typed:
+/// on Unix it's the unix-socket path to bind; on Windows it's the path
+/// to a discovery file under `runtime_root` where the named-pipe name
+/// is recorded for clients to find.
+#[cfg(unix)]
 pub fn start(state: Arc<AppState>, socket_path: PathBuf) -> Result<ControlHandle> {
     if let Some(parent) = socket_path.parent() {
         super::paths::create_dir_0700(parent)?;
@@ -106,7 +118,7 @@ pub fn start(state: Arc<AppState>, socket_path: PathBuf) -> Result<ControlHandle
         .wrap_err_with(|| format!("binding {}", socket_path.display()))?;
     set_socket_mode(&socket_path, 0o600)?;
 
-    let socket_for_handle = socket_path.clone();
+    let cleanup_path = socket_path.clone();
     let task = tokio::spawn(async move {
         loop {
             match listener.accept().await {
@@ -128,13 +140,101 @@ pub fn start(state: Arc<AppState>, socket_path: PathBuf) -> Result<ControlHandle
         }
     });
 
-    Ok(ControlHandle { task, socket_path: socket_for_handle })
+    Ok(ControlHandle { task, cleanup_path })
+}
+
+#[cfg(windows)]
+pub fn start(state: Arc<AppState>, discovery_path: PathBuf) -> Result<ControlHandle> {
+    if let Some(parent) = discovery_path.parent() {
+        super::paths::create_dir_0700(parent)?;
+    }
+    let pipe_name = windows_pipe_name(&discovery_path);
+
+    // Validate the pipe name by creating the first instance up front.
+    // Failure here usually means a stale bougie server still owns the
+    // name; surface the error before tokio::spawn so the user sees it.
+    let first = ServerOptions::new()
+        .first_pipe_instance(true)
+        .create(&pipe_name)
+        .wrap_err_with(|| format!("creating named pipe {pipe_name}"))?;
+
+    // Publish the pipe name only after we've successfully bound it —
+    // otherwise a `bougie server list` race window would read a name
+    // that doesn't yet correspond to a live listener.
+    std::fs::write(&discovery_path, &pipe_name)
+        .wrap_err_with(|| format!("writing pipe-discovery file {}", discovery_path.display()))?;
+
+    let cleanup_path = discovery_path.clone();
+    let pipe_name_for_loop = pipe_name.clone();
+    let task = tokio::spawn(async move {
+        // tokio's NamedPipeServer is single-instance: each `connect()`
+        // produces one connection and consumes the listener. To accept
+        // multiple clients we create a fresh instance for every
+        // accepted connection and hand the connected instance to the
+        // per-connection handler.
+        let mut server = first;
+        loop {
+            if let Err(e) = server.connect().await {
+                eprintln!("bougie control: pipe connect failed: {e}");
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                match ServerOptions::new().create(&pipe_name_for_loop) {
+                    Ok(s) => {
+                        server = s;
+                        continue;
+                    }
+                    Err(e2) => {
+                        eprintln!("bougie control: recreate pipe failed: {e2}");
+                        return;
+                    }
+                }
+            }
+            // Swap in a fresh instance for the next accept, hand the
+            // connected one off to the handler task.
+            let next = match ServerOptions::new().create(&pipe_name_for_loop) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("bougie control: recreate pipe failed: {e}");
+                    return;
+                }
+            };
+            let connected: NamedPipeServer = std::mem::replace(&mut server, next);
+            let state = Arc::clone(&state);
+            tokio::spawn(async move {
+                if let Err(e) = handle_connection(connected, state).await {
+                    eprintln!("bougie control: connection error: {e:#}");
+                }
+            });
+        }
+    });
+
+    Ok(ControlHandle { task, cleanup_path })
+}
+
+/// Derive a per-runtime-root named-pipe name. The hash isolates parallel
+/// `bougie server` instances anchored at different `runtime_root`s
+/// (e.g. test runs using a tempdir) so they don't collide on the global
+/// `\\.\pipe\` namespace.
+#[cfg(windows)]
+fn windows_pipe_name(discovery_path: &Path) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(discovery_path.to_string_lossy().as_bytes());
+    let digest = h.finalize();
+    let mut hex = String::with_capacity(12);
+    for b in digest.iter().take(6) {
+        hex.push_str(&format!("{b:02x}"));
+    }
+    format!(r"\\.\pipe\bougie-server-{hex}")
 }
 
 #[derive(Debug)]
 pub struct ControlHandle {
     task: tokio::task::JoinHandle<()>,
-    pub socket_path: PathBuf,
+    /// File path to remove on drop. On Unix this is the unix socket
+    /// (a real filesystem entry); on Windows it's the discovery file
+    /// holding the pipe name. The named pipe itself disappears when
+    /// its last handle is dropped — no manual cleanup needed.
+    pub cleanup_path: PathBuf,
 }
 
 impl ControlHandle {
@@ -146,14 +246,17 @@ impl ControlHandle {
 impl Drop for ControlHandle {
     fn drop(&mut self) {
         self.task.abort();
-        // Best-effort socket cleanup. Surviving sockets are harmless
-        // (the next `start()` call removes them) but tidy is tidy.
-        let _ = std::fs::remove_file(&self.socket_path);
+        // Best-effort cleanup. Surviving artifacts are harmless (the
+        // next `start()` removes/overwrites them) but tidy is tidy.
+        let _ = std::fs::remove_file(&self.cleanup_path);
     }
 }
 
-async fn handle_connection(stream: UnixStream, state: Arc<AppState>) -> Result<()> {
-    let (read_half, mut write_half) = stream.into_split();
+async fn handle_connection<S>(stream: S, state: Arc<AppState>) -> Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let (read_half, mut write_half) = tokio::io::split(stream);
     let mut reader = BufReader::new(read_half).take(u64::try_from(MAX_REQUEST_BYTES).unwrap());
     let mut line = String::new();
     let n = reader
@@ -236,6 +339,7 @@ fn reload_config(state: &Arc<AppState>) -> Result<usize> {
     Ok(count)
 }
 
+#[cfg(unix)]
 fn set_socket_mode(path: &Path, mode: u32) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
@@ -245,9 +349,12 @@ fn set_socket_mode(path: &Path, mode: u32) -> Result<()> {
 
 // --- client side ----------------------------------------------------
 
-/// Try to query a running server's control socket for its status.
-/// Returns `None` (silently) when no server is listening — the
+/// Try to query a running server for its status. The `path` is
+/// platform-typed: on Unix it's the unix-socket path; on Windows it's
+/// the discovery file under `runtime_root` that holds the named-pipe
+/// name. Returns `None` silently when no server is listening — the
 /// expected case for `bougie server list` without a live server.
+#[cfg(unix)]
 pub fn try_query_status(socket_path: &Path) -> Option<LiveStatus> {
     if !socket_path.exists() {
         return None;
@@ -262,19 +369,56 @@ pub fn try_query_status(socket_path: &Path) -> Option<LiveStatus> {
         let socket_path = socket_path.to_owned();
         let fut = async {
             let stream = UnixStream::connect(&socket_path).await.ok()?;
-            let (read_half, mut write_half) = stream.into_split();
-            write_half.write_all(b"{\"v\":1,\"method\":\"status\"}\n").await.ok()?;
-            write_half.shutdown().await.ok()?;
-            let mut reader = BufReader::new(read_half);
-            let mut line = String::new();
-            reader.read_line(&mut line).await.ok()?;
-            serde_json::from_str::<LiveStatus>(line.trim()).ok()
+            run_query(stream).await
         };
         tokio::time::timeout(Duration::from_millis(500), fut)
             .await
             .ok()
             .flatten()
     })
+}
+
+#[cfg(windows)]
+pub fn try_query_status(discovery_path: &Path) -> Option<LiveStatus> {
+    let pipe_name = std::fs::read_to_string(discovery_path)
+        .ok()?
+        .trim()
+        .to_owned();
+    if pipe_name.is_empty() {
+        return None;
+    }
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .ok()?;
+    rt.block_on(async move {
+        let fut = async {
+            let stream = ClientOptions::new().open(&pipe_name).ok()?;
+            run_query(stream).await
+        };
+        tokio::time::timeout(Duration::from_millis(500), fut)
+            .await
+            .ok()
+            .flatten()
+    })
+}
+
+async fn run_query<S>(stream: S) -> Option<LiveStatus>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let (read_half, mut write_half) = tokio::io::split(stream);
+    write_half
+        .write_all(b"{\"v\":1,\"method\":\"status\"}\n")
+        .await
+        .ok()?;
+    // No explicit shutdown: handle_connection terminates the request
+    // on the `\n` (read_line returns Ready), so signaling EOF isn't
+    // needed and would tear down half-duplex named pipes early.
+    let mut reader = BufReader::new(read_half);
+    let mut line = String::new();
+    reader.read_line(&mut line).await.ok()?;
+    serde_json::from_str::<LiveStatus>(line.trim()).ok()
 }
 
 /// Parsed status response, used by the `bougie server list` client.
@@ -353,10 +497,27 @@ mod tests {
         assert_eq!(live.pools[0].pid, 12345);
     }
 
+    #[cfg(unix)]
     #[test]
     fn try_query_status_returns_none_when_socket_missing() {
         let td = tempfile::TempDir::new().unwrap();
         let missing = td.path().join("absent.sock");
         assert!(try_query_status(&missing).is_none());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn try_query_status_returns_none_when_discovery_missing() {
+        let td = tempfile::TempDir::new().unwrap();
+        let missing = td.path().join("absent.pipe");
+        assert!(try_query_status(&missing).is_none());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_pipe_name_is_hex_suffix_under_pipe_namespace() {
+        let name = windows_pipe_name(Path::new(r"C:\tmp\control.pipe"));
+        assert!(name.starts_with(r"\\.\pipe\bougie-server-"));
+        assert_eq!(name.len(), r"\\.\pipe\bougie-server-".len() + 12);
     }
 }

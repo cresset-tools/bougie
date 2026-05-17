@@ -13,10 +13,10 @@ pub use bougie_errors::{exit_code_for, BougieError};
 pub use bougie_paths::Paths;
 pub use bougie_platform::target::Triple;
 
-use bougie_cli::{CacheCommand, ComposerCommand, ExtCommand, PhpCommand, SelfCommand};
+use bougie_cli::{CacheCommand, ComposerCommand, ExtCommand, PhpCommand, SelfCommand, ServerCommand};
 #[cfg(unix)]
 use bougie_cli::{
-    ServerCommand, ServerHostsCommand, ServerTlsCommand, ServicesCommand, ServicesDaemonCommand,
+    ServerHostsCommand, ServerTlsCommand, ServicesCommand, ServicesDaemonCommand,
 };
 use eyre::Result;
 use std::process::ExitCode;
@@ -165,7 +165,6 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
         Command::SelfCmd(SelfCommand::Version { short }) => {
             commands::self_version::run(format, short)
         }
-        #[cfg(unix)]
         Command::Server(ServerCommand::Run { config, listen, log_format }) => {
             bougie_server::server::run::run(
                 format,
@@ -174,7 +173,6 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
                 log_format.as_deref(),
             )
         }
-        #[cfg(unix)]
         Command::Server(ServerCommand::List) => bougie_server::server::helpers::list(format),
         #[cfg(unix)]
         Command::Server(ServerCommand::Hosts(ServerHostsCommand::Apply { config })) => {
@@ -189,7 +187,9 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
             bougie_server::server::tls::uninstall(format)
         }
         #[cfg(not(unix))]
-        Command::Server(_) => unsupported_on_windows("bougie server"),
+        Command::Server(ServerCommand::Hosts(_) | ServerCommand::Tls(_)) => {
+            unsupported_on_windows("bougie server hosts/tls")
+        }
         #[cfg(unix)]
         Command::Services(ServicesCommand::Add { names }) => {
             commands::services::add::run(format, names)

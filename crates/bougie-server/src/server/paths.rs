@@ -1,11 +1,20 @@
-//! `$XDG_RUNTIME_DIR/bougie/server/<project-hash>/` resolution. Spec:
-//! SERVER.md §7.3.
+//! Per-running-server filesystem layout.
 //!
-//! All ephemeral state for a running server — fpm config files, conf.d
-//! variants, unix sockets, the control socket — lives under this root.
-//! `XDG_RUNTIME_DIR` is the right place: tmpfs-backed on systemd
-//! systems, wiped at logout, 0700 by default. Falls back to
-//! `/tmp/bougie-server-<uid>` when unset.
+//! Unix: `$XDG_RUNTIME_DIR/bougie/server/<project-hash>/`. Spec:
+//! SERVER.md §7.3. tmpfs-backed on systemd systems, wiped at logout,
+//! 0700 by default. Falls back to `/tmp/bougie-server-<uid>` when
+//! XDG_RUNTIME_DIR is unset.
+//!
+//! Windows: `%LOCALAPPDATA%\bougie\server\<project-hash>\` — same
+//! layout shape; LocalAppData is per-user, not roamed, which mirrors
+//! the Unix-runtime-dir guarantees we care about (private, machine-
+//! local). Falls back to `%TEMP%\bougie\bougie\server\` when LOCALAPPDATA
+//! is somehow unset.
+//!
+//! `pool_socket()` only makes sense on Unix (php-fpm listens on a unix
+//! socket); on Windows the per-pool transport is TCP loopback, picked
+//! at spawn time and tracked inside [`super::pool::Pool`]. The path
+//! helper stays Unix-only.
 
 use eyre::{Result, WrapErr};
 use sha2::{Digest, Sha256};
@@ -20,19 +29,41 @@ pub struct ServerPaths {
 }
 
 impl ServerPaths {
-    /// Resolve from environment. Honors `XDG_RUNTIME_DIR`; otherwise
-    /// constructs the `/tmp/bougie-server-<uid>` fallback.
+    /// Resolve from environment.
     pub fn from_env() -> Result<Self> {
-        Ok(Self::from_xdg_runtime_dir(std::env::var_os("XDG_RUNTIME_DIR")))
+        #[cfg(unix)]
+        {
+            Ok(Self::from_xdg_runtime_dir(std::env::var_os("XDG_RUNTIME_DIR")))
+        }
+        #[cfg(windows)]
+        {
+            Ok(Self::from_local_app_data(std::env::var_os("LOCALAPPDATA")))
+        }
     }
 
-    /// Pure resolver, exposed for tests so they can exercise the
-    /// fallback without mutating process-global state (edition 2024
-    /// marks `std::env::set_var` unsafe and the crate forbids unsafe).
+    /// Pure resolver for the Unix code path. Exposed for tests so they
+    /// can exercise the fallback without mutating process-global state.
+    #[cfg(unix)]
     pub fn from_xdg_runtime_dir(xdg: Option<std::ffi::OsString>) -> Self {
         let root = xdg
             .map(PathBuf::from)
             .unwrap_or_else(fallback_root);
+        Self { runtime_root: root.join("bougie").join("server") }
+    }
+
+    /// Pure resolver for the Windows code path. Falls back to `%TEMP%`
+    /// when `LOCALAPPDATA` is somehow unset (rare; both are populated
+    /// by the standard user profile setup).
+    #[cfg(windows)]
+    pub fn from_local_app_data(lad: Option<std::ffi::OsString>) -> Self {
+        let root = lad
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                std::env::var_os("TEMP")
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| PathBuf::from(r"C:\Windows\Temp"))
+                    .join("bougie")
+            });
         Self { runtime_root: root.join("bougie").join("server") }
     }
 
@@ -45,34 +76,44 @@ impl ServerPaths {
         &self.runtime_root
     }
 
-    /// `$XDG_RUNTIME_DIR/bougie/server/<project-hash>/`. Created on
-    /// demand by callers.
+    /// `<runtime_root>/<project-hash>/`. Created on demand by callers.
     pub fn project_dir(&self, project: &Path) -> PathBuf {
         self.runtime_root.join(project_hash(project))
     }
 
-    /// Pool unix socket. SERVER.md §7.3:
+    /// Pool unix socket (Unix only). SERVER.md §7.3:
     /// `$XDG_RUNTIME_DIR/bougie/server/<project-hash>/<variant>.sock`.
+    #[cfg(unix)]
     pub fn pool_socket(&self, project: &Path, variant: &str) -> PathBuf {
         self.project_dir(project).join(format!("{variant}.sock"))
     }
 
-    /// Generated php-fpm config file:
-    /// `$XDG_RUNTIME_DIR/bougie/server/<project-hash>/<variant>.conf`.
+    /// Generated php-fpm config file (Unix only).
+    #[cfg(unix)]
     pub fn pool_conf(&self, project: &Path, variant: &str) -> PathBuf {
         self.project_dir(project).join(format!("{variant}.conf"))
     }
 
-    /// Variant conf.d directory the pool's `PHP_INI_SCAN_DIR` points
-    /// at: `$XDG_RUNTIME_DIR/bougie/server/<project-hash>/<variant>.confd/`.
+    /// Variant conf.d directory the pool's `PHP_INI_SCAN_DIR` points at:
+    /// `<runtime_root>/<project-hash>/<variant>.confd/`.
     pub fn pool_confd(&self, project: &Path, variant: &str) -> PathBuf {
         self.project_dir(project).join(format!("{variant}.confd"))
     }
 
-    /// Control socket: `$XDG_RUNTIME_DIR/bougie/server/control.sock`
-    /// (phase 6).
+    /// Control socket (Unix): `<runtime_root>/control.sock`.
+    #[cfg(unix)]
     pub fn control_socket(&self) -> PathBuf {
         self.runtime_root.join("control.sock")
+    }
+
+    /// Discovery file that holds the named-pipe name of the running
+    /// server (Windows). Stored as plain text — one line, the pipe
+    /// name (`\\.\pipe\bougie-server-<hash>`). The control socket itself
+    /// is a named pipe, not a filesystem entry, so we need a side
+    /// channel for `bougie server list` to find it.
+    #[cfg(windows)]
+    pub fn control_pipe_discovery(&self) -> PathBuf {
+        self.runtime_root.join("control.pipe")
     }
 
     /// Remove every per-project subdirectory of `runtime_root` whose
@@ -83,8 +124,9 @@ impl ServerPaths {
     /// owned. Non-fatal: a failure to prune is logged but doesn't
     /// abort startup or shutdown.
     ///
-    /// Files directly under `runtime_root` (notably `control.sock`)
-    /// are left alone — this only touches subdirs.
+    /// Files directly under `runtime_root` (notably `control.sock` on
+    /// Unix or `control.pipe` on Windows) are left alone — this only
+    /// touches subdirs.
     pub fn prune_project_dirs(&self, keep: &[std::path::PathBuf]) -> Vec<(PathBuf, String)> {
         use std::collections::HashSet;
         let mut errors = Vec::new();
@@ -128,9 +170,9 @@ fn is_project_hash_name(name: &str) -> bool {
 }
 
 /// First 12 hex chars of `sha256(canonical_project_path)`. Used as the
-/// per-project directory name under `$XDG_RUNTIME_DIR/bougie/server/`.
-/// Canonicalization keeps the hash stable across `cd ./foo` vs.
-/// `cd $(pwd)/foo` etc. — same project, same hash.
+/// per-project directory name under `<runtime_root>/`. Canonicalization
+/// keeps the hash stable across `cd ./foo` vs. `cd $(pwd)/foo` etc. —
+/// same project, same hash.
 pub fn project_hash(project: &Path) -> String {
     let canonical = project
         .canonicalize()
@@ -161,21 +203,58 @@ pub fn project_hash(project: &Path) -> String {
     out
 }
 
+#[cfg(unix)]
 fn fallback_root() -> PathBuf {
     let uid = rustix::process::geteuid().as_raw();
     PathBuf::from(format!("/tmp/bougie-server-{uid}"))
 }
 
-/// Create a directory with mode 0700. Used for the per-project runtime
-/// directory and the conf.d variant directory — both contain enough
-/// state to leak project paths and ini fragment contents.
+/// Stringify a path for embedding in CGI/FastCGI params (`SCRIPT_FILENAME`,
+/// `DOCUMENT_ROOT`, etc). Windows-specific: strips the `\\?\` extended-
+/// length prefix that `Path::canonicalize` returns, because PHP on
+/// Windows opens that literal as a verbatim filename rather than
+/// resolving it via the Win32 path normalizer — `\\?\C:\…` becomes a
+/// "file not found" 404 from php-cgi. On Unix it's just
+/// `path.display().to_string()`.
+pub fn cgi_path_string(p: &Path) -> String {
+    #[cfg(unix)]
+    {
+        p.display().to_string()
+    }
+    #[cfg(windows)]
+    {
+        let s = p.display().to_string();
+        if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+            // UNC verbatim form: \\?\UNC\server\share\... → \\server\share\...
+            format!(r"\\{rest}")
+        } else if let Some(rest) = s.strip_prefix(r"\\?\") {
+            rest.to_owned()
+        } else {
+            s
+        }
+    }
+}
+
+/// Create a directory with the tightest sensible permissions for the
+/// platform. Unix: mode 0700 (the runtime dir contains per-project
+/// state and leaks paths + ini fragment contents through readdir).
+/// Windows: default ACL — `%LOCALAPPDATA%` is already per-user and
+/// inherited permissions land on subdirectories.
 pub fn create_dir_0700(path: &Path) -> Result<()> {
-    use std::os::unix::fs::DirBuilderExt;
-    std::fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(path)
-        .wrap_err_with(|| format!("creating {}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(path)
+            .wrap_err_with(|| format!("creating {}", path.display()))?;
+    }
+    #[cfg(windows)]
+    {
+        std::fs::create_dir_all(path)
+            .wrap_err_with(|| format!("creating {}", path.display()))?;
+    }
     Ok(())
 }
 
@@ -216,6 +295,7 @@ mod tests {
         assert_eq!(a, b);
     }
 
+    #[cfg(unix)]
     #[test]
     fn paths_layout_matches_spec() {
         let p = ServerPaths::from_root(PathBuf::from("/run/user/1000/bougie/server"));
@@ -308,6 +388,7 @@ mod tests {
         assert!(!is_project_hash_name("control.sock"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn xdg_runtime_dir_is_honored() {
         let p = ServerPaths::from_xdg_runtime_dir(Some(
@@ -316,11 +397,62 @@ mod tests {
         assert_eq!(p.runtime_root(), Path::new("/tmp/xdg-fixture/bougie/server"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn missing_xdg_runtime_dir_falls_back_to_tmp() {
         let p = ServerPaths::from_xdg_runtime_dir(None);
         let s = p.runtime_root().to_string_lossy();
         assert!(s.starts_with("/tmp/bougie-server-"));
         assert!(s.ends_with("/bougie/server"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn local_app_data_is_honored() {
+        let p = ServerPaths::from_local_app_data(Some(
+            std::ffi::OsString::from(r"C:\Users\test\AppData\Local"),
+        ));
+        assert_eq!(
+            p.runtime_root(),
+            Path::new(r"C:\Users\test\AppData\Local\bougie\server")
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn missing_local_app_data_falls_back_to_temp() {
+        let p = ServerPaths::from_local_app_data(None);
+        let s = p.runtime_root().to_string_lossy();
+        // Either honors %TEMP% or the hard-coded fallback; both end in
+        // \bougie\server.
+        assert!(s.ends_with(r"bougie\server"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn cgi_path_string_strips_verbatim_prefix() {
+        let p = Path::new(r"\\?\C:\Users\jelle\proj\index.php");
+        assert_eq!(cgi_path_string(p), r"C:\Users\jelle\proj\index.php");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn cgi_path_string_strips_verbatim_unc_prefix() {
+        let p = Path::new(r"\\?\UNC\server\share\index.php");
+        assert_eq!(cgi_path_string(p), r"\\server\share\index.php");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn cgi_path_string_leaves_non_verbatim_alone() {
+        let p = Path::new(r"C:\Users\jelle\proj\index.php");
+        assert_eq!(cgi_path_string(p), r"C:\Users\jelle\proj\index.php");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cgi_path_string_unix_is_display() {
+        let p = Path::new("/srv/app/index.php");
+        assert_eq!(cgi_path_string(p), "/srv/app/index.php");
     }
 }
