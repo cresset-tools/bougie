@@ -11,7 +11,7 @@
 //! happy path; the CLI emits a single "(starting bougied …)" line on
 //! stderr so users understand the pause.
 
-use crate::Paths;
+use bougie_paths::Paths;
 use eyre::{eyre, Result, WrapErr};
 use serde::de::DeserializeOwned;
 use serde::Deserialize;

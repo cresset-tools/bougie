@@ -1,19 +1,19 @@
-use crate::cli::OutputFormat;
-use crate::config::load_project;
-use crate::errors::BougieError;
-use crate::index::{
+use bougie_cli::OutputFormat;
+use bougie_config::load_project;
+use bougie_errors::BougieError;
+use bougie_index::{
     build_verifier,
     fetch::{fetch_root, fetch_section},
     wire::Section,
 };
-use crate::install::{host_to_dirname, DEFAULT_INDEX_URL};
-use crate::list_format::{
+use bougie_installer::install::{host_to_dirname, DEFAULT_INDEX_URL};
+use bougie_output::list_format::{
     pad_spaces, write_styled, FLAVOR_STYLE, SEP_STYLE, Suffix, TARGET_STYLE, VERSION_STYLE,
 };
-use crate::output::{emit, Render};
-use crate::paths::Paths;
-use crate::state::read_project_resolved;
-use crate::target::Triple;
+use bougie_output::output::{emit, Render};
+use bougie_paths::Paths;
+use bougie_fs::state::read_project_resolved;
+use bougie_platform::target::Triple;
 use eyre::Result;
 use serde::Serialize;
 use std::collections::BTreeSet;
@@ -389,7 +389,7 @@ fn push_index_row(
     required: &BTreeSet<String>,
     installed: &BTreeSet<String>,
     url: Option<String>,
-    artifact: &crate::index::wire::Artifact,
+    artifact: &bougie_index::wire::Artifact,
 ) {
     let mut status = Vec::new();
     if required.contains(name) {
@@ -441,7 +441,7 @@ fn push_index_row_cheap(
 }
 
 fn resolved_matches(
-    art: &crate::index::wire::Artifact,
+    art: &bougie_index::wire::Artifact,
     resolved: Option<&(String, String)>,
 ) -> bool {
     let Some((v, f)) = resolved else {
@@ -469,8 +469,8 @@ fn build_manifest_url(host_base: &str, manifest_path: &str) -> String {
 fn pick_latest<'a>(
     section: &'a Section,
     resolved: Option<&(String, String)>,
-) -> Option<&'a crate::index::wire::Artifact> {
-    let mut best: Option<(&crate::index::wire::Artifact, Vec<u32>)> = None;
+) -> Option<&'a bougie_index::wire::Artifact> {
+    let mut best: Option<(&bougie_index::wire::Artifact, Vec<u32>)> = None;
     for art in &section.artifacts {
         if art.yanked {
             continue;

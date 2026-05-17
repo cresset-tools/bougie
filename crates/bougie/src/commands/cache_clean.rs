@@ -1,6 +1,6 @@
-use crate::cli::OutputFormat;
-use crate::output::{emit, Render};
-use crate::paths::Paths;
+use bougie_cli::OutputFormat;
+use bougie_output::output::{emit, Render};
+use bougie_paths::Paths;
 use eyre::{Result, WrapErr};
 use serde::Serialize;
 use std::io::{self, Write};

@@ -1,5 +1,5 @@
-use crate::cli::OutputFormat;
-use crate::output::{emit, Render};
+use bougie_cli::OutputFormat;
+use bougie_output::output::{emit, Render};
 use eyre::Result;
 use serde::Serialize;
 use std::io::{self, Write};

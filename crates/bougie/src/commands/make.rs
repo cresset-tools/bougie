@@ -2,10 +2,10 @@
 //! freshness. `bougie start` is a thin alias for `bougie make start`.
 //! See RECIPES.md.
 
-use crate::cli::OutputFormat;
+use bougie_cli::OutputFormat;
 use crate::commands::sync;
-use crate::output::{emit, Render};
-use crate::recipe::{
+use bougie_output::output::{emit, Render};
+use bougie_recipe::{
     builtin::{detect_from_text, load_builtin, BUILTINS},
     dag::Dag,
     merge_with_builtin, parse,

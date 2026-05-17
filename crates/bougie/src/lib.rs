@@ -1,39 +1,21 @@
-pub mod babysit;
-pub mod baseline;
-pub mod binfmt;
-pub mod cli;
+//! `bougie` binary library: CLI dispatch + the `shim` and `commands`
+//! glue that aren't useful outside the bougie executable. Everything
+//! else lives in a `bougie-*` workspace crate.
+
 pub mod commands;
-pub mod composer;
-pub mod conf_d;
-pub mod config;
-pub mod daemon;
-pub mod elf;
-pub mod errors;
-pub mod macho;
-pub mod fetch;
-pub mod index;
-pub mod install;
-pub mod list_format;
-pub mod lock;
-pub mod output;
-pub mod paths;
-pub mod recipe;
-pub mod request;
-pub mod resolve;
 pub mod shim;
-pub mod state;
-pub mod store;
-pub mod target;
-pub mod version;
 
-pub use cli::{Cli, Command, OutputFormat};
-pub use errors::{exit_code_for, BougieError};
-pub use paths::Paths;
-pub use target::Triple;
+// Re-exports kept so `main.rs` can write `bougie::{Cli, exit_code_for,
+// shim}`. Crates depending on bougie as a library would just import
+// from `bougie-cli` / `bougie-errors` directly.
+pub use bougie_cli::{Cli, Command, OutputFormat};
+pub use bougie_errors::{exit_code_for, BougieError};
+pub use bougie_paths::Paths;
+pub use bougie_platform::target::Triple;
 
-use cli::{
-    CacheCommand, ComposerCommand, PhpCommand, SelfCommand, ServerCommand, ServerHostsCommand,
-    ServerTlsCommand, ServicesCommand, ServicesDaemonCommand,
+use bougie_cli::{
+    CacheCommand, ComposerCommand, ExtCommand, PhpCommand, SelfCommand, ServerCommand,
+    ServerHostsCommand, ServerTlsCommand, ServicesCommand, ServicesDaemonCommand,
 };
 use eyre::Result;
 use std::process::ExitCode;
@@ -41,16 +23,15 @@ use std::process::ExitCode;
 pub fn run(cli: Cli) -> Result<ExitCode> {
     let format = cli.format;
 
-    // Progress bars (rendered by `fetch::fetch_to_partial`) only make
-    // sense for an interactive text-mode invocation: a JSON consumer
-    // would otherwise see ANSI escapes mixed into stderr alongside
-    // the §9.2 event stream, and `--quiet` users opted out of all
-    // non-error stderr noise.
+    // Progress bars (rendered by `bougie_fetch`) only make sense for an
+    // interactive text-mode invocation: a JSON consumer would otherwise
+    // see ANSI escapes mixed into stderr alongside the §9.2 event stream,
+    // and `--quiet` users opted out of all non-error stderr noise.
     use std::io::IsTerminal;
     let progress_visible = !cli.quiet
         && matches!(format, OutputFormat::Text)
         && std::io::stderr().is_terminal();
-    output::set_progress_visible(progress_visible);
+    bougie_output::output::set_progress_visible(progress_visible);
 
     match cli.command {
         Command::Init { toml } => commands::init::run(format, toml),
@@ -60,13 +41,13 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
         Command::Run { with, no_sync, xdebug, argv } => {
             commands::run::run(&with, &argv, format, no_sync, xdebug)
         }
-        Command::Ext(cli::ExtCommand::Add { args, no_sync }) => {
+        Command::Ext(ExtCommand::Add { args, no_sync }) => {
             commands::ext_add_remove::add(format, args, no_sync)
         }
-        Command::Ext(cli::ExtCommand::Remove { names, no_sync }) => {
+        Command::Ext(ExtCommand::Remove { names, no_sync }) => {
             commands::ext_add_remove::remove(format, names, no_sync)
         }
-        Command::Ext(cli::ExtCommand::List {
+        Command::Ext(ExtCommand::List {
             only_installed,
             only_available,
             all_versions,
@@ -163,30 +144,28 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
             commands::composer_pin::run(format, &request, target)
         }
         Command::Composer(ComposerCommand::Dir) => commands::composer_dir::run(format),
-        Command::Composer(ComposerCommand::Upgrade) => {
-            commands::composer_upgrade::run(format)
-        }
+        Command::Composer(ComposerCommand::Upgrade) => commands::composer_upgrade::run(format),
         Command::SelfCmd(SelfCommand::Update) => commands::self_update::run(),
         Command::SelfCmd(SelfCommand::Version { short }) => {
             commands::self_version::run(format, short)
         }
         Command::Server(ServerCommand::Run { config, listen, log_format }) => {
-            commands::server::run::run(
+            bougie_server::server::run::run(
                 format,
                 &config,
                 listen.as_deref(),
                 log_format.as_deref(),
             )
         }
-        Command::Server(ServerCommand::List) => commands::server::helpers::list(format),
+        Command::Server(ServerCommand::List) => bougie_server::server::helpers::list(format),
         Command::Server(ServerCommand::Hosts(ServerHostsCommand::Apply { config })) => {
-            commands::server::hosts::apply(format, config.as_deref())
+            bougie_server::server::hosts::apply(format, config.as_deref())
         }
         Command::Server(ServerCommand::Tls(ServerTlsCommand::Install)) => {
-            commands::server::tls::install(format)
+            bougie_server::server::tls::install(format)
         }
         Command::Server(ServerCommand::Tls(ServerTlsCommand::Uninstall)) => {
-            commands::server::tls::uninstall(format)
+            bougie_server::server::tls::uninstall(format)
         }
         Command::Services(ServicesCommand::Add { names }) => {
             commands::services::add::run(format, names)
@@ -197,9 +176,7 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
         Command::Services(ServicesCommand::List { all }) => {
             commands::services::list::run(format, all)
         }
-        Command::Services(ServicesCommand::Catalog) => {
-            commands::services::catalog::run(format)
-        }
+        Command::Services(ServicesCommand::Catalog) => commands::services::catalog::run(format),
         Command::Services(ServicesCommand::Restart { names }) => {
             commands::services::restart::run(format, names)
         }

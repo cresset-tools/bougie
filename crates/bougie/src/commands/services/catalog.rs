@@ -1,9 +1,9 @@
 //! `bougie services catalog` — print the built-in catalog. No daemon
 //! involvement. See SERVICES.md §2.
 
-use crate::cli::OutputFormat;
-use crate::daemon::catalog::{self, Binding, CatalogEntry, Tenancy};
-use crate::output::{Render, emit};
+use bougie_cli::OutputFormat;
+use bougie_daemon::daemon::catalog::{self, Binding, CatalogEntry, Tenancy};
+use bougie_output::output::{Render, emit};
 use eyre::Result;
 use serde::Serialize;
 use std::io::{self, Write};

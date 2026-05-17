@@ -18,19 +18,19 @@
 //!
 //! Zero composer subprocess invocations along this path.
 
-use crate::cli::OutputFormat;
+use bougie_cli::OutputFormat;
 use crate::commands::sync::{ensure_synced, project_php_inputs};
-use crate::composer::lockfile::{apply_require_change, RequireChange};
-use crate::conf_d;
-use crate::config::load_project;
-use crate::index::wire::LoadDirective;
-use crate::install::{install_extension, install_local_so};
-use crate::output::{emit, Render};
-use crate::paths::Paths;
-use crate::request::Flavor;
-use crate::resolve::ResolveOptions;
-use crate::state::read_project_resolved;
-use crate::version::PartialVersion;
+use bougie_composer::lockfile::{apply_require_change, RequireChange};
+use bougie_installer::conf_d;
+use bougie_config::load_project;
+use bougie_index::wire::LoadDirective;
+use bougie_installer::install::{install_extension, install_local_so};
+use bougie_output::output::{emit, Render};
+use bougie_paths::Paths;
+use bougie_version::request::Flavor;
+use bougie_resolver::ResolveOptions;
+use bougie_fs::state::read_project_resolved;
+use bougie_version::version::PartialVersion;
 use eyre::{eyre, Result, WrapErr};
 use serde::Serialize;
 use std::io::{self, Write};
@@ -297,7 +297,7 @@ fn install_local_arg(
              local `.so` installs need a path to an existing extension binary"
         ));
     }
-    let detected = crate::binfmt::detect_php_extension(&source_so).wrap_err_with(|| {
+    let detected = bougie_platform::binfmt::detect_php_extension(&source_so).wrap_err_with(|| {
         format!(
             "couldn't read PHP extension metadata from {}",
             source_so.display()

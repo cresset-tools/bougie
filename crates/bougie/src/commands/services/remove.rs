@@ -6,8 +6,8 @@
 //! is risky and should not exist in dry form).
 
 use super::config_mut::{choose_config_target, locate_project_root, remove_service, ConfigTarget};
-use crate::cli::OutputFormat;
-use crate::output::{Render, emit};
+use bougie_cli::OutputFormat;
+use bougie_output::output::{Render, emit};
 use eyre::{eyre, Result};
 use serde::Serialize;
 use std::io::{self, Write};

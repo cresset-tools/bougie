@@ -1,6 +1,6 @@
-use crate::cli::OutputFormat;
-use crate::config::write_bougie_toml_skeleton;
-use crate::output::{emit, Render};
+use bougie_cli::OutputFormat;
+use bougie_config::write_bougie_toml_skeleton;
+use bougie_output::output::{emit, Render};
 use eyre::{Result, WrapErr};
 use serde::Serialize;
 use std::fs;

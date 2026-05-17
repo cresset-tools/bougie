@@ -1,17 +1,17 @@
-use crate::cli::OutputFormat;
-use crate::errors::BougieError;
-use crate::index::{
+use bougie_cli::OutputFormat;
+use bougie_errors::BougieError;
+use bougie_index::{
     build_verifier,
     fetch::{fetch_root, fetch_section},
 };
-use crate::install::{host_to_dirname, DEFAULT_INDEX_URL};
-use crate::list_format::{write_row, KeyParts, Suffix};
-use crate::output::{emit, Render};
-use crate::paths::Paths;
-use crate::request::{parse_request, Flavor, Request, VersionLike};
-use crate::store::{install_dir, list_installed};
-use crate::target::Triple;
-use crate::version::{PartialVersion, Version};
+use bougie_installer::install::{host_to_dirname, DEFAULT_INDEX_URL};
+use bougie_output::list_format::{write_row, KeyParts, Suffix};
+use bougie_output::output::{emit, Render};
+use bougie_paths::Paths;
+use bougie_version::request::{parse_request, Flavor, Request, VersionLike};
+use bougie_fs::store::{install_dir, list_installed};
+use bougie_platform::target::Triple;
+use bougie_version::version::{PartialVersion, Version};
 use eyre::Result;
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -335,7 +335,7 @@ fn collapse_to_latest_per_minor(rows: Vec<Row>) -> Vec<Row> {
 }
 
 fn parse_triple(s: &str) -> Option<Triple> {
-    use crate::target::{Arch, Env, Os, Vendor};
+    use bougie_platform::target::{Arch, Env, Os, Vendor};
     let parts: Vec<&str> = s.split('-').collect();
     if parts.len() < 3 {
         return None;

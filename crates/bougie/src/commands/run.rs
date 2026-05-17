@@ -1,10 +1,10 @@
-use crate::cli::OutputFormat;
+use bougie_cli::OutputFormat;
 use crate::commands::sync;
-use crate::conf_d;
-use crate::config::read_composer_json;
-use crate::errors::BougieError;
-use crate::paths::Paths;
-use crate::state::{read_project_resolved, read_project_resolved_composer};
+use bougie_installer::conf_d;
+use bougie_config::read_composer_json;
+use bougie_errors::BougieError;
+use bougie_paths::Paths;
+use bougie_fs::state::{read_project_resolved, read_project_resolved_composer};
 use eyre::{eyre, Result, WrapErr};
 use std::os::unix::process::CommandExt;
 use std::path::Path;
@@ -115,13 +115,13 @@ fn install_xdebug_into_overlay(project_root: &Path) -> Result<()> {
     let paths = Paths::from_env()?;
     let (php_minor, flavor) =
         crate::commands::ext_add_remove::resolved_php_for_ext_install(project_root)?;
-    let installed = crate::install::install_extension(
+    let installed = bougie_installer::install::install_extension(
         &paths,
         "xdebug",
         None,
         php_minor,
         flavor,
-        crate::resolve::ResolveOptions::default(),
+        bougie_resolver::ResolveOptions::default(),
     )?;
     if !installed.already_present {
         eprintln!("bougie: downloaded xdebug for --xdebug run");

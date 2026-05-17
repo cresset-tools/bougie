@@ -6,11 +6,11 @@
 
 use super::client;
 use super::config_mut::locate_project_root;
-use crate::cli::OutputFormat;
-use crate::config::{load_project, ServicePin};
-use crate::daemon::store_fetch::ResolvedTool;
-use crate::output::{Render, emit};
-use crate::paths::Paths;
+use bougie_cli::OutputFormat;
+use bougie_config::{load_project, ServicePin};
+use bougie_daemon::daemon::store_fetch::ResolvedTool;
+use bougie_output::output::{Render, emit};
+use bougie_paths::Paths;
 use eyre::{eyre, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -134,7 +134,7 @@ pub fn run(format: OutputFormat, names: Vec<String>) -> Result<ExitCode> {
 
 fn derive_default_tenant(
     project_root: &std::path::Path,
-    composer: Option<&crate::config::ComposerJson>,
+    composer: Option<&bougie_config::ComposerJson>,
 ) -> String {
     // composer.json's `name` was excluded from ComposerJson's struct,
     // so re-read it. Falls back to cwd basename on any parse error.

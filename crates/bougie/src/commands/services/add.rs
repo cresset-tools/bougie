@@ -1,9 +1,9 @@
 //! `bougie services add <name>[@<version>]…`. CLI.md §3.8.1.
 
 use super::config_mut::{add_service, choose_config_target, locate_project_root, ConfigTarget};
-use crate::cli::OutputFormat;
-use crate::daemon::catalog;
-use crate::output::{Render, emit};
+use bougie_cli::OutputFormat;
+use bougie_daemon::daemon::catalog;
+use bougie_output::output::{Render, emit};
 use eyre::{eyre, Result};
 use serde::Serialize;
 use std::io::{self, Write};

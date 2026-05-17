@@ -11,10 +11,10 @@
 
 use super::client;
 use super::config_mut::locate_project_root;
-use crate::cli::OutputFormat;
-use crate::config::{load_project, ServicePin};
-use crate::output::{Render, emit};
-use crate::paths::Paths;
+use bougie_cli::OutputFormat;
+use bougie_config::{load_project, ServicePin};
+use bougie_output::output::{Render, emit};
+use bougie_paths::Paths;
 use eyre::{eyre, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;

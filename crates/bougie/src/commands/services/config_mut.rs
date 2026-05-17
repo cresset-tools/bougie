@@ -1,7 +1,7 @@
 //! Shared helpers for the offline `bougie services {add,remove}`
 //! mutations on `composer.json` / `bougie.toml`.
 
-use crate::composer::lockfile::{read_json_file, write_json_file};
+use bougie_composer::lockfile::{read_json_file, write_json_file};
 use eyre::{eyre, Result, WrapErr};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};

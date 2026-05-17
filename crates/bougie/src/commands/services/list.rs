@@ -5,9 +5,9 @@
 //! Phase 3 wires the cross-project tenant query against `bougied`.
 
 use super::config_mut::locate_project_root;
-use crate::cli::OutputFormat;
-use crate::config::{load_project, ServicePin};
-use crate::output::{Render, emit};
+use bougie_cli::OutputFormat;
+use bougie_config::{load_project, ServicePin};
+use bougie_output::output::{Render, emit};
 use eyre::Result;
 use serde::Serialize;
 use std::io::{self, Write};

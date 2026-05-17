@@ -166,6 +166,8 @@ sigstore = { version = "0.13", default-features = false, features = ["cosign", "
 zstd = { version = "0.13", default-features = false }
 tar = "0.4"
 rustix = { version = "1.0", default-features = false, features = ["std", "fs", "process"] }
+bougie-index = { path = "../bougie-index" }
+bougie-composer = { path = "../bougie-composer" }
 
 [lints]
 workspace = true

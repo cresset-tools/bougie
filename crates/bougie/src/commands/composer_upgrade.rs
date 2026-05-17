@@ -2,10 +2,10 @@
 //! and `preview` channel heads to whatever getcomposer.org currently
 //! advertises. Existing exact-version installs are not touched.
 
-use crate::cli::OutputFormat;
-use crate::composer::{install_composer, request::Channel, ComposerRequest, Installed};
-use crate::output::{emit, Render};
-use crate::paths::Paths;
+use bougie_cli::OutputFormat;
+use bougie_composer::{install_composer, request::Channel, ComposerRequest, Installed};
+use bougie_output::output::{emit, Render};
+use bougie_paths::Paths;
 use eyre::Result;
 use serde::Serialize;
 use std::io::{self, Write};
