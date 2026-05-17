@@ -244,10 +244,18 @@ pub enum ServerTlsCommand {
 
 #[derive(Subcommand, Debug)]
 pub enum ExtCommand {
-    /// Add an extension dependency.
+    /// Add an extension dependency. Each `<arg>` is either an
+    /// extension name (e.g. `redis`, `xdebug@3.5.1`) — fetched from
+    /// the index and recorded in composer.json — or a path to a local
+    /// `.so` file (e.g. `/opt/tideways/tideways-php-8.5.so`), in which
+    /// case bougie copies it into the store, auto-detects the
+    /// extension name and Zend-ness from the binary, and writes a
+    /// fragment to `.bougie/conf.d-local/` without touching
+    /// composer.json. Mix and match in one invocation.
     Add {
-        /// The extension(s) to add, optionally with `@<version>` pins.
-        names: Vec<String>,
+        /// Extension names or `.so` paths (anything ending in `.so` is
+        /// treated as a local file).
+        args: Vec<String>,
         /// Skip the implicit `bougie sync` after the composer call.
         #[arg(long)]
         no_sync: bool,

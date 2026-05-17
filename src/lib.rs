@@ -1,12 +1,15 @@
 pub mod babysit;
 pub mod baseline;
+pub mod binfmt;
 pub mod cli;
 pub mod commands;
 pub mod composer;
 pub mod conf_d;
 pub mod config;
 pub mod daemon;
+pub mod elf;
 pub mod errors;
+pub mod macho;
 pub mod fetch;
 pub mod index;
 pub mod install;
@@ -56,8 +59,8 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
         Command::Run { with, no_sync, xdebug, argv } => {
             commands::run::run(&with, &argv, format, no_sync, xdebug)
         }
-        Command::Ext(cli::ExtCommand::Add { names, no_sync }) => {
-            commands::ext_add_remove::add(format, names, no_sync)
+        Command::Ext(cli::ExtCommand::Add { args, no_sync }) => {
+            commands::ext_add_remove::add(format, args, no_sync)
         }
         Command::Ext(cli::ExtCommand::Remove { names, no_sync }) => {
             commands::ext_add_remove::remove(format, names, no_sync)
