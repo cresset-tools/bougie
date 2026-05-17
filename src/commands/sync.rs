@@ -670,11 +670,21 @@ fn write_shims(project_root: &std::path::Path) -> Result<PathBuf> {
     Ok(bin_dir)
 }
 
-/// Copy `bougie.exe` into `<bin_dir>/_bougie-shim.exe` when the
-/// canonical binary lives on a different NTFS volume. Returns the
-/// path of the same-volume copy (or the original if a copy isn't
-/// needed). Idempotent: skips the copy when the existing staged file
-/// already has matching bytes (cheap len + mtime check).
+/// Copy `bougie.exe` into `<bin_dir>/_bougie-shim.exe` so the four
+/// shim hard links land on the same volume as the staged binary
+/// (cross-volume NTFS hard links fail with ERROR_NOT_SAME_DEVICE).
+/// Returns the staged path; the four shim links point at that file.
+///
+/// Refreshes when either the size OR the mtime indicates the
+/// canonical `bougie.exe` has moved on (`cargo install --force`,
+/// `bougie self upgrade`, …). Size alone misses same-length
+/// rebuilds — the symptom is `.bougie/bin/unzip.EXE` running stale
+/// code after a binary upgrade and Composer's `ZipDownloader`
+/// reporting "the argument '--quiet' cannot be used multiple times"
+/// because the older shim didn't strip `.EXE` case-insensitively.
+/// `fs::copy` to the existing path truncates in place (CREATE_ALWAYS
+/// on Windows preserves the inode), so the refresh propagates to
+/// every hard link transparently.
 #[cfg(not(unix))]
 fn stage_local_bougie(
     bin_dir: &std::path::Path,
@@ -682,7 +692,9 @@ fn stage_local_bougie(
 ) -> Result<PathBuf> {
     let staged = bin_dir.join("_bougie-shim.exe");
     let needs_copy = match (std::fs::metadata(&staged), std::fs::metadata(bougie_bin)) {
-        (Ok(s), Ok(b)) => s.len() != b.len(),
+        (Ok(s), Ok(b)) => {
+            s.len() != b.len() || s.modified().ok() < b.modified().ok()
+        }
         _ => true,
     };
     if needs_copy {
