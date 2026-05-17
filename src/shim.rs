@@ -51,8 +51,17 @@ pub fn role_from_argv0(argv0: &OsStr) -> Option<Role> {
     let stem = Path::new(argv0).file_name()?.to_str()?;
     // On Windows the symlink/hardlink shims carry the `.exe` suffix
     // (see `commands::sync::write_shims`); strip it so the basename
-    // comparison matches the same role names as on Unix.
-    let stem = stem.strip_suffix(".exe").unwrap_or(stem);
+    // comparison matches the same role names as on Unix. Windows
+    // file names are case-insensitive — Composer's `ZipDownloader`
+    // surfaces the invocation as `unzip.EXE` (capitalised) on some
+    // PHP paths, so accept either casing or the bougie shim falls
+    // through to the global clap CLI parser ("argument '--quiet'
+    // cannot be used multiple times" for `unzip -qq`).
+    let stem = if stem.len() >= 4 && stem[stem.len() - 4..].eq_ignore_ascii_case(".exe") {
+        &stem[..stem.len() - 4]
+    } else {
+        stem
+    };
     match stem {
         "php" => Some(Role::Php),
         "php-fpm" => Some(Role::PhpFpm),
@@ -341,6 +350,30 @@ mod tests {
     fn ignores_bougie_basename() {
         assert_eq!(role_from_argv0(&OsString::from("/usr/bin/bougie")), None);
         assert_eq!(role_from_argv0(&OsString::from("bougie")), None);
+    }
+
+    /// Windows file names are case-insensitive and PHP's
+    /// `ZipDownloader` surfaces the invocation as `unzip.EXE`
+    /// (capitalised) on some PATH-lookup paths. Without case-
+    /// insensitive `.exe` stripping the shim falls through to the
+    /// global clap parser and `unzip -qq` errors with "the argument
+    /// '--quiet' cannot be used multiple times".
+    #[test]
+    fn strips_dot_exe_case_insensitively() {
+        // Stripping is the shim's job on every OS — there's no harm
+        // in trimming `.exe` on a Unix invocation, and the cross-
+        // platform test surface stays uniform.
+        assert_eq!(role_from_argv0(&OsString::from("unzip.exe")), Some(Role::Unzip));
+        assert_eq!(role_from_argv0(&OsString::from("unzip.EXE")), Some(Role::Unzip));
+        assert_eq!(role_from_argv0(&OsString::from("php.Exe")), Some(Role::Php));
+        // The backslash-path assertion only works on Windows, where
+        // `Path::file_name` recognises `\` as a separator. On Unix
+        // the whole string is one filename and no role matches.
+        #[cfg(windows)]
+        assert_eq!(
+            role_from_argv0(&OsString::from("C:\\proj\\.bougie\\bin\\composer.EXE")),
+            Some(Role::Composer)
+        );
     }
 
     #[cfg(unix)]

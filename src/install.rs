@@ -584,7 +584,17 @@ fn install_baseline_from_bundled_windows(
     }
 
     let ext_dir = install_root.join("bin").join("ext");
-    for &name in BASELINE_EXTENSIONS {
+    // The Windows baseline is the union of `BASELINE_EXTENSIONS` and
+    // `WINDOWS_DLL_BASELINE_EXTRAS`. The latter holds extensions that
+    // are static-into-php.so on the Linux build (so they sit in
+    // `BUILTIN_EXTENSIONS` and never reach this loop on Unix) but
+    // ride along as DLLs in the Windows ZIP — openssl is the canonical
+    // case. The filter applies symmetrically so `--without openssl`
+    // opts out of the ride-along too.
+    for &name in BASELINE_EXTENSIONS
+        .iter()
+        .chain(crate::baseline::WINDOWS_DLL_BASELINE_EXTRAS.iter())
+    {
         if !filter.includes(name) {
             continue;
         }
@@ -629,7 +639,7 @@ fn write_bundled_baseline_fragment(
         "{BASELINE_FRAGMENT_HEADER} {name} bundled\n\
          {directive}={dll}\n",
         directive = load.ini_directive(),
-        dll = dll.display(),
+        dll = crate::conf_d::format_ini_path(dll),
     );
     let mut tf = tempfile::NamedTempFile::new_in(conf_d)
         .wrap_err_with(|| format!("creating tempfile in {}", conf_d.display()))?;
