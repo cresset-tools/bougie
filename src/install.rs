@@ -7,15 +7,19 @@ use crate::baseline::{BaselineFilter, BASELINE_EXTENSIONS};
 use crate::baseline::{skip_for_platform, PREINSTALLED_EXTENSIONS};
 use crate::errors::BougieError;
 use crate::fetch::{fetch_blob, ArchiveKind, BlobSpec, DownloadBar};
+use crate::index::wire::LoadDirective;
+#[cfg(not(target_os = "windows"))]
 use crate::index::{
     build_verifier,
     fetch::{fetch_manifest, fetch_root, fetch_section},
-    wire::{LoadDirective, Manifest},
+    wire::Manifest,
 };
 use crate::lock::ExclusiveGuard;
 use crate::paths::Paths;
 use crate::request::{Flavor, Request};
-use crate::resolve::{resolve_extension, ResolveOptions, Selected};
+use crate::resolve::ResolveOptions;
+#[cfg(not(target_os = "windows"))]
+use crate::resolve::{resolve_extension, Selected};
 use crate::store::install_dir;
 use crate::target::Triple;
 use crate::version::{PartialVersion, Version};
@@ -160,6 +164,32 @@ pub fn install_extension_with_bar(
     opts: ResolveOptions,
     bar: &DownloadBar,
 ) -> Result<InstalledExt> {
+    // Windows pulls extensions from windows.php.net's PECL surface
+    // (deterministic URL, sha256 baked in at compile time) instead of
+    // the bougie index. version_pin/opts are bougie-index concepts and
+    // ignored — the WINDOWS_PECL_VERSIONS table is the version oracle.
+    #[cfg(target_os = "windows")]
+    {
+        let _ = (version_pin, opts);
+        return install_extension_windows_pecl(paths, name, php_minor, flavor, bar);
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        install_extension_with_bar_index(paths, name, version_pin, php_minor, flavor, opts, bar)
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn install_extension_with_bar_index(
+    paths: &Paths,
+    name: &str,
+    version_pin: Option<&str>,
+    php_minor: PartialVersion,
+    flavor: Flavor,
+    opts: ResolveOptions,
+    bar: &DownloadBar,
+) -> Result<InstalledExt> {
     let target = Triple::detect()?.to_string();
     let host = std::env::var("BOUGIE_INDEX_URL").unwrap_or_else(|_| DEFAULT_INDEX_URL.into());
     let section_name = format!("extension/{name}");
@@ -291,6 +321,89 @@ pub fn install_extension_with_bar(
         load: ext_ref.load,
         already_present,
         frozen_warning: selected.frozen_warning,
+    })
+}
+
+/// Windows ext install: looks up `WINDOWS_PECL_VERSIONS`, fetches the
+/// deterministic ZIP from windows.php.net, verifies it against the
+/// embedded sha256, and extracts into the content-addressed store at
+/// `<store>/ext-<name>-<ver>+php<minor>-<flavor>-<sha8>/`. The `.dll`
+/// inside (always named `php_<name>.dll` in this surface) becomes the
+/// `so_path` the conf.d emitter writes into the user fragment with an
+/// absolute `extension=` / `zend_extension=` directive.
+///
+/// `bougie ext add curl` etc. (extensions that ship bundled with PHP
+/// on Windows under `<install>/bin/ext/php_*.dll`) doesn't reach this
+/// function — `ext_add_remove::add` short-circuits via
+/// `conf_d::installed_fragment_present`, which sees the baseline
+/// fragment that `bougie sync` already mirrored from the install.
+#[cfg(target_os = "windows")]
+fn install_extension_windows_pecl(
+    paths: &Paths,
+    name: &str,
+    php_minor: PartialVersion,
+    flavor: Flavor,
+    bar: &DownloadBar,
+) -> Result<InstalledExt> {
+    let target = Triple::detect()?;
+    let _guard = ExclusiveGuard::acquire(&paths.global_lock(), LOCK_TIMEOUT)?;
+
+    // Backend trait must be in scope for `backend.client()` in the
+    // fetch_blob call below.
+    use crate::backend::Backend as _;
+    let backend = crate::backend::WindowsPhpNetBackend::new(paths, &target)?;
+    let artifact = backend.resolve_pecl(name, php_minor, flavor)?;
+
+    let sha8: String = artifact.sha256.chars().take(8).collect();
+    let php_minor_label = format!("php{}{}", php_minor.major, php_minor.minor.unwrap_or(0));
+    let dirname = format!(
+        "ext-{}-{}+{php_minor_label}-{flavor}-{sha8}",
+        artifact.name, artifact.version,
+    );
+    let dest = paths.store().join(&dirname);
+    let already_present = dest.exists();
+
+    if !already_present {
+        // windows.php.net doesn't advertise size on the PECL surface
+        // (no JSON index; the directory listing carries it but parsing
+        // HTML for one number isn't worth it). Bar stays unplanned —
+        // it ticks bytes received but can't fill, same fallback as a
+        // pre-`size` bougie-index publisher.
+        let blob_spec = BlobSpec {
+            url: &artifact.url,
+            sha256: &artifact.sha256,
+            partial_dir: &paths.cache_blobs(),
+            dest: &dest,
+            // PECL ZIPs are flat — `php_<name>.dll`, `<name>.ini`,
+            // LICENSE, contrib/ all at the root.
+            strip_prefix: "",
+            archive: ArchiveKind::Zip,
+        };
+        bar.set_current(format!("{}-{}", artifact.name, artifact.version));
+        fetch_blob(backend.client(), &blob_spec, bar)?;
+    }
+
+    let dll_name = format!("php_{name}.dll");
+    let so_path = dest.join(&dll_name);
+    if !so_path.exists() {
+        return Err(eyre!(
+            "extracted PECL bundle is missing the expected `{dll_name}` at {} \
+             — windows.php.net's ZIP at {} may have an unexpected layout",
+            so_path.display(),
+            artifact.url,
+        ));
+    }
+
+    Ok(InstalledExt {
+        name: artifact.name,
+        version: artifact.version,
+        flavor,
+        php_minor,
+        store_path: dest,
+        so_path,
+        load: artifact.load,
+        already_present,
+        frozen_warning: false,
     })
 }
 
@@ -685,6 +798,13 @@ fn write_install_conf_d(conf_d: &Path, installed: &InstalledExt) -> Result<()> {
 /// Caller is responsible for pre-planning bytes on the bar via
 /// [`plan_closure_bytes`] if a visible progress total is wanted. The
 /// daemon path uses [`DownloadBar::hidden`] so it skips planning.
+///
+/// Windows doesn't ship bougie-index closure tarballs (it pulls
+/// extensions from windows.php.net's PECL surface where dependent DLLs
+/// ride inside the same ZIP), so this whole machinery is `cfg(not(
+/// target_os = "windows"))`. The daemon code path that also calls
+/// this is itself `cfg(unix)`, which is a subset.
+#[cfg(not(target_os = "windows"))]
 pub(crate) fn install_closure_peers(
     client: &reqwest::blocking::Client,
     paths: &Paths,
@@ -734,6 +854,7 @@ pub(crate) fn install_closure_peers(
 /// whose `store_path` is missing. Cheap stat-only loop; intended to be
 /// called immediately before the main blob fetch so the caller can
 /// show an accurate aggregate from the first byte.
+#[cfg(not(target_os = "windows"))]
 pub(crate) fn plan_closure_bytes(paths: &Paths, manifest: &Manifest, bar: &DownloadBar) {
     for closure in &manifest.closure {
         let store_path =
@@ -748,6 +869,7 @@ pub(crate) fn plan_closure_bytes(paths: &Paths, manifest: &Manifest, bar: &Downl
 /// Thin wrapper over [`crate::store::store_dir`] kept here so callers
 /// don't need to import the store module just to compute closure
 /// destinations.
+#[cfg(not(target_os = "windows"))]
 fn store_dir_for_closure(paths: &Paths, name: &str, version: &str, hash: &str) -> PathBuf {
     crate::store::store_dir(paths, name, version, hash)
 }
@@ -770,6 +892,7 @@ fn store_dir_for_closure(paths: &Paths, name: &str, version: &str, hash: &str) -
 /// whole `$BOUGIE_HOME` tree relocates if the user moves it. Already-
 /// correct symlinks are left alone; conflicting plain files would
 /// indicate corruption and surface as an error.
+#[cfg(not(target_os = "windows"))]
 fn materialize_closure_peer(ext_root: &Path, name: &str, version: &str, hash: &str) -> Result<()> {
     let dirname = format!("{name}-{version}-{hash}");
     let store_peer = ext_root.join("store");
@@ -800,21 +923,16 @@ fn materialize_closure_peer(ext_root: &Path, name: &str, version: &str, hash: &s
     Ok(())
 }
 
-/// Cross-platform directory symlink.
+/// Cross-platform directory symlink, used by [`materialize_closure_peer`].
+/// Both arms compile out on Windows builds because the only caller is
+/// part of the bougie-index code path that's gated to
+/// `cfg(not(target_os = "windows"))`.
 ///
 /// Unix: `std::os::unix::fs::symlink` (no perm requirement).
-/// Windows: `std::os::windows::fs::symlink_dir`. On Windows this
-/// requires either Developer Mode to be enabled (Windows 10 1703+) or
-/// the process to run with `SeCreateSymbolicLinkPrivilege` (typically
-/// an elevated/admin shell). The error message is propagated so the
-/// hint surfaces to the user.
 #[cfg(unix)]
+#[cfg(not(target_os = "windows"))]
 fn symlink_dir(target: &Path, link: &Path) -> std::io::Result<()> {
     std::os::unix::fs::symlink(target, link)
-}
-#[cfg(not(unix))]
-fn symlink_dir(target: &Path, link: &Path) -> std::io::Result<()> {
-    std::os::windows::fs::symlink_dir(target, link)
 }
 
 pub fn host_to_dirname(host: &str) -> String {
@@ -907,6 +1025,11 @@ mod tests {
         clean_stale_baseline_fragments(&td.path().join("does-not-exist")).unwrap();
     }
 
+    // The whole closure-peer test family covers the bougie-index code
+    // path that's `cfg(not(target_os = "windows"))`. Gate the tests
+    // the same way so they don't reference symbols that don't exist
+    // on Windows builds.
+    #[cfg(not(target_os = "windows"))]
     #[test]
     fn materialize_closure_peer_creates_relative_symlink() {
         let td = tempfile::TempDir::new().unwrap();
@@ -927,6 +1050,7 @@ mod tests {
         assert!(std::fs::canonicalize(&link).unwrap().ends_with("libcurl-8.20.0-abcdef01"));
     }
 
+    #[cfg(not(target_os = "windows"))]
     #[test]
     fn materialize_closure_peer_is_idempotent() {
         let td = tempfile::TempDir::new().unwrap();
@@ -939,6 +1063,7 @@ mod tests {
         materialize_closure_peer(&ext_root, "libcurl", "8.20.0", "abcdef01").unwrap();
     }
 
+    #[cfg(not(target_os = "windows"))]
     #[test]
     fn materialize_closure_peer_refuses_to_overwrite_regular_file() {
         let td = tempfile::TempDir::new().unwrap();
@@ -956,6 +1081,7 @@ mod tests {
     /// `https://example.invalid/...` so any attempted network fetch
     /// would fail noisily — the test must pre-populate every
     /// `store_path` so the helper's fetch branch is never taken.
+    #[cfg(not(target_os = "windows"))]
     fn tool_manifest_with_closure(entries: &[(&str, &str, &str)]) -> crate::index::wire::Manifest {
         let closure_json: Vec<_> = entries
             .iter()
@@ -986,6 +1112,7 @@ mod tests {
         .unwrap()
     }
 
+    #[cfg(not(target_os = "windows"))]
     fn pre_create_store_entry(paths: &Paths, name: &str, ver: &str, hash: &str) {
         // Pretend the closure blob has already been extracted into the
         // global store. The helper's fetch branch should skip; only
@@ -999,6 +1126,7 @@ mod tests {
         .unwrap();
     }
 
+    #[cfg(not(target_os = "windows"))]
     #[test]
     fn install_closure_peers_creates_one_symlink_per_entry() {
         let td = tempfile::TempDir::new().unwrap();
@@ -1036,6 +1164,7 @@ mod tests {
         }
     }
 
+    #[cfg(not(target_os = "windows"))]
     #[test]
     fn install_closure_peers_is_idempotent() {
         // Second invocation must not error (the existing peer symlinks
@@ -1061,6 +1190,7 @@ mod tests {
         assert_eq!(entries.len(), 1);
     }
 
+    #[cfg(not(target_os = "windows"))]
     #[test]
     fn install_closure_peers_noop_on_empty_closure() {
         // Pre-split tool tarballs ship empty closure[]; the helper must
@@ -1080,6 +1210,7 @@ mod tests {
         assert!(!install_root.join("store").exists());
     }
 
+    #[cfg(not(target_os = "windows"))]
     #[test]
     fn plan_closure_bytes_only_counts_missing() {
         // The bar's planned total reflects what we'll actually need to
