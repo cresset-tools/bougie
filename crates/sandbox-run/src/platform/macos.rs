@@ -64,35 +64,44 @@ fn generate_profile(policy: &SandboxPolicy) -> Result<String, SandboxError> {
             profile.push_str("(deny file-write* (subpath \"/private/etc\"))\n");
         }
         ProtectSystem::Strict => {
-            // Deny all writes first
+            // Deny all writes first; the explicit read_write_paths
+            // re-allows are emitted later, after ProtectHome, so they
+            // also override its read+write deny when an RW path lives
+            // under $HOME (every bougie service's data/run/log/conf
+            // does).
             profile.push_str("(deny file-write*)\n");
-            // Allow writes to explicitly allowed paths
-            for path in &config.read_write_paths {
-                if let Ok(canonical) = canonicalize_path(path) {
-                    profile.push_str(&format!(
-                        "(allow file-write* (subpath \"{}\"))\n",
-                        escape_path(&canonical)
-                    ));
-                }
-            }
         }
     }
 
-    // ProtectHome
+    // ProtectHome — emitted before path-specific allows so the latter
+    // win under sbpl's last-match-wins semantics.
+    //
+    // We deny `file-read-data` rather than the broader `file-read*`:
+    // the wildcard covers `file-read-metadata` too, which breaks
+    // namei() traversal in POSIX `/bin/sh` and causes `cd
+    // /allowed/path` to fail with ENOTDIR even when the target is in
+    // a re-allowed subpath. (rabbitmq's `sbin/rabbitmq-env` shell
+    // helper tripped this.) Denying read-data preserves content
+    // confidentiality — file *bytes* in `$HOME` stay unreadable —
+    // while letting the kernel stat path components for traversal,
+    // which is what cd/chdir/dyld@rpath actually need. The cost is
+    // that filenames under $HOME become visible; acceptable for a
+    // dev sandbox where the real concern is leaking source / secrets
+    // / credentials by content.
     match config.protect_home {
         ProtectHome::No => {}
         ProtectHome::Yes => {
-            // Make home directories inaccessible
             if let Ok(home) = std::env::var("HOME") {
                 profile.push_str(&format!(
-                    "(deny file-read* file-write* (subpath \"{}\"))\n",
+                    "(deny file-read-data file-write* (subpath \"{}\"))\n",
                     escape_path(&home)
                 ));
             }
-            profile.push_str("(deny file-read* file-write* (regex #\"^/Users/[^/]+\"))\n");
+            profile.push_str(
+                "(deny file-read-data file-write* (regex #\"^/Users/[^/]+\"))\n",
+            );
         }
         ProtectHome::ReadOnly => {
-            // Make home directories read-only
             if let Ok(home) = std::env::var("HOME") {
                 profile.push_str(&format!(
                     "(deny file-write* (subpath \"{}\"))\n",
@@ -103,9 +112,35 @@ fn generate_profile(policy: &SandboxPolicy) -> Result<String, SandboxError> {
         }
     }
 
-    // ReadOnlyPaths - deny write access
+    // ReadWritePaths — explicit read+write allow. Emitted AFTER
+    // ProtectHome so the allow wins over any home-wide deny when an
+    // RW path lives under $HOME. The `file-read-data` allow mirrors
+    // the deny above so the override applies to the exact operation
+    // sbpl matches; the `file-read*` half handles the other read
+    // sub-ops not denied by ProtectHome.
+    if matches!(config.protect_system, ProtectSystem::Strict) {
+        for path in &config.read_write_paths {
+            if let Ok(canonical) = canonicalize_path(path) {
+                profile.push_str(&format!(
+                    "(allow file-read* file-read-data file-write* (subpath \"{}\"))\n",
+                    escape_path(&canonical)
+                ));
+            }
+        }
+    }
+
+    // ReadOnlyPaths — explicit read-allow + write-deny. Without the
+    // read-allow, dyld can't resolve dependent dylibs in
+    // `$BOUGIE_HOME/store/*` (e.g. redis-server loading openssl via
+    // `@rpath/libssl.3.dylib`). Both `file-read*` and the explicit
+    // `file-read-data` are emitted: see the comment on ProtectHome
+    // above for why matching the exact operation matters.
     for path in &config.read_only_paths {
         if let Ok(canonical) = canonicalize_path(path) {
+            profile.push_str(&format!(
+                "(allow file-read* file-read-data (subpath \"{}\"))\n",
+                escape_path(&canonical)
+            ));
             profile.push_str(&format!(
                 "(deny file-write* (subpath \"{}\"))\n",
                 escape_path(&canonical)
