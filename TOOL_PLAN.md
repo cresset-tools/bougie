@@ -462,6 +462,9 @@ need clean messages:
   isolated tree.
 - WSL / Git Bash / MSYS as first-class Windows targets. Use the
   Linux build under WSL.
+- A `bougiew.exe` Windows-GUI-subsystem variant (the equivalent of
+  uv's `uvw.exe`). PHP CLI tools we target are strictly console; revisit
+  if a GUI use case emerges.
 - Project-overlaid tool execution (`PHP_INI_SCAN_DIR` chain that adds
   project conf.d on top of tool conf.d). Hurts reproducibility;
   `bougie run` is the right tool when project context is needed.
