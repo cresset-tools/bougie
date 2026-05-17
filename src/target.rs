@@ -2,14 +2,14 @@
 
 use crate::errors::BougieError;
 use eyre::Result;
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 use eyre::WrapErr;
 use std::fmt;
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 use std::fs::File;
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 use std::io::{Read, Seek, SeekFrom};
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 use std::path::Path;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -98,10 +98,13 @@ impl fmt::Display for Triple {
 }
 
 impl Triple {
-    /// Detect the host's triple. Compile-time OS/arch + runtime libc probe
-    /// on Linux. Windows hosts always classify as `pc-windows-msvc`; the
-    /// libc-detection branch is `cfg(unix)`-gated because Windows has no
-    /// equivalent to `PT_INTERP`-based libc discovery.
+    /// Detect the host's triple. Compile-time OS/arch + runtime libc
+    /// probe on Linux. Windows hosts always classify as
+    /// `pc-windows-msvc`; the libc-detection helpers are
+    /// `cfg(target_os = "linux")`-gated because both macOS and Windows
+    /// pin the C runtime by platform convention rather than by
+    /// `PT_INTERP`-style discovery, and leaving them as `cfg(unix)`
+    /// would tip a `dead_code` error on macOS under `-D warnings`.
     pub fn detect() -> Result<Self> {
         let arch = detect_arch()?;
         match std::env::consts::OS {
@@ -135,7 +138,7 @@ fn detect_arch() -> Result<Arch> {
     }
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 fn detect_linux_libc() -> Result<Env> {
     let interp = read_pt_interp(Path::new("/bin/sh"))
         .or_else(|_| read_pt_interp(Path::new("/usr/bin/env")))
@@ -150,7 +153,7 @@ fn detect_linux_libc() -> Result<Env> {
 }
 
 /// Classify a dynamic linker path string per CLI.md §7.2.
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 pub(crate) fn classify_libc(interp: &str) -> Option<Env> {
     let stem = Path::new(interp).file_name()?.to_str()?;
     if stem.starts_with("ld-linux") {
@@ -163,7 +166,7 @@ pub(crate) fn classify_libc(interp: &str) -> Option<Env> {
 }
 
 /// Read `PT_INTERP` from an ELF64 file. Returns the null-stripped path.
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 pub(crate) fn read_pt_interp(path: &Path) -> Result<String> {
     let mut f = File::open(path).wrap_err_with(|| format!("opening {}", path.display()))?;
     let mut ehdr = [0u8; 64];
@@ -217,21 +220,21 @@ pub(crate) fn read_pt_interp(path: &Path) -> Result<String> {
 mod tests {
     use super::*;
 
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     #[test]
     fn classify_known_glibc_paths() {
         assert_eq!(classify_libc("/lib64/ld-linux-x86-64.so.2"), Some(Env::Gnu));
         assert_eq!(classify_libc("/lib/ld-linux-aarch64.so.1"), Some(Env::Gnu));
     }
 
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     #[test]
     fn classify_known_musl_paths() {
         assert_eq!(classify_libc("/lib/ld-musl-x86_64.so.1"), Some(Env::Musl));
         assert_eq!(classify_libc("/lib/ld-musl-aarch64.so.1"), Some(Env::Musl));
     }
 
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     #[test]
     fn classify_unknown_returns_none() {
         assert_eq!(classify_libc("/lib/ld-bsd.so.1"), None);
@@ -290,16 +293,13 @@ mod tests {
         assert_eq!(t.env, Some(Env::Msvc));
     }
 
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     #[test]
     fn read_pt_interp_on_bin_sh() {
-        // This test only runs on Linux where /bin/sh is ELF.
-        if cfg!(target_os = "linux") {
-            let interp = read_pt_interp(Path::new("/bin/sh")).expect("read /bin/sh interp");
-            assert!(
-                classify_libc(&interp).is_some(),
-                "expected gnu or musl, got {interp}"
-            );
-        }
+        let interp = read_pt_interp(Path::new("/bin/sh")).expect("read /bin/sh interp");
+        assert!(
+            classify_libc(&interp).is_some(),
+            "expected gnu or musl, got {interp}"
+        );
     }
 }
