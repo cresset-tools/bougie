@@ -454,7 +454,11 @@ impl DownloadBar {
     /// Current planned total. Returns 0 for a fresh / hidden bar that
     /// has never been planned against. Used in tests to assert
     /// planning correctness; not part of the user-facing UX.
-    #[cfg(test)]
+    ///
+    /// Only called from the closure-peer plan test, which is itself
+    /// gated `cfg(not(target_os = "windows"))` — match that gate or
+    /// `-D dead_code` on Windows CI flags this as unused.
+    #[cfg(all(test, not(target_os = "windows")))]
     pub(crate) fn planned(&self) -> u64 {
         self.pb.length().unwrap_or(0)
     }
