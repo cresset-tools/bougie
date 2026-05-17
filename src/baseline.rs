@@ -98,6 +98,24 @@ pub fn skip_for_platform(name: &str) -> bool {
     matches!(name, "gettext") && !cfg!(target_os = "linux")
 }
 
+/// Extensions that the Linux/Debian-aligned build statically links into
+/// `php.so` (so they appear in [`BUILTIN_EXTENSIONS`] and get no conf.d
+/// fragment from [`crate::install::install_baseline_into`]) but that
+/// windows.php.net ships as ride-along DLLs under `<install>/bin/ext/`.
+/// Without conf.d activation, `php_openssl.dll` etc. sit on disk
+/// unloaded and the first composer install errors with
+/// "The openssl extension is required for SSL/TLS protection".
+///
+/// Iterated by `install_baseline_from_bundled_windows` on top of
+/// [`BASELINE_EXTENSIONS`]. `BaselineFilter` applies to both lists
+/// — `--without openssl` opts out symmetrically.
+///
+/// Strictly Linux-static-but-Windows-DLL: members of
+/// [`BUILTIN_EXTENSIONS`] whose `php_<name>.dll` actually ships in the
+/// Windows ZIP. Verified empirically against `8.3.31-nts-vs16-x64.zip`'s
+/// `ext/` listing.
+pub const WINDOWS_DLL_BASELINE_EXTRAS: &[&str] = &["openssl", "sodium"];
+
 /// Extensions to pre-download into the content-addressed store as part
 /// of a default `bougie php install` / `bougie sync`, but NOT enable
 /// via any conf.d fragment. The motivating case is xdebug: every PHP

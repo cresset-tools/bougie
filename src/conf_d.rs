@@ -50,20 +50,27 @@ pub fn project_confd_debug_dir(project_root: &Path) -> PathBuf {
 }
 
 /// Compose a `PHP_INI_SCAN_DIR` value. With `debug_overlay=false` it's
-/// just `conf.d/`; with `true` it's `conf.d:conf.d-debug` so PHP
+/// just `conf.d/`; with `true` it's `conf.d<SEP>conf.d-debug` so PHP
 /// scans both. Shared between `bougie run` and the `php`/`composer`
 /// argv0 shim so both paths arrive at the same effective config when
 /// `XDEBUG_SESSION` is set or `--xdebug` was passed.
+///
+/// Separator matches PHP's own scan: `:` on Unix, `;` on Windows.
 pub fn php_ini_scan_dir(project_root: &Path, debug_overlay: bool) -> std::ffi::OsString {
     let regular = project_confd_dir(project_root);
     if !debug_overlay {
         return regular.into_os_string();
     }
     let mut joined = regular.into_os_string();
-    joined.push(":");
+    joined.push(SCAN_DIR_SEP);
     joined.push(project_confd_debug_dir(project_root));
     joined
 }
+
+#[cfg(windows)]
+const SCAN_DIR_SEP: &str = ";";
+#[cfg(not(windows))]
+const SCAN_DIR_SEP: &str = ":";
 
 /// `true` if the parent environment signals an active xdebug session.
 /// Equivalent to the cookie/query gate the server uses, applied to a
@@ -153,11 +160,29 @@ fn write_fragment_into(
     body.push_str(&format!(
         "{directive}={so}\n",
         directive = load.ini_directive(),
-        so = so_path.display(),
+        so = format_ini_path(so_path),
     ));
     body.push_str(default_ini_settings_for(name));
     write_atomic(&path, body.as_bytes())?;
     Ok(path)
+}
+
+/// Render `path` as the right-hand side of an `extension=` /
+/// `zend_extension=` directive. On Windows the result is wrapped in
+/// double quotes; PHP's INI parser otherwise treats `~` as the unary
+/// bitwise-NOT operator and truncates the value at the tilde — which
+/// strikes any path containing a Windows 8.3 short-form segment
+/// (`C:\Users\RUNNER~1\…`), as GitHub Actions runners produce by
+/// default. Quoting forces the parser into string-literal mode.
+/// Unix INI paths don't run into this since they don't carry `~`,
+/// and leaving them unquoted keeps the existing test assertions
+/// (`extension=/path/foo.so`) matching verbatim.
+#[inline]
+pub fn format_ini_path(path: &Path) -> String {
+    #[cfg(windows)]
+    return format!("\"{}\"", path.display());
+    #[cfg(not(windows))]
+    return path.display().to_string();
 }
 
 /// Path-extras marker prefix in conf.d fragments. Exposed as a const
@@ -431,7 +456,7 @@ mod tests {
         let body = std::fs::read_to_string(&path).unwrap();
         assert!(path.ends_with(".bougie/conf.d/20-redis.ini"));
         assert!(body.starts_with("; managed by bougie"));
-        assert!(body.contains(&format!("extension={}", so.display())));
+        assert!(body.contains(&format!("extension={}", format_ini_path(&so))));
         assert!(!body.contains("zend_extension"));
     }
 
@@ -448,7 +473,7 @@ mod tests {
         )
         .unwrap();
         let body = std::fs::read_to_string(&path).unwrap();
-        assert!(body.contains(&format!("zend_extension={}", so.display())));
+        assert!(body.contains(&format!("zend_extension={}", format_ini_path(&so))));
     }
 
     #[test]
@@ -462,8 +487,8 @@ mod tests {
         let path =
             write_ext_fragment(td.path(), "redis", &new_so, LoadDirective::Extension, &[]).unwrap();
         let body = std::fs::read_to_string(&path).unwrap();
-        assert!(body.contains(&format!("extension={}", new_so.display())));
-        assert!(!body.contains(&format!("extension={}", old_so.display())));
+        assert!(body.contains(&format!("extension={}", format_ini_path(&new_so))));
+        assert!(!body.contains(&format!("extension={}", format_ini_path(&old_so))));
     }
 
     #[test]
@@ -738,14 +763,28 @@ mod tests {
 
     #[test]
     fn php_ini_scan_dir_default_is_conf_d_only() {
-        let s = php_ini_scan_dir(Path::new("/p"), false);
-        assert_eq!(s.to_str().unwrap(), "/p/.bougie/conf.d");
+        let root = Path::new("/p");
+        let s = php_ini_scan_dir(root, false);
+        let expected = project_confd_dir(root);
+        assert_eq!(Path::new(&s), expected);
     }
 
     #[test]
-    fn php_ini_scan_dir_overlay_joins_both_with_colon() {
-        let s = php_ini_scan_dir(Path::new("/p"), true);
-        assert_eq!(s.to_str().unwrap(), "/p/.bougie/conf.d:/p/.bougie/conf.d-debug");
+    fn php_ini_scan_dir_overlay_joins_both_with_platform_separator() {
+        let root = Path::new("/p");
+        let s = php_ini_scan_dir(root, true);
+        let expected = {
+            let mut j = project_confd_dir(root).into_os_string();
+            j.push(SCAN_DIR_SEP);
+            j.push(project_confd_debug_dir(root));
+            j
+        };
+        assert_eq!(s, expected);
+        // Sanity-check the separator the PHP runtime actually expects.
+        #[cfg(windows)]
+        assert!(s.to_string_lossy().contains(';'));
+        #[cfg(not(windows))]
+        assert!(s.to_string_lossy().contains(':'));
     }
 
     #[test]
