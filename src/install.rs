@@ -1,6 +1,7 @@
 //! Orchestrates a PHP interpreter installation: refresh index, resolve,
 //! fetch + extract. Shared by `bougie php install` and `bougie sync`.
 
+use crate::backend::{Backend, BougieIndexBackend};
 use crate::baseline::{
     skip_for_platform, BaselineFilter, BASELINE_EXTENSIONS, PREINSTALLED_EXTENSIONS,
 };
@@ -14,7 +15,7 @@ use crate::index::{
 use crate::lock::ExclusiveGuard;
 use crate::paths::Paths;
 use crate::request::{Flavor, Request};
-use crate::resolve::{resolve_extension, resolve_php, ResolveOptions, Selected};
+use crate::resolve::{resolve_extension, ResolveOptions, Selected};
 use crate::store::install_dir;
 use crate::target::Triple;
 use crate::version::{PartialVersion, Version};
@@ -24,7 +25,6 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 pub const DEFAULT_INDEX_URL: &str = "https://index.bougie.tools";
-const SECTION_NAME: &str = "interpreter/php";
 const LOCK_TIMEOUT: Duration = Duration::from_mins(1);
 
 #[derive(Debug, Clone)]
@@ -58,79 +58,30 @@ pub fn install_php(
     // Lock the global store before mutating anything.
     let _guard = ExclusiveGuard::acquire(&paths.global_lock(), LOCK_TIMEOUT)?;
 
-    let client = reqwest::blocking::Client::builder()
-        .build()
-        .map_err(|e| BougieError::Network {
-            operation: "building HTTP client".into(),
-            detail: e.to_string(),
-        })?;
-
-    let cache_root = paths.cache_index(&host_to_dirname(&host));
-    let fetched = fetch_root(&client, &host, &cache_root, build_verifier)?;
-    let target_entry = fetched.root.targets.get(&target).ok_or_else(|| {
-        let available: Vec<String> = fetched.root.targets.keys().cloned().collect();
-        BougieError::UnknownTarget {
-            triple: target.clone(),
-            hint: format!(
-                "the index at {host} advertises: {}",
-                available.join(", ")
-            ),
-        }
-    })?;
-    let section_ref =
-        target_entry.sections.get(SECTION_NAME).ok_or_else(|| BougieError::Resolution {
-            kind: "section".into(),
-            detail: format!("the index at {host} has no `{SECTION_NAME}` section under target {target}"),
-        })?;
-    let section = fetch_section(
-        &client,
-        &host,
-        &cache_root,
-        &fetched.root.version,
-        &target,
-        SECTION_NAME,
-        &section_ref.sha256,
-    )?;
-
-    let selected: Selected<'_> = resolve_php(&section, &spec, flavor, opts)?;
-    let dest = install_dir(paths, selected.version, flavor);
+    let backend = BougieIndexBackend::new(paths, &host, &target)?;
+    let recipe = backend.resolve_php(&spec, flavor, opts)?;
+    let dest = install_dir(paths, recipe.version, recipe.flavor);
     let already_present = dest.exists();
     if !already_present {
-        let manifest = fetch_manifest(
-            &client,
-            &host,
-            &cache_root,
-            &selected.artifact.manifest.path,
-            &selected.artifact.manifest.sha256,
-        )?;
-        let blob_spec = BlobSpec {
-            url: &manifest.blob.url,
-            sha256: &manifest.blob.sha256,
-            partial_dir: &paths.cache_blobs(),
-            dest: &dest,
-            // Interpreter tarballs wrap their contents in `install/`.
-            strip_prefix: "install",
-            archive: ArchiveKind::TarZst,
-        };
-        // Interpreter is a monolithic blob (no closure walk here),
-        // so the bar grows by exactly the tarball's size. A
-        // pre-`size` publisher emits `size: 0` which `add_planned`
-        // silently drops; the bar still ticks bytes received but
-        // can't fill — same trade-off as before, but using the
-        // unified bar style.
+        // Interpreter is a monolithic blob (no closure walk), so the
+        // bar grows by exactly the tarball's size. A pre-`size`
+        // publisher emits `size: 0` which `add_planned` silently
+        // drops; the bar still ticks bytes received but can't fill.
         let bar = DownloadBar::new("downloading");
-        bar.add_planned(manifest.blob.size);
-        bar.set_current(format!("php-{}", selected.version));
-        fetch_blob(&client, &blob_spec, &bar)?;
+        bar.add_planned(recipe.blob.size);
+        bar.set_current(format!("php-{}", recipe.version));
+        let cache_blobs = paths.cache_blobs();
+        let blob_spec = recipe.blob.as_blob_spec(&cache_blobs, &dest);
+        fetch_blob(backend.client(), &blob_spec, &bar)?;
         bar.finish();
     }
 
     Ok(InstalledPhp {
-        version: selected.version,
-        flavor,
+        version: recipe.version,
+        flavor: recipe.flavor,
         install_path: dest,
         already_present,
-        frozen_warning: selected.frozen_warning,
+        frozen_warning: recipe.frozen_warning,
     })
 }
 
