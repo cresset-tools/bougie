@@ -37,7 +37,7 @@ bougie tool install <vendor/name>[@<constraint>] [--with <vendor/name>...]
                                                  [--php <ver>]
                                                  [--composer <ver>]
                                                  [--force]
-bougie tool run <vendor/name>[@<constraint>] [args...]   # alias: bougiex
+bougie tool run <vendor/name>[@<constraint>] [args...]   # also: bgx <vendor/name> [args...]
 bougie tool list [--installed | --available]
 bougie tool upgrade <vendor/name> | --all [--reinstall]
 bougie tool uninstall <vendor/name>
@@ -300,7 +300,7 @@ The bin-dir writes (symlink / .cmd creation) need no lock: the
 writer wins" semantics, which is the correct behavior for collisions
 anyway.
 
-## Ephemeral runs (`bougie tool run`, `bougiex`)
+## Ephemeral runs (`bougie tool run`, `bgx`)
 
 One-shots without persisting an install. Cache key:
 `(package, constraint, php_version, with...)`. Cache root:
@@ -310,6 +310,51 @@ If a persistent install matches the request exactly, reuse it.
 Otherwise materialize into the cache and run. GC: existing `bougie
 cache prune` walks tool-run entries by mtime, drops anything older
 than the configured TTL.
+
+### `bgx` — short alias binary
+
+`bgx` is to `bougie tool run` what `uvx` is to `uv tool run`: a
+separate binary that prepends `["tool", "run"]` to its argv and
+dispatches into the same library. Three chars, follows the
+`uvx`/`npx`/`pipx` pattern, low collision surface (two-char `bx` is
+risky — there's an existing Ruby `bx` wrapper in the wild).
+
+Shipped as a second `[[bin]]` in `Cargo.toml` rather than an
+argv[0]-symlink to `bougie`:
+
+```toml
+[[bin]]
+name = "bgx"
+path = "src/bin/bgx.rs"
+```
+
+```rust
+fn main() -> std::process::ExitCode {
+    bougie::run_with_prefix(&["tool", "run"])
+}
+```
+
+Reasons to ship a real binary instead of symlinking (same reasoning
+uv uses for `uvx`):
+
+- **Windows parity.** No reliable user-mode symlinks; we'd need two
+  files on Windows anyway. One mechanism on all platforms keeps the
+  installer simple.
+- **Self-update atomicity.** `bougie self update` replaces each
+  binary independently; no "what if the symlink got replaced by the
+  user / by a packager" edge cases.
+- **macOS argv[0] quirks.** Some exec paths canonicalize symlinks
+  before invoking, so a symlinked `bgx` could arrive with
+  `argv[0] == "bougie"` and silently mis-dispatch. A real binary
+  avoids it.
+- **Cost is negligible.** The second binary is ~5 lines; all real
+  code lives in the bougie library crate. Disk overhead is the size
+  of a stripped Rust launcher (tens of KB), not a duplicated bougie.
+
+No general-purpose `b` / `bx` alias for the whole bougie CLI —
+`bougie` is short enough, and an alias for every subcommand fragments
+the brand without solving a real ergonomic problem. Users who want it
+can `alias b=bougie` in their shell rc.
 
 ## Module layout (`src/tool/` + `src/commands/`)
 
@@ -327,7 +372,7 @@ src/tool/
   receipt.rs        # ToolReceipt struct + (de)serialise
   wrapper.rs        # platform-specific wrapper + launcher emission
   exec.rs           # tool-exec subcommand handler (read receipt, set env, exec php)
-  run.rs            # ephemeral tool run (bougiex)
+  run.rs            # ephemeral tool run (bgx)
 ```
 
 `src/commands/`:
@@ -378,11 +423,15 @@ PATH.
 - `bougie tool upgrade <pkg>` + `--all` + `--reinstall`.
 - Multi-bin tools (a single package exposing several entry points).
 
-### Phase 3 — ephemeral runs
+### Phase 3 — ephemeral runs + `bgx`
 
-- `bougie tool run` + `bougiex` alias.
+- `bougie tool run`.
+- New `[[bin]] bgx` shipped alongside `bougie`, prepending
+  `["tool", "run"]` to argv.
 - Cache layout under `paths.cache()/tool-run/`.
 - `bougie cache prune` integration.
+- `bougie self install` / `self update` installs and refreshes the
+  `bgx` binary alongside `bougie`.
 
 ### Phase 4 — Windows
 
