@@ -7,6 +7,10 @@ use crate::baseline::{BaselineFilter, BASELINE_EXTENSIONS};
 use crate::baseline::{skip_for_platform, PREINSTALLED_EXTENSIONS};
 use crate::errors::BougieError;
 use crate::fetch::{fetch_blob, BlobSpec, DownloadBar};
+// Closure-peer tarballs are bougie-index-only; the consuming code is
+// `cfg(not(target_os = "windows"))` so the import has to match.
+#[cfg(not(target_os = "windows"))]
+use crate::fetch::ArchiveKind;
 use crate::index::wire::LoadDirective;
 use crate::lock::ExclusiveGuard;
 use crate::paths::Paths;
