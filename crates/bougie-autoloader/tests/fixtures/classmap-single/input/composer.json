@@ -1,0 +1,11 @@
+{
+    "name": "fixture/classmap-single",
+    "description": "Single package exposing a classmap autoload entry.",
+    "type": "project",
+    "repositories": [
+        { "type": "path", "url": "packages/scanner", "options": { "symlink": false } }
+    ],
+    "require": {
+        "acme/scanner": "*"
+    }
+}
