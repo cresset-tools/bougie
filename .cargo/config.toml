@@ -1,0 +1,7 @@
+[alias]
+# `cargo test` needs the `fake-redis` fixture bin, which is gated
+# behind the non-default `test-fixtures` feature (kept out of default
+# so `cargo install --path .` doesn't ship it). These aliases make
+# the everyday workflow Just Work; CI passes the flag explicitly.
+t = "test --features test-fixtures"
+test-all = "test --features test-fixtures"
