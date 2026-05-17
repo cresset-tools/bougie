@@ -17,8 +17,8 @@
 //! are 64-bit LE; ELF32 / BE builds aren't relevant. Mach-O / PE
 //! aren't ELF and aren't handled here.
 
-use eyre::{eyre, Result, WrapErr};
-use std::path::Path;
+use crate::binfmt::DetectedExt;
+use eyre::{eyre, Result};
 
 const ELFMAG: &[u8; 4] = b"\x7fELF";
 const ELFCLASS64: u8 = 2;
@@ -57,23 +57,6 @@ const ZEND_MODULE_ENTRY_NAME_OFFSET: u64 = 32;
 
 /// `zend_extension.name` is the very first field, so offset 0.
 const ZEND_EXTENSION_ENTRY_NAME_OFFSET: u64 = 0;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DetectedExt {
-    /// The canonical extension name as `phpinfo()` reports it — the
-    /// string the runtime registers under and the platform check
-    /// compares against `ext-<name>`.
-    pub name: String,
-    /// `true` iff the extension exposes a `zend_extension_entry`
-    /// symbol (loads via `zend_extension=`).
-    pub zend: bool,
-}
-
-pub fn detect_php_extension(path: &Path) -> Result<DetectedExt> {
-    let bytes = std::fs::read(path)
-        .wrap_err_with(|| format!("reading {}", path.display()))?;
-    detect_from_bytes(&bytes)
-}
 
 pub fn detect_from_bytes(buf: &[u8]) -> Result<DetectedExt> {
     let hdr = ElfHeader::parse(buf)?;

@@ -1,5 +1,6 @@
 pub mod babysit;
 pub mod baseline;
+pub mod binfmt;
 pub mod cli;
 pub mod commands;
 pub mod composer;
@@ -8,6 +9,7 @@ pub mod config;
 pub mod daemon;
 pub mod elf;
 pub mod errors;
+pub mod macho;
 pub mod fetch;
 pub mod index;
 pub mod install;

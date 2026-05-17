@@ -317,10 +317,9 @@ fn install_local_arg(
              local `.so` installs need a path to an existing extension binary"
         ));
     }
-    let detected = crate::elf::detect_php_extension(&source_so).wrap_err_with(|| {
+    let detected = crate::binfmt::detect_php_extension(&source_so).wrap_err_with(|| {
         format!(
-            "couldn't read PHP extension metadata from {} — \
-             not an ELF64 PHP extension? (Mach-O / Windows DLLs aren't supported)",
+            "couldn't read PHP extension metadata from {}",
             source_so.display()
         )
     })?;
