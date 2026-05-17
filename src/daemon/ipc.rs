@@ -493,7 +493,13 @@ fn urlencode(s: &str) -> String {
 /// Reads each catalog entry's `tenants.json` and emits per-service
 /// vars per SERVICES.md §3.4. Side-effect free.
 async fn dispatch_env(state: &Arc<DaemonState>, project: std::path::PathBuf) -> ResultFrame {
-    use crate::daemon::{catalog, tenants};
+    use crate::daemon::{catalog, catalog::Binding, tenants};
+
+    // Every Tcp binding in the catalog is loopback-only in v1
+    // (Binding::Tcp's doc comment). Centralising the host here keeps
+    // the URL/HOST/PORT vars in sync — recipes can splice them
+    // independently without knowing the assembly recipe.
+    const LOOPBACK: &str = "127.0.0.1";
 
     let mut vars: serde_json::Map<String, Value> = serde_json::Map::new();
     for entry in catalog::CATALOG {
@@ -508,6 +514,17 @@ async fn dispatch_env(state: &Arc<DaemonState>, project: std::path::PathBuf) -> 
             continue;
         };
         let prefix = format!("BOUGIE_SERVICE_{}_", entry.name.to_ascii_uppercase());
+
+        // For Tcp-bound services, expose HOST/PORT alongside any
+        // service-specific URL string. Recipes that need split
+        // host/port (Magento's `setup:install --opensearch-host
+        // --opensearch-port`, etc.) read these directly instead of
+        // parsing URL bytes in shell.
+        if let Binding::Tcp { port } = entry.binding {
+            vars.insert(format!("{prefix}HOST"), Value::String(LOOPBACK.into()));
+            vars.insert(format!("{prefix}PORT"), Value::String(port.to_string()));
+        }
+
         match entry.name {
             "redis" => {
                 let sock = state
@@ -542,35 +559,37 @@ async fn dispatch_env(state: &Arc<DaemonState>, project: std::path::PathBuf) -> 
                 }
             }
             "opensearch" => {
-                // Catalog binding pins :9200 (loopback only). Surface
-                // both the base URL and the tenant's reserved index
+                // URL composed from the catalog port (set above as
+                // _HOST/_PORT). Surface the tenant's reserved index
                 // prefix so apps build `<prefix>articles` etc.
-                vars.insert(
-                    format!("{prefix}URL"),
-                    Value::String("http://127.0.0.1:9200".into()),
-                );
+                if let Binding::Tcp { port } = entry.binding {
+                    vars.insert(
+                        format!("{prefix}URL"),
+                        Value::String(format!("http://{LOOPBACK}:{port}")),
+                    );
+                }
                 if let Some(p) = tenant.alloc.get("index_prefix") {
                     vars.insert(format!("{prefix}INDEX_PREFIX"), p.clone());
                 }
             }
             "server" => {
-                // Catalog binding pins 127.0.0.1:7080. Surface the
-                // root URL alongside the tenant's reserved hostname
+                // Root URL alongside the tenant's reserved hostname
                 // so apps can build absolute redirects without
                 // re-encoding the suffix.
-                vars.insert(
-                    format!("{prefix}URL"),
-                    Value::String("http://127.0.0.1:7080".into()),
-                );
+                if let Binding::Tcp { port } = entry.binding {
+                    vars.insert(
+                        format!("{prefix}URL"),
+                        Value::String(format!("http://{LOOPBACK}:{port}")),
+                    );
+                }
                 if let Some(h) = tenant.alloc.get("hostname") {
                     vars.insert(format!("{prefix}HOSTNAME"), h.clone());
                 }
             }
             "rabbitmq" => {
-                // Catalog binding pins 127.0.0.1:5672. Compose the
-                // full AMQP DSN so apps don't have to assemble the
-                // pieces; vhost lives in the path component, user
-                // and password in the authority.
+                // Compose the full AMQP DSN so apps don't have to
+                // assemble the pieces; vhost lives in the path
+                // component, user and password in the authority.
                 let user = tenant
                     .alloc
                     .get("username")
@@ -582,13 +601,15 @@ async fn dispatch_env(state: &Arc<DaemonState>, project: std::path::PathBuf) -> 
                     .and_then(|v| v.as_str())
                     .unwrap_or(&tenant.tenant);
                 let pw = tenant.secrets.get("password").cloned().unwrap_or_default();
-                let url = format!(
-                    "amqp://{}:{}@127.0.0.1:5672/{}",
-                    urlencode(user),
-                    urlencode(&pw),
-                    urlencode(vhost),
-                );
-                vars.insert(format!("{prefix}URL"), Value::String(url));
+                if let Binding::Tcp { port } = entry.binding {
+                    let url = format!(
+                        "amqp://{}:{}@{LOOPBACK}:{port}/{}",
+                        urlencode(user),
+                        urlencode(&pw),
+                        urlencode(vhost),
+                    );
+                    vars.insert(format!("{prefix}URL"), Value::String(url));
+                }
                 vars.insert(format!("{prefix}VHOST"), Value::String(vhost.to_string()));
                 vars.insert(format!("{prefix}USER"), Value::String(user.to_string()));
                 if !pw.is_empty() {
