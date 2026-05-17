@@ -4,7 +4,7 @@
 
 use super::fetch::{ChannelEntry, Channels};
 use super::request::{Channel, ComposerRequest};
-use crate::errors::BougieError;
+use bougie_errors::BougieError;
 use eyre::Result;
 
 #[derive(Debug, Clone)]

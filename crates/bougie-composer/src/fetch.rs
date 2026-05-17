@@ -9,9 +9,9 @@
 //! upstream compromise that didn't update both would be caught.
 
 use super::resolve::Resolved;
-use crate::errors::BougieError;
-use crate::fetch::{fetch_file, BlobSpec, DownloadBar};
-use crate::paths::Paths;
+use bougie_errors::BougieError;
+use bougie_fetch::{fetch_file, BlobSpec, DownloadBar};
+use bougie_paths::Paths;
 use eyre::{Result, WrapErr};
 use serde::Deserialize;
 use std::fs;
