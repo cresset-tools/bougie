@@ -348,17 +348,20 @@ fn parse_triple(s: &str) -> Option<Triple> {
     let vendor = match parts[1] {
         "unknown" => Vendor::Unknown,
         "apple" => Vendor::Apple,
+        "pc" => Vendor::Pc,
         _ => return None,
     };
     let os = match parts[2] {
         "linux" => Os::Linux,
         "darwin" => Os::Darwin,
+        "windows" => Os::Windows,
         _ => return None,
     };
     let env = if parts.len() >= 4 {
         match parts[3] {
             "gnu" => Some(Env::Gnu),
             "musl" => Some(Env::Musl),
+            "msvc" => Some(Env::Msvc),
             _ => return None,
         }
     } else {

@@ -1,1 +1,4 @@
 /target
+
+# Visual Studio workspace state (per-user; not project config).
+.vs/

@@ -139,14 +139,6 @@ version = "1.0"
 default-features = false
 features = ["std", "fs", "process"]
 
-# Process sandboxing for managed dev services (`bougied`).
-# Cross-platform: Linux Landlock (kernel 5.13+), macOS SBPL via
-# `sandbox_init_with_parameters`. Vendored as workspace member at
-# `crates/sandbox-run/` so this repo is self-contained.
-[dependencies.sandbox-run]
-path = "crates/sandbox-run"
-version = "0.1.0"
-
 # URL joining for relative manifest URLs in the index protocol.
 [dependencies.url]
 version = "2.5"
@@ -248,6 +240,13 @@ version = "0.1"
 # defaults; we only consume the recommended watcher.
 [dependencies.notify]
 version = "8"
+
+[target.'cfg(unix)'.dependencies]
+# Process sandboxing for managed dev services (`bougied`).
+# Cross-platform: Linux Landlock (kernel 5.13+), macOS SBPL via
+# `sandbox_init_with_parameters`. Vendored as workspace member at
+# `crates/sandbox-run/` so this repo is self-contained.
+sandbox-run = { path = "crates/sandbox-run", version = "0.1.0" }
 
 [dev-dependencies]
 assert_cmd = "2.0"        # spawn the bougie binary in integration tests

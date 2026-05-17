@@ -26,7 +26,7 @@
 use crate::daemon::catalog::CatalogEntry;
 use crate::daemon::store_layout;
 use crate::errors::BougieError;
-use crate::fetch::{fetch_blob, BlobSpec, DownloadBar};
+use crate::fetch::{fetch_blob, ArchiveKind, BlobSpec, DownloadBar};
 use crate::index::{
     build_verifier,
     fetch::{fetch_manifest, fetch_root, fetch_section, FetchedRoot},
@@ -230,8 +230,14 @@ fn install_into(
     visited: &mut HashSet<(String, String)>,
     report: &mut Vec<ResolvedTool>,
 ) -> Result<()> {
+    // Adapt wire closures to the backend-neutral shape the install
+    // helpers now take. Cheap clone — closure lists are small (≤ a
+    // dozen entries for the heaviest tools).
+    let closure: Vec<crate::backend::ClosureRef> =
+        manifest.closure.iter().map(crate::backend::ClosureRef::from).collect();
+
     bar.add_planned(manifest.blob.size);
-    plan_closure_bytes(paths, manifest, bar);
+    plan_closure_bytes(paths, &closure, bar);
     bar.set_current(manifest.tag.clone());
 
     let spec = BlobSpec {
@@ -242,10 +248,11 @@ fn install_into(
         // Tool tarballs ship their tree under `install/` — same
         // convention as the interpreter tarball.
         strip_prefix: "install",
+        archive: ArchiveKind::TarZst,
     };
     fetch_blob(client, &spec, bar)?;
 
-    install_closure_peers(client, paths, manifest, install_root, bar)?;
+    install_closure_peers(client, paths, &closure, &manifest.name, &manifest.tag, install_root, bar)?;
 
     for rt in &manifest.requires_tools {
         let inner_root = install_required_tool(

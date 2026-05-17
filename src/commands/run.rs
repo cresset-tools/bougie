@@ -1,14 +1,21 @@
 use crate::cli::OutputFormat;
 use crate::commands::sync;
 use crate::conf_d;
+#[cfg(unix)]
 use crate::config::read_composer_json;
 use crate::errors::BougieError;
 use crate::paths::Paths;
 use crate::state::{read_project_resolved, read_project_resolved_composer};
 use eyre::{eyre, Result, WrapErr};
+#[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::ExitCode;
+
+#[cfg(unix)]
+const PATH_SEP: &str = ":";
+#[cfg(not(unix))]
+const PATH_SEP: &str = ";";
 
 /// `bougie run [--] <cmd> [args...]` — set `PATH` and `PHP_INI_SCAN_DIR`,
 /// then exec the requested command. Per CLI.md §3.4, implicitly runs
@@ -43,6 +50,11 @@ pub fn run(
     // PHP_INI_SCAN_DIR / BOUGIE_SERVICE_* env the exec path injects;
     // extra positional args (`bougie run test foo bar`) flow into
     // `$@` so scripts can act on them.
+    //
+    // Unix-only: the runner is `/bin/sh`, and the daemon isn't built
+    // on Windows in Phase 1. On Windows the argv falls through to the
+    // direct-exec path below.
+    #[cfg(unix)]
     if !explicit_passthrough() && !argv[0].contains('/') {
         if let Some(steps) = lookup_composer_script(&project_root, &argv[0])? {
             return run_composer_script(
@@ -75,11 +87,30 @@ pub fn run(
     let scan_dir = conf_d::php_ini_scan_dir(&project_root, debug_overlay);
 
     let prev_path = std::env::var("PATH").unwrap_or_default();
-    let new_path = if bougie_bin.exists() {
-        format!("{}:{prev_path}", bougie_bin.display())
-    } else {
-        prev_path
-    };
+    // Front-load the bougie shim dir, then any per-extension PATH
+    // extras the conf.d fragments asked for. Windows imagick is the
+    // canonical case: its store dir holds ~170 ImageMagick DLLs
+    // (`CORE_RL_*.dll`, `IM_MOD_RL_*.dll`) the Windows loader needs to
+    // find when `php_imagick.dll` initializes. Unix conf.d fragments
+    // don't emit `bougie-path:` markers (RPATH handles deps there),
+    // so the loop is a cheap no-op.
+    let path_extras = conf_d::read_path_extras(&project_root);
+    let mut new_path = String::new();
+    if bougie_bin.exists() {
+        new_path.push_str(&bougie_bin.display().to_string());
+    }
+    for extra in &path_extras {
+        if !new_path.is_empty() {
+            new_path.push_str(PATH_SEP);
+        }
+        new_path.push_str(&extra.display().to_string());
+    }
+    if !prev_path.is_empty() {
+        if !new_path.is_empty() {
+            new_path.push_str(PATH_SEP);
+        }
+        new_path.push_str(&prev_path);
+    }
 
     let (program, rest) = argv.split_first().ok_or_else(|| eyre!("argv missing"))?;
     let mut cmd = std::process::Command::new(program);
@@ -96,6 +127,9 @@ pub fn run(
     // explicitly chose `bougie services up` for that). When the
     // daemon isn't there the vars are absent; PHP code that depends
     // on them gets a connection error, which is the right surface.
+    //
+    // Unix-only: the daemon doesn't run on Windows in Phase 1.
+    #[cfg(unix)]
     if let Ok(paths) = Paths::from_env() {
         if paths.bougied_sock().exists() {
             for (k, v) in fetch_service_env(&paths, &project_root) {
@@ -103,12 +137,29 @@ pub fn run(
             }
         }
     }
-    let err = cmd.exec();
-    Err(BougieError::Filesystem {
-        operation: format!("execve {program}"),
-        detail: err.to_string(),
+
+    #[cfg(unix)]
+    {
+        // execve replaces this process; the only return is an error.
+        let err = cmd.exec();
+        Err(BougieError::Filesystem {
+            operation: format!("execve {program}"),
+            detail: err.to_string(),
+        }
+        .into())
     }
-    .into())
+    #[cfg(not(unix))]
+    {
+        // Windows has no execve; spawn the child, wait, and propagate
+        // its exit code so callers (and shells) see the same outcome.
+        let status = cmd.status().map_err(|e| BougieError::Filesystem {
+            operation: format!("spawning {program}"),
+            detail: e.to_string(),
+        })?;
+        let code = status.code().unwrap_or(1);
+        let code = u8::try_from(code).unwrap_or(1);
+        Ok(ExitCode::from(code))
+    }
 }
 
 fn install_xdebug_into_overlay(project_root: &Path) -> Result<()> {
@@ -140,6 +191,9 @@ fn install_xdebug_into_overlay(project_root: &Path) -> Result<()> {
 /// wrong — `bougie run` must never fail because the daemon was down,
 /// slow, or speaking an old protocol. A connection error here is a
 /// signal to the user (PHP gets no DSN); not a CLI-level error.
+///
+/// Unix-only — the daemon isn't built on Windows in Phase 1.
+#[cfg(unix)]
 fn fetch_service_env(
     paths: &Paths,
     project: &Path,
@@ -180,7 +234,11 @@ fn is_environment_present(project_root: &Path) -> Result<bool> {
         return Ok(false);
     };
     let install = paths.installs().join(format!("{version}-{flavor}"));
-    if !install.join("bin").join("php").exists() {
+    #[cfg(unix)]
+    let php_bin = install.join("bin").join("php");
+    #[cfg(not(unix))]
+    let php_bin = install.join("bin").join("php.exe");
+    if !php_bin.exists() {
         return Ok(false);
     }
 
@@ -200,6 +258,7 @@ fn is_environment_present(project_root: &Path) -> Result<bool> {
 /// is the user's "don't look at composer scripts, just exec this"
 /// signal — same convention as `npm run -- <cmd>` and a clean way to
 /// disambiguate when a script name shadows a binary.
+#[cfg(unix)]
 fn explicit_passthrough() -> bool {
     let mut after_run = false;
     for a in std::env::args_os() {
@@ -217,6 +276,7 @@ fn explicit_passthrough() -> bool {
 /// script's steps, if defined. Missing or malformed composer.json
 /// resolves to `Ok(None)` — script lookup is best-effort, the exec
 /// fall-through always works.
+#[cfg(unix)]
 fn lookup_composer_script(project_root: &Path, name: &str) -> Result<Option<Vec<String>>> {
     let path = project_root.join("composer.json");
     if !path.exists() {
@@ -236,6 +296,7 @@ fn lookup_composer_script(project_root: &Path, name: &str) -> Result<Option<Vec<
 /// `/bin/sh -e -c <body>` with the script name as `$0` and any
 /// trailing `bougie run <name> <extras…>` args available as
 /// `$1`/`$2`/`$@`. Stops on the first non-zero step.
+#[cfg(unix)]
 fn run_composer_script(
     project_root: &Path,
     name: &str,

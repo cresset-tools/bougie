@@ -37,6 +37,18 @@ pub struct DownloadBar {
 
 const RETRY_BUDGET: u32 = 1;
 
+/// Archive format `fetch_blob` should decode. Selected per-call
+/// because the index advertises tar.zst for bougie-published artifacts
+/// while windows.php.net (Phase 3+) publishes zip. `fetch_file`
+/// doesn't extract and ignores this field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArchiveKind {
+    /// Zstandard-compressed POSIX tar — bougie's own publish format.
+    TarZst,
+    /// Zip — windows.php.net's interpreter + PECL distribution format.
+    Zip,
+}
+
 #[derive(Debug, Clone)]
 pub struct BlobSpec<'a> {
     pub url: &'a str,
@@ -46,10 +58,14 @@ pub struct BlobSpec<'a> {
     /// Leading path component to strip from every entry while
     /// extracting. Interpreter tarballs wrap their contents in
     /// `install/`; per-store-path closure tarballs wrap theirs in
-    /// `<storeName>/` (see `shared/tarball-store-path.nix`). Pass `""`
-    /// for unwrapped archives (e.g. per-extension blobs that ship
-    /// `lib/extensions/<api>/<name>.so` at the top level).
+    /// `<storeName>/` (see `shared/tarball-store-path.nix`).
+    /// windows.php.net's `php-<ver>-Win32-...zip` wraps contents in
+    /// `php-<ver>/`. Pass `""` for unwrapped archives (e.g.
+    /// per-extension blobs that ship `lib/extensions/<api>/<name>.so`
+    /// at the top level).
     pub strip_prefix: &'a str,
+    /// How to decode the downloaded bytes. Ignored by [`fetch_file`].
+    pub archive: ArchiveKind,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -178,7 +194,10 @@ fn try_once_blob(
     let _ = fs::remove_dir_all(&incoming);
     fs::create_dir_all(&incoming)
         .wrap_err_with(|| format!("creating {}", incoming.display()))?;
-    extract_tar_zst(&tmp, &incoming, spec.strip_prefix)?;
+    match spec.archive {
+        ArchiveKind::TarZst => extract_tar_zst(&tmp, &incoming, spec.strip_prefix)?,
+        ArchiveKind::Zip => extract_zip(&tmp, &incoming, spec.strip_prefix)?,
+    }
 
     fs::rename(&incoming, spec.dest)
         .wrap_err_with(|| format!("rename {} → {}", incoming.display(), spec.dest.display()))?;
@@ -272,6 +291,61 @@ fn extract_tar_zst(tar_zst: &Path, into: &Path, strip_prefix: &str) -> Result<()
         entry
             .unpack(&dest)
             .wrap_err_with(|| format!("unpacking {} → {}", path.display(), dest.display()))?;
+    }
+    Ok(())
+}
+
+/// Extract a `.zip` archive into `into`, stripping `strip_prefix` as a
+/// leading path component from every entry (same convention as
+/// [`extract_tar_zst`]). Used for windows.php.net interpreter ZIPs,
+/// which wrap their contents in `php-<version>/`, and for PECL DLL
+/// ZIPs, which are flat (`strip_prefix = ""`).
+///
+/// Symlink entries (only seen in unix-built ZIPs) are not expected on
+/// the windows.php.net surface and are unpacked as plain files;
+/// re-introduce a symlink branch when a non-windows ZIP source needs
+/// it. The `zip` crate's own `ZipArchive::extract` would handle them
+/// on Unix, but rolling the walk by hand here keeps the strip-prefix
+/// rewrite (which `extract` doesn't support) trivial.
+fn extract_zip(zip_path: &Path, into: &Path, strip_prefix: &str) -> Result<()> {
+    let f = File::open(zip_path)
+        .wrap_err_with(|| format!("opening {}", zip_path.display()))?;
+    let mut archive = zip::ZipArchive::new(f)
+        .wrap_err_with(|| format!("reading zip {}", zip_path.display()))?;
+    for i in 0..archive.len() {
+        let mut entry = archive
+            .by_index(i)
+            .wrap_err_with(|| format!("reading zip entry {i}"))?;
+        // `enclosed_name` is the traversal-safe path (rejects `..` and
+        // absolute paths) — `name()` would return the raw header bytes.
+        let Some(raw) = entry.enclosed_name() else {
+            continue;
+        };
+        let Some(rewritten) = rewrite_archive_path(&raw, strip_prefix) else {
+            // The prefix directory entry itself; skip — `into` exists.
+            continue;
+        };
+        let dest = into.join(&rewritten);
+        if entry.is_dir() {
+            fs::create_dir_all(&dest)
+                .wrap_err_with(|| format!("creating {}", dest.display()))?;
+            continue;
+        }
+        if let Some(parent) = dest.parent() {
+            fs::create_dir_all(parent)
+                .wrap_err_with(|| format!("creating {}", parent.display()))?;
+        }
+        let mut out = File::create(&dest)
+            .wrap_err_with(|| format!("creating {}", dest.display()))?;
+        std::io::copy(&mut entry, &mut out)
+            .wrap_err_with(|| format!("writing {}", dest.display()))?;
+        // Preserve Unix executable bit if the entry carried mode info
+        // (windows.php.net ZIPs don't, but ZIPs built on Unix do).
+        #[cfg(unix)]
+        if let Some(mode) = entry.unix_mode() {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(&dest, fs::Permissions::from_mode(mode));
+        }
     }
     Ok(())
 }
@@ -380,7 +454,11 @@ impl DownloadBar {
     /// Current planned total. Returns 0 for a fresh / hidden bar that
     /// has never been planned against. Used in tests to assert
     /// planning correctness; not part of the user-facing UX.
-    #[cfg(test)]
+    ///
+    /// Only called from the closure-peer plan test, which is itself
+    /// gated `cfg(not(target_os = "windows"))` — match that gate or
+    /// `-D dead_code` on Windows CI flags this as unused.
+    #[cfg(all(test, not(target_os = "windows")))]
     pub(crate) fn planned(&self) -> u64 {
         self.pb.length().unwrap_or(0)
     }
@@ -579,6 +657,13 @@ mod tests {
         assert!(!into.join("libcurl-8.20.0-aaaa").exists());
     }
 
+    // Uses `MetadataExt::ino()` to confirm a real hardlink (same inode)
+    // was produced. The inode API only exists on Unix; on Windows we'd
+    // need to compare via `GetFileInformationByHandle`. Skip on
+    // Windows — the behavior the test covers (rewriting the link
+    // target with `strip_prefix`) is exercised the same way on either
+    // platform; the inode check is incidental.
+    #[cfg(unix)]
     #[test]
     fn extract_rewrites_hardlink_targets_with_strip_prefix() {
         // Mirrors the rabbitmq tarball shape that previously broke
@@ -636,6 +721,67 @@ mod tests {
         use std::os::unix::fs::MetadataExt;
         assert_eq!(m1.ino(), m2.ino());
         assert_eq!(std::fs::read(&linked).unwrap(), body);
+    }
+
+    /// windows.php.net's interpreter ZIP wraps `php.exe`, `ext/*.dll`,
+    /// etc. inside a top-level `php-<version>/` directory. The extractor
+    /// must strip that prefix so the materialized tree mirrors the
+    /// `bin/`-style layout the rest of bougie assumes.
+    #[test]
+    fn extract_zip_strips_prefix_and_writes_nested_files() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let zip_path = dir.path().join("a.zip");
+
+        let mut buf: Vec<u8> = Vec::new();
+        {
+            let cursor = std::io::Cursor::new(&mut buf);
+            let mut zw = zip::ZipWriter::new(cursor);
+            let opts = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+            zw.start_file("php-8.4.3/php.exe", opts).unwrap();
+            zw.write_all(b"MZ exe stub").unwrap();
+            zw.start_file("php-8.4.3/ext/php_curl.dll", opts).unwrap();
+            zw.write_all(b"DLL stub").unwrap();
+            zw.start_file("php-8.4.3/php.ini-development", opts).unwrap();
+            zw.write_all(b"; ini\n").unwrap();
+            zw.finish().unwrap();
+        }
+        std::fs::write(&zip_path, &buf).unwrap();
+
+        let into = dir.path().join("out");
+        std::fs::create_dir_all(&into).unwrap();
+        extract_zip(&zip_path, &into, "php-8.4.3").unwrap();
+
+        assert_eq!(std::fs::read(into.join("php.exe")).unwrap(), b"MZ exe stub");
+        assert_eq!(std::fs::read(into.join("ext/php_curl.dll")).unwrap(), b"DLL stub");
+        assert_eq!(std::fs::read(into.join("php.ini-development")).unwrap(), b"; ini\n");
+        // The wrapping directory itself is not materialized.
+        assert!(!into.join("php-8.4.3").exists());
+    }
+
+    /// PECL DLL ZIPs are flat — pass `strip_prefix = ""` and entries
+    /// land verbatim.
+    #[test]
+    fn extract_zip_passes_through_when_no_prefix() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let zip_path = dir.path().join("flat.zip");
+        let mut buf: Vec<u8> = Vec::new();
+        {
+            let cursor = std::io::Cursor::new(&mut buf);
+            let mut zw = zip::ZipWriter::new(cursor);
+            let opts = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+            zw.start_file("php_xdebug.dll", opts).unwrap();
+            zw.write_all(b"xdebug").unwrap();
+            zw.finish().unwrap();
+        }
+        std::fs::write(&zip_path, &buf).unwrap();
+
+        let into = dir.path().join("out");
+        std::fs::create_dir_all(&into).unwrap();
+        extract_zip(&zip_path, &into, "").unwrap();
+
+        assert_eq!(std::fs::read(into.join("php_xdebug.dll")).unwrap(), b"xdebug");
     }
 
     #[test]

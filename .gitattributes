@@ -1,0 +1,6 @@
+# Force LF line endings for every text file, regardless of contributors'
+# `core.autocrlf` setting. Without this, a Windows checkout normalizes
+# committed LF to CRLF on disk and then back to LF on commit, which
+# manifests as spurious "LF will be replaced by CRLF" warnings and as
+# noisy diffs when CRLF leaks into the index.
+* text=auto eol=lf

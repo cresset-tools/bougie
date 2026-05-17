@@ -21,7 +21,25 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        include:
+          - os: ubuntu-latest
+            build_cmd: cargo build --all-targets --features test-fixtures
+            test_cmd: cargo test --features test-fixtures
+          - os: macos-latest
+            build_cmd: cargo build --all-targets --features test-fixtures
+            test_cmd: cargo test --features test-fixtures
+          # Windows runs lib unit tests + the dedicated windows_smoke
+          # integration test. The other integration tests pull in
+          # Unix-only fixtures (mariadb/opensearch/rabbitmq tarball
+          # tables, `pre_exec`, `PermissionsExt::set_mode`, …) — they
+          # are deliberately not built here. `cargo build` (without
+          # --all-targets) keeps the binary green; the lib+smoke test
+          # commands cover everything Windows is supposed to cover.
+          # The `test-fixtures` feature gates the fake-redis bin, which
+          # is Unix-only test infrastructure — skip it on Windows.
+          - os: windows-latest
+            build_cmd: cargo build
+            test_cmd: cargo test --lib --test windows_smoke
     steps:
       - uses: actions/checkout@v5
 
@@ -43,7 +61,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: cargo build
-        run: cargo build --all-targets --features test-fixtures
+        run: ${{ matrix.build_cmd }}
 
       - name: cargo test
-        run: cargo test --features test-fixtures
+        run: ${{ matrix.test_cmd }}

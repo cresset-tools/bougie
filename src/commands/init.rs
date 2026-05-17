@@ -58,7 +58,7 @@ pub fn run(format: OutputFormat, with_toml: bool) -> Result<ExitCode> {
     let gitignore = bougie_dir.join(".gitignore");
     if !gitignore.exists() {
         fs::write(&gitignore, "bin/\nstate/\n").wrap_err("writing .bougie/.gitignore")?;
-        created.push(PathBuf::from(".bougie/.gitignore"));
+        created.push(PathBuf::from(".bougie").join(".gitignore"));
     }
 
     if with_toml {

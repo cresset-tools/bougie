@@ -22,8 +22,11 @@ pub mod php_upgrade;
 pub mod run;
 pub mod self_update;
 pub mod self_version;
+#[cfg(unix)]
 pub mod server;
+#[cfg(unix)]
 pub mod make;
+#[cfg(unix)]
 pub mod services;
 pub mod sync;
 pub mod unzip;
