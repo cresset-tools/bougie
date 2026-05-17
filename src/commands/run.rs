@@ -1,6 +1,7 @@
 use crate::cli::OutputFormat;
 use crate::commands::sync;
 use crate::conf_d;
+use crate::config::read_composer_json;
 use crate::errors::BougieError;
 use crate::paths::Paths;
 use crate::state::{read_project_resolved, read_project_resolved_composer};
@@ -34,6 +35,26 @@ pub fn run(
     if !no_sync && !is_environment_present(&project_root)? {
         sync::run(format, false)?;
     }
+
+    // composer.json `scripts.<name>` lookup. Skipped when the user
+    // explicitly typed `--` after `run` (their signal to bypass the
+    // script table) or when `argv[0]` looks like a path. Found
+    // scripts execute as `/bin/sh -e -c` with the same PATH /
+    // PHP_INI_SCAN_DIR / BOUGIE_SERVICE_* env the exec path injects;
+    // extra positional args (`bougie run test foo bar`) flow into
+    // `$@` so scripts can act on them.
+    if !explicit_passthrough() && !argv[0].contains('/') {
+        if let Some(steps) = lookup_composer_script(&project_root, &argv[0])? {
+            return run_composer_script(
+                &project_root,
+                &argv[0],
+                &steps,
+                &argv[1..],
+                xdebug_flag,
+            );
+        }
+    }
+
     let bougie_bin = project_root.join(".bougie").join("bin");
 
     let env_session_set = std::env::var_os("XDEBUG_SESSION")
@@ -170,4 +191,105 @@ fn is_environment_present(project_root: &Path) -> Result<bool> {
         return Ok(false);
     }
     Ok(true)
+}
+
+/// Did the user type `--` after the `run` subcommand?
+///
+/// clap consumes the literal `--` token from the parsed `argv`, but
+/// it's still visible in `std::env::args_os()`. The presence of `--`
+/// is the user's "don't look at composer scripts, just exec this"
+/// signal — same convention as `npm run -- <cmd>` and a clean way to
+/// disambiguate when a script name shadows a binary.
+fn explicit_passthrough() -> bool {
+    let mut after_run = false;
+    for a in std::env::args_os() {
+        if after_run && a == "--" {
+            return true;
+        }
+        if a == "run" {
+            after_run = true;
+        }
+    }
+    false
+}
+
+/// Read `composer.json` from the project root and return the named
+/// script's steps, if defined. Missing or malformed composer.json
+/// resolves to `Ok(None)` — script lookup is best-effort, the exec
+/// fall-through always works.
+fn lookup_composer_script(project_root: &Path, name: &str) -> Result<Option<Vec<String>>> {
+    let path = project_root.join("composer.json");
+    if !path.exists() {
+        return Ok(None);
+    }
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(_) => return Ok(None),
+    };
+    let Ok(parsed) = read_composer_json(&text) else {
+        return Ok(None);
+    };
+    Ok(parsed.scripts.get(name).cloned())
+}
+
+/// Execute a composer script. Each step runs as one
+/// `/bin/sh -e -c <body>` with the script name as `$0` and any
+/// trailing `bougie run <name> <extras…>` args available as
+/// `$1`/`$2`/`$@`. Stops on the first non-zero step.
+fn run_composer_script(
+    project_root: &Path,
+    name: &str,
+    steps: &[String],
+    extras: &[String],
+    xdebug_flag: bool,
+) -> Result<ExitCode> {
+    let bougie_bin = project_root.join(".bougie").join("bin");
+    let prev_path = std::env::var("PATH").unwrap_or_default();
+    let new_path = if bougie_bin.exists() {
+        format!("{}:{prev_path}", bougie_bin.display())
+    } else {
+        prev_path
+    };
+
+    let env_session_set = std::env::var_os("XDEBUG_SESSION")
+        .is_some_and(|v| !v.is_empty());
+    let debug_overlay = xdebug_flag || env_session_set;
+    let scan_dir = conf_d::php_ini_scan_dir(project_root, debug_overlay);
+
+    let service_env: Vec<(String, String)> = Paths::from_env()
+        .ok()
+        .filter(|paths| paths.bougied_sock().exists())
+        .map(|paths| fetch_service_env(&paths, project_root))
+        .unwrap_or_default();
+
+    for step in steps {
+        let mut cmd = std::process::Command::new("/bin/sh");
+        cmd.arg("-e")
+            .arg("-c")
+            .arg(step)
+            // `$0` = script name (shows up in shell error messages,
+            // matching how composer presents script failures).
+            .arg(name);
+        for e in extras {
+            cmd.arg(e);
+        }
+        cmd.current_dir(project_root)
+            .env("PATH", &new_path)
+            .env("PHP_INI_SCAN_DIR", &scan_dir)
+            .env("BOUGIE_PROJECT_ROOT", project_root);
+        if xdebug_flag && !env_session_set {
+            cmd.env("XDEBUG_SESSION", "1");
+        }
+        for (k, v) in &service_env {
+            cmd.env(k, v);
+        }
+        let status = cmd
+            .status()
+            .wrap_err_with(|| format!("spawning /bin/sh for composer script `{name}`"))?;
+        if !status.success() {
+            let code = status.code().unwrap_or(1);
+            return Ok(ExitCode::from(u8::try_from(code).unwrap_or(1)));
+        }
+    }
+    Ok(ExitCode::SUCCESS)
 }
