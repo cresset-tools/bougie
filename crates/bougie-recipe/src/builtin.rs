@@ -6,9 +6,9 @@ use super::parser::{parse, Recipe};
 /// `(name, TOML body)` of every builtin recipe, embedded at compile
 /// time. The name (`"magento"`, etc.) is what `--recipe <name>` selects.
 pub const BUILTINS: &[(&str, &str)] = &[
-    ("magento", include_str!("../../recipes/magento.toml")),
-    ("laravel", include_str!("../../recipes/laravel.toml")),
-    ("generic", include_str!("../../recipes/generic.toml")),
+    ("magento", include_str!("../recipes/magento.toml")),
+    ("laravel", include_str!("../recipes/laravel.toml")),
+    ("generic", include_str!("../recipes/generic.toml")),
 ];
 
 /// Sniff a `composer.json` for a builtin recipe name. Returns the

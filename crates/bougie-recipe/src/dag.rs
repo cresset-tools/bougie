@@ -106,7 +106,7 @@ pub fn task_names_by_creates(recipe: &Recipe) -> HashMap<&str, &str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::recipe::parser::parse;
+    use crate::parser::parse;
 
     #[test]
     fn topo_orders_deps_first() {

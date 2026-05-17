@@ -44,6 +44,10 @@ dev-trust-root = []
 path = "../bougie-cli"
 version = "0.4.0"
 
+[dependencies.bougie-backend]
+path = "../bougie-backend"
+version = "0.4.0"
+
 [dependencies.bougie-composer]
 path = "../bougie-composer"
 version = "0.4.0"
@@ -66,6 +70,21 @@ version = "0.4.0"
 
 [dependencies.bougie-index]
 path = "../bougie-index"
+version = "0.4.0"
+
+[dependencies.bougie-installer]
+path = "../bougie-installer"
+version = "0.4.0"
+
+[dependencies.bougie-resolver]
+path = "../bougie-resolver"
+version = "0.4.0"
+
+# Recipe engine: unix-only. The crate is an empty lib on Windows.
+# Gating the dep keeps Windows builds from compiling rustix's
+# Unix-specific symbols.
+[target.'cfg(unix)'.dependencies.bougie-recipe]
+path = "../bougie-recipe"
 version = "0.4.0"
 
 [dependencies.bougie-output]

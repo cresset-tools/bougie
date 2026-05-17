@@ -12,17 +12,17 @@
 //! instance for back-to-back resolves to avoid re-fetching the root.
 
 use super::{build_http_client, BlobRef, ClosureRef, ExtRecipe, PhpRecipe};
-use crate::errors::BougieError;
-use crate::fetch::ArchiveKind;
-use crate::index::{
+use bougie_errors::BougieError;
+use bougie_fetch::ArchiveKind;
+use bougie_index::{
     build_verifier,
     fetch::{fetch_manifest, fetch_root, fetch_section},
 };
-use crate::install::host_to_dirname;
-use crate::paths::Paths;
-use crate::request::{Flavor, VersionLike};
-use crate::resolve::{resolve_extension, resolve_php, ResolveOptions, Selected};
-use crate::version::PartialVersion;
+use bougie_index::host_to_dirname;
+use bougie_paths::Paths;
+use bougie_version::request::{Flavor, VersionLike};
+use bougie_resolver::{resolve_extension, resolve_php, ResolveOptions, Selected};
+use bougie_version::version::PartialVersion;
 use eyre::{eyre, Result};
 use std::path::PathBuf;
 

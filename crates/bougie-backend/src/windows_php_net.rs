@@ -36,14 +36,14 @@
 //! `install/bin/php.exe`.
 
 use super::{build_http_client, BlobRef, ExtRecipe, PhpRecipe};
-use crate::errors::BougieError;
-use crate::fetch::{fetch_blob, ArchiveKind, BlobOutcome, DownloadBar};
-use crate::index::wire::LoadDirective;
-use crate::paths::Paths;
-use crate::request::{Flavor, VersionLike};
-use crate::resolve::ResolveOptions;
-use crate::target::{Arch, Triple};
-use crate::version::{PartialVersion, Version};
+use bougie_errors::BougieError;
+use bougie_fetch::{fetch_blob, ArchiveKind, BlobOutcome, DownloadBar};
+use bougie_index::wire::LoadDirective;
+use bougie_paths::Paths;
+use bougie_version::request::{Flavor, VersionLike};
+use bougie_resolver::ResolveOptions;
+use bougie_platform::target::{Arch, Triple};
+use bougie_version::version::{PartialVersion, Version};
 use eyre::{eyre, Result, WrapErr};
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -303,8 +303,8 @@ fn pick_minor_key(spec: &VersionLike) -> Result<String> {
 ///
 /// Anything else (`^8`, unions, multi-minor ranges) returns `None` and
 /// the caller surfaces a structured error.
-fn constraint_anchor(c: &crate::version::Constraint) -> Option<PartialVersion> {
-    use crate::version::{Constraint as C, Op};
+fn constraint_anchor(c: &bougie_version::version::Constraint) -> Option<PartialVersion> {
+    use bougie_version::version::{Constraint as C, Op};
     match c {
         C::Caret(pv) | C::Tilde(pv) | C::Exact(pv) => Some(*pv),
         // `=8.4.21`, `>=8.4`, etc. that pin a single minor.
@@ -736,7 +736,7 @@ impl WindowsPhpNetBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::version::PartialVersion;
+    use bougie_version::version::PartialVersion;
 
     #[test]
     fn vc_pinning_follows_php_minor() {
@@ -775,7 +775,7 @@ mod tests {
     /// a new project on Windows" flow to function.
     #[test]
     fn pick_minor_key_accepts_caret_tilde_and_pinned_op_constraints() {
-        use crate::version::{Constraint, Op};
+        use bougie_version::version::{Constraint, Op};
         let caret = VersionLike::Constraint(Constraint::Caret(PartialVersion {
             major: 8,
             minor: Some(4),
@@ -803,7 +803,7 @@ mod tests {
 
     #[test]
     fn pick_minor_key_rejects_unanchored_constraints() {
-        use crate::version::{Constraint, Op};
+        use bougie_version::version::{Constraint, Op};
         // `^8` doesn't pin a minor — every 8.x patch satisfies it.
         let caret_major = VersionLike::Constraint(Constraint::Caret(PartialVersion {
             major: 8,
@@ -983,12 +983,12 @@ mod tests {
     #[test]
     fn resolve_pecl_builds_xdebug_url_for_php_84_nts_x64() {
         let td = tempfile::TempDir::new().unwrap();
-        let paths = crate::paths::Paths::new(td.path().into(), td.path().join("cache"));
-        let target = crate::target::Triple {
+        let paths = bougie_paths::Paths::new(td.path().into(), td.path().join("cache"));
+        let target = bougie_platform::target::Triple {
             arch: Arch::X86_64,
-            vendor: crate::target::Vendor::Pc,
-            os: crate::target::Os::Windows,
-            env: Some(crate::target::Env::Msvc),
+            vendor: bougie_platform::target::Vendor::Pc,
+            os: bougie_platform::target::Os::Windows,
+            env: Some(bougie_platform::target::Env::Msvc),
         };
         let backend = WindowsPhpNetBackend::new(&paths, &target).unwrap();
         let art = backend
@@ -1013,12 +1013,12 @@ mod tests {
     #[test]
     fn resolve_pecl_imagick_signals_needs_store_on_path() {
         let td = tempfile::TempDir::new().unwrap();
-        let paths = crate::paths::Paths::new(td.path().into(), td.path().join("cache"));
-        let target = crate::target::Triple {
+        let paths = bougie_paths::Paths::new(td.path().into(), td.path().join("cache"));
+        let target = bougie_platform::target::Triple {
             arch: Arch::X86_64,
-            vendor: crate::target::Vendor::Pc,
-            os: crate::target::Os::Windows,
-            env: Some(crate::target::Env::Msvc),
+            vendor: bougie_platform::target::Vendor::Pc,
+            os: bougie_platform::target::Os::Windows,
+            env: Some(bougie_platform::target::Env::Msvc),
         };
         let backend = WindowsPhpNetBackend::new(&paths, &target).unwrap();
         let art = backend
@@ -1042,12 +1042,12 @@ mod tests {
     fn resolve_extension_for_imagick_produces_recipe_with_empty_closure_and_path_extras() {
         use super::super::Backend as _;
         let td = tempfile::TempDir::new().unwrap();
-        let paths = crate::paths::Paths::new(td.path().into(), td.path().join("cache"));
-        let target = crate::target::Triple {
+        let paths = bougie_paths::Paths::new(td.path().into(), td.path().join("cache"));
+        let target = bougie_platform::target::Triple {
             arch: Arch::X86_64,
-            vendor: crate::target::Vendor::Pc,
-            os: crate::target::Os::Windows,
-            env: Some(crate::target::Env::Msvc),
+            vendor: bougie_platform::target::Vendor::Pc,
+            os: bougie_platform::target::Os::Windows,
+            env: Some(bougie_platform::target::Env::Msvc),
         };
         let backend = WindowsPhpNetBackend::new(&paths, &target).unwrap();
         let recipe = backend
@@ -1056,7 +1056,7 @@ mod tests {
                 PartialVersion { major: 8, minor: Some(4), patch: None },
                 Flavor::Nts,
                 None,
-                crate::resolve::ResolveOptions::default(),
+                bougie_resolver::ResolveOptions::default(),
             )
             .unwrap();
         assert_eq!(recipe.name, "imagick");
@@ -1078,12 +1078,12 @@ mod tests {
     fn resolve_extension_ignores_version_pin_and_opts() {
         use super::super::Backend as _;
         let td = tempfile::TempDir::new().unwrap();
-        let paths = crate::paths::Paths::new(td.path().into(), td.path().join("cache"));
-        let target = crate::target::Triple {
+        let paths = bougie_paths::Paths::new(td.path().into(), td.path().join("cache"));
+        let target = bougie_platform::target::Triple {
             arch: Arch::X86_64,
-            vendor: crate::target::Vendor::Pc,
-            os: crate::target::Os::Windows,
-            env: Some(crate::target::Env::Msvc),
+            vendor: bougie_platform::target::Vendor::Pc,
+            os: bougie_platform::target::Os::Windows,
+            env: Some(bougie_platform::target::Env::Msvc),
         };
         let backend = WindowsPhpNetBackend::new(&paths, &target).unwrap();
         // Pass a version_pin that doesn't match the table row's
@@ -1095,7 +1095,7 @@ mod tests {
                 PartialVersion { major: 8, minor: Some(4), patch: None },
                 Flavor::Nts,
                 Some("99.99.99"),
-                crate::resolve::ResolveOptions::default(),
+                bougie_resolver::ResolveOptions::default(),
             )
             .unwrap();
         assert_eq!(recipe.version, Version::new(3, 5, 1));
@@ -1104,12 +1104,12 @@ mod tests {
     #[test]
     fn resolve_pecl_errors_when_table_has_no_entry() {
         let td = tempfile::TempDir::new().unwrap();
-        let paths = crate::paths::Paths::new(td.path().into(), td.path().join("cache"));
-        let target = crate::target::Triple {
+        let paths = bougie_paths::Paths::new(td.path().into(), td.path().join("cache"));
+        let target = bougie_platform::target::Triple {
             arch: Arch::X86_64,
-            vendor: crate::target::Vendor::Pc,
-            os: crate::target::Os::Windows,
-            env: Some(crate::target::Env::Msvc),
+            vendor: bougie_platform::target::Vendor::Pc,
+            os: bougie_platform::target::Os::Windows,
+            env: Some(bougie_platform::target::Env::Msvc),
         };
         let backend = WindowsPhpNetBackend::new(&paths, &target).unwrap();
         // redis isn't in the bundled table yet — surface a structured error.
