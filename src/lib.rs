@@ -218,7 +218,7 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
         Command::Services(ServicesCommand::Daemon(ServicesDaemonCommand::Version)) => {
             commands::services::daemon::version(format)
         }
-        Command::Start {
+        Command::Make {
             task,
             list,
             dry_run,
@@ -227,9 +227,9 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
             no_builtin,
             recipe,
             print,
-        } => commands::start::run(
+        } => commands::make::run(
             format,
-            commands::start::StartOptions {
+            commands::make::MakeOptions {
                 task,
                 list,
                 dry_run,

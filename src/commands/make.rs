@@ -1,4 +1,6 @@
-//! `bougie start [task]` — run a project recipe. See RECIPES.md.
+//! `bougie make [task]` — walk a project recipe's DAG, applying
+//! freshness. `bougie start` is a thin alias for `bougie make start`.
+//! See RECIPES.md.
 
 use crate::cli::OutputFormat;
 use crate::commands::sync;
@@ -17,7 +19,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 #[derive(Debug, Default, Clone)]
-pub struct StartOptions {
+pub struct MakeOptions {
     pub task: Option<String>,
     pub list: bool,
     pub dry_run: bool,
@@ -29,7 +31,7 @@ pub struct StartOptions {
 }
 
 #[derive(Debug, Serialize)]
-pub struct StartResult {
+pub struct MakeResult {
     pub schema_version: u32,
     pub recipe: String,
     pub task: String,
@@ -43,7 +45,7 @@ pub struct StepResult {
     pub reason: String,
 }
 
-impl Render for StartResult {
+impl Render for MakeResult {
     fn render_text(&self, w: &mut dyn Write) -> io::Result<()> {
         writeln!(
             w,
@@ -86,7 +88,7 @@ impl Render for PrintResult {
     }
 }
 
-pub fn run(format: OutputFormat, opts: StartOptions) -> Result<ExitCode> {
+pub fn run(format: OutputFormat, opts: MakeOptions) -> Result<ExitCode> {
     let project_root = std::env::current_dir().wrap_err("getting current directory")?;
     let task_name = opts.task.clone().unwrap_or_else(|| "start".into());
 
@@ -189,7 +191,7 @@ pub fn run(format: OutputFormat, opts: StartOptions) -> Result<ExitCode> {
 
     emit(
         format,
-        &StartResult {
+        &MakeResult {
             schema_version: 1,
             recipe: recipe_name,
             task: task_name,
@@ -205,7 +207,7 @@ pub fn run(format: OutputFormat, opts: StartOptions) -> Result<ExitCode> {
 /// builtin entirely with `--no-builtin`).
 fn load_merged_recipe(
     project_root: &PathBuf,
-    opts: &StartOptions,
+    opts: &MakeOptions,
 ) -> Result<(String, Recipe)> {
     let composer_path = project_root.join("composer.json");
     let composer_text = if composer_path.exists() {

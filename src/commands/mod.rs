@@ -23,7 +23,7 @@ pub mod run;
 pub mod self_update;
 pub mod self_version;
 pub mod server;
+pub mod make;
 pub mod services;
-pub mod start;
 pub mod sync;
 pub mod unzip;

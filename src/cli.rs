@@ -125,9 +125,13 @@ pub enum Command {
     #[command(subcommand)]
     Services(ServicesCommand),
 
-    /// Run a project recipe task (default: `start`). See RECIPES.md.
-    Start {
-        /// Task to run. Defaults to `start`.
+    /// Walk a project recipe's DAG, running tasks whose freshness
+    /// check fails. `bougie start` is a zero-arg alias for
+    /// `bougie make start`. See RECIPES.md.
+    #[command(alias = "start")]
+    Make {
+        /// Task to run. Defaults to `start` — so `bougie make` and
+        /// `bougie start` are equivalent.
         task: Option<String>,
         /// List available tasks instead of running.
         #[arg(long, conflicts_with_all = ["dry_run", "explain", "print"])]
