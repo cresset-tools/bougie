@@ -39,14 +39,13 @@ deliberate and unchanged for the surfaces bougie already owns:
 | `bougie composer install`        | none (apply lock)     | dist downloads | no (this plan, Phase A)   |
 | `bougie composer install --lock-verify` | pubgrub (offline) | no            | no (Phase B)              |
 | `bougie composer update`         | pubgrub               | metadata + dist | no (Phase C)             |
-| Anything we can't faithfully replicate | n/a             | n/a            | **fallback to composer.phar** |
+| Repo types bougie doesn't implement yet (VCS, artifact) | per-package | dist downloads | **dist falls back to `composer.phar`** |
 
-The fallback path matters. Plugins that affect resolution
-(`PRE_DEPENDENCIES_SOLVING`, custom installers, Composer event
-listeners) cannot be honored by a native Rust resolver. Detecting them
-and shelling out to `composer.phar` is part of the design, not a
-failure mode. Bougie already owns the Composer binary surface
-(`bougie-composer` crate), so the fallback is local.
+The fallback path above is **only** for repository types bougie's
+installer hasn't implemented yet (VCS sources in Phase C, etc.). It
+is **not** a general escape hatch — bougie does not run Composer
+plugins or scripts under any circumstances. See "Hard scope
+boundaries" below.
 
 ## What we are **not** building
 
@@ -56,9 +55,11 @@ Out of scope, intentionally:
   crates.io (the same one uv uses). Our crate is the Composer-shaped
   `DependencyProvider` and the surrounding plumbing.
 - Source installs from VCS for the MVP (Phase D, deferred).
-- Composer plugin execution. Plugins that don't touch resolution
-  (post-install scripts, autoload generators) we still run by handing
-  off to `composer.phar` after our resolver finishes — see Phase A.
+- Composer plugins, of any kind. See "Hard scope boundaries" below.
+- Composer scripts: `pre-install-cmd`, `post-install-cmd`,
+  `pre-update-cmd`, `post-update-cmd`, `pre-autoload-dump`,
+  `post-autoload-dump`, per-package install scripts. See "Hard
+  scope boundaries" below.
 - A Packagist-compatible repository server. We *read* Packagist v2
   metadata; we don't *serve* it.
 - Cross-repo replacement indexes. We use what Packagist exposes
@@ -67,6 +68,84 @@ Out of scope, intentionally:
 - A `bougie-composer-server` analogue to `uv tool server`. If a
   long-running resolver daemon turns out to be useful (it might, for
   IDE integration), it lands separately, not in this plan.
+
+## Hard scope boundaries
+
+Two things bougie will **never** do, no matter what phase, no matter
+how popular the feature is. Both follow from the same principle:
+bougie owns project resolution and installation natively, and the
+projects it supports are the ones that can resolve and install
+deterministically with no PHP execution.
+
+### Composer plugins are unsupported
+
+Composer plugins (`type: composer-plugin`) are PHP-side extensions
+that hook into the resolver, installer, autoload generator, and event
+bus. Examples: custom installers (`oomphinc/composer-installers-extender`,
+`drupal/core-composer-scaffold`), `wikimedia/composer-merge-plugin`,
+hirak/prestissimo (legacy), composer-runtime-api consumers.
+
+We don't run them. There is no plugin compatibility shim, no
+"detect and fall back to composer.phar" path, no allowlist of
+known-safe plugins. Booting PHP to execute plugin code would
+re-create the very thing the native resolver exists to replace.
+
+**Detection + behavior:** at resolve time, if any package in the
+solution has `type: composer-plugin`, `bougie composer install` /
+`update` emits a hard error pointing the user at plain Composer:
+
+> This project requires Composer plugins
+> (`<vendor/name>`, `<vendor/name>`...), which bougie does not
+> support. Use plain Composer for this project.
+
+A `--allow-plugins=ignore` flag is available for users who know the
+plugin doesn't affect resolution or installation in a way they care
+about (e.g., a plugin that only adds CLI commands). The flag does
+**not** run the plugin; it only suppresses the hard error so install
+can proceed. Misusing it produces broken installs; that is the
+user's problem.
+
+### Composer scripts are unsupported
+
+The `scripts` block in `composer.json` runs arbitrary PHP / shell at
+specific lifecycle points: `pre-install-cmd`, `post-install-cmd`,
+`pre-update-cmd`, `post-update-cmd`, `pre-autoload-dump`,
+`post-autoload-dump`, per-package `pre-package-install` etc., plus
+user-defined custom scripts. Common uses: `php artisan
+package:discover` after install, clearing app caches, copying assets,
+regenerating IDE helper files.
+
+We don't run them. Same reasoning as plugins.
+
+**Detection + behavior:** on install/update, bougie reads
+`composer.json`'s `scripts` block. If any lifecycle script is
+declared (the user-defined custom-script entries like
+`"scripts": { "test": "phpunit" }` invoked via
+`composer run test` are fine — bougie's `bougie run` already
+handles those), emit a warning listing the unrun scripts:
+
+> composer.json declares lifecycle scripts that bougie does not
+> run: post-install-cmd, post-update-cmd. If your project depends
+> on these, run them manually (`php artisan package:discover` etc.)
+> or use plain Composer.
+
+`--ignore-scripts` exists as a no-op flag for parity with Composer's
+CLI; it suppresses the warning. The warning is the default because
+silently skipping a script the user is counting on is worse than
+noisy success.
+
+### Why this boundary, stated plainly
+
+A project that needs plugins or scripts to install correctly is a
+project bougie does not support. That is not a temporary state. The
+target users are projects where `composer install` is a pure
+resolve + download + extract + autoload-dump operation, which covers
+the large majority of PHP libraries and a substantial fraction of
+applications. Frameworks that lean hard on `post-install-cmd`
+(Laravel, Symfony with recipes, some Drupal setups) and projects
+using merge-plugin or custom installers are outside the envelope.
+Those users continue to run plain Composer; bougie's `bougie run`
+already exposes the Composer binary for that case.
 
 ## Surface (CLI)
 
@@ -301,10 +380,9 @@ refactors slide between them as needed.
 
 **Ship:** `bougie composer install` that reads an existing
 `composer.lock`, verifies `content-hash` against `composer.json`,
-parallel-downloads dists, extracts to `vendor/`, generates
-autoloader files, and runs `composer`'s post-install scripts by
-handing off to `composer.phar` for that final step (we don't reimplement
-PHP script execution).
+parallel-downloads dists, extracts to `vendor/`, and generates
+autoloader files. No scripts run, no plugins activated (see "Hard
+scope boundaries").
 
 **Why first:** Most users run `install` ≫ `update`. The performance
 win — from sequential blocking reqwest to a tokio-backed parallel
@@ -317,10 +395,9 @@ land. Every subsequent phase depends on them.
 - Any resolver. `install` on a `composer.json` without a lockfile
   errors with `run \`bougie composer update\` first`.
 - VCS sources. `dev-*` versions referencing git refs fall back to
-  `composer.phar`.
-- Composer plugins. Detected at install time; if any plugin in the
-  lock declares an `installer-plugin` or affects autoload generation
-  beyond the standard schemas, fall back.
+  `composer.phar` for the dist download only.
+- Plugins and scripts: not run, ever. Hard-error or warn as described
+  in "Hard scope boundaries."
 
 **Acceptance:** for the bougie repo itself + ~10 representative
 real-world Composer projects (Laravel skeleton, Symfony demo,
@@ -374,15 +451,12 @@ byte-compatible fidelity.
 
 **Out of scope (still):**
 - VCS / source / path / artifact repositories. These fall back to
-  `composer.phar` for the affected packages, while pubgrub handles
-  everything else. Mixed-mode is a complication we accept rather than
-  block on a clean solution; Phase D revisits.
-- Composer plugins that affect resolution. Detected by scanning
-  `composer.json` for `require` entries whose `type` (per metadata)
-  is `composer-plugin` and that declare the relevant capabilities
-  (`Composer\Plugin\Capability\CommandProvider` is fine; anything
-  hooking solver events is not). On detection: fall back to
-  `composer.phar` for the whole `update` invocation.
+  `composer.phar` for the affected packages' dist downloads, while
+  pubgrub handles resolution for everything else. Mixed-mode is a
+  complication we accept rather than block on a clean solution;
+  Phase D revisits.
+- Plugins (any kind) and scripts (lifecycle hooks). See "Hard scope
+  boundaries" — these projects are unsupported, not fallback-routed.
 
 **Acceptance:** for each fixture project, `bougie composer update` on
 a wiped `composer.lock` produces a lock that:
@@ -644,24 +718,32 @@ direct queries over the same derivation infrastructure. `why` walks
 *successful* derivations ("X is installed because A requires B
 requires X"); `why-not` walks the failure tree.
 
-## Fallback to `composer.phar`
+## Per-package fallback to `composer.phar` for unimplemented repo types
 
-We will not match Composer 100% in Phase C. The fallback is a
-first-class code path, not an emergency exit. It triggers on:
+Narrow fallback path, scoped only to *features bougie hasn't
+implemented yet*. Triggers:
 
-- A `composer.json` `repositories` entry of a type we don't support
-  (`vcs`, `git`, `artifact` in Phase C; `path` we handle).
-- A `require` entry on a package whose metadata declares a Composer
-  plugin with solver-affecting capabilities.
-- An explicit `--via-composer` flag for debugging or A/B comparison.
-- Any internal resolver bug, caught by the byte-equivalence check
-  (we'll have a release mode that always cross-checks against
-  `composer.phar` for the first N releases — slow but safe).
+- A `composer.json` `repositories` entry of a type whose downloader
+  bougie doesn't ship yet (`vcs`, `git`, `artifact` in Phase C;
+  `path` we handle natively). The resolver decides what to install;
+  the per-package downloader shells out to `composer.phar` for the
+  actual fetch + extract of those specific packages.
+- An explicit `--via-composer` flag for debugging or A/B comparison
+  against the reference implementation.
+- During the first N releases, an opt-in `[composer] cross-check =
+  true` setting that runs `composer install --dry-run` after every
+  bougie resolve and aborts on divergence. Slow but safe; expected
+  to be turned off once the cross-check harness in CI has bedded in.
 
-The fallback path lives in `fallback.rs` and shells out to
-`bougie-composer`'s installed Composer binary. From the user's
-perspective the command "just works"; from the operator's perspective
-we emit a debug-level log saying which clause forced the fallback.
+Explicitly **not** triggers for fallback (covered by hard errors
+instead, per "Hard scope boundaries"):
+
+- Presence of plugins.
+- Presence of scripts.
+
+The narrow fallback lives in `fallback.rs` and shells out to
+`bougie-composer`'s installed Composer binary for the affected
+packages only.
 
 ## Testing strategy
 
@@ -697,11 +779,13 @@ cleanly.
    shallow choice. Phase C acceptance against real-world projects is
    where we find out. If the cross-check failure rate is >5% at the
    end of Phase C, we revisit and consider the eager-index approach.
-2. **PHP plugin detection.** Conservative detection (any
-   `composer-plugin` type → fallback) is safe but pessimistic. Many
-   plugins don't actually touch resolution. Refinement: maintain an
-   allowlist of known-safe plugins. Out of scope until users
-   complain.
+2. **Project compatibility scope.** Bougie won't run plugins or
+   scripts (see "Hard scope boundaries"). Open question is how
+   loudly to error. Current plan: hard-error on plugin-using
+   projects, warn-and-proceed on script-using projects. We'll see
+   how that lands when real users hit it; could tighten scripts to
+   hard-error or loosen plugins to warn-and-proceed, depending on
+   feedback. Won't change the underlying boundary.
 3. **Async vs blocking.** Bougie's HTTP stack is currently blocking
    reqwest. Phase A doesn't need async (a thread pool for parallel
    downloads is enough). Phase C does (the prefetcher's whole value
