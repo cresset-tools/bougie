@@ -1,0 +1,18 @@
+[package]
+name = "bougie-errors"
+version = "0.4.0"
+edition = "2024"
+description = "Domain error taxonomy + exit-code map for bougie."
+license = "EUPL-1.2"
+repository = "https://github.com/cresset-tools/bougie"
+rust-version = "1.95"
+authors.workspace = true
+
+[dependencies.eyre]
+version = "0.6"
+
+[dependencies.thiserror]
+version = "2.0"
+
+[lints]
+workspace = true
