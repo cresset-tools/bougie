@@ -6,7 +6,7 @@
 
 use super::BougieConfig;
 use eyre::{Result, WrapErr};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ComposerJson {
@@ -14,6 +14,14 @@ pub struct ComposerJson {
     /// Extension names with the `ext-` prefix stripped.
     pub require_extensions: BTreeSet<String>,
     pub extra_bougie: Option<BougieConfig>,
+    /// `scripts` block, normalised: every entry is a non-empty list of
+    /// shell-command strings. composer.json allows either a bare
+    /// string (single step) or an array (run in order); both
+    /// collapse to the array form here. Entries that aren't strings
+    /// or string arrays — composer's `@scriptname` references, PHP
+    /// callables, event listeners — are dropped: bougie's runner is
+    /// a thin shell wrapper, not a composer-event reimplementation.
+    pub scripts: BTreeMap<String, Vec<String>>,
 }
 
 pub fn read_composer_json(text: &str) -> Result<ComposerJson> {
@@ -40,7 +48,48 @@ pub fn read_composer_json(text: &str) -> Result<ComposerJson> {
         .transpose()
         .wrap_err("deserializing extra.bougie")?;
 
-    Ok(ComposerJson { require_php, require_extensions, extra_bougie })
+    let scripts = v
+        .get("scripts")
+        .and_then(serde_json::Value::as_object)
+        .map(|obj| {
+            obj.iter()
+                .filter_map(|(name, val)| normalise_script(val).map(|steps| (name.clone(), steps)))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    Ok(ComposerJson {
+        require_php,
+        require_extensions,
+        extra_bougie,
+        scripts,
+    })
+}
+
+/// Collapse a composer.json `scripts.<name>` value to a `Vec<String>`
+/// of shell commands. Returns `None` for shapes bougie doesn't
+/// execute (PHP callables, composer-event refs, non-string array
+/// entries) — the caller treats those as "no script defined" and
+/// falls through to its normal exec path.
+fn normalise_script(v: &serde_json::Value) -> Option<Vec<String>> {
+    match v {
+        serde_json::Value::String(s) => Some(vec![s.clone()]),
+        serde_json::Value::Array(items) => {
+            let steps: Vec<String> = items
+                .iter()
+                .filter_map(|i| i.as_str().map(String::from))
+                .collect();
+            // Reject the mixed-types case: if the array had any
+            // non-string entries (a PHP callable, say), running only
+            // the shell-string subset would silently drop steps and
+            // give the user a surprising partial execution.
+            if steps.len() != items.len() || steps.is_empty() {
+                return None;
+            }
+            Some(steps)
+        }
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -53,6 +102,40 @@ mod tests {
         assert_eq!(c.require_php, None);
         assert!(c.require_extensions.is_empty());
         assert!(c.extra_bougie.is_none());
+        assert!(c.scripts.is_empty());
+    }
+
+    #[test]
+    fn scripts_string_form_normalises_to_single_step() {
+        let c = read_composer_json(r#"{"scripts":{"test":"phpunit"}}"#).unwrap();
+        assert_eq!(c.scripts.get("test"), Some(&vec!["phpunit".to_string()]));
+    }
+
+    #[test]
+    fn scripts_array_form_preserves_order() {
+        let c = read_composer_json(
+            r#"{"scripts":{"check":["phpcs","phpstan analyse"]}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            c.scripts.get("check"),
+            Some(&vec!["phpcs".to_string(), "phpstan analyse".to_string()])
+        );
+    }
+
+    #[test]
+    fn scripts_drop_non_string_array_entries_wholesale() {
+        // If an array has any non-string entry (e.g. composer's
+        // event-listener object form), bougie drops the whole script:
+        // executing only the shell-string subset would silently skip
+        // steps and give a surprising partial run.
+        let c = read_composer_json(
+            r#"{"scripts":{
+                "mixed":["phpunit",{"object":"with","fields":1}]
+            }}"#,
+        )
+        .unwrap();
+        assert!(!c.scripts.contains_key("mixed"));
     }
 
     #[test]

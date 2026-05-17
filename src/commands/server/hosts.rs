@@ -367,6 +367,7 @@ mod tests {
                 index: Vec::new(),
                 try_files: Vec::new(),
                 aliases: vec![HostAlias { hostname: "alias.bougie.test".into() }],
+                rewrites: Vec::new(),
             }],
         };
         let hs = hostnames_for_etc_hosts(&cfg);

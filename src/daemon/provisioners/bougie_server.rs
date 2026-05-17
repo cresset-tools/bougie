@@ -151,12 +151,49 @@ fn ensure_host_block(paths: &Paths, hostname: &str, project: &Path, root: &str) 
     let parent = cfg.parent().ok_or_else(|| eyre!("config path has no parent"))?;
     std::fs::create_dir_all(parent)
         .wrap_err_with(|| format!("creating {}", parent.display()))?;
-    // Per `bougie server add` behaviour, `add_host` returns
-    // `Ok(None)` when the hostname is already present — idempotent
-    // by design.
-    crate::commands::server::config::add_host(&cfg, hostname, project, Some(root))
-        .wrap_err_with(|| format!("adding host {hostname} to {}", cfg.display()))?;
+    let rewrites = framework_rewrites(project, root);
+    // Per `bougie server add` behaviour, `add_host_with_rewrites`
+    // returns `Ok(None)` when the hostname is already present —
+    // idempotent by design.
+    crate::commands::server::config::add_host_with_rewrites(
+        &cfg, hostname, project, Some(root), &rewrites,
+    )
+    .wrap_err_with(|| format!("adding host {hostname} to {}", cfg.display()))?;
     Ok(())
+}
+
+/// Soft framework auto-detection: when the docroot looks like a
+/// Magento 2 layout (a `static.php` front controller under `<root>/`),
+/// seed the host with the standard `/static/` rewrite so dev mode's
+/// on-demand asset materialisation works without the user having to
+/// hand-configure `[[host.rewrite]]`. Empty when nothing matches —
+/// other frameworks (Laravel, Symfony) put assets straight on disk
+/// and don't need a rewrite.
+fn framework_rewrites(
+    project: &Path,
+    root: &str,
+) -> Vec<crate::commands::server::config::RewriteRule> {
+    use crate::commands::server::config::RewriteRule;
+    let docroot = project.join(root);
+    let mut out = Vec::new();
+    if docroot.join("static.php").is_file() {
+        // Magento dev-mode asset materialiser: `/static/version<n>/<path>`
+        // (or unversioned `/static/<path>`) → `static.php?resource=<path>`.
+        out.push(RewriteRule {
+            pattern: r"^/static/(?:version[^/]+/)?(.*)$".into(),
+            target: "/static.php?resource=$1".into(),
+        });
+    }
+    if docroot.join("get.php").is_file() {
+        // Magento media protected-route fallback: `/media/<path>` that
+        // isn't on disk → `get.php?resource=<path>`. The disk-hit case
+        // is handled by `try_files` ahead of `get.php`.
+        out.push(RewriteRule {
+            pattern: r"^/media/(.*)$".into(),
+            target: "/get.php?resource=$1".into(),
+        });
+    }
+    out
 }
 
 /// Resolve the project's web-root subdirectory.

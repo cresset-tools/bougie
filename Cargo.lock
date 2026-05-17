@@ -388,6 +388,7 @@ dependencies = [
  "notify",
  "percent-encoding",
  "predicates",
+ "regex",
  "reqwest 0.13.3",
  "rustix",
  "rustls",
