@@ -339,6 +339,85 @@ pub fn install_extension_with_bar(
     })
 }
 
+/// Outcome of [`install_local_so`]. Same shape as [`InstalledExt`]
+/// for the bits the conf.d writer needs, minus the index-derived
+/// `version` / `frozen_warning` fields (a local .so has no version).
+#[derive(Debug, Clone)]
+pub struct InstalledLocalExt {
+    pub name: String,
+    pub store_path: PathBuf,
+    /// Absolute path to the copied `.so` inside `store_path`.
+    pub so_path: PathBuf,
+    /// `true` if the destination directory already existed — the .so
+    /// at this path matches the user-provided bytes (sha-addressed).
+    pub already_present: bool,
+}
+
+/// Copy a user-provided `.so` into the content-addressed store under
+/// `ext-<name>-local+php<minor>-<flavor>-<sha8>/<basename>`. The sha
+/// is over the .so bytes, so a different file produces a different
+/// dest; an identical re-add is a no-op.
+///
+/// Does NOT walk a closure (there's no manifest) and does NOT touch
+/// composer.json — callers (today: `bougie ext add --so`) pair this
+/// with [`crate::conf_d::write_local_ext_fragment`].
+pub fn install_local_so(
+    paths: &Paths,
+    name: &str,
+    source_so: &Path,
+    php_minor: PartialVersion,
+    flavor: Flavor,
+) -> Result<InstalledLocalExt> {
+    let _guard = ExclusiveGuard::acquire(&paths.global_lock(), LOCK_TIMEOUT)?;
+
+    let bytes = std::fs::read(source_so)
+        .wrap_err_with(|| format!("reading {}", source_so.display()))?;
+    let sha = {
+        use sha2::{Digest, Sha256};
+        let digest = Sha256::digest(&bytes);
+        digest.iter().map(|b| format!("{b:02x}")).collect::<String>()
+    };
+    let sha8: String = sha.chars().take(8).collect();
+
+    let basename = source_so
+        .file_name()
+        .ok_or_else(|| eyre!("source .so has no filename: {}", source_so.display()))?;
+
+    let php_minor_label = format!("php{}{}", php_minor.major, php_minor.minor.unwrap_or(0));
+    let dirname = format!("ext-{name}-local+{php_minor_label}-{flavor}-{sha8}");
+    let dest_dir = paths.store().join(&dirname);
+    let dest_so = dest_dir.join(basename);
+
+    if dest_so.exists() {
+        return Ok(InstalledLocalExt {
+            name: name.to_string(),
+            store_path: dest_dir,
+            so_path: dest_so,
+            already_present: true,
+        });
+    }
+
+    // Tempdir-then-rename for atomicity: a partial copy under a
+    // dest_dir that already-exists check would later mistake for a
+    // complete install.
+    let tmp = paths.store().join(format!(".{dirname}.incoming"));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp)
+        .wrap_err_with(|| format!("creating {}", tmp.display()))?;
+    let tmp_so = tmp.join(basename);
+    std::fs::write(&tmp_so, &bytes)
+        .wrap_err_with(|| format!("writing {}", tmp_so.display()))?;
+    std::fs::rename(&tmp, &dest_dir)
+        .wrap_err_with(|| format!("renaming {} -> {}", tmp.display(), dest_dir.display()))?;
+
+    Ok(InstalledLocalExt {
+        name: name.to_string(),
+        store_path: dest_dir,
+        so_path: dest_so,
+        already_present: false,
+    })
+}
+
 /// Outcome of [`install_baseline_into`]. `installed` and `failed`
 /// together cover every name the filter admitted; `skipped` is empty
 /// here and carried only so the JSON shape stays stable when the

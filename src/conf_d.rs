@@ -39,6 +39,16 @@ pub fn project_confd_dir(project_root: &Path) -> PathBuf {
     project_root.join(".bougie").join("conf.d")
 }
 
+/// `<project>/.bougie/conf.d-local/` — machine-local extensions added
+/// via `bougie ext add --so <path>`. Fragments here are NOT mirrored
+/// by `bougie sync` and NOT recorded in `composer.json` — they're for
+/// ad-hoc profilers/loaders (Tideways, Blackfire, custom builds) that
+/// shouldn't bleed into the project's portable dependency set.
+/// Layered into `PHP_INI_SCAN_DIR` for every flow that needs PHP.
+pub fn project_confd_local_dir(project_root: &Path) -> PathBuf {
+    project_root.join(".bougie").join("conf.d-local")
+}
+
 /// `<project>/.bougie/conf.d-debug/` — server-private overlay. Read
 /// only by the server's xdebug pool variant. Bougie server writes
 /// here from [`write_debug_overlay_fragment`] when it lazily installs
@@ -56,12 +66,16 @@ pub fn project_confd_debug_dir(project_root: &Path) -> PathBuf {
 /// `XDEBUG_SESSION` is set or `--xdebug` was passed.
 pub fn php_ini_scan_dir(project_root: &Path, debug_overlay: bool) -> std::ffi::OsString {
     let regular = project_confd_dir(project_root);
-    if !debug_overlay {
-        return regular.into_os_string();
-    }
+    let local = project_confd_local_dir(project_root);
     let mut joined = regular.into_os_string();
-    joined.push(":");
-    joined.push(project_confd_debug_dir(project_root));
+    if local.exists() {
+        joined.push(":");
+        joined.push(&local);
+    }
+    if debug_overlay {
+        joined.push(":");
+        joined.push(project_confd_debug_dir(project_root));
+    }
     joined
 }
 
@@ -96,6 +110,19 @@ pub fn write_ext_fragment(
 /// hasn't explicitly added it. Behaves like [`write_ext_fragment`]
 /// otherwise (atomic write, prefix collision cleanup, default INI
 /// settings appended).
+/// Write — atomically — a `<NN>-<name>.ini` fragment for a local-only
+/// extension (`bougie ext add <name> --so <path>`) into
+/// `.bougie/conf.d-local/`. Bypasses the sync/composer.json round-trip
+/// because the .so came from the user's machine, not the index.
+pub fn write_local_ext_fragment(
+    project_root: &Path,
+    name: &str,
+    so_path: &Path,
+    load: LoadDirective,
+) -> Result<PathBuf> {
+    write_fragment_into(project_confd_local_dir(project_root), name, so_path, load)
+}
+
 pub fn write_debug_overlay_fragment(
     project_root: &Path,
     name: &str,
@@ -164,6 +191,7 @@ pub fn remove_ext_fragment(project_root: &Path, name: &str) -> Result<bool> {
     for dir in [
         project_confd_dir(project_root),
         project_confd_debug_dir(project_root),
+        project_confd_local_dir(project_root),
     ] {
         removed |= remove_fragment_in(&dir, name)?;
     }
@@ -258,6 +286,7 @@ pub fn fragment_present_anywhere(project_root: &Path, name: &str) -> bool {
     for dir in [
         project_confd_dir(project_root),
         project_confd_debug_dir(project_root),
+        project_confd_local_dir(project_root),
     ] {
         if fragment_present_in(&dir, name) {
             return true;
