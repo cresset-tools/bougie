@@ -160,11 +160,29 @@ fn write_fragment_into(
     body.push_str(&format!(
         "{directive}={so}\n",
         directive = load.ini_directive(),
-        so = so_path.display(),
+        so = format_ini_path(so_path),
     ));
     body.push_str(default_ini_settings_for(name));
     write_atomic(&path, body.as_bytes())?;
     Ok(path)
+}
+
+/// Render `path` as the right-hand side of an `extension=` /
+/// `zend_extension=` directive. On Windows the result is wrapped in
+/// double quotes; PHP's INI parser otherwise treats `~` as the unary
+/// bitwise-NOT operator and truncates the value at the tilde — which
+/// strikes any path containing a Windows 8.3 short-form segment
+/// (`C:\Users\RUNNER~1\…`), as GitHub Actions runners produce by
+/// default. Quoting forces the parser into string-literal mode.
+/// Unix INI paths don't run into this since they don't carry `~`,
+/// and leaving them unquoted keeps the existing test assertions
+/// (`extension=/path/foo.so`) matching verbatim.
+#[inline]
+pub fn format_ini_path(path: &Path) -> String {
+    #[cfg(windows)]
+    return format!("\"{}\"", path.display());
+    #[cfg(not(windows))]
+    return path.display().to_string();
 }
 
 /// Path-extras marker prefix in conf.d fragments. Exposed as a const
@@ -438,7 +456,7 @@ mod tests {
         let body = std::fs::read_to_string(&path).unwrap();
         assert!(path.ends_with(".bougie/conf.d/20-redis.ini"));
         assert!(body.starts_with("; managed by bougie"));
-        assert!(body.contains(&format!("extension={}", so.display())));
+        assert!(body.contains(&format!("extension={}", format_ini_path(&so))));
         assert!(!body.contains("zend_extension"));
     }
 
@@ -455,7 +473,7 @@ mod tests {
         )
         .unwrap();
         let body = std::fs::read_to_string(&path).unwrap();
-        assert!(body.contains(&format!("zend_extension={}", so.display())));
+        assert!(body.contains(&format!("zend_extension={}", format_ini_path(&so))));
     }
 
     #[test]
@@ -469,8 +487,8 @@ mod tests {
         let path =
             write_ext_fragment(td.path(), "redis", &new_so, LoadDirective::Extension, &[]).unwrap();
         let body = std::fs::read_to_string(&path).unwrap();
-        assert!(body.contains(&format!("extension={}", new_so.display())));
-        assert!(!body.contains(&format!("extension={}", old_so.display())));
+        assert!(body.contains(&format!("extension={}", format_ini_path(&new_so))));
+        assert!(!body.contains(&format!("extension={}", format_ini_path(&old_so))));
     }
 
     #[test]

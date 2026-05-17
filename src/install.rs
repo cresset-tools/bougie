@@ -629,7 +629,7 @@ fn write_bundled_baseline_fragment(
         "{BASELINE_FRAGMENT_HEADER} {name} bundled\n\
          {directive}={dll}\n",
         directive = load.ini_directive(),
-        dll = dll.display(),
+        dll = crate::conf_d::format_ini_path(dll),
     );
     let mut tf = tempfile::NamedTempFile::new_in(conf_d)
         .wrap_err_with(|| format!("creating tempfile in {}", conf_d.display()))?;
