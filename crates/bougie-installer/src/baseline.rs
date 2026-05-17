@@ -8,7 +8,7 @@
 //! baseline is what makes `bougie php install <ver>` reproduce the
 //! "I just installed PHP and it behaves the way I expect" experience.
 //!
-//! Two extensions to the Debian-strict set live here because we target
+//! Four extensions to the Debian-strict set live here because we target
 //! the *Composer ecosystem* and not just "what the OS calls PHP":
 //!
 //! - **XML family** (`dom`, `simplexml`, `xml`, `xmlreader`,
@@ -18,6 +18,18 @@
 //!   monolog, doctrine all gate on it. Including the family in
 //!   baseline costs ~120KB of `.so` loaded per invocation and makes
 //!   `composer install` work first-shot for the median project.
+//!
+//! - **`mbstring`**. Debian ships this in a separate `php8.2-mbstring`
+//!   package. Baseline because Laravel's `Illuminate\Support\Str`
+//!   reaches for `mb_split` / `mb_str_pad` / `mb_strtolower` on every
+//!   `studly` / kebab-case helper call (and the migration runner uses
+//!   `studly` to derive class names from filenames — so `php artisan
+//!   migrate` fatals at boot without it). The broader Composer
+//!   ecosystem — symfony/string, monolog, league/csv, phpunit's own
+//!   data-provider machinery — gates similarly on `ext-mbstring`.
+//!   Costs ~200 KB per invocation. On Windows the DLL rides along in
+//!   the windows.php.net ZIP (`bin/ext/php_mbstring.dll`), so the
+//!   bundled-DLL baseline path picks it up automatically.
 //!
 //! - **`mysqlnd`**. The php-build-standalone Debian-faithful build
 //!   compiles `--enable-mysqlnd=shared`, so `mysqlnd.so` is a
@@ -29,6 +41,20 @@
 //!   required module "mysqlnd" is not loaded` on every PHP
 //!   invocation. The numeric prefix on `20-mysqlnd.ini` keeps it
 //!   loading before `35-pdo_mysql.ini` and `40-mysqli.ini`.
+//!
+//! - **SQLite** (`pdo_sqlite`, `sqlite3`). Debian ships these in a
+//!   separate `php8.2-sqlite3` package. They're baseline because
+//!   Laravel's default `DB_CONNECTION=sqlite` and the typical Composer-
+//!   project test suite (phpunit fixtures, pest in-memory DBs) expect
+//!   sqlite to be loadable without an explicit `bougie ext add`. The
+//!   pair lives together — `pdo_sqlite` without `sqlite3` strips the
+//!   procedural API that test bootstraps reach for. Costs ~150KB
+//!   per invocation. On Windows the DLLs ride along in the
+//!   windows.php.net ZIP (`bin/ext/php_pdo_sqlite.dll`,
+//!   `bin/ext/php_sqlite3.dll`), so the Windows baseline path picks
+//!   them up automatically without a [`WINDOWS_DLL_BASELINE_EXTRAS`]
+//!   entry — that list is reserved for [`BUILTIN_EXTENSIONS`] members
+//!   like openssl whose Linux build is static.
 //!
 //! The list is compiled into the bougie binary — a bougie release
 //! changes the baseline, not an index publication — which keeps
@@ -84,9 +110,16 @@ pub const BASELINE_EXTENSIONS: &[&str] = &[
     "xml",
     "xmlreader",
     "xmlwriter",
+    // mbstring — Laravel's Str helpers and most Composer libs gate
+    // on mb_* functions. See module docs.
+    "mbstring",
     // mysqlnd — required for pdo_mysql / mysqli to initialize. See
     // module docs.
     "mysqlnd",
+    // sqlite — Laravel's default DB driver and the typical phpunit
+    // fixture backend. See module docs.
+    "pdo_sqlite",
+    "sqlite3",
 ];
 
 /// `true` when the named baseline extension is not available on the
@@ -260,11 +293,16 @@ mod tests {
         // mysqlnd — pdo_mysql / mysqli refuse to init without it
         // loaded first (ZEND_MOD_REQUIRED).
         assert!(is_baseline("mysqlnd"));
+        // SQLite — Laravel default DB driver / phpunit fixture backend.
+        assert!(is_baseline("pdo_sqlite"));
+        assert!(is_baseline("sqlite3"));
+        // mbstring — universal Composer-ecosystem dep (Laravel Str
+        // helpers, symfony/string, monolog).
+        assert!(is_baseline("mbstring"));
         // Composer-domain exts that still ship as per-ext tarballs
         // (loud on every PHP install if they were baselined; users add
         // them explicitly via `bougie ext add` or implicitly via
         // composer.json's `require.ext-*`).
-        assert!(!is_baseline("mbstring"));
         assert!(!is_baseline("curl"));
         assert!(!is_baseline("intl"));
         assert!(!is_baseline("zip"));
