@@ -147,35 +147,15 @@ fn execute(script: &str, opts: &RunOptions) -> Result<ExitStatus> {
 }
 
 fn fetch_service_env_for_project(project: &std::path::Path) -> Vec<(String, String)> {
-    use serde::Deserialize;
-    #[derive(Deserialize)]
-    struct EnvReply {
-        #[serde(default)]
-        vars: std::collections::BTreeMap<String, serde_json::Value>,
-    }
-    let Ok(paths) = crate::Paths::from_env() else {
-        return Vec::new();
-    };
-    if !paths.bougied_sock().exists() {
-        return Vec::new();
-    }
-    let args = serde_json::json!({"project": project});
-    let reply: Result<EnvReply> =
-        crate::commands::services::client::call(&paths, "service.env", args);
-    match reply {
-        Ok(r) => r
-            .vars
-            .into_iter()
-            .map(|(k, v)| {
-                let s = match v {
-                    serde_json::Value::String(s) => s,
-                    other => other.to_string(),
-                };
-                (k, s)
-            })
-            .collect(),
-        Err(_) => Vec::new(),
-    }
+    // The IPC client to `bougied` lives in the top-level bougie crate
+    // (it shares wire types with the daemon). To keep the recipe crate
+    // free of that dependency, the bougie binary registers a provider
+    // via `bougie_recipe::set_service_env_provider` at startup. When
+    // unset (e.g. in unit tests), recipes still run — just without the
+    // BOUGIE_SERVICE_* env injection.
+    crate::service_env_provider()
+        .map(|f| f(project))
+        .unwrap_or_default()
 }
 
 /// Resolve the directory containing the running `bougie` binary, so
@@ -189,7 +169,7 @@ pub fn current_bougie_dir() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::recipe::parser::parse;
+    use crate::parser::parse;
 
     #[test]
     fn runs_phony_task_and_skips_when_creates_present() {

@@ -67,6 +67,18 @@ version = "0.4.0"
 path = "../bougie-index"
 version = "0.4.0"
 
+[dependencies.bougie-installer]
+path = "../bougie-installer"
+version = "0.4.0"
+
+[dependencies.bougie-recipe]
+path = "../bougie-recipe"
+version = "0.4.0"
+
+[dependencies.bougie-resolver]
+path = "../bougie-resolver"
+version = "0.4.0"
+
 [dependencies.bougie-output]
 path = "../bougie-output"
 version = "0.4.0"

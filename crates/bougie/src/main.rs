@@ -14,6 +14,11 @@ fn main() -> ExitCode {
         };
     }
 
+    // Register the bougie-recipe → bougied IPC bridge. The recipe crate
+    // exposes a function-pointer hook to keep itself free of the daemon
+    // protocol; the binary wires the real implementation here.
+    bougie_recipe::set_service_env_provider(bougie::commands::services::recipe_env_for_project);
+
     let cli = Cli::parse();
     match bougie::run(cli) {
         Ok(code) => code,

@@ -381,9 +381,12 @@ dependencies = [
  "bougie-fetch",
  "bougie-fs",
  "bougie-index",
+ "bougie-installer",
  "bougie-output",
  "bougie-paths",
  "bougie-platform",
+ "bougie-recipe",
+ "bougie-resolver",
  "bougie-version",
  "clap",
  "color-eyre",
@@ -517,6 +520,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "bougie-installer"
+version = "0.4.0"
+dependencies = [
+ "bougie-errors",
+ "bougie-fetch",
+ "bougie-fs",
+ "bougie-index",
+ "bougie-paths",
+ "bougie-platform",
+ "bougie-resolver",
+ "bougie-version",
+ "eyre",
+ "reqwest 0.13.3",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+ "tracing",
+]
+
+[[package]]
 name = "bougie-output"
 version = "0.4.0"
 dependencies = [
@@ -541,6 +565,29 @@ name = "bougie-platform"
 version = "0.4.0"
 dependencies = [
  "bougie-errors",
+ "eyre",
+]
+
+[[package]]
+name = "bougie-recipe"
+version = "0.4.0"
+dependencies = [
+ "eyre",
+ "rustix",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "toml_edit",
+]
+
+[[package]]
+name = "bougie-resolver"
+version = "0.4.0"
+dependencies = [
+ "bougie-errors",
+ "bougie-index",
+ "bougie-version",
  "eyre",
 ]
 
