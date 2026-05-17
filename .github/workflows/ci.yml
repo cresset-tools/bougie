@@ -43,7 +43,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: cargo build
-        run: cargo build --all-targets
+        run: cargo build --all-targets --features test-fixtures
 
       - name: cargo test
-        run: cargo test
+        run: cargo test --features test-fixtures
