@@ -360,9 +360,16 @@ mod tests {
     /// '--quiet' cannot be used multiple times".
     #[test]
     fn strips_dot_exe_case_insensitively() {
+        // Stripping is the shim's job on every OS — there's no harm
+        // in trimming `.exe` on a Unix invocation, and the cross-
+        // platform test surface stays uniform.
         assert_eq!(role_from_argv0(&OsString::from("unzip.exe")), Some(Role::Unzip));
         assert_eq!(role_from_argv0(&OsString::from("unzip.EXE")), Some(Role::Unzip));
         assert_eq!(role_from_argv0(&OsString::from("php.Exe")), Some(Role::Php));
+        // The backslash-path assertion only works on Windows, where
+        // `Path::file_name` recognises `\` as a separator. On Unix
+        // the whole string is one filename and no role matches.
+        #[cfg(windows)]
         assert_eq!(
             role_from_argv0(&OsString::from("C:\\proj\\.bougie\\bin\\composer.EXE")),
             Some(Role::Composer)
