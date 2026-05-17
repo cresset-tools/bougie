@@ -50,20 +50,27 @@ pub fn project_confd_debug_dir(project_root: &Path) -> PathBuf {
 }
 
 /// Compose a `PHP_INI_SCAN_DIR` value. With `debug_overlay=false` it's
-/// just `conf.d/`; with `true` it's `conf.d:conf.d-debug` so PHP
+/// just `conf.d/`; with `true` it's `conf.d<SEP>conf.d-debug` so PHP
 /// scans both. Shared between `bougie run` and the `php`/`composer`
 /// argv0 shim so both paths arrive at the same effective config when
 /// `XDEBUG_SESSION` is set or `--xdebug` was passed.
+///
+/// Separator matches PHP's own scan: `:` on Unix, `;` on Windows.
 pub fn php_ini_scan_dir(project_root: &Path, debug_overlay: bool) -> std::ffi::OsString {
     let regular = project_confd_dir(project_root);
     if !debug_overlay {
         return regular.into_os_string();
     }
     let mut joined = regular.into_os_string();
-    joined.push(":");
+    joined.push(SCAN_DIR_SEP);
     joined.push(project_confd_debug_dir(project_root));
     joined
 }
+
+#[cfg(windows)]
+const SCAN_DIR_SEP: &str = ";";
+#[cfg(not(windows))]
+const SCAN_DIR_SEP: &str = ":";
 
 /// `true` if the parent environment signals an active xdebug session.
 /// Equivalent to the cookie/query gate the server uses, applied to a
@@ -738,14 +745,28 @@ mod tests {
 
     #[test]
     fn php_ini_scan_dir_default_is_conf_d_only() {
-        let s = php_ini_scan_dir(Path::new("/p"), false);
-        assert_eq!(s.to_str().unwrap(), "/p/.bougie/conf.d");
+        let root = Path::new("/p");
+        let s = php_ini_scan_dir(root, false);
+        let expected = project_confd_dir(root);
+        assert_eq!(Path::new(&s), expected);
     }
 
     #[test]
-    fn php_ini_scan_dir_overlay_joins_both_with_colon() {
-        let s = php_ini_scan_dir(Path::new("/p"), true);
-        assert_eq!(s.to_str().unwrap(), "/p/.bougie/conf.d:/p/.bougie/conf.d-debug");
+    fn php_ini_scan_dir_overlay_joins_both_with_platform_separator() {
+        let root = Path::new("/p");
+        let s = php_ini_scan_dir(root, true);
+        let expected = {
+            let mut j = project_confd_dir(root).into_os_string();
+            j.push(SCAN_DIR_SEP);
+            j.push(project_confd_debug_dir(root));
+            j
+        };
+        assert_eq!(s, expected);
+        // Sanity-check the separator the PHP runtime actually expects.
+        #[cfg(windows)]
+        assert!(s.to_string_lossy().contains(';'));
+        #[cfg(not(windows))]
+        assert!(s.to_string_lossy().contains(':'));
     }
 
     #[test]
