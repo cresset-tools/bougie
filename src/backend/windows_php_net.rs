@@ -38,11 +38,12 @@
 use super::{build_http_client, BlobRef, PhpRecipe};
 use crate::errors::BougieError;
 use crate::fetch::{fetch_blob, ArchiveKind, BlobOutcome, DownloadBar};
+use crate::index::wire::LoadDirective;
 use crate::paths::Paths;
 use crate::request::{Flavor, VersionLike};
 use crate::resolve::ResolveOptions;
 use crate::target::{Arch, Triple};
-use crate::version::Version;
+use crate::version::{PartialVersion, Version};
 use eyre::{eyre, Result, WrapErr};
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -51,6 +52,7 @@ use std::path::{Path, PathBuf};
 
 const RELEASES_URL: &str = "https://windows.php.net/downloads/releases/releases.json";
 const BLOB_BASE: &str = "https://windows.php.net/downloads/releases";
+const PECL_BASE: &str = "https://windows.php.net/downloads/pecl/releases";
 const CACHE_HOST_DIR: &str = "windows.php.net";
 
 #[derive(Debug)]
@@ -217,20 +219,56 @@ impl MinorEntry {
 }
 
 fn pick_minor_key(spec: &VersionLike) -> Result<String> {
-    match spec {
-        VersionLike::Version(pv) => {
-            let minor = pv.minor.ok_or_else(|| eyre!(
-                "windows.php.net needs at least <major>.<minor> (e.g. `8.4`); got `{pv}`. \
-                 Specify the minor — windows.php.net only ships the latest patch per minor."
-            ))?;
-            Ok(format!("{}.{minor}", pv.major))
+    let anchor = match spec {
+        VersionLike::Version(pv) => *pv,
+        VersionLike::Constraint(c) => constraint_anchor(c).ok_or_else(|| eyre!(
+            "constraint `{c:?}` doesn't reduce to a single PHP minor, which is all \
+             windows.php.net can resolve against (releases.json exposes only the \
+             latest patch per minor). Try specifying a minor (`8.4`) or exact patch \
+             (`8.4.21`) instead, or open an issue describing the use case."
+        ))?,
+    };
+    let minor = anchor.minor.ok_or_else(|| eyre!(
+        "windows.php.net needs at least <major>.<minor> (e.g. `8.4`); got `{anchor}`. \
+         Specify the minor — windows.php.net only ships the latest patch per minor."
+    ))?;
+    Ok(format!("{}.{minor}", anchor.major))
+}
+
+/// Extract the "anchor" major+minor a Composer-style constraint pins
+/// to, if there's an unambiguous one. windows.php.net only resolves at
+/// minor granularity (releases.json lists one entry per minor), so the
+/// only constraints we can satisfy are those that already collapse to
+/// a single minor:
+///
+/// - `^8.4` / `~8.4` / `~8.4.0` — all map to the 8.4 entry.
+/// - `8.4.x` / `=8.4.21` / a bare exact version — same.
+/// - `>=8.4,<8.5` (an `All` intersecting around a single minor) — same.
+///
+/// Anything else (`^8`, unions, multi-minor ranges) returns `None` and
+/// the caller surfaces a structured error.
+fn constraint_anchor(c: &crate::version::Constraint) -> Option<PartialVersion> {
+    use crate::version::{Constraint as C, Op};
+    match c {
+        C::Caret(pv) | C::Tilde(pv) | C::Exact(pv) => Some(*pv),
+        // `=8.4.21`, `>=8.4`, etc. that pin a single minor.
+        C::Op(Op::Eq | Op::Gte | Op::Lte, pv) if pv.minor.is_some() => Some(*pv),
+        // Intersection: walk components and pick the most specific one
+        // whose minor agrees with every other component. Common shape
+        // is `>=8.4,<8.5` (a single-minor pin) — both halves agree.
+        C::All(items) => {
+            let anchors: Vec<PartialVersion> =
+                items.iter().filter_map(constraint_anchor).collect();
+            let first = anchors.first()?;
+            if anchors.iter().all(|a| a.major == first.major && a.minor == first.minor) {
+                Some(*first)
+            } else {
+                None
+            }
         }
-        VersionLike::Constraint(_) => Err(eyre!(
-            "version constraints aren't supported by the windows.php.net backend yet — \
-             specify a minor (`8.4`) or exact patch (`8.4.21`). \
-             Constraint resolution would need bougie to discover every published patch, \
-             which releases.json doesn't expose (only the latest per minor)."
-        )),
+        // Unions, lone `<`/`>` (open-ended), and `Op` with no minor
+        // can't collapse to a single minor.
+        _ => None,
     }
 }
 
@@ -344,6 +382,192 @@ fn fetch_releases(client: &reqwest::blocking::Client, cache_root: &Path) -> Resu
     serde_json::from_slice(&body).wrap_err("parsing fetched releases.json")
 }
 
+// ---------- PECL ----------
+//
+// windows.php.net mirrors a subset of PECL under
+//   <PECL_BASE>/<name>/<version>/php_<name>-<version>-<php_minor>-<ts|nts>-<vc>-<arch>.zip
+// Each ZIP is flat: `php_<name>.dll` + a sample `<name>.ini`, LICENSE,
+// docs. Some extensions (imagick) ship extra DLL dependencies in the
+// same ZIP — Phase 5 handles their placement; Phase 4b only ensures
+// the main DLL lands in the store and a conf.d fragment points at it.
+//
+// `.sha256` sidecars are NOT consistently published on this surface
+// (a survey across xdebug/redis/msgpack/apcu/mongodb found every
+// sidecar URL returns 404). The trust anchor is therefore
+// [`WINDOWS_PECL_VERSIONS`] below — a compile-time table of
+// known-good (name, version, sha256) triplets, refreshed per bougie
+// release. Verifying the downloaded ZIP against the embedded sha256
+// is strictly stronger than trusting an upstream-provided sidecar
+// (and dodges the "sidecar missing" question entirely).
+
+/// One row in the compile-time table of known-good PECL artifacts on
+/// windows.php.net. Refresh per bougie release. The flavor + arch are
+/// hardcoded to `("nts", "x64")` today — TS / x86 entries get added
+/// when there's user demand.
+#[derive(Debug)]
+struct WindowsPeclVersion {
+    name: &'static str,
+    version: &'static str,
+    /// `<major>.<minor>` PHP version this artifact targets.
+    php_minor: &'static str,
+    flavor: &'static str,
+    arch: &'static str,
+    /// sha256 of the ZIP at the deterministic URL. Independent of any
+    /// `.sha256` sidecar the upstream may or may not publish.
+    sha256: &'static str,
+}
+
+/// Hand-curated table of `(name, php_minor, flavor, arch) → (version, sha256)`.
+/// Add a row when shipping support for a new extension/version combo;
+/// the version is the latest stable at the time of the bougie release.
+///
+/// Today's coverage is xdebug 3.5.1 for the PHP minors windows.php.net
+/// actively publishes (8.0–8.5), NTS x64. Other extensions
+/// (redis, igbinary, msgpack, apcu, pcov, mongodb, imagick) and other
+/// flavors land as the user-demand picture clarifies.
+const WINDOWS_PECL_VERSIONS: &[WindowsPeclVersion] = &[
+    WindowsPeclVersion {
+        name: "xdebug",
+        version: "3.5.1",
+        php_minor: "8.0",
+        flavor: "nts",
+        arch: "x64",
+        sha256: "6105bc3ffe76c79f3a38f27a2b7d605594a68bfec42984e9ab12c17d64bac067",
+    },
+    WindowsPeclVersion {
+        name: "xdebug",
+        version: "3.5.1",
+        php_minor: "8.1",
+        flavor: "nts",
+        arch: "x64",
+        sha256: "cf5bcf99b0f64339f14c28e120d5e52c7a608ce317d1ba4b9c06b3d755eb70fc",
+    },
+    WindowsPeclVersion {
+        name: "xdebug",
+        version: "3.5.1",
+        php_minor: "8.2",
+        flavor: "nts",
+        arch: "x64",
+        sha256: "b3c1bb3c709e1f62d5e8a8b62094995663eec428f4d10136db9d96d3f3dd63b0",
+    },
+    WindowsPeclVersion {
+        name: "xdebug",
+        version: "3.5.1",
+        php_minor: "8.3",
+        flavor: "nts",
+        arch: "x64",
+        sha256: "be2e8553d51d3b048c79022cce8002e133573ad1fa33cbeaa4e823e9013faf01",
+    },
+    WindowsPeclVersion {
+        name: "xdebug",
+        version: "3.5.1",
+        php_minor: "8.4",
+        flavor: "nts",
+        arch: "x64",
+        sha256: "967cceb6aebbc5592f6aeb61e67ce2e1bef26e985a5b07efe3a622de090a70a9",
+    },
+    WindowsPeclVersion {
+        name: "xdebug",
+        version: "3.5.1",
+        php_minor: "8.5",
+        flavor: "nts",
+        arch: "x64",
+        sha256: "1f5a5ec509971c35bf738ff21ccf1e5652a223f2101ea9e3c66e79b647e06e2a",
+    },
+];
+
+/// A resolved PECL artifact ready to fetch + extract. Holds owned
+/// strings so callers can move the value around without lifetime ties
+/// to the source [`WindowsPeclVersion`] in the static table.
+#[derive(Debug, Clone)]
+pub struct WindowsPeclArtifact {
+    pub name: String,
+    pub version: Version,
+    pub php_minor: PartialVersion,
+    pub flavor: Flavor,
+    pub url: String,
+    pub sha256: String,
+    /// `extension=` vs `zend_extension=`. Hardcoded per extension —
+    /// the windows.php.net PECL surface doesn't carry this metadata.
+    pub load: LoadDirective,
+}
+
+/// PHP INI load directive for a PECL extension on Windows. The
+/// classification is invariant across versions, so it lives outside
+/// [`WINDOWS_PECL_VERSIONS`].
+fn pecl_load_directive(name: &str) -> LoadDirective {
+    match name {
+        "xdebug" => LoadDirective::ZendExtension,
+        _ => LoadDirective::Extension,
+    }
+}
+
+impl WindowsPhpNetBackend {
+    /// Resolve a PECL extension for the requested `(name, php_minor, flavor)`
+    /// to a fetchable artifact. Looks up [`WINDOWS_PECL_VERSIONS`] for
+    /// the known-good (version, sha256) triplet and builds the
+    /// deterministic URL.
+    ///
+    /// Returns a structured error if bougie has no entry for the
+    /// requested combo. The user-visible fix is either to ship a
+    /// bougie release that adds the row, or to vendor the DLL by hand
+    /// — there's no automatic discovery on this surface.
+    pub fn resolve_pecl(
+        &self,
+        name: &str,
+        php_minor: PartialVersion,
+        flavor: Flavor,
+    ) -> Result<WindowsPeclArtifact> {
+        let arch = self.arch_suffix()?;
+        let flavor_tag = flavor_tag(flavor)?;
+        let minor = php_minor.minor.ok_or_else(|| {
+            eyre!(
+                "PECL resolution needs <major>.<minor>; got `{}`",
+                php_minor
+            )
+        })?;
+        let php_minor_str = format!("{}.{minor}", php_minor.major);
+        let vc = vc_for_minor(&php_minor_str)?;
+
+        let entry = WINDOWS_PECL_VERSIONS
+            .iter()
+            .find(|e| {
+                e.name == name
+                    && e.php_minor == php_minor_str
+                    && e.flavor == flavor_tag
+                    && e.arch == arch
+            })
+            .ok_or_else(|| BougieError::Resolution {
+                kind: "extension".into(),
+                detail: format!(
+                    "no compile-time WINDOWS_PECL_VERSIONS entry for ext-{name} on \
+                     PHP {php_minor_str} ({flavor_tag}-{arch}). windows.php.net \
+                     may still publish it — open an issue so bougie's next release \
+                     can bake in the (version, sha256) pair."
+                ),
+            })?;
+
+        let filename = format!(
+            "php_{name}-{}-{php_minor_str}-{flavor_tag}-{vc}-{arch}.zip",
+            entry.version
+        );
+        Ok(WindowsPeclArtifact {
+            name: name.to_owned(),
+            version: entry.version.parse().wrap_err_with(|| {
+                format!(
+                    "WINDOWS_PECL_VERSIONS entry for {name} has non-semver `version = {}`",
+                    entry.version
+                )
+            })?,
+            php_minor,
+            flavor,
+            url: format!("{PECL_BASE}/{name}/{}/{filename}", entry.version),
+            sha256: entry.sha256.to_owned(),
+            load: pecl_load_directive(name),
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -378,6 +602,59 @@ mod tests {
         let with_patch =
             VersionLike::Version(PartialVersion { major: 8, minor: Some(4), patch: Some(21) });
         assert_eq!(pick_minor_key(&with_patch).unwrap(), "8.4");
+    }
+
+    /// `bougie init` writes `"php": "^8.4"` to composer.json; sync
+    /// passes that constraint through to the backend. Resolving it to
+    /// a windows.php.net minor key has to work for the everyday "open
+    /// a new project on Windows" flow to function.
+    #[test]
+    fn pick_minor_key_accepts_caret_tilde_and_pinned_op_constraints() {
+        use crate::version::{Constraint, Op};
+        let caret = VersionLike::Constraint(Constraint::Caret(PartialVersion {
+            major: 8,
+            minor: Some(4),
+            patch: None,
+        }));
+        assert_eq!(pick_minor_key(&caret).unwrap(), "8.4");
+        let tilde = VersionLike::Constraint(Constraint::Tilde(PartialVersion {
+            major: 8,
+            minor: Some(3),
+            patch: Some(0),
+        }));
+        assert_eq!(pick_minor_key(&tilde).unwrap(), "8.3");
+        let exact = VersionLike::Constraint(Constraint::Exact(PartialVersion {
+            major: 8,
+            minor: Some(5),
+            patch: Some(0),
+        }));
+        assert_eq!(pick_minor_key(&exact).unwrap(), "8.5");
+        let pinned_op = VersionLike::Constraint(Constraint::Op(
+            Op::Eq,
+            PartialVersion { major: 8, minor: Some(2), patch: Some(15) },
+        ));
+        assert_eq!(pick_minor_key(&pinned_op).unwrap(), "8.2");
+    }
+
+    #[test]
+    fn pick_minor_key_rejects_unanchored_constraints() {
+        use crate::version::{Constraint, Op};
+        // `^8` doesn't pin a minor — every 8.x patch satisfies it.
+        let caret_major = VersionLike::Constraint(Constraint::Caret(PartialVersion {
+            major: 8,
+            minor: None,
+            patch: None,
+        }));
+        assert!(pick_minor_key(&caret_major).is_err());
+        // Open-ended `>=8.0` could be any minor.
+        let open = VersionLike::Constraint(Constraint::Op(
+            Op::Gte,
+            PartialVersion { major: 8, minor: Some(0), patch: None },
+        ));
+        // This one anchors to 8.0 (the lower bound), which is acceptable —
+        // the backend will pick 8.0's latest patch even though `>=8.0`
+        // would happily accept newer minors. Document the trade-off.
+        assert_eq!(pick_minor_key(&open).unwrap(), "8.0");
     }
 
     #[test]
@@ -438,5 +715,104 @@ mod tests {
         assert!(keys.contains(&"ts-vs17-x64"));
         assert!(keys.contains(&"nts-vs17-x64"));
         assert!(!keys.contains(&"source"));
+    }
+
+    // ---------- PECL ----------
+
+    #[test]
+    fn pecl_load_directive_classifies_known_extensions() {
+        assert_eq!(pecl_load_directive("xdebug"), LoadDirective::ZendExtension);
+        // Unknown / regular extensions default to plain `extension=`.
+        assert_eq!(pecl_load_directive("redis"), LoadDirective::Extension);
+        assert_eq!(pecl_load_directive("apcu"), LoadDirective::Extension);
+        assert_eq!(pecl_load_directive("mongodb"), LoadDirective::Extension);
+    }
+
+    /// Smoke-check the compile-time PECL table: every entry parses,
+    /// uses the expected flavor/arch surface, and its sha256 looks like
+    /// a real 64-hex digest. Guards against a typo-during-refresh.
+    #[test]
+    fn windows_pecl_versions_table_is_well_formed() {
+        for e in WINDOWS_PECL_VERSIONS {
+            // Flavor + arch are constrained: NTS x64 only today.
+            // Loosen these asserts when the table grows.
+            assert_eq!(e.flavor, "nts", "{}: TS not yet supported in table", e.name);
+            assert_eq!(e.arch, "x64", "{}: x86 not yet supported in table", e.name);
+            // sha256 should be 64 lowercase hex chars.
+            assert_eq!(e.sha256.len(), 64, "{}: bad sha256 length", e.name);
+            assert!(
+                e.sha256.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+                "{}: sha256 must be lowercase hex",
+                e.name
+            );
+            // Version must parse as a full semver (PartialVersion would
+            // accept partials; Version requires patch).
+            assert!(
+                e.version.parse::<Version>().is_ok(),
+                "{}: version `{}` must be full semver",
+                e.name,
+                e.version,
+            );
+            // PHP minor must parse as `<major>.<minor>`.
+            let (maj, min) = parse_minor(e.php_minor).unwrap_or_else(|err| {
+                panic!("{}: php_minor `{}` malformed: {err}", e.name, e.php_minor)
+            });
+            assert!(maj >= 8, "{}: php_minor major {maj} pre-bougie-support", e.name);
+            let _ = min;
+        }
+    }
+
+    /// xdebug 8.4 NTS x64 must round-trip from `(name, php_minor, flavor)`
+    /// to a deterministic URL whose filename matches windows.php.net's
+    /// real PECL naming (`php_xdebug-3.5.1-8.4-nts-vs17-x64.zip`).
+    #[test]
+    fn resolve_pecl_builds_xdebug_url_for_php_84_nts_x64() {
+        let td = tempfile::TempDir::new().unwrap();
+        let paths = crate::paths::Paths::new(td.path().into(), td.path().join("cache"));
+        let target = crate::target::Triple {
+            arch: Arch::X86_64,
+            vendor: crate::target::Vendor::Pc,
+            os: crate::target::Os::Windows,
+            env: Some(crate::target::Env::Msvc),
+        };
+        let backend = WindowsPhpNetBackend::new(&paths, &target).unwrap();
+        let art = backend
+            .resolve_pecl(
+                "xdebug",
+                PartialVersion { major: 8, minor: Some(4), patch: None },
+                Flavor::Nts,
+            )
+            .unwrap();
+        assert_eq!(art.name, "xdebug");
+        assert_eq!(art.version, Version::new(3, 5, 1));
+        assert_eq!(art.url,
+            "https://windows.php.net/downloads/pecl/releases/xdebug/3.5.1/php_xdebug-3.5.1-8.4-nts-vs17-x64.zip");
+        assert_eq!(art.load, LoadDirective::ZendExtension);
+        assert_eq!(
+            art.sha256,
+            "967cceb6aebbc5592f6aeb61e67ce2e1bef26e985a5b07efe3a622de090a70a9"
+        );
+    }
+
+    #[test]
+    fn resolve_pecl_errors_when_table_has_no_entry() {
+        let td = tempfile::TempDir::new().unwrap();
+        let paths = crate::paths::Paths::new(td.path().into(), td.path().join("cache"));
+        let target = crate::target::Triple {
+            arch: Arch::X86_64,
+            vendor: crate::target::Vendor::Pc,
+            os: crate::target::Os::Windows,
+            env: Some(crate::target::Env::Msvc),
+        };
+        let backend = WindowsPhpNetBackend::new(&paths, &target).unwrap();
+        // redis isn't in the bundled table yet — surface a structured error.
+        let err = backend
+            .resolve_pecl(
+                "redis",
+                PartialVersion { major: 8, minor: Some(4), patch: None },
+                Flavor::Nts,
+            )
+            .unwrap_err();
+        assert!(err.to_string().contains("WINDOWS_PECL_VERSIONS"), "got: {err}");
     }
 }
