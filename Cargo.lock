@@ -374,6 +374,12 @@ dependencies = [
  "assert_cmd",
  "axum",
  "base64 0.22.1",
+ "bougie-cli",
+ "bougie-errors",
+ "bougie-output",
+ "bougie-paths",
+ "bougie-platform",
+ "bougie-version",
  "clap",
  "color-eyre",
  "etcetera",
@@ -413,6 +419,56 @@ dependencies = [
  "wiremock",
  "zip",
  "zstd",
+]
+
+[[package]]
+name = "bougie-cli"
+version = "0.4.0"
+dependencies = [
+ "clap",
+]
+
+[[package]]
+name = "bougie-errors"
+version = "0.4.0"
+dependencies = [
+ "eyre",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "bougie-output"
+version = "0.4.0"
+dependencies = [
+ "anstream",
+ "anstyle",
+ "bougie-cli",
+ "eyre",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "bougie-paths"
+version = "0.4.0"
+dependencies = [
+ "etcetera",
+ "eyre",
+]
+
+[[package]]
+name = "bougie-platform"
+version = "0.4.0"
+dependencies = [
+ "bougie-errors",
+ "eyre",
+]
+
+[[package]]
+name = "bougie-version"
+version = "0.4.0"
+dependencies = [
+ "eyre",
 ]
 
 [[package]]

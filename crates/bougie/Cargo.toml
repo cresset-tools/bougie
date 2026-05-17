@@ -38,6 +38,31 @@ test-fixtures = []
 # inert and only the live Sigstore path is reachable.
 dev-trust-root = []
 
+# Workspace crates (leaf tier).
+[dependencies.bougie-cli]
+path = "../bougie-cli"
+version = "0.4.0"
+
+[dependencies.bougie-errors]
+path = "../bougie-errors"
+version = "0.4.0"
+
+[dependencies.bougie-output]
+path = "../bougie-output"
+version = "0.4.0"
+
+[dependencies.bougie-paths]
+path = "../bougie-paths"
+version = "0.4.0"
+
+[dependencies.bougie-platform]
+path = "../bougie-platform"
+version = "0.4.0"
+
+[dependencies.bougie-version]
+path = "../bougie-version"
+version = "0.4.0"
+
 # CLI & config
 [dependencies.clap]
 version = "4.5"

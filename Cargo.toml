@@ -6,6 +6,12 @@
 resolver = "3"
 members = [
     "crates/bougie",
+    "crates/bougie-cli",
+    "crates/bougie-errors",
+    "crates/bougie-output",
+    "crates/bougie-paths",
+    "crates/bougie-platform",
+    "crates/bougie-version",
     "crates/macos-sandbox-sys",
     "crates/sandbox-run",
 ]
