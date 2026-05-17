@@ -1,0 +1,253 @@
+[package]
+name = "bougie"
+version = "0.4.0"
+edition = "2024"
+description = "PHP toolchain management the luxury way."
+license = "EUPL-1.2"
+repository = "https://github.com/cresset-tools/bougie"
+rust-version = "1.95"
+default-run = "bougie"
+
+[[bin]]
+name = "bougie"
+path = "src/main.rs"
+
+# Phase 3 integration-test fixture. Stands in for a real redis-server
+# in the supervisor tests: parses `--unixsocket <path>` and binds the
+# socket, satisfying the daemon's health probe. Gated behind the
+# non-default `test-fixtures` feature so `cargo install --path .` skips
+# it; CI and local `cargo test` enable the feature explicitly.
+[[bin]]
+name = "fake-redis"
+path = "tests/fixtures/fake_redis.rs"
+required-features = ["test-fixtures"]
+
+[features]
+default = ["dev-trust-root"]
+# Enables the `fake-redis` test-fixture bin. Off by default so
+# `cargo install` doesn't ship it; turn on with `cargo test --features
+# test-fixtures` (CI does this).
+test-fixtures = []
+# Compile in the `BOUGIE_TRUST_ROOT_PATH` override: when set, the
+# verifier swaps the production Sigstore Bundle path for a detached
+# ECDSA P-256 key at the pointed-to PEM. Used by the integration
+# test harness (which can't reach the live Sigstore TUF root) and
+# operators running a private index with their own signing key.
+# A future `cargo install --no-default-features` (or a release
+# pipeline that does the same) ships a binary where the env var is
+# inert and only the live Sigstore path is reachable.
+dev-trust-root = []
+
+# CLI & config
+[dependencies.clap]
+version = "4.5"
+default-features = false
+features = ["std", "derive", "help", "usage", "error-context", "suggestions", "wrap_help", "color"]
+
+[dependencies.serde]
+version = "1.0"
+features = ["derive"]
+
+[dependencies.serde_json]
+version = "1.0"
+# Preserve object key insertion order on round-trip. Required by the
+# composer.lock content-hash algorithm: PHP's `Locker::getContentHash`
+# ksorts the *top* level but leaves nested object keys in their source
+# order, and we re-emit composer.lock close to its original form.
+features = ["preserve_order"]
+
+# `toml_edit` reads AND writes TOML preserving comments/formatting.
+# Required by `bougie php pin` writing into a hand-edited bougie.toml.
+[dependencies.toml_edit]
+version = "0.25"
+features = ["serde"]
+
+# Compiled regex for `[[host.rewrite]]` patterns in the dev server.
+# `unicode` features are dropped — host-rewrite patterns are ASCII
+# URL paths, and the slim build cuts ~1 MB of unicode tables out of
+# the binary.
+[dependencies.regex]
+version = "1.11"
+default-features = false
+features = ["std", "perf"]
+
+# HTTP + signature path
+[dependencies.reqwest]
+version = "0.13"
+default-features = false
+features = ["blocking", "rustls", "stream"]
+
+[dependencies.rustls]
+version = "0.23"
+default-features = false
+features = ["std", "tls12", "ring"]
+
+[dependencies.sha2]
+version = "0.11"
+
+# Composer's `Locker::getContentHash` is MD5 of a canonicalized
+# composer.json subset. MD5 isn't in `sha2`; pull the RustCrypto MD5
+# crate. Hash-collision risk is irrelevant here — the algorithm is
+# composer's published contract and we have to match it.
+[dependencies.md-5]
+version = "0.11"
+
+# Sigstore root signature verification.
+[dependencies.sigstore]
+version = "0.13"
+default-features = false
+features = ["cosign", "verify", "rustls-tls", "sigstore-trust-root"]
+
+# Filesystem & process
+[dependencies.zstd]
+version = "0.13"
+default-features = false
+
+[dependencies.tar]
+version = "0.4"
+
+# In-process `unzip` shim — Composer's ZipDownloader prefers a PATH
+# `unzip` over PHP's ZipArchive (faster + preserves Unix mode bits and
+# symlinks). We satisfy that preference by exposing `unzip` as an
+# argv[0] role on the bougie binary, implemented against this crate.
+[dependencies.zip]
+version = "8.0"
+default-features = false
+features = ["deflate"]
+
+[dependencies.tempfile]
+version = "3.10"
+
+# Direct flock(2) for the timeout-aware ExclusiveLock in src/lock.rs;
+# also `geteuid()` for the $XDG_RUNTIME_DIR fallback path inside
+# `bougie server`, and the `bougied.pid` singleton lock in
+# `src/daemon/`.
+[dependencies.rustix]
+version = "1.0"
+default-features = false
+features = ["std", "fs", "process"]
+
+# Process sandboxing for managed dev services (`bougied`).
+# Cross-platform: Linux Landlock (kernel 5.13+), macOS SBPL via
+# `sandbox_init_with_parameters`. Vendored as workspace member at
+# `crates/sandbox-run/` so this repo is self-contained.
+[dependencies.sandbox-run]
+path = "../sandbox-run"
+version = "0.1.0"
+
+# URL joining for relative manifest URLs in the index protocol.
+[dependencies.url]
+version = "2.5"
+
+[dependencies.walkdir]
+version = "2.5"
+
+[dependencies.which]
+version = "8.0"
+
+# Strict-XDG dirs on every platform (incl. macOS — does NOT use ~/Library/...).
+# Matches the bougie convention from CLI.md §2.1.
+[dependencies.etcetera]
+version = "0.11"
+
+# Output
+[dependencies.anstream]
+version = "1.0"
+
+[dependencies.anstyle]
+version = "1.0"
+
+[dependencies.indicatif]
+version = "0.18"
+
+[dependencies.tracing]
+version = "0.1"
+
+[dependencies.tracing-subscriber]
+version = "0.3"
+default-features = false
+features = ["std", "fmt", "ansi", "env-filter", "json"]
+
+# Errors
+[dependencies.eyre]
+version = "0.6"
+
+[dependencies.color-eyre]
+version = "0.6"
+
+[dependencies.thiserror]
+version = "2.0"
+
+# Hand-rolled parser combinator (Composer constraint syntax + bougie's
+# §3.5.0 PHP version request grammar). No off-the-shelf crate matches.
+[dependencies.winnow]
+version = "1.0"
+
+# `bougie server` async stack. Reserved for the HTTP server subcommand;
+# the rest of bougie is sync. Features are pruned to what the server
+# actually uses today (no multipart, no JSON-body parsing on the wire —
+# requests are forwarded verbatim to FastCGI in phase 2+).
+[dependencies.tokio]
+version = "1"
+default-features = false
+features = [
+    "rt-multi-thread", "net", "process", "signal", "fs",
+    "macros", "time", "sync", "io-util",
+]
+
+[dependencies.axum]
+version = "0.8"
+default-features = false
+features = ["http1", "tokio"]
+
+[dependencies.hyper]
+version = "1"
+default-features = false
+features = ["server", "http1"]
+
+[dependencies.hyper-util]
+version = "0.1"
+default-features = false
+features = ["tokio", "server"]
+
+[dependencies.tower]
+version = "0.5"
+default-features = false
+features = ["util"]
+
+[dependencies.tower-http]
+version = "0.6"
+default-features = false
+features = ["trace"]
+
+[dependencies.mime_guess]
+version = "2"
+default-features = false
+
+[dependencies.percent-encoding]
+version = "2"
+
+[dependencies.http-body-util]
+version = "0.1"
+
+# File-watch reload for the bougie server's pool lifecycle (phase 4):
+# notify::RecommendedWatcher picks the best backend per OS (inotify on
+# Linux, FSEvents on macOS). Default features keep the cross-platform
+# defaults; we only consume the recommended watcher.
+[dependencies.notify]
+version = "8"
+
+[dev-dependencies]
+assert_cmd = "2.0"        # spawn the bougie binary in integration tests
+predicates = "3.1"        # human-readable assertions on its output
+insta = "1.41"            # snapshot tests for `--format json` schemas
+wiremock = "0.6"          # fake index server for end-to-end tests
+tempfile = "3.10"         # already in regular deps; pulled into [dev] too for clarity
+serde_json = "1.0"
+base64 = "0.22"           # encode test signatures
+tokio = { version = "1", features = ["rt", "macros"] }  # drive wiremock
+zip = { version = "8.0", default-features = false, features = ["deflate"] }  # build fixture archives for the unzip-shim integration test
+reqwest = { version = "0.13", default-features = false, features = ["blocking", "rustls"] }  # already a regular dep, repeated here so feature unification keeps blocking on
+
+[lints]
+workspace = true
