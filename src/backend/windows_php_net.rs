@@ -35,7 +35,7 @@
 //! `*.dll`s land where the shim already looks for them via
 //! `install/bin/php.exe`.
 
-use super::{build_http_client, BlobRef, PhpRecipe};
+use super::{build_http_client, BlobRef, ExtRecipe, PhpRecipe};
 use crate::errors::BougieError;
 use crate::fetch::{fetch_blob, ArchiveKind, BlobOutcome, DownloadBar};
 use crate::index::wire::LoadDirective;
@@ -111,6 +111,51 @@ impl super::Backend for WindowsPhpNetBackend {
         let bin_dir = install_root.join("bin");
         let spec = blob.as_blob_spec(partial_dir, &bin_dir);
         fetch_blob(&self.client, &spec, bar)
+    }
+
+    fn resolve_extension(
+        &self,
+        name: &str,
+        php_minor: PartialVersion,
+        flavor: Flavor,
+        _version_pin: Option<&str>,
+        _opts: ResolveOptions,
+    ) -> Result<ExtRecipe> {
+        // windows.php.net PECL surface is version-oracled by the
+        // compile-time `WINDOWS_PECL_VERSIONS` table; `version_pin` and
+        // `opts` (which steer bougie-index resolution) are intentionally
+        // ignored. See WINDOWS_PLAN.md §Phase 4.
+        let artifact = self.resolve_pecl(name, php_minor, flavor)?;
+        let dll_name = format!("php_{}.dll", artifact.name);
+        Ok(ExtRecipe {
+            name: artifact.name,
+            version: artifact.version,
+            php_minor: artifact.php_minor,
+            flavor: artifact.flavor,
+            blob: BlobRef {
+                url: artifact.url,
+                sha256: artifact.sha256,
+                // windows.php.net doesn't advertise size on the PECL
+                // surface (no JSON index; the HTML directory listing
+                // carries it but parsing HTML for one number isn't
+                // worth it). Bar stays unplanned for this artifact —
+                // it ticks bytes received but can't fill, same
+                // fallback as a pre-`size` bougie-index publisher.
+                size: 0,
+                archive: ArchiveKind::Zip,
+                // PECL ZIPs are flat — `php_<name>.dll`, `<name>.ini`,
+                // LICENSE, contrib/ all at the root.
+                strip_prefix: String::new(),
+            },
+            artifact_rel: std::path::PathBuf::from(dll_name),
+            load: artifact.load,
+            // PECL DLL deps ride inside the same ZIP, not as separate
+            // closure tarballs. The Windows DLL search path bleeds
+            // through `needs_store_on_path` instead.
+            closure: Vec::new(),
+            needs_store_on_path: artifact.needs_store_on_path,
+            frozen_warning: false,
+        })
     }
 
     fn resolve_php(
@@ -543,24 +588,24 @@ const WINDOWS_PECL_VERSIONS: &[WindowsPeclVersion] = &[
     },
 ];
 
-/// A resolved PECL artifact ready to fetch + extract. Holds owned
-/// strings so callers can move the value around without lifetime ties
-/// to the source [`WindowsPeclVersion`] in the static table.
+/// A resolved PECL artifact ready to fetch + extract. Internal to
+/// this module — the trait's [`super::ExtRecipe`] is the public shape
+/// the install code sees.
 #[derive(Debug, Clone)]
-pub struct WindowsPeclArtifact {
-    pub name: String,
-    pub version: Version,
-    pub php_minor: PartialVersion,
-    pub flavor: Flavor,
-    pub url: String,
-    pub sha256: String,
+struct WindowsPeclArtifact {
+    name: String,
+    version: Version,
+    php_minor: PartialVersion,
+    flavor: Flavor,
+    url: String,
+    sha256: String,
     /// `extension=` vs `zend_extension=`. Hardcoded per extension —
     /// the windows.php.net PECL surface doesn't carry this metadata.
-    pub load: LoadDirective,
+    load: LoadDirective,
     /// `true` when the extension's store dir needs to be on PATH at
     /// run time so the Windows DLL loader can find its dependent DLLs.
     /// imagick is the canonical case (see [`pecl_needs_store_on_path`]).
-    pub needs_store_on_path: bool,
+    needs_store_on_path: bool,
 }
 
 /// PHP INI load directive for a PECL extension on Windows. The
@@ -583,7 +628,11 @@ impl WindowsPhpNetBackend {
     /// requested combo. The user-visible fix is either to ship a
     /// bougie release that adds the row, or to vendor the DLL by hand
     /// — there's no automatic discovery on this surface.
-    pub fn resolve_pecl(
+    ///
+    /// Internal helper for the trait's [`super::Backend::resolve_extension`]
+    /// impl; the install code reaches the backend through the trait, not
+    /// this inherent method.
+    fn resolve_pecl(
         &self,
         name: &str,
         php_minor: PartialVersion,
@@ -903,6 +952,73 @@ mod tests {
         assert_eq!(art.version, Version::new(3, 8, 1));
         assert_eq!(art.load, LoadDirective::Extension);
         assert!(art.needs_store_on_path, "imagick must set needs_store_on_path");
+    }
+
+    /// Trait surface: `Backend::resolve_extension` must wrap the
+    /// inner `resolve_pecl` result into an [`ExtRecipe`] with an empty
+    /// closure (windows.php.net PECL deps ride inside the ZIP) and the
+    /// correct artifact_rel (`php_<name>.dll` at the zip root).
+    #[test]
+    fn resolve_extension_for_imagick_produces_recipe_with_empty_closure_and_path_extras() {
+        use super::super::Backend as _;
+        let td = tempfile::TempDir::new().unwrap();
+        let paths = crate::paths::Paths::new(td.path().into(), td.path().join("cache"));
+        let target = crate::target::Triple {
+            arch: Arch::X86_64,
+            vendor: crate::target::Vendor::Pc,
+            os: crate::target::Os::Windows,
+            env: Some(crate::target::Env::Msvc),
+        };
+        let backend = WindowsPhpNetBackend::new(&paths, &target).unwrap();
+        let recipe = backend
+            .resolve_extension(
+                "imagick",
+                PartialVersion { major: 8, minor: Some(4), patch: None },
+                Flavor::Nts,
+                None,
+                crate::resolve::ResolveOptions::default(),
+            )
+            .unwrap();
+        assert_eq!(recipe.name, "imagick");
+        assert_eq!(recipe.version, Version::new(3, 8, 1));
+        assert_eq!(recipe.artifact_rel, std::path::PathBuf::from("php_imagick.dll"));
+        assert_eq!(recipe.blob.archive, ArchiveKind::Zip);
+        assert_eq!(recipe.blob.strip_prefix, "");
+        assert!(recipe.closure.is_empty(), "windows.php.net PECL has no closure entries");
+        assert!(recipe.needs_store_on_path, "imagick must signal needs_store_on_path");
+        assert!(!recipe.frozen_warning);
+    }
+
+    /// `version_pin` and `opts` are bougie-index concepts; the
+    /// windows.php.net backend must ignore them rather than error.
+    /// Otherwise the unified install path would have to switch on
+    /// backend type to filter what it passes through, defeating the
+    /// trait.
+    #[test]
+    fn resolve_extension_ignores_version_pin_and_opts() {
+        use super::super::Backend as _;
+        let td = tempfile::TempDir::new().unwrap();
+        let paths = crate::paths::Paths::new(td.path().into(), td.path().join("cache"));
+        let target = crate::target::Triple {
+            arch: Arch::X86_64,
+            vendor: crate::target::Vendor::Pc,
+            os: crate::target::Os::Windows,
+            env: Some(crate::target::Env::Msvc),
+        };
+        let backend = WindowsPhpNetBackend::new(&paths, &target).unwrap();
+        // Pass a version_pin that doesn't match the table row's
+        // version — backend should still resolve to the table row
+        // (windows.php.net is one-version-per-row).
+        let recipe = backend
+            .resolve_extension(
+                "xdebug",
+                PartialVersion { major: 8, minor: Some(4), patch: None },
+                Flavor::Nts,
+                Some("99.99.99"),
+                crate::resolve::ResolveOptions::default(),
+            )
+            .unwrap();
+        assert_eq!(recipe.version, Version::new(3, 5, 1));
     }
 
     #[test]

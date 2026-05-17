@@ -11,7 +11,7 @@
 //! cache root path, and a target-triple string. Re-use the same
 //! instance for back-to-back resolves to avoid re-fetching the root.
 
-use super::{build_http_client, BlobRef, PhpRecipe};
+use super::{build_http_client, BlobRef, ClosureRef, ExtRecipe, PhpRecipe};
 use crate::errors::BougieError;
 use crate::fetch::ArchiveKind;
 use crate::index::{
@@ -21,8 +21,9 @@ use crate::index::{
 use crate::install::host_to_dirname;
 use crate::paths::Paths;
 use crate::request::{Flavor, VersionLike};
-use crate::resolve::{resolve_php, ResolveOptions, Selected};
-use eyre::Result;
+use crate::resolve::{resolve_extension, resolve_php, ResolveOptions, Selected};
+use crate::version::PartialVersion;
+use eyre::{eyre, Result};
 use std::path::PathBuf;
 
 const SECTION_NAME: &str = "interpreter/php";
@@ -115,6 +116,91 @@ impl super::Backend for BougieIndexBackend {
                 // Interpreter tarballs wrap their contents in `install/`.
                 strip_prefix: "install".to_owned(),
             },
+            frozen_warning: selected.frozen_warning,
+        })
+    }
+
+    fn resolve_extension(
+        &self,
+        name: &str,
+        php_minor: PartialVersion,
+        flavor: Flavor,
+        version_pin: Option<&str>,
+        opts: ResolveOptions,
+    ) -> Result<ExtRecipe> {
+        let section_name = format!("extension/{name}");
+        let fetched = fetch_root(&self.client, &self.host, &self.cache_root, build_verifier)?;
+        let target_entry = fetched.root.targets.get(&self.target).ok_or_else(|| {
+            let available: Vec<String> = fetched.root.targets.keys().cloned().collect();
+            BougieError::UnknownTarget {
+                triple: self.target.clone(),
+                hint: format!(
+                    "the index at {} advertises: {}",
+                    self.host,
+                    available.join(", ")
+                ),
+            }
+        })?;
+        let section_ref = target_entry
+            .sections
+            .get(&section_name)
+            .ok_or_else(|| BougieError::Resolution {
+                kind: "extension".into(),
+                detail: format!(
+                    "the index at {} has no `{section_name}` section under target {} — \
+                     run `bougie ext list --only-available` to see what's published",
+                    self.host, self.target,
+                ),
+            })?;
+        let section = fetch_section(
+            &self.client,
+            &self.host,
+            &self.cache_root,
+            &fetched.root.version,
+            &self.target,
+            &section_name,
+            &section_ref.sha256,
+        )?;
+
+        let selected: Selected<'_> =
+            resolve_extension(&section, php_minor, flavor, version_pin, opts)?;
+
+        let manifest = fetch_manifest(
+            &self.client,
+            &self.host,
+            &self.cache_root,
+            &selected.artifact.manifest.path,
+            &selected.artifact.manifest.sha256,
+        )?;
+        let ext_ref = manifest.extension.as_ref().ok_or_else(|| {
+            eyre!(
+                "manifest for {} is missing the `extension` field — \
+                 publisher bug: an extension-kind manifest must declare its `.so` path",
+                manifest.tag
+            )
+        })?;
+
+        Ok(ExtRecipe {
+            name: manifest.name.clone(),
+            version: selected.version,
+            php_minor,
+            flavor,
+            blob: BlobRef {
+                url: manifest.blob.url.clone(),
+                sha256: manifest.blob.sha256.clone(),
+                size: manifest.blob.size,
+                archive: ArchiveKind::TarZst,
+                // Per-extension tarballs ship `lib/extensions/<api>/<name>.so`
+                // at the top level — no wrapping directory to strip.
+                strip_prefix: String::new(),
+            },
+            artifact_rel: PathBuf::from(&ext_ref.path),
+            load: ext_ref.load,
+            closure: manifest.closure.iter().map(ClosureRef::from).collect(),
+            // bougie-index extensions get their dep closure via
+            // install_closure_peers + RPATH; no PATH augmentation
+            // needed at run time.
+            needs_store_on_path: false,
             frozen_warning: selected.frozen_warning,
         })
     }
