@@ -14,8 +14,9 @@ use bougie_paths::Paths;
 use bougie_version::request::{Flavor, Request, VersionLike};
 use bougie_resolver::{intersect_php, ResolveOptions};
 use bougie_fs::state::{write_project_resolved, write_project_resolved_composer, GlobalState};
+use bougie_fs::store::list_installed;
 use bougie_platform::target::Triple;
-use bougie_version::version::{Constraint, PartialVersion};
+use bougie_version::version::{Constraint, PartialVersion, Version};
 use eyre::{eyre, Result};
 use serde::Serialize;
 use std::collections::BTreeSet;
@@ -82,6 +83,92 @@ pub fn run(format: OutputFormat, dry_run: bool) -> Result<ExitCode> {
     let result = ensure_synced(&paths, &project_root, &project, spec, flavor)?;
     emit(format, &result)?;
     Ok(ExitCode::SUCCESS)
+}
+
+/// Same as [`run`] but, when neither `composer.json` nor `bougie.toml`
+/// pins a PHP version, falls back to the highest already-installed
+/// interpreter (or `>=8.0` for a fresh machine) instead of erroring.
+///
+/// Mirrors uv's behavior for `uv run` outside a project: be useful with
+/// whatever's lying around, defer the strict-constraint requirement to
+/// the explicit `bougie sync` path. `bougie sync` itself still errors —
+/// only `bougie run` opts in via this entry point.
+pub fn run_with_default_fallback(format: OutputFormat, dry_run: bool) -> Result<ExitCode> {
+    let paths = Paths::from_env()?;
+    let project_root = std::env::current_dir()?;
+
+    let project = load_project(&project_root)?;
+    let (spec, flavor) = match resolve_php_inputs(&project) {
+        Ok(inputs) => inputs,
+        Err(err) if is_missing_php_constraint(&err) => default_php_inputs(&paths, &project)?,
+        Err(err) => return Err(err),
+    };
+
+    if dry_run {
+        eprintln!("Resolving…");
+        eprintln!("would install php matching the resolved spec; flavor={flavor}");
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    let result = ensure_synced(&paths, &project_root, &project, spec, flavor)?;
+    emit(format, &result)?;
+    Ok(ExitCode::SUCCESS)
+}
+
+fn is_missing_php_constraint(err: &eyre::Report) -> bool {
+    matches!(
+        err.downcast_ref::<BougieError>(),
+        Some(BougieError::Resolution { kind, .. }) if kind == "php"
+    ) && format!("{err}").contains("no PHP version constraint set")
+}
+
+/// Resolve PHP inputs when no project constraint is set:
+///   (1) prefer the highest already-installed interpreter (matching
+///       any flavor pin), so repeat `bougie run` is fast and offline;
+///   (2) else fall back to `>=8.0` — the resolver picks the latest
+///       published artifact for the configured flavor.
+fn default_php_inputs(paths: &Paths, project: &ProjectConfig) -> Result<(VersionLike, Flavor)> {
+    let flavor = parse_flavor(project.bougie.php.flavor.as_deref())?;
+    if let Some(v) = highest_installed(paths, flavor) {
+        return Ok((
+            VersionLike::Version(PartialVersion {
+                major: v.major,
+                minor: Some(v.minor),
+                patch: Some(v.patch),
+            }),
+            flavor,
+        ));
+    }
+    let c = Constraint::parse(">=8.0")?;
+    Ok((VersionLike::Constraint(c), flavor))
+}
+
+fn highest_installed(paths: &Paths, flavor: Flavor) -> Option<Version> {
+    let want = flavor.as_str();
+    list_installed(paths)
+        .ok()?
+        .into_iter()
+        .filter(|(_, fl)| fl == want)
+        .filter_map(|(v, _)| v.parse::<Version>().ok())
+        .max()
+}
+
+fn parse_flavor(s: Option<&str>) -> Result<Flavor> {
+    Ok(match s {
+        Some("nts") | None => Flavor::Nts,
+        Some("nts-debug") => Flavor::NtsDebug,
+        Some("zts") => Flavor::Zts,
+        Some("zts-debug") => Flavor::ZtsDebug,
+        Some(other) => {
+            return Err(BougieError::Resolution {
+                kind: "flavor".into(),
+                detail: format!(
+                    "[php]flavor = {other:?} is not one of nts | nts-debug | zts | zts-debug"
+                ),
+            }
+            .into())
+        }
+    })
 }
 
 /// The full sync pipeline minus argument parsing and result emission.
@@ -304,21 +391,7 @@ fn resolve_php_inputs(project: &ProjectConfig) -> Result<(VersionLike, Flavor)> 
         .transpose()?;
 
     let spec = intersect_php(public.as_ref(), override_spec.as_ref())?;
-    let flavor = match project.bougie.php.flavor.as_deref() {
-        Some("nts") | None => Flavor::Nts,
-        Some("nts-debug") => Flavor::NtsDebug,
-        Some("zts") => Flavor::Zts,
-        Some("zts-debug") => Flavor::ZtsDebug,
-        Some(other) => {
-            return Err(BougieError::Resolution {
-                kind: "flavor".into(),
-                detail: format!(
-                    "[php]flavor = {other:?} is not one of nts | nts-debug | zts | zts-debug"
-                ),
-            }
-            .into())
-        }
-    };
+    let flavor = parse_flavor(project.bougie.php.flavor.as_deref())?;
     Ok((spec, flavor))
 }
 
