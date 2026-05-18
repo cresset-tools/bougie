@@ -82,6 +82,9 @@ fn byte_equivalence_against_composer() {
             optimize: flags.optimize,
             classmap_authoritative: flags.classmap_authoritative,
             no_dev: flags.no_dev,
+            apcu_autoloader: flags.apcu_autoloader,
+            apcu_prefix: flags.apcu_prefix.clone(),
+            autoloader_suffix: flags.autoloader_suffix.clone(),
         };
         if let Err(e) = dump_autoload(&req) {
             failures.push(format!("{name}: dump_autoload failed: {e}"));
@@ -141,15 +144,19 @@ fn format_diff(name: &str, rel: &str, expected: &[u8], actual: &[u8]) -> String 
 }
 
 /// Flags pulled from a fixture's optional `input/bougie-flags` file.
-/// Format is one `key=value` per line; missing keys default to false.
-/// Used by both this harness and `scripts/generate-autoload-fixtures.sh`
-/// so the fixture is regenerated under the same flag combo that the
-/// harness asserts byte-equivalence under.
+/// Format is one `key=value` per line. Bools default to false;
+/// string-valued flags (`apcu_prefix`, `autoloader_suffix`) default
+/// to None. Used by both this harness and
+/// `scripts/generate-autoload-fixtures.sh` so the fixture is
+/// regenerated under the same flag combo the harness asserts under.
 #[derive(Default)]
 struct FixtureFlags {
     optimize: bool,
     classmap_authoritative: bool,
     no_dev: bool,
+    apcu_autoloader: bool,
+    apcu_prefix: Option<String>,
+    autoloader_suffix: Option<String>,
 }
 
 fn parse_flags(input_dir: &Path) -> FixtureFlags {
@@ -166,11 +173,15 @@ fn parse_flags(input_dir: &Path) -> FixtureFlags {
         let Some((k, v)) = line.split_once('=') else {
             continue;
         };
-        let v = v.trim() == "true";
+        let v_str = v.trim();
+        let v_bool = v_str == "true";
         match k.trim() {
-            "optimize" => flags.optimize = v,
-            "classmap_authoritative" => flags.classmap_authoritative = v,
-            "no_dev" => flags.no_dev = v,
+            "optimize" => flags.optimize = v_bool,
+            "classmap_authoritative" => flags.classmap_authoritative = v_bool,
+            "no_dev" => flags.no_dev = v_bool,
+            "apcu_autoloader" => flags.apcu_autoloader = v_bool,
+            "apcu_prefix" => flags.apcu_prefix = Some(v_str.to_string()),
+            "autoloader_suffix" => flags.autoloader_suffix = Some(v_str.to_string()),
             _ => {}
         }
     }

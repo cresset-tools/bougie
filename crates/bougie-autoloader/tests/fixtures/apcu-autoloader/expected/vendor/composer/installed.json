@@ -1,0 +1,28 @@
+{
+    "packages": [
+        {
+            "name": "acme/lib",
+            "version": "1.0.0",
+            "version_normalized": "1.0.0.0",
+            "dist": {
+                "type": "path",
+                "url": "packages/lib",
+                "reference": "35e92418f2164d661133200545fdcb5ce55e7399"
+            },
+            "type": "library",
+            "installation-source": "dist",
+            "autoload": {
+                "psr-4": {
+                    "Acme\\Lib\\": "src/"
+                }
+            },
+            "transport-options": {
+                "symlink": false,
+                "relative": true
+            },
+            "install-path": "../acme/lib"
+        }
+    ],
+    "dev": true,
+    "dev-package-names": []
+}

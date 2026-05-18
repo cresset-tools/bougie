@@ -91,7 +91,8 @@ run_fixture() {
     # equivalence harness reads the same file, so the expected output
     # we generate here is asserted under the exact flag set the
     # harness will replay.
-    local optimize=false classmap_authoritative=false no_dev=false
+    local optimize=false classmap_authoritative=false no_dev=false apcu_autoloader=false
+    local apcu_prefix="" autoloader_suffix=""
     if [[ -f "$input/bougie-flags" ]]; then
         # shellcheck disable=SC1090
         source "$input/bougie-flags"
@@ -100,6 +101,11 @@ run_fixture() {
     [[ "$optimize" == "true" ]] && extra+=("--optimize-autoloader")
     [[ "$classmap_authoritative" == "true" ]] && extra+=("--classmap-authoritative")
     [[ "$no_dev" == "true" ]] && extra+=("--no-dev")
+    [[ "$apcu_autoloader" == "true" ]] && extra+=("--apcu-autoloader")
+    [[ -n "$apcu_prefix" ]] && extra+=("--apcu-autoloader-prefix=$apcu_prefix")
+    # `autoloader_suffix` is a composer.json `config` setting, not a CLI
+    # flag — the fixture's input/composer.json carries it directly and
+    # composer reads it during `install`.
 
     (
         cd "$work"

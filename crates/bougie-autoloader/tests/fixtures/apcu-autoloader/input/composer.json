@@ -1,0 +1,11 @@
+{
+    "name": "fixture/apcu-autoloader",
+    "description": "Dumped under --apcu-autoloader --apcu-autoloader-prefix=fixture-apcu-prefix-zzz0. Adds the `$loader->setApcuPrefix(...)` call to autoload_real.php between the static-init and register lines.",
+    "type": "project",
+    "repositories": [
+        { "type": "path", "url": "packages/lib", "options": { "symlink": false } }
+    ],
+    "require": {
+        "acme/lib": "*"
+    }
+}
