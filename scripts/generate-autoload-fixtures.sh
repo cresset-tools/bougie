@@ -73,6 +73,13 @@ run_fixture() {
         php "$COMPOSER_PHAR" install --no-progress --no-interaction --quiet
     )
 
+    # composer.lock is part of the input — bougie's dump_autoload reads
+    # it for the package list and the content-hash (which Composer uses
+    # to derive the ComposerAutoloaderInit<hash> class suffix). Path
+    # repositories yield a deterministic lock since the dist reference
+    # is sha1 of the committed package contents.
+    cp "$work/composer.lock" "$input/composer.lock"
+
     rm -rf "$expected"
     mkdir -p "$expected/vendor/composer"
     for f in "${GENERATED_TOPLEVEL[@]}"; do

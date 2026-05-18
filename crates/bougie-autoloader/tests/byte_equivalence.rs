@@ -42,13 +42,30 @@ fn fixtures_are_well_formed() {
     }
 }
 
+/// Files Phase 1 emits. Other files in `expected/` (autoload_real.php,
+/// autoload_static.php, autoload_classmap.php with real class entries,
+/// installed.{json,php}) are produced by later phases or by full
+/// `composer install`; the harness ignores them until those phases
+/// land.
+const PHASE1_EMITTED: &[&str] = &[
+    "vendor/autoload.php",
+    "vendor/composer/autoload_namespaces.php",
+    "vendor/composer/autoload_psr4.php",
+    "vendor/composer/autoload_files.php",
+];
+
 #[test]
-#[ignore = "bougie-autoloader::dump_autoload is a stub; enable when AUTOLOADER_PLAN Phase 1 lands"]
-fn byte_equivalence_against_composer() {
+fn phase1_byte_equivalence_against_composer() {
     let mut failures: Vec<String> = vec![];
 
     for dir in fixture_dirs() {
         let name = dir.file_name().unwrap().to_string_lossy().into_owned();
+        // Phase 1 covers psr4/psr0/files; classmap-single's expected
+        // output relies on classmap emission (Phase 2). Skip it.
+        if name == "classmap-single" {
+            continue;
+        }
+
         let work = match copy_input_to_tempdir(&dir) {
             Ok(p) => p,
             Err(e) => {
@@ -69,44 +86,55 @@ fn byte_equivalence_against_composer() {
         }
 
         let expected_root = dir.join("expected");
-        for rel in walk(&expected_root) {
-            let expected_path = expected_root.join(&rel);
-            let actual_path = work.path().join(&rel);
-            let expected_bytes = match std::fs::read(&expected_path) {
-                Ok(b) => b,
-                Err(e) => {
-                    failures.push(format!("{name}: read {}: {e}", rel.display()));
-                    continue;
-                }
-            };
-            let actual_bytes = match std::fs::read(&actual_path) {
-                Ok(b) => b,
-                Err(e) => {
+        for rel in PHASE1_EMITTED {
+            let expected_path = expected_root.join(rel);
+            let actual_path = work.path().join(rel);
+            // autoload_files.php is only emitted when any package has
+            // a files entry. If neither side wrote it, that's fine.
+            match (expected_path.exists(), actual_path.exists()) {
+                (false, false) => continue,
+                (true, false) => {
                     failures.push(format!(
-                        "{name}: bougie did not produce {}: {e}",
-                        rel.display()
+                        "{name}: bougie did not produce {} (Composer did)",
+                        rel
                     ));
                     continue;
                 }
-            };
+                (false, true) => {
+                    failures.push(format!(
+                        "{name}: bougie produced {} but Composer did not",
+                        rel
+                    ));
+                    continue;
+                }
+                (true, true) => {}
+            }
+            let expected_bytes = std::fs::read(&expected_path).unwrap();
+            let actual_bytes = std::fs::read(&actual_path).unwrap();
             if expected_bytes != actual_bytes {
-                failures.push(format!(
-                    "{name}: {} differs ({} expected bytes vs {} actual)",
-                    rel.display(),
-                    expected_bytes.len(),
-                    actual_bytes.len(),
-                ));
+                failures.push(format_diff(&name, rel, &expected_bytes, &actual_bytes));
             }
         }
     }
 
     if !failures.is_empty() {
         panic!(
-            "{} byte-equivalence failures:\n  {}",
+            "{} Phase 1 byte-equivalence failures:\n\n{}",
             failures.len(),
-            failures.join("\n  ")
+            failures.join("\n\n")
         );
     }
+}
+
+fn format_diff(name: &str, rel: &str, expected: &[u8], actual: &[u8]) -> String {
+    let exp_str = std::str::from_utf8(expected).unwrap_or("<non-utf8>");
+    let act_str = std::str::from_utf8(actual).unwrap_or("<non-utf8>");
+    format!(
+        "{name}: {} differs ({} expected bytes vs {} actual)\n--- expected ---\n{exp_str}\n--- actual ---\n{act_str}",
+        rel,
+        expected.len(),
+        actual.len()
+    )
 }
 
 fn fixture_dirs() -> Vec<PathBuf> {
