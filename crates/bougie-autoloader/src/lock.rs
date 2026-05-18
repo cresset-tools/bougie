@@ -68,6 +68,23 @@ impl LockFile {
         self.packages.iter().chain(dev.iter())
     }
 
+    /// Iterate packages in Composer's `sortPackageMap` order:
+    /// `PackageSorter::sortPackages` — dependencies before
+    /// dependents (ascending importance weight, alphabetical
+    /// tie-break). Root is handled separately by the caller. Used by
+    /// the files-autoload emitter; matches Composer's
+    /// `parseAutoloads` line `$files = $this->parseAutoloadsType(
+    /// $sortedPackageMap, 'files', ...)` (deps-first so an upstream
+    /// package's files autoload runs before any dependent that might
+    /// reference its symbols at include time).
+    pub(crate) fn sorted_packages(&self, no_dev: bool) -> Vec<&Package> {
+        let mut all: Vec<&Package> = self.packages.iter().collect();
+        if !no_dev {
+            all.extend(self.packages_dev.iter());
+        }
+        sort_packages(all)
+    }
+
     /// Iterate packages in Composer's `reverseSortedMap` order:
     /// reverse of `PackageSorter::sortPackages`. Root is handled
     /// separately by the caller — Composer's iteration is
@@ -82,12 +99,7 @@ impl LockFile {
     /// the same namespace; the fixture `psr4-shared-namespace` is the
     /// minimal case.
     pub(crate) fn reverse_sorted_packages(&self, no_dev: bool) -> Vec<&Package> {
-        let mut all: Vec<&Package> = self.packages.iter().collect();
-        if !no_dev {
-            all.extend(self.packages_dev.iter());
-        }
-        let sorted = sort_packages(all);
-        sorted.into_iter().rev().collect()
+        self.sorted_packages(no_dev).into_iter().rev().collect()
     }
 }
 
