@@ -30,7 +30,14 @@ use std::time::{Duration, Instant};
 
 use bougie_autoloader::{dump_autoload, DumpRequest};
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() {
+    if let Err(e) = run() {
+        eprintln!("dump_bench: {e}");
+        std::process::exit(1);
+    }
+}
+
+fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args().skip(1);
     let project = PathBuf::from(args.next().ok_or(
         "usage: dump_bench <project-root> [iters]\n\
@@ -58,7 +65,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Instant::now().elapsed().as_nanos()
     ));
     println!("staging copy of {} → {}", project.display(), work_root.display());
-    copy_dir(&project, &work_root)?;
+    copy_dir(&project, &work_root)
+        .map_err(|e| format!("staging copy {} → {} failed: {e}", project.display(), work_root.display()))?;
     let guard = Cleanup(work_root.clone());
 
     println!("iterations: {iters} (first is warmup)\n");
@@ -215,55 +223,65 @@ impl Drop for Cleanup {
 }
 
 /// Recursive copy that preserves symlinks (doesn't follow them) and
-/// tolerates per-entry errors. Real `vendor/` trees routinely contain
-/// dangling symlinks (`vendor/bin/<tool>` pointing at a package that
-/// is intentionally removed, or platform-specific binaries). The
-/// scanner skips unreadable files anyway, so a dangling symlink in
-/// the staged copy doesn't change correctness — we just need to not
-/// abort the staging step over it.
+/// tolerates per-entry errors. Every error carries the exact path
+/// and operation that failed so the user can see why staging died
+/// (or, with per-entry tolerance, what got skipped).
 fn copy_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
-    std::fs::create_dir_all(dst)
-        .map_err(|e| std::io::Error::new(e.kind(), format!("create_dir_all {dst:?}: {e}")))?;
-    let read = std::fs::read_dir(src)
-        .map_err(|e| std::io::Error::new(e.kind(), format!("read_dir {src:?}: {e}")))?;
+    std::fs::create_dir_all(dst).map_err(|e| ctx(e, "create_dir_all", dst))?;
+    let read = std::fs::read_dir(src).map_err(|e| ctx(e, "read_dir", src))?;
     for entry in read {
         let entry = match entry {
             Ok(e) => e,
             Err(e) => {
-                eprintln!("  warn: skipping entry under {}: {e}", src.display());
+                eprintln!("  warn: read_dir entry under {}: {e}", src.display());
                 continue;
             }
         };
         let s = entry.path();
         let d = dst.join(entry.file_name());
 
-        // symlink_metadata = don't follow the link. The vendor/bin/*
-        // symlinks would otherwise resolve to potentially-missing
-        // targets.
+        // symlink_metadata = inspect the link itself rather than its
+        // target. If we used metadata() we'd follow links and inherit
+        // any errors from broken targets.
         let meta = match std::fs::symlink_metadata(&s) {
             Ok(m) => m,
             Err(e) => {
-                eprintln!("  warn: skipping {} (metadata: {e})", s.display());
+                eprintln!("  warn: symlink_metadata {}: {e}", s.display());
                 continue;
             }
         };
 
         let ft = meta.file_type();
         let result: std::io::Result<()> = if ft.is_symlink() {
-            copy_symlink(&s, &d)
+            copy_symlink(&s, &d).map_err(|e| ctx(e, "copy_symlink", &s))
         } else if ft.is_dir() {
             copy_dir(&s, &d)
         } else if ft.is_file() {
-            std::fs::copy(&s, &d).map(|_| ())
+            std::fs::copy(&s, &d)
+                .map(|_| ())
+                .map_err(|e| ctx(e, "copy", &s))
         } else {
-            // FIFO / socket / device — rare in vendor/, skip silently.
+            // FIFO / socket / device — rare under a vendor/ tree;
+            // skip and report so it isn't silently invisible.
+            eprintln!(
+                "  warn: skipping {} (unsupported file type: {ft:?})",
+                s.display()
+            );
             Ok(())
         };
         if let Err(e) = result {
-            eprintln!("  warn: skipping {}: {e}", s.display());
+            eprintln!("  warn: {e}");
         }
     }
     Ok(())
+}
+
+/// Wrap an [`io::Error`] with the path and operation that produced it.
+/// The Rust stdlib's bare `fs::copy` / `read_dir` / etc. errors don't
+/// include the path — and "No such file or directory" alone is no
+/// help when something deep in a vendor/ tree fails.
+fn ctx(e: std::io::Error, op: &str, path: &Path) -> std::io::Error {
+    std::io::Error::new(e.kind(), format!("{op} {}: {e}", path.display()))
 }
 
 #[cfg(unix)]
