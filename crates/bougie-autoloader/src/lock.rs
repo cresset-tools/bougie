@@ -37,11 +37,10 @@ pub(crate) struct AutoloadBlock {
     pub psr0: Vec<(String, Vec<String>)>,
     #[serde(default)]
     pub files: Vec<String>,
-    // `classmap` + `exclude-from-classmap` deserialize but are unused
-    // in Phase 1 (no classmap scan). Phase 2 wires them up.
     #[serde(default)]
-    #[allow(dead_code)]
     pub classmap: Vec<String>,
+    // `exclude-from-classmap` deserializes but is not yet honored;
+    // wired up alongside `--optimize` in a follow-up PR.
     #[serde(default, rename = "exclude-from-classmap")]
     #[allow(dead_code)]
     pub exclude_from_classmap: Vec<String>,

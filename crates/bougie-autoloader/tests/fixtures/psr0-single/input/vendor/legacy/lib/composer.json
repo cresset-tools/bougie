@@ -1,0 +1,9 @@
+{
+    "name": "legacy/lib",
+    "version": "1.0.0",
+    "autoload": {
+        "psr-0": {
+            "Legacy": "src/"
+        }
+    }
+}
