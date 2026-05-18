@@ -8,9 +8,14 @@
 
 pub mod fetch;
 pub mod lockfile;
-pub mod php_json;
 pub mod request;
 pub mod resolve;
+
+/// Re-export of the [`bougie_php_json`] crate. Kept under
+/// `bougie_composer::php_json` for backwards compatibility with the
+/// pre-extraction module path; new consumers should depend on
+/// `bougie-php-json` directly.
+pub use bougie_php_json as php_json;
 
 use bougie_fs::lock::ExclusiveGuard;
 use bougie_paths::Paths;

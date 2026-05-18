@@ -421,6 +421,7 @@ dependencies = [
 name = "bougie-autoloader"
 version = "0.1.0"
 dependencies = [
+ "bougie-php-json",
  "criterion",
  "md-5",
  "memchr",
@@ -473,6 +474,7 @@ dependencies = [
  "bougie-fetch",
  "bougie-fs",
  "bougie-paths",
+ "bougie-php-json",
  "eyre",
  "md-5",
  "reqwest 0.13.3",
@@ -612,6 +614,13 @@ version = "0.4.0"
 dependencies = [
  "etcetera",
  "eyre",
+]
+
+[[package]]
+name = "bougie-php-json"
+version = "0.4.0"
+dependencies = [
+ "serde_json",
 ]
 
 [[package]]
