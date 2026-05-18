@@ -1,0 +1,11 @@
+{
+    "name": "fixture/classmap-authoritative",
+    "description": "Dumped under --classmap-authoritative. The only diff vs classmap-single is the setClassMapAuthoritative(true) line in autoload_real.php (this package's autoload is only a classmap so the implicit -o has no extra effect).",
+    "type": "project",
+    "repositories": [
+        { "type": "path", "url": "packages/scanner", "options": { "symlink": false } }
+    ],
+    "require": {
+        "acme/scanner": "*"
+    }
+}

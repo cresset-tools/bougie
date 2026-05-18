@@ -1,0 +1,28 @@
+{
+    "packages": [
+        {
+            "name": "acme/scanner",
+            "version": "1.0.0",
+            "version_normalized": "1.0.0.0",
+            "dist": {
+                "type": "path",
+                "url": "packages/scanner",
+                "reference": "0152746cebbe946a50f0e6ead7118b2a6d049e6e"
+            },
+            "type": "library",
+            "installation-source": "dist",
+            "autoload": {
+                "classmap": [
+                    "lib/"
+                ]
+            },
+            "transport-options": {
+                "symlink": false,
+                "relative": true
+            },
+            "install-path": "../acme/scanner"
+        }
+    ],
+    "dev": true,
+    "dev-package-names": []
+}
