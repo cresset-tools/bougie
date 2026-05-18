@@ -5,11 +5,13 @@
 //! as of the initial fixture set). Performance-first design: parallel
 //! file scan, SIMD byte search in the classmap pipeline, lazy I/O.
 //!
-//! **Status:** Phase 1 — PSR-4, PSR-0, files emitters land. Classmap
-//! scanning (Phase 2), autoload_real.php + autoload_static.php
-//! (Phase 3), vendored ClassLoader / InstalledVersions / LICENSE
-//! (deferred), installed.json / installed.php regeneration (deferred)
-//! arrive in subsequent PRs. The byte-equivalence harness in
+//! **Status:** Phase 1 + Phase 2 complete — PSR-4, PSR-0, files,
+//! and classmap emitters land, with `--optimize`,
+//! `--classmap-authoritative`, and `exclude-from-classmap` honored.
+//! `autoload_real.php` + `autoload_static.php` (Phase 3), vendored
+//! ClassLoader / InstalledVersions / LICENSE (deferred), and
+//! installed.json / installed.php regeneration (deferred) arrive in
+//! subsequent PRs. The byte-equivalence harness in
 //! `tests/byte_equivalence.rs` checks only what each phase ships.
 
 mod collect;
@@ -94,10 +96,11 @@ impl From<std::io::Error> for DumpError {
 /// `vendor/composer/autoload_classmap.php` (always — at minimum the
 /// `Composer\InstalledVersions` stub), and
 /// `vendor/composer/autoload_files.php` (only if any package or root
-/// declares `files`). Phase 3 adds `autoload_real.php` +
-/// `autoload_static.php` and the vendored runtime files;
-/// `--optimize` / `--classmap-authoritative` / `exclude-from-classmap`
-/// are still pending wiring.
+/// declares `files`). Honors `--optimize`,
+/// `--classmap-authoritative`, and `exclude-from-classmap`. Phase 3
+/// adds `autoload_real.php` + `autoload_static.php` and the vendored
+/// runtime files (`ClassLoader.php`, `InstalledVersions.php`,
+/// `LICENSE`, optional `platform_check.php`).
 pub fn dump_autoload(req: &DumpRequest<'_>) -> Result<(), DumpError> {
     let lock = lock::read_lock(req.project_root)?;
     let manifest = lock::read_root_manifest(req.project_root)?;
