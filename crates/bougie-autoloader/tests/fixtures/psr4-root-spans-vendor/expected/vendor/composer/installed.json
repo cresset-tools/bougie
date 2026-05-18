@@ -1,0 +1,23 @@
+{
+    "packages": [
+        {
+            "name": "acme/sneak",
+            "version": "1.0.0",
+            "version_normalized": "1.0.0.0",
+            "dist": {
+                "type": "path",
+                "url": "packages/sneak",
+                "reference": "6902eae24eaae267456d998993dd86213e9ed117"
+            },
+            "type": "library",
+            "installation-source": "dist",
+            "transport-options": {
+                "symlink": false,
+                "relative": true
+            },
+            "install-path": "../acme/sneak"
+        }
+    ],
+    "dev": true,
+    "dev-package-names": []
+}
