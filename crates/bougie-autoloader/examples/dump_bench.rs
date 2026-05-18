@@ -214,17 +214,71 @@ impl Drop for Cleanup {
     }
 }
 
+/// Recursive copy that preserves symlinks (doesn't follow them) and
+/// tolerates per-entry errors. Real `vendor/` trees routinely contain
+/// dangling symlinks (`vendor/bin/<tool>` pointing at a package that
+/// is intentionally removed, or platform-specific binaries). The
+/// scanner skips unreadable files anyway, so a dangling symlink in
+/// the staged copy doesn't change correctness — we just need to not
+/// abort the staging step over it.
 fn copy_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
-    std::fs::create_dir_all(dst)?;
-    for entry in std::fs::read_dir(src)? {
-        let entry = entry?;
+    std::fs::create_dir_all(dst)
+        .map_err(|e| std::io::Error::new(e.kind(), format!("create_dir_all {dst:?}: {e}")))?;
+    let read = std::fs::read_dir(src)
+        .map_err(|e| std::io::Error::new(e.kind(), format!("read_dir {src:?}: {e}")))?;
+    for entry in read {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(e) => {
+                eprintln!("  warn: skipping entry under {}: {e}", src.display());
+                continue;
+            }
+        };
         let s = entry.path();
         let d = dst.join(entry.file_name());
-        if s.is_dir() {
-            copy_dir(&s, &d)?;
+
+        // symlink_metadata = don't follow the link. The vendor/bin/*
+        // symlinks would otherwise resolve to potentially-missing
+        // targets.
+        let meta = match std::fs::symlink_metadata(&s) {
+            Ok(m) => m,
+            Err(e) => {
+                eprintln!("  warn: skipping {} (metadata: {e})", s.display());
+                continue;
+            }
+        };
+
+        let ft = meta.file_type();
+        let result: std::io::Result<()> = if ft.is_symlink() {
+            copy_symlink(&s, &d)
+        } else if ft.is_dir() {
+            copy_dir(&s, &d)
+        } else if ft.is_file() {
+            std::fs::copy(&s, &d).map(|_| ())
         } else {
-            std::fs::copy(&s, &d)?;
+            // FIFO / socket / device — rare in vendor/, skip silently.
+            Ok(())
+        };
+        if let Err(e) = result {
+            eprintln!("  warn: skipping {}: {e}", s.display());
         }
     }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn copy_symlink(src: &Path, dst: &Path) -> std::io::Result<()> {
+    let target = std::fs::read_link(src)?;
+    // If the destination already exists (e.g. recursive directory
+    // already created), drop it before re-linking.
+    let _ = std::fs::remove_file(dst);
+    std::os::unix::fs::symlink(target, dst)
+}
+
+#[cfg(not(unix))]
+fn copy_symlink(_src: &Path, _dst: &Path) -> std::io::Result<()> {
+    // Skip — Windows symlink semantics differ enough that we'd want a
+    // separate code path. The bench example doesn't currently target
+    // Windows.
     Ok(())
 }
