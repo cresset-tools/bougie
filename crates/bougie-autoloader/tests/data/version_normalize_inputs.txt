@@ -26,6 +26,9 @@ V1.0.0
 1.0.0+no-version-set
 1.0.0+anything.else
 2.5.0+202401.commit.abc
+# Build metadata after a modifier (regex has no modifier-aware guard).
+1.0.0-RC1+build
+1.0.0-alpha2+sha.abc
 
 # --- Pre-release: long form, dash separator ---
 1.0.0-alpha1
@@ -70,6 +73,9 @@ default
 dev-master
 dev-main
 dev-feature/foo
+# `stripos` is case-insensitive — uppercase should also match.
+DEV-foo
+Dev-mixed-case
 
 # --- Branch version aliases ---
 1.x-dev
@@ -93,6 +99,9 @@ dev-feature/foo
 
 # --- Whitespace ---
   1.0.0
+
+# --- # reference suffix (only parseStability strips it, normalize doesn't) ---
+1.0.0#abc123
 
 # --- Garbage (should throw) ---
 not-a-version

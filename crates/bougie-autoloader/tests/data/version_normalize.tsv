@@ -16,6 +16,8 @@ V1.0.0	1.0.0.0
 1.0.0+no-version-set	1.0.0.0
 1.0.0+anything.else	1.0.0.0
 2.5.0+202401.commit.abc	2.5.0.0
+1.0.0-RC1+build	1.0.0.0-RC1
+1.0.0-alpha2+sha.abc	1.0.0.0-alpha2
 1.0.0-alpha1	1.0.0.0-alpha1
 1.0.0-beta1	1.0.0.0-beta1
 1.0.0-RC1	1.0.0.0-RC1
@@ -44,6 +46,8 @@ default	dev-default
 dev-master	dev-master
 dev-main	dev-main
 dev-feature/foo	dev-feature/foo
+DEV-foo	dev-foo
+Dev-mixed-case	dev-mixed-case
 1.x-dev	1.9999999.9999999.9999999-dev
 1.0.x-dev	1.0.9999999.9999999-dev
 1.2.x-dev	1.2.9999999.9999999-dev
@@ -57,5 +61,6 @@ dev-feature/foo	dev-feature/foo
 2024.01.15.10	2024.01.15.10
 20240115.5	20240115.5
   1.0.0	1.0.0.0
+1.0.0#abc123	THROWS	Invalid version string "1.0.0#abc123"
 not-a-version	THROWS	Invalid version string "not-a-version"
 1.0.0.0.0	THROWS	Invalid version string "1.0.0.0.0"
