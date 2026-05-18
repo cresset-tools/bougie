@@ -1,0 +1,14 @@
+[package]
+name = "bougie-autoloader"
+version = "0.1.0"
+edition = "2024"
+description = "Generate Composer-compatible vendor/composer/autoload_*.php from a resolved dependency tree."
+license = "EUPL-1.2"
+repository = "https://github.com/cresset-tools/bougie"
+rust-version = "1.95"
+authors.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

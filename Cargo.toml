@@ -6,6 +6,7 @@
 resolver = "3"
 members = [
     "crates/bougie",
+    "crates/bougie-autoloader",
     "crates/bougie-cli",
     "crates/bougie-backend",
     "crates/bougie-composer",
