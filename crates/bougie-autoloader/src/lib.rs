@@ -16,6 +16,7 @@ mod collect;
 mod emit;
 mod lock;
 mod scan;
+mod vendored;
 
 /// Internal entry points exposed only so the in-tree
 /// `benches/scan.rs` criterion harness can call them. Not a stable
@@ -138,6 +139,12 @@ pub fn dump_autoload(req: &DumpRequest<'_>) -> Result<(), DumpError> {
         &req.project_root.join("vendor").join("autoload.php"),
         emit::entry(&lock.content_hash).as_bytes(),
     )?;
+
+    // Composer copies ClassLoader.php, InstalledVersions.php, and
+    // LICENSE verbatim from its own source into vendor/composer/ —
+    // we ship pinned copies under crates/bougie-autoloader/vendored/
+    // and write them the same way.
+    vendored::write_runtime_files(&composer_dir, write_atomic)?;
 
     Ok(())
 }
