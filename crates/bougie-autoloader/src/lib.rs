@@ -5,15 +5,19 @@
 //! as of the initial fixture set). Performance-first design: parallel
 //! file scan, SIMD byte search in the classmap pipeline, lazy I/O.
 //!
-//! **Status:** Phase 1 — PSR-4, PSR-0, files emitters land. Classmap
-//! scanning (Phase 2), autoload_real.php + autoload_static.php
-//! (Phase 3), vendored ClassLoader / InstalledVersions / LICENSE
-//! (deferred), installed.json / installed.php regeneration (deferred)
-//! arrive in subsequent PRs. The byte-equivalence harness in
-//! `tests/byte_equivalence.rs` checks only what each phase ships.
+//! **Status:** every file `composer dump-autoload` writes under
+//! `vendor/` is now emitted byte-equivalent across the fixtures in
+//! `tests/fixtures/`: `vendor/autoload.php`,
+//! `vendor/composer/autoload_{namespaces,psr4,classmap,files,real,static}.php`,
+//! the vendored `ClassLoader.php` / `InstalledVersions.php` / `LICENSE`,
+//! and `installed.{json,php}`. Remaining gaps are conditional features
+//! the fixtures don't yet exercise: `config.platform-check` →
+//! `platform_check.php`, `--apcu-autoloader`, and
+//! `config.autoloader-suffix` overrides.
 
 mod collect;
 mod emit;
+mod installed;
 mod lock;
 mod scan;
 mod vendored;
@@ -160,6 +164,19 @@ pub fn dump_autoload(req: &DumpRequest<'_>) -> Result<(), DumpError> {
     // we ship pinned copies under crates/bougie-autoloader/vendored/
     // and write them the same way.
     vendored::write_runtime_files(&composer_dir, write_atomic)?;
+
+    // `vendor/composer/installed.{json,php}` mirror Composer's
+    // `FilesystemRepository::write` — installed.json re-serializes
+    // composer.lock's package metadata, installed.php is the runtime
+    // target for `Composer\InstalledVersions::getVersion(...)` etc.
+    write_atomic(
+        &composer_dir.join("installed.json"),
+        installed::emit_installed_json(req.project_root, req.no_dev)?.as_bytes(),
+    )?;
+    write_atomic(
+        &composer_dir.join("installed.php"),
+        installed::emit_installed_php(req.project_root, req.no_dev)?.as_bytes(),
+    )?;
 
     Ok(())
 }
