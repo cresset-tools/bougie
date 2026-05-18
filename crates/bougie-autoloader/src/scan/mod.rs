@@ -9,29 +9,36 @@
 //! 3. [`finder`] — prefilter + extract class declarations from the
 //!    cleaned source.
 //!
-//! This module currently runs the pipeline sequentially. Parallelism
-//! (`rayon::par_iter` over the file list, `rayon::scope` across
-//! packages) lands in a follow-up PR per `AUTOLOADER_PLAN.md` Phase 2.
+//! File reads + clean + extract run in parallel via [`rayon`]. Output
+//! order is preserved by `par_iter().flat_map_iter().collect()` so
+//! per-file iteration order (and therefore the first-seen dedup at
+//! `collect::classmap`) stays deterministic.
 
-mod cleaner;
-mod finder;
+pub(crate) mod cleaner;
+pub(crate) mod finder;
 mod walker;
 
 use std::path::{Path, PathBuf};
 
+use rayon::prelude::*;
+
 /// Scan a single classmap directory (or file). Returns
-/// `(class_name, absolute_path)` pairs in the order they are
-/// discovered. Deduplication and sort happen at a higher layer
-/// (`collect::classmap`) so this module stays mechanical.
+/// `(class_name, absolute_path)` pairs in walker order. Deduplication
+/// and sort happen at a higher layer (`collect::classmap`) so this
+/// module stays mechanical.
 pub(crate) fn scan(root: &Path) -> Vec<(String, PathBuf)> {
-    let mut out = vec![];
-    for path in walker::enumerate(root, walker::DEFAULT_EXTENSIONS) {
-        let Ok(bytes) = std::fs::read(&path) else {
-            continue;
-        };
-        for class in finder::find_classes(&bytes) {
-            out.push((class, path.clone()));
-        }
-    }
-    out
+    let files = walker::enumerate(root, walker::DEFAULT_EXTENSIONS);
+    files
+        .par_iter()
+        .flat_map_iter(|path| {
+            let Ok(bytes) = std::fs::read(path) else {
+                return Vec::new().into_iter();
+            };
+            finder::find_classes(&bytes)
+                .into_iter()
+                .map(|c| (c, path.clone()))
+                .collect::<Vec<_>>()
+                .into_iter()
+        })
+        .collect()
 }

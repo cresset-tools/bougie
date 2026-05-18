@@ -17,6 +17,19 @@ mod emit;
 mod lock;
 mod scan;
 
+/// Internal entry points exposed only so the in-tree
+/// `benches/scan.rs` criterion harness can call them. Not a stable
+/// API — names and signatures move with the implementation.
+#[doc(hidden)]
+pub mod bench_api {
+    pub fn clean(input: &[u8]) -> Vec<u8> {
+        crate::scan::cleaner::clean(input)
+    }
+    pub fn find_classes(input: &[u8]) -> Vec<String> {
+        crate::scan::finder::find_classes(input)
+    }
+}
+
 use std::path::Path;
 
 /// Pinned upstream Composer version that fixtures + byte-equivalence
