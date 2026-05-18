@@ -1,4 +1,8 @@
 /target
 
+# Local cache for fixture-generation deps (e.g. pinned composer.phar
+# pulled in by scripts/generate-autoload-fixtures.sh).
+/.cache
+
 # Visual Studio workspace state (per-user; not project config).
 .vs/
