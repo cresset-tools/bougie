@@ -1,0 +1,53 @@
+{
+    "packages": [
+        {
+            "name": "acme/alpha",
+            "version": "1.0.0",
+            "version_normalized": "1.0.0.0",
+            "dist": {
+                "type": "path",
+                "url": "packages/alpha",
+                "reference": "267eaccf760641678ee43555c573a7679f138507"
+            },
+            "require": {
+                "acme/zulu": "*"
+            },
+            "type": "library",
+            "installation-source": "dist",
+            "autoload": {
+                "files": [
+                    "alpha.php"
+                ]
+            },
+            "transport-options": {
+                "symlink": false,
+                "relative": true
+            },
+            "install-path": "../acme/alpha"
+        },
+        {
+            "name": "acme/zulu",
+            "version": "1.0.0",
+            "version_normalized": "1.0.0.0",
+            "dist": {
+                "type": "path",
+                "url": "packages/zulu",
+                "reference": "e3e30b9ec924baf395e0467e79479b7ceb915c20"
+            },
+            "type": "library",
+            "installation-source": "dist",
+            "autoload": {
+                "files": [
+                    "zulu.php"
+                ]
+            },
+            "transport-options": {
+                "symlink": false,
+                "relative": true
+            },
+            "install-path": "../acme/zulu"
+        }
+    ],
+    "dev": true,
+    "dev-package-names": []
+}

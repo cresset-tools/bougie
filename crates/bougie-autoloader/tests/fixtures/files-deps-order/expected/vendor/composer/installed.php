@@ -1,0 +1,41 @@
+<?php return array(
+    'root' => array(
+        'name' => 'fixture/files-deps-order',
+        'pretty_version' => '1.0.0+no-version-set',
+        'version' => '1.0.0.0',
+        'reference' => null,
+        'type' => 'project',
+        'install_path' => __DIR__ . '/../../',
+        'aliases' => array(),
+        'dev' => true,
+    ),
+    'versions' => array(
+        'acme/alpha' => array(
+            'pretty_version' => '1.0.0',
+            'version' => '1.0.0.0',
+            'reference' => '267eaccf760641678ee43555c573a7679f138507',
+            'type' => 'library',
+            'install_path' => __DIR__ . '/../acme/alpha',
+            'aliases' => array(),
+            'dev_requirement' => false,
+        ),
+        'acme/zulu' => array(
+            'pretty_version' => '1.0.0',
+            'version' => '1.0.0.0',
+            'reference' => 'e3e30b9ec924baf395e0467e79479b7ceb915c20',
+            'type' => 'library',
+            'install_path' => __DIR__ . '/../acme/zulu',
+            'aliases' => array(),
+            'dev_requirement' => false,
+        ),
+        'fixture/files-deps-order' => array(
+            'pretty_version' => '1.0.0+no-version-set',
+            'version' => '1.0.0.0',
+            'reference' => null,
+            'type' => 'project',
+            'install_path' => __DIR__ . '/../../',
+            'aliases' => array(),
+            'dev_requirement' => false,
+        ),
+    ),
+);

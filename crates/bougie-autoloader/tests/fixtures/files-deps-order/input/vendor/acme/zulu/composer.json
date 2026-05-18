@@ -1,0 +1,7 @@
+{
+    "name": "acme/zulu",
+    "version": "1.0.0",
+    "autoload": {
+        "files": ["zulu.php"]
+    }
+}
