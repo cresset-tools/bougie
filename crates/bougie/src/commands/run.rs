@@ -40,7 +40,11 @@ pub fn run(
     }
     let project_root = std::env::current_dir()?;
     if !no_sync && !is_environment_present(&project_root)? {
-        sync::run(format, false)?;
+        // uv-parity: `bougie run` outside a project (no `require.php`,
+        // no `[php]version`) falls back to the highest already-installed
+        // PHP, or the latest publishable >=8.0 — instead of erroring the
+        // way `bougie sync` does.
+        sync::run_with_default_fallback(format, false)?;
     }
 
     // composer.json `scripts.<name>` lookup. Skipped when the user
