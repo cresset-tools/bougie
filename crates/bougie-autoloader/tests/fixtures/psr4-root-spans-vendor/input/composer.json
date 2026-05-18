@@ -1,0 +1,16 @@
+{
+    "name": "fixture/psr4-root-spans-vendor",
+    "description": "Root PSR-4 mapping (App\\) is rooted at the project root, so an -o scan would walk into vendor/. Composer detects this in AutoloadGenerator::dump and adds vendor/ to the exclude regex for that specific scan; without the guard a contrived vendor file (`class App\\vendor\\acme\\sneak\\SneakClass` at vendor/acme/sneak/SneakClass.php) would satisfy the namespace+path filter and land in the classmap.",
+    "type": "project",
+    "repositories": [
+        { "type": "path", "url": "packages/sneak", "options": { "symlink": false } }
+    ],
+    "require": {
+        "acme/sneak": "*"
+    },
+    "autoload": {
+        "psr-4": {
+            "App\\": "."
+        }
+    }
+}

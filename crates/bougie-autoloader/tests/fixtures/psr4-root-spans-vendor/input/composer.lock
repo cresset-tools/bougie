@@ -1,0 +1,33 @@
+{
+    "_readme": [
+        "This file locks the dependencies of your project to a known state",
+        "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
+        "This file is @generated automatically"
+    ],
+    "content-hash": "d583a2b96d6d87922c488ffb74e7b98f",
+    "packages": [
+        {
+            "name": "acme/sneak",
+            "version": "1.0.0",
+            "dist": {
+                "type": "path",
+                "url": "packages/sneak",
+                "reference": "6902eae24eaae267456d998993dd86213e9ed117"
+            },
+            "type": "library",
+            "transport-options": {
+                "symlink": false,
+                "relative": true
+            }
+        }
+    ],
+    "packages-dev": [],
+    "aliases": [],
+    "minimum-stability": "stable",
+    "stability-flags": {},
+    "prefer-stable": false,
+    "prefer-lowest": false,
+    "platform": {},
+    "platform-dev": {},
+    "plugin-api-version": "2.6.0"
+}

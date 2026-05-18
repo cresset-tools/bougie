@@ -79,7 +79,7 @@ where
             push(
                 &mut out,
                 prefix,
-                format!("$baseDir . '/{}'", strip_leading_slash(d)),
+                format!("$baseDir . '/{}'", normalize_emit_dir(d)),
             );
         }
     }
@@ -175,6 +175,13 @@ pub(crate) fn classmap(
         install_abs: PathBuf,
         scan_root: PathBuf,
         filter: NamespaceFilter,
+        /// True only for `-o`-mode PSR-* tasks whose scan_root spans
+        /// the project's vendor/ tree. Mirrors Composer's `dump()`:
+        /// `if (str_contains($vendorPath, $dir.'/'))` adds vendor to
+        /// the exclude regex for that specific scan, otherwise the
+        /// scan would walk through vendor/ and possibly classmap a
+        /// vendor file under the user's namespace.
+        needs_vendor_exclude: bool,
     }
 
     // Aggregate exclude-from-classmap patterns across packages + root.
@@ -203,7 +210,19 @@ pub(crate) fn classmap(
     for raw in &root.autoload.exclude_from_classmap {
         exclude_patterns.push((canonical(project_root.to_path_buf()), raw.clone()));
     }
-    let exclude = ExcludePatterns::build(&exclude_patterns);
+    let exclude_default = ExcludePatterns::build(&exclude_patterns);
+
+    // Second pre-compiled set with the project's `vendor/` appended.
+    // Used by PSR-* scan tasks whose scan_root contains vendor (i.e.
+    // a root mapping like `"App\\": "."`). The scan would otherwise
+    // walk into vendor/ and the filter would let through any vendor
+    // file whose path happens to match the user's namespace+path
+    // rule. We mirror Composer's per-scan exclude.
+    let project_root_abs = canonical(project_root.to_path_buf());
+    let vendor_abs = canonical(project_root.join("vendor"));
+    let mut exclude_with_vendor_patterns = exclude_patterns.clone();
+    exclude_with_vendor_patterns.push((project_root_abs.clone(), "vendor/".to_string()));
+    let exclude_with_vendor = ExcludePatterns::build(&exclude_with_vendor_patterns);
 
     let mut tasks: Vec<Task<'_>> = Vec::new();
 
@@ -219,6 +238,10 @@ pub(crate) fn classmap(
             scan_root: canonical(project_root.join(strip_leading_slash(dir))),
             install_abs: canonical(project_root.to_path_buf()),
             filter: NamespaceFilter::None,
+            // Composer does NOT vendor-guard classmap dirs — those are
+            // explicitly listed and assumed scoped already. Only the
+            // PSR-* scan gets the auto-exclude.
+            needs_vendor_exclude: false,
         });
     }
     for pkg in lock.reverse_sorted_packages(no_dev) {
@@ -232,6 +255,7 @@ pub(crate) fn classmap(
                 scan_root: canonical(install_abs.join(strip_leading_slash(dir))),
                 install_abs: install_abs.clone(),
                 filter: NamespaceFilter::None,
+                needs_vendor_exclude: false,
             });
         }
     }
@@ -249,10 +273,19 @@ pub(crate) fn classmap(
         // descending so PSR-4 stays before PSR-0 within a namespace
         // bucket (mirrors Composer's `foreach (['psr-4', 'psr-0']
         // ...)` outer-loop order).
+        // Composer's per-scan vendor-dir guard:
+        //   `if (str_contains($vendorPath, $dir.'/'))` ⇒ add vendor to
+        // the exclude regex. We mirror it with a path-prefix check
+        // (`vendor_abs` starts with `scan_root` and isn't equal).
+        let spans_vendor = |scan_root: &Path| -> bool {
+            vendor_abs != *scan_root && vendor_abs.starts_with(scan_root)
+        };
+
         let mut psr_tasks: Vec<(String, Task<'_>)> = Vec::new();
         for (ns, dirs) in &root.autoload.psr4 {
             for dir in dirs {
                 let scan_root = canonical(project_root.join(strip_leading_slash(dir)));
+                let needs_vendor_exclude = spans_vendor(&scan_root);
                 psr_tasks.push((
                     ns.clone(),
                     Task {
@@ -263,6 +296,7 @@ pub(crate) fn classmap(
                             namespace: ns.clone(),
                             base: scan_root,
                         },
+                        needs_vendor_exclude,
                     },
                 ));
             }
@@ -270,6 +304,7 @@ pub(crate) fn classmap(
         for (ns, dirs) in &root.autoload.psr0 {
             for dir in dirs {
                 let scan_root = canonical(project_root.join(strip_leading_slash(dir)));
+                let needs_vendor_exclude = spans_vendor(&scan_root);
                 psr_tasks.push((
                     ns.clone(),
                     Task {
@@ -280,6 +315,7 @@ pub(crate) fn classmap(
                             namespace: ns.clone(),
                             base: scan_root,
                         },
+                        needs_vendor_exclude,
                     },
                 ));
             }
@@ -289,6 +325,7 @@ pub(crate) fn classmap(
             for (ns, dirs) in &pkg.autoload.psr4 {
                 for dir in dirs {
                     let scan_root = canonical(install_abs.join(strip_leading_slash(dir)));
+                    let needs_vendor_exclude = spans_vendor(&scan_root);
                     psr_tasks.push((
                         ns.clone(),
                         Task {
@@ -299,6 +336,7 @@ pub(crate) fn classmap(
                                 namespace: ns.clone(),
                                 base: scan_root,
                             },
+                            needs_vendor_exclude,
                         },
                     ));
                 }
@@ -306,6 +344,7 @@ pub(crate) fn classmap(
             for (ns, dirs) in &pkg.autoload.psr0 {
                 for dir in dirs {
                     let scan_root = canonical(install_abs.join(strip_leading_slash(dir)));
+                    let needs_vendor_exclude = spans_vendor(&scan_root);
                     psr_tasks.push((
                         ns.clone(),
                         Task {
@@ -316,6 +355,7 @@ pub(crate) fn classmap(
                                 namespace: ns.clone(),
                                 base: scan_root,
                             },
+                            needs_vendor_exclude,
                         },
                     ));
                 }
@@ -335,7 +375,12 @@ pub(crate) fn classmap(
     let per_task: Vec<Vec<(String, String)>> = tasks
         .par_iter()
         .map(|task| {
-            scan::scan(&task.scan_root, &task.filter, &exclude)
+            let task_exclude = if task.needs_vendor_exclude {
+                &exclude_with_vendor
+            } else {
+                &exclude_default
+            };
+            scan::scan(&task.scan_root, &task.filter, task_exclude)
                 .into_iter()
                 .map(|(class, file_abs)| {
                     let rel = file_abs
@@ -393,7 +438,7 @@ fn file_identifier(package_name: &str, path: &str) -> String {
 /// source: `<install_path>/<dir>` minus the trailing slash (Composer
 /// omits it). Empty `dir` collapses to just the install path.
 fn join_rel(install_path: &str, dir: &str) -> String {
-    let trimmed = strip_leading_slash(dir).trim_end_matches('/');
+    let trimmed = normalize_emit_dir(dir);
     let pkg_part = install_path.strip_prefix("vendor/").unwrap_or(install_path);
     if trimmed.is_empty() {
         pkg_part.to_string()
@@ -404,6 +449,20 @@ fn join_rel(install_path: &str, dir: &str) -> String {
 
 fn strip_leading_slash(s: &str) -> &str {
     s.strip_prefix('/').unwrap_or(s)
+}
+
+/// Normalize a PSR-* directory path the way Composer's
+/// `Filesystem::normalizePath` + `findShortestPath` does before emit:
+/// strip a leading `/`, strip a leading `./`, treat a lone `.` as
+/// empty, trim trailing `/`. Returns a borrowed slice — the caller
+/// formats the result into the emitted PHP literal.
+fn normalize_emit_dir(d: &str) -> &str {
+    let d = d.strip_prefix('/').unwrap_or(d);
+    if d == "." {
+        return "";
+    }
+    let d = d.strip_prefix("./").unwrap_or(d);
+    d.trim_end_matches('/')
 }
 
 /// Resolve symlinks in a path. Mirrors Composer's `realpath()` usage
