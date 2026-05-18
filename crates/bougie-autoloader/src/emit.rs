@@ -1,10 +1,12 @@
-//! PHP-source emitters for the Phase 1 autoload files.
+//! PHP-source emitters for the autoload files.
 //!
 //! Every file Composer emits shares a fixed prolog and epilog. The
 //! per-file contents between them are a single `return array(...)`
 //! (or for `autoload.php`, the entry-point bootstrap). Output is
 //! byte-equivalent to Composer 2.8 — golden fixtures in
 //! `tests/fixtures/*/expected/` are the contract.
+
+pub(crate) mod real;
 
 use crate::collect::{ClassmapEntry, Entry, FileEntry};
 

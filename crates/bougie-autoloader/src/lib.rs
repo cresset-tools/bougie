@@ -140,6 +140,16 @@ pub fn dump_autoload(req: &DumpRequest<'_>) -> Result<(), DumpError> {
         emit::entry(&lock.content_hash).as_bytes(),
     )?;
 
+    write_atomic(
+        &composer_dir.join("autoload_real.php"),
+        emit::real::emit(
+            &lock.content_hash,
+            !files.is_empty(),
+            req.classmap_authoritative,
+        )
+        .as_bytes(),
+    )?;
+
     // Composer copies ClassLoader.php, InstalledVersions.php, and
     // LICENSE verbatim from its own source into vendor/composer/ —
     // we ship pinned copies under crates/bougie-autoloader/vendored/
