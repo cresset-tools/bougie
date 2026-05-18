@@ -7,9 +7,10 @@
 //! `AutoloadGenerator`).
 
 use md5::{Digest, Md5};
+use rayon::prelude::*;
 use std::collections::BTreeMap;
 use std::fmt::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::lock::{LockFile, RootManifest};
 use crate::scan;
@@ -122,38 +123,70 @@ pub(crate) fn classmap(
     no_dev: bool,
     project_root: &Path,
 ) -> Vec<ClassmapEntry> {
-    let mut seen: BTreeMap<String, String> = BTreeMap::new();
+    // Flatten (package, dir) pairs in lockfile order, then a final
+    // pass for root entries. Each `Task` owns the scan root and the
+    // closure that turns scan output into a PHP path expression.
+    enum Origin<'a> {
+        Package(&'a str), // package name → `$vendorDir . '/<name>/...'`
+        Root,             // root entry → `$baseDir . '/...'`
+    }
+    struct Task<'a> {
+        origin: Origin<'a>,
+        install_abs: PathBuf, // path the scanner walks
+        scan_root: PathBuf,   // absolute path passed to scan::scan
+    }
 
+    let mut tasks: Vec<Task<'_>> = Vec::new();
     for pkg in lock.iter_packages(no_dev) {
         if pkg.autoload.classmap.is_empty() {
             continue;
         }
-        let install_rel = format!("vendor/{}", pkg.name);
-        let install_abs = project_root.join(&install_rel);
+        let install_abs = project_root.join(format!("vendor/{}", pkg.name));
         for dir in &pkg.autoload.classmap {
-            let scan_root = install_abs.join(strip_leading_slash(dir));
-            for (class, file_abs) in scan::scan(&scan_root) {
-                if seen.contains_key(&class) {
-                    continue;
-                }
-                let rel = file_abs.strip_prefix(&install_abs).unwrap_or(&file_abs);
-                let rel_str = rel.to_string_lossy().replace('\\', "/");
-                let path_expr = format!("$vendorDir . '/{}/{rel_str}'", pkg.name);
-                seen.insert(class, path_expr);
-            }
+            tasks.push(Task {
+                origin: Origin::Package(&pkg.name),
+                scan_root: install_abs.join(strip_leading_slash(dir)),
+                install_abs: install_abs.clone(),
+            });
         }
     }
-
     for dir in &root.autoload.classmap {
-        let scan_root = project_root.join(strip_leading_slash(dir));
-        for (class, file_abs) in scan::scan(&scan_root) {
-            if seen.contains_key(&class) {
-                continue;
-            }
-            let rel = file_abs.strip_prefix(project_root).unwrap_or(&file_abs);
-            let rel_str = rel.to_string_lossy().replace('\\', "/");
-            let path_expr = format!("$baseDir . '/{rel_str}'");
-            seen.insert(class, path_expr);
+        tasks.push(Task {
+            origin: Origin::Root,
+            scan_root: project_root.join(strip_leading_slash(dir)),
+            install_abs: project_root.to_path_buf(),
+        });
+    }
+
+    // Parallel scan across (package, dir) pairs — rayon's `collect`
+    // preserves source order so the sequential merge below sees
+    // results in the same order as the lockfile + root iteration.
+    let per_task: Vec<Vec<(String, String)>> = tasks
+        .par_iter()
+        .map(|task| {
+            scan::scan(&task.scan_root)
+                .into_iter()
+                .map(|(class, file_abs)| {
+                    let rel = file_abs
+                        .strip_prefix(&task.install_abs)
+                        .unwrap_or(&file_abs);
+                    let rel_str = rel.to_string_lossy().replace('\\', "/");
+                    let path_expr = match task.origin {
+                        Origin::Package(name) => format!("$vendorDir . '/{name}/{rel_str}'"),
+                        Origin::Root => format!("$baseDir . '/{rel_str}'"),
+                    };
+                    (class, path_expr)
+                })
+                .collect()
+        })
+        .collect();
+
+    // Sequential merge: first-seen wins across tasks, in iteration
+    // order. The BTreeMap also sorts the final output alphabetically.
+    let mut seen: BTreeMap<String, String> = BTreeMap::new();
+    for results in per_task {
+        for (class, path_expr) in results {
+            seen.entry(class).or_insert(path_expr);
         }
     }
 
