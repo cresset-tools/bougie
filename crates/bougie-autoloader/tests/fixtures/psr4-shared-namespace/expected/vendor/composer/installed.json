@@ -1,0 +1,50 @@
+{
+    "packages": [
+        {
+            "name": "acme/alpha",
+            "version": "1.0.0",
+            "version_normalized": "1.0.0.0",
+            "dist": {
+                "type": "path",
+                "url": "packages/acme-alpha",
+                "reference": "ebe8918e59f4741af2d192e6aac71099b2ae599b"
+            },
+            "type": "library",
+            "installation-source": "dist",
+            "autoload": {
+                "psr-4": {
+                    "Shared\\": "src/"
+                }
+            },
+            "transport-options": {
+                "symlink": false,
+                "relative": true
+            },
+            "install-path": "../acme/alpha"
+        },
+        {
+            "name": "acme/beta",
+            "version": "1.0.0",
+            "version_normalized": "1.0.0.0",
+            "dist": {
+                "type": "path",
+                "url": "packages/acme-beta",
+                "reference": "6143618b59337fbd65229dd79118acf776d33372"
+            },
+            "type": "library",
+            "installation-source": "dist",
+            "autoload": {
+                "psr-4": {
+                    "Shared\\": "src/"
+                }
+            },
+            "transport-options": {
+                "symlink": false,
+                "relative": true
+            },
+            "install-path": "../acme/beta"
+        }
+    ],
+    "dev": true,
+    "dev-package-names": []
+}

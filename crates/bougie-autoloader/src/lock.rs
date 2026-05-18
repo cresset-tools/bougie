@@ -27,6 +27,12 @@ pub(crate) struct Package {
     pub name: String,
     #[serde(default)]
     pub autoload: AutoloadBlock,
+    /// Other packages this one requires. Composer's `PackageSorter`
+    /// uses this to build a usage graph for topological-ish sorting;
+    /// see `LockFile::reverse_sorted_packages`. Values are version
+    /// constraints we don't care about — only the keys matter.
+    #[serde(default)]
+    pub require: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -61,6 +67,88 @@ impl LockFile {
         let dev: &[Package] = if no_dev { &[] } else { &self.packages_dev };
         self.packages.iter().chain(dev.iter())
     }
+
+    /// Iterate packages in Composer's `reverseSortedMap` order:
+    /// reverse of `PackageSorter::sortPackages`. Root is handled
+    /// separately by the caller — Composer's iteration is
+    /// `[root, ...reverse(sortPackages(deps))]` so callers should
+    /// process root first, then this iterator.
+    ///
+    /// PSR-*/classmap aggregation, the optimize-mode PSR-* scan, and
+    /// the classmap scan all use this ordering — Composer applies
+    /// `array_reverse` to `sortPackageMap` output before iterating in
+    /// `parseAutoloadsType` and `dump()`. The ordering only affects
+    /// output when multiple packages contribute paths or classes to
+    /// the same namespace; the fixture `psr4-shared-namespace` is the
+    /// minimal case.
+    pub(crate) fn reverse_sorted_packages(&self, no_dev: bool) -> Vec<&Package> {
+        let mut all: Vec<&Package> = self.packages.iter().collect();
+        if !no_dev {
+            all.extend(self.packages_dev.iter());
+        }
+        let sorted = sort_packages(all);
+        sorted.into_iter().rev().collect()
+    }
+}
+
+/// Port of `Composer\Util\PackageSorter::sortPackages` for our
+/// reduced view of the lockfile.
+///
+/// Algorithm: compute a per-package weight by walking the reverse
+/// usage graph (`who requires me` chained recursively). Tie-break
+/// alphabetically (Composer uses `strnatcasecmp`; we use plain ASCII
+/// `cmp` since real package names are lowercase ASCII).
+fn sort_packages(packages: Vec<&Package>) -> Vec<&Package> {
+    use std::collections::HashMap;
+
+    // usage[target] = list of package names that require `target`.
+    let mut usage: HashMap<&str, Vec<&str>> = HashMap::new();
+    for pkg in &packages {
+        for dep_name in pkg.require.keys() {
+            usage.entry(dep_name.as_str()).or_default().push(&pkg.name);
+        }
+    }
+
+    // Recursive weight computation, memoized; cycle-broken by a
+    // "computing" guard (matches Composer's $computing array).
+    let mut computed: HashMap<&str, i32> = HashMap::new();
+    let mut computing: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    fn importance<'a>(
+        name: &'a str,
+        usage: &HashMap<&'a str, Vec<&'a str>>,
+        computed: &mut HashMap<&'a str, i32>,
+        computing: &mut std::collections::HashSet<&'a str>,
+    ) -> i32 {
+        if let Some(&v) = computed.get(name) {
+            return v;
+        }
+        if !computing.insert(name) {
+            // cycle — Composer returns 0.
+            return 0;
+        }
+        let mut weight = 0;
+        if let Some(users) = usage.get(name) {
+            for u in users {
+                weight -= 1 - importance(u, usage, computed, computing);
+            }
+        }
+        computing.remove(name);
+        computed.insert(name, weight);
+        weight
+    }
+
+    let mut weighted: Vec<(i32, &Package)> = packages
+        .iter()
+        .map(|p| {
+            (
+                importance(&p.name, &usage, &mut computed, &mut computing),
+                *p,
+            )
+        })
+        .collect();
+    // Stable sort by (weight asc, name asc).
+    weighted.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.name.cmp(&b.1.name)));
+    weighted.into_iter().map(|(_, p)| p).collect()
 }
 
 pub(crate) fn read_lock(project_root: &Path) -> Result<LockFile, DumpError> {
