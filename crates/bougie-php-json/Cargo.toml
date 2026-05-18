@@ -1,0 +1,15 @@
+[package]
+name = "bougie-php-json"
+version = "0.4.0"
+edition = "2024"
+description = "Byte-exact PHP json_encode output for two flag combinations Composer relies on (content-hash + JsonFile::encode)."
+license = "EUPL-1.2"
+repository = "https://github.com/cresset-tools/bougie"
+rust-version = "1.95"
+authors.workspace = true
+
+[dependencies]
+serde_json = { version = "1", features = ["preserve_order"] }
+
+[lints]
+workspace = true

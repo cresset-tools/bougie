@@ -20,6 +20,7 @@ members = [
     "crates/bougie-installer",
     "crates/bougie-output",
     "crates/bougie-paths",
+    "crates/bougie-php-json",
     "crates/bougie-platform",
     "crates/bougie-recipe",
     "crates/bougie-resolver",

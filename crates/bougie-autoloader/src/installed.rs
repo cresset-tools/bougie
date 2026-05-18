@@ -466,87 +466,15 @@ fn normalize_version(s: &str) -> String {
     }
 }
 
-/// Composer-style JSON pretty-printer. Indent is four spaces, `:` is
-/// followed by one space, empty `{}` and `[]` stay on the line they
-/// open on. Slashes are emitted unescaped (Composer's `JsonFormatter`
-/// passes `unescapeSlashes = true` for `installed.json`). Trailing
-/// newline.
+/// Encode with [`bougie_php_json::Mode::Pretty`] — the byte-exact PHP
+/// `json_encode($d, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES |
+/// JSON_UNESCAPED_UNICODE)` output that Composer's `JsonFile::encode`
+/// produces. Appends the trailing newline `JsonFile::write` writes via
+/// `file_put_contents`.
 fn format_composer_json(v: &Value) -> String {
-    let mut out = String::with_capacity(2048);
-    emit_json(v, &mut out, 0);
-    out.push('\n');
-    out
-}
-
-fn emit_json(v: &Value, out: &mut String, level: usize) {
-    match v {
-        Value::Null => out.push_str("null"),
-        Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
-        Value::Number(n) => out.push_str(&n.to_string()),
-        Value::String(s) => emit_json_string(s, out),
-        Value::Array(arr) => {
-            if arr.is_empty() {
-                out.push_str("[]");
-                return;
-            }
-            out.push('[');
-            for (i, item) in arr.iter().enumerate() {
-                if i > 0 {
-                    out.push(',');
-                }
-                out.push('\n');
-                indent_json(out, level + 1);
-                emit_json(item, out, level + 1);
-            }
-            out.push('\n');
-            indent_json(out, level);
-            out.push(']');
-        }
-        Value::Object(obj) => {
-            if obj.is_empty() {
-                out.push_str("{}");
-                return;
-            }
-            out.push('{');
-            for (i, (k, val)) in obj.iter().enumerate() {
-                if i > 0 {
-                    out.push(',');
-                }
-                out.push('\n');
-                indent_json(out, level + 1);
-                emit_json_string(k, out);
-                out.push_str(": ");
-                emit_json(val, out, level + 1);
-            }
-            out.push('\n');
-            indent_json(out, level);
-            out.push('}');
-        }
-    }
-}
-
-fn indent_json(out: &mut String, level: usize) {
-    for _ in 0..level {
-        out.push_str("    ");
-    }
-}
-
-fn emit_json_string(s: &str, out: &mut String) {
-    out.push('"');
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if (c as u32) < 0x20 => {
-                let _ = write!(out, "\\u{:04x}", c as u32);
-            }
-            c => out.push(c),
-        }
-    }
-    out.push('"');
+    let mut bytes = bougie_php_json::encode(v, bougie_php_json::Mode::Pretty);
+    bytes.push(b'\n');
+    String::from_utf8(bytes).expect("UTF-8 by construction (Pretty mode escapes non-UTF8 control bytes)")
 }
 
 #[cfg(test)]
