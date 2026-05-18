@@ -34,6 +34,7 @@ use std::path::Path;
 
 use serde_json::{Map, Value};
 
+use crate::version::normalize as normalize_version;
 use crate::DumpError;
 
 /// Re-parse `composer.lock` as raw JSON. `lock::read_lock` already
@@ -434,35 +435,6 @@ fn php_maybe_null(s: Option<&str>) -> String {
     match s {
         Some(v) => php_str(v),
         None => "null".to_string(),
-    }
-}
-
-/// Minimal `VersionParser::normalize` port — enough for the path-repo
-/// fixtures we ship today. Handles:
-/// - leading `v` strip
-/// - `+build` metadata strip
-/// - `X.Y.Z` padded to `X.Y.Z.0`; already-4-part input unchanged
-/// - `-suffix` preserved verbatim (no Composer-style canonicalization
-///   of alpha/beta/RC casing — no fixture exercises it yet)
-fn normalize_version(s: &str) -> String {
-    let s = s.strip_prefix('v').unwrap_or(s);
-    let s = match s.find('+') {
-        Some(idx) => &s[..idx],
-        None => s,
-    };
-    let (numeric, suffix) = match s.find('-') {
-        Some(idx) => (&s[..idx], Some(&s[idx..])),
-        None => (s, None),
-    };
-    let mut parts: Vec<String> = numeric.split('.').map(String::from).collect();
-    while parts.len() < 4 {
-        parts.push("0".into());
-    }
-    parts.truncate(4);
-    let normalized = parts.join(".");
-    match suffix {
-        Some(sfx) => format!("{normalized}{sfx}"),
-        None => normalized,
     }
 }
 
