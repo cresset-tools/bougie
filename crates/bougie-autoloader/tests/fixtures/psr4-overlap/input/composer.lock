@@ -1,0 +1,39 @@
+{
+    "_readme": [
+        "This file locks the dependencies of your project to a known state",
+        "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
+        "This file is @generated automatically"
+    ],
+    "content-hash": "0815621ba8c575eea0b8d5aa0ab185e2",
+    "packages": [
+        {
+            "name": "acme/overlap",
+            "version": "1.0.0",
+            "dist": {
+                "type": "path",
+                "url": "packages/acme-overlap",
+                "reference": "682dd4f3cdf3f33f9b434b9fc0986bca421e5d0e"
+            },
+            "type": "library",
+            "autoload": {
+                "psr-4": {
+                    "Acme\\": "src/",
+                    "Acme\\Overlap\\": "extra/"
+                }
+            },
+            "transport-options": {
+                "symlink": false,
+                "relative": true
+            }
+        }
+    ],
+    "packages-dev": [],
+    "aliases": [],
+    "minimum-stability": "stable",
+    "stability-flags": {},
+    "prefer-stable": false,
+    "prefer-lowest": false,
+    "platform": {},
+    "platform-dev": {},
+    "plugin-api-version": "2.6.0"
+}
