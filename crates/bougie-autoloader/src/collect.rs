@@ -46,6 +46,7 @@ pub(crate) fn psr4(root: &RootManifest, lock: &LockFile, no_dev: bool) -> Vec<En
             paths,
         });
     }
+    krsort_entries(&mut out);
     out
 }
 
@@ -74,7 +75,17 @@ pub(crate) fn psr0(root: &RootManifest, lock: &LockFile, no_dev: bool) -> Vec<En
             paths,
         });
     }
+    krsort_entries(&mut out);
     out
+}
+
+/// PHP's `krsort` semantics: sort by key (here the namespace prefix)
+/// in descending lex order. Composer applies this to the aggregated
+/// psr-4/psr-0 maps before emit so the more-specific namespaces hit
+/// the runtime ClassLoader first. Stable so per-package insertion
+/// order is preserved within a prefix bucket.
+fn krsort_entries(out: &mut Vec<Entry>) {
+    out.sort_by(|a, b| b.prefix.cmp(&a.prefix));
 }
 
 pub(crate) struct FileEntry {
@@ -202,70 +213,97 @@ pub(crate) fn classmap(
     }
 
     if optimize {
-        // PSR-4 then PSR-0, packages then root — mirrors Composer's
-        // iteration over the aggregated namespace maps. Cross-
-        // namespace ordering quirks (krsort) only matter when scan
-        // bases overlap, which is rare; if a future stress fixture
-        // exposes a mismatch we revisit.
+        // Composer's `dump()` buckets all PSR-* entries by namespace
+        // and then runs `krsort` on the bucket keys — so more-
+        // specific namespaces scan first, which on overlapping bases
+        // controls which mapping claims a class via first-seen dedup.
+        //
+        // We collect candidate tasks tagged with their namespace,
+        // then sort by namespace descending with a stable sort so
+        // PSR-4 stays before PSR-0 within a namespace bucket (mirrors
+        // Composer's `foreach (['psr-4', 'psr-0'] ...)` outer-loop
+        // order). Cross-package order within a namespace bucket is
+        // lockfile order — Composer's reverse-sortPackageMap order
+        // is topological + root-first; matching it exactly is a
+        // separate gap.
+        let mut psr_tasks: Vec<(String, Task<'_>)> = Vec::new();
         for pkg in lock.iter_packages(no_dev) {
             let install_abs = canonical(project_root.join(format!("vendor/{}", pkg.name)));
             for (ns, dirs) in &pkg.autoload.psr4 {
                 for dir in dirs {
                     let scan_root = canonical(install_abs.join(strip_leading_slash(dir)));
-                    tasks.push(Task {
-                        origin: Origin::Package(&pkg.name),
-                        scan_root: scan_root.clone(),
-                        install_abs: install_abs.clone(),
-                        filter: NamespaceFilter::Psr4 {
-                            namespace: ns.clone(),
-                            base: scan_root,
+                    psr_tasks.push((
+                        ns.clone(),
+                        Task {
+                            origin: Origin::Package(&pkg.name),
+                            scan_root: scan_root.clone(),
+                            install_abs: install_abs.clone(),
+                            filter: NamespaceFilter::Psr4 {
+                                namespace: ns.clone(),
+                                base: scan_root,
+                            },
                         },
-                    });
+                    ));
                 }
             }
             for (ns, dirs) in &pkg.autoload.psr0 {
                 for dir in dirs {
                     let scan_root = canonical(install_abs.join(strip_leading_slash(dir)));
-                    tasks.push(Task {
-                        origin: Origin::Package(&pkg.name),
-                        scan_root: scan_root.clone(),
-                        install_abs: install_abs.clone(),
-                        filter: NamespaceFilter::Psr0 {
-                            namespace: ns.clone(),
-                            base: scan_root,
+                    psr_tasks.push((
+                        ns.clone(),
+                        Task {
+                            origin: Origin::Package(&pkg.name),
+                            scan_root: scan_root.clone(),
+                            install_abs: install_abs.clone(),
+                            filter: NamespaceFilter::Psr0 {
+                                namespace: ns.clone(),
+                                base: scan_root,
+                            },
                         },
-                    });
+                    ));
                 }
             }
         }
         for (ns, dirs) in &root.autoload.psr4 {
             for dir in dirs {
                 let scan_root = canonical(project_root.join(strip_leading_slash(dir)));
-                tasks.push(Task {
-                    origin: Origin::Root,
-                    scan_root: scan_root.clone(),
-                    install_abs: canonical(project_root.to_path_buf()),
-                    filter: NamespaceFilter::Psr4 {
-                        namespace: ns.clone(),
-                        base: scan_root,
+                psr_tasks.push((
+                    ns.clone(),
+                    Task {
+                        origin: Origin::Root,
+                        scan_root: scan_root.clone(),
+                        install_abs: canonical(project_root.to_path_buf()),
+                        filter: NamespaceFilter::Psr4 {
+                            namespace: ns.clone(),
+                            base: scan_root,
+                        },
                     },
-                });
+                ));
             }
         }
         for (ns, dirs) in &root.autoload.psr0 {
             for dir in dirs {
                 let scan_root = canonical(project_root.join(strip_leading_slash(dir)));
-                tasks.push(Task {
-                    origin: Origin::Root,
-                    scan_root: scan_root.clone(),
-                    install_abs: canonical(project_root.to_path_buf()),
-                    filter: NamespaceFilter::Psr0 {
-                        namespace: ns.clone(),
-                        base: scan_root,
+                psr_tasks.push((
+                    ns.clone(),
+                    Task {
+                        origin: Origin::Root,
+                        scan_root: scan_root.clone(),
+                        install_abs: canonical(project_root.to_path_buf()),
+                        filter: NamespaceFilter::Psr0 {
+                            namespace: ns.clone(),
+                            base: scan_root,
+                        },
                     },
-                });
+                ));
             }
         }
+
+        // krsort: reverse-lex by namespace, stable so PSR-4 stays
+        // ahead of PSR-0 within the same namespace and per-package
+        // entries keep lockfile order within type.
+        psr_tasks.sort_by(|a, b| b.0.cmp(&a.0));
+        tasks.extend(psr_tasks.into_iter().map(|(_, t)| t));
     }
 
     // Parallel scan — rayon preserves source order in `collect`, so
