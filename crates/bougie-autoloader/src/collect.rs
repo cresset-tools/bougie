@@ -13,7 +13,7 @@ use std::fmt::Write;
 use std::path::{Path, PathBuf};
 
 use crate::lock::{LockFile, RootManifest};
-use crate::scan::{self, NamespaceFilter};
+use crate::scan::{self, ExcludePatterns, NamespaceFilter};
 
 /// One PSR-4 or PSR-0 prefix and its install-path-prefixed dirs.
 pub(crate) struct Entry {
@@ -146,6 +146,34 @@ pub(crate) fn classmap(
         filter: NamespaceFilter,
     }
 
+    // Aggregate exclude-from-classmap patterns across packages + root.
+    // Compilation needs each pattern's source install path so that
+    // realpath() (canonicalize) resolves to the right absolute
+    // directory; with that, all alternatives OR into one regex.
+    //
+    // Canonicalize install paths here too. On macOS `/var/folders/...`
+    // is a symlink to `/private/var/folders/...`; the exclude regex
+    // (compiled from canonicalize'd install + pattern) would otherwise
+    // be anchored at one form while strip_prefix on file_abs uses the
+    // other. Same trap on any platform where the project root sits
+    // behind a symlink. We canonicalize once at this boundary so every
+    // path that flows downstream (install_abs, scan_root, exclude
+    // anchors, file_abs from walkdir) is in the same form.
+    let mut exclude_patterns: Vec<(PathBuf, String)> = Vec::new();
+    for pkg in lock.iter_packages(no_dev) {
+        if pkg.autoload.exclude_from_classmap.is_empty() {
+            continue;
+        }
+        let install_abs = canonical(project_root.join(format!("vendor/{}", pkg.name)));
+        for raw in &pkg.autoload.exclude_from_classmap {
+            exclude_patterns.push((install_abs.clone(), raw.clone()));
+        }
+    }
+    for raw in &root.autoload.exclude_from_classmap {
+        exclude_patterns.push((canonical(project_root.to_path_buf()), raw.clone()));
+    }
+    let exclude = ExcludePatterns::build(&exclude_patterns);
+
     let mut tasks: Vec<Task<'_>> = Vec::new();
 
     // Classmap dirs first — matches Composer's dump() order
@@ -154,11 +182,11 @@ pub(crate) fn classmap(
         if pkg.autoload.classmap.is_empty() {
             continue;
         }
-        let install_abs = project_root.join(format!("vendor/{}", pkg.name));
+        let install_abs = canonical(project_root.join(format!("vendor/{}", pkg.name)));
         for dir in &pkg.autoload.classmap {
             tasks.push(Task {
                 origin: Origin::Package(&pkg.name),
-                scan_root: install_abs.join(strip_leading_slash(dir)),
+                scan_root: canonical(install_abs.join(strip_leading_slash(dir))),
                 install_abs: install_abs.clone(),
                 filter: NamespaceFilter::None,
             });
@@ -167,8 +195,8 @@ pub(crate) fn classmap(
     for dir in &root.autoload.classmap {
         tasks.push(Task {
             origin: Origin::Root,
-            scan_root: project_root.join(strip_leading_slash(dir)),
-            install_abs: project_root.to_path_buf(),
+            scan_root: canonical(project_root.join(strip_leading_slash(dir))),
+            install_abs: canonical(project_root.to_path_buf()),
             filter: NamespaceFilter::None,
         });
     }
@@ -180,10 +208,10 @@ pub(crate) fn classmap(
         // bases overlap, which is rare; if a future stress fixture
         // exposes a mismatch we revisit.
         for pkg in lock.iter_packages(no_dev) {
-            let install_abs = project_root.join(format!("vendor/{}", pkg.name));
+            let install_abs = canonical(project_root.join(format!("vendor/{}", pkg.name)));
             for (ns, dirs) in &pkg.autoload.psr4 {
                 for dir in dirs {
-                    let scan_root = install_abs.join(strip_leading_slash(dir));
+                    let scan_root = canonical(install_abs.join(strip_leading_slash(dir)));
                     tasks.push(Task {
                         origin: Origin::Package(&pkg.name),
                         scan_root: scan_root.clone(),
@@ -197,7 +225,7 @@ pub(crate) fn classmap(
             }
             for (ns, dirs) in &pkg.autoload.psr0 {
                 for dir in dirs {
-                    let scan_root = install_abs.join(strip_leading_slash(dir));
+                    let scan_root = canonical(install_abs.join(strip_leading_slash(dir)));
                     tasks.push(Task {
                         origin: Origin::Package(&pkg.name),
                         scan_root: scan_root.clone(),
@@ -212,11 +240,11 @@ pub(crate) fn classmap(
         }
         for (ns, dirs) in &root.autoload.psr4 {
             for dir in dirs {
-                let scan_root = project_root.join(strip_leading_slash(dir));
+                let scan_root = canonical(project_root.join(strip_leading_slash(dir)));
                 tasks.push(Task {
                     origin: Origin::Root,
                     scan_root: scan_root.clone(),
-                    install_abs: project_root.to_path_buf(),
+                    install_abs: canonical(project_root.to_path_buf()),
                     filter: NamespaceFilter::Psr4 {
                         namespace: ns.clone(),
                         base: scan_root,
@@ -226,11 +254,11 @@ pub(crate) fn classmap(
         }
         for (ns, dirs) in &root.autoload.psr0 {
             for dir in dirs {
-                let scan_root = project_root.join(strip_leading_slash(dir));
+                let scan_root = canonical(project_root.join(strip_leading_slash(dir)));
                 tasks.push(Task {
                     origin: Origin::Root,
                     scan_root: scan_root.clone(),
-                    install_abs: project_root.to_path_buf(),
+                    install_abs: canonical(project_root.to_path_buf()),
                     filter: NamespaceFilter::Psr0 {
                         namespace: ns.clone(),
                         base: scan_root,
@@ -246,7 +274,7 @@ pub(crate) fn classmap(
     let per_task: Vec<Vec<(String, String)>> = tasks
         .par_iter()
         .map(|task| {
-            scan::scan(&task.scan_root, &task.filter)
+            scan::scan(&task.scan_root, &task.filter, &exclude)
                 .into_iter()
                 .map(|(class, file_abs)| {
                     let rel = file_abs
@@ -315,6 +343,22 @@ fn join_rel(install_path: &str, dir: &str) -> String {
 
 fn strip_leading_slash(s: &str) -> &str {
     s.strip_prefix('/').unwrap_or(s)
+}
+
+/// Resolve symlinks in a path. Mirrors Composer's `realpath()` usage
+/// in `ClassMapGenerator::scanPaths` and `parseAutoloadsType` — every
+/// install/scan path is realpath'd before being compared. On macOS
+/// the project root often sits under `/var/folders/...` which
+/// symlinks to `/private/var/folders/...`; without this normalization
+/// the exclude regex (anchored at the canonical form) would never
+/// match scan output (using the symlink form), and `strip_prefix` of
+/// the install path against file paths would also fail.
+///
+/// Falls back to the input path when canonicalize fails (target
+/// doesn't exist yet, permission denied, etc.) — the surrounding
+/// scan returns empty in those cases anyway.
+fn canonical(p: PathBuf) -> PathBuf {
+    std::fs::canonicalize(&p).unwrap_or(p)
 }
 
 #[cfg(test)]

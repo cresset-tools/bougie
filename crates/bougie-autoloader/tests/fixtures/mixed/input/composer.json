@@ -1,0 +1,15 @@
+{
+    "name": "fixture/mixed",
+    "description": "Three packages, one each exercising psr-4, classmap, and files autoload schemas — verifies cross-schema coordination in a single resolve.",
+    "type": "project",
+    "repositories": [
+        { "type": "path", "url": "packages/acme-lib", "options": { "symlink": false } },
+        { "type": "path", "url": "packages/scanner",  "options": { "symlink": false } },
+        { "type": "path", "url": "packages/helpers", "options": { "symlink": false } }
+    ],
+    "require": {
+        "acme/lib": "*",
+        "acme/scanner": "*",
+        "acme/helpers": "*"
+    }
+}
