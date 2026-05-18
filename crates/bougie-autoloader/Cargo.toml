@@ -23,7 +23,12 @@ version = "0.4.0"
 [dependencies.regex]
 version = "1.11"
 default-features = false
-features = ["std", "perf"]
+# `unicode-perl` is needed for `\d` / `\s` / `\w` shorthand used in
+# `src/version.rs`, and `unicode-case` for `(?i)` on the stability
+# tokens. The two together are the smallest add-on the regex crate
+# offers that covers what composer/semver's `normalize()` regexes
+# require.
+features = ["std", "perf", "unicode-perl", "unicode-case"]
 
 [dev-dependencies]
 criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }

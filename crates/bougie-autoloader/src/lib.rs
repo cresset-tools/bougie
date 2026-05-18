@@ -40,8 +40,8 @@ pub mod bench_api {
 /// `tests/`. Not a stable API.
 #[doc(hidden)]
 pub mod test_api {
-    pub fn normalize_version(input: &str) -> String {
-        crate::version::normalize(input)
+    pub fn normalize_version(input: &str) -> Result<String, String> {
+        crate::version::normalize(input).map_err(|e| e.to_string())
     }
 }
 

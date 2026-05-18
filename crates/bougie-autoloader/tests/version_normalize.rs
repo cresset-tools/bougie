@@ -6,13 +6,10 @@
 //! whenever the pinned composer/semver version changes.
 //!
 //! Three test outcomes:
-//! - **`matches_composer_for_normalizable_inputs`**: bougie's output
-//!   equals Composer's for every input Composer accepts. Currently
-//!   asserts; this is the failing test the port has to drive to green.
-//! - **`reports_throws_inputs_separately`**: collects every input
-//!   Composer rejects and either bougie rejects too (once the API
-//!   gains an error path) or bougie produces a value (today's
-//!   behavior — flagged with a warning so we don't lose track).
+//! - **`matches_composer_for_normalizable_inputs`**: for every input
+//!   Composer accepts, bougie returns `Ok(<same string>)`.
+//! - **`errors_on_inputs_composer_rejects`**: for every input that
+//!   makes Composer throw, bougie returns `Err`.
 //! - **`fixture_is_well_formed`**: every line is either a comment or
 //!   `input\toutput` / `input\tTHROWS\tmessage`. Cheap sanity check on
 //!   the TSV format.
@@ -78,14 +75,20 @@ fn matches_composer_for_normalizable_inputs() {
         let Expectation::Normalized(expected) = c.expected else {
             continue;
         };
-        let actual = normalize_version(c.input);
-        if actual != expected {
-            failures.push(format!(
+        match normalize_version(c.input) {
+            Ok(actual) if actual == expected => {}
+            Ok(actual) => failures.push(format!(
                 "input={input:?} expected={expected:?} actual={actual:?}",
                 input = c.input,
                 expected = expected,
                 actual = actual,
-            ));
+            )),
+            Err(e) => failures.push(format!(
+                "input={input:?} expected={expected:?} got_error={err}",
+                input = c.input,
+                expected = expected,
+                err = e,
+            )),
         }
     }
     if !failures.is_empty() {
@@ -98,30 +101,26 @@ fn matches_composer_for_normalizable_inputs() {
 }
 
 #[test]
-fn reports_throws_inputs_separately() {
-    // The bougie API currently returns String unconditionally, so
-    // there's no error-path to assert against. Track each THROWS case
-    // so the punch-list survives until `normalize_version` gains a
-    // Result-shaped return type.
-    let mut throws_observed: Vec<String> = Vec::new();
+fn errors_on_inputs_composer_rejects() {
+    let mut failures: Vec<String> = Vec::new();
     for c in cases() {
-        let Expectation::Throws(msg) = c.expected else {
+        let Expectation::Throws(_msg) = c.expected else {
             continue;
         };
-        let actual = normalize_version(c.input);
-        throws_observed.push(format!(
-            "input={input:?} composer-throws-with={msg:?} bougie-returns={actual:?}",
-            input = c.input,
-            msg = msg,
-            actual = actual,
-        ));
+        match normalize_version(c.input) {
+            Err(_) => {}
+            Ok(actual) => failures.push(format!(
+                "input={input:?} expected error, but got Ok({actual:?})",
+                input = c.input,
+                actual = actual,
+            )),
+        }
     }
-    // Once bougie's normalizer rejects these inputs (whatever shape
-    // that takes — Result, Option, panic), update this test to assert
-    // the rejection. For now we just confirm the fixture carries
-    // at-least-one throws-case so we don't accidentally lose coverage.
-    assert!(
-        !throws_observed.is_empty(),
-        "fixture has no THROWS cases — did the TSV regenerate cleanly?"
-    );
+    if !failures.is_empty() {
+        panic!(
+            "{} inputs Composer rejects, bougie accepted:\n  {}",
+            failures.len(),
+            failures.join("\n  ")
+        );
+    }
 }
