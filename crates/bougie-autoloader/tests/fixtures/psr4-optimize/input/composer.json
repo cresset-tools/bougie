@@ -1,0 +1,14 @@
+{
+    "name": "fixture/psr4-optimize",
+    "description": "PSR-4 package, dumped under --optimize-autoloader so its classes also land in autoload_classmap.php.",
+    "type": "project",
+    "repositories": [
+        { "type": "path", "url": "packages/acme-lib", "options": { "symlink": false } }
+    ],
+    "require": {
+        "acme/lib": "*"
+    },
+    "config": {
+        "allow-plugins": {}
+    }
+}

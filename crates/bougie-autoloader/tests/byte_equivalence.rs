@@ -69,11 +69,12 @@ fn byte_equivalence_against_composer() {
             }
         };
 
+        let flags = parse_flags(&dir.join("input"));
         let req = DumpRequest {
             project_root: work.path(),
-            optimize: false,
-            classmap_authoritative: false,
-            no_dev: false,
+            optimize: flags.optimize,
+            classmap_authoritative: flags.classmap_authoritative,
+            no_dev: flags.no_dev,
         };
         if let Err(e) = dump_autoload(&req) {
             failures.push(format!("{name}: dump_autoload failed: {e}"));
@@ -130,6 +131,43 @@ fn format_diff(name: &str, rel: &str, expected: &[u8], actual: &[u8]) -> String 
         expected.len(),
         actual.len()
     )
+}
+
+/// Flags pulled from a fixture's optional `input/bougie-flags` file.
+/// Format is one `key=value` per line; missing keys default to false.
+/// Used by both this harness and `scripts/generate-autoload-fixtures.sh`
+/// so the fixture is regenerated under the same flag combo that the
+/// harness asserts byte-equivalence under.
+#[derive(Default)]
+struct FixtureFlags {
+    optimize: bool,
+    classmap_authoritative: bool,
+    no_dev: bool,
+}
+
+fn parse_flags(input_dir: &Path) -> FixtureFlags {
+    let path = input_dir.join("bougie-flags");
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return FixtureFlags::default();
+    };
+    let mut flags = FixtureFlags::default();
+    for raw in text.lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((k, v)) = line.split_once('=') else {
+            continue;
+        };
+        let v = v.trim() == "true";
+        match k.trim() {
+            "optimize" => flags.optimize = v,
+            "classmap_authoritative" => flags.classmap_authoritative = v,
+            "no_dev" => flags.no_dev = v,
+            _ => {}
+        }
+    }
+    flags
 }
 
 fn fixture_dirs() -> Vec<PathBuf> {

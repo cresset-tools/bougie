@@ -15,6 +15,7 @@
 //! `collect::classmap`) stays deterministic.
 
 pub(crate) mod cleaner;
+pub(crate) mod filter;
 pub(crate) mod finder;
 mod walker;
 
@@ -22,11 +23,17 @@ use std::path::{Path, PathBuf};
 
 use rayon::prelude::*;
 
+pub(crate) use filter::NamespaceFilter;
+
 /// Scan a single classmap directory (or file). Returns
 /// `(class_name, absolute_path)` pairs in walker order. Deduplication
 /// and sort happen at a higher layer (`collect::classmap`) so this
 /// module stays mechanical.
-pub(crate) fn scan(root: &Path) -> Vec<(String, PathBuf)> {
+///
+/// `filter` is [`NamespaceFilter::None`] for classmap-style scans
+/// (every class kept) and `Psr4` / `Psr0` for the optimize-mode
+/// PSR-* directory scans (class must match the namespace+path rule).
+pub(crate) fn scan(root: &Path, filter: &NamespaceFilter) -> Vec<(String, PathBuf)> {
     let files = walker::enumerate(root, walker::DEFAULT_EXTENSIONS);
     files
         .par_iter()
@@ -34,8 +41,9 @@ pub(crate) fn scan(root: &Path) -> Vec<(String, PathBuf)> {
             let Ok(bytes) = std::fs::read(path) else {
                 return Vec::new().into_iter();
             };
-            finder::find_classes(&bytes)
-                .into_iter()
+            let classes = finder::find_classes(&bytes);
+            let kept = filter::apply(filter, classes, path);
+            kept.into_iter()
                 .map(|c| (c, path.clone()))
                 .collect::<Vec<_>>()
                 .into_iter()

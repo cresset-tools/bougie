@@ -108,7 +108,12 @@ pub fn dump_autoload(req: &DumpRequest<'_>) -> Result<(), DumpError> {
     let psr4 = collect::psr4(&manifest, &lock, req.no_dev);
     let psr0 = collect::psr0(&manifest, &lock, req.no_dev);
     let files = collect::files(&manifest, &lock, req.no_dev);
-    let classmap = collect::classmap(&manifest, &lock, req.no_dev, req.project_root);
+    // `--classmap-authoritative` implies `--optimize` (Composer's
+    // dump() does `if (classmapAuthoritative) $scanPsrPackages = true`).
+    // The flag's other effect — narrowing autoload_real.php's runtime
+    // lookup — lives in the static-loader emit, which is Phase 3.
+    let optimize = req.optimize || req.classmap_authoritative;
+    let classmap = collect::classmap(&manifest, &lock, req.no_dev, optimize, req.project_root);
 
     write_atomic(
         &composer_dir.join("autoload_psr4.php"),

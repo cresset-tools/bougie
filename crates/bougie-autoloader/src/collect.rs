@@ -13,7 +13,7 @@ use std::fmt::Write;
 use std::path::{Path, PathBuf};
 
 use crate::lock::{LockFile, RootManifest};
-use crate::scan;
+use crate::scan::{self, NamespaceFilter};
 
 /// One PSR-4 or PSR-0 prefix and its install-path-prefixed dirs.
 pub(crate) struct Entry {
@@ -109,34 +109,47 @@ pub(crate) struct ClassmapEntry {
 }
 
 /// Walk every `autoload.classmap` directory across packages + root,
-/// run the scan pipeline, and produce a deduped, alphabetically
-/// sorted entry list ready for emit. The synthetic
-/// `Composer\InstalledVersions` entry is always included — Composer
-/// emits it unconditionally, even when no user classes are found.
+/// optionally walk `autoload.psr-4` and `autoload.psr-0` directories
+/// when `optimize` is set, run the scan pipeline, and produce a
+/// deduped, alphabetically sorted entry list ready for emit. The
+/// synthetic `Composer\InstalledVersions` entry is always included —
+/// Composer emits it unconditionally, even when no user classes are
+/// found.
 ///
 /// Dedup: first occurrence wins. Packages are walked in lockfile
 /// order (prod first, then dev when not skipped), root entries last
-/// — same as the PSR-4/PSR-0 collectors.
+/// — same as the PSR-4/PSR-0 collectors. Within optimize mode the
+/// classmap dirs are scanned first, then PSR-* dirs, mirroring the
+/// order in `AutoloadGenerator::dump`.
+#[allow(clippy::too_many_lines)] // task-list construction is naturally long and benefits from staying inline
 pub(crate) fn classmap(
     root: &RootManifest,
     lock: &LockFile,
     no_dev: bool,
+    optimize: bool,
     project_root: &Path,
 ) -> Vec<ClassmapEntry> {
-    // Flatten (package, dir) pairs in lockfile order, then a final
-    // pass for root entries. Each `Task` owns the scan root and the
-    // closure that turns scan output into a PHP path expression.
+    // Flatten scan tasks across packages + root. Each task owns its
+    // scan root, the install path used to derive the emit-time
+    // relative path, the namespace filter to apply to discovered
+    // classes (None for classmap scans, Psr4/Psr0 for optimize-mode
+    // PSR-* scans), and the origin (package vs root) that picks
+    // between `$vendorDir` and `$baseDir`.
     enum Origin<'a> {
-        Package(&'a str), // package name → `$vendorDir . '/<name>/...'`
-        Root,             // root entry → `$baseDir . '/...'`
+        Package(&'a str),
+        Root,
     }
     struct Task<'a> {
         origin: Origin<'a>,
-        install_abs: PathBuf, // path the scanner walks
-        scan_root: PathBuf,   // absolute path passed to scan::scan
+        install_abs: PathBuf,
+        scan_root: PathBuf,
+        filter: NamespaceFilter,
     }
 
     let mut tasks: Vec<Task<'_>> = Vec::new();
+
+    // Classmap dirs first — matches Composer's dump() order
+    // (classmap pass, then optionally PSR-* pass).
     for pkg in lock.iter_packages(no_dev) {
         if pkg.autoload.classmap.is_empty() {
             continue;
@@ -147,6 +160,7 @@ pub(crate) fn classmap(
                 origin: Origin::Package(&pkg.name),
                 scan_root: install_abs.join(strip_leading_slash(dir)),
                 install_abs: install_abs.clone(),
+                filter: NamespaceFilter::None,
             });
         }
     }
@@ -155,16 +169,84 @@ pub(crate) fn classmap(
             origin: Origin::Root,
             scan_root: project_root.join(strip_leading_slash(dir)),
             install_abs: project_root.to_path_buf(),
+            filter: NamespaceFilter::None,
         });
     }
 
-    // Parallel scan across (package, dir) pairs — rayon's `collect`
-    // preserves source order so the sequential merge below sees
-    // results in the same order as the lockfile + root iteration.
+    if optimize {
+        // PSR-4 then PSR-0, packages then root — mirrors Composer's
+        // iteration over the aggregated namespace maps. Cross-
+        // namespace ordering quirks (krsort) only matter when scan
+        // bases overlap, which is rare; if a future stress fixture
+        // exposes a mismatch we revisit.
+        for pkg in lock.iter_packages(no_dev) {
+            let install_abs = project_root.join(format!("vendor/{}", pkg.name));
+            for (ns, dirs) in &pkg.autoload.psr4 {
+                for dir in dirs {
+                    let scan_root = install_abs.join(strip_leading_slash(dir));
+                    tasks.push(Task {
+                        origin: Origin::Package(&pkg.name),
+                        scan_root: scan_root.clone(),
+                        install_abs: install_abs.clone(),
+                        filter: NamespaceFilter::Psr4 {
+                            namespace: ns.clone(),
+                            base: scan_root,
+                        },
+                    });
+                }
+            }
+            for (ns, dirs) in &pkg.autoload.psr0 {
+                for dir in dirs {
+                    let scan_root = install_abs.join(strip_leading_slash(dir));
+                    tasks.push(Task {
+                        origin: Origin::Package(&pkg.name),
+                        scan_root: scan_root.clone(),
+                        install_abs: install_abs.clone(),
+                        filter: NamespaceFilter::Psr0 {
+                            namespace: ns.clone(),
+                            base: scan_root,
+                        },
+                    });
+                }
+            }
+        }
+        for (ns, dirs) in &root.autoload.psr4 {
+            for dir in dirs {
+                let scan_root = project_root.join(strip_leading_slash(dir));
+                tasks.push(Task {
+                    origin: Origin::Root,
+                    scan_root: scan_root.clone(),
+                    install_abs: project_root.to_path_buf(),
+                    filter: NamespaceFilter::Psr4 {
+                        namespace: ns.clone(),
+                        base: scan_root,
+                    },
+                });
+            }
+        }
+        for (ns, dirs) in &root.autoload.psr0 {
+            for dir in dirs {
+                let scan_root = project_root.join(strip_leading_slash(dir));
+                tasks.push(Task {
+                    origin: Origin::Root,
+                    scan_root: scan_root.clone(),
+                    install_abs: project_root.to_path_buf(),
+                    filter: NamespaceFilter::Psr0 {
+                        namespace: ns.clone(),
+                        base: scan_root,
+                    },
+                });
+            }
+        }
+    }
+
+    // Parallel scan — rayon preserves source order in `collect`, so
+    // the sequential merge below sees results in the same order as
+    // the lockfile + root iteration.
     let per_task: Vec<Vec<(String, String)>> = tasks
         .par_iter()
         .map(|task| {
-            scan::scan(&task.scan_root)
+            scan::scan(&task.scan_root, &task.filter)
                 .into_iter()
                 .map(|(class, file_abs)| {
                     let rel = file_abs
@@ -181,8 +263,8 @@ pub(crate) fn classmap(
         })
         .collect();
 
-    // Sequential merge: first-seen wins across tasks, in iteration
-    // order. The BTreeMap also sorts the final output alphabetically.
+    // Sequential merge: first-seen wins across tasks. BTreeMap sorts
+    // the final output alphabetically for emit.
     let mut seen: BTreeMap<String, String> = BTreeMap::new();
     for results in per_task {
         for (class, path_expr) in results {
