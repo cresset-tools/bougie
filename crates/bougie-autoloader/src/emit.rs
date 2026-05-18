@@ -7,6 +7,7 @@
 //! `tests/fixtures/*/expected/` are the contract.
 
 pub(crate) mod real;
+pub(crate) mod static_loader;
 
 use crate::collect::{ClassmapEntry, Entry, FileEntry};
 
@@ -112,7 +113,7 @@ pub(crate) fn entry(content_hash: &str) -> String {
 
 /// PHP single-quoted string: backslashes and single-quotes are the
 /// only escapes. Used for namespace prefixes (which contain `\`).
-fn php_single_quoted(s: &str) -> String {
+pub(crate) fn php_single_quoted(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 4);
     out.push('\'');
     for c in s.chars() {
