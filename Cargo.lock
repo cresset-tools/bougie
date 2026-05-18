@@ -620,6 +620,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "bougie-semver"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "bougie-server"
 version = "0.4.0"
 dependencies = [
