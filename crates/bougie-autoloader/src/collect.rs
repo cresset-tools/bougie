@@ -113,9 +113,16 @@ pub(crate) struct FileEntry {
     pub path_expr: String,
 }
 
+/// Emit order matches Composer's
+/// `parseAutoloads`: `$files = parseAutoloadsType($sortedPackageMap,
+/// 'files', ...)` — `$sortedPackageMap` is `sortPackageMap(deps)`
+/// with the root appended last. So packages come first in topological
+/// (deps-first) order, then root. This matters when one package's
+/// `files` autoload references symbols defined in another's at
+/// include time; the dependency's file must `require` first.
 pub(crate) fn files(root: &RootManifest, lock: &LockFile, no_dev: bool) -> Vec<FileEntry> {
     let mut out = vec![];
-    for pkg in lock.iter_packages(no_dev) {
+    for pkg in lock.sorted_packages(no_dev) {
         let install_path = format!("vendor/{}", pkg.name);
         for f in &pkg.autoload.files {
             out.push(FileEntry {

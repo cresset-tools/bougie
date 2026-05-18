@@ -1,0 +1,12 @@
+{
+    "name": "fixture/files-deps-order",
+    "description": "Two packages with `files` autoload where dependency order differs from alphabetical lockfile order. `acme/alpha` requires `acme/zulu`, so Composer's sortPackageMap orders zulu first (deps before dependents); the lockfile-alphabetical iteration would emit alpha first. This fixture exists to fail byte-equivalence until the files emitter uses topological order.",
+    "type": "project",
+    "repositories": [
+        { "type": "path", "url": "packages/alpha", "options": { "symlink": false } },
+        { "type": "path", "url": "packages/zulu",  "options": { "symlink": false } }
+    ],
+    "require": {
+        "acme/alpha": "*"
+    }
+}
