@@ -2,7 +2,7 @@
 name = "bougie-daemon"
 version = "0.4.0"
 edition = "2024"
-description = "bougied process supervisor + per-service babysit for bougie."
+description = "bougied process supervisor for bougie."
 license = "EUPL-1.2"
 repository = "https://github.com/cresset-tools/bougie"
 rust-version = "1.95"

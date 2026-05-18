@@ -371,6 +371,7 @@ version = "0.4.0"
 dependencies = [
  "assert_cmd",
  "base64 0.22.1",
+ "bougie-babysit",
  "bougie-backend",
  "bougie-cli",
  "bougie-composer",
@@ -413,6 +414,15 @@ dependencies = [
 [[package]]
 name = "bougie-autoloader"
 version = "0.1.0"
+
+[[package]]
+name = "bougie-babysit"
+version = "0.4.0"
+dependencies = [
+ "eyre",
+ "rustix",
+ "tokio",
+]
 
 [[package]]
 name = "bougie-backend"

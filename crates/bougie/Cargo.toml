@@ -102,6 +102,7 @@ version = "0.4.0"
 # `php-cgi.exe -b 127.0.0.1:<port>` and uses named pipes for the
 # control endpoint) and stays in the regular [dependencies] block.
 [target.'cfg(unix)'.dependencies]
+bougie-babysit = { path = "../bougie-babysit", version = "0.4.0" }
 bougie-daemon = { path = "../bougie-daemon", version = "0.4.0" }
 bougie-recipe = { path = "../bougie-recipe", version = "0.4.0" }
 sandbox-run = { path = "../sandbox-run", version = "0.1.0" }
