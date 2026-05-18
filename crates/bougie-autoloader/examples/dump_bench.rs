@@ -11,8 +11,13 @@
 //! iteration is treated as a warm-up (its time is reported but
 //! excluded from the summary) because the OS page cache for vendor/
 //! is what we actually want to measure against.
+//!
+//! The target project is **never mutated**: we copy it to a tempdir
+//! up front and run `dump_autoload` against the copy. This keeps the
+//! original tree clean and means a `cargo run --example dump_bench`
+//! can't accidentally pollute a fixture or a real working repo.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use bougie_autoloader::{dump_autoload, DumpRequest};
@@ -39,11 +44,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .into());
     }
 
-    println!("dump_autoload @ {}", project.display());
+    let work_root = std::env::temp_dir().join(format!(
+        "bougie-dump-bench-{}-{}",
+        std::process::id(),
+        Instant::now().elapsed().as_nanos()
+    ));
+    println!("staging copy of {} → {}", project.display(), work_root.display());
+    copy_dir(&project, &work_root)?;
+    let guard = Cleanup(work_root.clone());
+
+    println!("dump_autoload @ {}", guard.0.display());
     println!("iterations: {iters} (first is warmup)");
 
     let req = DumpRequest {
-        project_root: &project,
+        project_root: &guard.0,
         optimize: false,
         classmap_authoritative: false,
         no_dev: false,
@@ -75,5 +89,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  median: {:>10.3?}", median);
     println!("  max:    {:>10.3?}", max);
 
+    Ok(())
+}
+
+struct Cleanup(PathBuf);
+impl Drop for Cleanup {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn copy_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let s = entry.path();
+        let d = dst.join(entry.file_name());
+        if s.is_dir() {
+            copy_dir(&s, &d)?;
+        } else {
+            std::fs::copy(&s, &d)?;
+        }
+    }
     Ok(())
 }
