@@ -81,6 +81,24 @@ run_fixture() {
     # is sha1 of the committed package contents.
     cp "$work/composer.lock" "$input/composer.lock"
 
+    # Materialize the installed vendor/<pkg>/ tree into the input so the
+    # classmap scanner has source files to walk. bougie-autoloader is
+    # not an installer — it scans the same vendor/ layout Composer's
+    # installer step would produce, so the fixture commits that layout
+    # alongside composer.{json,lock}. We rsync vendor/ minus the
+    # composer/ subdir (which contains the *outputs* we're testing).
+    rm -rf "$input/vendor"
+    if [[ -d "$work/vendor" ]]; then
+        mkdir -p "$input/vendor"
+        for entry in "$work/vendor"/*; do
+            [[ -e "$entry" ]] || continue
+            base="$(basename "$entry")"
+            [[ "$base" == "composer" ]] && continue
+            [[ "$base" == "autoload.php" ]] && continue
+            cp -R "$entry" "$input/vendor/$base"
+        done
+    fi
+
     rm -rf "$expected"
     mkdir -p "$expected/vendor/composer"
     for f in "${GENERATED_TOPLEVEL[@]}"; do

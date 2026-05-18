@@ -15,6 +15,7 @@
 mod collect;
 mod emit;
 mod lock;
+mod scan;
 
 use std::path::Path;
 
@@ -74,13 +75,16 @@ impl From<std::io::Error> for DumpError {
 
 /// Generate `vendor/composer/autoload_*.php` for the given project.
 ///
-/// Phase 1 emits: `vendor/autoload.php` (entry point),
+/// Phase 1+2 emits: `vendor/autoload.php`,
 /// `vendor/composer/autoload_namespaces.php` (PSR-0),
 /// `vendor/composer/autoload_psr4.php`,
+/// `vendor/composer/autoload_classmap.php` (always — at minimum the
+/// `Composer\InstalledVersions` stub), and
 /// `vendor/composer/autoload_files.php` (only if any package or root
-/// declares `files`). Phase 2 adds `autoload_classmap.php`; Phase 3
-/// adds `autoload_real.php` + `autoload_static.php` and the vendored
-/// runtime files.
+/// declares `files`). Phase 3 adds `autoload_real.php` +
+/// `autoload_static.php` and the vendored runtime files;
+/// `--optimize` / `--classmap-authoritative` / `exclude-from-classmap`
+/// are still pending wiring.
 pub fn dump_autoload(req: &DumpRequest<'_>) -> Result<(), DumpError> {
     let lock = lock::read_lock(req.project_root)?;
     let manifest = lock::read_root_manifest(req.project_root)?;
@@ -91,6 +95,7 @@ pub fn dump_autoload(req: &DumpRequest<'_>) -> Result<(), DumpError> {
     let psr4 = collect::psr4(&manifest, &lock, req.no_dev);
     let psr0 = collect::psr0(&manifest, &lock, req.no_dev);
     let files = collect::files(&manifest, &lock, req.no_dev);
+    let classmap = collect::classmap(&manifest, &lock, req.no_dev, req.project_root);
 
     write_atomic(
         &composer_dir.join("autoload_psr4.php"),
@@ -99,6 +104,10 @@ pub fn dump_autoload(req: &DumpRequest<'_>) -> Result<(), DumpError> {
     write_atomic(
         &composer_dir.join("autoload_namespaces.php"),
         emit::psr0(&psr0).as_bytes(),
+    )?;
+    write_atomic(
+        &composer_dir.join("autoload_classmap.php"),
+        emit::classmap(&classmap).as_bytes(),
     )?;
     if !files.is_empty() {
         write_atomic(

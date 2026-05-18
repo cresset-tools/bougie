@@ -416,8 +416,11 @@ name = "bougie-autoloader"
 version = "0.1.0"
 dependencies = [
  "md-5",
+ "memchr",
+ "regex",
  "serde",
  "serde_json",
+ "walkdir",
 ]
 
 [[package]]
