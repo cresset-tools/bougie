@@ -150,6 +150,11 @@ mod tests {
                     .as_nanos()
             ));
             std::fs::create_dir_all(&path).unwrap();
+            // Resolve `/var/folders/...` → `/private/var/folders/...`
+            // on macOS so the path we hand to `ExcludePatterns::build`
+            // (which canonicalize's internally) matches what `matches`
+            // sees later. No-op on Linux.
+            let path = std::fs::canonicalize(&path).unwrap();
             Self { path }
         }
     }
