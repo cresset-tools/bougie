@@ -13,7 +13,7 @@ use std::fmt::Write;
 use std::path::{Path, PathBuf};
 
 use crate::lock::{LockFile, RootManifest};
-use crate::scan::{self, NamespaceFilter};
+use crate::scan::{self, ExcludePatterns, NamespaceFilter};
 
 /// One PSR-4 or PSR-0 prefix and its install-path-prefixed dirs.
 pub(crate) struct Entry {
@@ -146,6 +146,25 @@ pub(crate) fn classmap(
         filter: NamespaceFilter,
     }
 
+    // Aggregate exclude-from-classmap patterns across packages + root.
+    // Compilation needs each pattern's source install path so that
+    // realpath() (canonicalize) resolves to the right absolute
+    // directory; with that, all alternatives OR into one regex.
+    let mut exclude_patterns: Vec<(PathBuf, String)> = Vec::new();
+    for pkg in lock.iter_packages(no_dev) {
+        if pkg.autoload.exclude_from_classmap.is_empty() {
+            continue;
+        }
+        let install_abs = project_root.join(format!("vendor/{}", pkg.name));
+        for raw in &pkg.autoload.exclude_from_classmap {
+            exclude_patterns.push((install_abs.clone(), raw.clone()));
+        }
+    }
+    for raw in &root.autoload.exclude_from_classmap {
+        exclude_patterns.push((project_root.to_path_buf(), raw.clone()));
+    }
+    let exclude = ExcludePatterns::build(&exclude_patterns);
+
     let mut tasks: Vec<Task<'_>> = Vec::new();
 
     // Classmap dirs first — matches Composer's dump() order
@@ -246,7 +265,7 @@ pub(crate) fn classmap(
     let per_task: Vec<Vec<(String, String)>> = tasks
         .par_iter()
         .map(|task| {
-            scan::scan(&task.scan_root, &task.filter)
+            scan::scan(&task.scan_root, &task.filter, &exclude)
                 .into_iter()
                 .map(|(class, file_abs)| {
                     let rel = file_abs

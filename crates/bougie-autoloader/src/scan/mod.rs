@@ -15,6 +15,7 @@
 //! `collect::classmap`) stays deterministic.
 
 pub(crate) mod cleaner;
+pub(crate) mod exclude;
 pub(crate) mod filter;
 pub(crate) mod finder;
 mod walker;
@@ -23,6 +24,7 @@ use std::path::{Path, PathBuf};
 
 use rayon::prelude::*;
 
+pub(crate) use exclude::ExcludePatterns;
 pub(crate) use filter::NamespaceFilter;
 
 /// Scan a single classmap directory (or file). Returns
@@ -33,10 +35,17 @@ pub(crate) use filter::NamespaceFilter;
 /// `filter` is [`NamespaceFilter::None`] for classmap-style scans
 /// (every class kept) and `Psr4` / `Psr0` for the optimize-mode
 /// PSR-* directory scans (class must match the namespace+path rule).
-pub(crate) fn scan(root: &Path, filter: &NamespaceFilter) -> Vec<(String, PathBuf)> {
+/// `exclude` is the precompiled exclude-from-classmap regex set;
+/// files whose path matches it are skipped before they're read.
+pub(crate) fn scan(
+    root: &Path,
+    filter: &NamespaceFilter,
+    exclude: &ExcludePatterns,
+) -> Vec<(String, PathBuf)> {
     let files = walker::enumerate(root, walker::DEFAULT_EXTENSIONS);
     files
         .par_iter()
+        .filter(|path| !exclude.matches(path))
         .flat_map_iter(|path| {
             let Ok(bytes) = std::fs::read(path) else {
                 return Vec::new().into_iter();
