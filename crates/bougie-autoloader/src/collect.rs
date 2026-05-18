@@ -22,58 +22,78 @@ pub(crate) struct Entry {
 }
 
 pub(crate) fn psr4(root: &RootManifest, lock: &LockFile, no_dev: bool) -> Vec<Entry> {
-    let mut out = vec![];
-    for pkg in lock.iter_packages(no_dev) {
-        let install_path = format!("vendor/{}", pkg.name);
-        for (prefix, dirs) in &pkg.autoload.psr4 {
-            let paths = dirs
-                .iter()
-                .map(|d| format!("$vendorDir . '/{}'", join_rel(&install_path, d)))
-                .collect();
-            out.push(Entry {
-                prefix: prefix.clone(),
-                paths,
-            });
-        }
-    }
-    for (prefix, dirs) in &root.autoload.psr4 {
-        let paths = dirs
-            .iter()
-            .map(|d| format!("$baseDir . '/{}'", strip_leading_slash(d)))
-            .collect();
-        out.push(Entry {
-            prefix: prefix.clone(),
-            paths,
-        });
-    }
-    krsort_entries(&mut out);
-    out
+    aggregate_psr(
+        root,
+        lock,
+        no_dev,
+        |pkg| &pkg.autoload.psr4,
+        |r| &r.autoload.psr4,
+    )
 }
 
 pub(crate) fn psr0(root: &RootManifest, lock: &LockFile, no_dev: bool) -> Vec<Entry> {
-    let mut out = vec![];
-    for pkg in lock.iter_packages(no_dev) {
-        let install_path = format!("vendor/{}", pkg.name);
-        for (prefix, dirs) in &pkg.autoload.psr0 {
-            let paths = dirs
-                .iter()
-                .map(|d| format!("$vendorDir . '/{}'", join_rel(&install_path, d)))
-                .collect();
+    aggregate_psr(
+        root,
+        lock,
+        no_dev,
+        |pkg| &pkg.autoload.psr0,
+        |r| &r.autoload.psr0,
+    )
+}
+
+/// Walk root + every package's PSR-* block in Composer's
+/// `reverseSortedMap` order (root first, then reverse of the
+/// topological sort), aggregating same-prefix entries into a single
+/// `Entry` with concatenated paths. Without aggregation, two
+/// packages declaring the same namespace would emit duplicate map
+/// keys in `autoload_psr4.php` — invalid PHP that silently overrides
+/// at runtime — and the path-list order would diverge from Composer's.
+fn aggregate_psr<'a, F, G>(
+    root: &'a RootManifest,
+    lock: &'a LockFile,
+    no_dev: bool,
+    psr_pkg: F,
+    psr_root: G,
+) -> Vec<Entry>
+where
+    F: Fn(&'a crate::lock::Package) -> &'a Vec<(String, Vec<String>)>,
+    G: Fn(&'a RootManifest) -> &'a Vec<(String, Vec<String>)>,
+{
+    let mut out: Vec<Entry> = vec![];
+    let push = |out: &mut Vec<Entry>, prefix: &str, path: String| {
+        if let Some(existing) = out.iter_mut().find(|e| e.prefix == prefix) {
+            existing.paths.push(path);
+        } else {
             out.push(Entry {
-                prefix: prefix.clone(),
-                paths,
+                prefix: prefix.to_string(),
+                paths: vec![path],
             });
         }
+    };
+
+    // Root first — matches Composer's parseAutoloadsType iteration
+    // (`reverseSortedMap` puts root at the front, then reverse of
+    // sortPackages output).
+    for (prefix, dirs) in psr_root(root) {
+        for d in dirs {
+            push(
+                &mut out,
+                prefix,
+                format!("$baseDir . '/{}'", strip_leading_slash(d)),
+            );
+        }
     }
-    for (prefix, dirs) in &root.autoload.psr0 {
-        let paths = dirs
-            .iter()
-            .map(|d| format!("$baseDir . '/{}'", strip_leading_slash(d)))
-            .collect();
-        out.push(Entry {
-            prefix: prefix.clone(),
-            paths,
-        });
+    for pkg in lock.reverse_sorted_packages(no_dev) {
+        let install_path = format!("vendor/{}", pkg.name);
+        for (prefix, dirs) in psr_pkg(pkg) {
+            for d in dirs {
+                push(
+                    &mut out,
+                    prefix,
+                    format!("$vendorDir . '/{}'", join_rel(&install_path, d)),
+                );
+            }
+        }
     }
     krsort_entries(&mut out);
     out
@@ -187,9 +207,21 @@ pub(crate) fn classmap(
 
     let mut tasks: Vec<Task<'_>> = Vec::new();
 
-    // Classmap dirs first — matches Composer's dump() order
-    // (classmap pass, then optionally PSR-* pass).
-    for pkg in lock.iter_packages(no_dev) {
+    // Classmap dirs — matches Composer's dump() order:
+    // parseAutoloadsType iterates reverseSortedMap (root first, then
+    // reverse of topological dependency sort), and the scan iterates
+    // the resulting aggregated `classmap` list. Root entries appear
+    // first in that list, so we scan them first; subsequent packages
+    // come in reverse-sorted order.
+    for dir in &root.autoload.classmap {
+        tasks.push(Task {
+            origin: Origin::Root,
+            scan_root: canonical(project_root.join(strip_leading_slash(dir))),
+            install_abs: canonical(project_root.to_path_buf()),
+            filter: NamespaceFilter::None,
+        });
+    }
+    for pkg in lock.reverse_sorted_packages(no_dev) {
         if pkg.autoload.classmap.is_empty() {
             continue;
         }
@@ -203,31 +235,56 @@ pub(crate) fn classmap(
             });
         }
     }
-    for dir in &root.autoload.classmap {
-        tasks.push(Task {
-            origin: Origin::Root,
-            scan_root: canonical(project_root.join(strip_leading_slash(dir))),
-            install_abs: canonical(project_root.to_path_buf()),
-            filter: NamespaceFilter::None,
-        });
-    }
 
     if optimize {
         // Composer's `dump()` buckets all PSR-* entries by namespace
-        // and then runs `krsort` on the bucket keys — so more-
-        // specific namespaces scan first, which on overlapping bases
-        // controls which mapping claims a class via first-seen dedup.
+        // (across packages and root, in reverseSortedMap order), then
+        // runs `krsort` on the bucket keys so more-specific namespaces
+        // scan first. Within a bucket the order is reverseSortedMap
+        // order (root first, then reverse of topological dep sort).
         //
         // We collect candidate tasks tagged with their namespace,
-        // then sort by namespace descending with a stable sort so
-        // PSR-4 stays before PSR-0 within a namespace bucket (mirrors
-        // Composer's `foreach (['psr-4', 'psr-0'] ...)` outer-loop
-        // order). Cross-package order within a namespace bucket is
-        // lockfile order — Composer's reverse-sortPackageMap order
-        // is topological + root-first; matching it exactly is a
-        // separate gap.
+        // emit them in reverseSortedMap order (root first, then
+        // reversed sortPackages), then stable-sort by namespace
+        // descending so PSR-4 stays before PSR-0 within a namespace
+        // bucket (mirrors Composer's `foreach (['psr-4', 'psr-0']
+        // ...)` outer-loop order).
         let mut psr_tasks: Vec<(String, Task<'_>)> = Vec::new();
-        for pkg in lock.iter_packages(no_dev) {
+        for (ns, dirs) in &root.autoload.psr4 {
+            for dir in dirs {
+                let scan_root = canonical(project_root.join(strip_leading_slash(dir)));
+                psr_tasks.push((
+                    ns.clone(),
+                    Task {
+                        origin: Origin::Root,
+                        scan_root: scan_root.clone(),
+                        install_abs: canonical(project_root.to_path_buf()),
+                        filter: NamespaceFilter::Psr4 {
+                            namespace: ns.clone(),
+                            base: scan_root,
+                        },
+                    },
+                ));
+            }
+        }
+        for (ns, dirs) in &root.autoload.psr0 {
+            for dir in dirs {
+                let scan_root = canonical(project_root.join(strip_leading_slash(dir)));
+                psr_tasks.push((
+                    ns.clone(),
+                    Task {
+                        origin: Origin::Root,
+                        scan_root: scan_root.clone(),
+                        install_abs: canonical(project_root.to_path_buf()),
+                        filter: NamespaceFilter::Psr0 {
+                            namespace: ns.clone(),
+                            base: scan_root,
+                        },
+                    },
+                ));
+            }
+        }
+        for pkg in lock.reverse_sorted_packages(no_dev) {
             let install_abs = canonical(project_root.join(format!("vendor/{}", pkg.name)));
             for (ns, dirs) in &pkg.autoload.psr4 {
                 for dir in dirs {
@@ -264,44 +321,10 @@ pub(crate) fn classmap(
                 }
             }
         }
-        for (ns, dirs) in &root.autoload.psr4 {
-            for dir in dirs {
-                let scan_root = canonical(project_root.join(strip_leading_slash(dir)));
-                psr_tasks.push((
-                    ns.clone(),
-                    Task {
-                        origin: Origin::Root,
-                        scan_root: scan_root.clone(),
-                        install_abs: canonical(project_root.to_path_buf()),
-                        filter: NamespaceFilter::Psr4 {
-                            namespace: ns.clone(),
-                            base: scan_root,
-                        },
-                    },
-                ));
-            }
-        }
-        for (ns, dirs) in &root.autoload.psr0 {
-            for dir in dirs {
-                let scan_root = canonical(project_root.join(strip_leading_slash(dir)));
-                psr_tasks.push((
-                    ns.clone(),
-                    Task {
-                        origin: Origin::Root,
-                        scan_root: scan_root.clone(),
-                        install_abs: canonical(project_root.to_path_buf()),
-                        filter: NamespaceFilter::Psr0 {
-                            namespace: ns.clone(),
-                            base: scan_root,
-                        },
-                    },
-                ));
-            }
-        }
 
         // krsort: reverse-lex by namespace, stable so PSR-4 stays
         // ahead of PSR-0 within the same namespace and per-package
-        // entries keep lockfile order within type.
+        // entries keep reverseSortedMap order within type.
         psr_tasks.sort_by(|a, b| b.0.cmp(&a.0));
         tasks.extend(psr_tasks.into_iter().map(|(_, t)| t));
     }

@@ -1,0 +1,57 @@
+{
+    "_readme": [
+        "This file locks the dependencies of your project to a known state",
+        "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
+        "This file is @generated automatically"
+    ],
+    "content-hash": "4cae1c9389ee930b1ac0b1393b375640",
+    "packages": [
+        {
+            "name": "acme/alpha",
+            "version": "1.0.0",
+            "dist": {
+                "type": "path",
+                "url": "packages/acme-alpha",
+                "reference": "ebe8918e59f4741af2d192e6aac71099b2ae599b"
+            },
+            "type": "library",
+            "autoload": {
+                "psr-4": {
+                    "Shared\\": "src/"
+                }
+            },
+            "transport-options": {
+                "symlink": false,
+                "relative": true
+            }
+        },
+        {
+            "name": "acme/beta",
+            "version": "1.0.0",
+            "dist": {
+                "type": "path",
+                "url": "packages/acme-beta",
+                "reference": "6143618b59337fbd65229dd79118acf776d33372"
+            },
+            "type": "library",
+            "autoload": {
+                "psr-4": {
+                    "Shared\\": "src/"
+                }
+            },
+            "transport-options": {
+                "symlink": false,
+                "relative": true
+            }
+        }
+    ],
+    "packages-dev": [],
+    "aliases": [],
+    "minimum-stability": "stable",
+    "stability-flags": {},
+    "prefer-stable": false,
+    "prefer-lowest": false,
+    "platform": {},
+    "platform-dev": {},
+    "plugin-api-version": "2.6.0"
+}
