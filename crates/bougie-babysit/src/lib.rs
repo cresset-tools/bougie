@@ -1,6 +1,6 @@
 //! Per-service babysitter shim. Bougied spawns this as
-//! `current_exe()` with `argv[0] = "bougie-babysit"`; the binary
-//! routes here via [`crate::shim`].
+//! `current_exe()` with `argv[0] = "bougie-babysit"`; the `bougie`
+//! binary's argv[0] shim routes here.
 //!
 //! Owns one supervised service: puts it in its own process group via
 //! `setpgid(0, 0)`, then watches three signals — service exit, EOF on

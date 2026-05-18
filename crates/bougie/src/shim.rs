@@ -106,7 +106,7 @@ pub fn exec(role: Role) -> Result<ExitCode> {
     // up on parent death. Project-agnostic.
     #[cfg(unix)]
     if role == Role::Babysit {
-        return bougie_daemon::babysit::run(args);
+        return bougie_babysit::run(args);
     }
 
     let project_root = locate_project_root(&argv0)?;

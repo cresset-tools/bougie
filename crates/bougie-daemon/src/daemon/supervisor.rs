@@ -92,7 +92,7 @@ pub enum ServiceState {
 /// One supervised service. The `child` is `None` whenever the state
 /// is `Stopped` or `Failed`.
 ///
-/// `child` is the *babysit* process (see `crate::babysit`); the
+/// `child` is the *babysit* process (see the `bougie-babysit` crate); the
 /// service binary itself is `child`'s grandchild via `fork+exec` into
 /// a fresh process group. `service_pgid` is the babysit-reported
 /// pgid we use for group-wide signals (`kill(-pgid, ...)`).
