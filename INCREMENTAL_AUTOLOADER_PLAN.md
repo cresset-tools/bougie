@@ -97,10 +97,14 @@ struct Cache {
 }
 ```
 
-Codec: **rkyv** (zero-copy decode) is the target — the dev-loop goal
-is sub-100ms warm-no-change re-dumps, and validating a ~10 MB cache
-file in single-digit ms matters. Fallback to bincode if rkyv adds too
-much friction to the schema during PR1.
+Codec: **bincode 2**. Microbenched against rkyv 0.8 on a ~94k-file synthetic cache (94k files / 400 tasks): bincode decodes the full
+~7 MiB cache in ~5 ms and encodes in ~1.4 ms. rkyv's zero-copy decode
+is faster (~0.6 ms) but the 4 ms delta is invisible next to the
+fs::metadata calls on 94k files that the warm-no-change path has to
+make regardless. bincode also produces ~27% smaller files (6.9 vs
+9.5 MiB) and avoids rkyv's alignment / archived-type / pinned-version
+complexity. Both codecs comfortably hit the sub-100ms target;
+simplicity wins.
 
 Atomic write: reuse `write_atomic` at `crates/bougie-autoloader/src/lib.rs:280`
 (rename-based, already in use for every emitted PHP file).
@@ -180,8 +184,8 @@ Five PRs, each independently reviewable. Composer's cross-task
 `scannedFiles` dedup is **deferred to a separate issue** — orthogonal
 and would muddy ambiguity-replay testing.
 
-1. **PR1 — cache write-only.** New `cache/` module + types + rkyv (or
-   bincode) dep. After every `dump_autoload`, write
+1. **PR1 — cache write-only.** New `cache/` module + types + bincode 2
+   dep. After every `dump_autoload`, write
    `vendor/composer/.bougie-classmap-cache.bin`. No read-back yet.
    `enumerate_with_meta` lands here so the cold-cache path doesn't
    regress.
