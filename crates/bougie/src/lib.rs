@@ -139,8 +139,13 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
         Command::Php(PhpCommand::Upgrade { minor }) => {
             commands::php_upgrade::run(format, minor.as_deref())
         }
-        Command::Composer(ComposerCommand::Install { request }) => {
-            commands::composer_install::run(format, request.as_deref())
+        Command::Composer(ComposerCommand::Install {
+            working_dir,
+            no_dev,
+            frozen,
+        }) => commands::composer_install::run(format, working_dir, no_dev, frozen),
+        Command::Composer(ComposerCommand::Fetch { request }) => {
+            commands::composer_fetch::run(format, request.as_deref())
         }
         Command::Composer(ComposerCommand::Uninstall { request }) => {
             commands::composer_uninstall::run(format, &request)

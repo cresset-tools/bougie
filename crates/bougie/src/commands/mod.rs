@@ -4,6 +4,7 @@ pub mod cache_prune;
 pub mod cache_size;
 pub mod composer_dir;
 pub mod composer_dump_autoloader;
+pub mod composer_fetch;
 pub mod composer_find;
 pub mod composer_install;
 pub mod composer_list;

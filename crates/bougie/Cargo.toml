@@ -53,6 +53,10 @@ version = "0.4.0"
 path = "../bougie-composer"
 version = "0.4.0"
 
+[dependencies.bougie-composer-resolver]
+path = "../bougie-composer-resolver"
+version = "0.1.0"
+
 [dependencies.bougie-config]
 path = "../bougie-config"
 version = "0.4.0"
@@ -174,6 +178,7 @@ zip = { version = "8.0", default-features = false, features = ["deflate"] }
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "rustls"] }
 # Crates only used by integration tests in tests/; kept out of the
 # regular [dependencies] block so a bin-only build doesn't link them.
+sha1 = "0.10"
 sha2 = "0.11"
 sigstore = { version = "0.13", default-features = false, features = ["cosign", "verify", "rustls-tls", "sigstore-trust-root"] }
 zstd = { version = "0.13", default-features = false }
