@@ -196,6 +196,76 @@ fn install_fails_when_lock_declares_composer_plugin() {
     assert!(stderr.contains("bougie run -- composer install"), "{stderr}");
 }
 
+#[test]
+fn lock_verify_returns_zero_on_valid_lock() {
+    let env = TestEnv::new();
+    let proj = TempDir::new().unwrap();
+    let composer_json = r#"{"name":"test/ok","require":{"acme/foo":"^1.2"}}"#;
+    let content_hash =
+        bougie_composer::lockfile::content_hash(composer_json.as_bytes()).unwrap();
+    let lock = format!(
+        r#"{{
+            "content-hash": "{content_hash}",
+            "packages": [
+                {{
+                    "name": "acme/foo",
+                    "version": "1.2.3",
+                    "dist": {{"type":"zip","url":"https://e/f.zip","shasum":"aa"}}
+                }}
+            ],
+            "packages-dev": []
+        }}"#
+    );
+    write_project_files(proj.path(), composer_json, &lock);
+
+    let output = env
+        .bougie()
+        .args(["composer", "install", "--lock-verify", "-d"])
+        .arg(proj.path())
+        .output()
+        .expect("run bougie");
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("valid"), "{stdout}");
+    // No vendor/ should be created for the verify path.
+    assert!(!proj.path().join("vendor").exists());
+}
+
+#[test]
+fn lock_verify_returns_non_zero_on_invalid_lock() {
+    let env = TestEnv::new();
+    let proj = TempDir::new().unwrap();
+    // Root says ^2 but lock pins 1.5 — invalid.
+    let composer_json = r#"{"name":"test/bad","require":{"acme/foo":"^2"}}"#;
+    let content_hash =
+        bougie_composer::lockfile::content_hash(composer_json.as_bytes()).unwrap();
+    let lock = format!(
+        r#"{{
+            "content-hash": "{content_hash}",
+            "packages": [
+                {{
+                    "name": "acme/foo",
+                    "version": "1.5.0",
+                    "dist": {{"type":"zip","url":"https://e/f.zip","shasum":"aa"}}
+                }}
+            ],
+            "packages-dev": []
+        }}"#
+    );
+    write_project_files(proj.path(), composer_json, &lock);
+
+    let output = env
+        .bougie()
+        .args(["composer", "install", "--lock-verify", "-d"])
+        .arg(proj.path())
+        .output()
+        .expect("run bougie");
+    assert!(!output.status.success(), "expected non-zero exit");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("INVALID"), "{stdout}");
+    assert!(stdout.contains("acme/foo"), "must name the conflicting pkg: {stdout}");
+}
+
 /// Use the binary `Command` API directly here so `cargo build -p
 /// bougie --tests` still exercises this file even with --quiet.
 #[allow(dead_code)]
