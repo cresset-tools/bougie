@@ -458,6 +458,30 @@ impl Version {
             other => other.to_owned(),
         }
     }
+
+    /// Construct a Version with the same numeric body as `self` but
+    /// the given suffix. Returns `None` for [`VersionKind::Branch`]
+    /// (a branch ref has no numeric body to attach a suffix to).
+    ///
+    /// Used by the Composer-to-pubgrub `Ranges<Version>` conversion
+    /// to synthesize boundary markers: `<X` becomes
+    /// `strictly_lower_than(X.with_suffix(Suffix::Dev))` so that
+    /// every prerelease of `X` (which sorts ≥ `X-dev`) is excluded.
+    pub fn with_suffix(&self, suffix: Suffix) -> Option<Version> {
+        match &self.kind {
+            VersionKind::Numeric { segments_raw, .. } => {
+                let normalized = render_numeric(segments_raw, &suffix);
+                Some(Version {
+                    kind: VersionKind::Numeric {
+                        segments_raw: segments_raw.clone(),
+                        suffix,
+                    },
+                    normalized,
+                })
+            }
+            VersionKind::Branch(_) => None,
+        }
+    }
 }
 
 // ---- ordering -----------------------------------------------------------

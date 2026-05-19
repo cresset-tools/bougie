@@ -424,6 +424,11 @@ pub enum ComposerCommand {
         /// with Composer's CI usage.
         #[arg(long = "frozen")]
         frozen: bool,
+        /// Verify the lock is internally consistent (content-hash,
+        /// requires, transitives) and exit. Doesn't touch `vendor/`
+        /// or run the autoloader. CI-friendly read-only check.
+        #[arg(long = "lock-verify")]
+        lock_verify: bool,
     },
     /// Download and install a Composer phar version into
     /// `$BOUGIE_LOCAL/composer/<version>/`. The verb formerly known
