@@ -208,6 +208,15 @@ impl Paths {
     pub fn cache_composer_dist(&self) -> PathBuf {
         self.cache.join("composer-dist")
     }
+    /// Persistent cache of Packagist v2 metadata documents at
+    /// `$BOUGIE_CACHE/composer-metadata/p2/<vendor>/<name>.json` (plus
+    /// `~dev.json`) with ETag sidecars alongside each. Shared across
+    /// projects: a `monolog/monolog` metadata fetch from project A is
+    /// reused by project B via conditional GET, avoiding the multi-MB
+    /// re-download Composer is forced into without a warm cache.
+    pub fn cache_composer_metadata(&self) -> PathBuf {
+        self.cache.join("composer-metadata")
+    }
 
     // ---------- `bougied` daemon + service supervisor paths ----------
     //
@@ -370,6 +379,7 @@ mod tests {
         assert_eq!(p.cache_index("origin.example"), Path::new("/c/index/origin.example"));
         assert_eq!(p.cache_blobs(), Path::new("/c/blobs"));
         assert_eq!(p.cache_composer_dist(), Path::new("/c/composer-dist"));
+        assert_eq!(p.cache_composer_metadata(), Path::new("/c/composer-metadata"));
     }
 
     /// Two-arg `new(home, cache)` shorthand keeps the legacy single-root
