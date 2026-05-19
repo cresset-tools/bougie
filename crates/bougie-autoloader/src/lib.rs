@@ -55,6 +55,35 @@ use std::path::Path;
 /// `tests/fixtures/`.
 pub const REFERENCE_COMPOSER_VERSION: &str = "2.8.12";
 
+/// PSR-noncompliance report for a single class. Composer prints one
+/// of these per rejected class when a file's classes all failed the
+/// `psr-4` / `psr-0` namespace+path rule: it drops every class in
+/// the file and warns. bougie collects them so the CLI can render
+/// the same `Class X located in Y does not comply with psr-N
+/// autoloading standard. Skipping.` line.
+///
+/// `relative_path` is already prefixed with `./` to match Composer's
+/// `preg_replace('{^getcwd()}', '.', ...)` output. The string is
+/// rendered with forward slashes on every platform.
+#[derive(Debug, Clone)]
+pub struct PsrWarning {
+    pub class: String,
+    pub relative_path: String,
+    /// 0 for PSR-0, 4 for PSR-4 — used as the literal in the
+    /// rendered `psr-N` token.
+    pub psr_version: u8,
+}
+
+/// Summary returned by [`dump_autoload`]. `class_count` matches
+/// Composer's `containing N classes` figure: total entries in the
+/// emitted classmap (always includes the synthetic
+/// `Composer\InstalledVersions` row, mirroring Composer).
+#[derive(Debug, Clone)]
+pub struct DumpReport {
+    pub class_count: usize,
+    pub warnings: Vec<PsrWarning>,
+}
+
 /// Inputs for an autoload dump. Names mirror Composer terminology.
 #[derive(Debug, Clone)]
 pub struct DumpRequest<'a> {
@@ -131,7 +160,7 @@ impl From<std::io::Error> for DumpError {
 /// `autoload_static.php` and the vendored runtime files;
 /// `--optimize` / `--classmap-authoritative` / `exclude-from-classmap`
 /// are still pending wiring.
-pub fn dump_autoload(req: &DumpRequest<'_>) -> Result<(), DumpError> {
+pub fn dump_autoload(req: &DumpRequest<'_>) -> Result<DumpReport, DumpError> {
     let lock = lock::read_lock(req.project_root)?;
     let manifest = lock::read_root_manifest(req.project_root)?;
 
@@ -173,7 +202,8 @@ pub fn dump_autoload(req: &DumpRequest<'_>) -> Result<(), DumpError> {
     // The flag's other effect — narrowing autoload_real.php's runtime
     // lookup — lives in the static-loader emit, which is Phase 3.
     let optimize = req.optimize || req.classmap_authoritative;
-    let classmap = collect::classmap(&manifest, &lock, req.no_dev, optimize, req.project_root);
+    let classmap_out = collect::classmap(&manifest, &lock, req.no_dev, optimize, req.project_root);
+    let classmap = classmap_out.entries;
 
     write_atomic(
         &composer_dir.join("autoload_psr4.php"),
@@ -234,7 +264,37 @@ pub fn dump_autoload(req: &DumpRequest<'_>) -> Result<(), DumpError> {
         installed::emit_installed_php(req.project_root, req.no_dev)?.as_bytes(),
     )?;
 
-    Ok(())
+    let class_count = classmap.len();
+    let warnings = classmap_out
+        .warnings
+        .into_iter()
+        .map(|w| PsrWarning {
+            class: w.class,
+            relative_path: format_relative_path(&w.file, req.project_root),
+            psr_version: if w.psr0 { 0 } else { 4 },
+        })
+        .collect();
+
+    Ok(DumpReport {
+        class_count,
+        warnings,
+    })
+}
+
+/// Format an absolute file path the way Composer does in its
+/// noncompliance warning: replace the leading project root with `.`
+/// (so output starts with `./`) and normalize to forward slashes for
+/// cross-platform-consistent display. Falls back to the input path
+/// when the prefix doesn't match (canonicalize mismatch, etc.).
+fn format_relative_path(file: &Path, project_root: &Path) -> String {
+    let canon_root = std::fs::canonicalize(project_root).unwrap_or_else(|_| project_root.into());
+    let rel = file.strip_prefix(&canon_root).unwrap_or(file);
+    let rel_str = rel.to_string_lossy().replace('\\', "/");
+    if rel_str.starts_with("./") || rel_str == "." {
+        rel_str
+    } else {
+        format!("./{rel_str}")
+    }
 }
 
 /// Lightweight ASCII-hex randomness for the APCu prefix default.

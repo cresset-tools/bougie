@@ -25,12 +25,23 @@ use std::path::{Path, PathBuf};
 use rayon::prelude::*;
 
 pub(crate) use exclude::ExcludePatterns;
-pub(crate) use filter::NamespaceFilter;
+pub(crate) use filter::{NamespaceFilter, ScanWarning};
 
-/// Scan a single classmap directory (or file). Returns
-/// `(class_name, absolute_path)` pairs in walker order. Deduplication
-/// and sort happen at a higher layer (`collect::classmap`) so this
-/// module stays mechanical.
+/// Result of scanning a single classmap (or PSR-*) directory.
+/// `entries` are `(class_name, absolute_path)` pairs in walker order;
+/// dedup and sort happen at a higher layer. `warnings` is the
+/// PSR-noncompliance list produced when a file's classes were all
+/// rejected by the namespace filter — empty for classmap-style scans.
+pub(crate) struct ScanOutput {
+    pub entries: Vec<(String, PathBuf)>,
+    pub warnings: Vec<ScanWarning>,
+}
+
+/// Per-file shape used inside the parallel rayon stage of [`scan`].
+/// Extracted only to keep clippy's `type_complexity` quiet.
+type FileResult = (Vec<(String, PathBuf)>, Vec<ScanWarning>);
+
+/// Scan a single classmap directory (or file). See [`ScanOutput`].
 ///
 /// `filter` is [`NamespaceFilter::None`] for classmap-style scans
 /// (every class kept) and `Psr4` / `Psr0` for the optimize-mode
@@ -41,21 +52,30 @@ pub(crate) fn scan(
     root: &Path,
     filter: &NamespaceFilter,
     exclude: &ExcludePatterns,
-) -> Vec<(String, PathBuf)> {
+) -> ScanOutput {
     let files = walker::enumerate(root, walker::DEFAULT_EXTENSIONS);
-    files
+    let per_file: Vec<FileResult> = files
         .par_iter()
         .filter(|path| !exclude.matches(path))
-        .flat_map_iter(|path| {
+        .map(|path| {
             let Ok(bytes) = std::fs::read(path) else {
-                return Vec::new().into_iter();
+                return (Vec::new(), Vec::new());
             };
             let classes = finder::find_classes(&bytes);
-            let kept = filter::apply(filter, classes, path);
-            kept.into_iter()
-                .map(|c| (c, path.clone()))
-                .collect::<Vec<_>>()
+            let (kept, warnings) = filter::apply(filter, classes, path);
+            let entries = kept
                 .into_iter()
+                .map(|c| (c, path.clone()))
+                .collect::<Vec<_>>();
+            (entries, warnings)
         })
-        .collect()
+        .collect();
+
+    let mut entries = Vec::new();
+    let mut warnings = Vec::new();
+    for (e, w) in per_file {
+        entries.extend(e);
+        warnings.extend(w);
+    }
+    ScanOutput { entries, warnings }
 }

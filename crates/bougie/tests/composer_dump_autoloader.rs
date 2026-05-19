@@ -60,7 +60,8 @@ fn cli_runs_in_cwd_by_default_and_emits_real_file() {
         .current_dir(work.path())
         .assert()
         .success()
-        .stdout(contains("wrote vendor/composer/autoload_*.php"));
+        // Composer-style footer: "Generated <mode> containing N classes".
+        .stdout(contains("Generated autoload files containing"));
 
     let real = work.path().join("vendor/composer/autoload_real.php");
     assert!(real.is_file(), "autoload_real.php should land in cwd's vendor/composer/");
@@ -107,7 +108,9 @@ fn cli_classmap_authoritative_propagates_to_output() {
         .current_dir(work.path())
         .assert()
         .success()
-        .stdout(contains("classmap-authoritative"));
+        // The "(authoritative)" qualifier in the Composer-style footer
+        // is what tells us `--classmap-authoritative` propagated.
+        .stdout(contains("(authoritative)"));
 
     let real = std::fs::read_to_string(
         work.path().join("vendor/composer/autoload_real.php"),
@@ -130,9 +133,11 @@ fn cli_apcu_prefix_implies_apcu_autoloader_and_propagates() {
         .arg("fixture-apcu-prefix-zzz0")
         .current_dir(work.path())
         .assert()
-        .success()
-        .stdout(contains("apcu-autoloader"));
+        .success();
 
+    // APCu state isn't part of the Composer-style stdout footer, so
+    // the propagation test is whether the emitted autoload_real.php
+    // carries the setApcuPrefix call with our explicit prefix.
     let real = std::fs::read_to_string(
         work.path().join("vendor/composer/autoload_real.php"),
     )
