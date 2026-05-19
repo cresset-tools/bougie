@@ -24,9 +24,14 @@
 //! the replaced `Q` end up in the solution. See the comment in
 //! `get_dependencies` for the known edge cases.
 //!
+//! `minimum-stability` (top-level composer.json) and the per-package
+//! `@<stability>` flag (root require suffix like `"acme/foo":
+//! "^1.0@dev"`) are honored — see [`ResolveProvider::versions_for`].
+//! `prefer-stable` (a candidate-ordering tweak, not a filter) is a
+//! follow-up.
+//!
 //! Out of scope (follow-ups):
-//! - `minimum-stability` / `prefer-stable` / per-package stability
-//!   flags (currently hard-coded to "stable-only candidates")
+//! - `prefer-stable` candidate-ordering
 //! - Platform-package version checks against the bougie-pinned PHP
 //!   (issue #118 — affects polyfill-style `replace: { php: "..." }`
 //!   declarations too)
@@ -73,9 +78,19 @@ pub struct ResolveProvider {
     base_url: String,
     root_deps: Vec<(String, ComposerRange)>,
     root_version: Version,
-    /// `vendor/name` → versions list, newest-first, stable-only.
-    /// Populated lazily on first `choose_version` / `get_dependencies`
-    /// for that package.
+    /// Composer's top-level `minimum-stability` (`stable` by default).
+    /// Sets the floor for candidate stability; any version whose
+    /// stability is *below* this is dropped from `versions_for`.
+    minimum_stability: Stability,
+    /// Per-package stability overrides extracted from `@<stability>`
+    /// suffixes on root requires (`acme/foo: ^1.0@dev`). Takes
+    /// precedence over [`Self::minimum_stability`] for the named
+    /// package. Composer only honors these at the root require/
+    /// require-dev level; transitive deps don't carry flags.
+    stability_flags: HashMap<String, Stability>,
+    /// `vendor/name` → versions list, newest-first, filtered by the
+    /// effective stability gate. Populated lazily on first
+    /// `choose_version` / `get_dependencies` for that package.
     cache: RefCell<HashMap<String, Vec<LockPackage>>>,
 }
 
@@ -100,7 +115,8 @@ impl ResolveProvider {
         composer_json: &Value,
         no_dev: bool,
     ) -> Result<Self, BuildError> {
-        let root_deps = read_root_requires(composer_json, no_dev)?;
+        let minimum_stability = read_minimum_stability(composer_json)?;
+        let (root_deps, stability_flags) = read_root_requires(composer_json, no_dev)?;
         // Any synthetic value works for the root version — pubgrub
         // never compares it against another candidate. Match the
         // verify provider's choice for cross-module consistency.
@@ -112,6 +128,8 @@ impl ResolveProvider {
             base_url,
             root_deps,
             root_version,
+            minimum_stability,
+            stability_flags,
             cache: RefCell::new(HashMap::new()),
         })
     }
@@ -127,9 +145,20 @@ impl ResolveProvider {
         self.cache.borrow().len()
     }
 
-    /// Fetch (or read from cache) the version list for one package.
-    /// Filters out non-stable candidates and packages whose
-    /// version-string fails to parse.
+    /// Effective stability floor for `name`: per-package `@<flag>`
+    /// at root require time overrides the top-level
+    /// `minimum-stability`.
+    fn effective_stability(&self, name: &str) -> Stability {
+        self.stability_flags
+            .get(name)
+            .copied()
+            .unwrap_or(self.minimum_stability)
+    }
+
+    /// Fetch (or read from cache) the version list for one package,
+    /// filtered to candidates whose stability is at or above the
+    /// effective gate for that package. Versions whose version-string
+    /// fails to parse are dropped.
     fn versions_for(&self, name: &str) -> Result<Vec<LockPackage>, ProviderError> {
         if let Some(v) = self.cache.borrow().get(name) {
             return Ok(v.clone());
@@ -147,24 +176,31 @@ impl ResolveProvider {
         // `packages` keyed by the requested name; defensively handle
         // the missing-key shape rather than indexing.
         let versions = md.packages.get(name).cloned().unwrap_or_default();
-        let stable: Vec<LockPackage> = versions
+        let floor = self.effective_stability(name);
+        let filtered: Vec<LockPackage> = versions
             .into_iter()
             .filter(|p| {
                 Version::parse(&p.version)
-                    .map(|v| v.stability() == Stability::Stable)
+                    .map(|v| v.stability() >= floor)
                     .unwrap_or(false)
             })
             .collect();
-        self.cache.borrow_mut().insert(name.to_owned(), stable.clone());
-        Ok(stable)
+        self.cache.borrow_mut().insert(name.to_owned(), filtered.clone());
+        Ok(filtered)
     }
 }
 
+/// Walk `require` / `require-dev` from composer.json. Returns the
+/// list of `(name, range)` pairs plus the per-package stability
+/// flags extracted from any `@<stability>` suffix on the constraint
+/// string. Composer accepts these only at the root level, so this
+/// is the only place they're parsed.
 fn read_root_requires(
     composer_json: &Value,
     no_dev: bool,
-) -> Result<Vec<(String, ComposerRange)>, BuildError> {
+) -> Result<(Vec<(String, ComposerRange)>, HashMap<String, Stability>), BuildError> {
     let mut out: Vec<(String, ComposerRange)> = Vec::new();
+    let mut flags: HashMap<String, Stability> = HashMap::new();
     let obj = composer_json
         .as_object()
         .ok_or_else(|| BuildError::Internal("composer.json top-level is not an object".into()))?;
@@ -179,7 +215,11 @@ fn read_root_requires(
             let raw_constraint = raw.as_str().ok_or_else(|| {
                 BuildError::Internal(format!("{key}.{dep_name} is not a string"))
             })?;
-            let constraint = Constraint::parse(raw_constraint).map_err(|e| {
+            let (cleaned, flag) = split_stability_flag(raw_constraint);
+            if let Some(stability) = flag {
+                flags.insert(dep_name.clone(), stability);
+            }
+            let constraint = Constraint::parse(cleaned).map_err(|e| {
                 BuildError::ParseConstraint {
                     dep: dep_name.clone(),
                     constraint: raw_constraint.to_owned(),
@@ -189,7 +229,42 @@ fn read_root_requires(
             out.push((dep_name.clone(), to_range(&constraint)));
         }
     }
-    Ok(out)
+    Ok((out, flags))
+}
+
+/// Read `minimum-stability` from composer.json's top-level. Default
+/// is `Stability::Stable` (Composer's own default). Unknown values
+/// surface as a `BuildError`.
+fn read_minimum_stability(composer_json: &Value) -> Result<Stability, BuildError> {
+    let obj = composer_json.as_object().ok_or_else(|| {
+        BuildError::Internal("composer.json top-level is not an object".into())
+    })?;
+    let Some(value) = obj.get("minimum-stability") else {
+        return Ok(Stability::Stable);
+    };
+    let s = value.as_str().ok_or_else(|| {
+        BuildError::Internal("`minimum-stability` is not a string".into())
+    })?;
+    Stability::parse(s).ok_or_else(|| {
+        BuildError::Internal(format!(
+            "`minimum-stability` value {s:?} is not a recognised Composer stability \
+             (expected one of: dev, alpha, beta, RC, stable)",
+        ))
+    })
+}
+
+/// Split a Composer constraint string into its constraint body and
+/// trailing `@<stability>` flag. Returns `(body, Some(stability))` or
+/// `(input, None)` when no flag is present. Composer's grammar puts
+/// the flag at the end after a literal `@`, e.g. `"^1.0@dev"`.
+fn split_stability_flag(raw: &str) -> (&str, Option<Stability>) {
+    if let Some(idx) = raw.rfind('@') {
+        let suffix = &raw[idx + 1..];
+        if let Some(stab) = Stability::parse(suffix) {
+            return (raw[..idx].trim_end(), Some(stab));
+        }
+    }
+    (raw, None)
 }
 
 #[derive(Debug, Clone)]
