@@ -43,20 +43,14 @@ pub fn base_url() -> String {
 }
 
 /// Build the default blocking HTTP client used by the metadata
-/// fetcher. Gzip negotiation is enabled (Packagist serves multi-MB
-/// JSON; transparent gzip cuts wire bytes by ~5×). The user-agent
-/// matches what Composer itself sends.
+/// fetcher. Routes through [`bougie_fetch::default_client`] so the
+/// `User-Agent` matches every other bougie outbound request — gives
+/// Packagist a single identifying string to rate-limit or contact
+/// against if bougie ever misbehaves. Gzip negotiation is on for the
+/// crate as a whole via the `gzip` feature flag (Packagist serves
+/// multi-MB JSON; transparent gzip cuts wire bytes by ~5×).
 pub fn build_client() -> Result<reqwest::blocking::Client> {
-    reqwest::blocking::Client::builder()
-        .user_agent("bougie-composer-resolver")
-        .build()
-        .map_err(|e| {
-            BougieError::Network {
-                operation: "building Packagist HTTP client".into(),
-                detail: e.to_string(),
-            }
-            .into()
-        })
+    bougie_fetch::default_client()
 }
 
 /// Which of the two `/p2/` documents to fetch for a package.

@@ -234,3 +234,35 @@ fn server_error_is_surfaced() {
     let msg = format!("{err:#}");
     assert!(msg.contains("404"), "{msg}");
 }
+
+#[test]
+fn outbound_request_carries_bougie_user_agent() {
+    // The wire-test for the shared UA: a mock that only matches when
+    // the request's `User-Agent` starts with `bougie/`. If the client
+    // forgot to set it (e.g. somebody re-introduces a bare
+    // `Client::builder().build()`), the matcher misses and the
+    // fetcher gets a 404, surfacing as a hard error.
+    let tmp = TempDir::new().unwrap();
+    let paths = paths_in(tmp.path());
+    let body = fixture_body("acme/ua", "1.0.0");
+
+    let rt = rt();
+    let (uri, _server) = rt.block_on(async {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(wm_path("/p2/acme/ua.json"))
+            .and(wiremock::matchers::header_regex(
+                "User-Agent",
+                r"^bougie/.*\(\+https://github\.com/cresset-tools/bougie\)$",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_string(body))
+            .mount(&server)
+            .await;
+        (server.uri(), server)
+    });
+
+    let client = build_client().unwrap();
+    let md =
+        fetch_package_metadata(&client, &paths, &uri, "acme/ua", Variant::Stable).unwrap();
+    assert_eq!(md.packages["acme/ua"][0].version, "1.0.0");
+}

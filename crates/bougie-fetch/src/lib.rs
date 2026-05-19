@@ -14,6 +14,38 @@ use std::io::{copy, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+/// The `User-Agent` every outbound bougie HTTP request advertises.
+/// Format: `bougie/<crate-version> (+<repo-url>)`. Identifies us
+/// specifically to upstream services (Packagist, getcomposer.org, our
+/// own index) so they can rate-limit or contact maintainers rather
+/// than blanket-blocking anonymous reqwest traffic. The version comes
+/// from `bougie-fetch`'s own `Cargo.toml` — it tracks the workspace
+/// release cadence closely enough that bumping it is a single change
+/// when the format here needs to evolve.
+pub const USER_AGENT: &str = concat!(
+    "bougie/",
+    env!("CARGO_PKG_VERSION"),
+    " (+https://github.com/cresset-tools/bougie)",
+);
+
+/// Build a `reqwest::blocking::Client` with the bougie [`USER_AGENT`]
+/// set. Every outbound external request should go through this so the
+/// UA, redirect policy, and connection settings stay consistent across
+/// crates. Tests and localhost provisioner clients can keep their own
+/// builders — they don't represent bougie to the outside world.
+pub fn default_client() -> Result<reqwest::blocking::Client> {
+    reqwest::blocking::Client::builder()
+        .user_agent(USER_AGENT)
+        .build()
+        .map_err(|e| {
+            BougieError::Network {
+                operation: "building HTTP client".into(),
+                detail: e.to_string(),
+            }
+            .into()
+        })
+}
+
 /// Which hash algorithm verifies a download. Bougie's own published
 /// blobs use sha256; Composer's Packagist dist `shasum` field is sha1.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -633,6 +665,18 @@ mod tests {
     fn format_hex_lowercase() {
         assert_eq!(format_hex(&[0xab, 0xcd]), "abcd");
         assert_eq!(format_hex(&[0]), "00");
+    }
+
+    #[test]
+    fn user_agent_has_expected_shape() {
+        // `bougie/<semver> (+https://...)`. The exact version is the
+        // bougie-fetch crate version — checking the shape, not the
+        // value, so a release-plz bump doesn't break the test.
+        assert!(USER_AGENT.starts_with("bougie/"), "{USER_AGENT}");
+        assert!(
+            USER_AGENT.contains("(+https://github.com/cresset-tools/bougie)"),
+            "{USER_AGENT}",
+        );
     }
 
     #[test]
