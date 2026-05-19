@@ -423,6 +423,20 @@ pub enum CmpOp {
 }
 
 impl Version {
+    /// Composer's `Package::getStability()` applied to a parsed
+    /// `Version`. Branch versions are always `Dev`; numeric versions
+    /// inherit their `Suffix`'s stability (`Stable` for bare,
+    /// `Patch(_)`; `Dev` for bare `-dev`; the prerelease keyword
+    /// otherwise). This is the granular stability used to filter
+    /// candidates against `minimum-stability` and per-package
+    /// stability flags.
+    pub fn stability(&self) -> Stability {
+        match &self.kind {
+            VersionKind::Numeric { suffix, .. } => suffix.stability(),
+            VersionKind::Branch(_) => Stability::Dev,
+        }
+    }
+
     /// Composer's comparator. Returns `false` for every op when the
     /// two operands are bare dev branches with different names; `==`
     /// is `true` only when both are bare branches with the same

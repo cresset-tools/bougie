@@ -9,6 +9,7 @@
 
 pub mod install;
 pub mod metadata;
+pub mod update;
 pub mod verify;
 
 pub use install::{
