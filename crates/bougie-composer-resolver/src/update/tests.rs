@@ -755,3 +755,162 @@ fn unknown_minimum_stability_value_is_a_build_error() {
     assert!(msg.contains("stable"), "{msg}");
 }
 
+/// Helper: mount the dev variant explicitly (`/p2/<name>~dev.json`).
+async fn mount_p2_dev(server: &MockServer, name: &str, body: String) {
+    let p = format!("/p2/{name}~dev.json");
+    Mock::given(method("GET"))
+        .and(wm_path(p))
+        .respond_with(ResponseTemplate::new(200).set_body_string(body))
+        .mount(server)
+        .await;
+}
+
+#[test]
+fn dev_floor_pulls_branch_versions_from_tilde_dev_json() {
+    // The stable doc has only an old 1.0.0; ~dev.json carries the
+    // 1.x-dev branch which (with floor=dev) is the highest in-range
+    // candidate.
+    let tmp = TempDir::new().unwrap();
+    let paths = paths_in(tmp.path());
+
+    let stable = p2_body("acme/foo", &[("1.0.0", json!({}))]);
+    let dev = p2_body("acme/foo", &[("1.x-dev", json!({}))]);
+
+    let rt = rt();
+    let (uri, _server) = rt.block_on(async {
+        let server = MockServer::start().await;
+        mount_p2(&server, "acme/foo", stable).await;
+        mount_p2_dev(&server, "acme/foo", dev).await;
+        (server.uri(), server)
+    });
+
+    let composer_json = json!({
+        "minimum-stability": "dev",
+        "require": {"acme/foo": "^1.0"},
+    });
+    let client = crate::metadata::build_client().unwrap();
+    let provider =
+        ResolveProvider::build(client, paths, uri, &composer_json, true).unwrap();
+    let root = provider.root_version();
+
+    let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
+    let foo = solution
+        .get(&PubGrubPackage::Package("acme/foo".into()))
+        .unwrap();
+    // 1.x-dev normalizes to 1.9999999... which is higher than 1.0.0.
+    assert_eq!(foo.to_string(), "1.9999999.9999999.9999999-dev", "got {foo}");
+}
+
+#[test]
+fn dev_floor_tolerates_missing_tilde_dev_json() {
+    // ~dev.json 404s (we don't mount it). The resolver should still
+    // succeed using only the stable doc — Packagist 404s the dev
+    // variant for any package with no branches, which is common.
+    let tmp = TempDir::new().unwrap();
+    let paths = paths_in(tmp.path());
+
+    let stable = p2_body(
+        "acme/foo",
+        &[("1.2.0-dev", json!({})), ("1.0.0", json!({}))],
+    );
+
+    let rt = rt();
+    let (uri, _server) = rt.block_on(async {
+        let server = MockServer::start().await;
+        mount_p2(&server, "acme/foo", stable).await;
+        // Deliberately no ~dev.json mock — wiremock returns 404 by
+        // default, which the optional fetcher must absorb as
+        // "no dev candidates."
+        (server.uri(), server)
+    });
+
+    let composer_json = json!({
+        "minimum-stability": "dev",
+        "require": {"acme/foo": "^1.0"},
+    });
+    let client = crate::metadata::build_client().unwrap();
+    let provider =
+        ResolveProvider::build(client, paths, uri, &composer_json, true).unwrap();
+    let root = provider.root_version();
+
+    let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
+    let foo = solution
+        .get(&PubGrubPackage::Package("acme/foo".into()))
+        .unwrap();
+    // The dev-suffixed numeric in the stable doc is still admitted —
+    // it's higher than 1.0.0.
+    assert_eq!(foo.to_string(), "1.2.0.0-dev");
+}
+
+#[test]
+fn stable_floor_does_not_fetch_tilde_dev_json() {
+    // Default stable floor must NOT consult ~dev.json. We assert
+    // this by mounting a 500-response there: if the resolver ever
+    // calls the URL, the test fails with a server-error.
+    let tmp = TempDir::new().unwrap();
+    let paths = paths_in(tmp.path());
+
+    let stable = p2_body("acme/foo", &[("1.0.0", json!({}))]);
+
+    let rt = rt();
+    let (uri, _server) = rt.block_on(async {
+        let server = MockServer::start().await;
+        mount_p2(&server, "acme/foo", stable).await;
+        // Trap mock: any GET to ~dev.json is a 500.
+        Mock::given(method("GET"))
+            .and(wm_path("/p2/acme/foo~dev.json"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+        (server.uri(), server)
+    });
+
+    let composer_json = json!({"require": {"acme/foo": "^1.0"}});
+    let client = crate::metadata::build_client().unwrap();
+    let provider =
+        ResolveProvider::build(client, paths, uri, &composer_json, true).unwrap();
+    let root = provider.root_version();
+
+    let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
+    let foo = solution
+        .get(&PubGrubPackage::Package("acme/foo".into()))
+        .unwrap();
+    assert_eq!(foo.to_string(), "1.0.0.0");
+}
+
+#[test]
+fn combined_stable_plus_dev_versions_sort_descending() {
+    // Both docs carry versions in the constraint's range. The
+    // resolver must pick the *highest* across both — 2.0.0 from
+    // stable beats 1.x-dev (normalized 1.99...) from dev when both
+    // satisfy `>=1.0`.
+    let tmp = TempDir::new().unwrap();
+    let paths = paths_in(tmp.path());
+
+    let stable = p2_body("acme/foo", &[("2.0.0", json!({})), ("1.0.0", json!({}))]);
+    let dev = p2_body("acme/foo", &[("1.x-dev", json!({}))]);
+
+    let rt = rt();
+    let (uri, _server) = rt.block_on(async {
+        let server = MockServer::start().await;
+        mount_p2(&server, "acme/foo", stable).await;
+        mount_p2_dev(&server, "acme/foo", dev).await;
+        (server.uri(), server)
+    });
+
+    let composer_json = json!({
+        "minimum-stability": "dev",
+        "require": {"acme/foo": ">=1.0"},
+    });
+    let client = crate::metadata::build_client().unwrap();
+    let provider =
+        ResolveProvider::build(client, paths, uri, &composer_json, true).unwrap();
+    let root = provider.root_version();
+
+    let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
+    let foo = solution
+        .get(&PubGrubPackage::Package("acme/foo".into()))
+        .unwrap();
+    assert_eq!(foo.to_string(), "2.0.0.0", "stable 2.0.0 > dev 1.x-dev");
+}
+

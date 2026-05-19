@@ -144,6 +144,80 @@ pub fn fetch_package_metadata(
         .wrap_err_with(|| format!("parsing metadata for {package_name}"))
 }
 
+/// Like [`fetch_package_metadata`] but returns `Ok(None)` when the
+/// upstream replies 404. Useful for the `~dev.json` variant: many
+/// packages have no branches, so Packagist 404s for them — the
+/// resolver wants to treat that as "no dev candidates," not as a
+/// hard failure.
+///
+/// Any other non-success status, parse failure, or transport error
+/// still propagates as `Err`.
+pub fn fetch_package_metadata_optional(
+    client: &reqwest::blocking::Client,
+    paths: &Paths,
+    base_url: &str,
+    package_name: &str,
+    variant: Variant,
+) -> Result<Option<PackageMetadata>> {
+    let (json_path, etag_path) = cache_paths(paths, package_name, variant);
+    if let Some(parent) = json_path.parent() {
+        fs::create_dir_all(parent)
+            .wrap_err_with(|| format!("creating {}", parent.display()))?;
+    }
+
+    let url = format!(
+        "{}/p2/{}{}.json",
+        base_url.trim_end_matches('/'),
+        package_name,
+        variant.suffix(),
+    );
+    let mut req = client.get(&url);
+    if let Ok(etag) = fs::read_to_string(&etag_path) {
+        let etag = etag.trim();
+        if !etag.is_empty() {
+            req = req.header(reqwest::header::IF_NONE_MATCH, etag);
+        }
+    }
+
+    let resp = req.send().map_err(|e| BougieError::Network {
+        operation: format!("GET {url}"),
+        detail: e.to_string(),
+    })?;
+
+    if resp.status() == reqwest::StatusCode::NOT_MODIFIED {
+        return read_cached(&json_path).map(Some);
+    }
+    if resp.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
+    if !resp.status().is_success() {
+        return Err(BougieError::Network {
+            operation: format!("GET {url}"),
+            detail: format!("server returned HTTP {}", resp.status()),
+        }
+        .into());
+    }
+
+    let etag = resp
+        .headers()
+        .get(reqwest::header::ETAG)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+    let bytes = resp.bytes().map_err(|e| BougieError::Network {
+        operation: format!("reading body of {url}"),
+        detail: e.to_string(),
+    })?;
+
+    write_atomic(&json_path, &bytes)?;
+    if let Some(t) = etag {
+        let _ = write_atomic(&etag_path, t.as_bytes());
+    }
+
+    PackageMetadata::parse(&bytes)
+        .wrap_err_with(|| format!("parsing metadata for {package_name}"))
+        .map(Some)
+}
+
 fn read_cached(json_path: &Path) -> Result<PackageMetadata> {
     let bytes = fs::read(json_path)
         .wrap_err_with(|| format!("reading cached metadata at {}", json_path.display()))?;
