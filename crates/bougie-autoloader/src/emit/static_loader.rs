@@ -21,12 +21,19 @@
 //!   `var_export`'s default 2-space indent, doubling to 4)
 //!
 //! The closure body inside `getInitializer` emits one
-//! `$loader->X = ComposerStaticInit<hash>::$X;` per non-empty bucket
-//! in this order: `prefixLengthsPsr4`, `prefixDirsPsr4`,
-//! `prefixesPsr0`, `classMap`. `$files` is referenced separately by
-//! `autoload_real.php` and has no closure line. Composer always
-//! emits a trailing blank line before the closing `}, null,
-//! ClassLoader::class);`.
+//! `$loader->X = ComposerStaticInit<hash>::$X;` per non-empty
+//! ClassLoader property, in declaration order:
+//! `prefixLengthsPsr4`, `prefixDirsPsr4`, `fallbackDirsPsr4`,
+//! `prefixesPsr0`, `fallbackDirsPsr0`, `classMap`. `$files` is
+//! referenced separately by `autoload_real.php` and has no closure
+//! line. Composer always emits a trailing blank line before the
+//! closing `}, null, ClassLoader::class);`.
+//!
+//! Empty PSR-0 / PSR-4 prefixes (e.g. Magento's root composer.json
+//! has `"psr-0": { "": ".../lib" }`) route to the fallback fields
+//! rather than the named prefix buckets — Composer's
+//! `ClassLoader::set` / `setPsr4` does this routing at load time;
+//! `getStaticFile` then picks the fields up via `(array) $loader`.
 
 use std::fmt::Write;
 
@@ -49,22 +56,34 @@ pub(crate) fn emit(
     let _ = writeln!(out, "class ComposerStaticInit{content_hash}");
     out.push_str("{\n");
 
-    let has_psr4 = !psr4.is_empty();
-    let has_psr0 = !psr0.is_empty();
+    let (named_psr4, fallback_psr4) = split_fallback(psr4);
+    let (named_psr0, fallback_psr0) = split_fallback(psr0);
+    let has_named_psr4 = !named_psr4.is_empty();
+    let has_fallback_psr4 = !fallback_psr4.is_empty();
+    let has_named_psr0 = !named_psr0.is_empty();
+    let has_fallback_psr0 = !fallback_psr0.is_empty();
     let has_files = !files.is_empty();
 
     if has_files {
         emit_files(&mut out, files);
         out.push('\n');
     }
-    if has_psr4 {
-        emit_prefix_lengths_psr4(&mut out, psr4);
+    if has_named_psr4 {
+        emit_prefix_lengths_psr4(&mut out, &named_psr4);
         out.push('\n');
-        emit_prefix_dirs_psr4(&mut out, psr4);
+        emit_prefix_dirs_psr4(&mut out, &named_psr4);
         out.push('\n');
     }
-    if has_psr0 {
-        emit_prefixes_psr0(&mut out, psr0);
+    if has_fallback_psr4 {
+        emit_fallback_dirs(&mut out, "fallbackDirsPsr4", &fallback_psr4);
+        out.push('\n');
+    }
+    if has_named_psr0 {
+        emit_prefixes_psr0(&mut out, &named_psr0);
+        out.push('\n');
+    }
+    if has_fallback_psr0 {
+        emit_fallback_dirs(&mut out, "fallbackDirsPsr0", &fallback_psr0);
         out.push('\n');
     }
     // classMap is always emitted — at minimum the InstalledVersions
@@ -75,13 +94,36 @@ pub(crate) fn emit(
     emit_initializer(
         &mut out,
         content_hash,
-        has_psr4,
-        has_psr0,
+        has_named_psr4,
+        has_fallback_psr4,
+        has_named_psr0,
+        has_fallback_psr0,
         !classmap.is_empty(),
     );
 
     out.push_str("}\n");
     out
+}
+
+/// Partition krsort'd PSR-* entries into (named, fallback). Entries
+/// whose prefix is `""` collapse into a flat fallback path list —
+/// `ClassLoader::set("", paths)` / `setPsr4("", paths)` routes those
+/// to `fallbackDirsPsr0` / `fallbackDirsPsr4` at runtime. Within the
+/// fallback list, ordering is the same as the input (which is itself
+/// reverseSortedMap order from aggregate_psr).
+fn split_fallback(entries: &[Entry]) -> (Vec<&Entry>, Vec<&str>) {
+    let mut named: Vec<&Entry> = Vec::with_capacity(entries.len());
+    let mut fallback: Vec<&str> = Vec::new();
+    for e in entries {
+        if e.prefix.is_empty() {
+            for p in &e.paths {
+                fallback.push(p.as_str());
+            }
+        } else {
+            named.push(e);
+        }
+    }
+    (named, fallback)
 }
 
 fn emit_files(out: &mut String, entries: &[FileEntry]) {
@@ -101,7 +143,7 @@ fn emit_files(out: &mut String, entries: &[FileEntry]) {
 /// `getStaticFile`, the outer key is `$prefix[0]` (first char of the
 /// PSR-4 prefix), and within a bucket entries appear in the same
 /// krsort order as the surrounding `$psr4` list.
-fn emit_prefix_lengths_psr4(out: &mut String, psr4: &[Entry]) {
+fn emit_prefix_lengths_psr4(out: &mut String, psr4: &[&Entry]) {
     out.push_str("    public static $prefixLengthsPsr4 = array (\n");
     let mut current_letter: Option<char> = None;
     for e in psr4 {
@@ -131,7 +173,7 @@ fn emit_prefix_lengths_psr4(out: &mut String, psr4: &[Entry]) {
     out.push_str("    );\n");
 }
 
-fn emit_prefix_dirs_psr4(out: &mut String, psr4: &[Entry]) {
+fn emit_prefix_dirs_psr4(out: &mut String, psr4: &[&Entry]) {
     out.push_str("    public static $prefixDirsPsr4 = array (\n");
     for e in psr4 {
         let _ = writeln!(out, "        {} => ", php_single_quoted(&e.prefix));
@@ -146,7 +188,7 @@ fn emit_prefix_dirs_psr4(out: &mut String, psr4: &[Entry]) {
 
 /// `$prefixesPsr0` is three-deep: first-letter bucket → namespace →
 /// indexed paths. Mirrors Composer's `getStaticFile` nested loop.
-fn emit_prefixes_psr0(out: &mut String, psr0: &[Entry]) {
+fn emit_prefixes_psr0(out: &mut String, psr0: &[&Entry]) {
     out.push_str("    public static $prefixesPsr0 = array (\n");
     let mut current_letter: Option<char> = None;
     for e in psr0 {
@@ -176,6 +218,19 @@ fn emit_prefixes_psr0(out: &mut String, psr0: &[Entry]) {
     out.push_str("    );\n");
 }
 
+/// Flat indexed-array emit for `fallbackDirsPsr4` / `fallbackDirsPsr0`.
+/// `paths` is the concatenation of every empty-prefix entry's path
+/// list. Composer formats these as a single-level
+/// `array (0 => __DIR__ . '/..' . '/...', ...)` — no namespace key,
+/// no per-letter bucketing.
+fn emit_fallback_dirs(out: &mut String, name: &str, paths: &[&str]) {
+    let _ = writeln!(out, "    public static ${name} = array (");
+    for (i, p) in paths.iter().enumerate() {
+        let _ = writeln!(out, "        {} => {},", i, to_dir_expr(p));
+    }
+    out.push_str("    );\n");
+}
+
 fn emit_classmap(out: &mut String, entries: &[ClassmapEntry]) {
     out.push_str("    public static $classMap = array (\n");
     for e in entries {
@@ -189,17 +244,25 @@ fn emit_classmap(out: &mut String, entries: &[ClassmapEntry]) {
     out.push_str("    );\n");
 }
 
+#[allow(clippy::fn_params_excessive_bools)] // mirrors ClassLoader's property layout
 fn emit_initializer(
     out: &mut String,
     content_hash: &str,
-    has_psr4: bool,
-    has_psr0: bool,
+    has_named_psr4: bool,
+    has_fallback_psr4: bool,
+    has_named_psr0: bool,
+    has_fallback_psr0: bool,
     has_classmap: bool,
 ) {
     out.push_str("    public static function getInitializer(ClassLoader $loader)\n");
     out.push_str("    {\n");
     out.push_str("        return \\Closure::bind(function () use ($loader) {\n");
-    if has_psr4 {
+    // Composer iterates the loader's properties via `(array) $loader`,
+    // emitting one line per non-empty array property. The order is the
+    // declaration order in ClassLoader.php: prefixLengthsPsr4,
+    // prefixDirsPsr4, fallbackDirsPsr4, prefixesPsr0, fallbackDirsPsr0,
+    // classMap.
+    if has_named_psr4 {
         let _ = writeln!(
             out,
             "            $loader->prefixLengthsPsr4 = ComposerStaticInit{content_hash}::$prefixLengthsPsr4;"
@@ -209,10 +272,22 @@ fn emit_initializer(
             "            $loader->prefixDirsPsr4 = ComposerStaticInit{content_hash}::$prefixDirsPsr4;"
         );
     }
-    if has_psr0 {
+    if has_fallback_psr4 {
+        let _ = writeln!(
+            out,
+            "            $loader->fallbackDirsPsr4 = ComposerStaticInit{content_hash}::$fallbackDirsPsr4;"
+        );
+    }
+    if has_named_psr0 {
         let _ = writeln!(
             out,
             "            $loader->prefixesPsr0 = ComposerStaticInit{content_hash}::$prefixesPsr0;"
+        );
+    }
+    if has_fallback_psr0 {
+        let _ = writeln!(
+            out,
+            "            $loader->fallbackDirsPsr0 = ComposerStaticInit{content_hash}::$fallbackDirsPsr0;"
         );
     }
     if has_classmap {
