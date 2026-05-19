@@ -512,6 +512,7 @@ dependencies = [
  "pubgrub",
  "rayon",
  "reqwest 0.13.3",
+ "serde",
  "serde_json",
  "sha1",
  "tempfile",
