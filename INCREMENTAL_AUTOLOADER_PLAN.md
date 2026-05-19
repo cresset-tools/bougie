@@ -1,296 +1,396 @@
-# Incremental classmap cache for `dump-autoloader`
+# Live autoloader in bougie-server
 
-Working plan for caching `bougie composer dump-autoloader -o` output
-between invocations so that an unchanged subtree doesn't get rescanned.
-Follow-on to `AUTOLOADER_PLAN.md`; tracked in issue #108. Complementary
-to issue #107 (`--trust-psr4-filenames`): #107 cuts the cost of a full
-rebuild, this plan cuts how often a full rebuild is needed.
+Working plan to make autoloader updates invisible in the dev loop:
+bougie-server owns an in-memory autoloader model per project,
+bootstraps it via the equivalent of `bougie composer dump-autoloader -a -o`
+on server start, and patches it incrementally as the existing
+filesystem watcher reports user-code changes. Tracks #108. Supersedes
+the persistent-cache framing originally proposed in this document.
 
 ## Context
 
-`bougie composer dump-autoloader -o` rescans every PHP file under
-`vendor/` on each invocation. On a large project (~94k files) that's
-~2s warm-cache and ~3.2s cold, with ~89% of CPU in
-`open` / `read` / `getdirentries` syscalls (samply profile in #107).
+`bougie composer dump-autoloader -o` on a large project (~94k files)
+takes ~2 s warm, ~3.2 s cold; ~89% of CPU is in syscalls (samply
+profile in #107). Today's dev-loop UX is "save file, run
+dump-autoloader, wait 2 s, refresh browser."
 
-The dev-server flow regenerates the autoloader after every file edit.
-Paying that 2s when one file changed and 94,099 didn't is the cost we
-want to eliminate.
+bougie-server is a long-lived process. It already watches
+`<project>/.bougie/conf.d/`, `composer.json`, and `bougie.toml`
+(SERVER.md §7.2; impl: `crates/bougie-server/src/server/watcher.rs`),
+and serves HTTP via axum, dispatching either to a PHP-FPM pool over
+FastCGI (`server/router.rs::serve_php`) or to a static file
+(`serve_static`). Extending it to watch user autoload roots and patch
+the classmap in-memory removes the dump-autoloader step entirely.
+The dev saves a file; before their browser-refresh request lands, the
+classmap is current.
 
-Cache location: `vendor/composer/.bougie-classmap-cache.bin`. Living
-under `vendor/` means `rm -rf vendor && bougie composer install`
-naturally resets it — no separate "how do I clear the cache" knob.
+This is `[[project_autoloader_incremental_and_autoreload.md]]`'s
+PRs β + γ, with PR α (a persistent per-file cache) explicitly
+skipped: the server is the source of truth during its lifetime, so
+no cache file is needed.
 
 ## Mental model
 
-The current pipeline (`crates/bougie-autoloader/src/collect.rs:163`)
-builds a list of `Task`s (each = one scan root + namespace filter),
-runs `scan::scan` over each task in parallel, then sequentially merges
-the per-task `(class, path_expr)` vectors with first-seen-wins.
+One `Autoloader` per project, owned by the server. State:
 
-The cache is a **replay tape of the per-task scan output**, not a
-snapshot of the merged classmap. We store, per task, every file we
-visited with its mtime, size, and the class names we extracted under
-that task's filter. On re-dump:
+- The full task list (same shape as `collect.rs:163`'s task construction
+  builds today; lines 234-377).
+- Per task, a `BTreeMap<rel_path, Vec<class>>` recording every kept
+  file's emitted class list under that task's `NamespaceFilter`.
+- The merged `BTreeMap<class, path_expr>` ready to emit
+  (`autoload_classmap.php`).
+- Header hashes (`composer.lock` content-hash, normalized root
+  autoload-config hash, exclude-patterns hash, flags) for detecting
+  config drift.
 
-1. Header-hash the inputs (`composer.lock`, root manifest's autoload
-   block, exclude patterns, flags). On mismatch, full rebuild.
-2. Build the current task list exactly as today.
-3. For each task that's in the cache: either reuse all its file
-   records (no path under that task is dirty) or rescan only the
-   changed files.
-4. Synthesize the per-task `Vec<(class, path_expr)>` from cached +
-   newly-scanned records, feed it into the existing merge at
-   `collect.rs:407-414`.
-5. Write the updated cache.
+Three flows:
 
-Because we replay each task's emission, ambiguity (first-seen wins
-across tasks) is correct by construction: if the winning file
-disappears, the merge naturally picks the next emission.
+1. **Bootstrap** (server start, lockfile change, autoload-config
+   change): build the task list, run a full parallel scan, populate
+   per-file maps, merge, write `autoload_*.php` atomically.
+2. **Patch** (notify event under a watched user-code root): re-read
+   the dirty file, recompute its classes, diff against its prior
+   per-file entry, update the task's map, recompute the merged
+   BTreeMap, rewrite `autoload_classmap.php`.
+3. **Tear down** (lockfile content-hash change): drop the Autoloader
+   and re-bootstrap.
 
-## Cache schema
+## Bootstrap flow
+
+On server start, **before** the project's HTTP front becomes ready:
+
+1. Read `composer.lock` + root manifest as `dump_autoload` does
+   today (`lib.rs:135-136`).
+2. Run the task-construction pass from `collect::classmap`
+   (`collect.rs:234-377`).
+3. For each task, drive `scan::scan` over `scan_root` with the
+   task's filter and exclude set — same code as today — but capture
+   the per-file emission as `BTreeMap<rel_path, Vec<class>>` instead
+   of folding into a flat `Vec<(class, PathBuf)>`. A small change to
+   `scan/mod.rs:40`'s return shape; the cleaner/finder/filter
+   internals are unchanged.
+4. Merge across tasks with the existing first-seen-wins
+   (`collect.rs:407-414`) into the per-Autoloader merged BTreeMap.
+5. Emit every autoload file via the existing `emit::*` paths
+   (`lib.rs:178-209`): `autoload_classmap.php`, `autoload_psr4.php`,
+   `autoload_namespaces.php`, `autoload_files.php` (if any),
+   `autoload.php`, `autoload_real.php`, `autoload_static.php`,
+   plus the vendored composer runtime files. All via `write_atomic`
+   (`lib.rs:280`).
+6. Flip the project's readiness flag in `AppState`.
+
+Bootstrap is always `-a -o` (classmap-authoritative + optimize):
+every class lives in the classmap, no PSR-* runtime file_exists
+fallback, fastest request handling. The block-on-bootstrap discipline
+makes authoritative mode safe — no request is served against an
+incomplete classmap.
+
+For a large project: ~2 s. For small projects: tens of milliseconds.
+
+## Startup page
+
+While a project's readiness flag is `false`, `router.rs::dispatch`
+short-circuits requests for that host to a 503 response carrying an
+embedded HTML page (`include_str!` of an asset under
+`crates/bougie-server/src/server/`). The page is dev-mode UX only:
+
+- `<meta http-equiv="refresh" content="1">` so the browser polls.
+- Friendly message naming the project and what's happening.
+- No CSS framework, no JS — single static `&'static str`.
+
+Slot it next to `not_found` / `forbidden` / `internal_error` in
+`router.rs:521-530` as `fn starting(project: &Path) -> Response`.
+
+## Patch flow
+
+`watcher.rs` already debounces notify events per `(project, kind)`
+on a 250 ms window. We add `ChangeKind::UserCode` with a 50 ms window
+(devs notice longer than that on save → refresh) and batched paths.
+
+Per settled batch, for each dirty path:
+
+- **Modified**: locate the task whose `scan_root` contains the path
+  (longest-prefix match across all tasks). If excluded by the task's
+  `ExcludePatterns`, drop. Otherwise read+clean+find+filter via the
+  same code as bootstrap; replace that task's `per_file[rel_path]`
+  with the new class list.
+- **Deleted**: drop the entry from every task it appeared under.
+- **Created**: same handling as Modified — locate the owning task,
+  scan, insert.
+
+After applying the batch:
+
+1. Rebuild the merged `BTreeMap<class, path_expr>` by re-running the
+   first-seen-wins merge across all task `per_file` maps in task
+   order. Cheap — ~5 ms across 94k entries.
+2. Emit `autoload_classmap.php` via `write_atomic`. The other
+   `autoload_*.php` files only change on bootstrap (PSR-4 / PSR-0 /
+   files come from the lockfile + root manifest, not user code).
+3. (Optional, PR3) Nudge fpm to `opcache_reset` the project's pool.
+
+Per-edit total: ~10 ms (debounce 50 ms not included in the work
+window — it overlaps with the dev's hand moving to the browser).
+
+## Lockfile / autoload-config change flow
+
+Two new `ChangeKind`s in the watcher:
+
+- `ChangeKind::Lockfile` — `composer.lock` touched. Read it, hash the
+  content; if the hash differs from the live Autoloader's header,
+  flip the project's readiness flag to `false`, re-bootstrap, flip
+  back. During the rebuild window, requests get the startup page
+  again.
+- The existing `ChangeKind::VersionInput` (composer.json /
+  bougie.toml) already triggers a pool restart on PHP-version change.
+  Extend it to also recompute the normalized autoload-config hash;
+  on mismatch, re-bootstrap the Autoloader.
+
+`vendor/` is **not watched**. Invariant: vendor only changes when
+`composer install` runs, and `composer install` rewrites
+`composer.lock`, which we DO watch. Hand-edits to vendor files work
+for the common case (devs poke at method bodies to debug a library)
+because existing class → file mappings stay stable. The exotic case
+— adding a new class to a vendor file — is invisible until the next
+install or server restart. Document it; offer `bougie server reload
+<project>` (control socket; out of scope here) as an escape valve.
+
+Path-repo packages (`dist.type: path` in `composer.lock`) get their
+`scan_root`s added to the user-code watcher set — they behave like
+root autoload paths for invalidation.
+
+## `Autoloader` API
+
+New struct in `bougie-autoloader`:
 
 ```rust
-// crates/bougie-autoloader/src/cache/
-struct CacheHeader {
-    schema_version: u32,            // bumps on any layout change
-    bougie_version: String,         // env!("CARGO_PKG_VERSION")
-    reference_composer_version: String,
-    composer_lock_hash: [u8; 16],
-    root_autoload_hash: [u8; 16],
-    no_dev: bool,
-    optimize: bool,
-    classmap_authoritative: bool,
-    exclude_patterns_hash: [u8; 16],
+pub struct Autoloader {
+    project_root: PathBuf,
+    tasks: Vec<TaskState>,
+    merged: BTreeMap<String, String>,   // class -> path_expr
+    header: AutoloadHeader,             // lock hash, autoload-config hash,
+                                        // exclude-patterns hash, flags
 }
 
-struct TaskKey {
-    origin_pkg: Option<String>,     // None = root
-    scan_root: PathBuf,             // canonicalized
-    install_abs: PathBuf,
-    filter: NamespaceFilterKey,     // serializable mirror of NamespaceFilter
-    needs_vendor_exclude: bool,
+struct TaskState {
+    task: TaskKey,                       // origin, scan_root, install_abs,
+                                         // filter, needs_vendor_exclude
+    exclude: ExcludePatterns,            // precompiled for this task
+    per_file: BTreeMap<PathBuf, Vec<String>>, // rel_path -> emitted classes
 }
 
-struct FileRecord {
-    rel_path: PathBuf,              // forward-slash, relative to scan_root
-    mtime_ns: i128,
-    size: u64,
-    classes: Vec<String>,           // post-filter, in walker order
-}
-
-struct DirRecord {
-    rel_dir: PathBuf,
-    mtime_ns: i128,
-    child_count: u32,
-}
-
-struct TaskCache {
-    task: TaskKey,
-    files: Vec<FileRecord>,         // sorted by rel_path → walker order
-    dirs: Vec<DirRecord>,
-}
-
-struct Cache {
-    header: CacheHeader,
-    tasks: Vec<TaskCache>,
+impl Autoloader {
+    pub fn bootstrap(req: &DumpRequest<'_>) -> Result<Self, DumpError>;
+    pub fn apply_changed_path(&mut self, abs_path: &Path) -> Result<bool, DumpError>;
+    pub fn apply_deleted_path(&mut self, abs_path: &Path) -> Result<bool, DumpError>;
+    pub fn emit(&self) -> Result<(), DumpError>;
+    pub fn header_matches(&self, req: &DumpRequest<'_>) -> bool;
+    pub fn user_code_roots(&self) -> impl Iterator<Item = &Path>;
 }
 ```
 
-Codec: **bincode 2**. Microbenched against rkyv 0.8 on a ~94k-file synthetic cache (94k files / 400 tasks): bincode decodes the full
-~7 MiB cache in ~5 ms and encodes in ~1.4 ms. rkyv's zero-copy decode
-is faster (~0.6 ms) but the 4 ms delta is invisible next to the
-fs::metadata calls on 94k files that the warm-no-change path has to
-make regardless. bincode also produces ~27% smaller files (6.9 vs
-9.5 MiB) and avoids rkyv's alignment / archived-type / pinned-version
-complexity. Both codecs comfortably hit the sub-100ms target;
-simplicity wins.
+`apply_*` return `Ok(true)` iff the merged map actually changed (so
+the caller can skip the emit when an edit didn't move the classmap —
+e.g. a comment-only change). They're no-ops returning `Ok(false)`
+for paths outside any `scan_root`.
 
-Atomic write: reuse `write_atomic` at `crates/bougie-autoloader/src/lib.rs:280`
-(rename-based, already in use for every emitted PHP file).
-
-## Hash inputs
-
-- `composer_lock_hash`: md5 of `composer.lock` bytes (cheap; the file is small).
-- `root_autoload_hash`: hash of the **canonical, parsed-and-normalized**
-  form of root `composer.json`'s `autoload`, `autoload-dev`, `config.platform`,
-  `config.autoloader-suffix`. Built from `lock::read_root_manifest`'s output —
-  whitespace / key-order changes in `composer.json` must not invalidate the
-  cache.
-- `exclude_patterns_hash`: union of `exclude-from-classmap` across packages
-  + root in lockfile order — the same input that feeds `ExcludePatterns::build`
-  at `collect.rs:220`.
-
-`md-5` is already a dep via `collect.rs:9`.
-
-## Invalidation flows
-
-Both driven from a new `collect::classmap_incremental(req, cache_path) -> Vec<ClassmapEntry>`.
-
-**Watcher-driven** (`dirty_paths: Some(&[PathBuf])`):
-- For each task, intersect `dirty_paths` with `scan_root`.
-- For each dirty path:
-  - exists, mtime+size unchanged → keep cached record;
-  - exists, mtime or size changed → re-read, re-clean, re-find, replace;
-  - gone → drop record;
-  - new (no prior record) → walk the smallest containing dir and add records.
-- Tasks with empty intersection are reused as-is.
-
-**Self-driven** (CLI `--incremental`, `dirty_paths: None`):
-- For each task, walk `scan_root` via `fs::read_dir` (NOT walkdir's
-  full recursive iterator), recursing only into directories whose
-  mtime differs from cached `DirRecord.mtime_ns`. Inside a matching
-  dir we still stat each file (content edits don't bump parent dir
-  mtime), but skip `open` + `read` + parse for matching files.
-- On a mismatched dir, diff the live entry list against cached
-  records and recurse / add / remove as needed.
-
-## API additions
-
-`DumpRequest` (`crates/bougie-autoloader/src/lib.rs:60`) gains:
+`dump_autoload` (`lib.rs:134`) becomes a thin wrapper:
 
 ```rust
-pub incremental: bool,                       // default false
-pub dirty_paths: Option<&'a [PathBuf]>,      // None = self-driven
+pub fn dump_autoload(req: &DumpRequest<'_>) -> Result<(), DumpError> {
+    let loader = Autoloader::bootstrap(req)?;
+    loader.emit()
+}
 ```
 
-`dump_autoload` (`lib.rs:134`) calls `collect::classmap_incremental`
-when `incremental == true`. `psr4`, `psr0`, `files` collectors stay
-unchanged — they're already cheap and don't need caching.
+CLI semantics unchanged.
 
-CLI: add `--incremental` to `crates/bougie/src/commands/composer_dump_autoloader.rs:71`.
-Off by default for byte-equivalence safety.
+## Server integration
 
-Dev server: `bougie-server` / `bougie-daemon` already runs the file
-watcher and is the same binary as the CLI. It accumulates dirty paths
-between dumps and calls `bougie_autoloader::dump_autoload` directly
-with `incremental: true` and `dirty_paths: Some(&paths)`. No subprocess.
+`crates/bougie-server/src/server/watcher.rs` extensions:
 
-## Walker integration
+- `ChangeKind::UserCode { paths: Vec<PathBuf> }` — batches a set of
+  paths per debounced fire (unlike ConfD / VersionInput which carry
+  no payload).
+- `ChangeKind::Lockfile`.
+- 50 ms debounce window for UserCode.
+- `build_path_map` extended at bootstrap time with each project's
+  `Autoloader::user_code_roots()` (root autoload `scan_root`s +
+  path-repo package `scan_root`s).
+- `classify` returns `UserCode { paths: vec![path] }` for hits under
+  those roots, filtered by `.php` / `.inc` extension (mirroring
+  `scan/walker.rs::DEFAULT_EXTENSIONS`) to keep noise out.
+- Dispatch coalescing: when a `UserCode` key already exists in
+  `pending`, append the new path to its set rather than replacing.
 
-Add `scan::walker::enumerate_with_meta(root, exts) -> Vec<(PathBuf, i128, u64)>`
-returning `(path, mtime_ns, size)` for every kept file. The cold-cache
-path uses this so PR1 doesn't double-stat. Symlink handling unchanged:
-`follow_links(true)` stays, mtime read via `fs::metadata` (follows
-symlinks, matches walkdir semantics).
+New `AutoloaderManager` in `bougie-server`:
 
-`TaskKey.scan_root` and `install_abs` continue through `collect::canonical`
-(used at `collect.rs:212, 245, 258, 294, …`), so cache keys stay
-stable across runs even when the project root sits behind a symlink.
+- Holds `HashMap<PathBuf, Arc<tokio::sync::Mutex<Autoloader>>>`
+  keyed by canonical project root.
+- Per-project readiness flag in `AppState` (or co-located here).
+- Bootstrap runs on the tokio runtime at server start; readiness
+  flips when each project's bootstrap returns.
+- On `UserCode` batch: lock the project's mutex, apply each path,
+  emit if `any(changed)`.
+- On `Lockfile` / `VersionInput` re-bootstrap: flip readiness off,
+  rebuild, swap in the new Autoloader, flip readiness on.
+
+`crates/bougie-server/src/server/run.rs`:
+
+- Construct an `AutoloaderManager`; for each project, build a
+  `DumpRequest` from `composer.json` / `composer.lock`, kick off
+  `Autoloader::bootstrap`, store in the manager.
+- Pass the manager into `AppState`.
+- The watcher's `start` call gets the manager so its dispatch loop
+  can route `UserCode` / `Lockfile` events to it.
+
+`crates/bougie-server/src/server/router.rs::dispatch`:
+
+- After host resolution, before forwarding to `serve_php`, check the
+  project's readiness flag. Not ready → return `starting(project)`.
 
 ## Phasing
 
-Five PRs, each independently reviewable. Composer's cross-task
-`scannedFiles` dedup is **deferred to a separate issue** — orthogonal
-and would muddy ambiguity-replay testing.
+Three PRs.
 
-1. **PR1 — cache write-only.** New `cache/` module + types + bincode 2
-   dep. After every `dump_autoload`, write
-   `vendor/composer/.bougie-classmap-cache.bin`. No read-back yet.
-   `enumerate_with_meta` lands here so the cold-cache path doesn't
-   regress.
-2. **PR2 — self-driven invalidation.** Implement
-   `collect::classmap_incremental` for `dirty_paths: None`. Wire
-   `DumpRequest::incremental` and the CLI `--incremental` flag.
-   Bench against a large project: expect sub-100ms warm-no-change.
-3. **PR3 — watcher-driven invalidation.** Implement the
-   `dirty_paths: Some(...)` branch. Subset of PR2's machinery plus
-   a fast intersection path.
-4. **PR4 — dev-server integration.** Plumb the existing watcher in
-   `bougie-server` / `bougie-daemon` into a debounced `dirty_paths`
-   vec. Call `dump_autoload` in-process. No autoloader changes.
-5. **PR5 (optional) — race-tolerance hardening.** Files may be
-   deleted/recreated between a watcher event and the re-dump. Make
-   per-path errors local (skip + invalidate that record) rather than
-   aborting the dump.
+1. **PR1 — `Autoloader` refactor.** Carve `Autoloader::bootstrap` /
+   `apply_changed_path` / `apply_deleted_path` / `emit` out of the
+   existing `dump_autoload` machinery. Pure refactor; no behavior
+   change for CLI users. Introduces `TaskState` + per-file class-list
+   storage. Adds the apply-path code that PR2 needs.
+2. **PR2 — server-resident autoloader.** `AutoloaderManager` in
+   `bougie-server`; bootstrap on server start; readiness gate in
+   `router.rs::dispatch`; `starting` response; `ChangeKind::UserCode`
+   + `ChangeKind::Lockfile` in `watcher.rs`; dispatch loop wires
+   events through the manager.
+3. **PR3 (optional) — opcache reset.** Touch / signal fpm pool after
+   each emit. Standard dev `opcache.revalidate_freq=0` makes this a
+   convenience, not a requirement.
 
 ## Critical files
 
-- `crates/bougie-autoloader/src/lib.rs` — `DumpRequest` fields, `dump_autoload` branch.
-- `crates/bougie-autoloader/src/collect.rs` — new `classmap_incremental`;
-  task construction (lines 234-377) is the source of truth for `TaskKey`s;
-  merge (lines 407-414) stays.
-- `crates/bougie-autoloader/src/scan/mod.rs` — `scan()` still drives
-  full-task scans when a whole task is dirty.
-- `crates/bougie-autoloader/src/scan/walker.rs` — add `enumerate_with_meta`.
-- `crates/bougie-autoloader/src/cache/` — new module (mod, header, entry, codec).
-- `crates/bougie/src/commands/composer_dump_autoloader.rs` — `--incremental` CLI plumbing.
-- `crates/bougie-server/`, `crates/bougie-daemon/` (PR4) — watcher → `DumpRequest` glue.
+- `crates/bougie-autoloader/src/lib.rs` — `Autoloader` struct,
+  re-route `dump_autoload` through it. `DumpRequest` unchanged.
+- `crates/bougie-autoloader/src/collect.rs` — task construction
+  (`:234-377`) and the merge (`:407-414`) get extracted into pieces
+  the patch flow can drive on a single file's worth of input.
+- `crates/bougie-autoloader/src/scan/mod.rs` — `scan()` continues to
+  drive full-task scans on bootstrap; new `scan_one(path, &task, &exclude)`
+  for the patch path runs the same cleaner+finder+filter pipeline on
+  one file.
+- `crates/bougie-autoloader/src/scan/walker.rs` — unchanged.
+- `crates/bougie-server/src/server/watcher.rs` — new ChangeKinds,
+  expanded `build_path_map`, 50 ms UserCode debounce, batched-path
+  coalescing.
+- `crates/bougie-server/src/server/run.rs` — `AutoloaderManager`
+  construction, bootstrap orchestration.
+- `crates/bougie-server/src/server/router.rs` — readiness gate +
+  `starting()` response, slotted next to `not_found` / `forbidden`
+  at `router.rs:521-530`.
+- `crates/bougie-server/src/server/` — embedded startup HTML asset.
 
 ## Reused utilities
 
-- `write_atomic` (`bougie-autoloader/src/lib.rs:280`) — cache writes.
-- `collect::canonical` (`collect.rs:212` and similar) — `TaskKey` path normalization.
-- `md5::Md5` (already imported at `collect.rs:9`) — hash fields.
-- `lock::read_lock` / `lock::read_root_manifest` (`lib.rs:135-136`) — drive header hashes.
-- `rayon::prelude` (`collect.rs:10`) — parallel rescan of dirty files inside a task.
+- `collect::canonical` (`collect.rs:212` and similar) — TaskKey path
+  normalization.
+- `write_atomic` (`bougie-autoloader/src/lib.rs:280`) — emit writes.
+- `scan::finder::find_classes` + `scan::cleaner` + `scan::filter` —
+  per-file extraction in the patch path uses the same code as
+  bootstrap.
+- `notify::RecommendedWatcher` + debounce dispatch in
+  `bougie-server/src/server/watcher.rs` — extend, don't replace.
+- `md5::Md5` (already imported at `collect.rs:9`) — header hashes.
+- `lock::read_lock` / `lock::read_root_manifest` (`lib.rs:135-136`) —
+  drive lockfile + autoload-config hashes.
+- `axum::response::Response` + the `plain_response` helper in
+  `router.rs` — startup-page response shape.
 
 ## Verification
 
-Unit tests in `crates/bougie-autoloader/src/cache/`:
+Unit tests in `bougie-autoloader`:
 
-- Header round-trip + every-field-flipped mismatch detection.
-- Corrupt cache (truncated, wrong magic, bad `schema_version`) →
-  graceful fall-through to full scan.
-- `TaskKey` equality across canonicalize variants (test inside a
-  tempdir symlink).
-- Ambiguity replay: build cache with two tasks claiming the same
-  class, delete first task's file on disk, run incremental, assert
-  second now wins.
+- For every existing fixture under `tests/fixtures/`:
+  bootstrap → emit → assert byte-equivalent to today's
+  `dump_autoload` (reuses the harness from `byte_equivalence.rs:65`).
+- For every fixture: bootstrap → mutate one PHP file (add a class
+  / remove a class / no-op edit) → `apply_changed_path` → re-emit
+  → assert bytes match a fresh bootstrap with the mutation in place.
+- Ambiguity replay: two files declare class `Foo`; bootstrap (first
+  wins); `apply_deleted_path(first)`; assert the second now wins on
+  re-emit.
+- `apply_changed_path` on a path outside any `scan_root` returns
+  `Ok(false)` and doesn't mutate state.
+- Path-repo package scan_roots appear in `user_code_roots()`.
+- `apply_changed_path` on a comment-only edit returns `Ok(false)`.
 
-Integration tests under `crates/bougie-autoloader/tests/`:
+Integration tests in `bougie-server`:
 
-- `incremental_byte_equivalence.rs`: every existing fixture under
-  `tests/fixtures/` runs `dump_autoload` twice (second with
-  `incremental: true`); assert second invocation produces byte-identical
-  output to first. Reuses the harness from `byte_equivalence.rs:65`.
-- New fixture `incremental-edit/`: dump → mutate one PHP file to
-  declare a new class → incremental dump → assert classmap contains
-  the new class.
-- New fixture `incremental-delete/`: dump → delete a uniquely-named
-  class's file → incremental dump → assert class removed.
-- New fixture `incremental-ambiguous/`: two files declare class `Foo`;
-  dump (first wins); delete first; incremental dump; assert second
-  now wins.
-- New fixture `incremental-lockfile-change/`: dump → bump
-  `composer.lock` content-hash → incremental dump → assert full
-  rebuild happened.
+- Server bootstraps an Autoloader on start; readiness flips after.
+- HTTP request during bootstrap returns 503 with the startup page
+  (assert `<meta http-equiv="refresh">` substring in body).
+- After ready, requests forward to fpm normally.
+- File touched under a root autoload `scan_root` triggers a
+  debounced re-emit within 100 ms; `autoload_classmap.php` mtime
+  advances and the new class is present.
+- `composer.lock` content change triggers a re-bootstrap; readiness
+  flickers `true → false → true` and the new classmap reflects the
+  lock change.
 
-Manual perf check (not CI), a large project:
+Manual perf check (large project, ~94k files):
 
-- Warm, no changes: <100ms (vs ~2s today).
-- Warm, one file edited: <100ms.
-- Cold (no cache): within 10% of current cold-cache wall —
-  `enumerate_with_meta` must not regress.
+- Server boot → first project ready: ~2 s (block-on-bootstrap).
+- Save src/Foo.php → `autoload_classmap.php` mtime advance:
+  <100 ms wall-clock (50 ms debounce + ~10 ms work).
+- Steady-state HTTP request after save: 0 ms autoloader overhead
+  (rewrite has already landed before the next request).
 
 ## Risks
 
-- **Ambiguity correctness.** Without per-task per-file class-list
-  storage, deletion of a winner silently keeps the wrong record.
-  Mitigation: mandatory `incremental-ambiguous` fixture in PR2.
-- **Cache corruption.** Every read path returns `Result`; on any
-  error log at debug and fall through to full scan, then overwrite
-  the cache. Atomic write via `write_atomic`. Under `vendor/` so
-  `composer install` resets it.
-- **Cold-cache regression.** `enumerate_with_meta` should be free on
-  macOS (`getdirentries64` already returns d_type / size) but may
-  need an extra `fstatat` per file on Linux ext4. Bench in PR1.
-- **Hash drift.** Root manifest hash MUST be the canonical
-  parsed-and-normalized form, not raw JSON bytes. Whitespace /
-  key-order changes in `composer.json` must not invalidate the cache.
-- **`NamespaceFilter` evolution.** Any added field that affects
-  `scan::scan` output must be reflected in `TaskKey.filter` and the
-  `schema_version`. Add a doc reminder at the `NamespaceFilter`
-  definition and a compile-time check (e.g. `mem::size_of` assertion
-  on the discriminant variants) so the next person to extend the
-  type can't silently invalidate the cache.
+- **Server-only optimization.** CLI `bougie composer dump-autoloader`
+  (no server) keeps today's full-scan path. CI/scripted dumps cost
+  ~2 s on a large project. Acceptable — CI is infrequent.
+- **Server-crash latency.** If the server dies between a save and
+  the next bootstrap, the just-saved class isn't in
+  `autoload_classmap.php` yet. Next bootstrap (~2 s) fixes it. The
+  startup page surfaces this honestly.
+- **Hand-edits to vendor.** Adding a new class to a vendor file is
+  invisible until `composer install` or a server restart. Document;
+  offer a manual reload as an escape valve.
+- **Opcache staleness.** Without `opcache.revalidate_freq=0`, fpm
+  workers serve a stale classmap for up to 2 s after each save.
+  Standard dev php.ini sets this to 0 already; document, optionally
+  PR3.
+- **Ambiguity correctness after a deletion.** If files A and B both
+  declared `Foo` and A is deleted, the patch flow must re-resolve
+  to B by walking remaining `per_file` maps in task order. Without
+  the `per_file` storage we'd silently keep A's stale `path_expr`.
+  PR1 carries the mandatory ambiguity fixture.
+- **Multi-project memory.** One Autoloader per project ≈ ~20 MiB
+  for a ~94k-file project. A dev server with 5-10 projects
+  costs ~100-200 MiB. Acceptable.
+- **`NamespaceFilter` evolution.** Any field that affects
+  `scan::scan` output must also affect single-file extraction so
+  `apply_changed_path` produces the same set as bootstrap.
+  Compile-time check on the discriminant + a doc reminder at the
+  `NamespaceFilter` definition.
+- **Watcher churn from editor tempfiles.** Editors do
+  write-and-rename, which fires `Create` + `Remove` events near the
+  real save. The 50 ms debounce + the `.php` / `.inc` extension
+  filter in `classify` are usually enough, but worth eyeballing in
+  PR2 against the editors the team uses (vim, VS Code, JetBrains).
 
 ## Out of scope
 
-- `scannedFiles` cross-task dedup (Composer parity): orthogonal,
+- Persistent on-disk cache. Server is the source of truth; bootstrap
+  on every server start is cheap enough.
+- CLI dump-autoloader speedups. Today's full-scan path is fine for
+  CI / scripted invocations.
+- File-watching `vendor/`. `composer.lock` watch covers the
+  "vendor changed via composer install" case; hand-edits are
+  documented exotic.
+- `scannedFiles` cross-task dedup (Composer parity). Orthogonal,
   separate issue.
-- Background / asynchronous cache writes: cache write is on the
-  critical path of `dump_autoload`. Async write would need careful
-  failure-mode design and isn't required to hit the perf goal.
-- Distributed / network caches: not relevant for the dev-loop use
-  case; the cache is per-checkout.
+- Cross-pool autoload sharing (e.g. SHM between fpm workers). PHP's
+  opcache already does this; no new mechanism needed.
+- Control-socket commands (`bougie server reload <project>` etc.).
+  Out of scope for this plan; once the control socket exists it'll
+  expose a one-liner to bust readiness and re-bootstrap.
