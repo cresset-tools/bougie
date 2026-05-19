@@ -161,6 +161,24 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
         }
         Command::Composer(ComposerCommand::Dir) => commands::composer_dir::run(format),
         Command::Composer(ComposerCommand::Upgrade) => commands::composer_upgrade::run(format),
+        Command::Composer(ComposerCommand::DumpAutoloader {
+            optimize,
+            classmap_authoritative,
+            no_dev,
+            apcu_autoloader,
+            apcu_prefix,
+            autoloader_suffix,
+            working_dir,
+        }) => commands::composer_dump_autoloader::run(
+            format,
+            working_dir,
+            optimize,
+            classmap_authoritative,
+            no_dev,
+            apcu_autoloader,
+            apcu_prefix,
+            autoloader_suffix,
+        ),
         Command::SelfCmd(SelfCommand::Update) => commands::self_update::run(),
         Command::SelfCmd(SelfCommand::Version { short }) => {
             commands::self_version::run(format, short)

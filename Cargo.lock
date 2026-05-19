@@ -377,6 +377,7 @@ version = "0.4.0"
 dependencies = [
  "assert_cmd",
  "base64 0.22.1",
+ "bougie-autoloader",
  "bougie-babysit",
  "bougie-backend",
  "bougie-cli",

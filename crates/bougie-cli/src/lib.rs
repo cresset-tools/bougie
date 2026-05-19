@@ -436,6 +436,39 @@ pub enum ComposerCommand {
     Dir,
     /// Refresh the stable + preview Composer channels to the latest.
     Upgrade,
+    /// Regenerate `vendor/composer/autoload_*.php` against the current
+    /// `composer.lock`. Drop-in for `composer dump-autoload`; output
+    /// is byte-equivalent to Composer 2.8.12 with the same flags. Aliased
+    /// to `dump-autoload` for users coming from Composer muscle-memory.
+    #[command(alias = "dump-autoload")]
+    DumpAutoloader {
+        /// Optimize the classmap (`--optimize` / `-o`).
+        #[arg(short = 'o', long = "optimize", alias = "optimize-autoloader")]
+        optimize: bool,
+        /// Emit the classmap-authoritative static loader
+        /// (`--classmap-authoritative` / `-a`). Implies `--optimize`.
+        #[arg(short = 'a', long = "classmap-authoritative")]
+        classmap_authoritative: bool,
+        /// Skip dev autoload entries (`--no-dev`).
+        #[arg(long = "no-dev")]
+        no_dev: bool,
+        /// Emit the APCu loader bootstrap (`--apcu-autoloader`).
+        #[arg(long = "apcu-autoloader")]
+        apcu_autoloader: bool,
+        /// Explicit APCu prefix; implies `--apcu-autoloader`.
+        #[arg(long = "apcu-autoloader-prefix", value_name = "PREFIX")]
+        apcu_prefix: Option<String>,
+        /// Override the `ComposerAutoloaderInit<X>` class suffix —
+        /// otherwise the value from `composer.json`'s
+        /// `config.autoloader-suffix`, or the `composer.lock`
+        /// content-hash.
+        #[arg(long = "autoloader-suffix", value_name = "SUFFIX")]
+        autoloader_suffix: Option<String>,
+        /// Run the dump in this directory instead of the current one.
+        /// Mirrors Composer's `--working-dir` / `-d`.
+        #[arg(short = 'd', long = "working-dir", value_name = "DIR")]
+        working_dir: Option<std::path::PathBuf>,
+    },
 }
 
 #[derive(Subcommand, Debug)]

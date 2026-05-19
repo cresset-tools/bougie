@@ -41,6 +41,10 @@ dev-trust-root = ["bougie-index/dev-trust-root"]
 path = "../bougie-backend"
 version = "0.4.0"
 
+[dependencies.bougie-autoloader]
+path = "../bougie-autoloader"
+version = "0.1.0"
+
 [dependencies.bougie-cli]
 path = "../bougie-cli"
 version = "0.4.0"
