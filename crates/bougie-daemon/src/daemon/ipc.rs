@@ -507,7 +507,7 @@ async fn dispatch_env(state: &Arc<DaemonState>, project: std::path::PathBuf) -> 
             continue;
         }
         let tenants_path = state.paths.service_tenants(entry.name);
-        let Ok(all) = tenants::load_all(&tenants_path) else {
+        let Ok(all) = tenants::load_all(&tenants_path).await else {
             continue;
         };
         let Some(tenant) = all.into_iter().find(|t| t.project == project) else {
@@ -743,6 +743,7 @@ async fn dispatch_down(
             let tenants_path = state.paths.service_tenants(entry.name);
             // Find this project's tenant; if any, deprovision it.
             let project_tenant = tenants::load_all(&tenants_path)
+                .await
                 .ok()
                 .and_then(|all| all.into_iter().find(|t| t.project == project));
             if let Some(t) = project_tenant {
@@ -767,6 +768,7 @@ async fn dispatch_down(
             }
             // Stop the global service iff no tenants remain.
             let remaining = tenants::load_all(&tenants_path)
+                .await
                 .map(|v| v.len())
                 .unwrap_or(0);
             if remaining == 0 {
