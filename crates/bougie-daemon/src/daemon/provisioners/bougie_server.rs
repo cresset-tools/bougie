@@ -16,10 +16,10 @@
 use crate::daemon::tenants::{self, Tenant};
 use bougie_paths::Paths;
 use eyre::{eyre, Result, WrapErr};
-use std::io::{Read, Write};
-use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::UnixStream;
 
 /// Hostname suffix bougie reserves for dev hosts. See SERVER.md §3.
 const HOSTNAME_SUFFIX: &str = ".bougie.run";
@@ -34,15 +34,17 @@ const CONTROL_TIMEOUT: Duration = Duration::from_secs(5);
 /// write `server.toml` into it. (The sandbox layer also creates
 /// the dir, but it does so via `build_strict` which is *not* called
 /// for the LightHome stance the server entry uses.)
-pub fn pre_start(paths: &Paths) -> Result<()> {
+pub async fn pre_start(paths: &Paths) -> Result<()> {
     let conf = paths.service_conf("server");
-    std::fs::create_dir_all(&conf)
+    tokio::fs::create_dir_all(&conf)
+        .await
         .wrap_err_with(|| format!("creating {}", conf.display()))?;
     // Seed an empty server.toml when missing so `bougie server run`
     // can start before the first tenant is provisioned.
     let cfg = conf.join("server.toml");
-    if !cfg.exists() {
-        std::fs::write(&cfg, default_server_toml())
+    if !tokio::fs::try_exists(&cfg).await.unwrap_or(false) {
+        tokio::fs::write(&cfg, default_server_toml())
+            .await
             .wrap_err_with(|| format!("seeding {}", cfg.display()))?;
     }
     Ok(())
@@ -50,8 +52,8 @@ pub fn pre_start(paths: &Paths) -> Result<()> {
 
 /// Provision a tenant. Idempotent — repeated calls for the same
 /// project re-use the same hostname + existing `[[host]]` entry.
-pub fn provision(paths: &Paths, tenants_path: &Path, tenant_name: &str, project: &Path) -> Result<Tenant> {
-    let existing = tenants::load_all(tenants_path)?;
+pub async fn provision(paths: &Paths, tenants_path: &Path, tenant_name: &str, project: &Path) -> Result<Tenant> {
+    let existing = tenants::load_all(tenants_path).await?;
     if let Some(existing_t) = existing.iter().find(|t| t.project == project) {
         // Make sure the server has the entry in memory too — a
         // previous up/down cycle might have removed the [[host]]
@@ -61,9 +63,9 @@ pub fn provision(paths: &Paths, tenants_path: &Path, tenant_name: &str, project:
         // ledger entry is still authoritative and the user can fix
         // the project later. Skip the [[host]] rewrite in that case.
         if let Ok(root) = resolve_web_root(project) {
-            let _ = ensure_host_block(paths, &hostname, project, &root);
+            let _ = ensure_host_block(paths, &hostname, project, &root).await;
         }
-        let _ = ping_reload_config(paths);
+        let _ = ping_reload_config(paths).await;
         return Ok(existing_t.clone());
     }
 
@@ -71,14 +73,17 @@ pub fn provision(paths: &Paths, tenants_path: &Path, tenant_name: &str, project:
     let root = resolve_web_root(project)
         .wrap_err_with(|| format!("resolving web root for {}", project.display()))?;
     ensure_host_block(paths, &hostname, project, &root)
+        .await
         .wrap_err_with(|| format!("adding [[host]] for {hostname}"))?;
-    ping_reload_config(paths).wrap_err("notifying running server about new host")?;
+    ping_reload_config(paths)
+        .await
+        .wrap_err("notifying running server about new host")?;
 
     let mut tenant = Tenant::new(tenant_name, project.to_path_buf());
     tenant
         .alloc
         .insert("hostname".into(), serde_json::json!(hostname));
-    tenants::append(tenants_path, &tenant)?;
+    tenants::append(tenants_path, &tenant).await?;
     Ok(tenant)
 }
 
@@ -86,13 +91,13 @@ pub fn provision(paths: &Paths, tenants_path: &Path, tenant_name: &str, project:
 /// possible later `up`. With `purge` also removes the
 /// `$XDG_RUNTIME_DIR/bougie/server/<hash>/` directory (php-fpm
 /// sockets + rendered conf.d variants).
-pub fn deprovision(
+pub async fn deprovision(
     paths: &Paths,
     tenants_path: &Path,
     tenant_name: &str,
     purge: bool,
 ) -> Result<()> {
-    let existing = tenants::load_all(tenants_path)?;
+    let existing = tenants::load_all(tenants_path).await?;
     let Some(target) = existing.iter().find(|t| t.tenant == tenant_name).cloned() else {
         return Ok(());
     };
@@ -108,21 +113,22 @@ pub fn deprovision(
     // and the running server might be down. Either way we still
     // want the tenant ledger updated.
     let cfg = server_toml_path(paths);
-    if cfg.exists() {
+    if tokio::fs::try_exists(&cfg).await.unwrap_or(false) {
         let _ = bougie_server::server::config::remove_host(&cfg, &hostname);
     }
-    let _ = ping_reload_config(paths);
+    let _ = ping_reload_config(paths).await;
 
     if purge {
         if let Some(rt) = project_runtime_dir(&target.project) {
-            if rt.exists() {
-                std::fs::remove_dir_all(&rt)
+            if tokio::fs::try_exists(&rt).await.unwrap_or(false) {
+                tokio::fs::remove_dir_all(&rt)
+                    .await
                     .wrap_err_with(|| format!("removing {}", rt.display()))?;
             }
         }
     }
 
-    tenants::rewrite(tenants_path, |t| t.tenant != tenant_name)?;
+    tenants::rewrite(tenants_path, |t| t.tenant != tenant_name).await?;
     Ok(())
 }
 
@@ -146,10 +152,11 @@ fn derive_hostname(tenant_name: &str) -> String {
 /// Ensure `[[host]]` exists for the given hostname/project. Wraps
 /// `commands::server::config::add_host` so the daemon writes
 /// through the same atomic-temp-then-rename code path the CLI uses.
-fn ensure_host_block(paths: &Paths, hostname: &str, project: &Path, root: &str) -> Result<()> {
+async fn ensure_host_block(paths: &Paths, hostname: &str, project: &Path, root: &str) -> Result<()> {
     let cfg = server_toml_path(paths);
     let parent = cfg.parent().ok_or_else(|| eyre!("config path has no parent"))?;
-    std::fs::create_dir_all(parent)
+    tokio::fs::create_dir_all(parent)
+        .await
         .wrap_err_with(|| format!("creating {}", parent.display()))?;
     let rewrites = framework_rewrites(project, root);
     // Per `bougie server add` behaviour, `add_host_with_rewrites`
@@ -240,38 +247,47 @@ fn resolve_web_root(project: &Path) -> Result<String> {
 /// Best-effort: no-op when the socket file is missing (server not
 /// up yet) and surfaces real I/O failures otherwise so the CLI can
 /// report `provision_failed` with useful context.
-fn ping_reload_config(_paths: &Paths) -> Result<()> {
+async fn ping_reload_config(_paths: &Paths) -> Result<()> {
     let sock = control_socket_path();
-    if !sock.exists() {
+    if !tokio::fs::try_exists(&sock).await.unwrap_or(false) {
         // Server isn't running. That's fine on the first
         // `services up` — bougied will start the server child and
         // the server will load its config from disk at boot.
         return Ok(());
     }
-    let mut stream = UnixStream::connect(&sock)
-        .wrap_err_with(|| format!("connecting to {}", sock.display()))?;
-    stream
-        .set_read_timeout(Some(CONTROL_TIMEOUT))
-        .wrap_err("set_read_timeout on server control socket")?;
-    stream
-        .set_write_timeout(Some(CONTROL_TIMEOUT))
-        .wrap_err("set_write_timeout on server control socket")?;
-    stream
-        .write_all(b"{\"v\":1,\"method\":\"reload-config\"}\n")
-        .wrap_err("writing reload-config request")?;
-    stream
-        .shutdown(std::net::Shutdown::Write)
-        .wrap_err("shutting down write half")?;
-    let mut reply = String::new();
-    stream
-        .read_to_string(&mut reply)
-        .wrap_err("reading reload-config reply")?;
-    // Don't parse — the server's reply schema is `{ok: true|false,
-    // hosts: N}`. A bad reply still tells us the server is up and
-    // responsive; reload-config failures (e.g. bad server.toml on
-    // disk) would surface as `ok: false` which we'd want to bubble
-    // up, but that case is hard to hit through our own controlled
-    // mutations. v1: trust the server, log later if needed.
+    // Bound the whole connect/write/read round-trip — tokio's
+    // `UnixStream` has no per-side timeout setters like the std
+    // type, so wrap the future in `tokio::time::timeout` instead.
+    tokio::time::timeout(CONTROL_TIMEOUT, async move {
+        let mut stream = UnixStream::connect(&sock)
+            .await
+            .wrap_err_with(|| format!("connecting to {}", sock.display()))?;
+        stream
+            .write_all(b"{\"v\":1,\"method\":\"reload-config\"}\n")
+            .await
+            .wrap_err("writing reload-config request")?;
+        // Half-close write so the server sees EOF on its read side
+        // and can flush the reply. Mirrors what the sync version did
+        // via `Shutdown::Write`.
+        stream
+            .shutdown()
+            .await
+            .wrap_err("shutting down write half")?;
+        let mut reply = String::new();
+        stream
+            .read_to_string(&mut reply)
+            .await
+            .wrap_err("reading reload-config reply")?;
+        // Don't parse — the server's reply schema is `{ok: true|false,
+        // hosts: N}`. A bad reply still tells us the server is up and
+        // responsive; reload-config failures (e.g. bad server.toml on
+        // disk) would surface as `ok: false` which we'd want to bubble
+        // up, but that case is hard to hit through our own controlled
+        // mutations. v1: trust the server, log later if needed.
+        Ok::<(), eyre::Report>(())
+    })
+    .await
+    .map_err(|_| eyre!("reload-config round-trip exceeded {CONTROL_TIMEOUT:?}"))??;
     Ok(())
 }
 

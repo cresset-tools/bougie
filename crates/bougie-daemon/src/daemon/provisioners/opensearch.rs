@@ -161,7 +161,7 @@ async fn rewrite_jvm_options(path: &Path, data_dir: &Path) -> Result<()> {
 /// Provision a tenant. Idempotent — repeated calls for the same
 /// project re-use the existing index template.
 pub async fn provision(tenants_path: &Path, tenant_name: &str, project: &Path) -> Result<Tenant> {
-    let existing = tenants::load_all(tenants_path)?;
+    let existing = tenants::load_all(tenants_path).await?;
     if let Some(existing_t) = existing.iter().find(|t| t.project == project) {
         return Ok(existing_t.clone());
     }
@@ -186,7 +186,7 @@ pub async fn provision(tenants_path: &Path, tenant_name: &str, project: &Path) -
     tenant
         .alloc
         .insert("index_prefix".into(), serde_json::json!(format!("{tenant_name}-")));
-    tenants::append(tenants_path, &tenant)?;
+    tenants::append(tenants_path, &tenant).await?;
     Ok(tenant)
 }
 
@@ -195,7 +195,7 @@ pub async fn provision(tenants_path: &Path, tenant_name: &str, project: &Path) -
 /// the local ledger entry goes away; opensearch state survives a
 /// `services down` so a later `up` re-uses it (matches redis/mariadb).
 pub async fn deprovision(tenants_path: &Path, tenant_name: &str, purge: bool) -> Result<()> {
-    let existing = tenants::load_all(tenants_path)?;
+    let existing = tenants::load_all(tenants_path).await?;
     let Some(_target) = existing.iter().find(|t| t.tenant == tenant_name).cloned() else {
         return Ok(());
     };
@@ -211,7 +211,7 @@ pub async fn deprovision(tenants_path: &Path, tenant_name: &str, purge: bool) ->
         let _ = delete_indices(tenant_name).await;
         let _ = delete_index_template(tenant_name).await;
     }
-    tenants::rewrite(tenants_path, |t| t.tenant != tenant_name)?;
+    tenants::rewrite(tenants_path, |t| t.tenant != tenant_name).await?;
     Ok(())
 }
 
