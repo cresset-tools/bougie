@@ -24,6 +24,7 @@ mod installed;
 mod lock;
 mod scan;
 mod vendored;
+mod version;
 
 /// Internal entry points exposed only so the in-tree
 /// `benches/scan.rs` criterion harness can call them. Not a stable
@@ -35,6 +36,15 @@ pub mod bench_api {
     }
     pub fn find_classes(input: &[u8]) -> Vec<String> {
         crate::scan::finder::find_classes(input)
+    }
+}
+
+/// Internal entry points exposed only for the integration tests under
+/// `tests/`. Not a stable API.
+#[doc(hidden)]
+pub mod test_api {
+    pub fn normalize_version(input: &str) -> Result<String, String> {
+        crate::version::normalize(input).map_err(|e| e.to_string())
     }
 }
 

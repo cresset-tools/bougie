@@ -1,0 +1,108 @@
+# Inputs used to capture VersionParser::normalize() ground truth.
+# One per line. Empty lines and `#`-lines ignored.
+#
+# Each input is fed through Composer\Semver\VersionParser::normalize()
+# (via scripts/gen-version-normalize-fixtures.php) and the (input,
+# expected_output | "THROWS") pair is emitted to
+# version_normalize.tsv. Re-run the generator script when bumping the
+# composer/semver pin (REFERENCE_COMPOSER_VERSION).
+
+# --- Basic semver shapes ---
+1
+1.0
+1.0.0
+1.0.0.0
+1.2.3
+1.2.3.4
+0.0.0
+99999.99999.99999
+
+# --- Leading v ---
+v1.0.0
+v0.1
+V1.0.0
+
+# --- Build metadata ---
+1.0.0+no-version-set
+1.0.0+anything.else
+2.5.0+202401.commit.abc
+# Build metadata after a modifier (regex has no modifier-aware guard).
+1.0.0-RC1+build
+1.0.0-alpha2+sha.abc
+
+# --- Pre-release: long form, dash separator ---
+1.0.0-alpha1
+1.0.0-beta1
+1.0.0-RC1
+1.0.0-patch1
+1.0.0-rc1
+1.0.0-RC.1
+1.0.0-RC-1
+1.0.0-alpha.10
+
+# --- Pre-release: short form ---
+1.0.0-a1
+1.0.0-b1
+1.0.0-p1
+1.0.0-pl1
+
+# --- Pre-release: no separator ---
+1.0.0RC1
+1.0.0a1
+1.0.0b2
+1.0.0patch3
+
+# --- Pre-release: underscore / dot separator ---
+1.0.0_alpha1
+1.0.0.alpha1
+
+# --- -dev suffix combos ---
+1.0.0-dev
+1.0.0-RC1-dev
+1.0.0.dev
+
+# --- Stable suffix ---
+1.0.0-stable
+
+# --- master/trunk/default ---
+master
+trunk
+default
+
+# --- dev- prefix passthrough ---
+dev-master
+dev-main
+dev-feature/foo
+# `stripos` is case-insensitive — uppercase should also match.
+DEV-foo
+Dev-mixed-case
+
+# --- Branch version aliases ---
+1.x-dev
+1.0.x-dev
+1.2.x-dev
+
+# --- @stability tag ---
+1.0.0@dev
+1.0.0@RC
+1.0.0@stable
+
+# --- "as" aliasing ---
+1.0.0 as 2.0.0
+
+# --- Date-based ---
+20240115
+2024-01-15
+2024.01.15
+2024.01.15.10
+20240115.5
+
+# --- Whitespace ---
+  1.0.0
+
+# --- # reference suffix (only parseStability strips it, normalize doesn't) ---
+1.0.0#abc123
+
+# --- Garbage (should throw) ---
+not-a-version
+1.0.0.0.0

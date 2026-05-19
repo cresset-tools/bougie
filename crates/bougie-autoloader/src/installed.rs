@@ -34,6 +34,7 @@ use std::path::Path;
 
 use serde_json::{Map, Value};
 
+use crate::version::normalize as normalize_version;
 use crate::DumpError;
 
 /// Re-parse `composer.lock` as raw JSON. `lock::read_lock` already
@@ -90,7 +91,8 @@ pub(crate) fn emit_installed_json(
         .chain(dev.iter())
         .filter_map(|p| p.as_object())
         .map(package_to_installed_entry)
-        .collect();
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| DumpError::Lock(e.to_string()))?;
     packages.sort_by(|a, b| {
         let an = a.get("name").and_then(|v| v.as_str()).unwrap_or("");
         let bn = b.get("name").and_then(|v| v.as_str()).unwrap_or("");
@@ -120,7 +122,9 @@ pub(crate) fn emit_installed_json(
 /// notification-url, include-path, php-ext, archive, scripts, license,
 /// authors, description, homepage, keywords, repositories, support,
 /// funding, transport-options, install-path.
-fn package_to_installed_entry(pkg: &Map<String, Value>) -> Map<String, Value> {
+fn package_to_installed_entry(
+    pkg: &Map<String, Value>,
+) -> Result<Map<String, Value>, crate::version::NormalizeError> {
     let mut out = Map::new();
     let copy = |out: &mut Map<String, Value>, k: &str| {
         if let Some(v) = pkg.get(k) {
@@ -133,7 +137,7 @@ fn package_to_installed_entry(pkg: &Map<String, Value>) -> Map<String, Value> {
 
     if let Some(v) = pkg.get("version") {
         out.insert("version".into(), v.clone());
-        let nv = normalize_version(v.as_str().unwrap_or(""));
+        let nv = normalize_version(v.as_str().unwrap_or(""))?;
         out.insert("version_normalized".into(), Value::String(nv));
     }
 
@@ -193,7 +197,7 @@ fn package_to_installed_entry(pkg: &Map<String, Value>) -> Map<String, Value> {
     // sub-path.
     out.insert("install-path".into(), Value::String(format!("../{name}")));
 
-    out
+    Ok(out)
 }
 
 pub(crate) fn emit_installed_php(
@@ -232,13 +236,15 @@ pub(crate) fn emit_installed_php(
         .chain(dev.iter())
         .filter_map(|p| p.as_object())
         .map(|p| pkg_entry_from_lock(p, &dev_names))
-        .collect();
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| DumpError::Lock(e.to_string()))?;
     packages.sort_by(|a, b| a.name.cmp(&b.name));
 
     let manifest_obj = manifest
         .as_object()
         .ok_or_else(|| DumpError::Manifest("expected top-level object".into()))?;
-    let root = root_entry_from_manifest(manifest_obj);
+    let root = root_entry_from_manifest(manifest_obj)
+        .map_err(|e| DumpError::Manifest(e.to_string()))?;
 
     let dev_mode = !no_dev;
     Ok(format_installed_php(&root, &packages, dev_mode))
@@ -264,7 +270,10 @@ struct RootEntry {
     install_path: String,
 }
 
-fn pkg_entry_from_lock(pkg: &Map<String, Value>, dev_names: &HashSet<String>) -> PkgEntry {
+fn pkg_entry_from_lock(
+    pkg: &Map<String, Value>,
+    dev_names: &HashSet<String>,
+) -> Result<PkgEntry, crate::version::NormalizeError> {
     let name = pkg
         .get("name")
         .and_then(|v| v.as_str())
@@ -275,7 +284,7 @@ fn pkg_entry_from_lock(pkg: &Map<String, Value>, dev_names: &HashSet<String>) ->
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
-    let version = normalize_version(&pretty_version);
+    let version = normalize_version(&pretty_version)?;
     // Mirrors `FilesystemRepository::dumpInstalledPackage`:
     //   $reference = $installationSource === 'source'
     //              ? $sourceReference : $distReference;
@@ -300,7 +309,7 @@ fn pkg_entry_from_lock(pkg: &Map<String, Value>, dev_names: &HashSet<String>) ->
         .to_string();
     let install_path = format!("../{name}");
     let dev_requirement = dev_names.contains(&name);
-    PkgEntry {
+    Ok(PkgEntry {
         name,
         pretty_version,
         version,
@@ -308,10 +317,12 @@ fn pkg_entry_from_lock(pkg: &Map<String, Value>, dev_names: &HashSet<String>) ->
         r#type: ty,
         install_path,
         dev_requirement,
-    }
+    })
 }
 
-fn root_entry_from_manifest(manifest: &Map<String, Value>) -> RootEntry {
+fn root_entry_from_manifest(
+    manifest: &Map<String, Value>,
+) -> Result<RootEntry, crate::version::NormalizeError> {
     let name = manifest
         .get("name")
         .and_then(|v| v.as_str())
@@ -323,13 +334,13 @@ fn root_entry_from_manifest(manifest: &Map<String, Value>) -> RootEntry {
         .unwrap_or("library")
         .to_string();
     let (pretty_version, version) = match manifest.get("version").and_then(|v| v.as_str()) {
-        Some(v) => (v.to_string(), normalize_version(v)),
+        Some(v) => (v.to_string(), normalize_version(v)?),
         // Composer's RootPackageLoader uses VersionGuesser, which
         // ultimately falls back to "1.0.0+no-version-set" when no VCS
         // tag is available either. Path-repo fixtures never have one.
         None => ("1.0.0+no-version-set".to_string(), "1.0.0.0".to_string()),
     };
-    RootEntry {
+    Ok(RootEntry {
         name,
         pretty_version,
         version,
@@ -339,7 +350,7 @@ fn root_entry_from_manifest(manifest: &Map<String, Value>) -> RootEntry {
         // is `../../`; the trailing slash is what Composer adds when
         // the relative path lands on the source's ancestor.
         install_path: "../../".to_string(),
-    }
+    })
 }
 
 fn format_installed_php(root: &RootEntry, packages: &[PkgEntry], dev_mode: bool) -> String {
@@ -437,35 +448,6 @@ fn php_maybe_null(s: Option<&str>) -> String {
     }
 }
 
-/// Minimal `VersionParser::normalize` port — enough for the path-repo
-/// fixtures we ship today. Handles:
-/// - leading `v` strip
-/// - `+build` metadata strip
-/// - `X.Y.Z` padded to `X.Y.Z.0`; already-4-part input unchanged
-/// - `-suffix` preserved verbatim (no Composer-style canonicalization
-///   of alpha/beta/RC casing — no fixture exercises it yet)
-fn normalize_version(s: &str) -> String {
-    let s = s.strip_prefix('v').unwrap_or(s);
-    let s = match s.find('+') {
-        Some(idx) => &s[..idx],
-        None => s,
-    };
-    let (numeric, suffix) = match s.find('-') {
-        Some(idx) => (&s[..idx], Some(&s[idx..])),
-        None => (s, None),
-    };
-    let mut parts: Vec<String> = numeric.split('.').map(String::from).collect();
-    while parts.len() < 4 {
-        parts.push("0".into());
-    }
-    parts.truncate(4);
-    let normalized = parts.join(".");
-    match suffix {
-        Some(sfx) => format!("{normalized}{sfx}"),
-        None => normalized,
-    }
-}
-
 /// Encode with [`bougie_php_json::Mode::Pretty`] — the byte-exact PHP
 /// `json_encode($d, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES |
 /// JSON_UNESCAPED_UNICODE)` output that Composer's `JsonFile::encode`
@@ -481,13 +463,9 @@ fn format_composer_json(v: &Value) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn normalize_basic() {
-        assert_eq!(normalize_version("1.0.0"), "1.0.0.0");
-        assert_eq!(normalize_version("v2.5.0"), "2.5.0.0");
-        assert_eq!(normalize_version("1.0.0+no-version-set"), "1.0.0.0");
-        assert_eq!(normalize_version("3.1.2.4"), "3.1.2.4");
-    }
+    // `normalize_version` is exercised end-to-end against Composer's
+    // own output by `tests/version_normalize.rs`; no inline duplicate
+    // needed here.
 
     #[test]
     fn empty_array_inline() {
