@@ -94,7 +94,12 @@ pub struct ResolveProvider {
     /// `vendor/name` → versions list, newest-first, filtered by the
     /// effective stability gate. Populated lazily on first
     /// `choose_version` / `get_dependencies` for that package.
-    cache: RefCell<HashMap<String, Vec<LockPackage>>>,
+    /// Parsed `Version` is kept alongside the raw `LockPackage` so
+    /// `choose_version` and `get_dependencies` don't need to
+    /// re-parse `LockPackage::version` and risk normalization
+    /// differences between our parser and Packagist's
+    /// `version_normalized`.
+    cache: RefCell<HashMap<String, Vec<(Version, LockPackage)>>>,
 }
 
 impl std::fmt::Debug for ResolveProvider {
@@ -175,7 +180,7 @@ impl ResolveProvider {
     /// The combined list is sorted version-descending so pubgrub's
     /// "first in range" candidate selection still picks the highest
     /// matching version regardless of which document supplied it.
-    fn versions_for(&self, name: &str) -> Result<Vec<LockPackage>, ProviderError> {
+    fn versions_for(&self, name: &str) -> Result<Vec<(Version, LockPackage)>, ProviderError> {
         if let Some(v) = self.cache.borrow().get(name) {
             return Ok(v.clone());
         }
@@ -213,8 +218,10 @@ impl ResolveProvider {
             }
         }
 
-        // Filter by effective stability, drop unparseable versions.
-        let mut filtered: Vec<(Version, LockPackage)> = versions
+        // Filter by effective stability, drop unparseable versions,
+        // keep the parsed `Version` alongside the raw `LockPackage`
+        // so downstream lookups don't need to re-parse.
+        let mut out: Vec<(Version, LockPackage)> = versions
             .into_iter()
             .filter_map(|p| {
                 Version::parse(&p.version)
@@ -225,8 +232,7 @@ impl ResolveProvider {
             .collect();
         // Sort descending by parsed version so the "first in range"
         // selection picks the highest candidate across both documents.
-        filtered.sort_by(|a, b| b.0.cmp(&a.0));
-        let out: Vec<LockPackage> = filtered.into_iter().map(|(_, p)| p).collect();
+        out.sort_by(|a, b| b.0.cmp(&a.0));
 
         self.cache.borrow_mut().insert(name.to_owned(), out.clone());
         Ok(out)
@@ -393,14 +399,14 @@ impl DependencyProvider for ResolveProvider {
             }),
             PubGrubPackage::Package(name) => {
                 let versions = self.versions_for(name)?;
-                // Packagist orders newest-first, so the first entry
+                // `versions_for` sorts descending, so the first entry
                 // that falls inside the range is also the highest
-                // candidate — no explicit sort needed.
-                for p in &versions {
-                    if let Ok(v) = Version::parse(&p.version) {
-                        if range.contains(&v) {
-                            return Ok(Some(v));
-                        }
+                // candidate. The parsed `Version` is the same instance
+                // we'll hand back via `get_dependencies` — no re-parse
+                // needed.
+                for (v, _) in &versions {
+                    if range.contains(v) {
+                        return Ok(Some(v.clone()));
                     }
                 }
                 Ok(None)
@@ -417,10 +423,12 @@ impl DependencyProvider for ResolveProvider {
             PubGrubPackage::Root => self.root_deps.clone(),
             PubGrubPackage::Package(name) => {
                 let versions = self.versions_for(name)?;
-                let entry = versions
-                    .iter()
-                    .find(|p| Version::parse(&p.version).ok().as_ref() == Some(version));
-                let Some(entry) = entry else {
+                // Find the entry by reference equality on the cached
+                // `Version` — same instance `choose_version` returned,
+                // no re-parse, no chance of a Packagist
+                // `version_normalized` quirk masquerading as a missing
+                // version.
+                let Some((_, entry)) = versions.iter().find(|(v, _)| v == version) else {
                     // Shouldn't happen — pubgrub only asks for
                     // dependencies of a version we just returned from
                     // `choose_version`. Surface as a hard error so a
