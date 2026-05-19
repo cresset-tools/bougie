@@ -384,9 +384,19 @@ Manual perf check (large project, ~94k files):
   on every server start is cheap enough.
 - CLI dump-autoloader speedups. Today's full-scan path is fine for
   CI / scripted invocations.
-- File-watching `vendor/`. `composer.lock` watch covers the
-  "vendor changed via composer install" case; hand-edits are
-  documented exotic.
+- File-watching `vendor/` for autoloader correctness. `composer.lock`
+  watch covers the "vendor changed via composer install" case;
+  hand-edits are documented exotic.
+- Opt-in `vendor/` watcher for `opcache_invalidate`. Feasible as a
+  follow-on PR — a ~94k-file project's vendor consumes ~10-15k inotify watches,
+  well under modern Linux defaults (`fs.inotify.max_user_watches`
+  is 524288 on Ubuntu 22+). Would let devs run `revalidate_freq=2`
+  instead of the default `0`, with the watcher pre-invalidating
+  touched files via a FastCGI call to fpm. Orthogonal to the
+  classmap (vendor stays frozen-at-install); needs a config flag
+  (off by default), event-storm suppression during lockfile
+  re-bootstrap, and graceful fall-through if `inotify_add_watch`
+  hits the user's limit.
 - `scannedFiles` cross-task dedup (Composer parity). Orthogonal,
   separate issue.
 - Cross-pool autoload sharing (e.g. SHM between fpm workers). PHP's
