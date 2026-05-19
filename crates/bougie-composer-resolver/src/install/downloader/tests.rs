@@ -89,7 +89,7 @@ fn downloads_single_zip_and_extracts_with_strip_prefix() {
         url: &url,
         sha1: &hash,
         archive: ArchiveKind::Zip,
-        strip_prefix: "acme-foo-abc1234",
+        strip_prefix: Some("acme-foo-abc1234"),
         vendor_dest: &vendor_dest,
     }];
 
@@ -136,11 +136,12 @@ fn cache_hit_short_circuits_network() {
         url: &url,
         sha1: &hash,
         archive: ArchiveKind::Zip,
-        strip_prefix: "acme-foo-deadbeef",
+        strip_prefix: Some("acme-foo-deadbeef"),
         vendor_dest: &vendor_dest,
     }];
 
-    fetch_and_extract_dists(&client, &paths, &dists, &bar).unwrap();
+    let outcomes = fetch_and_extract_dists(&client, &paths, &dists, &bar).unwrap();
+    assert_eq!(outcomes, vec![DistOutcome::CacheHit]);
     assert!(vendor_dest.join("composer.json").is_file());
 }
 
@@ -175,7 +176,7 @@ fn hash_mismatch_aborts_install_cleanly() {
         url: &url,
         sha1: wrong_hash,
         archive: ArchiveKind::Zip,
-        strip_prefix: "acme-foo-aaaa",
+        strip_prefix: Some("acme-foo-aaaa"),
         vendor_dest: &vendor_dest,
     }];
 
@@ -240,7 +241,7 @@ fn parallel_four_dists_share_one_bar() {
             url: &urls[i],
             sha1: &pkgs[i].1,
             archive: ArchiveKind::Zip,
-            strip_prefix: &pkgs[i].0,
+            strip_prefix: Some(&pkgs[i].0),
             vendor_dest: &dests[i],
         })
         .collect();
@@ -256,11 +257,12 @@ fn parallel_four_dists_share_one_bar() {
 }
 
 #[test]
-fn extract_strips_top_level_directory() {
+fn extract_strips_top_level_directory_via_auto_detect() {
     // Tighter check than the success test: verify that *no* file with
     // the top-level directory component as a path segment survives in
-    // `vendor_dest`. Catches a regression where strip_prefix is
-    // mis-threaded and entries land under `vendor_dest/top/...`.
+    // `vendor_dest`. Also exercises the `strip_prefix = None` branch
+    // (the production path — the install command never knows the
+    // wrapping dir up-front, so it always lets the downloader detect).
     let tmp = TempDir::new().unwrap();
     let paths = paths_in(tmp.path());
     let vendor_dest = tmp.path().join("vendor").join("acme").join("strip");
@@ -288,10 +290,11 @@ fn extract_strips_top_level_directory() {
         url: &url,
         sha1: &hash,
         archive: ArchiveKind::Zip,
-        strip_prefix: top,
+        strip_prefix: None,
         vendor_dest: &vendor_dest,
     }];
-    fetch_and_extract_dists(&client, &paths, &dists, &bar).unwrap();
+    let outcomes = fetch_and_extract_dists(&client, &paths, &dists, &bar).unwrap();
+    assert_eq!(outcomes, vec![DistOutcome::Downloaded]);
 
     // Walk vendor_dest; assert no path component equals the stripped
     // top-level name.

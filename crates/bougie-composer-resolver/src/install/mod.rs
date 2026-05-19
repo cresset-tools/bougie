@@ -7,4 +7,4 @@
 
 mod downloader;
 
-pub use downloader::{fetch_and_extract_dists, DistRequest};
+pub use downloader::{fetch_and_extract_dists, DistOutcome, DistRequest};

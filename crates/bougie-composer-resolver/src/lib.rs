@@ -9,4 +9,4 @@
 
 pub mod install;
 
-pub use install::{fetch_and_extract_dists, DistRequest};
+pub use install::{fetch_and_extract_dists, DistOutcome, DistRequest};

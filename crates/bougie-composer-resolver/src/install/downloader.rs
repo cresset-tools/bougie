@@ -39,16 +39,26 @@ pub struct DistRequest<'a> {
     /// install-from-lock MVP per `RESOLVER_PLAN.md` Phase A).
     pub archive: ArchiveKind,
     /// Top-level directory inside the archive to strip — e.g.
-    /// `monolog-monolog-1234567`. Packagist's zip dists wrap every
-    /// entry in a single directory whose name is
-    /// `<vendor>-<package>-<short_sha>`; the caller (the eventual lock
-    /// reader) computes it from the lock entry, since the lock doesn't
-    /// store it directly.
-    pub strip_prefix: &'a str,
+    /// `monolog-monolog-1234567`. `None` (the default for callers
+    /// driven by `composer.lock`) means auto-detect from the cached
+    /// archive's central directory via
+    /// [`bougie_fetch::detect_zip_top_level`]; pass `Some` only when
+    /// the caller already knows the wrapper name (e.g. tests built
+    /// around a fixture zip with a known layout).
+    pub strip_prefix: Option<&'a str>,
     /// Where the extracted tree should live. Typically
     /// `<project>/vendor/<vendor>/<package>/`. The directory is
     /// created (and any existing contents replaced) by the extractor.
     pub vendor_dest: &'a Path,
+}
+
+/// Per-dist outcome reported back to the caller so the install
+/// summary can distinguish cache hits ("already had this package's
+/// bytes locally") from fresh downloads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DistOutcome {
+    CacheHit,
+    Downloaded,
 }
 
 /// Download every dist in `dists` in parallel into the bougie cache,
@@ -56,23 +66,26 @@ pub struct DistRequest<'a> {
 /// extraction is complete; on any failure, the remaining downloads
 /// still finish (rayon's `try_for_each` aborts the *result*, not the
 /// work in flight) but extraction does not start.
+///
+/// Outcomes are returned in the same order as `dists`.
 pub fn fetch_and_extract_dists(
     client: &reqwest::blocking::Client,
     paths: &Paths,
     dists: &[DistRequest<'_>],
     bar: &DownloadBar,
-) -> Result<()> {
+) -> Result<Vec<DistOutcome>> {
     let cache_root = paths.cache_composer_dist();
     std::fs::create_dir_all(&cache_root)
         .wrap_err_with(|| format!("creating {}", cache_root.display()))?;
 
-    dists
+    let outcomes: Vec<DistOutcome> = dists
         .par_iter()
-        .try_for_each(|d| download_to_cache(client, &cache_root, d, bar))?;
+        .map(|d| download_to_cache(client, &cache_root, d, bar))
+        .collect::<Result<Vec<_>>>()?;
     dists
         .par_iter()
         .try_for_each(|d| extract_from_cache(&cache_root, d))?;
-    Ok(())
+    Ok(outcomes)
 }
 
 /// Download one dist into the content-addressed cache. No-op when the
@@ -83,10 +96,10 @@ fn download_to_cache(
     cache_root: &Path,
     dist: &DistRequest<'_>,
     bar: &DownloadBar,
-) -> Result<()> {
+) -> Result<DistOutcome> {
     let cache_path = cache_path_for(cache_root, dist);
     if cache_path.exists() {
-        return Ok(());
+        return Ok(DistOutcome::CacheHit);
     }
     bar.set_current(dist.package_name);
     let spec = bougie_fetch::BlobSpec {
@@ -104,7 +117,7 @@ fn download_to_cache(
     bougie_fetch::fetch_file(client, &spec, bar).wrap_err_with(|| {
         format!("downloading dist for {}", dist.package_name)
     })?;
-    Ok(())
+    Ok(DistOutcome::Downloaded)
 }
 
 /// Extract one cached dist archive into its `vendor_dest`. The
@@ -121,7 +134,22 @@ fn extract_from_cache(cache_root: &Path, dist: &DistRequest<'_>) -> Result<()> {
         .wrap_err_with(|| format!("creating {}", dist.vendor_dest.display()))?;
     match dist.archive {
         ArchiveKind::Zip => {
-            bougie_fetch::extract_zip(&cache_path, dist.vendor_dest, dist.strip_prefix)
+            let detected: String;
+            let strip = match dist.strip_prefix {
+                Some(s) => s,
+                None => {
+                    detected = bougie_fetch::detect_zip_top_level(&cache_path)
+                        .wrap_err_with(|| {
+                            format!(
+                                "detecting top-level dir in dist for {} ({})",
+                                dist.package_name,
+                                cache_path.display(),
+                            )
+                        })?;
+                    detected.as_str()
+                }
+            };
+            bougie_fetch::extract_zip(&cache_path, dist.vendor_dest, strip)
                 .wrap_err_with(|| {
                     format!(
                         "extracting dist for {} ({} → {})",
