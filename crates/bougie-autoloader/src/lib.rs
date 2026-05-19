@@ -10,10 +10,13 @@
 //! `tests/fixtures/`: `vendor/autoload.php`,
 //! `vendor/composer/autoload_{namespaces,psr4,classmap,files,real,static}.php`,
 //! the vendored `ClassLoader.php` / `InstalledVersions.php` / `LICENSE`,
-//! and `installed.{json,php}`. Remaining gaps are conditional features
-//! the fixtures don't yet exercise: `config.platform-check` →
-//! `platform_check.php`, `--apcu-autoloader`, and
-//! `config.autoloader-suffix` overrides.
+//! and `installed.{json,php}`. Conditional features wired in:
+//! `--optimize`, `--classmap-authoritative`, `--no-dev`,
+//! `--apcu-autoloader` (with explicit `apcu_prefix` override for
+//! tests), and `config.autoloader-suffix` (composer.json override of
+//! the content-hash). Still pending: `config.platform-check` →
+//! `platform_check.php` (needs a constraint-parsing facility we don't
+//! yet have).
 
 mod collect;
 mod emit;
@@ -55,6 +58,21 @@ pub struct DumpRequest<'a> {
     pub classmap_authoritative: bool,
     /// Whether to skip dev autoload entries (`--no-dev`).
     pub no_dev: bool,
+    /// `--apcu-autoloader` — emits a `setApcuPrefix` call in
+    /// `autoload_real.php`. Has no effect unless the PHP runtime has
+    /// the APCu extension loaded; the line is a no-op otherwise.
+    pub apcu_autoloader: bool,
+    /// Explicit APCu prefix override (`--apcu-autoloader-prefix=X`).
+    /// When `apcu_autoloader` is true and this is None, Composer
+    /// generates a random `bin2hex(random_bytes(10))` prefix; bougie
+    /// does the same. Supply an explicit value for byte-equivalence
+    /// tests or to stabilize across dumps.
+    pub apcu_prefix: Option<String>,
+    /// `config.autoloader-suffix` override. When set, replaces both
+    /// the value read from `composer.json`'s `config` block and the
+    /// `composer.lock` content-hash as the
+    /// `ComposerAutoloaderInit<X>` / `ComposerStaticInit<X>` suffix.
+    pub autoloader_suffix: Option<String>,
 }
 
 #[derive(Debug)]
@@ -110,6 +128,33 @@ pub fn dump_autoload(req: &DumpRequest<'_>) -> Result<(), DumpError> {
     let composer_dir = req.project_root.join("vendor").join("composer");
     std::fs::create_dir_all(&composer_dir)?;
 
+    // Composer's resolution order (mirrors getAutoloadFile in
+    // AutoloadGenerator.php): explicit setter → `config.autoloader-
+    // suffix` from composer.json → existing `vendor/autoload.php`
+    // suffix → `composer.lock` content-hash → random hex. We
+    // implement the first two and fall through to content-hash. The
+    // "scrape existing autoload.php" step matters only for re-dump
+    // scenarios; bougie's harness always starts fresh.
+    let suffix: String = req
+        .autoloader_suffix
+        .clone()
+        .or_else(|| manifest.config.autoloader_suffix.clone())
+        .unwrap_or_else(|| lock.content_hash.clone());
+
+    // APCu prefix: explicit override → Composer's
+    // `bin2hex(random_bytes(10))` default. Random is fine here — the
+    // value is purely a cache namespace; cross-process collision risk
+    // is what the 20 hex chars are sized against.
+    let apcu_prefix: Option<String> = if req.apcu_autoloader {
+        Some(
+            req.apcu_prefix
+                .clone()
+                .unwrap_or_else(|| random_hex_chars(20)),
+        )
+    } else {
+        None
+    };
+
     let psr4 = collect::psr4(&manifest, &lock, req.no_dev);
     let psr0 = collect::psr0(&manifest, &lock, req.no_dev);
     let files = collect::files(&manifest, &lock, req.no_dev);
@@ -141,22 +186,23 @@ pub fn dump_autoload(req: &DumpRequest<'_>) -> Result<(), DumpError> {
 
     write_atomic(
         &req.project_root.join("vendor").join("autoload.php"),
-        emit::entry(&lock.content_hash).as_bytes(),
+        emit::entry(&suffix).as_bytes(),
     )?;
 
     write_atomic(
         &composer_dir.join("autoload_real.php"),
         emit::real::emit(
-            &lock.content_hash,
+            &suffix,
             !files.is_empty(),
             req.classmap_authoritative,
+            apcu_prefix.as_deref(),
         )
         .as_bytes(),
     )?;
 
     write_atomic(
         &composer_dir.join("autoload_static.php"),
-        emit::static_loader::emit(&lock.content_hash, &psr4, &psr0, &classmap, &files).as_bytes(),
+        emit::static_loader::emit(&suffix, &psr4, &psr0, &classmap, &files).as_bytes(),
     )?;
 
     // Composer copies ClassLoader.php, InstalledVersions.php, and
@@ -179,6 +225,46 @@ pub fn dump_autoload(req: &DumpRequest<'_>) -> Result<(), DumpError> {
     )?;
 
     Ok(())
+}
+
+/// Lightweight ASCII-hex randomness for the APCu prefix default.
+/// Mirrors PHP's `bin2hex(random_bytes(n/2))`. `n` is the output
+/// length in hex chars (so `random_bytes(10)` → 20-char hex prefix).
+///
+/// Source of entropy: nanos-since-epoch XOR'd with the process ID
+/// and the address of a stack local — enough to avoid same-tick
+/// collisions on the same host. Composer itself uses a CSPRNG; the
+/// prefix's job is purely to namespace the APCu cache so two
+/// unrelated projects on the same SAPI don't share entries. For
+/// byte-equivalence tests, callers should pass an explicit
+/// `apcu_prefix` (no fallback to randomness then).
+fn random_hex_chars(n: usize) -> String {
+    use std::fmt::Write as _;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let local = 0u8;
+    let mut state: u128 = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0)
+        ^ u128::from(std::process::id())
+        ^ (std::ptr::addr_of!(local) as u128);
+
+    let mut out = String::with_capacity(n);
+    while out.len() < n {
+        // xorshift64-style step on each 64-bit half of the 128-bit
+        // state. We don't need crypto-grade output, just uncorrelated
+        // bytes for a cache-namespace tag.
+        state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        for byte in state.to_le_bytes() {
+            if out.len() >= n {
+                break;
+            }
+            let _ = write!(out, "{byte:02x}");
+        }
+    }
+    out.truncate(n);
+    out
 }
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {

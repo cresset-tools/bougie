@@ -111,6 +111,9 @@ fn run_bougie(project: &Path, iters: usize) -> Result<Summary, Box<dyn std::erro
         optimize: false,
         classmap_authoritative: false,
         no_dev: false,
+        apcu_autoloader: false,
+        apcu_prefix: None,
+        autoloader_suffix: None,
     };
     let mut samples = Vec::with_capacity(iters);
     for i in 0..iters {

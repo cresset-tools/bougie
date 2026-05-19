@@ -56,6 +56,21 @@ pub(crate) struct RootManifest {
     #[serde(default, rename = "autoload-dev")]
     #[allow(dead_code)] // wired in once dev separation matters (Phase 3)
     pub autoload_dev: AutoloadBlock,
+    /// `config` block. Only the fields the autoloader cares about are
+    /// extracted; everything else is dropped.
+    #[serde(default)]
+    pub config: RootConfig,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub(crate) struct RootConfig {
+    /// `autoloader-suffix` override — when set, replaces the
+    /// `composer.lock` `content-hash` as the
+    /// `ComposerAutoloaderInit<X>` / `ComposerStaticInit<X>` class
+    /// suffix. Lets the user stabilize the suffix across
+    /// content-hash-changing edits.
+    #[serde(default, rename = "autoloader-suffix")]
+    pub autoloader_suffix: Option<String>,
 }
 
 impl LockFile {

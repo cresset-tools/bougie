@@ -17,7 +17,21 @@ use std::fmt::Write;
 ///
 /// `classmap_authoritative`: emits `$loader->setClassMapAuthoritative(true);`
 /// before `$loader->register(...)`.
-pub(crate) fn emit(content_hash: &str, has_files: bool, classmap_authoritative: bool) -> String {
+///
+/// `apcu_prefix`: `Some(<hex>)` emits `$loader->setApcuPrefix(<hex>);`
+/// between the classmap-authoritative line and the register call.
+/// `None` skips the line entirely. The hex is what Composer's
+/// `var_export($apcuPrefix, true)` would have produced — a
+/// single-quoted PHP string with `\\` / `\'` escapes; the caller is
+/// responsible for handing over a string with no embedded quotes (the
+/// random default and the `--apcu-autoloader-prefix=` CLI form are
+/// both 20-hex-char strings, so this is trivially safe in practice).
+pub(crate) fn emit(
+    content_hash: &str,
+    has_files: bool,
+    classmap_authoritative: bool,
+    apcu_prefix: Option<&str>,
+) -> String {
     let mut out = String::with_capacity(2048);
 
     // HEADER block — same for every fixture. Ends with `}\n\n` (one
@@ -79,6 +93,16 @@ pub(crate) fn emit(content_hash: &str, has_files: bool, classmap_authoritative: 
         out.push_str("        $loader->setClassMapAuthoritative(true);\n");
     }
 
+    // APCU — emits between classmap-authoritative and the loader
+    // register call. Composer formats the prefix via
+    // `var_export($apcuPrefix, true)`; single-quoted PHP string. We
+    // assume the prefix has no backslashes or single-quotes, which
+    // holds for both the random hex default and the canonical
+    // `--apcu-autoloader-prefix=` form.
+    if let Some(prefix) = apcu_prefix {
+        let _ = writeln!(out, "        $loader->setApcuPrefix('{prefix}');");
+    }
+
     // REGISTER_LOADER — always present.
     out.push_str("        $loader->register(true);\n\n");
 
@@ -118,18 +142,19 @@ mod tests {
 
     #[test]
     fn minimal_shape() {
-        let s = emit("deadbeef", false, false);
+        let s = emit("deadbeef", false, false, None);
         assert!(s.starts_with("<?php\n\n// autoload_real.php"));
         assert!(s.contains("class ComposerAutoloaderInitdeadbeef\n"));
         assert!(s.ends_with("}\n"));
-        // No files loop, no classmap-authoritative line
+        // No files loop, no classmap-authoritative line, no APCu line
         assert!(!s.contains("setClassMapAuthoritative"));
         assert!(!s.contains("filesToLoad"));
+        assert!(!s.contains("setApcuPrefix"));
     }
 
     #[test]
     fn classmap_authoritative_inserts_before_register() {
-        let s = emit("deadbeef", false, true);
+        let s = emit("deadbeef", false, true, None);
         let auth_pos = s.find("setClassMapAuthoritative").unwrap();
         let register_pos = s.find("$loader->register(true)").unwrap();
         assert!(auth_pos < register_pos);
@@ -137,8 +162,24 @@ mod tests {
 
     #[test]
     fn files_block_present_when_requested() {
-        let s = emit("deadbeef", true, false);
+        let s = emit("deadbeef", true, false, None);
         assert!(s.contains("$filesToLoad"));
         assert!(s.contains("$requireFile"));
+    }
+
+    #[test]
+    fn apcu_prefix_inserts_between_classmap_authoritative_and_register() {
+        let s = emit("deadbeef", false, true, Some("abc123"));
+        let auth_pos = s.find("setClassMapAuthoritative").unwrap();
+        let apcu_pos = s.find("setApcuPrefix('abc123')").unwrap();
+        let register_pos = s.find("$loader->register(true)").unwrap();
+        assert!(auth_pos < apcu_pos);
+        assert!(apcu_pos < register_pos);
+    }
+
+    #[test]
+    fn apcu_skipped_when_none() {
+        let s = emit("deadbeef", false, false, None);
+        assert!(!s.contains("setApcuPrefix"));
     }
 }
