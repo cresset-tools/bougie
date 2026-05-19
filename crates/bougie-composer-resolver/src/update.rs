@@ -30,14 +30,18 @@
 //! `prefer-stable` (a candidate-ordering tweak, not a filter) is a
 //! follow-up.
 //!
+//! When the effective stability for a package is
+//! [`Stability::Dev`], `versions_for` also consults the dev variant
+//! `/p2/<name>~dev.json` and merges its entries newest-first with
+//! the stable doc. A 404 on the dev variant is absorbed silently
+//! (many packages have no branches); other errors propagate.
+//!
 //! Out of scope (follow-ups):
 //! - `prefer-stable` candidate-ordering
 //! - Platform-package version checks against the bougie-pinned PHP
 //!   (issue #118 — affects polyfill-style `replace: { php: "..." }`
 //!   declarations too)
 //! - Custom repositories beyond Packagist
-//! - The dev variant (`/p2/<name>~dev.json`) — only the stable
-//!   document is consulted right now
 //! - Streaming parse + fan-out-on-discovery prefetcher
 //! - Lockfile writer (the `--dry-run` orchestrator ships in this PR)
 
@@ -46,7 +50,6 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use bougie_composer::lockfile::LockPackage;
-use bougie_composer::metadata::PackageMetadata;
 use bougie_paths::Paths;
 use bougie_semver::constraint::Constraint;
 use bougie_semver::stability::Stability;
@@ -61,7 +64,7 @@ use serde_json::Value;
 
 use crate::metadata::build_client;
 
-use crate::metadata::{fetch_package_metadata, Variant};
+use crate::metadata::{fetch_package_metadata, fetch_package_metadata_optional, Variant};
 use crate::verify::{is_platform, to_range, ComposerRange, ProviderError, PubGrubPackage};
 
 /// pubgrub provider that resolves a fresh `composer.json` against
@@ -159,11 +162,26 @@ impl ResolveProvider {
     /// filtered to candidates whose stability is at or above the
     /// effective gate for that package. Versions whose version-string
     /// fails to parse are dropped.
+    ///
+    /// When the effective stability is [`Stability::Dev`] we also
+    /// consult `/p2/<name>~dev.json` (the branch document). Packagist
+    /// serves stable numeric versions and branch entries
+    /// (`dev-main`, `1.x-dev`, …) in separate documents; without
+    /// fetching both, a project with `minimum-stability: dev` can't
+    /// pick up branches. Many packages have no branches, in which
+    /// case `~dev.json` 404s — we treat that as "no dev candidates"
+    /// rather than a hard error.
+    ///
+    /// The combined list is sorted version-descending so pubgrub's
+    /// "first in range" candidate selection still picks the highest
+    /// matching version regardless of which document supplied it.
     fn versions_for(&self, name: &str) -> Result<Vec<LockPackage>, ProviderError> {
         if let Some(v) = self.cache.borrow().get(name) {
             return Ok(v.clone());
         }
-        let md: PackageMetadata = fetch_package_metadata(
+        let floor = self.effective_stability(name);
+
+        let stable_md = fetch_package_metadata(
             &self.client,
             &self.paths,
             &self.base_url,
@@ -171,22 +189,47 @@ impl ResolveProvider {
             Variant::Stable,
         )
         .map_err(|e| ProviderError(format!("fetching metadata for {name}: {e:#}")))?;
-
         // Packagist's response always carries exactly one entry under
         // `packages` keyed by the requested name; defensively handle
         // the missing-key shape rather than indexing.
-        let versions = md.packages.get(name).cloned().unwrap_or_default();
-        let floor = self.effective_stability(name);
-        let filtered: Vec<LockPackage> = versions
+        let mut versions: Vec<LockPackage> =
+            stable_md.packages.get(name).cloned().unwrap_or_default();
+
+        if floor == Stability::Dev {
+            let dev_md = fetch_package_metadata_optional(
+                &self.client,
+                &self.paths,
+                &self.base_url,
+                name,
+                Variant::Dev,
+            )
+            .map_err(|e| {
+                ProviderError(format!("fetching dev metadata for {name}: {e:#}"))
+            })?;
+            if let Some(md) = dev_md {
+                if let Some(extra) = md.packages.get(name) {
+                    versions.extend(extra.iter().cloned());
+                }
+            }
+        }
+
+        // Filter by effective stability, drop unparseable versions.
+        let mut filtered: Vec<(Version, LockPackage)> = versions
             .into_iter()
-            .filter(|p| {
+            .filter_map(|p| {
                 Version::parse(&p.version)
-                    .map(|v| v.stability() >= floor)
-                    .unwrap_or(false)
+                    .ok()
+                    .filter(|v| v.stability() >= floor)
+                    .map(|v| (v, p))
             })
             .collect();
-        self.cache.borrow_mut().insert(name.to_owned(), filtered.clone());
-        Ok(filtered)
+        // Sort descending by parsed version so the "first in range"
+        // selection picks the highest candidate across both documents.
+        filtered.sort_by(|a, b| b.0.cmp(&a.0));
+        let out: Vec<LockPackage> = filtered.into_iter().map(|(_, p)| p).collect();
+
+        self.cache.borrow_mut().insert(name.to_owned(), out.clone());
+        Ok(out)
     }
 }
 
