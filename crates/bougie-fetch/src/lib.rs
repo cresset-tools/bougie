@@ -427,6 +427,53 @@ pub fn extract_zip(zip_path: &Path, into: &Path, strip_prefix: &str) -> Result<(
     Ok(())
 }
 
+/// Scan a zip's central directory and return the single common
+/// top-level path component if there is exactly one. Returns the
+/// empty string when entries are already flat at the archive root,
+/// or when there are multiple top-level components (no safe strip is
+/// possible).
+///
+/// Reads only the central directory — no decompression — so this is
+/// cheap enough to call before extracting every Composer dist.
+/// Packagist's zipballs always wrap contents in
+/// `<owner>-<repo>-<short_sha>/`, but the wrapper name isn't
+/// predictable across CDNs, so detection beats computation.
+pub fn detect_zip_top_level(zip_path: &Path) -> Result<String> {
+    let f = File::open(zip_path)
+        .wrap_err_with(|| format!("opening {}", zip_path.display()))?;
+    let mut archive = zip::ZipArchive::new(f)
+        .wrap_err_with(|| format!("reading zip {}", zip_path.display()))?;
+    let mut top: Option<String> = None;
+    for i in 0..archive.len() {
+        let entry = archive
+            .by_index(i)
+            .wrap_err_with(|| format!("reading zip entry {i}"))?;
+        let Some(raw) = entry.enclosed_name() else {
+            continue;
+        };
+        // First normal path component. `enclosed_name` already
+        // rejects `..` and absolute paths so `Component::Normal` is
+        // the only kind we can encounter on a non-empty input.
+        let Some(first) = raw.components().next() else {
+            continue;
+        };
+        let std::path::Component::Normal(os) = first else {
+            continue;
+        };
+        let Some(s) = os.to_str() else {
+            // Non-utf-8 entry name — bail on detection, fall back to
+            // no-strip rather than guessing.
+            return Ok(String::new());
+        };
+        match &top {
+            None => top = Some(s.to_owned()),
+            Some(existing) if existing == s => {}
+            Some(_) => return Ok(String::new()),
+        }
+    }
+    Ok(top.unwrap_or_default())
+}
+
 /// Apply `strip_prefix` to a tar-internal path. Returns `None` when the
 /// rewrite produces an empty path (the prefix directory entry itself
 /// — caller skips it because the destination already exists). Entries
@@ -862,6 +909,58 @@ mod tests {
         extract_zip(&zip_path, &into, "").unwrap();
 
         assert_eq!(std::fs::read(into.join("php_xdebug.dll")).unwrap(), b"xdebug");
+    }
+
+    fn make_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut buf: Vec<u8> = Vec::new();
+        let cursor = std::io::Cursor::new(&mut buf);
+        let mut zw = zip::ZipWriter::new(cursor);
+        let opts = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        for (name, body) in entries {
+            zw.start_file(*name, opts).unwrap();
+            zw.write_all(body).unwrap();
+        }
+        zw.finish().unwrap();
+        buf
+    }
+
+    #[test]
+    fn detect_zip_top_level_returns_single_wrapper() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let p = dir.path().join("a.zip");
+        std::fs::write(
+            &p,
+            make_zip(&[
+                ("acme-foo-abc1234/composer.json", b"{}"),
+                ("acme-foo-abc1234/src/Foo.php", b"<?php"),
+            ]),
+        )
+        .unwrap();
+        assert_eq!(detect_zip_top_level(&p).unwrap(), "acme-foo-abc1234");
+    }
+
+    #[test]
+    fn detect_zip_top_level_returns_empty_for_flat_archive() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let p = dir.path().join("flat.zip");
+        std::fs::write(&p, make_zip(&[("composer.json", b"{}"), ("Foo.php", b"<?php")])).unwrap();
+        assert_eq!(detect_zip_top_level(&p).unwrap(), "");
+    }
+
+    #[test]
+    fn detect_zip_top_level_returns_empty_when_multiple_wrappers() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let p = dir.path().join("mixed.zip");
+        std::fs::write(
+            &p,
+            make_zip(&[
+                ("acme-one-aaa/file.php", b"a"),
+                ("acme-two-bbb/file.php", b"b"),
+            ]),
+        )
+        .unwrap();
+        assert_eq!(detect_zip_top_level(&p).unwrap(), "");
     }
 
     #[test]

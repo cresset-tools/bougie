@@ -382,6 +382,7 @@ dependencies = [
  "bougie-backend",
  "bougie-cli",
  "bougie-composer",
+ "bougie-composer-resolver",
  "bougie-config",
  "bougie-daemon",
  "bougie-errors",
@@ -406,6 +407,7 @@ dependencies = [
  "sandbox-run",
  "serde",
  "serde_json",
+ "sha1",
  "sha2 0.11.0",
  "sigstore",
  "tar",
@@ -488,12 +490,15 @@ dependencies = [
 name = "bougie-composer-resolver"
 version = "0.1.0"
 dependencies = [
+ "bougie-autoloader",
+ "bougie-composer",
  "bougie-errors",
  "bougie-fetch",
  "bougie-paths",
  "eyre",
  "rayon",
  "reqwest 0.13.3",
+ "serde_json",
  "sha1",
  "tempfile",
  "tokio",

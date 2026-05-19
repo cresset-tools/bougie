@@ -404,8 +404,31 @@ pub enum PhpCommand {
 
 #[derive(Subcommand, Debug)]
 pub enum ComposerCommand {
-    /// Install a Composer version.
+    /// Install a project's `vendor/` from `composer.lock`. Reads
+    /// `composer.json` + `composer.lock` in the working directory,
+    /// content-hash-verifies the lock, parallel-downloads dists into
+    /// `vendor/`, and emits `vendor/autoload.php`. Replaces today's
+    /// binary-management `install <version>` — use `bougie composer
+    /// fetch <version>` for that.
     Install {
+        /// Run the install in this directory instead of CWD.
+        /// Mirrors Composer's `--working-dir` / `-d`.
+        #[arg(short = 'd', long = "working-dir", value_name = "DIR")]
+        working_dir: Option<std::path::PathBuf>,
+        /// Skip dev-only packages and dev autoload entries.
+        #[arg(long = "no-dev")]
+        no_dev: bool,
+        /// Fail if composer.lock is out of sync with composer.json.
+        /// Currently a no-op — the install already errors on
+        /// content-hash mismatch by default. Accepted for parity
+        /// with Composer's CI usage.
+        #[arg(long = "frozen")]
+        frozen: bool,
+    },
+    /// Download and install a Composer phar version into
+    /// `$BOUGIE_LOCAL/composer/<version>/`. The verb formerly known
+    /// as `install <version>`.
+    Fetch {
         /// The Composer version to install (exact, partial, or channel).
         request: Option<String>,
     },

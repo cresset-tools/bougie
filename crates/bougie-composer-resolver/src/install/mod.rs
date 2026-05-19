@@ -6,5 +6,7 @@
 //! `bougie-autoloader` for `vendor/autoload.php` generation.
 
 mod downloader;
+mod orchestrate;
 
-pub use downloader::{fetch_and_extract_dists, DistRequest};
+pub use downloader::{fetch_and_extract_dists, DistOutcome, DistRequest};
+pub use orchestrate::{install_from_lock, InstallOptions, InstallSummary};

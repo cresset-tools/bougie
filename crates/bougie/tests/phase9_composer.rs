@@ -70,7 +70,7 @@ fn install_fetches_phar_and_writes_to_bougie_home_composer() {
 
     env.bougie()
         .env("BOUGIE_COMPOSER_BASE_URL", fx.server.uri())
-        .args(["composer", "install", "2.8.5"])
+        .args(["composer", "fetch", "2.8.5"])
         .assert()
         .success()
         .stdout(contains("installed composer 2.8.5"));
@@ -88,7 +88,7 @@ fn install_resolves_partial_version() {
 
     env.bougie()
         .env("BOUGIE_COMPOSER_BASE_URL", fx.server.uri())
-        .args(["composer", "install", "2.8"])
+        .args(["composer", "fetch", "2.8"])
         .assert()
         .success()
         .stdout(contains("installed composer 2.8.5"));
@@ -103,7 +103,7 @@ fn install_default_picks_stable_head() {
 
     env.bougie()
         .env("BOUGIE_COMPOSER_BASE_URL", fx.server.uri())
-        .args(["composer", "install"])
+        .args(["composer", "fetch"])
         .assert()
         .success()
         .stdout(contains("installed composer 2.8.5"));
@@ -118,13 +118,13 @@ fn install_is_idempotent() {
 
     env.bougie()
         .env("BOUGIE_COMPOSER_BASE_URL", fx.server.uri())
-        .args(["composer", "install", "2.8.5"])
+        .args(["composer", "fetch", "2.8.5"])
         .assert()
         .success();
 
     env.bougie()
         .env("BOUGIE_COMPOSER_BASE_URL", fx.server.uri())
-        .args(["composer", "install", "2.8.5"])
+        .args(["composer", "fetch", "2.8.5"])
         .assert()
         .success()
         .stdout(contains("already composer 2.8.5"));
@@ -158,7 +158,7 @@ fn install_rejects_phar_bytes_disagreeing_with_sha256sum_endpoint() {
     let env = TestEnv::new();
     env.bougie()
         .env("BOUGIE_COMPOSER_BASE_URL", server.uri())
-        .args(["composer", "install", "2.8.5"])
+        .args(["composer", "fetch", "2.8.5"])
         .assert()
         .failure()
         .stderr(contains("sha256 mismatch"));
@@ -197,7 +197,7 @@ fn find_after_install_returns_phar_path() {
 
     env.bougie()
         .env("BOUGIE_COMPOSER_BASE_URL", fx.server.uri())
-        .args(["composer", "install", "2.8.5"])
+        .args(["composer", "fetch", "2.8.5"])
         .assert()
         .success();
 
@@ -221,7 +221,7 @@ fn find_without_arg_picks_highest_installed() {
 
     env.bougie()
         .env("BOUGIE_COMPOSER_BASE_URL", fx.server.uri())
-        .args(["composer", "install", "2.8.5"])
+        .args(["composer", "fetch", "2.8.5"])
         .assert()
         .success();
 
@@ -329,7 +329,7 @@ fn idempotent_install_does_not_refetch_phar() {
     for _ in 0..2 {
         env.bougie()
             .env("BOUGIE_COMPOSER_BASE_URL", server.uri())
-            .args(["composer", "install", "2.8.5"])
+            .args(["composer", "fetch", "2.8.5"])
             .assert()
             .success();
     }
