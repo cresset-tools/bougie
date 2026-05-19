@@ -85,7 +85,7 @@ fallback, fastest request handling. The block-on-bootstrap discipline
 makes authoritative mode safe — no request is served against an
 incomplete classmap.
 
-For a large project: ~2 s. For small projects: tens of milliseconds.
+For a ~94k-file project: ~2 s. For small projects: tens of milliseconds.
 
 ## Startup page
 
@@ -365,8 +365,8 @@ Manual perf check (large project, ~94k files):
   the `per_file` storage we'd silently keep A's stale `path_expr`.
   PR1 carries the mandatory ambiguity fixture.
 - **Multi-project memory.** One Autoloader per project ≈ ~20 MiB
-  for a ~94k-file project. A dev server with 5-10 projects
-  costs ~100-200 MiB. Acceptable.
+  at ~94k classes. A dev server with 5-10 projects costs
+  ~100-200 MiB. Acceptable.
 - **`NamespaceFilter` evolution.** Any field that affects
   `scan::scan` output must also affect single-file extraction so
   `apply_changed_path` produces the same set as bootstrap.
