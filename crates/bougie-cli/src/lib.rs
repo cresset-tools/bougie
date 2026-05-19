@@ -430,6 +430,26 @@ pub enum ComposerCommand {
         #[arg(long = "lock-verify")]
         lock_verify: bool,
     },
+    /// Resolve the project's dependency graph from scratch (read
+    /// `composer.json`, ignore any existing `composer.lock`) and
+    /// produce a fresh solution. Currently only the read-only
+    /// `--dry-run` mode is implemented; writing `composer.lock` is
+    /// a follow-up.
+    Update {
+        /// Run the update in this directory instead of CWD.
+        /// Mirrors Composer's `--working-dir` / `-d`.
+        #[arg(short = 'd', long = "working-dir", value_name = "DIR")]
+        working_dir: Option<std::path::PathBuf>,
+        /// Skip dev-only root requires when resolving.
+        #[arg(long = "no-dev")]
+        no_dev: bool,
+        /// Resolve and print the solution without writing
+        /// `composer.lock` or touching `vendor/`. Currently the only
+        /// supported mode — without this flag the command refuses
+        /// to run.
+        #[arg(long = "dry-run")]
+        dry_run: bool,
+    },
     /// Download and install a Composer phar version into
     /// `$BOUGIE_LOCAL/composer/<version>/`. The verb formerly known
     /// as `install <version>`.

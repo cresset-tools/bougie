@@ -23,10 +23,11 @@
 //! - The dev variant (`/p2/<name>~dev.json`) — only the stable
 //!   document is consulted right now
 //! - Streaming parse + fan-out-on-discovery prefetcher
-//! - The `bougie composer update` CLI verb + lockfile writer
+//! - Lockfile writer (the `--dry-run` orchestrator ships in this PR)
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::path::Path;
 
 use bougie_composer::lockfile::LockPackage;
 use bougie_composer::metadata::PackageMetadata;
@@ -34,10 +35,15 @@ use bougie_paths::Paths;
 use bougie_semver::constraint::Constraint;
 use bougie_semver::stability::Stability;
 use bougie_semver::version::Version;
+use eyre::{eyre, Result, WrapErr};
 use pubgrub::{
-    Dependencies, DependencyConstraints, DependencyProvider, PackageResolutionStatistics,
+    resolve, DefaultStringReporter, Dependencies, DependencyConstraints, DependencyProvider,
+    PackageResolutionStatistics, PubGrubError, Reporter,
 };
+use serde::Serialize;
 use serde_json::Value;
+
+use crate::metadata::build_client;
 
 use crate::metadata::{fetch_package_metadata, Variant};
 use crate::verify::{is_platform, to_range, ComposerRange, ProviderError, PubGrubPackage};
@@ -288,6 +294,92 @@ impl DependencyProvider for ResolveProvider {
             .map(|(n, r)| (PubGrubPackage::Package(n), r))
             .collect();
         Ok(Dependencies::Available(constraints))
+    }
+}
+
+/// One resolved package in the dry-run output.
+#[derive(Debug, Clone, Serialize)]
+pub struct ResolvedPackage {
+    pub name: String,
+    pub version: String,
+}
+
+/// Result of `dry_run_update`: the package set pubgrub would write
+/// to `composer.lock` if we were committing the update. Ordering is
+/// stable (sorted by package name) so two consecutive dry runs
+/// produce identical output.
+#[derive(Debug, Clone, Serialize)]
+pub struct UpdateSummary {
+    pub packages: Vec<ResolvedPackage>,
+    pub no_dev: bool,
+}
+
+/// Options for [`dry_run_update`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DryRunOptions {
+    pub no_dev: bool,
+}
+
+/// Run a pubgrub-backed resolve of `composer.json` against the
+/// metadata host at `base_url` and return the package set that would
+/// land in `composer.lock`.
+///
+/// Read-only: doesn't write `composer.lock`, doesn't touch `vendor/`.
+/// The lockfile writer is a follow-up PR; until then this is the
+/// only user-visible entry point into the resolver from the CLI.
+///
+/// `base_url` is the Packagist host (no trailing slash). Production
+/// callers pass [`crate::metadata::base_url()`]; tests pass a
+/// wiremock URI.
+pub fn dry_run_update(
+    paths: &Paths,
+    project_root: &Path,
+    base_url: &str,
+    opts: DryRunOptions,
+) -> Result<UpdateSummary> {
+    let composer_json_path = project_root.join("composer.json");
+    if !composer_json_path.is_file() {
+        return Err(eyre!(
+            "{} not found — not a Composer project",
+            composer_json_path.display(),
+        ));
+    }
+    let composer_json_bytes = std::fs::read(&composer_json_path)
+        .wrap_err_with(|| format!("reading {}", composer_json_path.display()))?;
+    let composer_json: Value = serde_json::from_slice(&composer_json_bytes)
+        .map_err(|e| eyre!("parsing composer.json: {e}"))?;
+
+    let client = build_client()?;
+    let provider = ResolveProvider::build(
+        client,
+        paths.clone(),
+        base_url.to_owned(),
+        &composer_json,
+        opts.no_dev,
+    )
+    .map_err(|e| eyre!(e))?;
+    let root = provider.root_version();
+
+    match resolve(&provider, PubGrubPackage::Root, root) {
+        Ok(solution) => {
+            let mut packages: Vec<ResolvedPackage> = solution
+                .into_iter()
+                .filter_map(|(pkg, version)| match pkg {
+                    PubGrubPackage::Root => None,
+                    PubGrubPackage::Package(name) => Some(ResolvedPackage {
+                        name,
+                        version: version.to_string(),
+                    }),
+                })
+                .collect();
+            packages.sort_by(|a, b| a.name.cmp(&b.name));
+            Ok(UpdateSummary { packages, no_dev: opts.no_dev })
+        }
+        Err(PubGrubError::NoSolution(tree)) => Err(eyre!(
+            "no valid dependency resolution exists:\n\n{}",
+            DefaultStringReporter::report(&tree),
+        )),
+        Err(other) => Err(eyre!("solver error: {other}")),
     }
 }
 
