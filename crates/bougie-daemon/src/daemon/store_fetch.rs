@@ -26,7 +26,7 @@
 use crate::daemon::catalog::CatalogEntry;
 use crate::daemon::store_layout;
 use bougie_errors::BougieError;
-use bougie_fetch::{fetch_blob, ArchiveKind, BlobSpec, DownloadBar};
+use bougie_fetch::{fetch_blob, ArchiveKind, BlobSpec, DownloadBar, Hash};
 use bougie_index::{
     build_verifier,
     fetch::{fetch_manifest, fetch_root, fetch_section, FetchedRoot},
@@ -242,7 +242,7 @@ fn install_into(
 
     let spec = BlobSpec {
         url: &manifest.blob.url,
-        sha256: &manifest.blob.sha256,
+        hash: Hash::sha256(&manifest.blob.sha256),
         partial_dir: &paths.cache_blobs(),
         dest: install_root,
         // Tool tarballs ship their tree under `install/` — same

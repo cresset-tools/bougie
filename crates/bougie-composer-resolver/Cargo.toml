@@ -1,0 +1,40 @@
+[package]
+name = "bougie-composer-resolver"
+version = "0.1.0"
+edition = "2024"
+description = "Native Composer dependency resolver + installer for bougie. Reads composer.lock, downloads dists in parallel, extracts to vendor/."
+license = "EUPL-1.2"
+repository = "https://github.com/cresset-tools/bougie"
+rust-version = "1.95"
+authors.workspace = true
+
+[dependencies]
+eyre = "0.6"
+rayon = "1.10"
+
+[dependencies.bougie-errors]
+path = "../bougie-errors"
+version = "0.4.0"
+
+[dependencies.bougie-fetch]
+path = "../bougie-fetch"
+version = "0.4.0"
+
+[dependencies.bougie-paths]
+path = "../bougie-paths"
+version = "0.4.0"
+
+[dependencies.reqwest]
+version = "0.13"
+default-features = false
+features = ["blocking", "rustls"]
+
+[dev-dependencies]
+tempfile = "3.10"
+sha1 = "0.10"
+zip = { version = "8.0", default-features = false, features = ["deflate"] }
+wiremock = "0.6"
+tokio = { version = "1", features = ["rt", "macros"] }
+
+[lints]
+workspace = true

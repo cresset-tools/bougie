@@ -180,7 +180,7 @@ impl BlobRef {
     ) -> bougie_fetch::BlobSpec<'a> {
         bougie_fetch::BlobSpec {
             url: &self.url,
-            sha256: &self.sha256,
+            hash: bougie_fetch::Hash::sha256(&self.sha256),
             partial_dir,
             dest,
             strip_prefix: &self.strip_prefix,

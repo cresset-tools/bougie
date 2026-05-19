@@ -485,6 +485,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "bougie-composer-resolver"
+version = "0.1.0"
+dependencies = [
+ "bougie-errors",
+ "bougie-fetch",
+ "bougie-paths",
+ "eyre",
+ "rayon",
+ "reqwest 0.13.3",
+ "sha1",
+ "tempfile",
+ "tokio",
+ "wiremock",
+ "zip",
+]
+
+[[package]]
 name = "bougie-config"
 version = "0.4.0"
 dependencies = [
@@ -539,6 +556,7 @@ dependencies = [
  "eyre",
  "indicatif",
  "reqwest 0.13.3",
+ "sha1",
  "sha2 0.11.0",
  "tar",
  "tempfile",

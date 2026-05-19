@@ -19,7 +19,9 @@
 use crate::php_json::{self, Mode};
 use eyre::{eyre, Result, WrapErr};
 use md5::{Digest, Md5};
+use serde::Deserialize;
 use serde_json::{Map, Value};
+use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -423,6 +425,258 @@ pub fn apply_require_change(
         new_content_hash,
         change_applied,
     })
+}
+
+// -----------------------------------------------------------------
+// Typed read API for `composer.lock`.
+//
+// The edit primitives above operate on `serde_json::Value` to preserve
+// byte-for-byte fidelity when round-tripping; the typed API below is
+// the read side for callers that need to *consume* a lockfile:
+// `bougie composer install` reads the package list, derives a
+// `DistRequest` per entry, and hands it to the parallel downloader in
+// `bougie-composer-resolver`. Autoload metadata is also exposed for
+// the eventual install-time wiring to `bougie-autoloader`.
+//
+// The schema is intentionally permissive: every field we don't yet act
+// on is captured as `Value` or skipped entirely (`serde(default)`),
+// because Composer adds new fields over time and we don't want
+// parsing to fail when a future Composer release introduces something
+// new. Strict validation lives in the resolver, not in the reader.
+// -----------------------------------------------------------------
+
+/// Parsed `composer.lock`. Round-trips through `serde_json` but loses
+/// the byte-exact representation — for in-place edits use
+/// [`read_json_file`] + the `lock_*` helpers above.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Lock {
+    /// Set on every lockfile produced by Composer 1.10+; absence means
+    /// the lockfile predates the algorithm and the install command
+    /// should refuse with a clear error.
+    #[serde(rename = "content-hash", default)]
+    pub content_hash: Option<String>,
+    #[serde(default)]
+    pub packages: Vec<LockPackage>,
+    #[serde(rename = "packages-dev", default)]
+    pub packages_dev: Vec<LockPackage>,
+    /// Top-level `minimum-stability` (string, e.g. `"stable"`,
+    /// `"dev"`). Drives the eventual resolver's stability filter; the
+    /// installer doesn't act on it but exposes it so the verifier in
+    /// Phase B can.
+    #[serde(rename = "minimum-stability", default)]
+    pub minimum_stability: Option<String>,
+    #[serde(rename = "prefer-stable", default)]
+    pub prefer_stable: bool,
+    #[serde(rename = "prefer-lowest", default)]
+    pub prefer_lowest: bool,
+    /// Platform requirements mirrored by `apply_require_change`. Map
+    /// from platform-package name (e.g. `"php"`, `"ext-redis"`) to a
+    /// constraint string.
+    #[serde(default)]
+    pub platform: BTreeMap<String, String>,
+    #[serde(rename = "platform-dev", default)]
+    pub platform_dev: BTreeMap<String, String>,
+    /// Reported by the Composer build that wrote the lockfile; e.g.
+    /// `"2.6.0"`. Carried through verbatim by the writer.
+    #[serde(rename = "plugin-api-version", default)]
+    pub plugin_api_version: Option<String>,
+}
+
+/// One package entry from `packages` or `packages-dev`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct LockPackage {
+    /// `vendor/package` exactly as Composer writes it (case-preserved;
+    /// Composer canonicalizes case on resolve but the lock keeps the
+    /// declared form).
+    pub name: String,
+    /// Selected version. Format depends on the source: a semver string
+    /// for stable releases (`"3.5.0"`, `"1.2.3-RC1"`), a `dev-*` ref
+    /// for branch installs (`"dev-main"`, `"1.x-dev"`), or rarely an
+    /// `as`-alias form (`"dev-main as 1.0.x-dev"`) — we expose the
+    /// string verbatim and let the resolver/installer interpret it.
+    pub version: String,
+    /// Composer's 4-segment normalized form (`"3.5.0.0"`,
+    /// `"dev-main"`). Optional because pre-2.x lockfiles omit it.
+    #[serde(rename = "version_normalized", default)]
+    pub version_normalized: Option<String>,
+    /// The dist archive Composer will install from. Some packages ship
+    /// only via `source` (git clone) — those are out of scope until
+    /// Phase D and the install command surfaces a clear error.
+    #[serde(default)]
+    pub dist: Option<LockDist>,
+    /// VCS source. We capture but don't act on it in Phase A; Phase D
+    /// will use it for git-ref installs.
+    #[serde(default)]
+    pub source: Option<LockSource>,
+    /// Transitive runtime dependencies (package name → constraint).
+    /// Composer writes this in a stable order; consumers that care
+    /// about ordering iterate in insertion order via `serde_json`'s
+    /// `preserve_order` (which `BTreeMap` does *not* do — we use it
+    /// here because the resolver only needs set semantics).
+    #[serde(default)]
+    pub require: BTreeMap<String, String>,
+    /// Transitive dev dependencies (rarely populated inside the lock —
+    /// dev-only constraints land on the root package's
+    /// `composer.json`, not on transitive packages).
+    #[serde(rename = "require-dev", default)]
+    pub require_dev: BTreeMap<String, String>,
+    /// Package type: `"library"`, `"composer-plugin"`,
+    /// `"metapackage"`, etc. Drives plugin-detection in the eventual
+    /// fallback path (`composer-plugin` types with resolver-affecting
+    /// capabilities force `composer.phar` fallback).
+    #[serde(rename = "type", default)]
+    pub package_type: Option<String>,
+    /// Autoload declarations. Surfaces as the typed
+    /// [`LockAutoload`] shape so the installer can hand it to
+    /// `bougie-autoloader` without re-parsing.
+    #[serde(default)]
+    pub autoload: LockAutoload,
+    /// `autoload-dev` is intentionally NOT consumed at install time
+    /// for transitive packages — Composer itself ignores it for
+    /// non-root packages — but we keep the field as `Value` so a
+    /// future caller can opt in without reshaping the struct.
+    #[serde(rename = "autoload-dev", default)]
+    pub autoload_dev: Value,
+    /// Packages declared to satisfy this package's `replace`. Each
+    /// entry maps `vendor/name → version-constraint`. Phase C feeds
+    /// this into the pubgrub replace/provide encoding; Phase A
+    /// ignores it.
+    #[serde(default)]
+    pub replace: BTreeMap<String, String>,
+    /// Same shape as `replace` for `provide`.
+    #[serde(default)]
+    pub provide: BTreeMap<String, String>,
+    /// Inverse: packages this one conflicts with. Phase C uses this;
+    /// Phase A ignores it.
+    #[serde(default)]
+    pub conflict: BTreeMap<String, String>,
+    /// `bin` listing for the package — each path is relative to the
+    /// package root and gets symlinked into `vendor/bin/` at install
+    /// time. Captured for the bin-linker that lands alongside the
+    /// install command.
+    #[serde(default)]
+    pub bin: Vec<String>,
+    /// Free-form package metadata Composer copies through verbatim.
+    /// `extra.branch-alias` matters for resolution; everything else is
+    /// consumed by third-party plugins.
+    #[serde(default)]
+    pub extra: Value,
+    /// ISO-8601 timestamp Composer recorded when this version was
+    /// published. Present for Packagist-served packages; absent for
+    /// `path` and `vcs` sources. Used by `--prefer-stable` heuristics
+    /// in the resolver; the installer ignores it.
+    #[serde(default)]
+    pub time: Option<String>,
+}
+
+/// `dist` block — what bougie's parallel downloader actually consumes.
+/// The combination of `kind` + `shasum` + `url` is the minimum
+/// information needed to materialize the package; `reference` carries
+/// the upstream commit hash (used for the wrapping-directory name in
+/// Packagist zipballs, and for verification debugging).
+#[derive(Debug, Clone, Deserialize)]
+pub struct LockDist {
+    /// `"zip"` for Packagist API zipballs, `"tar"` for tarballs (rare,
+    /// not yet supported by the downloader — `RESOLVER_PLAN.md` Phase
+    /// A explicitly defers), `"path"` for local-path repositories
+    /// (the autoloader fixtures use this; no fetching).
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub url: String,
+    /// sha1 hex of the dist archive, lower-case. Optional because
+    /// `path` dists don't have one.
+    #[serde(default)]
+    pub shasum: Option<String>,
+    /// Upstream VCS reference (full sha for git). Used to derive the
+    /// wrapping-directory name inside Packagist zipballs.
+    #[serde(default)]
+    pub reference: Option<String>,
+    /// Free-form transport options Composer attaches per-dist (e.g.
+    /// `{"symlink": false, "relative": true}` for `path` dists).
+    /// Captured but not yet acted on.
+    #[serde(rename = "transport-options", default)]
+    pub transport_options: Value,
+}
+
+/// `source` block — VCS coordinates. Phase D will use this when we
+/// add git-clone-as-source-install; Phase A only surfaces it so error
+/// messages can name the source URL when a dist is missing.
+#[derive(Debug, Clone, Deserialize)]
+pub struct LockSource {
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub url: String,
+    pub reference: String,
+}
+
+/// `autoload` block — passed through to `bougie-autoloader` at install
+/// time. The shapes mirror Composer's schema:
+///
+/// - `psr-4` and `psr-0`: namespace → directory(ies). A single string
+///   or an array of strings.
+/// - `classmap`: list of directories or files to scan.
+/// - `files`: list of files to `require_once` from `vendor/autoload.php`.
+/// - `exclude-from-classmap`: glob patterns the autoloader skips when
+///   building the classmap.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct LockAutoload {
+    /// `psr-4` maps a namespace prefix (with trailing `\\`) to one or
+    /// more directories. Each value is either a single string or an
+    /// array of strings; both arrive here as a generic `Value` so we
+    /// don't lose information when round-tripping through the typed
+    /// shape. `bougie-autoloader` already handles both forms.
+    #[serde(rename = "psr-4", default)]
+    pub psr_4: BTreeMap<String, Value>,
+    #[serde(rename = "psr-0", default)]
+    pub psr_0: BTreeMap<String, Value>,
+    #[serde(default)]
+    pub classmap: Vec<String>,
+    #[serde(default)]
+    pub files: Vec<String>,
+    #[serde(rename = "exclude-from-classmap", default)]
+    pub exclude_from_classmap: Vec<String>,
+}
+
+impl Lock {
+    /// Read and parse a `composer.lock` file from disk.
+    pub fn read(path: &Path) -> Result<Self> {
+        let bytes = std::fs::read(path)
+            .wrap_err_with(|| format!("reading {}", path.display()))?;
+        Self::from_bytes(&bytes)
+            .wrap_err_with(|| format!("parsing {}", path.display()))
+    }
+
+    /// Parse from raw bytes. Useful for tests and for callers that
+    /// already have the lock in memory (e.g. after staging an edit).
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
+        serde_json::from_slice(bytes)
+            .map_err(|e| eyre!("composer.lock parse: {e}"))
+    }
+
+    /// Iterate over `packages` then `packages-dev`. Used by the
+    /// installer when `--no-dev` is off; with `--no-dev` the caller
+    /// iterates `self.packages` directly.
+    pub fn all_packages(&self) -> impl Iterator<Item = &LockPackage> {
+        self.packages.iter().chain(self.packages_dev.iter())
+    }
+}
+
+impl LockPackage {
+    /// Convenience: `true` when the package's only install source is a
+    /// `path` dist (no shasum, no remote URL). The Phase A downloader
+    /// skips these — `path` dists are materialized by Composer through
+    /// a symlink-or-copy mechanism that lives outside the
+    /// dist-archive flow.
+    pub fn is_path_dist(&self) -> bool {
+        self.dist.as_ref().is_some_and(|d| d.kind == "path")
+    }
+
+    /// Is this a Composer plugin? Used to gate the fallback to
+    /// `composer.phar` for installs that involve plugin packages
+    /// (which can register install-time hooks we don't run).
+    pub fn is_composer_plugin(&self) -> bool {
+        matches!(self.package_type.as_deref(), Some("composer-plugin" | "composer-installer"))
+    }
 }
 
 #[cfg(test)]
@@ -977,5 +1231,247 @@ mod tests {
         let cj: Value =
             serde_json::from_slice(&std::fs::read(proj.join("composer.json")).unwrap()).unwrap();
         assert!(cj.get("require").unwrap().get("ext-redis").is_none());
+    }
+
+    // -----------------------------------------------------------------
+    // Tests for the typed read API (Lock, LockPackage, ...).
+    // -----------------------------------------------------------------
+
+    /// Realistic Packagist-shape lock entry. Modeled on a real
+    /// `monolog/monolog` 3.5.0 lock record (URL + sha1 are placeholders
+    /// — the test never makes a network call). Covers: top-level
+    /// metadata, dist + source, transitive require, psr-4 autoload,
+    /// time, replace/provide/conflict shapes.
+    const FIXTURE_PACKAGIST_LOCK: &str = r#"{
+    "_readme": ["…"],
+    "content-hash": "abc123def456abc123def456abc123de",
+    "packages": [
+        {
+            "name": "monolog/monolog",
+            "version": "3.5.0",
+            "version_normalized": "3.5.0.0",
+            "source": {
+                "type": "git",
+                "url": "https://github.com/Seldaek/monolog.git",
+                "reference": "c915e2634718dbc8a4a15c61b0e62e7a44e14448"
+            },
+            "dist": {
+                "type": "zip",
+                "url": "https://api.github.com/repos/Seldaek/monolog/zipball/c915e2634718dbc8a4a15c61b0e62e7a44e14448",
+                "reference": "c915e2634718dbc8a4a15c61b0e62e7a44e14448",
+                "shasum": "0000000000000000000000000000000000000000"
+            },
+            "require": {
+                "php": ">=8.1",
+                "psr/log": "^2.0 || ^3.0"
+            },
+            "provide": {
+                "psr/log-implementation": "3.0.0"
+            },
+            "require-dev": {
+                "phpunit/phpunit": "^10.5.17"
+            },
+            "type": "library",
+            "extra": {"branch-alias": {"dev-main": "3.x-dev"}},
+            "autoload": {
+                "psr-4": {"Monolog\\": "src/Monolog/"}
+            },
+            "time": "2023-12-05T16:23:35+00:00"
+        },
+        {
+            "name": "acme/plugin",
+            "version": "1.0.0",
+            "dist": {
+                "type": "zip",
+                "url": "https://example.com/acme-plugin-1.0.0.zip",
+                "shasum": "1111111111111111111111111111111111111111",
+                "reference": "abcdef1234567890abcdef1234567890abcdef12"
+            },
+            "type": "composer-plugin",
+            "require": {"composer-plugin-api": "^2.0"},
+            "autoload": {
+                "psr-0": {"Acme\\Plugin\\": "lib/"},
+                "classmap": ["compat/"],
+                "files": ["bootstrap.php"],
+                "exclude-from-classmap": ["compat/legacy/"]
+            },
+            "bin": ["bin/acme-plugin"]
+        }
+    ],
+    "packages-dev": [
+        {
+            "name": "phpunit/phpunit",
+            "version": "10.5.0",
+            "dist": {
+                "type": "zip",
+                "url": "https://api.github.com/repos/sebastianbergmann/phpunit/zipball/aaaa",
+                "shasum": "2222222222222222222222222222222222222222"
+            },
+            "type": "library",
+            "autoload": {"classmap": ["src/"]}
+        }
+    ],
+    "aliases": [],
+    "minimum-stability": "stable",
+    "stability-flags": {},
+    "prefer-stable": true,
+    "prefer-lowest": false,
+    "platform": {"php": "^8.3", "ext-redis": "*"},
+    "platform-dev": {},
+    "plugin-api-version": "2.6.0"
+}"#;
+
+    #[test]
+    fn lock_parses_packagist_shape() {
+        let lock = Lock::from_bytes(FIXTURE_PACKAGIST_LOCK.as_bytes()).unwrap();
+        assert_eq!(lock.content_hash.as_deref(), Some("abc123def456abc123def456abc123de"));
+        assert_eq!(lock.packages.len(), 2);
+        assert_eq!(lock.packages_dev.len(), 1);
+        assert_eq!(lock.minimum_stability.as_deref(), Some("stable"));
+        assert!(lock.prefer_stable);
+        assert!(!lock.prefer_lowest);
+        assert_eq!(lock.plugin_api_version.as_deref(), Some("2.6.0"));
+        assert_eq!(lock.platform.get("php").map(String::as_str), Some("^8.3"));
+        assert_eq!(lock.platform.get("ext-redis").map(String::as_str), Some("*"));
+    }
+
+    #[test]
+    fn lock_package_exposes_dist_and_source() {
+        let lock = Lock::from_bytes(FIXTURE_PACKAGIST_LOCK.as_bytes()).unwrap();
+        let monolog = &lock.packages[0];
+        assert_eq!(monolog.name, "monolog/monolog");
+        assert_eq!(monolog.version, "3.5.0");
+        assert_eq!(monolog.version_normalized.as_deref(), Some("3.5.0.0"));
+
+        let dist = monolog.dist.as_ref().expect("dist present");
+        assert_eq!(dist.kind, "zip");
+        assert!(dist.url.contains("Seldaek/monolog/zipball/"));
+        assert_eq!(dist.shasum.as_deref(), Some("0000000000000000000000000000000000000000"));
+        assert_eq!(
+            dist.reference.as_deref(),
+            Some("c915e2634718dbc8a4a15c61b0e62e7a44e14448")
+        );
+
+        let src = monolog.source.as_ref().expect("source present");
+        assert_eq!(src.kind, "git");
+        assert!(src.url.contains("Seldaek/monolog.git"));
+
+        assert!(!monolog.is_path_dist());
+        assert!(!monolog.is_composer_plugin());
+    }
+
+    #[test]
+    fn lock_package_exposes_autoload_variants() {
+        let lock = Lock::from_bytes(FIXTURE_PACKAGIST_LOCK.as_bytes()).unwrap();
+        let monolog = &lock.packages[0];
+        let plugin = &lock.packages[1];
+
+        // psr-4: single dir as string.
+        let psr4 = monolog.autoload.psr_4.get("Monolog\\").expect("psr-4 entry");
+        assert_eq!(psr4.as_str(), Some("src/Monolog/"));
+
+        // psr-0 + classmap + files + exclude-from-classmap, all on
+        // the same package (the plugin entry exercises every shape).
+        assert!(plugin.autoload.psr_0.contains_key("Acme\\Plugin\\"));
+        assert_eq!(plugin.autoload.classmap, vec!["compat/"]);
+        assert_eq!(plugin.autoload.files, vec!["bootstrap.php"]);
+        assert_eq!(plugin.autoload.exclude_from_classmap, vec!["compat/legacy/"]);
+        assert_eq!(plugin.bin, vec!["bin/acme-plugin"]);
+    }
+
+    #[test]
+    fn lock_package_detects_composer_plugin_type() {
+        let lock = Lock::from_bytes(FIXTURE_PACKAGIST_LOCK.as_bytes()).unwrap();
+        let plugin = &lock.packages[1];
+        assert_eq!(plugin.package_type.as_deref(), Some("composer-plugin"));
+        assert!(plugin.is_composer_plugin());
+    }
+
+    #[test]
+    fn lock_package_captures_replace_and_provide() {
+        let lock = Lock::from_bytes(FIXTURE_PACKAGIST_LOCK.as_bytes()).unwrap();
+        let monolog = &lock.packages[0];
+        assert_eq!(
+            monolog.provide.get("psr/log-implementation").map(String::as_str),
+            Some("3.0.0")
+        );
+        assert!(monolog.replace.is_empty());
+        assert!(monolog.conflict.is_empty());
+    }
+
+    #[test]
+    fn lock_all_packages_iterates_runtime_then_dev() {
+        let lock = Lock::from_bytes(FIXTURE_PACKAGIST_LOCK.as_bytes()).unwrap();
+        let names: Vec<&str> = lock.all_packages().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, vec!["monolog/monolog", "acme/plugin", "phpunit/phpunit"]);
+    }
+
+    #[test]
+    fn lock_tolerates_minimal_lockfile() {
+        // Older / sparser lockfiles may omit nearly everything except
+        // packages + content-hash. The reader must not error on the
+        // absence of optional fields.
+        let minimal = br#"{
+            "content-hash": "deadbeefdeadbeefdeadbeefdeadbeef",
+            "packages": [
+                {"name": "acme/lean", "version": "0.1.0"}
+            ]
+        }"#;
+        let lock = Lock::from_bytes(minimal).unwrap();
+        assert_eq!(lock.packages.len(), 1);
+        let p = &lock.packages[0];
+        assert!(p.dist.is_none());
+        assert!(p.source.is_none());
+        assert!(p.require.is_empty());
+        assert!(p.autoload.psr_4.is_empty());
+        assert_eq!(p.package_type, None);
+        // Defaults on top-level booleans.
+        assert!(!lock.prefer_stable);
+        assert!(!lock.prefer_lowest);
+        assert!(lock.platform.is_empty());
+    }
+
+    #[test]
+    fn lock_path_dist_round_trips_from_autoloader_fixture() {
+        // The bougie-autoloader fixtures use `dist.type: "path"`
+        // entries (local-path repositories). Our reader must parse
+        // them too — exercising the same files the autoloader works
+        // against keeps the two crates honest about a shared schema.
+        let bytes = include_bytes!(
+            "../../bougie-autoloader/tests/fixtures/psr4-single/input/composer.lock"
+        );
+        let lock = Lock::from_bytes(bytes).unwrap();
+        assert_eq!(lock.packages.len(), 1);
+        let p = &lock.packages[0];
+        assert_eq!(p.name, "acme/lib");
+        assert!(p.is_path_dist());
+        let dist = p.dist.as_ref().unwrap();
+        assert_eq!(dist.kind, "path");
+        assert!(dist.shasum.is_none());
+        // psr-4 entry round-trips with the string form Composer
+        // writes for a single directory.
+        assert_eq!(
+            p.autoload.psr_4.get("Acme\\Lib\\").and_then(|v| v.as_str()),
+            Some("src/")
+        );
+    }
+
+    #[test]
+    fn lock_read_reads_from_disk() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("composer.lock");
+        std::fs::write(&path, FIXTURE_PACKAGIST_LOCK).unwrap();
+        let lock = Lock::read(&path).unwrap();
+        assert_eq!(lock.packages.len(), 2);
+    }
+
+    #[test]
+    fn lock_rejects_invalid_json_with_filename_context() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("composer.lock");
+        std::fs::write(&path, b"not json").unwrap();
+        let err = Lock::read(&path).expect_err("must error");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("composer.lock"), "error must name the file: {msg}");
     }
 }

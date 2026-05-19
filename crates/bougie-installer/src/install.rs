@@ -6,7 +6,7 @@ use crate::baseline::{BaselineFilter, BASELINE_EXTENSIONS};
 #[cfg(not(target_os = "windows"))]
 use crate::baseline::{skip_for_platform, PREINSTALLED_EXTENSIONS};
 use bougie_errors::BougieError;
-use bougie_fetch::{fetch_blob, BlobSpec, DownloadBar};
+use bougie_fetch::{fetch_blob, BlobSpec, DownloadBar, Hash};
 // Closure-peer tarballs are bougie-index-only; the consuming code is
 // `cfg(not(target_os = "windows"))` so the import has to match.
 #[cfg(not(target_os = "windows"))]
@@ -204,7 +204,7 @@ pub fn install_extension_with_bar(
     if !already_present {
         let blob_spec = BlobSpec {
             url: &recipe.blob.url,
-            sha256: &recipe.blob.sha256,
+            hash: Hash::sha256(&recipe.blob.sha256),
             partial_dir: &paths.cache_blobs(),
             dest: &dest,
             strip_prefix: &recipe.blob.strip_prefix,
@@ -800,7 +800,7 @@ pub fn install_closure_peers(
             let storename = format!("{}-{}-{}", entry.name, entry.version, entry.hash);
             let blob_spec = BlobSpec {
                 url: &entry.url,
-                sha256: &entry.sha256,
+                hash: Hash::sha256(&entry.sha256),
                 partial_dir: &paths.cache_blobs(),
                 dest: &store_path,
                 strip_prefix: &storename,

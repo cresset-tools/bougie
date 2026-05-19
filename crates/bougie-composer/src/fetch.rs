@@ -10,7 +10,7 @@
 
 use super::resolve::Resolved;
 use bougie_errors::BougieError;
-use bougie_fetch::{fetch_file, ArchiveKind, BlobSpec, DownloadBar};
+use bougie_fetch::{fetch_file, ArchiveKind, BlobSpec, DownloadBar, Hash};
 use bougie_paths::Paths;
 use eyre::{Result, WrapErr};
 use serde::Deserialize;
@@ -147,7 +147,7 @@ pub fn fetch_phar(
 
     let spec = BlobSpec {
         url: &phar_url,
-        sha256: &sha256,
+        hash: Hash::sha256(&sha256),
         partial_dir: &paths.cache_blobs(),
         dest: &dest,
         // fetch_file doesn't extract, so the prefix is irrelevant —
