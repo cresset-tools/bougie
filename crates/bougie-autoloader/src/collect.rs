@@ -13,7 +13,7 @@ use std::fmt::Write;
 use std::path::{Path, PathBuf};
 
 use crate::lock::{LockFile, RootManifest};
-use crate::scan::{self, ExcludePatterns, NamespaceFilter};
+use crate::scan::{self, ExcludePatterns, NamespaceFilter, ScanWarning};
 
 /// One PSR-4 or PSR-0 prefix and its install-path-prefixed dirs.
 pub(crate) struct Entry {
@@ -160,13 +160,28 @@ pub(crate) struct ClassmapEntry {
 /// classmap dirs are scanned first, then PSR-* dirs, mirroring the
 /// order in `AutoloadGenerator::dump`.
 #[allow(clippy::too_many_lines)] // task-list construction is naturally long and benefits from staying inline
+/// Output of [`classmap`]: the deduped + sorted entries plus the
+/// PSR-noncompliance warnings collected from the per-task scans. The
+/// CLI surfaces the warnings; the autoloader emit itself only needs
+/// `entries`.
+pub(crate) struct ClassmapOutput {
+    pub entries: Vec<ClassmapEntry>,
+    pub warnings: Vec<ScanWarning>,
+}
+
+/// `(scan_entries_as_path_expressions, warnings)` produced by one
+/// parallel classmap-scan task. Pulled out of [`classmap`] only to
+/// keep clippy's `type_complexity` lint quiet — the shape lives at
+/// one call site.
+type TaskResult = (Vec<(String, String)>, Vec<ScanWarning>);
+
 pub(crate) fn classmap(
     root: &RootManifest,
     lock: &LockFile,
     no_dev: bool,
     optimize: bool,
     project_root: &Path,
-) -> Vec<ClassmapEntry> {
+) -> ClassmapOutput {
     // Flatten scan tasks across packages + root. Each task owns its
     // scan root, the install path used to derive the emit-time
     // relative path, the namespace filter to apply to discovered
@@ -379,7 +394,7 @@ pub(crate) fn classmap(
     // Parallel scan — rayon preserves source order in `collect`, so
     // the sequential merge below sees results in the same order as
     // the lockfile + root iteration.
-    let per_task: Vec<Vec<(String, String)>> = tasks
+    let per_task: Vec<TaskResult> = tasks
         .par_iter()
         .map(|task| {
             let task_exclude = if task.needs_vendor_exclude {
@@ -387,7 +402,9 @@ pub(crate) fn classmap(
             } else {
                 &exclude_default
             };
-            scan::scan(&task.scan_root, &task.filter, task_exclude)
+            let out = scan::scan(&task.scan_root, &task.filter, task_exclude);
+            let entries = out
+                .entries
                 .into_iter()
                 .map(|(class, file_abs)| {
                     let rel = file_abs
@@ -400,17 +417,20 @@ pub(crate) fn classmap(
                     };
                     (class, path_expr)
                 })
-                .collect()
+                .collect();
+            (entries, out.warnings)
         })
         .collect();
 
     // Sequential merge: first-seen wins across tasks. BTreeMap sorts
     // the final output alphabetically for emit.
     let mut seen: BTreeMap<String, String> = BTreeMap::new();
-    for results in per_task {
+    let mut warnings: Vec<ScanWarning> = Vec::new();
+    for (results, task_warnings) in per_task {
         for (class, path_expr) in results {
             seen.entry(class).or_insert(path_expr);
         }
+        warnings.extend(task_warnings);
     }
 
     // Composer always emits the InstalledVersions row. The fixture's
@@ -419,9 +439,11 @@ pub(crate) fn classmap(
     seen.entry("Composer\\InstalledVersions".to_string())
         .or_insert_with(|| "$vendorDir . '/composer/InstalledVersions.php'".to_string());
 
-    seen.into_iter()
+    let entries = seen
+        .into_iter()
         .map(|(class, path_expr)| ClassmapEntry { class, path_expr })
-        .collect()
+        .collect();
+    ClassmapOutput { entries, warnings }
 }
 
 /// Composer's `AutoloadGenerator::getFileIdentifier`:
