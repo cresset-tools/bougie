@@ -9,4 +9,7 @@
 
 pub mod install;
 
-pub use install::{fetch_and_extract_dists, DistOutcome, DistRequest};
+pub use install::{
+    fetch_and_extract_dists, install_from_lock, DistOutcome, DistRequest, InstallOptions,
+    InstallSummary,
+};

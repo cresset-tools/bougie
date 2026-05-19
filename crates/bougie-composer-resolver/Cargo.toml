@@ -11,6 +11,15 @@ authors.workspace = true
 [dependencies]
 eyre = "0.6"
 rayon = "1.10"
+serde_json = "1"
+
+[dependencies.bougie-autoloader]
+path = "../bougie-autoloader"
+version = "0.1.0"
+
+[dependencies.bougie-composer]
+path = "../bougie-composer"
+version = "0.4.0"
 
 [dependencies.bougie-errors]
 path = "../bougie-errors"

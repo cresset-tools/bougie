@@ -488,12 +488,15 @@ dependencies = [
 name = "bougie-composer-resolver"
 version = "0.1.0"
 dependencies = [
+ "bougie-autoloader",
+ "bougie-composer",
  "bougie-errors",
  "bougie-fetch",
  "bougie-paths",
  "eyre",
  "rayon",
  "reqwest 0.13.3",
+ "serde_json",
  "sha1",
  "tempfile",
  "tokio",
