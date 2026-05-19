@@ -62,5 +62,10 @@ opt-level = 3
 panic = "abort"
 strip = "symbols"
 
+[profile.profiling]
+inherits = "release"
+debug = "line-tables-only"
+strip = "none"
+
 [profile.dev]
 # Default; mostly here so developers don't get surprised by a tuned profile.
