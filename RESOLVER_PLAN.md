@@ -589,21 +589,46 @@ Packagist v2 protocol: two files per package, both gzipped JSON:
 /p2/<vendor>/<name>~dev.json    # dev versions
 ```
 
-Both are large (hundreds of KB to MB for popular packages). We:
+Both can be large (hundreds of KB to MB for packages with long
+release histories — `symfony/console`, `monolog/monolog`, etc.).
+Versions are listed newest-first. We:
 
-1. Use HTTP conditional GET (`If-Modified-Since` against the cached
-   `last-modified/<name>` sentinel).
-2. Cache parsed `MetadataIndex` entries in memory for the duration
-   of the solve.
-3. Prefetch in a background tokio task: while the solver works on one
-   package's `get_dependencies`, the prefetcher pulls the top-N
-   not-yet-loaded packages mentioned in already-known dependency
-   lists, ranked by `Priorities`. Direct port of the uv strategy in
-   `crates/uv-resolver/src/resolver/batch_prefetch.rs`.
+1. **Conditional GET** via `If-None-Match` against an ETag sidecar
+   stored alongside the cached JSON. Packagist's response sets both
+   `ETag` and `Last-Modified`; we follow the existing
+   `bougie_composer::fetch::fetch_channels` convention and use ETag.
+   A 304 short-circuits to the cached body. (Shipped in the metadata
+   fetcher PR.)
+2. **Streaming parse + early termination** when the solver has a
+   lower-bound constraint hint. The minified `composer/2.0` format
+   is intrinsically sequential — each version is a sparse diff
+   against the previous — so a SAX-style parser (`struson` or
+   equivalent) decompresses gzip, expands diffs, and yields one
+   `LockPackage` at a time. Once the streamed `version_normalized`
+   drops below the constraint's lower bound, the rest of the
+   response is irrelevant and the body stream is dropped, closing
+   the HTTP connection. For a `^3.0` query against a package with
+   60 versions back to 1.0 we read maybe 10 entries instead of all
+   60. The cache copy on disk is still the full body (we tee writes
+   through as we stream), so subsequent fetches benefit from the
+   conditional-GET path.
+3. **Cache parsed `PackageMetadata` in memory** for the duration of
+   the solve, keyed by `(vendor/name, Variant)`.
+4. **Fan-out-on-discovery prefetcher.** When the solver enters
+   `get_dependencies(p@v)` and discovers a require on `acme/bar`,
+   kick off the fetch for `acme/bar`'s metadata immediately — don't
+   wait for the solver's later `choose_version` call to ask for it.
+   This is the orthogonal pattern to uv's `batch_prefetch.rs`
+   (which is conflict-driven: when uv has thrashed through ≥5
+   versions of one package, it speculatively prefetches metadata
+   for *more versions of that same package*). uv's pattern doesn't
+   apply here — Packagist returns every version of a package in a
+   single `/p2/` document, so we never need to fan out across
+   versions; we fan out across packages instead.
 
-The prefetcher is the largest single source of wall-clock improvement
-over Composer. Composer's resolver is algorithmically fine; it just
-fetches sequentially.
+Composer's resolver is algorithmically fine; it just fetches
+sequentially. The win comes from (2) + (4): overlap network with
+solver CPU, and short-circuit reading once we've seen what we need.
 
 ## Lockfile fidelity
 
