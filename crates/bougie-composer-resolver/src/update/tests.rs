@@ -545,3 +545,213 @@ fn platform_replace_clauses_are_skipped() {
     assert!(solution.get(&PubGrubPackage::Package("php".into())).is_none());
 }
 
+#[test]
+fn default_minimum_stability_is_stable_unchanged_behavior() {
+    // Composer's default is `stable`. Resolver should reject the
+    // beta even though it's the highest version.
+    let tmp = TempDir::new().unwrap();
+    let paths = paths_in(tmp.path());
+
+    let body = p2_body(
+        "acme/foo",
+        &[
+            ("2.0.0-beta1", json!({})),
+            ("1.0.0", json!({})),
+        ],
+    );
+
+    let rt = rt();
+    let (uri, _server) = rt.block_on(async {
+        let server = MockServer::start().await;
+        mount_p2(&server, "acme/foo", body).await;
+        (server.uri(), server)
+    });
+
+    let composer_json = json!({"require": {"acme/foo": ">=1.0"}});
+    let client = crate::metadata::build_client().unwrap();
+    let provider =
+        ResolveProvider::build(client, paths, uri, &composer_json, true).unwrap();
+    let root = provider.root_version();
+
+    let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
+    let foo = solution
+        .get(&PubGrubPackage::Package("acme/foo".into()))
+        .unwrap();
+    assert_eq!(foo.to_string(), "1.0.0.0", "beta must be filtered by default");
+}
+
+#[test]
+fn minimum_stability_dev_allows_dev_versions() {
+    // Only a `-dev` suffixed version is published. With the default
+    // stable gate this would be filtered; minimum-stability=dev must
+    // let it through.
+    let tmp = TempDir::new().unwrap();
+    let paths = paths_in(tmp.path());
+
+    // Pick a non-boundary version: 1.5.0-dev sits comfortably
+    // inside [1.0, 2.0) regardless of how the lower-bound marker
+    // is encoded (composer's partial-constraint rule synthesizes a
+    // stable lower bound for `^1.0`, so a 1.0.0-dev candidate would
+    // be excluded for unrelated reasons — see PR #115).
+    let body = p2_body("acme/devonly", &[("1.5.0-dev", json!({}))]);
+
+    let rt = rt();
+    let (uri, _server) = rt.block_on(async {
+        let server = MockServer::start().await;
+        mount_p2(&server, "acme/devonly", body).await;
+        (server.uri(), server)
+    });
+
+    let composer_json = json!({
+        "minimum-stability": "dev",
+        "require": {"acme/devonly": "^1.0"},
+    });
+    let client = crate::metadata::build_client().unwrap();
+    let provider =
+        ResolveProvider::build(client, paths, uri, &composer_json, true).unwrap();
+    let root = provider.root_version();
+
+    let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
+    assert!(solution
+        .get(&PubGrubPackage::Package("acme/devonly".into()))
+        .is_some());
+}
+
+#[test]
+fn minimum_stability_beta_accepts_beta_rejects_alpha() {
+    // Versions: 2.0-alpha1 (filtered), 1.5-beta1 (acceptable),
+    // 1.0 (stable, acceptable). Without floor: pick 2.0-alpha1.
+    // With minimum-stability=beta: pick 1.5-beta1 since it's
+    // higher than 1.0 stable and 2.0-alpha1 is below the floor.
+    let tmp = TempDir::new().unwrap();
+    let paths = paths_in(tmp.path());
+
+    let body = p2_body(
+        "acme/foo",
+        &[
+            ("2.0.0-alpha1", json!({})),
+            ("1.5.0-beta1", json!({})),
+            ("1.0.0", json!({})),
+        ],
+    );
+
+    let rt = rt();
+    let (uri, _server) = rt.block_on(async {
+        let server = MockServer::start().await;
+        mount_p2(&server, "acme/foo", body).await;
+        (server.uri(), server)
+    });
+
+    let composer_json = json!({
+        "minimum-stability": "beta",
+        "require": {"acme/foo": ">=1.0"},
+    });
+    let client = crate::metadata::build_client().unwrap();
+    let provider =
+        ResolveProvider::build(client, paths, uri, &composer_json, true).unwrap();
+    let root = provider.root_version();
+
+    let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
+    let foo = solution
+        .get(&PubGrubPackage::Package("acme/foo".into()))
+        .unwrap();
+    assert_eq!(foo.to_string(), "1.5.0.0-beta1", "got {}", foo);
+}
+
+#[test]
+fn per_package_at_dev_flag_overrides_default_stability() {
+    // Global default is `stable` (composer.json has no
+    // minimum-stability). acme/foo publishes only a -dev version;
+    // the root require carries `@dev` for acme/foo, so dev is
+    // acceptable for THIS package — bypassing the global gate.
+    let tmp = TempDir::new().unwrap();
+    let paths = paths_in(tmp.path());
+
+    let body = p2_body("acme/foo", &[("1.5.0-dev", json!({}))]);
+
+    let rt = rt();
+    let (uri, _server) = rt.block_on(async {
+        let server = MockServer::start().await;
+        mount_p2(&server, "acme/foo", body).await;
+        (server.uri(), server)
+    });
+
+    let composer_json = json!({
+        "require": {"acme/foo": "^1.0@dev"},
+    });
+    let client = crate::metadata::build_client().unwrap();
+    let provider =
+        ResolveProvider::build(client, paths, uri, &composer_json, true).unwrap();
+    let root = provider.root_version();
+
+    let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
+    assert!(solution
+        .get(&PubGrubPackage::Package("acme/foo".into()))
+        .is_some());
+}
+
+#[test]
+fn per_package_at_stable_flag_tightens_a_global_dev_floor() {
+    // Global is `dev`, so anything goes by default. acme/strict
+    // carries `@stable` — it's restricted to stable candidates even
+    // though the global floor is below. Other packages (acme/loose)
+    // get the global floor.
+    let tmp = TempDir::new().unwrap();
+    let paths = paths_in(tmp.path());
+
+    let strict = p2_body(
+        "acme/strict",
+        &[("2.0.0-beta1", json!({})), ("1.0.0", json!({}))],
+    );
+    let loose = p2_body(
+        "acme/loose",
+        &[("2.0.0-beta1", json!({})), ("1.0.0", json!({}))],
+    );
+
+    let rt = rt();
+    let (uri, _server) = rt.block_on(async {
+        let server = MockServer::start().await;
+        mount_p2(&server, "acme/strict", strict).await;
+        mount_p2(&server, "acme/loose", loose).await;
+        (server.uri(), server)
+    });
+
+    let composer_json = json!({
+        "minimum-stability": "dev",
+        "require": {
+            "acme/strict": "*@stable",
+            "acme/loose": "*",
+        },
+    });
+    let client = crate::metadata::build_client().unwrap();
+    let provider =
+        ResolveProvider::build(client, paths, uri, &composer_json, true).unwrap();
+    let root = provider.root_version();
+
+    let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
+    let strict = solution
+        .get(&PubGrubPackage::Package("acme/strict".into()))
+        .unwrap();
+    let loose = solution
+        .get(&PubGrubPackage::Package("acme/loose".into()))
+        .unwrap();
+    assert_eq!(strict.to_string(), "1.0.0.0", "strict must drop the beta");
+    assert_eq!(loose.to_string(), "2.0.0.0-beta1", "loose can keep the beta");
+}
+
+#[test]
+fn unknown_minimum_stability_value_is_a_build_error() {
+    let tmp = TempDir::new().unwrap();
+    let paths = paths_in(tmp.path());
+    let composer_json = json!({
+        "minimum-stability": "wonky",
+        "require": {},
+    });
+    let client = crate::metadata::build_client().unwrap();
+    let err = ResolveProvider::build(client, paths, "http://x".into(), &composer_json, true)
+        .unwrap_err();
+    let msg = format!("{err}");
+    assert!(msg.contains("wonky"), "{msg}");
+    assert!(msg.contains("stable"), "{msg}");
+}
+
