@@ -8,7 +8,10 @@ repository = "https://github.com/cresset-tools/bougie"
 rust-version = "1.95"
 authors.workspace = true
 
-[dependencies]
+[dependencies.regex]
+version = "1.11"
+default-features = false
+features = ["std", "perf", "unicode-perl", "unicode-case"]
 
 [dev-dependencies]
 serde = { version = "1", features = ["derive"] }
