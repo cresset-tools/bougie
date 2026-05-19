@@ -30,12 +30,26 @@ pub const USER_AGENT: &str = concat!(
 
 /// Build a `reqwest::blocking::Client` with the bougie [`USER_AGENT`]
 /// set. Every outbound external request should go through this so the
-/// UA, redirect policy, and connection settings stay consistent across
+/// UA, timeout policy, and connection settings stay consistent across
 /// crates. Tests and localhost provisioner clients can keep their own
 /// builders — they don't represent bougie to the outside world.
+///
+/// **Timeouts:**
+/// - `connect_timeout = 10s`. Bounds the TCP+TLS handshake — a slow
+///   or hung peer (network blip, captive portal) fails fast instead
+///   of blocking the resolver forever.
+/// - `timeout = 300s`. Total per-request budget. Matches Composer's
+///   own default (`Composer\Util\HttpDownloader`). Generous enough
+///   for a 100MB dist on a slow link, tight enough that a runaway
+///   read doesn't hang the install indefinitely.
+///
+/// Both are per-request, not per-keepalive — connection reuse across
+/// requests is unaffected.
 pub fn default_client() -> Result<reqwest::blocking::Client> {
     reqwest::blocking::Client::builder()
         .user_agent(USER_AGENT)
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(300))
         .build()
         .map_err(|e| {
             BougieError::Network {
