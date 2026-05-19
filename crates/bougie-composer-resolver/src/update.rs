@@ -13,12 +13,23 @@
 //! stable version, drops platform packages (`php`, `ext-*`, etc.) at
 //! the require boundary the way `LockVerifyProvider` does.
 //!
+//! `replace` and `provide` are encoded by `get_dependencies` as
+//! additional constraints — selecting `P@V` forces every named
+//! alternative to satisfy `P`'s declared clause for it. The
+//! semantic distinction Composer draws between the two (replace =
+//! exclusive swap, provide = weaker capability) is invisible in
+//! plain pubgrub requires; both collapse to "if P is selected,
+//! then Q must match this range." The lockfile writer is
+//! responsible for de-duping the install set when both `P` and
+//! the replaced `Q` end up in the solution. See the comment in
+//! `get_dependencies` for the known edge cases.
+//!
 //! Out of scope (follow-ups):
 //! - `minimum-stability` / `prefer-stable` / per-package stability
 //!   flags (currently hard-coded to "stable-only candidates")
-//! - `replace` / `provide` (a package that `replace`s another should
-//!   satisfy requires on the replaced name)
 //! - Platform-package version checks against the bougie-pinned PHP
+//!   (issue #118 — affects polyfill-style `replace: { php: "..." }`
+//!   declarations too)
 //! - Custom repositories beyond Packagist
 //! - The dev variant (`/p2/<name>~dev.json`) — only the stable
 //!   document is consulted right now
@@ -205,6 +216,33 @@ impl std::fmt::Display for BuildError {
 
 impl std::error::Error for BuildError {}
 
+/// Parse each `(dep_name, constraint_str)` pair from one of the
+/// `require` / `replace` / `provide` maps and append it to `out` as
+/// a pubgrub constraint. Platform packages are skipped (their
+/// version check is tracked separately in issue #118). `clause_kind`
+/// is the source label used in error messages so a malformed
+/// constraint reports whether it came from a require, a replace,
+/// or a provide.
+fn push_constraint_map(
+    out: &mut Vec<(String, ComposerRange)>,
+    map: &std::collections::BTreeMap<String, String>,
+    owner: &str,
+    clause_kind: &'static str,
+) -> Result<(), ProviderError> {
+    for (dep_name, raw) in map {
+        if is_platform(dep_name) {
+            continue;
+        }
+        let constraint = Constraint::parse(raw).map_err(|e| {
+            ProviderError(format!(
+                "constraint {raw:?} on `{dep_name}` ({clause_kind} from `{owner}`): {e}",
+            ))
+        })?;
+        out.push((dep_name.clone(), to_range(&constraint)));
+    }
+    Ok(())
+}
+
 impl DependencyProvider for ResolveProvider {
     type P = PubGrubPackage;
     type V = Version;
@@ -275,17 +313,32 @@ impl DependencyProvider for ResolveProvider {
                     )));
                 };
                 let mut out: Vec<(String, ComposerRange)> = Vec::new();
-                for (dep_name, raw) in &entry.require {
-                    if is_platform(dep_name) {
-                        continue;
-                    }
-                    let constraint = Constraint::parse(raw).map_err(|e| {
-                        ProviderError(format!(
-                            "constraint {raw:?} on `{dep_name}` (from `{name}`): {e}",
-                        ))
-                    })?;
-                    out.push((dep_name.clone(), to_range(&constraint)));
-                }
+                push_constraint_map(&mut out, &entry.require, name, "require")?;
+                // `replace` and `provide` get encoded as additional
+                // requires: selecting this package forces the named
+                // alternative to satisfy the replace/provide
+                // constraint. The semantic distinction Composer
+                // draws — "replace = strict swap, only one wins"
+                // versus "provide = weaker capability assertion" —
+                // is invisible in plain pubgrub requires. Both
+                // collapse to "if you pick P@V, then Q must be in
+                // <clause>". This is correct for the common case
+                // of a project requiring both the replacer and the
+                // replaced; the lockfile writer is responsible for
+                // de-duping the install set so we don't extract
+                // the same code twice.
+                //
+                // Two known limitations, both documented:
+                // - Platform replaces (`replace: { php: "8.0.x" }`
+                //   on polyfills) still skip — platform packages
+                //   are filtered before they reach pubgrub. Tracked
+                //   in issue #118.
+                // - Monolith replacers (a package replacing one
+                //   that has no standalone Packagist entry) will
+                //   fail resolution. Rare in practice; surfaces as
+                //   a fixture failure if it bites.
+                push_constraint_map(&mut out, &entry.replace, name, "replace")?;
+                push_constraint_map(&mut out, &entry.provide, name, "provide")?;
                 out
             }
         };
