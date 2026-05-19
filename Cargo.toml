@@ -11,6 +11,7 @@ members = [
     "crates/bougie-cli",
     "crates/bougie-backend",
     "crates/bougie-composer",
+    "crates/bougie-composer-resolver",
     "crates/bougie-config",
     "crates/bougie-daemon",
     "crates/bougie-errors",

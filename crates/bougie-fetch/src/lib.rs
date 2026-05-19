@@ -14,6 +14,41 @@ use std::io::{copy, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+/// Which hash algorithm verifies a download. Bougie's own published
+/// blobs use sha256; Composer's Packagist dist `shasum` field is sha1.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HashAlgo {
+    Sha1,
+    Sha256,
+}
+
+impl HashAlgo {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Sha1 => "sha1",
+            Self::Sha256 => "sha256",
+        }
+    }
+}
+
+/// A hex-encoded digest paired with its algorithm. Borrowed so a
+/// `BlobSpec` literal can point at the hash string from an enclosing
+/// manifest without cloning.
+#[derive(Debug, Clone, Copy)]
+pub struct Hash<'a> {
+    pub algo: HashAlgo,
+    pub hex: &'a str,
+}
+
+impl<'a> Hash<'a> {
+    pub fn sha256(hex: &'a str) -> Self {
+        Self { algo: HashAlgo::Sha256, hex }
+    }
+    pub fn sha1(hex: &'a str) -> Self {
+        Self { algo: HashAlgo::Sha1, hex }
+    }
+}
+
 /// Aggregate download progress bar shared across many `fetch_blob`/
 /// `fetch_file` calls. Renders a single bar with the running label of
 /// the part currently in flight; orchestrators (e.g. baseline install,
@@ -52,7 +87,11 @@ pub enum ArchiveKind {
 #[derive(Debug, Clone)]
 pub struct BlobSpec<'a> {
     pub url: &'a str,
-    pub sha256: &'a str,
+    /// The expected content hash. Use [`Hash::sha256`] for bougie-
+    /// published blobs (the index emits sha256 universally) and
+    /// [`Hash::sha1`] for Composer dist artifacts (Packagist's
+    /// `dist.shasum` field is legacy sha1).
+    pub hash: Hash<'a>,
     pub partial_dir: &'a Path,
     pub dest: &'a Path,
     /// Leading path component to strip from every entry while
@@ -138,7 +177,7 @@ fn fetch_to_partial(
     spec: &BlobSpec<'_>,
     bar: &DownloadBar,
 ) -> Result<PathBuf> {
-    let tmp = spec.partial_dir.join(format!("{}.partial", spec.sha256));
+    let tmp = spec.partial_dir.join(format!("{}.partial", spec.hash.hex));
 
     let mut resp = client.get(spec.url).send().map_err(|e| BougieError::Network {
         operation: format!("fetching blob {}", spec.url),
@@ -153,34 +192,70 @@ fn fetch_to_partial(
     }
 
     let mut file = File::create(&tmp).wrap_err_with(|| format!("creating {}", tmp.display()))?;
-    let mut hasher = Sha256::new();
-    let mut buf = vec![0u8; 64 * 1024];
-    loop {
-        let n = resp.read(&mut buf).map_err(|e| BougieError::Network {
-            operation: format!("reading blob body from {}", spec.url),
-            detail: e.to_string(),
-        })?;
-        if n == 0 {
-            break;
-        }
-        hasher.update(&buf[..n]);
-        file.write_all(&buf[..n])
-            .wrap_err_with(|| format!("writing {}", tmp.display()))?;
-        bar.inc(n as u64);
-    }
+    let actual = stream_into_file(&mut resp, &mut file, spec, bar, &tmp)?;
     file.flush().wrap_err("flushing partial blob")?;
 
-    let actual = format_hex(&hasher.finalize());
-    if !actual.eq_ignore_ascii_case(spec.sha256) {
+    if !actual.eq_ignore_ascii_case(spec.hash.hex) {
         let _ = fs::remove_file(&tmp);
         return Err(BougieError::BlobHashMismatch {
             url: spec.url.to_owned(),
-            expected: spec.sha256.to_owned(),
-            actual,
+            expected: format!("{}:{}", spec.hash.algo.as_str(), spec.hash.hex),
+            actual: format!("{}:{}", spec.hash.algo.as_str(), actual),
         }
         .into());
     }
     Ok(tmp)
+}
+
+/// Stream `resp` into `file` while feeding bytes to the algorithm
+/// selected by `spec.hash.algo`. Returns the computed hex digest.
+/// Split out so the algorithm branch sits in one place instead of
+/// duplicating the byte-copy loop.
+fn stream_into_file(
+    resp: &mut reqwest::blocking::Response,
+    file: &mut File,
+    spec: &BlobSpec<'_>,
+    bar: &DownloadBar,
+    tmp: &Path,
+) -> Result<String> {
+    let mut buf = vec![0u8; 64 * 1024];
+    match spec.hash.algo {
+        HashAlgo::Sha256 => {
+            let mut hasher = Sha256::new();
+            loop {
+                let n = resp.read(&mut buf).map_err(|e| BougieError::Network {
+                    operation: format!("reading blob body from {}", spec.url),
+                    detail: e.to_string(),
+                })?;
+                if n == 0 {
+                    break;
+                }
+                hasher.update(&buf[..n]);
+                file.write_all(&buf[..n])
+                    .wrap_err_with(|| format!("writing {}", tmp.display()))?;
+                bar.inc(n as u64);
+            }
+            Ok(format_hex(&hasher.finalize()))
+        }
+        HashAlgo::Sha1 => {
+            use sha1::Digest as _;
+            let mut hasher = sha1::Sha1::new();
+            loop {
+                let n = resp.read(&mut buf).map_err(|e| BougieError::Network {
+                    operation: format!("reading blob body from {}", spec.url),
+                    detail: e.to_string(),
+                })?;
+                if n == 0 {
+                    break;
+                }
+                hasher.update(&buf[..n]);
+                file.write_all(&buf[..n])
+                    .wrap_err_with(|| format!("writing {}", tmp.display()))?;
+                bar.inc(n as u64);
+            }
+            Ok(format_hex(&hasher.finalize()))
+        }
+    }
 }
 
 fn try_once_blob(
@@ -298,8 +373,10 @@ fn extract_tar_zst(tar_zst: &Path, into: &Path, strip_prefix: &str) -> Result<()
 /// Extract a `.zip` archive into `into`, stripping `strip_prefix` as a
 /// leading path component from every entry (same convention as
 /// [`extract_tar_zst`]). Used for windows.php.net interpreter ZIPs,
-/// which wrap their contents in `php-<version>/`, and for PECL DLL
-/// ZIPs, which are flat (`strip_prefix = ""`).
+/// which wrap their contents in `php-<version>/`, for PECL DLL ZIPs,
+/// which are flat (`strip_prefix = ""`), and by
+/// `bougie-composer-resolver` for Composer package dist zips (which
+/// wrap contents in `<vendor>-<package>-<short_sha>/`).
 ///
 /// Symlink entries (only seen in unix-built ZIPs) are not expected on
 /// the windows.php.net surface and are unpacked as plain files;
@@ -307,7 +384,7 @@ fn extract_tar_zst(tar_zst: &Path, into: &Path, strip_prefix: &str) -> Result<()
 /// it. The `zip` crate's own `ZipArchive::extract` would handle them
 /// on Unix, but rolling the walk by hand here keeps the strip-prefix
 /// rewrite (which `extract` doesn't support) trivial.
-fn extract_zip(zip_path: &Path, into: &Path, strip_prefix: &str) -> Result<()> {
+pub fn extract_zip(zip_path: &Path, into: &Path, strip_prefix: &str) -> Result<()> {
     let f = File::open(zip_path)
         .wrap_err_with(|| format!("opening {}", zip_path.display()))?;
     let mut archive = zip::ZipArchive::new(f)

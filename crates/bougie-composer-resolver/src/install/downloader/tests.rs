@@ -1,0 +1,331 @@
+//! Unit tests for the parallel dist downloader.
+//!
+//! Each test spins up a `wiremock` server (already in the workspace
+//! lockfile, used by phase7_sync) on a per-test tokio runtime. The
+//! production code is blocking so the test driver constructs the
+//! runtime, sets up the mock, then calls into the blocking
+//! `fetch_and_extract_dists` from the main thread.
+
+use super::*;
+use bougie_fetch::{ArchiveKind, DownloadBar};
+use bougie_paths::Paths;
+use sha1::Digest as _;
+use std::io::Write as _;
+use tempfile::TempDir;
+use wiremock::matchers::{method, path as wm_path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
+
+fn rt() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+}
+
+fn sha1_hex(bytes: &[u8]) -> String {
+    let digest = sha1::Sha1::digest(bytes);
+    let mut s = String::with_capacity(40);
+    for b in digest {
+        use std::fmt::Write as _;
+        let _ = write!(s, "{b:02x}");
+    }
+    s
+}
+
+/// Build a small zip whose entries live under `acme-foo-abc1234/` so
+/// `strip_prefix = "acme-foo-abc1234"` lands them at the dest root —
+/// mirrors Packagist's standard dist layout.
+fn build_fixture_zip(top: &str) -> Vec<u8> {
+    let mut buf: Vec<u8> = Vec::new();
+    {
+        let cursor = std::io::Cursor::new(&mut buf);
+        let mut zw = zip::ZipWriter::new(cursor);
+        let opts = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        zw.start_file(format!("{top}/composer.json"), opts).unwrap();
+        zw.write_all(br#"{"name":"acme/foo"}"#).unwrap();
+        zw.start_file(format!("{top}/src/Foo.php"), opts).unwrap();
+        zw.write_all(b"<?php class Foo {}\n").unwrap();
+        zw.finish().unwrap();
+    }
+    buf
+}
+
+/// Build a [`Paths`] rooted at `tmp` so the test owns its cache dir.
+fn paths_in(tmp: &Path) -> Paths {
+    let home = tmp.join("home");
+    let cache = tmp.join("cache");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::create_dir_all(&cache).unwrap();
+    Paths::new(home, cache)
+}
+
+#[test]
+fn downloads_single_zip_and_extracts_with_strip_prefix() {
+    let tmp = TempDir::new().unwrap();
+    let paths = paths_in(tmp.path());
+    let vendor_dest = tmp.path().join("vendor").join("acme").join("foo");
+
+    let body = build_fixture_zip("acme-foo-abc1234");
+    let hash = sha1_hex(&body);
+
+    let rt = rt();
+    let (uri, _server) = rt.block_on(async {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(wm_path("/dists/acme-foo.zip"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(body.clone()))
+            .mount(&server)
+            .await;
+        let uri = server.uri();
+        (uri, server)
+    });
+
+    let url = format!("{uri}/dists/acme-foo.zip");
+    let client = reqwest::blocking::Client::new();
+    let bar = DownloadBar::hidden();
+    let dists = [DistRequest {
+        package_name: "acme/foo",
+        url: &url,
+        sha1: &hash,
+        archive: ArchiveKind::Zip,
+        strip_prefix: "acme-foo-abc1234",
+        vendor_dest: &vendor_dest,
+    }];
+
+    fetch_and_extract_dists(&client, &paths, &dists, &bar).unwrap();
+
+    assert!(vendor_dest.join("composer.json").is_file());
+    assert!(vendor_dest.join("src/Foo.php").is_file());
+    assert!(!vendor_dest.join("acme-foo-abc1234").exists());
+    let cached = paths.cache_composer_dist().join(format!("{hash}.zip"));
+    assert!(cached.is_file(), "cache file should be retained for reuse");
+}
+
+#[test]
+fn cache_hit_short_circuits_network() {
+    // Pre-populate the cache; the mock server returns 500 if hit, so
+    // any HTTP attempt would fail the test loudly.
+    let tmp = TempDir::new().unwrap();
+    let paths = paths_in(tmp.path());
+    let vendor_dest = tmp.path().join("vendor").join("acme").join("foo");
+
+    let body = build_fixture_zip("acme-foo-deadbeef");
+    let hash = sha1_hex(&body);
+    let cache_dir = paths.cache_composer_dist();
+    std::fs::create_dir_all(&cache_dir).unwrap();
+    std::fs::write(cache_dir.join(format!("{hash}.zip")), &body).unwrap();
+
+    let rt = rt();
+    let (uri, _server) = rt.block_on(async {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(wm_path("/dists/acme-foo.zip"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+        let uri = server.uri();
+        (uri, server)
+    });
+
+    let url = format!("{uri}/dists/acme-foo.zip");
+    let client = reqwest::blocking::Client::new();
+    let bar = DownloadBar::hidden();
+    let dists = [DistRequest {
+        package_name: "acme/foo",
+        url: &url,
+        sha1: &hash,
+        archive: ArchiveKind::Zip,
+        strip_prefix: "acme-foo-deadbeef",
+        vendor_dest: &vendor_dest,
+    }];
+
+    fetch_and_extract_dists(&client, &paths, &dists, &bar).unwrap();
+    assert!(vendor_dest.join("composer.json").is_file());
+}
+
+#[test]
+fn hash_mismatch_aborts_install_cleanly() {
+    let tmp = TempDir::new().unwrap();
+    let paths = paths_in(tmp.path());
+    let vendor_dest = tmp.path().join("vendor").join("acme").join("foo");
+
+    let body = build_fixture_zip("acme-foo-aaaa");
+    // Claim the wrong hash — bougie-fetch must reject the bytes and
+    // leave neither a `.partial` nor a cached zip behind.
+    let wrong_hash = "0000000000000000000000000000000000000000";
+
+    let rt = rt();
+    let (uri, _server) = rt.block_on(async {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(wm_path("/dists/acme-foo.zip"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(body))
+            .mount(&server)
+            .await;
+        let uri = server.uri();
+        (uri, server)
+    });
+
+    let url = format!("{uri}/dists/acme-foo.zip");
+    let client = reqwest::blocking::Client::new();
+    let bar = DownloadBar::hidden();
+    let dists = [DistRequest {
+        package_name: "acme/foo",
+        url: &url,
+        sha1: wrong_hash,
+        archive: ArchiveKind::Zip,
+        strip_prefix: "acme-foo-aaaa",
+        vendor_dest: &vendor_dest,
+    }];
+
+    let err = fetch_and_extract_dists(&client, &paths, &dists, &bar)
+        .expect_err("hash mismatch must error");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("hash") || msg.contains("Hash") || msg.contains("sha1"),
+        "expected hash-mismatch context in error, got: {msg}"
+    );
+
+    // No cached zip, no leftover `.partial`. The directory might exist
+    // (we mkdir it before the fetch) but it must not contain the
+    // failed download under either filename.
+    let cache_dir = paths.cache_composer_dist();
+    let cached = cache_dir.join(format!("{wrong_hash}.zip"));
+    let partial = cache_dir.join(format!("{wrong_hash}.partial"));
+    assert!(!cached.exists(), "no cached zip for failed hash");
+    assert!(!partial.exists(), "no leftover .partial");
+    // `vendor_dest` must not exist either — we never get to extract.
+    assert!(!vendor_dest.exists());
+}
+
+#[test]
+fn parallel_four_dists_share_one_bar() {
+    let tmp = TempDir::new().unwrap();
+    let paths = paths_in(tmp.path());
+
+    // Four distinct packages, each with its own fixture zip and dest.
+    let pkgs: Vec<(String, String, Vec<u8>)> = (0..4)
+        .map(|i| {
+            let top = format!("acme-pkg{i}-aaaa");
+            let body = build_fixture_zip(&top);
+            let hash = sha1_hex(&body);
+            (top, hash, body)
+        })
+        .collect();
+
+    let rt = rt();
+    let (uri, _server) = rt.block_on(async {
+        let server = MockServer::start().await;
+        for (i, (_, _, body)) in pkgs.iter().enumerate() {
+            Mock::given(method("GET"))
+                .and(wm_path(format!("/p{i}.zip")))
+                .respond_with(ResponseTemplate::new(200).set_body_bytes(body.clone()))
+                .mount(&server)
+                .await;
+        }
+        let uri = server.uri();
+        (uri, server)
+    });
+
+    let urls: Vec<String> = (0..4).map(|i| format!("{uri}/p{i}.zip")).collect();
+    let names: Vec<String> = (0..4).map(|i| format!("acme/pkg{i}")).collect();
+    let dests: Vec<PathBuf> = (0..4)
+        .map(|i| tmp.path().join("vendor").join("acme").join(format!("pkg{i}")))
+        .collect();
+
+    let dists: Vec<DistRequest<'_>> = (0..4)
+        .map(|i| DistRequest {
+            package_name: &names[i],
+            url: &urls[i],
+            sha1: &pkgs[i].1,
+            archive: ArchiveKind::Zip,
+            strip_prefix: &pkgs[i].0,
+            vendor_dest: &dests[i],
+        })
+        .collect();
+
+    let client = reqwest::blocking::Client::new();
+    let bar = DownloadBar::hidden();
+    fetch_and_extract_dists(&client, &paths, &dists, &bar).unwrap();
+
+    for dest in &dests {
+        assert!(dest.join("composer.json").is_file());
+        assert!(dest.join("src/Foo.php").is_file());
+    }
+}
+
+#[test]
+fn extract_strips_top_level_directory() {
+    // Tighter check than the success test: verify that *no* file with
+    // the top-level directory component as a path segment survives in
+    // `vendor_dest`. Catches a regression where strip_prefix is
+    // mis-threaded and entries land under `vendor_dest/top/...`.
+    let tmp = TempDir::new().unwrap();
+    let paths = paths_in(tmp.path());
+    let vendor_dest = tmp.path().join("vendor").join("acme").join("strip");
+
+    let top = "acme-strip-9876543";
+    let body = build_fixture_zip(top);
+    let hash = sha1_hex(&body);
+
+    let rt = rt();
+    let (uri, _server) = rt.block_on(async {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(wm_path("/d.zip"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(body))
+            .mount(&server)
+            .await;
+        (server.uri(), server)
+    });
+
+    let url = format!("{uri}/d.zip");
+    let client = reqwest::blocking::Client::new();
+    let bar = DownloadBar::hidden();
+    let dists = [DistRequest {
+        package_name: "acme/strip",
+        url: &url,
+        sha1: &hash,
+        archive: ArchiveKind::Zip,
+        strip_prefix: top,
+        vendor_dest: &vendor_dest,
+    }];
+    fetch_and_extract_dists(&client, &paths, &dists, &bar).unwrap();
+
+    // Walk vendor_dest; assert no path component equals the stripped
+    // top-level name.
+    let mut count = 0usize;
+    for entry in walkdir(&vendor_dest) {
+        count += 1;
+        for part in entry.components() {
+            if let std::path::Component::Normal(p) = part {
+                assert_ne!(p.to_str(), Some(top), "stripped prefix leaked: {entry:?}");
+            }
+        }
+    }
+    assert!(count > 0, "no files extracted");
+}
+
+/// Minimal recursive walk: returns every path under `root` relative
+/// to `root`. Avoids pulling `walkdir` into the test deps just for
+/// this one assertion.
+fn walkdir(root: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in rd.flatten() {
+            let p = entry.path();
+            let rel = p.strip_prefix(root).unwrap().to_path_buf();
+            if p.is_dir() {
+                stack.push(p);
+            } else {
+                out.push(rel);
+            }
+        }
+    }
+    out
+}

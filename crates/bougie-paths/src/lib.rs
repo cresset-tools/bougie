@@ -196,6 +196,18 @@ impl Paths {
     pub fn cache_blobs(&self) -> PathBuf {
         self.cache.join("blobs")
     }
+    /// Persistent, content-addressed cache of Composer package dist
+    /// archives at `$BOUGIE_CACHE/composer-dist/<sha1>.<ext>`. Unlike
+    /// [`cache_blobs`] (which holds in-flight `.partial` files and is
+    /// purged after each fetch), this directory keeps the verified
+    /// archives so a second `bougie composer install` in another
+    /// project that needs the same `monolog/monolog 3.2.0` reuses the
+    /// existing copy without a network round-trip. Mirrors what
+    /// Composer's own `~/.composer/cache/files/` does, just under
+    /// bougie's XDG-strict layout.
+    pub fn cache_composer_dist(&self) -> PathBuf {
+        self.cache.join("composer-dist")
+    }
 
     // ---------- `bougied` daemon + service supervisor paths ----------
     //
@@ -357,6 +369,7 @@ mod tests {
         // Cache (transient).
         assert_eq!(p.cache_index("origin.example"), Path::new("/c/index/origin.example"));
         assert_eq!(p.cache_blobs(), Path::new("/c/blobs"));
+        assert_eq!(p.cache_composer_dist(), Path::new("/c/composer-dist"));
     }
 
     /// Two-arg `new(home, cache)` shorthand keeps the legacy single-root
