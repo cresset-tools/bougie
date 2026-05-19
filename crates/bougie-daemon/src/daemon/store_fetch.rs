@@ -117,12 +117,7 @@ fn fetch_blocking(paths: &Paths, entry: &CatalogEntry) -> Result<Vec<ResolvedToo
         return Ok(Vec::new());
     }
 
-    let client = reqwest::blocking::Client::builder()
-        .build()
-        .map_err(|e| BougieError::Network {
-            operation: "building HTTP client".into(),
-            detail: e.to_string(),
-        })?;
+    let client = bougie_fetch::default_client()?;
 
     let cache_root = paths.cache_index(&host_to_dirname(&host));
     let fetched = fetch_root(&client, &host, &cache_root, build_verifier)?;
