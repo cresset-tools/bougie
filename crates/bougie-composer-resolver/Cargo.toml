@@ -10,6 +10,7 @@ authors.workspace = true
 
 [dependencies]
 eyre = "0.6"
+pubgrub = "0.4"
 rayon = "1.10"
 serde_json = "1"
 
@@ -32,6 +33,10 @@ version = "0.4.0"
 [dependencies.bougie-paths]
 path = "../bougie-paths"
 version = "0.4.0"
+
+[dependencies.bougie-semver]
+path = "../bougie-semver"
+version = "0.1.0"
 
 [dependencies.reqwest]
 version = "0.13"

@@ -8,6 +8,7 @@
 //! reader land in later phases.
 
 pub mod install;
+pub mod verify;
 
 pub use install::{
     fetch_and_extract_dists, install_from_lock, DistOutcome, DistRequest, InstallOptions,
