@@ -38,12 +38,14 @@ fn main() {
 }
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
-    let mut args = std::env::args().skip(1);
-    let project = PathBuf::from(args.next().ok_or(
-        "usage: dump_bench <project-root> [iters]\n\
+    let raw: Vec<String> = std::env::args().skip(1).collect();
+    let optimize = raw.iter().any(|a| a == "-o" || a == "--optimize");
+    let mut positional = raw.iter().filter(|a| !a.starts_with('-'));
+    let project = PathBuf::from(positional.next().ok_or(
+        "usage: dump_bench <project-root> [iters] [-o|--optimize]\n\
          project-root must contain composer.json, composer.lock, and a populated vendor/",
     )?);
-    let iters: usize = args.next().as_deref().unwrap_or("5").parse()?;
+    let iters: usize = positional.next().map(String::as_str).unwrap_or("5").parse()?;
 
     if !project.join("composer.json").is_file() {
         return Err(format!("no composer.json at {}", project.display()).into());
@@ -69,15 +71,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .map_err(|e| format!("staging copy {} → {} failed: {e}", project.display(), work_root.display()))?;
     let guard = Cleanup(work_root.clone());
 
-    println!("iterations: {iters} (first is warmup)\n");
+    println!(
+        "iterations: {iters} (first is warmup){}\n",
+        if optimize { " — optimize=true" } else { "" }
+    );
 
-    let bougie_summary = run_bougie(&guard.0, iters)?;
+    let bougie_summary = run_bougie(&guard.0, iters, optimize)?;
 
     let composer = locate_composer();
     let composer_summary = match composer {
         Some(cmd) => {
             println!();
-            Some(run_composer(&cmd, &guard.0, iters)?)
+            Some(run_composer(&cmd, &guard.0, iters, optimize)?)
         }
         None => {
             println!(
@@ -104,11 +109,15 @@ struct Summary {
     median: Duration,
 }
 
-fn run_bougie(project: &Path, iters: usize) -> Result<Summary, Box<dyn std::error::Error>> {
+fn run_bougie(
+    project: &Path,
+    iters: usize,
+    optimize: bool,
+) -> Result<Summary, Box<dyn std::error::Error>> {
     println!("== bougie dump_autoload ==");
     let req = DumpRequest {
         project_root: project,
-        optimize: false,
+        optimize,
         classmap_authoritative: false,
         no_dev: false,
         apcu_autoloader: false,
@@ -158,6 +167,7 @@ fn run_composer(
     cmd: &ComposerCmd,
     project: &Path,
     iters: usize,
+    optimize: bool,
 ) -> Result<Summary, Box<dyn std::error::Error>> {
     let (label, mut base) = match cmd {
         ComposerCmd::Phar(p) => (
@@ -171,6 +181,12 @@ fn run_composer(
         ComposerCmd::Bin(p) => (p.display().to_string(), Command::new(p)),
     };
     base.args(["dump-autoload", "--no-interaction", "--no-scripts", "--quiet"]);
+    if optimize {
+        // `dump-autoload` accepts `--optimize` / `-o`; the
+        // `--optimize-autoloader` long form only exists on `install`/
+        // `update` because it's a hint at install time. Mirror that.
+        base.arg("--optimize");
+    }
     base.current_dir(project);
 
     // Smoke-check: bail early if the composer invocation fails so we
