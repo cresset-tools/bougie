@@ -1624,3 +1624,227 @@ fn vcs_repo_type_is_ignored_silently() {
         .is_some());
 }
 
+
+// ===================== Repository auth =====================
+
+#[test]
+fn http_basic_auth_from_config_unlocks_private_repo() {
+    use wiremock::matchers::header;
+    let tmp = TempDir::new().unwrap();
+    let paths = paths_in(tmp.path());
+    let body = p2_body("acme/private", &[("1.0.0", json!({}))]);
+    // base64("alice:s3cret") = "YWxpY2U6czNjcmV0"
+    let expected_header = "Basic YWxpY2U6czNjcmV0";
+
+    let rt = rt();
+    let (custom_uri, _server) = rt.block_on(async {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(wm_path("/p2/acme/private.json"))
+            .and(header("Authorization", expected_header))
+            .respond_with(ResponseTemplate::new(200).set_body_string(body))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(wm_path("/p2/acme/private.json"))
+            .respond_with(ResponseTemplate::new(401))
+            .mount(&server)
+            .await;
+        (server.uri(), server)
+    });
+
+    let custom_host = custom_uri
+        .strip_prefix("http://")
+        .unwrap_or(&custom_uri)
+        .split(':')
+        .next()
+        .unwrap()
+        .to_owned();
+    let composer_json = json!({
+        "repositories": [
+            {"type": "composer", "url": custom_uri},
+            {"packagist.org": false},
+        ],
+        "config": {
+            "http-basic": {
+                custom_host: {"username": "alice", "password": "s3cret"},
+            },
+        },
+        "require": {"acme/private": "^1.0"},
+    });
+    let client = crate::metadata::build_client().unwrap();
+    let auth = crate::update::read_auth_from_composer_json(&composer_json).unwrap();
+    let provider = ResolveProvider::build_with_auth(
+        client,
+        paths,
+        crate::metadata::Repo::from_url("http://unused"),
+        &composer_json,
+        true,
+        auth,
+    )
+    .unwrap();
+    let root = provider.root_version();
+    let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
+    assert!(solution
+        .get(&PubGrubPackage::Package("acme/private".into()))
+        .is_some());
+}
+
+#[test]
+fn bearer_auth_from_config_unlocks_private_repo() {
+    use wiremock::matchers::header;
+    let tmp = TempDir::new().unwrap();
+    let paths = paths_in(tmp.path());
+    let body = p2_body("acme/gated", &[("2.0.0", json!({}))]);
+
+    let rt = rt();
+    let (custom_uri, _server) = rt.block_on(async {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(wm_path("/p2/acme/gated.json"))
+            .and(header("Authorization", "Bearer SUPERSECRET"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(body))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(wm_path("/p2/acme/gated.json"))
+            .respond_with(ResponseTemplate::new(401))
+            .mount(&server)
+            .await;
+        (server.uri(), server)
+    });
+
+    let custom_host = custom_uri
+        .strip_prefix("http://")
+        .unwrap_or(&custom_uri)
+        .split(':')
+        .next()
+        .unwrap()
+        .to_owned();
+    let composer_json = json!({
+        "repositories": [
+            {"type": "composer", "url": custom_uri.clone()},
+            {"packagist.org": false},
+        ],
+        "config": {
+            "bearer": {custom_host: "SUPERSECRET"},
+        },
+        "require": {"acme/gated": "^2.0"},
+    });
+    let client = crate::metadata::build_client().unwrap();
+    let auth = crate::update::read_auth_from_composer_json(&composer_json).unwrap();
+    let provider = ResolveProvider::build_with_auth(
+        client,
+        paths,
+        crate::metadata::Repo::from_url("http://unused"),
+        &composer_json,
+        true,
+        auth,
+    )
+    .unwrap();
+    let root = provider.root_version();
+    let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
+    assert!(solution
+        .get(&PubGrubPackage::Package("acme/gated".into()))
+        .is_some());
+}
+
+#[test]
+fn auth_json_overrides_composer_json_config() {
+    use wiremock::matchers::header;
+    let tmp = TempDir::new().unwrap();
+    let paths = paths_in(tmp.path());
+    let body = p2_body("acme/foo", &[("1.0.0", json!({}))]);
+
+    let rt = rt();
+    let (custom_uri, _server) = rt.block_on(async {
+        let server = MockServer::start().await;
+        // base64("admin:correct") = "YWRtaW46Y29ycmVjdA=="
+        Mock::given(method("GET"))
+            .and(wm_path("/p2/acme/foo.json"))
+            .and(header("Authorization", "Basic YWRtaW46Y29ycmVjdA=="))
+            .respond_with(ResponseTemplate::new(200).set_body_string(body))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(wm_path("/p2/acme/foo.json"))
+            .respond_with(ResponseTemplate::new(401))
+            .mount(&server)
+            .await;
+        (server.uri(), server)
+    });
+
+    let custom_host = custom_uri
+        .strip_prefix("http://")
+        .unwrap_or(&custom_uri)
+        .split(':')
+        .next()
+        .unwrap()
+        .to_owned();
+    // composer.json has the WRONG creds; auth.json has the right.
+    let composer_json_value = json!({
+        "repositories": [
+            {"type": "composer", "url": custom_uri.clone()},
+            {"packagist.org": false},
+        ],
+        "config": {
+            "http-basic": {
+                custom_host.clone(): {"username": "bob", "password": "wrong"},
+            },
+        },
+        "require": {"acme/foo": "^1.0"},
+    });
+    let proj = TempDir::new().unwrap();
+    std::fs::write(
+        proj.path().join("composer.json"),
+        serde_json::to_string(&composer_json_value).unwrap(),
+    )
+    .unwrap();
+    let auth_json = json!({
+        "http-basic": {
+            custom_host: {"username": "admin", "password": "correct"},
+        },
+    });
+    std::fs::write(
+        proj.path().join("auth.json"),
+        serde_json::to_string(&auth_json).unwrap(),
+    )
+    .unwrap();
+
+    let client = crate::metadata::build_client().unwrap();
+    let mut auth = crate::update::read_auth_from_composer_json(&composer_json_value).unwrap();
+    auth.extend(crate::update::read_auth_json(proj.path()).unwrap());
+
+    let provider = ResolveProvider::build_with_auth(
+        client,
+        paths,
+        crate::metadata::Repo::from_url("http://unused"),
+        &composer_json_value,
+        true,
+        auth,
+    )
+    .unwrap();
+    let root = provider.root_version();
+    let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
+    assert!(solution
+        .get(&PubGrubPackage::Package("acme/foo".into()))
+        .is_some());
+}
+
+#[test]
+fn auth_credentials_debug_redacts_password_and_token() {
+    let basic = crate::metadata::AuthCredentials::Basic {
+        username: "alice".into(),
+        password: "supersecret123".into(),
+    };
+    let bearer = crate::metadata::AuthCredentials::Bearer {
+        token: "tokenZZ".into(),
+    };
+    let basic_dbg = format!("{basic:?}");
+    let bearer_dbg = format!("{bearer:?}");
+    assert!(!basic_dbg.contains("supersecret123"), "{basic_dbg}");
+    assert!(basic_dbg.contains("alice"), "username should be visible: {basic_dbg}");
+    assert!(basic_dbg.contains("redacted"), "{basic_dbg}");
+    assert!(!bearer_dbg.contains("tokenZZ"), "{bearer_dbg}");
+    assert!(bearer_dbg.contains("redacted"), "{bearer_dbg}");
+}

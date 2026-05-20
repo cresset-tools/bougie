@@ -502,6 +502,7 @@ dependencies = [
 name = "bougie-composer-resolver"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "bougie-autoloader",
  "bougie-composer",
  "bougie-errors",
