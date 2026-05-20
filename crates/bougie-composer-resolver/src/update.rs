@@ -74,7 +74,7 @@ use serde_json::Value;
 
 use crate::metadata::build_client;
 
-use crate::metadata::{fetch_package_metadata_optional, Variant};
+use crate::metadata::{fetch_package_metadata_optional, Repo, Variant};
 use crate::verify::{is_platform, to_range, ComposerRange, ProviderError, PubGrubPackage};
 
 /// pubgrub provider that resolves a fresh `composer.json` against
@@ -88,7 +88,13 @@ use crate::verify::{is_platform, to_range, ComposerRange, ProviderError, PubGrub
 pub struct ResolveProvider {
     client: reqwest::blocking::Client,
     paths: Paths,
-    base_url: String,
+    /// Repositories to consult for package metadata, in declaration
+    /// order (highest priority first). Built from composer.json's
+    /// `repositories` field plus an implicit public Packagist entry
+    /// unless `{ "packagist.org": false }` disables it.
+    /// `versions_for(name)` walks this list and takes the first
+    /// non-404 hit.
+    repos: Vec<Repo>,
     root_deps: Vec<(String, ComposerRange)>,
     root_version: Version,
     /// Composer's top-level `minimum-stability` (`stable` by default).
@@ -176,7 +182,10 @@ pub struct WildcardProvider {
 impl std::fmt::Debug for ResolveProvider {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ResolveProvider")
-            .field("base_url", &self.base_url)
+            .field(
+                "repos",
+                &self.repos.iter().map(|r| &r.url).collect::<Vec<_>>(),
+            )
             .field("root_deps", &self.root_deps)
             .field("cache_keys", &self.cache.borrow().keys().collect::<Vec<_>>())
             .finish()
@@ -185,18 +194,23 @@ impl std::fmt::Debug for ResolveProvider {
 
 impl ResolveProvider {
     /// Build from the parsed `composer.json` (top-level `Value`),
-    /// reading `require` and optionally `require-dev`. Network access
-    /// is deferred until pubgrub asks for a candidate.
+    /// reading `require`, optionally `require-dev`, and the
+    /// `repositories` array. `default_packagist` is the implicit
+    /// public Packagist repo (typically `Repo::packagist()`);
+    /// composer.json's `{ "packagist.org": false }` entry disables
+    /// the implicit append. Network access is deferred until pubgrub
+    /// asks for a candidate.
     pub fn build(
         client: reqwest::blocking::Client,
         paths: Paths,
-        base_url: String,
+        default_packagist: Repo,
         composer_json: &Value,
         no_dev: bool,
     ) -> Result<Self, BuildError> {
         let minimum_stability = read_minimum_stability(composer_json)?;
         let prefer_stable = read_prefer_stable(composer_json)?;
         let (root_deps, stability_flags) = read_root_requires(composer_json, no_dev)?;
+        let repos = read_repositories(composer_json, default_packagist)?;
         // Any synthetic value works for the root version — pubgrub
         // never compares it against another candidate. Match the
         // verify provider's choice for cross-module consistency.
@@ -205,7 +219,7 @@ impl ResolveProvider {
         Ok(Self {
             client,
             paths,
-            base_url,
+            repos,
             root_deps,
             root_version,
             minimum_stability,
@@ -298,48 +312,62 @@ impl ResolveProvider {
         Ok(out)
     }
 
-    /// Fetch + parse + filter the Packagist side of the candidate
-    /// list. Side-effects: every loaded version's `provide` /
-    /// `replace` declarations get registered in the virtual-provider
-    /// index. Returns the filtered parsed entries (no virtual
-    /// candidates merged — that happens in `versions_for`).
+    /// Fetch + parse + filter the real-package candidate list,
+    /// walking repos in priority order and stopping at the first
+    /// non-404 hit. Side-effects: every loaded version's `provide`
+    /// / `replace` declarations get registered in the
+    /// virtual-provider index. Returns the filtered parsed entries
+    /// (no virtual candidates merged — that happens in
+    /// `versions_for`).
     fn load_real_candidates(
         &self,
         name: &str,
         floor: Stability,
     ) -> Result<Vec<(Version, LockPackage)>, ProviderError> {
-        // Packagist fetch — 404 absorbed as "no real entry," which is
-        // expected for virtual packages like
-        // `psr/http-client-implementation`.
-        let stable_md = fetch_package_metadata_optional(
-            &self.client,
-            &self.paths,
-            &self.base_url,
-            name,
-            Variant::Stable,
-        )
-        .map_err(|e| ProviderError(format!("fetching metadata for {name}: {e:#}")))?;
-        let mut versions: Vec<LockPackage> = stable_md
-            .as_ref()
-            .and_then(|md| md.packages.get(name))
-            .cloned()
-            .unwrap_or_default();
-
-        if floor == Stability::Dev {
-            let dev_md = fetch_package_metadata_optional(
+        let mut versions: Vec<LockPackage> = Vec::new();
+        // Repository priority: declarations first, public Packagist
+        // last (mirrors Composer). First repo with a non-404 hit
+        // wins; subsequent repos are skipped — Composer's "first
+        // matching repository" precedence rule.
+        for repo in &self.repos {
+            let stable_md = fetch_package_metadata_optional(
                 &self.client,
                 &self.paths,
-                &self.base_url,
+                repo,
                 name,
-                Variant::Dev,
+                Variant::Stable,
             )
             .map_err(|e| {
-                ProviderError(format!("fetching dev metadata for {name}: {e:#}"))
+                ProviderError(format!(
+                    "fetching metadata for {name} from {}: {e:#}",
+                    repo.url,
+                ))
             })?;
-            if let Some(md) = dev_md {
-                if let Some(extra) = md.packages.get(name) {
-                    versions.extend(extra.iter().cloned());
+            if let Some(md) = stable_md {
+                if let Some(entries) = md.packages.get(name) {
+                    versions.extend(entries.iter().cloned());
                 }
+                if floor == Stability::Dev {
+                    let dev_md = fetch_package_metadata_optional(
+                        &self.client,
+                        &self.paths,
+                        repo,
+                        name,
+                        Variant::Dev,
+                    )
+                    .map_err(|e| {
+                        ProviderError(format!(
+                            "fetching dev metadata for {name} from {}: {e:#}",
+                            repo.url,
+                        ))
+                    })?;
+                    if let Some(md) = dev_md {
+                        if let Some(extra) = md.packages.get(name) {
+                            versions.extend(extra.iter().cloned());
+                        }
+                    }
+                }
+                break;
             }
         }
 
@@ -681,6 +709,94 @@ fn read_prefer_stable(composer_json: &Value) -> Result<bool, BuildError> {
     })
 }
 
+/// Read composer.json's `repositories` array into the resolver's
+/// repo list. Accepted forms:
+///
+/// - `{ "type": "composer", "url": "..." }` — adds a Composer-
+///   protocol repo (`/p2/<vendor>/<name>.json`). The most common
+///   custom-repository pattern (private Packagist mirror, satis).
+/// - `{ "packagist.org": false }` — disables the implicit public
+///   Packagist repo that would otherwise be appended at the end.
+/// - Other forms (`vcs`, `path`, `package`, `artifact`, missing
+///   `type`) are ignored silently for this first slice. VCS and
+///   path repositories need different machinery and are tracked as
+///   follow-ups.
+///
+/// Composer's repository ordering: declarations come first (highest
+/// priority), with the implicit public Packagist appended last
+/// unless disabled. Mirrors `Composer\Repository\
+/// RepositoryFactory::createDefaultRepositories`.
+fn read_repositories(
+    composer_json: &Value,
+    default_packagist: Repo,
+) -> Result<Vec<Repo>, BuildError> {
+    let obj = composer_json.as_object().ok_or_else(|| {
+        BuildError::Internal("composer.json top-level is not an object".into())
+    })?;
+    let mut repos: Vec<Repo> = Vec::new();
+    let mut keep_default_packagist = true;
+    if let Some(entries) = obj.get("repositories").and_then(Value::as_array) {
+        for entry in entries {
+            let Some(entry_obj) = entry.as_object() else { continue };
+            // `{ "packagist.org": false }` is the disable form.
+            if let Some(val) = entry_obj.get("packagist.org") {
+                if val.as_bool() == Some(false) {
+                    keep_default_packagist = false;
+                }
+                continue;
+            }
+            let r#type = entry_obj.get("type").and_then(Value::as_str);
+            match r#type {
+                Some("composer") => {
+                    let url = entry_obj
+                        .get("url")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| {
+                            BuildError::Internal(
+                                "repository entry of type \"composer\" is missing `url`".into(),
+                            )
+                        })?;
+                    repos.push(Repo::from_url(url));
+                }
+                Some("vcs" | "github" | "git" | "bitbucket" | "gitlab" | "git-bitbucket"
+                    | "hg" | "fossil" | "svn") => {
+                    // VCS family — not supported yet. Silently
+                    // ignore so the resolver can still make progress
+                    // on packages that happen to be on Packagist
+                    // too. Follow-up issue.
+                }
+                Some("path" | "package" | "artifact") => {
+                    // Same story; non-Composer-protocol shapes need
+                    // distinct machinery.
+                }
+                Some(other) => {
+                    return Err(BuildError::Internal(format!(
+                        "unknown repository type {other:?}; supported: composer (others coming)",
+                    )));
+                }
+                None => {
+                    return Err(BuildError::Internal(
+                        "repository entry has no `type` field and is not `packagist.org: false`"
+                            .into(),
+                    ));
+                }
+            }
+        }
+    }
+    if keep_default_packagist {
+        repos.push(default_packagist);
+    }
+    if repos.is_empty() {
+        // A project that explicitly disabled Packagist but declared
+        // no replacement repos: nothing to resolve against.
+        return Err(BuildError::Internal(
+            "no repositories configured: `packagist.org: false` set with no replacement repo"
+                .into(),
+        ));
+    }
+    Ok(repos)
+}
+
 /// Split a Composer constraint string into its constraint body and
 /// trailing `@<stability>` flag. Returns `(body, Some(stability))` or
 /// `(input, None)` when no flag is present. Composer's grammar puts
@@ -954,20 +1070,19 @@ pub struct DryRunOptions {
 }
 
 /// Run a pubgrub-backed resolve of `composer.json` against the
-/// metadata host at `base_url` and return the package set that would
-/// land in `composer.lock`.
+/// metadata host(s) and return the package set that would land in
+/// `composer.lock`.
 ///
 /// Read-only: doesn't write `composer.lock`, doesn't touch `vendor/`.
-/// The lockfile writer is a follow-up PR; until then this is the
-/// only user-visible entry point into the resolver from the CLI.
 ///
-/// `base_url` is the Packagist host (no trailing slash). Production
-/// callers pass [`crate::metadata::base_url()`]; tests pass a
-/// wiremock URI.
+/// `default_packagist` is the implicit public Packagist repo
+/// (production callers pass [`crate::metadata::Repo::packagist`];
+/// tests pass a `Repo::from_url(mock_uri)`). composer.json's
+/// `repositories` field augments / overrides this list.
 pub fn dry_run_update(
     paths: &Paths,
     project_root: &Path,
-    base_url: &str,
+    default_packagist: Repo,
     opts: DryRunOptions,
 ) -> Result<UpdateSummary> {
     let composer_json_path = project_root.join("composer.json");
@@ -986,7 +1101,7 @@ pub fn dry_run_update(
     let provider = ResolveProvider::build(
         client,
         paths.clone(),
-        base_url.to_owned(),
+        default_packagist,
         &composer_json,
         opts.no_dev,
     )
@@ -1086,7 +1201,7 @@ pub struct LockfileSolveOutcome {
 pub fn resolve_for_lockfile(
     paths: &Paths,
     project_root: &Path,
-    base_url: &str,
+    default_packagist: Repo,
 ) -> Result<(Vec<u8>, LockfileSolveOutcome)> {
     let composer_json_path = project_root.join("composer.json");
     if !composer_json_path.is_file() {
@@ -1100,8 +1215,8 @@ pub fn resolve_for_lockfile(
     let composer_json: Value = serde_json::from_slice(&composer_json_bytes)
         .map_err(|e| eyre!("parsing composer.json: {e}"))?;
 
-    let full = solve_into_lock_packages(paths, base_url, &composer_json, false)?;
-    let prod = solve_into_lock_packages(paths, base_url, &composer_json, true)?;
+    let full = solve_into_lock_packages(paths, default_packagist.clone(), &composer_json, false)?;
+    let prod = solve_into_lock_packages(paths, default_packagist, &composer_json, true)?;
 
     let prod_names: std::collections::HashSet<&str> =
         prod.packages.iter().map(|p| p.name.as_str()).collect();
@@ -1133,7 +1248,7 @@ pub fn resolve_for_lockfile(
 /// sorted by name plus the metadata fields the lockfile writer needs.
 fn solve_into_lock_packages(
     paths: &Paths,
-    base_url: &str,
+    default_packagist: Repo,
     composer_json: &Value,
     no_dev: bool,
 ) -> Result<SolutionSummary> {
@@ -1141,7 +1256,7 @@ fn solve_into_lock_packages(
     let provider = ResolveProvider::build(
         client,
         paths.clone(),
-        base_url.to_owned(),
+        default_packagist,
         composer_json,
         no_dev,
     )

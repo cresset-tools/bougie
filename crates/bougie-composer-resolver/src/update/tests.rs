@@ -98,7 +98,7 @@ fn resolves_single_dep_to_highest_in_range() {
 
     let client = crate::metadata::build_client().unwrap();
     let provider =
-        ResolveProvider::build(client, paths, uri, &composer_json, true).unwrap();
+        ResolveProvider::build(client, paths, crate::metadata::Repo::from_url(uri), &composer_json, true).unwrap();
     let root = provider.root_version();
 
     let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
@@ -138,7 +138,7 @@ fn resolves_transitive_dependency() {
     let composer_json = json!({"require": {"acme/foo": "^1.0"}});
     let client = crate::metadata::build_client().unwrap();
     let provider =
-        ResolveProvider::build(client, paths, uri, &composer_json, true).unwrap();
+        ResolveProvider::build(client, paths, crate::metadata::Repo::from_url(uri), &composer_json, true).unwrap();
     let root = provider.root_version();
 
     let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
@@ -166,7 +166,7 @@ fn unsatisfiable_constraint_produces_no_solution() {
     let composer_json = json!({"require": {"acme/foo": "^1.0"}});
     let client = crate::metadata::build_client().unwrap();
     let provider =
-        ResolveProvider::build(client, paths, uri, &composer_json, true).unwrap();
+        ResolveProvider::build(client, paths, crate::metadata::Repo::from_url(uri), &composer_json, true).unwrap();
     let root = provider.root_version();
 
     let err = resolve(&provider, PubGrubPackage::Root, root).unwrap_err();
@@ -205,7 +205,7 @@ fn prerelease_versions_are_filtered_from_candidates() {
     let composer_json = json!({"require": {"acme/foo": ">=1.0"}});
     let client = crate::metadata::build_client().unwrap();
     let provider =
-        ResolveProvider::build(client, paths, uri, &composer_json, true).unwrap();
+        ResolveProvider::build(client, paths, crate::metadata::Repo::from_url(uri), &composer_json, true).unwrap();
     let root = provider.root_version();
 
     let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
@@ -241,7 +241,7 @@ fn platform_requires_are_skipped_no_fetch_attempted() {
     });
     let client = crate::metadata::build_client().unwrap();
     let provider =
-        ResolveProvider::build(client, paths, uri, &composer_json, true).unwrap();
+        ResolveProvider::build(client, paths, crate::metadata::Repo::from_url(uri), &composer_json, true).unwrap();
     let root = provider.root_version();
 
     let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
@@ -273,7 +273,7 @@ fn require_dev_included_when_no_dev_is_false() {
 
     let client = crate::metadata::build_client().unwrap();
     let provider =
-        ResolveProvider::build(client, paths, uri, &composer_json, /*no_dev=*/ false)
+        ResolveProvider::build(client, paths, crate::metadata::Repo::from_url(uri), &composer_json, /*no_dev=*/ false)
             .unwrap();
     let root = provider.root_version();
 
@@ -302,7 +302,7 @@ fn require_dev_excluded_when_no_dev_is_true() {
 
     let client = crate::metadata::build_client().unwrap();
     let provider =
-        ResolveProvider::build(client, paths, uri, &composer_json, /*no_dev=*/ true)
+        ResolveProvider::build(client, paths, crate::metadata::Repo::from_url(uri), &composer_json, /*no_dev=*/ true)
             .unwrap();
     let root = provider.root_version();
 
@@ -374,7 +374,7 @@ fn replace_forces_replaced_package_to_consistent_version() {
     });
     let client = crate::metadata::build_client().unwrap();
     let provider =
-        ResolveProvider::build(client, paths, uri, &composer_json, true).unwrap();
+        ResolveProvider::build(client, paths, crate::metadata::Repo::from_url(uri), &composer_json, true).unwrap();
     let root = provider.root_version();
 
     let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
@@ -413,7 +413,7 @@ fn provide_forces_consistent_version_same_as_replace() {
     });
     let client = crate::metadata::build_client().unwrap();
     let provider =
-        ResolveProvider::build(client, paths, uri, &composer_json, true).unwrap();
+        ResolveProvider::build(client, paths, crate::metadata::Repo::from_url(uri), &composer_json, true).unwrap();
     let root = provider.root_version();
 
     let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
@@ -450,7 +450,7 @@ fn replace_conflicts_with_a_separate_require_yield_no_solution() {
     });
     let client = crate::metadata::build_client().unwrap();
     let provider =
-        ResolveProvider::build(client, paths, uri, &composer_json, true).unwrap();
+        ResolveProvider::build(client, paths, crate::metadata::Repo::from_url(uri), &composer_json, true).unwrap();
     let root = provider.root_version();
 
     let err = resolve(&provider, PubGrubPackage::Root, root).unwrap_err();
@@ -493,7 +493,7 @@ fn replace_clause_as_range_intersects_with_separate_require() {
     });
     let client = crate::metadata::build_client().unwrap();
     let provider =
-        ResolveProvider::build(client, paths, uri, &composer_json, true).unwrap();
+        ResolveProvider::build(client, paths, crate::metadata::Repo::from_url(uri), &composer_json, true).unwrap();
     let root = provider.root_version();
 
     let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
@@ -532,7 +532,7 @@ fn platform_replace_clauses_are_skipped() {
     });
     let client = crate::metadata::build_client().unwrap();
     let provider =
-        ResolveProvider::build(client, paths, uri, &composer_json, true).unwrap();
+        ResolveProvider::build(client, paths, crate::metadata::Repo::from_url(uri), &composer_json, true).unwrap();
     let root = provider.root_version();
 
     let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
@@ -570,7 +570,7 @@ fn default_minimum_stability_is_stable_unchanged_behavior() {
     let composer_json = json!({"require": {"acme/foo": ">=1.0"}});
     let client = crate::metadata::build_client().unwrap();
     let provider =
-        ResolveProvider::build(client, paths, uri, &composer_json, true).unwrap();
+        ResolveProvider::build(client, paths, crate::metadata::Repo::from_url(uri), &composer_json, true).unwrap();
     let root = provider.root_version();
 
     let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
@@ -608,7 +608,7 @@ fn minimum_stability_dev_allows_dev_versions() {
     });
     let client = crate::metadata::build_client().unwrap();
     let provider =
-        ResolveProvider::build(client, paths, uri, &composer_json, true).unwrap();
+        ResolveProvider::build(client, paths, crate::metadata::Repo::from_url(uri), &composer_json, true).unwrap();
     let root = provider.root_version();
 
     let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
@@ -648,7 +648,7 @@ fn minimum_stability_beta_accepts_beta_rejects_alpha() {
     });
     let client = crate::metadata::build_client().unwrap();
     let provider =
-        ResolveProvider::build(client, paths, uri, &composer_json, true).unwrap();
+        ResolveProvider::build(client, paths, crate::metadata::Repo::from_url(uri), &composer_json, true).unwrap();
     let root = provider.root_version();
 
     let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
@@ -681,7 +681,7 @@ fn per_package_at_dev_flag_overrides_default_stability() {
     });
     let client = crate::metadata::build_client().unwrap();
     let provider =
-        ResolveProvider::build(client, paths, uri, &composer_json, true).unwrap();
+        ResolveProvider::build(client, paths, crate::metadata::Repo::from_url(uri), &composer_json, true).unwrap();
     let root = provider.root_version();
 
     let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
@@ -725,7 +725,7 @@ fn per_package_at_stable_flag_tightens_a_global_dev_floor() {
     });
     let client = crate::metadata::build_client().unwrap();
     let provider =
-        ResolveProvider::build(client, paths, uri, &composer_json, true).unwrap();
+        ResolveProvider::build(client, paths, crate::metadata::Repo::from_url(uri), &composer_json, true).unwrap();
     let root = provider.root_version();
 
     let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
@@ -748,7 +748,7 @@ fn unknown_minimum_stability_value_is_a_build_error() {
         "require": {},
     });
     let client = crate::metadata::build_client().unwrap();
-    let err = ResolveProvider::build(client, paths, "http://x".into(), &composer_json, true)
+    let err = ResolveProvider::build(client, paths, crate::metadata::Repo::from_url("http://x"), &composer_json, true)
         .unwrap_err();
     let msg = format!("{err}");
     assert!(msg.contains("wonky"), "{msg}");
@@ -790,7 +790,7 @@ fn dev_floor_pulls_branch_versions_from_tilde_dev_json() {
     });
     let client = crate::metadata::build_client().unwrap();
     let provider =
-        ResolveProvider::build(client, paths, uri, &composer_json, true).unwrap();
+        ResolveProvider::build(client, paths, crate::metadata::Repo::from_url(uri), &composer_json, true).unwrap();
     let root = provider.root_version();
 
     let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
@@ -830,7 +830,7 @@ fn dev_floor_tolerates_missing_tilde_dev_json() {
     });
     let client = crate::metadata::build_client().unwrap();
     let provider =
-        ResolveProvider::build(client, paths, uri, &composer_json, true).unwrap();
+        ResolveProvider::build(client, paths, crate::metadata::Repo::from_url(uri), &composer_json, true).unwrap();
     let root = provider.root_version();
 
     let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
@@ -868,7 +868,7 @@ fn stable_floor_does_not_fetch_tilde_dev_json() {
     let composer_json = json!({"require": {"acme/foo": "^1.0"}});
     let client = crate::metadata::build_client().unwrap();
     let provider =
-        ResolveProvider::build(client, paths, uri, &composer_json, true).unwrap();
+        ResolveProvider::build(client, paths, crate::metadata::Repo::from_url(uri), &composer_json, true).unwrap();
     let root = provider.root_version();
 
     let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
@@ -904,7 +904,7 @@ fn combined_stable_plus_dev_versions_sort_descending() {
     });
     let client = crate::metadata::build_client().unwrap();
     let provider =
-        ResolveProvider::build(client, paths, uri, &composer_json, true).unwrap();
+        ResolveProvider::build(client, paths, crate::metadata::Repo::from_url(uri), &composer_json, true).unwrap();
     let root = provider.root_version();
 
     let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
@@ -980,7 +980,7 @@ fn virtual_package_satisfied_by_provide_clause() {
     });
     let client = crate::metadata::build_client().unwrap();
     let provider =
-        ResolveProvider::build(client, paths, uri, &composer_json, true).unwrap();
+        ResolveProvider::build(client, paths, crate::metadata::Repo::from_url(uri), &composer_json, true).unwrap();
     provider.pre_fetch_closure().unwrap();
     let root = provider.root_version();
 
@@ -1024,7 +1024,7 @@ fn virtual_package_with_no_provider_yields_no_solution() {
     let composer_json = json!({"require": {"acme/lonely": "^1.0"}});
     let client = crate::metadata::build_client().unwrap();
     let provider =
-        ResolveProvider::build(client, paths, uri, &composer_json, true).unwrap();
+        ResolveProvider::build(client, paths, crate::metadata::Repo::from_url(uri), &composer_json, true).unwrap();
     provider.pre_fetch_closure().unwrap();
     let root = provider.root_version();
 
@@ -1075,7 +1075,7 @@ fn replace_clause_with_range_constraint_registers_virtual() {
     });
     let client = crate::metadata::build_client().unwrap();
     let provider =
-        ResolveProvider::build(client, paths, uri, &composer_json, true).unwrap();
+        ResolveProvider::build(client, paths, crate::metadata::Repo::from_url(uri), &composer_json, true).unwrap();
     provider.pre_fetch_closure().unwrap();
     let root = provider.root_version();
 
@@ -1123,7 +1123,7 @@ fn multiple_providers_at_same_virtual_version_dedup() {
     });
     let client = crate::metadata::build_client().unwrap();
     let provider =
-        ResolveProvider::build(client, paths, uri, &composer_json, true).unwrap();
+        ResolveProvider::build(client, paths, crate::metadata::Repo::from_url(uri), &composer_json, true).unwrap();
     provider.pre_fetch_closure().unwrap();
     let root = provider.root_version();
 
@@ -1172,7 +1172,7 @@ fn prefer_stable_picks_stable_over_higher_beta() {
     });
     let client = crate::metadata::build_client().unwrap();
     let provider =
-        ResolveProvider::build(client, paths, uri, &composer_json, true).unwrap();
+        ResolveProvider::build(client, paths, crate::metadata::Repo::from_url(uri), &composer_json, true).unwrap();
     let root = provider.root_version();
 
     let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
@@ -1205,7 +1205,7 @@ fn without_prefer_stable_highest_beta_still_wins() {
     });
     let client = crate::metadata::build_client().unwrap();
     let provider =
-        ResolveProvider::build(client, paths, uri, &composer_json, true).unwrap();
+        ResolveProvider::build(client, paths, crate::metadata::Repo::from_url(uri), &composer_json, true).unwrap();
     let root = provider.root_version();
 
     let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
@@ -1243,7 +1243,7 @@ fn prefer_stable_falls_back_to_unstable_when_no_stable_in_range() {
     });
     let client = crate::metadata::build_client().unwrap();
     let provider =
-        ResolveProvider::build(client, paths, uri, &composer_json, true).unwrap();
+        ResolveProvider::build(client, paths, crate::metadata::Repo::from_url(uri), &composer_json, true).unwrap();
     let root = provider.root_version();
 
     let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
@@ -1278,7 +1278,7 @@ fn prefer_stable_is_noop_when_floor_is_stable() {
     });
     let client = crate::metadata::build_client().unwrap();
     let provider =
-        ResolveProvider::build(client, paths, uri, &composer_json, true).unwrap();
+        ResolveProvider::build(client, paths, crate::metadata::Repo::from_url(uri), &composer_json, true).unwrap();
     let root = provider.root_version();
 
     let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
@@ -1297,7 +1297,7 @@ fn unknown_prefer_stable_type_is_a_build_error() {
         "require": {},
     });
     let client = crate::metadata::build_client().unwrap();
-    let err = ResolveProvider::build(client, paths, "http://x".into(), &composer_json, true)
+    let err = ResolveProvider::build(client, paths, crate::metadata::Repo::from_url("http://x"), &composer_json, true)
         .unwrap_err();
     let msg = format!("{err}");
     assert!(msg.contains("prefer-stable"), "{msg}");
@@ -1348,7 +1348,7 @@ fn wildcard_replace_satisfies_unrelated_range() {
     });
     let client = crate::metadata::build_client().unwrap();
     let provider =
-        ResolveProvider::build(client, paths, uri, &composer_json, true).unwrap();
+        ResolveProvider::build(client, paths, crate::metadata::Repo::from_url(uri), &composer_json, true).unwrap();
     provider.pre_fetch_closure().unwrap();
     let root = provider.root_version();
 
@@ -1400,7 +1400,7 @@ fn wildcard_replace_does_not_synthesize_without_consumer() {
     let composer_json = json!({"require": {"acme/monolith": "^5.0"}});
     let client = crate::metadata::build_client().unwrap();
     let provider =
-        ResolveProvider::build(client, paths, uri, &composer_json, true).unwrap();
+        ResolveProvider::build(client, paths, crate::metadata::Repo::from_url(uri), &composer_json, true).unwrap();
     provider.pre_fetch_closure().unwrap();
     let root = provider.root_version();
 
@@ -1452,7 +1452,7 @@ fn real_packagist_versions_preferred_over_wildcard() {
     });
     let client = crate::metadata::build_client().unwrap();
     let provider =
-        ResolveProvider::build(client, paths, uri, &composer_json, true).unwrap();
+        ResolveProvider::build(client, paths, crate::metadata::Repo::from_url(uri), &composer_json, true).unwrap();
     provider.pre_fetch_closure().unwrap();
     let root = provider.root_version();
 
@@ -1465,5 +1465,162 @@ fn real_packagist_versions_preferred_over_wildcard() {
     // The wildcard entry exists in the index but was never
     // synthesized (no fallback was needed), so virtual_selections
     // shouldn't have wrapper@9.0.0 from a wildcard.
+}
+
+// ===================== Composer-type repositories =====================
+
+#[test]
+fn custom_repo_finds_package_packagist_lacks() {
+    // Two repos: custom Composer repo at one wiremock server,
+    // public Packagist mock at another. acme/foo only exists on the
+    // custom repo. The resolver must find it there.
+    let tmp = TempDir::new().unwrap();
+    let paths = paths_in(tmp.path());
+
+    let foo_body = p2_body("acme/foo", &[("1.0.0", json!({}))]);
+
+    let rt = rt();
+    let (custom_uri, packagist_uri, _custom_server, _pkgst_server) = rt.block_on(async {
+        let custom = MockServer::start().await;
+        mount_p2(&custom, "acme/foo", foo_body).await;
+        let pkgst = MockServer::start().await;
+        let cu = custom.uri();
+        let pu = pkgst.uri();
+        (cu, pu, custom, pkgst)
+    });
+
+    let composer_json = json!({
+        "repositories": [
+            {"type": "composer", "url": custom_uri},
+        ],
+        "require": {"acme/foo": "^1.0"},
+    });
+    let client = crate::metadata::build_client().unwrap();
+    let provider = ResolveProvider::build(
+        client,
+        paths,
+        crate::metadata::Repo::from_url(packagist_uri),
+        &composer_json,
+        true,
+    )
+    .unwrap();
+    let root = provider.root_version();
+
+    let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
+    let foo = solution
+        .get(&PubGrubPackage::Package("acme/foo".into()))
+        .unwrap();
+    assert_eq!(foo.to_string(), "1.0.0.0");
+}
+
+#[test]
+fn packagist_org_false_disables_public_fallback() {
+    // Custom repo has the package; public Packagist also has it but
+    // is disabled via `packagist.org: false`. The resolver must
+    // succeed via the custom repo and never touch public Packagist.
+    let tmp = TempDir::new().unwrap();
+    let paths = paths_in(tmp.path());
+
+    let foo = p2_body("acme/foo", &[("1.0.0", json!({}))]);
+
+    let rt = rt();
+    let (custom_uri, packagist_uri, _custom, _pkgst) = rt.block_on(async {
+        let custom = MockServer::start().await;
+        mount_p2(&custom, "acme/foo", foo).await;
+        let pkgst = MockServer::start().await;
+        // Trap mock: any request to public Packagist returns 500.
+        // If the resolver ever queries it the test fails.
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&pkgst)
+            .await;
+        (custom.uri(), pkgst.uri(), custom, pkgst)
+    });
+
+    let composer_json = json!({
+        "repositories": [
+            {"type": "composer", "url": custom_uri},
+            {"packagist.org": false},
+        ],
+        "require": {"acme/foo": "^1.0"},
+    });
+    let client = crate::metadata::build_client().unwrap();
+    let provider = ResolveProvider::build(
+        client,
+        paths,
+        crate::metadata::Repo::from_url(packagist_uri),
+        &composer_json,
+        true,
+    )
+    .unwrap();
+    let root = provider.root_version();
+
+    let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
+    assert!(solution
+        .get(&PubGrubPackage::Package("acme/foo".into()))
+        .is_some());
+}
+
+#[test]
+fn unknown_repo_type_yields_build_error() {
+    // `vcs` / `path` / `package` / `artifact` are ignored silently
+    // (follow-up work). A genuinely unrecognized type errors so
+    // typos surface fast.
+    let tmp = TempDir::new().unwrap();
+    let paths = paths_in(tmp.path());
+    let composer_json = json!({
+        "repositories": [{"type": "qwerty", "url": "https://example.test/"}],
+        "require": {},
+    });
+    let client = crate::metadata::build_client().unwrap();
+    let err = ResolveProvider::build(
+        client,
+        paths,
+        crate::metadata::Repo::from_url("http://x"),
+        &composer_json,
+        true,
+    )
+    .unwrap_err();
+    let msg = format!("{err}");
+    assert!(msg.contains("qwerty"), "{msg}");
+}
+
+#[test]
+fn vcs_repo_type_is_ignored_silently() {
+    // VCS repositories aren't supported yet but should not break
+    // resolution against the public-Packagist fallback for packages
+    // that DO live there.
+    let tmp = TempDir::new().unwrap();
+    let paths = paths_in(tmp.path());
+
+    let foo = p2_body("acme/foo", &[("1.0.0", json!({}))]);
+    let rt = rt();
+    let (packagist_uri, _pkgst) = rt.block_on(async {
+        let pkgst = MockServer::start().await;
+        mount_p2(&pkgst, "acme/foo", foo).await;
+        (pkgst.uri(), pkgst)
+    });
+
+    let composer_json = json!({
+        "repositories": [
+            {"type": "vcs", "url": "https://github.com/acme/foo.git"},
+        ],
+        "require": {"acme/foo": "^1.0"},
+    });
+    let client = crate::metadata::build_client().unwrap();
+    let provider = ResolveProvider::build(
+        client,
+        paths,
+        crate::metadata::Repo::from_url(packagist_uri),
+        &composer_json,
+        true,
+    )
+    .unwrap();
+    let root = provider.root_version();
+
+    let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
+    assert!(solution
+        .get(&PubGrubPackage::Package("acme/foo".into()))
+        .is_some());
 }
 
