@@ -313,13 +313,24 @@ fn parse_atom(token: &str) -> Result<Constraint, ParseError> {
         return Ok(Constraint::Any);
     }
 
-    // Branch-alias form: `Nx-dev`, `N.x-dev`, `N.M.x-dev`. Composer
-    // accepts these as constraints meaning "exactly this dev
-    // branch." Maps to `==` against the parsed Version (which
-    // already normalizes `3.x-dev` to `3.9999999.9999999.9999999-dev`).
-    // Marked explicit-lower-bound so a same-numeric-prerelease
+    // Branch references appear in Composer constraints in two
+    // related shapes (cross-referenced against Composer's
+    // `Composer\Semver\VersionParser::parseConstraint` "Basic
+    // Comparators" fallback + `parseStability`):
+    //   1. `Nx-dev` / `N.x-dev` / `N.M.x-dev` — numeric-flavor
+    //      branch alias (e.g. `3.x-dev`). `Version::parse`
+    //      normalizes this to `N.9999999.9999999.9999999-dev`.
+    //   2. `dev-<branch-name>` — bare branch reference (e.g.
+    //      `dev-main`, `dev-feature/foo`). `Version::parse` keeps
+    //      this as `VersionKind::Branch("<name>")`.
+    // Both map to an `==` constraint against the same string
+    // re-parsed as a Version — matches Composer's "operator `=`,
+    // version normalized" handling. Composer matches `dev-`
+    // case-insensitively (`stripos`/`/i` regex) so we do too.
+    // Marked explicit-lower-bound so any same-numeric-prerelease
     // comparison falls through to standard ordering.
-    if bougie_semver_is_branch_alias(s) {
+    let is_dev_branch = s.len() >= 4 && s.as_bytes()[..4].eq_ignore_ascii_case(b"dev-");
+    if bougie_semver_is_branch_alias(s) || is_dev_branch {
         let v = Version::parse(s)
             .map_err(|e| ParseError::Invalid(format!("{token}: {e}")))?;
         return Ok(Constraint::Op {
@@ -634,6 +645,33 @@ mod tests {
         // `1.0.x-dev` parses to `1.0.9999999.9999999-dev`.
         let c = Constraint::parse("1.0.x-dev").unwrap();
         let v = Version::parse("1.0.x-dev").unwrap();
+        assert!(c.matches(&v));
+    }
+
+    #[test]
+    fn dev_branch_constraint_matches_named_branch() {
+        // `"dep": "dev-main"` is the bare branch form — pinned to
+        // the named branch. Parses to `==` against
+        // `Version::Branch("main")`.
+        let c = Constraint::parse("dev-main").unwrap();
+        let v = Version::parse("dev-main").unwrap();
+        assert!(c.matches(&v), "constraint {c:?} should match {v:?}");
+    }
+
+    #[test]
+    fn dev_branch_constraint_rejects_other_branches() {
+        let c = Constraint::parse("dev-main").unwrap();
+        let other = Version::parse("dev-feature-x").unwrap();
+        assert!(!c.matches(&other));
+    }
+
+    #[test]
+    fn dev_branch_constraint_handles_slashed_branch_name() {
+        // Composer accepts branch names with slashes
+        // (e.g. `dev-fix/some-bug`). Parses through Version::parse,
+        // which preserves the branch body verbatim.
+        let c = Constraint::parse("dev-fix/some-bug").unwrap();
+        let v = Version::parse("dev-fix/some-bug").unwrap();
         assert!(c.matches(&v));
     }
 }
