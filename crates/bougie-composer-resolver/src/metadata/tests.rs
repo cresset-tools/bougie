@@ -305,16 +305,16 @@ fn probe_protocol_classifies_v2_repo_by_metadata_url() {
 
     let client = build_client().unwrap();
     let protocol = probe_protocol(&client, &Repo::from_url(&uri)).unwrap();
-    assert_eq!(protocol, RepoProtocol::V2);
+    assert!(matches!(protocol, RepoProtocol::V2), "got {protocol:?}");
 }
 
 #[test]
 fn probe_protocol_classifies_v1_repo_when_metadata_url_missing() {
     // Composer v1 servers (repo.magento.com, older satis builds)
     // ship `provider-includes` / `providers-url` and have no
-    // `metadata-url`. bougie's resolver doesn't speak v1, so the
-    // classification must come out as `V1` so the orchestrator can
-    // drop the repo with a warning rather than blindly hitting `/p2/`.
+    // `metadata-url`. The probe must capture the providers-url
+    // template + each include's path/sha256 so the v1 fetcher can
+    // drive the lookup.
     let rt = rt();
     let (uri, _server) = rt.block_on(async {
         let server = MockServer::start().await;
@@ -324,7 +324,7 @@ fn probe_protocol_classifies_v1_repo_when_metadata_url_missing() {
                 r#"{
                     "packages": [],
                     "provider-includes": {
-                        "p/providers-2024.json": {"sha256": "aa"}
+                        "p/providers-2024$%hash%.json": {"sha256": "aa"}
                     },
                     "providers-url": "/p/%package%$%hash%.json"
                 }"#,
@@ -336,7 +336,16 @@ fn probe_protocol_classifies_v1_repo_when_metadata_url_missing() {
 
     let client = build_client().unwrap();
     let protocol = probe_protocol(&client, &Repo::from_url(&uri)).unwrap();
-    assert_eq!(protocol, RepoProtocol::V1);
+    let RepoProtocol::V1(discovery) = protocol else {
+        panic!("expected V1, got {protocol:?}");
+    };
+    assert_eq!(discovery.providers_url, "/p/%package%$%hash%.json");
+    assert_eq!(discovery.provider_includes.len(), 1);
+    assert_eq!(
+        discovery.provider_includes[0].path_template,
+        "p/providers-2024$%hash%.json",
+    );
+    assert_eq!(discovery.provider_includes[0].sha256, "aa");
 }
 
 #[test]

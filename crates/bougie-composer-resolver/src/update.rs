@@ -75,7 +75,8 @@ use serde_json::Value;
 use crate::metadata::build_client;
 
 use crate::metadata::{
-    fetch_package_metadata_optional, probe_protocol, Repo, RepoProtocol, Variant,
+    fetch_package_metadata_optional, fetch_package_metadata_v1_optional,
+    load_v1_provider_table, probe_protocol, Repo, RepoProtocol, Variant,
 };
 use crate::verify::{is_platform, to_range, ComposerRange, ProviderError, PubGrubPackage};
 
@@ -151,6 +152,14 @@ pub struct ResolveProvider {
     /// which (provider_name, provider_version) backed it. Used by
     /// `get_dependencies` to add the require that pins the provider.
     virtual_selections: RefCell<HashMap<(String, Version), (String, Version)>>,
+    /// Per-v1-repo merged provider lookup tables (package name →
+    /// sha256). Lazily populated on the first per-package lookup
+    /// against a given v1 repo, keyed by `repo.url`. Composer v1
+    /// requires loading every `provider-includes` file before any
+    /// package can be resolved (the includes are the only index
+    /// telling us which package's hash to use); this cache makes
+    /// that load happen at most once per resolve per repo.
+    v1_provider_tables: RefCell<HashMap<String, HashMap<String, String>>>,
 }
 
 /// One entry in the virtual provider index — "real package
@@ -257,6 +266,7 @@ impl ResolveProvider {
             virtual_providers: RefCell::new(HashMap::new()),
             virtual_wildcards: RefCell::new(HashMap::new()),
             virtual_selections: RefCell::new(HashMap::new()),
+            v1_provider_tables: RefCell::new(HashMap::new()),
         })
     }
 
@@ -265,49 +275,31 @@ impl ResolveProvider {
         self.root_version.clone()
     }
 
-    /// Probe each configured repository's `packages.json` and drop
-    /// the ones that speak the Composer v1 protocol (no
-    /// `metadata-url`; uses `provider-includes` + `providers-url`
-    /// instead). bougie's resolver only implements v2 today — sending
-    /// `/p2/<name>.json` at a v1 repo gets a 302 redirect to a
-    /// marketing page, which is what crashed `composer update` on
-    /// projects with `repo.magento.com` configured.
+    /// Probe each configured repository's `packages.json` and record
+    /// the discovered Composer protocol (v2 with `/p2/` direct
+    /// fetches, or v1 with `provider-includes` + `providers-url`) on
+    /// the [`Repo`] itself. The per-package fetcher dispatches on
+    /// that stored protocol; without this step every repo is treated
+    /// as v2 and v1 repos (like `repo.magento.com`) crash on a
+    /// 302→HTML response.
     ///
-    /// Dropped repos surface as a one-shot stderr warning per repo
-    /// so the user understands *why* a previously-working
-    /// `repositories` entry is being ignored. Probe failures
-    /// (network blip, malformed `packages.json`) leave the repo in
-    /// place: better to attempt and fail loudly than to silently
-    /// de-list a working repo over a transient hiccup.
+    /// Probe failures (network blip, malformed `packages.json`) leave
+    /// the protocol as `None` — the fetcher then falls back to the v2
+    /// `/p2/` path with the defensive HTML-body guard. That gives a
+    /// transient hiccup a chance to be a no-op rather than silently
+    /// de-listing a working repo.
     ///
     /// Idempotent and cheap to re-run; call once after
     /// `build_with_auth` and before any `pre_fetch_closure` /
-    /// `resolve` so the probe runs before any `/p2/` traffic.
-    pub fn drop_v1_repos(&mut self) {
+    /// `resolve` so the probe runs before any per-package traffic.
+    pub fn discover_repos(&mut self) {
         let original = std::mem::take(&mut self.repos);
-        let mut kept = Vec::with_capacity(original.len());
+        let mut updated = Vec::with_capacity(original.len());
         for repo in original {
-            match probe_protocol(&self.client, &repo) {
-                Ok(RepoProtocol::V2) => kept.push(repo),
-                Ok(RepoProtocol::V1) => {
-                    eprintln!(
-                        "warning: skipping repository {} — it speaks the Composer v1 \
-                         protocol (provider-includes / providers-url), which bougie \
-                         does not yet implement. Any packages only available here \
-                         will fail to resolve.",
-                        repo.url,
-                    );
-                }
-                Err(_) => {
-                    // Probe failed — keep the repo. A subsequent
-                    // `/p2/` fetch will either succeed (probe was a
-                    // false negative) or surface a clearer per-package
-                    // error than "we couldn't reach packages.json once."
-                    kept.push(repo);
-                }
-            }
+            let protocol = probe_protocol(&self.client, &repo).ok();
+            updated.push(repo.with_protocol(protocol));
         }
-        self.repos = kept;
+        self.repos = updated;
     }
 
     /// Inspect what's been fetched so far. Exposed for tests + future
@@ -403,37 +395,27 @@ impl ResolveProvider {
         // wins; subsequent repos are skipped — Composer's "first
         // matching repository" precedence rule.
         for repo in &self.repos {
-            let stable_md = fetch_package_metadata_optional(
-                &self.client,
-                &self.paths,
-                repo,
-                name,
-                Variant::Stable,
-            )
-            .map_err(|e| {
-                ProviderError(format!(
-                    "fetching metadata for {name} from {}: {e:#}",
-                    repo.url,
-                ))
-            })?;
+            let stable_md = self
+                .fetch_one(repo, name, Variant::Stable)
+                .map_err(|e| {
+                    ProviderError(format!(
+                        "fetching metadata for {name} from {}: {e:#}",
+                        repo.url,
+                    ))
+                })?;
             if let Some(md) = stable_md {
                 if let Some(entries) = md.packages.get(name) {
                     versions.extend(entries.iter().cloned());
                 }
                 if floor == Stability::Dev {
-                    let dev_md = fetch_package_metadata_optional(
-                        &self.client,
-                        &self.paths,
-                        repo,
-                        name,
-                        Variant::Dev,
-                    )
-                    .map_err(|e| {
-                        ProviderError(format!(
-                            "fetching dev metadata for {name} from {}: {e:#}",
-                            repo.url,
-                        ))
-                    })?;
+                    let dev_md = self
+                        .fetch_one(repo, name, Variant::Dev)
+                        .map_err(|e| {
+                            ProviderError(format!(
+                                "fetching dev metadata for {name} from {}: {e:#}",
+                                repo.url,
+                            ))
+                        })?;
                     if let Some(md) = dev_md {
                         if let Some(extra) = md.packages.get(name) {
                             versions.extend(extra.iter().cloned());
@@ -460,6 +442,63 @@ impl ResolveProvider {
             .collect();
         out.sort_by(|a, b| b.0.cmp(&a.0));
         Ok(out)
+    }
+
+    /// Protocol-dispatching fetch for one (repo, package, variant)
+    /// triple. Hides the v1 vs v2 split from `load_real_candidates`:
+    ///
+    /// - **v2** (or unknown protocol — typical for Packagist and any
+    ///   repo whose probe failed): direct `/p2/<name>.json` GET.
+    /// - **v1**: lazily load the repo's merged provider lookup table
+    ///   (once per resolve, cached on the provider), look up the
+    ///   package's sha256, and fetch the per-package file. v1 has no
+    ///   `~dev.json` equivalent — branch versions are listed in the
+    ///   same per-package document — so `Variant::Dev` returns
+    ///   `Ok(None)` to avoid a second wasted request.
+    fn fetch_one(
+        &self,
+        repo: &Repo,
+        package: &str,
+        variant: Variant,
+    ) -> eyre::Result<Option<bougie_composer::metadata::PackageMetadata>> {
+        match &repo.protocol {
+            Some(RepoProtocol::V1(discovery)) => {
+                if variant == Variant::Dev {
+                    // v1 stuffs branches into the single per-package
+                    // document — `Variant::Stable` already returned
+                    // everything. Save the round-trip.
+                    return Ok(None);
+                }
+                if !self.v1_provider_tables.borrow().contains_key(&repo.url) {
+                    let table = load_v1_provider_table(
+                        &self.client,
+                        &self.paths,
+                        repo,
+                        discovery,
+                    )?;
+                    self.v1_provider_tables
+                        .borrow_mut()
+                        .insert(repo.url.clone(), table);
+                }
+                let tables = self.v1_provider_tables.borrow();
+                let table = tables.get(&repo.url).expect("just inserted");
+                fetch_package_metadata_v1_optional(
+                    &self.client,
+                    &self.paths,
+                    repo,
+                    discovery,
+                    table,
+                    package,
+                )
+            }
+            _ => fetch_package_metadata_optional(
+                &self.client,
+                &self.paths,
+                repo,
+                package,
+                variant,
+            ),
+        }
     }
 
     /// Walk a freshly-loaded package's versions and register every
@@ -1345,11 +1384,10 @@ pub fn dry_run_update(
         auth,
     )
     .map_err(|e| eyre!(e))?;
-    // Discover each repo's Composer protocol via packages.json and
-    // drop v1 repos before any `/p2/` traffic. Skipped repos surface
-    // a stderr warning naming the host so users can either remove the
-    // entry or wait for v1 protocol support.
-    provider.drop_v1_repos();
+    // Probe each repo's `packages.json` and record the discovered
+    // Composer protocol (v1 vs v2) so the per-package fetcher
+    // dispatches correctly. Required before any pre-fetch traffic.
+    provider.discover_repos();
     provider
         .pre_fetch_closure()
         .map_err(|e| eyre!("pre-fetching metadata closure: {}", e.0))?;
@@ -1522,11 +1560,11 @@ fn solve_into_lock_packages(
         auth,
     )
     .map_err(|e| eyre!(e))?;
-    // Drop Composer v1 repos before any `/p2/` traffic (see
-    // [`ResolveProvider::drop_v1_repos`]). Done here too because
+    // Record discovered Composer protocols on each repo (see
+    // [`ResolveProvider::discover_repos`]). Done here too because
     // `solve_into_lock_packages` builds its own provider for the
     // full-graph and prod-only solves.
-    provider.drop_v1_repos();
+    provider.discover_repos();
     // Eager pre-fetch: load every reachable package's metadata
     // before the solver runs so virtual providers are registered.
     // Mirrors Composer's PoolBuilder.
