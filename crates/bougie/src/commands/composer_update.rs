@@ -8,7 +8,7 @@
 
 use std::collections::BTreeMap;
 use std::io::{self, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use bougie_cli::OutputFormat;
@@ -108,31 +108,7 @@ pub fn run(
     }
 
     // Write-mode path: resolve, build a Lock, atomic write.
-    let (composer_json_bytes, outcome): (Vec<u8>, LockfileSolveOutcome) =
-        resolve_for_lockfile(&paths, &project_root, Repo::packagist())?;
-    let lock_path = project_root.join("composer.lock");
-
-    let content_hash = lockfile::content_hash(&composer_json_bytes)
-        .wrap_err("computing composer.json content-hash")?;
-
-    let lock = Lock {
-        readme: canonical_readme(),
-        content_hash: Some(content_hash),
-        packages: outcome.packages.clone(),
-        packages_dev: outcome.packages_dev.clone(),
-        aliases: Vec::new(),
-        minimum_stability: Some(outcome.minimum_stability.clone()),
-        stability_flags: outcome.stability_flags.clone(),
-        prefer_stable: outcome.prefer_stable,
-        prefer_lowest: false,
-        platform: BTreeMap::new(),
-        platform_dev: BTreeMap::new(),
-        platform_overrides: BTreeMap::new(),
-        plugin_api_version: Some("2.6.0".into()),
-    };
-
-    lockfile::write_lock(&lock_path, &lock)
-        .wrap_err_with(|| format!("writing {}", lock_path.display()))?;
+    let (lock_path, outcome) = resolve_and_write_lock(&paths, &project_root)?;
 
     let result = UpdateResult {
         schema_version: 1,
@@ -159,5 +135,49 @@ pub fn run(
     };
     emit(format, &result)?;
     Ok(ExitCode::SUCCESS)
+}
+
+/// Resolve `composer.json` against Packagist + any configured
+/// repositories, build a `Lock`, and atomically write it to
+/// `<project_root>/composer.lock`. Returns the lock path and the
+/// resolver outcome (so the caller can render output without
+/// re-reading the file).
+///
+/// Shared by `bougie composer update` (the headline verb) and the
+/// `bougie composer install` fallback path that triggers when no
+/// `composer.lock` exists yet — mirrors what Composer itself does
+/// in `Composer\Installer::run` (see the
+/// `'No composer.lock file present. Updating dependencies to
+/// latest instead of installing from lock file'` warning).
+pub fn resolve_and_write_lock(
+    paths: &Paths,
+    project_root: &Path,
+) -> Result<(PathBuf, LockfileSolveOutcome)> {
+    let (composer_json_bytes, outcome): (Vec<u8>, LockfileSolveOutcome) =
+        resolve_for_lockfile(paths, project_root, Repo::packagist())?;
+    let lock_path = project_root.join("composer.lock");
+
+    let content_hash = lockfile::content_hash(&composer_json_bytes)
+        .wrap_err("computing composer.json content-hash")?;
+
+    let lock = Lock {
+        readme: canonical_readme(),
+        content_hash: Some(content_hash),
+        packages: outcome.packages.clone(),
+        packages_dev: outcome.packages_dev.clone(),
+        aliases: Vec::new(),
+        minimum_stability: Some(outcome.minimum_stability.clone()),
+        stability_flags: outcome.stability_flags.clone(),
+        prefer_stable: outcome.prefer_stable,
+        prefer_lowest: false,
+        platform: BTreeMap::new(),
+        platform_dev: BTreeMap::new(),
+        platform_overrides: BTreeMap::new(),
+        plugin_api_version: Some("2.6.0".into()),
+    };
+
+    lockfile::write_lock(&lock_path, &lock)
+        .wrap_err_with(|| format!("writing {}", lock_path.display()))?;
+    Ok((lock_path, outcome))
 }
 
