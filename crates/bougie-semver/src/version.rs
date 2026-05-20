@@ -160,6 +160,16 @@ fn re_branch_alias() -> &'static Regex {
     })
 }
 
+/// True iff `s` matches the Composer branch-alias form
+/// `Nx-dev` / `N.x-dev` / `N.M.x-dev` (etc.). These appear both as
+/// versions (Packagist's dev document lists them) and as constraints
+/// in `composer.json` (`"phpmd/phpmd": "3.x-dev"`). The constraint
+/// parser routes the form to an `==` against the same string
+/// re-parsed as a `Version`.
+pub fn is_branch_alias(s: &str) -> bool {
+    re_branch_alias().is_match(s.trim())
+}
+
 /// Strip a trailing `@stable`/`@dev`/etc. stability flag. Composer
 /// accepts these on package require strings (e.g.
 /// `name@dev`); `normalize` drops them before further parsing.
