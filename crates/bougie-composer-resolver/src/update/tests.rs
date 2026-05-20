@@ -1848,3 +1848,66 @@ fn auth_credentials_debug_redacts_password_and_token() {
     assert!(!bearer_dbg.contains("tokenZZ"), "{bearer_dbg}");
     assert!(bearer_dbg.contains("redacted"), "{bearer_dbg}");
 }
+
+#[test]
+fn drop_v1_repos_skips_repos_without_metadata_url() {
+    // End-to-end check for the v1-repo guard: a custom repo serves a
+    // Composer v1 `packages.json` (no `metadata-url`), and would
+    // return a marketing HTML page for `/p2/<name>.json` if asked.
+    // After `drop_v1_repos`, the resolver must skip that repo
+    // entirely and find the package on Packagist instead. The trap
+    // mock on `/p2/` ensures we never even *attempt* to fetch the
+    // package from the v1 server — proves the drop, not just the
+    // tolerant Content-Type guard.
+    let tmp = TempDir::new().unwrap();
+    let paths = paths_in(tmp.path());
+
+    let foo_body = p2_body("acme/foo", &[("1.0.0", json!({}))]);
+
+    let rt = rt();
+    let (v1_uri, packagist_uri, _v1, _pkgst) = rt.block_on(async {
+        let v1 = MockServer::start().await;
+        // v1-style packages.json: no `metadata-url`, just the legacy
+        // provider-includes shape.
+        Mock::given(method("GET"))
+            .and(wm_path("/packages.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"{"providers-url": "/p/%package%$%hash%.json"}"#,
+            ))
+            .mount(&v1)
+            .await;
+        // Trap: any /p2/ request to the v1 server fails the test.
+        Mock::given(method("GET"))
+            .and(wiremock::matchers::path_regex(r"^/p2/.*"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&v1)
+            .await;
+        let pkgst = MockServer::start().await;
+        mount_p2(&pkgst, "acme/foo", foo_body).await;
+        (v1.uri(), pkgst.uri(), v1, pkgst)
+    });
+
+    let composer_json = json!({
+        "repositories": [
+            {"type": "composer", "url": v1_uri},
+        ],
+        "require": {"acme/foo": "^1.0"},
+    });
+    let client = crate::metadata::build_client().unwrap();
+    let mut provider = ResolveProvider::build(
+        client,
+        paths,
+        crate::metadata::Repo::from_url(packagist_uri),
+        &composer_json,
+        true,
+    )
+    .unwrap();
+    provider.drop_v1_repos();
+    let root = provider.root_version();
+
+    let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
+    let foo = solution
+        .get(&PubGrubPackage::Package("acme/foo".into()))
+        .expect("acme/foo should resolve via Packagist after the v1 repo is dropped");
+    assert_eq!(foo.to_string(), "1.0.0.0");
+}

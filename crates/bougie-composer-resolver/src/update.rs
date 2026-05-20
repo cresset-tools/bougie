@@ -74,7 +74,9 @@ use serde_json::Value;
 
 use crate::metadata::build_client;
 
-use crate::metadata::{fetch_package_metadata_optional, Repo, Variant};
+use crate::metadata::{
+    fetch_package_metadata_optional, probe_protocol, Repo, RepoProtocol, Variant,
+};
 use crate::verify::{is_platform, to_range, ComposerRange, ProviderError, PubGrubPackage};
 
 /// pubgrub provider that resolves a fresh `composer.json` against
@@ -261,6 +263,51 @@ impl ResolveProvider {
     /// The synthetic root version pubgrub should `resolve` against.
     pub fn root_version(&self) -> Version {
         self.root_version.clone()
+    }
+
+    /// Probe each configured repository's `packages.json` and drop
+    /// the ones that speak the Composer v1 protocol (no
+    /// `metadata-url`; uses `provider-includes` + `providers-url`
+    /// instead). bougie's resolver only implements v2 today — sending
+    /// `/p2/<name>.json` at a v1 repo gets a 302 redirect to a
+    /// marketing page, which is what crashed `composer update` on
+    /// projects with `repo.magento.com` configured.
+    ///
+    /// Dropped repos surface as a one-shot stderr warning per repo
+    /// so the user understands *why* a previously-working
+    /// `repositories` entry is being ignored. Probe failures
+    /// (network blip, malformed `packages.json`) leave the repo in
+    /// place: better to attempt and fail loudly than to silently
+    /// de-list a working repo over a transient hiccup.
+    ///
+    /// Idempotent and cheap to re-run; call once after
+    /// `build_with_auth` and before any `pre_fetch_closure` /
+    /// `resolve` so the probe runs before any `/p2/` traffic.
+    pub fn drop_v1_repos(&mut self) {
+        let original = std::mem::take(&mut self.repos);
+        let mut kept = Vec::with_capacity(original.len());
+        for repo in original {
+            match probe_protocol(&self.client, &repo) {
+                Ok(RepoProtocol::V2) => kept.push(repo),
+                Ok(RepoProtocol::V1) => {
+                    eprintln!(
+                        "warning: skipping repository {} — it speaks the Composer v1 \
+                         protocol (provider-includes / providers-url), which bougie \
+                         does not yet implement. Any packages only available here \
+                         will fail to resolve.",
+                        repo.url,
+                    );
+                }
+                Err(_) => {
+                    // Probe failed — keep the repo. A subsequent
+                    // `/p2/` fetch will either succeed (probe was a
+                    // false negative) or surface a clearer per-package
+                    // error than "we couldn't reach packages.json once."
+                    kept.push(repo);
+                }
+            }
+        }
+        self.repos = kept;
     }
 
     /// Inspect what's been fetched so far. Exposed for tests + future
@@ -1289,7 +1336,7 @@ pub fn dry_run_update(
     // top (auth.json wins — matches Composer's precedence).
     let mut auth = read_auth_from_composer_json(&composer_json).map_err(|e| eyre!(e))?;
     auth.extend(read_auth_json(project_root).map_err(|e| eyre!(e))?);
-    let provider = ResolveProvider::build_with_auth(
+    let mut provider = ResolveProvider::build_with_auth(
         client,
         paths.clone(),
         default_packagist,
@@ -1298,6 +1345,11 @@ pub fn dry_run_update(
         auth,
     )
     .map_err(|e| eyre!(e))?;
+    // Discover each repo's Composer protocol via packages.json and
+    // drop v1 repos before any `/p2/` traffic. Skipped repos surface
+    // a stderr warning naming the host so users can either remove the
+    // entry or wait for v1 protocol support.
+    provider.drop_v1_repos();
     provider
         .pre_fetch_closure()
         .map_err(|e| eyre!("pre-fetching metadata closure: {}", e.0))?;
@@ -1461,7 +1513,7 @@ fn solve_into_lock_packages(
     auth: HashMap<String, crate::metadata::AuthCredentials>,
 ) -> Result<SolutionSummary> {
     let client = build_client()?;
-    let provider = ResolveProvider::build_with_auth(
+    let mut provider = ResolveProvider::build_with_auth(
         client,
         paths.clone(),
         default_packagist,
@@ -1470,6 +1522,11 @@ fn solve_into_lock_packages(
         auth,
     )
     .map_err(|e| eyre!(e))?;
+    // Drop Composer v1 repos before any `/p2/` traffic (see
+    // [`ResolveProvider::drop_v1_repos`]). Done here too because
+    // `solve_into_lock_packages` builds its own provider for the
+    // full-graph and prod-only solves.
+    provider.drop_v1_repos();
     // Eager pre-fetch: load every reachable package's metadata
     // before the solver runs so virtual providers are registered.
     // Mirrors Composer's PoolBuilder.

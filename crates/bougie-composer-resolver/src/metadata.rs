@@ -180,6 +180,72 @@ pub fn build_client() -> Result<reqwest::blocking::Client> {
     bougie_fetch::default_client()
 }
 
+/// Which Composer-protocol version a repository speaks. Discovered
+/// by reading the repo's root `packages.json`: v2 servers advertise
+/// a `metadata-url` template (Composer's "metadata as static files"
+/// shape), v1 servers don't — they use `provider-includes` /
+/// `providers-url` for lazy provider discovery instead.
+///
+/// bougie only implements the v2 protocol today. The probe exists
+/// so v1 repos can be detected and skipped cleanly (with a one-shot
+/// warning) instead of crashing on a 302→HTML response to a `/p2/`
+/// request. See [`probe_protocol`].
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum RepoProtocol {
+    /// `metadata-url` present in `packages.json`. Resolver fetches
+    /// `/p2/<name>.json` directly.
+    V2,
+    /// `metadata-url` absent. Repository serves the v1 lazy-provider
+    /// protocol, which bougie doesn't implement yet. Such repos are
+    /// dropped from the working list at solve time.
+    V1,
+}
+
+/// Probe a repository's protocol version by GETting `<url>/packages.json`
+/// and looking for a top-level `metadata-url` string field.
+///
+/// Returns `Err` on transport failure, non-success HTTP status, or
+/// malformed JSON — the caller decides whether a probe failure
+/// should disqualify the repo or leave it in place. (Today: leave
+/// in place, so a transient packages.json hiccup doesn't silently
+/// drop a working v2 repo.)
+pub fn probe_protocol(
+    client: &reqwest::blocking::Client,
+    repo: &Repo,
+) -> Result<RepoProtocol> {
+    let url = format!("{}/packages.json", repo.url);
+    let mut req = client.get(&url);
+    if let Some(auth) = &repo.auth {
+        req = req.header(reqwest::header::AUTHORIZATION, auth.header_value());
+    }
+    let resp = req.send().map_err(|e| BougieError::Network {
+        operation: format!("GET {url}"),
+        detail: e.to_string(),
+    })?;
+    if !resp.status().is_success() {
+        return Err(BougieError::Network {
+            operation: format!("GET {url}"),
+            detail: format!("server returned HTTP {}", resp.status()),
+        }
+        .into());
+    }
+    let bytes = resp.bytes().map_err(|e| BougieError::Network {
+        operation: format!("reading body of {url}"),
+        detail: e.to_string(),
+    })?;
+    let root: serde_json::Value = serde_json::from_slice(&bytes)
+        .wrap_err_with(|| format!("parsing packages.json from {url}"))?;
+    if root
+        .get("metadata-url")
+        .and_then(serde_json::Value::as_str)
+        .is_some()
+    {
+        Ok(RepoProtocol::V2)
+    } else {
+        Ok(RepoProtocol::V1)
+    }
+}
+
 /// Which of the two `/p2/` documents to fetch for a package.
 ///
 /// Packagist publishes stable releases in `<name>.json` and any
@@ -271,13 +337,24 @@ pub fn fetch_package_metadata(
 }
 
 /// Like [`fetch_package_metadata`] but returns `Ok(None)` when the
-/// upstream replies 404. Useful for the `~dev.json` variant: many
-/// packages have no branches, so Packagist 404s for them — the
-/// resolver wants to treat that as "no dev candidates," not as a
-/// hard failure.
+/// upstream replies 404 — or when the response body isn't JSON.
+/// Useful for two distinct cases:
 ///
-/// Any other non-success status, parse failure, or transport error
-/// still propagates as `Err`.
+/// - The `~dev.json` variant: many packages have no branches, so
+///   Packagist 404s for them; treat that as "no dev candidates," not
+///   a hard failure.
+/// - Composer v1 repos (e.g. `repo.magento.com`) that don't serve
+///   `/p2/<name>.json` at all and instead return a 302 to a marketing
+///   page — reqwest follows the redirect, the final response is a
+///   200 `text/html` body, and `PackageMetadata::parse` then chokes
+///   on "expected value at line 1 column 1." A non-JSON Content-Type
+///   is the signal that this repo doesn't actually host `<name>`; the
+///   resolver moves on to the next repo. The bogus body is *not*
+///   written to the on-disk cache.
+///
+/// Any other non-success status, parse failure on an
+/// `application/json` body, or transport error still propagates as
+/// `Err`.
 pub fn fetch_package_metadata_optional(
     client: &reqwest::blocking::Client,
     paths: &Paths,
@@ -327,6 +404,18 @@ pub fn fetch_package_metadata_optional(
         .into());
     }
 
+    // 2xx HTML → treat as a repo miss. Stops bogus bodies (HTML from
+    // redirect-to-marketing-site Composer v1 repos, sign-in pages
+    // behind a transparent proxy, etc.) from crashing the resolve
+    // *and* from poisoning the on-disk metadata cache. We deliberately
+    // reject only the obviously-wrong types here: a `text/plain` or
+    // missing Content-Type might still be valid JSON from a
+    // misconfigured server, and we'd rather attempt the parse and
+    // surface a clear error than silently de-list a working repo.
+    if response_is_html(&resp) {
+        return Ok(None);
+    }
+
     let etag = resp
         .headers()
         .get(reqwest::header::ETAG)
@@ -345,6 +434,25 @@ pub fn fetch_package_metadata_optional(
     PackageMetadata::parse(&bytes)
         .wrap_err_with(|| format!("parsing metadata for {package_name}"))
         .map(Some)
+}
+
+/// True when a response's `Content-Type` advertises HTML — the
+/// canonical "this is not your Composer metadata" shape. Used to
+/// short-circuit a `/p2/` request that landed on a redirect-to-
+/// marketing-site (the Magento v1 repo case) without poisoning the
+/// JSON cache. Deliberately narrow: anything *not* HTML is left to
+/// `PackageMetadata::parse` so a misconfigured server that ships
+/// JSON as `text/plain` (or omits the header) still works.
+fn response_is_html(resp: &reqwest::blocking::Response) -> bool {
+    let Some(raw) = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+    else {
+        return false;
+    };
+    let mime = raw.split(';').next().unwrap_or("").trim().to_ascii_lowercase();
+    mime == "text/html" || mime == "application/xhtml+xml"
 }
 
 fn read_cached(json_path: &Path) -> Result<PackageMetadata> {
