@@ -516,6 +516,15 @@ fn read_root_requires(
             let (cleaned, flag) = split_stability_flag(raw_constraint);
             if let Some(stability) = flag {
                 flags.insert(dep_name.clone(), stability);
+            } else if bougie_semver::version::is_branch_alias(cleaned) {
+                // `"pdepend/pdepend": "3.x-dev"` — the constraint
+                // itself targets a dev branch. Composer infers a
+                // per-package `dev` stability flag in this case, so
+                // the dev document (`/p2/<name>~dev.json`) gets
+                // consulted. Without this, the resolver only loads
+                // the stable doc and can't find `3.x-dev` as a
+                // candidate.
+                flags.insert(dep_name.clone(), Stability::Dev);
             }
             let constraint = Constraint::parse(cleaned).map_err(|e| {
                 BuildError::ParseConstraint {
@@ -618,7 +627,13 @@ fn push_constraint_map(
         } else {
             raw
         };
-        let constraint = Constraint::parse(effective).map_err(|e| {
+        // Strip any trailing `@<stability>` flag — Composer accepts
+        // these on transitive requires too (e.g.
+        // `"codeception/codeception": "*@dev"`) but doesn't use them
+        // for matching at the transitive level. For our purposes,
+        // ignore the flag and parse the remainder.
+        let (cleaned, _flag) = split_stability_flag(effective);
+        let constraint = Constraint::parse(cleaned).map_err(|e| {
             ProviderError(format!(
                 "constraint {raw:?} on `{dep_name}` ({clause_kind} from `{owner}`): {e}",
             ))

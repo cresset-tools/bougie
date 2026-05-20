@@ -22,7 +22,7 @@
 //! `Or`. Matching is then a straight tree walk against the candidate
 //! version using [`Version::compare`].
 
-use crate::version::{CmpOp, Suffix, Version, VersionKind};
+use crate::version::{is_branch_alias as bougie_semver_is_branch_alias, CmpOp, Suffix, Version, VersionKind};
 use regex::Regex;
 use std::sync::OnceLock;
 
@@ -302,9 +302,31 @@ fn parse_atom(token: &str) -> Result<Constraint, ParseError> {
     if s.is_empty() {
         return Err(ParseError::Invalid(token.to_owned()));
     }
+    // Strip any `#<commit-ref>` suffix Composer accepts on any
+    // constraint atom (`"acme/foo": "3.x-dev#abc1234"`). For
+    // resolution purposes the ref is purely informational — the
+    // installer uses it to pin a specific commit of the branch, but
+    // the matcher behaves the same as without it.
+    let s = s.split_once('#').map_or(s, |(left, _)| left).trim_end();
     // `*` / `x` / `X`
     if matches!(s, "*" | "x" | "X") {
         return Ok(Constraint::Any);
+    }
+
+    // Branch-alias form: `Nx-dev`, `N.x-dev`, `N.M.x-dev`. Composer
+    // accepts these as constraints meaning "exactly this dev
+    // branch." Maps to `==` against the parsed Version (which
+    // already normalizes `3.x-dev` to `3.9999999.9999999.9999999-dev`).
+    // Marked explicit-lower-bound so a same-numeric-prerelease
+    // comparison falls through to standard ordering.
+    if bougie_semver_is_branch_alias(s) {
+        let v = Version::parse(s)
+            .map_err(|e| ParseError::Invalid(format!("{token}: {e}")))?;
+        return Ok(Constraint::Op {
+            op: CmpOp::Eq,
+            version: v,
+            explicit_lower_bound: true,
+        });
     }
 
     // Caret: `^X.Y.Z`
@@ -566,4 +588,52 @@ fn pad_segments_with(mut segs: Vec<String>, pad: &str, target: usize) -> Vec<Str
         segs.push(pad.to_owned());
     }
     segs
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Composer accepts `Nx-dev` / `N.x-dev` / `N.M.x-dev` as
+    /// constraint strings meaning "exactly the named dev branch."
+    /// They parse to an `==` constraint against the same string
+    /// re-parsed as a Version (which already canonicalizes
+    /// `3.x-dev` into `3.9999999.9999999.9999999-dev`).
+    #[test]
+    fn nx_dev_constraint_matches_same_branch_version() {
+        let c = Constraint::parse("3.x-dev").unwrap();
+        let v = Version::parse("3.x-dev").unwrap();
+        assert!(c.matches(&v), "got constraint {c:?}");
+    }
+
+    #[test]
+    fn nx_dev_constraint_rejects_other_major_branch() {
+        let c = Constraint::parse("3.x-dev").unwrap();
+        let other = Version::parse("2.x-dev").unwrap();
+        assert!(!c.matches(&other), "got constraint {c:?}");
+    }
+
+    #[test]
+    fn nx_dev_constraint_rejects_stable_release() {
+        // `3.x-dev` is the exact dev branch; a stable `3.0.0` does
+        // not satisfy it.
+        let c = Constraint::parse("3.x-dev").unwrap();
+        let stable = Version::parse("3.0.0").unwrap();
+        assert!(!c.matches(&stable), "got constraint {c:?}");
+    }
+
+    #[test]
+    fn n_dot_x_dev_handles_two_segment_form() {
+        let c = Constraint::parse("1.x-dev").unwrap();
+        let v = Version::parse("1.x-dev").unwrap();
+        assert!(c.matches(&v));
+    }
+
+    #[test]
+    fn n_dot_m_dot_x_dev_handles_three_segment_form() {
+        // `1.0.x-dev` parses to `1.0.9999999.9999999-dev`.
+        let c = Constraint::parse("1.0.x-dev").unwrap();
+        let v = Version::parse("1.0.x-dev").unwrap();
+        assert!(c.matches(&v));
+    }
 }
