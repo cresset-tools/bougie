@@ -1303,3 +1303,167 @@ fn unknown_prefer_stable_type_is_a_build_error() {
     assert!(msg.contains("prefer-stable"), "{msg}");
 }
 
+// ===================== Wildcard replace/provide =====================
+
+#[test]
+fn wildcard_replace_satisfies_unrelated_range() {
+    // The canonical codeception → phpunit-wrapper pattern that
+    // unblocked magento2's require-dev: a real package replaces a
+    // virtual at `*` (any version), and a consumer requires the
+    // virtual in some specific range. The wildcard must absorb the
+    // require regardless of the version space.
+    let tmp = TempDir::new().unwrap();
+    let paths = paths_in(tmp.path());
+
+    let monolith = p2_body_with_extras(
+        "acme/monolith",
+        &[(
+            "5.3.5",
+            json!({}),
+            json!({"replace": {"acme/wrapper": "*"}}),
+        )],
+    );
+    // Consumer requires the wrapper in a range that does NOT
+    // include the monolith's own version.
+    let consumer = p2_body(
+        "acme/consumer",
+        &[("2.2.0", json!({"acme/wrapper": "^7.7.1 | ^8.0.3 | ^9.0"}))],
+    );
+
+    let rt = rt();
+    let (uri, _server) = rt.block_on(async {
+        let server = MockServer::start().await;
+        mount_p2(&server, "acme/monolith", monolith).await;
+        mount_p2(&server, "acme/consumer", consumer).await;
+        // Deliberately no /p2/acme/wrapper.json — the wildcard
+        // replace is the only way to satisfy the require.
+        (server.uri(), server)
+    });
+
+    let composer_json = json!({
+        "require": {
+            "acme/monolith": "^5.0",
+            "acme/consumer": "^2.0",
+        },
+    });
+    let client = crate::metadata::build_client().unwrap();
+    let provider =
+        ResolveProvider::build(client, paths, uri, &composer_json, true).unwrap();
+    provider.pre_fetch_closure().unwrap();
+    let root = provider.root_version();
+
+    let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
+    assert!(solution
+        .get(&PubGrubPackage::Package("acme/monolith".into()))
+        .is_some());
+    assert!(solution
+        .get(&PubGrubPackage::Package("acme/consumer".into()))
+        .is_some());
+    // The wildcard synthesized a wrapper@<some_version>; it
+    // appears in pubgrub's raw solution but is filtered from
+    // user-facing output.
+    let wrapper_sel = solution
+        .get(&PubGrubPackage::Package("acme/wrapper".into()));
+    assert!(wrapper_sel.is_some(), "wrapper must be in raw solution");
+    // virtual_selections recorded the link back to the provider.
+    let selections = provider.virtual_selections.borrow();
+    let any_wrapper_entry = selections
+        .keys()
+        .any(|(n, _)| n == "acme/wrapper");
+    assert!(any_wrapper_entry, "virtual_selections should record wrapper");
+}
+
+#[test]
+fn wildcard_replace_does_not_synthesize_without_consumer() {
+    // No consumer requires the wrapper. The wildcard should not
+    // synthesize a candidate, and the solution should not include
+    // the virtual name.
+    let tmp = TempDir::new().unwrap();
+    let paths = paths_in(tmp.path());
+
+    let monolith = p2_body_with_extras(
+        "acme/monolith",
+        &[(
+            "5.0.0",
+            json!({}),
+            json!({"replace": {"acme/wrapper": "*"}}),
+        )],
+    );
+
+    let rt = rt();
+    let (uri, _server) = rt.block_on(async {
+        let server = MockServer::start().await;
+        mount_p2(&server, "acme/monolith", monolith).await;
+        (server.uri(), server)
+    });
+
+    let composer_json = json!({"require": {"acme/monolith": "^5.0"}});
+    let client = crate::metadata::build_client().unwrap();
+    let provider =
+        ResolveProvider::build(client, paths, uri, &composer_json, true).unwrap();
+    provider.pre_fetch_closure().unwrap();
+    let root = provider.root_version();
+
+    let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
+    assert!(solution
+        .get(&PubGrubPackage::Package("acme/monolith".into()))
+        .is_some());
+    assert!(solution
+        .get(&PubGrubPackage::Package("acme/wrapper".into()))
+        .is_none());
+}
+
+#[test]
+fn real_packagist_versions_preferred_over_wildcard() {
+    // Both real Packagist versions AND a wildcard provider are
+    // available. Real takes precedence (the wildcard fallback only
+    // fires when no real or specific-virtual candidate fits).
+    let tmp = TempDir::new().unwrap();
+    let paths = paths_in(tmp.path());
+
+    let monolith = p2_body_with_extras(
+        "acme/monolith",
+        &[(
+            "5.0.0",
+            json!({}),
+            json!({"replace": {"acme/wrapper": "*"}}),
+        )],
+    );
+    let wrapper = p2_body("acme/wrapper", &[("9.0.0", json!({}))]);
+    let consumer = p2_body(
+        "acme/consumer",
+        &[("1.0.0", json!({"acme/wrapper": "^9.0"}))],
+    );
+
+    let rt = rt();
+    let (uri, _server) = rt.block_on(async {
+        let server = MockServer::start().await;
+        mount_p2(&server, "acme/monolith", monolith).await;
+        mount_p2(&server, "acme/wrapper", wrapper).await;
+        mount_p2(&server, "acme/consumer", consumer).await;
+        (server.uri(), server)
+    });
+
+    let composer_json = json!({
+        "require": {
+            "acme/monolith": "^5.0",
+            "acme/consumer": "^1.0",
+        },
+    });
+    let client = crate::metadata::build_client().unwrap();
+    let provider =
+        ResolveProvider::build(client, paths, uri, &composer_json, true).unwrap();
+    provider.pre_fetch_closure().unwrap();
+    let root = provider.root_version();
+
+    let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
+    // Real wrapper 9.0.0 picked, not a wildcard synthetic.
+    let wrapper_v = solution
+        .get(&PubGrubPackage::Package("acme/wrapper".into()))
+        .unwrap();
+    assert_eq!(wrapper_v.to_string(), "9.0.0.0");
+    // The wildcard entry exists in the index but was never
+    // synthesized (no fallback was needed), so virtual_selections
+    // shouldn't have wrapper@9.0.0 from a wildcard.
+}
+

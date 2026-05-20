@@ -130,6 +130,15 @@ pub struct ResolveProvider {
     /// answer can come from the index even though Packagist has no
     /// `/p2/psr/http-client-implementation.json`.
     virtual_providers: RefCell<HashMap<String, Vec<VirtualProvider>>>,
+    /// Wildcard / range-shaped replace+provide clauses. Composer's
+    /// `replace: { codeception/phpunit-wrapper: "*" }` on
+    /// codeception 5.x says "I replace any version of
+    /// phpunit-wrapper" — Composer's `whatProvides` then satisfies
+    /// any require on phpunit-wrapper from codeception's pool entry.
+    /// We model this by remembering the range the provider declares
+    /// and synthesizing a candidate inside the consumer's range at
+    /// `choose_version` time (when the consumer's range is known).
+    virtual_wildcards: RefCell<HashMap<String, Vec<WildcardProvider>>>,
     /// Reverse-lookup: for each (virtual_name, selected_version),
     /// which (provider_name, provider_version) backed it. Used by
     /// `get_dependencies` to add the require that pins the provider.
@@ -144,6 +153,24 @@ pub struct VirtualProvider {
     pub provider_name: String,
     pub provider_version: Version,
     pub provided_version: Version,
+}
+
+/// Wildcard provider entry — "real package
+/// `provider_name@provider_version` declares it
+/// provides/replaces the virtual name across the range
+/// `provided_range`." Used for `*` and other range-shaped
+/// `replace` / `provide` clauses where no single version is
+/// authoritative. The synthetic candidate is picked from inside
+/// the consumer's required range at `choose_version` time.
+#[derive(Debug, Clone)]
+pub struct WildcardProvider {
+    pub provider_name: String,
+    pub provider_version: Version,
+    /// The range the provider declared it covers. For `*` this is
+    /// `Ranges::full()` (matches every consumer constraint). For
+    /// something like `replace: { Q: "^1.0" }` we use the parsed
+    /// constraint's range.
+    pub provided_range: ComposerRange,
 }
 
 impl std::fmt::Debug for ResolveProvider {
@@ -186,6 +213,7 @@ impl ResolveProvider {
             stability_flags,
             cache: RefCell::new(HashMap::new()),
             virtual_providers: RefCell::new(HashMap::new()),
+            virtual_wildcards: RefCell::new(HashMap::new()),
             virtual_selections: RefCell::new(HashMap::new()),
         })
     }
@@ -340,6 +368,7 @@ impl ResolveProvider {
     /// filtered before reaching pubgrub anyway (issue #118).
     fn register_virtuals_from(&self, provider_name: &str, versions: &[LockPackage]) {
         let mut index = self.virtual_providers.borrow_mut();
+        let mut wildcards = self.virtual_wildcards.borrow_mut();
         let mut selections = self.virtual_selections.borrow_mut();
         for p in versions {
             let Ok(provider_version) = Version::parse(&p.version) else {
@@ -356,56 +385,66 @@ impl ResolveProvider {
                     if is_platform(virtual_name) {
                         continue;
                     }
-                    // The constraint here pins the version the
-                    // provider provides/replaces *at*. For
-                    // `replace: "1.0.0"` it's exact; for `replace:
-                    // "self.version"` we substitute. Anything more
-                    // exotic (e.g. `^1.0`) is rare for the version
-                    // (vs. the consumer's constraint) — Composer
-                    // treats it as a range; we pick a representative
-                    // version from inside it for the synthetic
-                    // candidate.
                     let effective = if raw_constraint == "self.version" {
                         &p.version
                     } else {
                         raw_constraint
                     };
-                    // Composer's `replace`/`provide` accepts either
-                    // an exact version (`"1.0.0"`) or a range
-                    // (`"^1.12"`). If the value parses as a bare
-                    // version, use it directly. Otherwise, fall back
-                    // to the replacer's own version as a
-                    // representative — covers the common case where
-                    // `magento/zend-cache 1.16.0` replaces
-                    // `zfs1/zend-cache: ^1.12` and a consumer
-                    // requires `zfs1/zend-cache: ^1.12` (1.16.0 sits
-                    // inside that range). Open limitation: if a
-                    // consumer requires a tight range that excludes
-                    // the replacer's version, our virtual won't
-                    // match. Rare in practice.
-                    let provided_version = match Version::parse(effective) {
-                        Ok(v) => v,
-                        Err(_) => provider_version.clone(),
-                    };
-                    index
-                        .entry(virtual_name.clone())
-                        .or_default()
-                        .push(VirtualProvider {
-                            provider_name: provider_name.to_owned(),
-                            provider_version: provider_version.clone(),
-                            provided_version: provided_version.clone(),
-                        });
-                    // Map the (virtual, provided) tuple back to the
-                    // provider. First-write-wins for determinism
-                    // when multiple providers offer the same virtual
-                    // at the same version (e.g. several PSR
-                    // implementations). The losing providers are
-                    // still loaded into the pool through their own
-                    // requires; we just don't route the virtual
-                    // selection back to them.
-                    selections
-                        .entry((virtual_name.clone(), provided_version.clone()))
-                        .or_insert((provider_name.to_owned(), provider_version.clone()));
+                    // Composer's `replace`/`provide` accepts an
+                    // exact version (`"1.0.0"`), a range
+                    // (`"^1.12"`), or a wildcard (`"*"`). The three
+                    // shapes need different pubgrub encodings:
+                    //
+                    // 1. Bare version → register a specific-version
+                    //    virtual candidate at exactly that version
+                    //    (`virtual_providers` index).
+                    // 2. Anything else that parses as a Constraint
+                    //    (incl. `*`, `^X.Y`, `>=X`, ...) → register
+                    //    a wildcard provider with the constraint's
+                    //    range. The synthetic candidate is built
+                    //    lazily inside `choose_version` once the
+                    //    consumer's required range is known.
+                    //
+                    // This split matters in practice: codeception
+                    // 5.x declares `replace: { phpunit-wrapper: "*" }`,
+                    // and lib-asserts 2.x requires `phpunit-wrapper
+                    // ^7.7.1 | ^8.0.3 | ^9.0`. A specific-version
+                    // synthetic at codeception's own version (5.3.5)
+                    // wouldn't fit any of those caret ranges and the
+                    // resolver would dead-end into the real
+                    // phpunit-wrapper's incompatible deps. The
+                    // wildcard path picks a version *in the
+                    // consumer's range* instead.
+                    if let Ok(v) = Version::parse(effective) {
+                        index
+                            .entry(virtual_name.clone())
+                            .or_default()
+                            .push(VirtualProvider {
+                                provider_name: provider_name.to_owned(),
+                                provider_version: provider_version.clone(),
+                                provided_version: v.clone(),
+                            });
+                        // Map the (virtual, provided) tuple back to
+                        // the provider. First-write-wins for
+                        // determinism when multiple providers offer
+                        // the same virtual at the same version (e.g.
+                        // several PSR implementations).
+                        selections
+                            .entry((virtual_name.clone(), v))
+                            .or_insert((provider_name.to_owned(), provider_version.clone()));
+                    } else if let Ok(constraint) = Constraint::parse(effective) {
+                        wildcards
+                            .entry(virtual_name.clone())
+                            .or_default()
+                            .push(WildcardProvider {
+                                provider_name: provider_name.to_owned(),
+                                provider_version: provider_version.clone(),
+                                provided_range: to_range(&constraint),
+                            });
+                    }
+                    // If the value parses as neither a Version nor a
+                    // Constraint, skip — losing one virtual entry is
+                    // safer than aborting the whole load.
                 }
             }
         }
@@ -456,6 +495,55 @@ impl ResolveProvider {
             ));
         }
         out
+    }
+
+    /// Pick a synthetic candidate version for `name` from a
+    /// wildcard provider when no real or specific-virtual candidate
+    /// satisfied the consumer's `range`.
+    ///
+    /// For each `WildcardProvider` whose declared range intersects
+    /// `range`, the candidate version is taken from the lower bound
+    /// of the intersection (the first version the consumer would
+    /// accept that the provider also covers). `virtual_selections`
+    /// is updated so `get_dependencies` can route the synthetic
+    /// pick back to its concrete provider.
+    fn synthesize_wildcard_candidate(
+        &self,
+        name: &str,
+        range: &ComposerRange,
+    ) -> Option<Version> {
+        let wildcards = self.virtual_wildcards.borrow();
+        let entries = wildcards.get(name)?;
+        if entries.is_empty() {
+            return None;
+        }
+        // Deterministic order: smallest provider name first.
+        let mut sorted: Vec<&WildcardProvider> = entries.iter().collect();
+        sorted.sort_by(|a, b| a.provider_name.cmp(&b.provider_name));
+
+        for entry in sorted {
+            let intersection = range.intersection(&entry.provided_range);
+            if intersection.is_empty() {
+                continue;
+            }
+            // Take the intersection's lower bound. `Included(v)` is
+            // the cleanest case — that exact version is admissible.
+            // `Excluded(v)` would need a "next-greater version,"
+            // which we don't have a primitive for; skip those rare
+            // forms rather than synthesize a possibly-out-of-range
+            // candidate.
+            let (lower, _) = intersection.bounding_range()?;
+            let picked = match lower {
+                std::ops::Bound::Included(v) => v.clone(),
+                _ => continue,
+            };
+            self.virtual_selections.borrow_mut().insert(
+                (name.to_owned(), picked.clone()),
+                (entry.provider_name.clone(), entry.provider_version.clone()),
+            );
+            return Some(picked);
+        }
+        None
     }
 
     /// Eagerly walk the require closure from the root requires,
@@ -726,6 +814,16 @@ impl DependencyProvider for ResolveProvider {
                         return Ok(Some(v.clone()));
                     }
                 }
+                // Wildcard fallback: when a real package declared
+                // `replace: { name: "*" }` (or any range-shaped
+                // clause), it stands in for *any* version of `name`
+                // that fits the consumer's range. Synthesize a
+                // candidate at the first version inside the
+                // consumer's range that the wildcard provider also
+                // covers.
+                if let Some(picked) = self.synthesize_wildcard_candidate(name, range) {
+                    return Ok(Some(picked));
+                }
                 Ok(None)
             }
         }
@@ -781,21 +879,41 @@ impl DependencyProvider for ResolveProvider {
                 let mut out: Vec<(String, ComposerRange)> = Vec::new();
                 let owner_version = &entry.version;
                 push_constraint_map(&mut out, &entry.require, name, owner_version, "require")?;
-                // `replace` is still encoded as an additional require:
-                // selecting a replacer forces the replaced package to
-                // sit at the replace version, mirroring Composer's
-                // "no coexistence" rule.
+                // `replace` is encoded as an additional require ONLY
+                // when the clause is a bare version
+                // (`replace: { sub: 2.0.0 }`). This emits
+                // `sub: ==2.0.0` from the replacer, mirroring
+                // Composer's "no coexistence" rule: selecting the
+                // replacer forces the replaced package to its
+                // exact replace-version (preventing real sub at any
+                // other version from being selected alongside).
                 //
-                // `provide` is no longer encoded here — it's a
-                // capability declaration, not a requirement. The
-                // virtual-provider index registered earlier makes the
-                // provided name resolvable for any consumer that
-                // requires it, without forcing the provider to also
-                // require the (often virtual) provided name.
+                // For range/wildcard replaces
+                // (`replace: { sub: * }`, `replace: { sub: ^1.0 }`),
+                // there's no single version to pin — the replacer
+                // simply offers a capability. Those flow through the
+                // virtual-provider index alone; emitting them here
+                // would pull a virtual name into the graph
+                // unnecessarily and force a wildcard synthesis even
+                // when no real consumer needs the replaced name.
                 //
-                // Platform replaces (`replace: { php: "..." }`) still
-                // skip — tracked in issue #118.
-                push_constraint_map(&mut out, &entry.replace, name, owner_version, "replace")?;
+                // `provide` follows the same logic: capability
+                // declaration via the virtual index, never an
+                // additional require.
+                let exact_replaces: std::collections::BTreeMap<String, String> = entry
+                    .replace
+                    .iter()
+                    .filter(|(_, v)| {
+                        let effective = if v.as_str() == "self.version" {
+                            owner_version.as_str()
+                        } else {
+                            v.as_str()
+                        };
+                        Version::parse(effective).is_ok()
+                    })
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect();
+                push_constraint_map(&mut out, &exact_replaces, name, owner_version, "replace")?;
                 out
             }
         };
