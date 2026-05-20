@@ -87,12 +87,16 @@ impl RawPackageDocument {
     }
 }
 
-/// Apply one minified-diff entry on top of the running accumulator:
-/// JSON `null` values remove a key (resetting inheritance); any other
-/// value overwrites it.
+/// Apply one minified-diff entry on top of the running accumulator.
+/// Composer's `MetadataMinifier::expand` uses the literal string
+/// `"__unset"` (not JSON `null`) as the sentinel for "remove this
+/// inherited key"; any other value — including `null` itself —
+/// overwrites the accumulator entry verbatim. Real Packagist
+/// responses use both: e.g. `"require-dev": "__unset"` to drop an
+/// inherited dev-deps map.
 fn apply_diff(acc: &mut Map<String, Value>, diff: Map<String, Value>) {
     for (k, v) in diff {
-        if v.is_null() {
+        if v.as_str() == Some("__unset") {
             acc.remove(&k);
         } else {
             acc.insert(k, v);

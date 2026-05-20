@@ -368,17 +368,29 @@ impl std::error::Error for BuildError {}
 /// is the source label used in error messages so a malformed
 /// constraint reports whether it came from a require, a replace,
 /// or a provide.
+///
+/// `owner_version` is the version string of the package the map
+/// belongs to. Used to resolve Composer's `"self.version"` sentinel
+/// — common in `replace` declarations like
+/// `ramsey/uuid 4.9.2 replace: { rhumsaa/uuid: "self.version" }`,
+/// meaning "I replace rhumsaa/uuid at exactly my own version."
 fn push_constraint_map(
     out: &mut Vec<(String, ComposerRange)>,
     map: &std::collections::BTreeMap<String, String>,
     owner: &str,
+    owner_version: &str,
     clause_kind: &'static str,
 ) -> Result<(), ProviderError> {
     for (dep_name, raw) in map {
         if is_platform(dep_name) {
             continue;
         }
-        let constraint = Constraint::parse(raw).map_err(|e| {
+        let effective = if raw == "self.version" {
+            owner_version
+        } else {
+            raw
+        };
+        let constraint = Constraint::parse(effective).map_err(|e| {
             ProviderError(format!(
                 "constraint {raw:?} on `{dep_name}` ({clause_kind} from `{owner}`): {e}",
             ))
@@ -460,7 +472,8 @@ impl DependencyProvider for ResolveProvider {
                     )));
                 };
                 let mut out: Vec<(String, ComposerRange)> = Vec::new();
-                push_constraint_map(&mut out, &entry.require, name, "require")?;
+                let owner_version = &entry.version;
+                push_constraint_map(&mut out, &entry.require, name, owner_version, "require")?;
                 // `replace` and `provide` get encoded as additional
                 // requires: selecting this package forces the named
                 // alternative to satisfy the replace/provide
@@ -484,8 +497,8 @@ impl DependencyProvider for ResolveProvider {
                 //   that has no standalone Packagist entry) will
                 //   fail resolution. Rare in practice; surfaces as
                 //   a fixture failure if it bites.
-                push_constraint_map(&mut out, &entry.replace, name, "replace")?;
-                push_constraint_map(&mut out, &entry.provide, name, "provide")?;
+                push_constraint_map(&mut out, &entry.replace, name, owner_version, "replace")?;
+                push_constraint_map(&mut out, &entry.provide, name, owner_version, "provide")?;
                 out
             }
         };
@@ -578,6 +591,18 @@ pub fn dry_run_update(
         Err(PubGrubError::NoSolution(tree)) => Err(eyre!(
             "no valid dependency resolution exists:\n\n{}",
             DefaultStringReporter::report(&tree),
+        )),
+        Err(PubGrubError::ErrorChoosingVersion { package, source }) => Err(eyre!(
+            "solver could not choose a version for {package}: {}",
+            source.0,
+        )),
+        Err(PubGrubError::ErrorRetrievingDependencies {
+            package,
+            version,
+            source,
+        }) => Err(eyre!(
+            "solver could not retrieve dependencies of {package}@{version}: {}",
+            source.0,
         )),
         Err(other) => Err(eyre!("solver error: {other}")),
     }
@@ -691,6 +716,22 @@ fn solve_into_lock_packages(
             return Err(eyre!(
                 "no valid dependency resolution exists:\n\n{}",
                 DefaultStringReporter::report(&tree),
+            ));
+        }
+        Err(PubGrubError::ErrorChoosingVersion { package, source }) => {
+            return Err(eyre!(
+                "solver could not choose a version for {package}: {}",
+                source.0,
+            ));
+        }
+        Err(PubGrubError::ErrorRetrievingDependencies {
+            package,
+            version,
+            source,
+        }) => {
+            return Err(eyre!(
+                "solver could not retrieve dependencies of {package}@{version}: {}",
+                source.0,
             ));
         }
         Err(other) => return Err(eyre!("solver error: {other}")),

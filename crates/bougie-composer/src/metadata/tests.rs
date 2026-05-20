@@ -84,8 +84,11 @@ fn expands_minified_composer_2_0_inheritance() {
 }
 
 #[test]
-fn null_in_minified_diff_resets_inherited_key() {
-    // The second entry uses `"require": null` to wipe v0's require map.
+fn __unset_sentinel_in_minified_diff_resets_inherited_key() {
+    // The second entry uses `"require": "__unset"` to wipe v0's
+    // require map. Composer's `MetadataMinifier::expand` uses the
+    // literal string `"__unset"` as the deletion sentinel — JSON
+    // `null` is NOT special and would just set the key to null.
     let body = br#"{
         "minified": "composer/2.0",
         "packages": {
@@ -102,7 +105,7 @@ fn null_in_minified_diff_resets_inherited_key() {
                     "version": "1.0.0",
                     "version_normalized": "1.0.0.0",
                     "dist": {"type":"zip","url":"https://e/b","shasum":"b"},
-                    "require": null
+                    "require": "__unset"
                 }
             ]
         }
