@@ -616,14 +616,19 @@ fn read_root_requires(
             let (cleaned, flag) = split_stability_flag(raw_constraint);
             if let Some(stability) = flag {
                 flags.insert(dep_name.clone(), stability);
-            } else if bougie_semver::version::is_branch_alias(cleaned) {
-                // `"pdepend/pdepend": "3.x-dev"` — the constraint
-                // itself targets a dev branch. Composer infers a
-                // per-package `dev` stability flag in this case, so
-                // the dev document (`/p2/<name>~dev.json`) gets
-                // consulted. Without this, the resolver only loads
-                // the stable doc and can't find `3.x-dev` as a
-                // candidate.
+            } else if bougie_semver::version::is_branch_alias(cleaned)
+                || (cleaned.len() >= 4
+                    && cleaned.as_bytes()[..4].eq_ignore_ascii_case(b"dev-"))
+            {
+                // The constraint itself targets a dev branch — either
+                // the numeric form (`"pdepend/pdepend": "3.x-dev"`)
+                // or the bare form (`"acme/module": "dev-main"`).
+                // Composer infers a per-package `dev` stability flag
+                // in both cases, so the dev document
+                // (`/p2/<name>~dev.json`) gets consulted. Matches
+                // Composer's `parseStability` which routes
+                // `strpos($v, 'dev-') === 0` and
+                // `'-dev' === substr($v, -4)` to `'dev'`.
                 flags.insert(dep_name.clone(), Stability::Dev);
             }
             let constraint = Constraint::parse(cleaned).map_err(|e| {
