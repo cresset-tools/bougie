@@ -26,8 +26,11 @@
 //! `minimum-stability` (top-level composer.json) and the per-package
 //! `@<stability>` flag (root require suffix like `"acme/foo":
 //! "^1.0@dev"`) are honored — see [`ResolveProvider::versions_for`].
-//! `prefer-stable` (a candidate-ordering tweak, not a filter) is a
-//! follow-up.
+//! `prefer-stable` (top-level composer.json) is honored by
+//! [`ResolveProvider::choose_version`]: when enabled and the floor
+//! admits non-stable versions, the candidate scan does a two-pass
+//! lookup — highest stable in range first, then highest in range
+//! regardless of stability.
 //!
 //! When the effective stability for a package is
 //! [`Stability::Dev`], `versions_for` also consults the dev variant
@@ -92,6 +95,13 @@ pub struct ResolveProvider {
     /// Sets the floor for candidate stability; any version whose
     /// stability is *below* this is dropped from `versions_for`.
     minimum_stability: Stability,
+    /// Composer's top-level `prefer-stable` (`false` by default).
+    /// When true, `choose_version` does a two-pass scan: highest
+    /// stable in range first, then fall back to the highest
+    /// in-range candidate regardless of stability. This is the
+    /// difference between "beta 2.0.0-beta1 wins over stable 1.0.0"
+    /// and Composer's "pick the highest stable when one fits."
+    prefer_stable: bool,
     /// Per-package stability overrides extracted from `@<stability>`
     /// suffixes on root requires (`acme/foo: ^1.0@dev`). Takes
     /// precedence over [`Self::minimum_stability`] for the named
@@ -158,6 +168,7 @@ impl ResolveProvider {
         no_dev: bool,
     ) -> Result<Self, BuildError> {
         let minimum_stability = read_minimum_stability(composer_json)?;
+        let prefer_stable = read_prefer_stable(composer_json)?;
         let (root_deps, stability_flags) = read_root_requires(composer_json, no_dev)?;
         // Any synthetic value works for the root version — pubgrub
         // never compares it against another candidate. Match the
@@ -171,6 +182,7 @@ impl ResolveProvider {
             root_deps,
             root_version,
             minimum_stability,
+            prefer_stable,
             stability_flags,
             cache: RefCell::new(HashMap::new()),
             virtual_providers: RefCell::new(HashMap::new()),
@@ -560,6 +572,22 @@ fn read_minimum_stability(composer_json: &Value) -> Result<Stability, BuildError
     })
 }
 
+/// Read `prefer-stable` from composer.json's top-level. Composer's
+/// default is `false`. Non-boolean values surface as a `BuildError`.
+fn read_prefer_stable(composer_json: &Value) -> Result<bool, BuildError> {
+    let obj = composer_json.as_object().ok_or_else(|| {
+        BuildError::Internal("composer.json top-level is not an object".into())
+    })?;
+    let Some(value) = obj.get("prefer-stable") else {
+        return Ok(false);
+    };
+    value.as_bool().ok_or_else(|| {
+        BuildError::Internal(format!(
+            "`prefer-stable` must be a boolean (got {value:?})",
+        ))
+    })
+}
+
 /// Split a Composer constraint string into its constraint body and
 /// trailing `@<stability>` flag. Returns `(body, Some(stability))` or
 /// `(input, None)` when no flag is present. Composer's grammar puts
@@ -675,11 +703,24 @@ impl DependencyProvider for ResolveProvider {
             }),
             PubGrubPackage::Package(name) => {
                 let versions = self.versions_for(name)?;
-                // `versions_for` sorts descending, so the first entry
-                // that falls inside the range is also the highest
-                // candidate. The parsed `Version` is the same instance
-                // we'll hand back via `get_dependencies` — no re-parse
-                // needed.
+                // `versions_for` sorts descending. With
+                // `prefer-stable`, do a two-pass scan: first pick the
+                // highest *stable* in range, then fall back to the
+                // highest in range regardless of stability. Without
+                // prefer-stable the second pass alone is used.
+                //
+                // Cheap optimization: when the effective floor is
+                // already `Stable`, every candidate is stable, so
+                // the prefer-stable pass would just duplicate the
+                // fallback. Skip it.
+                let floor = self.effective_stability(name);
+                if self.prefer_stable && floor != Stability::Stable {
+                    for (v, _) in &versions {
+                        if v.stability() == Stability::Stable && range.contains(v) {
+                            return Ok(Some(v.clone()));
+                        }
+                    }
+                }
                 for (v, _) in &versions {
                     if range.contains(v) {
                         return Ok(Some(v.clone()));
@@ -901,6 +942,11 @@ pub struct LockfileSolveOutcome {
     /// (`"stable"`, `"dev"`, ...). Matches the lockfile's
     /// `minimum-stability` field verbatim.
     pub minimum_stability: String,
+    /// Mirrors composer.json's top-level `prefer-stable`. Carried
+    /// through into the lockfile's same-named field so a subsequent
+    /// install / verify sees the same setting that produced the
+    /// solve.
+    pub prefer_stable: bool,
     /// Per-package stability flags in Composer's wire form: the
     /// integer constants used in the lockfile's `stability-flags`
     /// map. Composer's `BasePackage::STABILITIES`:
@@ -953,6 +999,7 @@ pub fn resolve_for_lockfile(
             packages,
             packages_dev,
             minimum_stability: full.minimum_stability.as_str().to_owned(),
+            prefer_stable: full.prefer_stable,
             stability_flags,
         },
     ))
@@ -1039,6 +1086,7 @@ fn solve_into_lock_packages(
     Ok(SolutionSummary {
         packages,
         minimum_stability: provider.minimum_stability,
+        prefer_stable: provider.prefer_stable,
         stability_flags: provider.stability_flags.clone(),
     })
 }
@@ -1046,6 +1094,7 @@ fn solve_into_lock_packages(
 struct SolutionSummary {
     packages: Vec<LockPackage>,
     minimum_stability: Stability,
+    prefer_stable: bool,
     stability_flags: HashMap<String, Stability>,
 }
 
