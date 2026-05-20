@@ -13,16 +13,15 @@
 //! stable version, drops platform packages (`php`, `ext-*`, etc.) at
 //! the require boundary the way `LockVerifyProvider` does.
 //!
-//! `replace` and `provide` are encoded by `get_dependencies` as
-//! additional constraints — selecting `P@V` forces every named
-//! alternative to satisfy `P`'s declared clause for it. The
-//! semantic distinction Composer draws between the two (replace =
-//! exclusive swap, provide = weaker capability) is invisible in
-//! plain pubgrub requires; both collapse to "if P is selected,
-//! then Q must match this range." The lockfile writer is
-//! responsible for de-duping the install set when both `P` and
-//! the replaced `Q` end up in the solution. See the comment in
-//! `get_dependencies` for the known edge cases.
+//! `replace` and `provide` route through a virtual-provider index
+//! populated by an eager pre-fetch closure (mirrors Composer's
+//! `PoolBuilder::buildPool`). Virtual names — `psr/log-implementation`,
+//! `psr/http-client-implementation`, and the rest of the PSR-virtual
+//! family — are resolvable even though Packagist returns 404 for
+//! them, because some real package in the graph declared
+//! `provide: { Q: ... }`. `replace` additionally emits a require
+//! from the replacing package on the replaced name, mirroring
+//! Composer's "no coexistence" rule; `provide` is virtual-only.
 //!
 //! `minimum-stability` (top-level composer.json) and the per-package
 //! `@<stability>` flag (root require suffix like `"acme/foo":
@@ -72,7 +71,7 @@ use serde_json::Value;
 
 use crate::metadata::build_client;
 
-use crate::metadata::{fetch_package_metadata, fetch_package_metadata_optional, Variant};
+use crate::metadata::{fetch_package_metadata_optional, Variant};
 use crate::verify::{is_platform, to_range, ComposerRange, ProviderError, PubGrubPackage};
 
 /// pubgrub provider that resolves a fresh `composer.json` against
@@ -106,8 +105,35 @@ pub struct ResolveProvider {
     /// `choose_version` and `get_dependencies` don't need to
     /// re-parse `LockPackage::version` and risk normalization
     /// differences between our parser and Packagist's
-    /// `version_normalized`.
+    /// `version_normalized`. Only real Packagist candidates are
+    /// cached here — virtual candidates are merged in on every
+    /// `versions_for` call so a late provider registration becomes
+    /// visible (the pre-fetch queue can visit a virtual name before
+    /// its provider is loaded).
     cache: RefCell<HashMap<String, Vec<(Version, LockPackage)>>>,
+    /// Index of virtual provider entries: maps each virtual package
+    /// name (e.g. `psr/http-client-implementation`) to the list of
+    /// real packages that provide or replace it. Populated by
+    /// [`Self::pre_fetch_closure`] before the solve runs — matches
+    /// what Composer's `PoolBuilder` does, so that when pubgrub asks
+    /// `choose_version("psr/http-client-implementation", ^1)` the
+    /// answer can come from the index even though Packagist has no
+    /// `/p2/psr/http-client-implementation.json`.
+    virtual_providers: RefCell<HashMap<String, Vec<VirtualProvider>>>,
+    /// Reverse-lookup: for each (virtual_name, selected_version),
+    /// which (provider_name, provider_version) backed it. Used by
+    /// `get_dependencies` to add the require that pins the provider.
+    virtual_selections: RefCell<HashMap<(String, Version), (String, Version)>>,
+}
+
+/// One entry in the virtual provider index — "real package
+/// `provider_name@provider_version` declares it provides/replaces
+/// the virtual name at version `provided_version`."
+#[derive(Debug, Clone)]
+pub struct VirtualProvider {
+    pub provider_name: String,
+    pub provider_version: Version,
+    pub provided_version: Version,
 }
 
 impl std::fmt::Debug for ResolveProvider {
@@ -147,6 +173,8 @@ impl ResolveProvider {
             minimum_stability,
             stability_flags,
             cache: RefCell::new(HashMap::new()),
+            virtual_providers: RefCell::new(HashMap::new()),
+            virtual_selections: RefCell::new(HashMap::new()),
         })
     }
 
@@ -202,12 +230,48 @@ impl ResolveProvider {
     /// "first in range" candidate selection still picks the highest
     /// matching version regardless of which document supplied it.
     fn versions_for(&self, name: &str) -> Result<Vec<(Version, LockPackage)>, ProviderError> {
-        if let Some(v) = self.cache.borrow().get(name) {
-            return Ok(v.clone());
-        }
         let floor = self.effective_stability(name);
 
-        let stable_md = fetch_package_metadata(
+        // The Packagist side is cached — once we've made the network
+        // call for a name, we don't repeat it.
+        let real_candidates = if let Some(v) = self.cache.borrow().get(name) {
+            v.clone()
+        } else {
+            let real = self.load_real_candidates(name, floor)?;
+            self.cache.borrow_mut().insert(name.to_owned(), real.clone());
+            real
+        };
+
+        // Virtual candidates are merged in on every call so a
+        // late-registered provider becomes visible even after the
+        // first cache populate. (Pre-fetch can hit a virtual name
+        // before any of its providers have been loaded.)
+        let mut out: Vec<(Version, LockPackage)> = real_candidates;
+        out.extend(self.synthesize_virtual_candidates(name, floor));
+        out.sort_by(|a, b| b.0.cmp(&a.0));
+        // Deduplicate consecutive entries with the same parsed
+        // version — when both Packagist and a virtual provider
+        // register the same name+version, prefer the real entry
+        // (sort is stable; real Packagist entries are at the front
+        // because they were extended in first).
+        out.dedup_by(|a, b| a.0 == b.0);
+        Ok(out)
+    }
+
+    /// Fetch + parse + filter the Packagist side of the candidate
+    /// list. Side-effects: every loaded version's `provide` /
+    /// `replace` declarations get registered in the virtual-provider
+    /// index. Returns the filtered parsed entries (no virtual
+    /// candidates merged — that happens in `versions_for`).
+    fn load_real_candidates(
+        &self,
+        name: &str,
+        floor: Stability,
+    ) -> Result<Vec<(Version, LockPackage)>, ProviderError> {
+        // Packagist fetch — 404 absorbed as "no real entry," which is
+        // expected for virtual packages like
+        // `psr/http-client-implementation`.
+        let stable_md = fetch_package_metadata_optional(
             &self.client,
             &self.paths,
             &self.base_url,
@@ -215,11 +279,11 @@ impl ResolveProvider {
             Variant::Stable,
         )
         .map_err(|e| ProviderError(format!("fetching metadata for {name}: {e:#}")))?;
-        // Packagist's response always carries exactly one entry under
-        // `packages` keyed by the requested name; defensively handle
-        // the missing-key shape rather than indexing.
-        let mut versions: Vec<LockPackage> =
-            stable_md.packages.get(name).cloned().unwrap_or_default();
+        let mut versions: Vec<LockPackage> = stable_md
+            .as_ref()
+            .and_then(|md| md.packages.get(name))
+            .cloned()
+            .unwrap_or_default();
 
         if floor == Stability::Dev {
             let dev_md = fetch_package_metadata_optional(
@@ -239,9 +303,11 @@ impl ResolveProvider {
             }
         }
 
+        // Register virtuals as a side effect of loading.
+        self.register_virtuals_from(name, &versions);
+
         // Filter by effective stability, drop unparseable versions,
-        // keep the parsed `Version` alongside the raw `LockPackage`
-        // so downstream lookups don't need to re-parse.
+        // keep the parsed `Version` alongside the raw `LockPackage`.
         let mut out: Vec<(Version, LockPackage)> = versions
             .into_iter()
             .filter_map(|p| {
@@ -251,12 +317,174 @@ impl ResolveProvider {
                     .map(|v| (v, p))
             })
             .collect();
-        // Sort descending by parsed version so the "first in range"
-        // selection picks the highest candidate across both documents.
         out.sort_by(|a, b| b.0.cmp(&a.0));
-
-        self.cache.borrow_mut().insert(name.to_owned(), out.clone());
         Ok(out)
+    }
+
+    /// Walk a freshly-loaded package's versions and register every
+    /// `provide` / `replace` entry in the virtual-provider index.
+    /// `provider_name` is the name we just loaded metadata for.
+    /// Platform names (`php`, `ext-*`, ...) are skipped — they're
+    /// filtered before reaching pubgrub anyway (issue #118).
+    fn register_virtuals_from(&self, provider_name: &str, versions: &[LockPackage]) {
+        let mut index = self.virtual_providers.borrow_mut();
+        let mut selections = self.virtual_selections.borrow_mut();
+        for p in versions {
+            let Ok(provider_version) = Version::parse(&p.version) else {
+                continue;
+            };
+            // Both `provide` and `replace` route through here. The
+            // semantic distinction Composer draws ("replace = no
+            // coexistence, provide = capability declaration") is
+            // approximated below: replace also adds a hard require
+            // on the replaced name in `get_dependencies`; this index
+            // alone gives provide-style behavior.
+            for clause_map in [&p.replace, &p.provide] {
+                for (virtual_name, raw_constraint) in clause_map {
+                    if is_platform(virtual_name) {
+                        continue;
+                    }
+                    // The constraint here pins the version the
+                    // provider provides/replaces *at*. For
+                    // `replace: "1.0.0"` it's exact; for `replace:
+                    // "self.version"` we substitute. Anything more
+                    // exotic (e.g. `^1.0`) is rare for the version
+                    // (vs. the consumer's constraint) — Composer
+                    // treats it as a range; we pick a representative
+                    // version from inside it for the synthetic
+                    // candidate.
+                    let effective = if raw_constraint == "self.version" {
+                        &p.version
+                    } else {
+                        raw_constraint
+                    };
+                    // Composer's `replace`/`provide` accepts either
+                    // an exact version (`"1.0.0"`) or a range
+                    // (`"^1.12"`). If the value parses as a bare
+                    // version, use it directly. Otherwise, fall back
+                    // to the replacer's own version as a
+                    // representative — covers the common case where
+                    // `magento/zend-cache 1.16.0` replaces
+                    // `zfs1/zend-cache: ^1.12` and a consumer
+                    // requires `zfs1/zend-cache: ^1.12` (1.16.0 sits
+                    // inside that range). Open limitation: if a
+                    // consumer requires a tight range that excludes
+                    // the replacer's version, our virtual won't
+                    // match. Rare in practice.
+                    let provided_version = match Version::parse(effective) {
+                        Ok(v) => v,
+                        Err(_) => provider_version.clone(),
+                    };
+                    index
+                        .entry(virtual_name.clone())
+                        .or_default()
+                        .push(VirtualProvider {
+                            provider_name: provider_name.to_owned(),
+                            provider_version: provider_version.clone(),
+                            provided_version: provided_version.clone(),
+                        });
+                    // Map the (virtual, provided) tuple back to the
+                    // provider. First-write-wins for determinism
+                    // when multiple providers offer the same virtual
+                    // at the same version (e.g. several PSR
+                    // implementations). The losing providers are
+                    // still loaded into the pool through their own
+                    // requires; we just don't route the virtual
+                    // selection back to them.
+                    selections
+                        .entry((virtual_name.clone(), provided_version.clone()))
+                        .or_insert((provider_name.to_owned(), provider_version.clone()));
+                }
+            }
+        }
+    }
+
+    /// Build synthetic `(Version, LockPackage)` candidates for
+    /// `name` from the virtual-provider index, filtered by the
+    /// effective stability floor. The synthesized `LockPackage`
+    /// carries just enough metadata for the install path to ignore
+    /// it cleanly (no `dist`, no `require`); `get_dependencies` is
+    /// where the real provider link is injected.
+    fn synthesize_virtual_candidates(
+        &self,
+        name: &str,
+        floor: Stability,
+    ) -> Vec<(Version, LockPackage)> {
+        let index = self.virtual_providers.borrow();
+        let Some(entries) = index.get(name) else { return Vec::new() };
+        let mut seen: std::collections::HashSet<Version> = std::collections::HashSet::new();
+        let mut out: Vec<(Version, LockPackage)> = Vec::new();
+        for entry in entries {
+            if entry.provided_version.stability() < floor {
+                continue;
+            }
+            if !seen.insert(entry.provided_version.clone()) {
+                continue;
+            }
+            out.push((
+                entry.provided_version.clone(),
+                LockPackage {
+                    name: name.to_owned(),
+                    version: entry.provided_version.normalized.clone(),
+                    version_normalized: Some(entry.provided_version.normalized.clone()),
+                    dist: None,
+                    source: None,
+                    require: Default::default(),
+                    require_dev: Default::default(),
+                    package_type: Some("metapackage".into()),
+                    autoload: Default::default(),
+                    autoload_dev: serde_json::Value::Null,
+                    replace: Default::default(),
+                    provide: Default::default(),
+                    conflict: Default::default(),
+                    bin: Default::default(),
+                    extra: serde_json::Value::Null,
+                    time: None,
+                },
+            ));
+        }
+        out
+    }
+
+    /// Eagerly walk the require closure from the root requires,
+    /// loading every reachable package's metadata before pubgrub
+    /// runs. Mirrors Composer's `PoolBuilder::buildPool` — we need
+    /// every potential virtual provider in the index before any
+    /// `choose_version` is called for a virtual name, otherwise the
+    /// resolver can't see e.g. that `guzzlehttp/guzzle` provides
+    /// `psr/http-client-implementation`.
+    ///
+    /// Errors loading a single package (network failure, parse
+    /// error) propagate. 404s for individual names are absorbed
+    /// silently — that's the expected shape for virtual names that
+    /// have no real Packagist entry.
+    pub fn pre_fetch_closure(&self) -> Result<(), ProviderError> {
+        use std::collections::HashSet;
+        let mut visited: HashSet<String> = HashSet::new();
+        let mut queue: Vec<String> = self
+            .root_deps
+            .iter()
+            .map(|(n, _)| n.clone())
+            .collect();
+        while let Some(name) = queue.pop() {
+            if is_platform(&name) {
+                continue;
+            }
+            if !visited.insert(name.clone()) {
+                continue;
+            }
+            // versions_for both loads metadata and registers
+            // virtuals as a side effect.
+            let versions = self.versions_for(&name)?;
+            for (_, pkg) in &versions {
+                for req in pkg.require.keys() {
+                    if !visited.contains(req) {
+                        queue.push(req.clone());
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -455,6 +683,29 @@ impl DependencyProvider for ResolveProvider {
         let deps: Vec<(String, ComposerRange)> = match package {
             PubGrubPackage::Root => self.root_deps.clone(),
             PubGrubPackage::Package(name) => {
+                // Virtual selections take priority: if pubgrub picked
+                // a virtual (e.g. `psr/http-client-implementation @
+                // 1.0`), the only dependency we emit is a tight pin
+                // on the real providing package. That binds the
+                // virtual selection to the concrete provider; the
+                // provider then carries its own require chain
+                // through pubgrub naturally.
+                let virtual_key = (name.clone(), version.clone());
+                if let Some((provider_name, provider_version)) =
+                    self.virtual_selections.borrow().get(&virtual_key).cloned()
+                {
+                    let pinned = Constraint::Op {
+                        op: bougie_semver::version::CmpOp::Eq,
+                        version: provider_version,
+                        explicit_lower_bound: true,
+                    };
+                    let constraints: DependencyConstraints<Self::P, Self::VS> = std::iter::once((
+                        PubGrubPackage::Package(provider_name),
+                        to_range(&pinned),
+                    ))
+                    .collect();
+                    return Ok(Dependencies::Available(constraints));
+                }
                 let versions = self.versions_for(name)?;
                 // Find the entry by reference equality on the cached
                 // `Version` — same instance `choose_version` returned,
@@ -474,31 +725,21 @@ impl DependencyProvider for ResolveProvider {
                 let mut out: Vec<(String, ComposerRange)> = Vec::new();
                 let owner_version = &entry.version;
                 push_constraint_map(&mut out, &entry.require, name, owner_version, "require")?;
-                // `replace` and `provide` get encoded as additional
-                // requires: selecting this package forces the named
-                // alternative to satisfy the replace/provide
-                // constraint. The semantic distinction Composer
-                // draws — "replace = strict swap, only one wins"
-                // versus "provide = weaker capability assertion" —
-                // is invisible in plain pubgrub requires. Both
-                // collapse to "if you pick P@V, then Q must be in
-                // <clause>". This is correct for the common case
-                // of a project requiring both the replacer and the
-                // replaced; the lockfile writer is responsible for
-                // de-duping the install set so we don't extract
-                // the same code twice.
+                // `replace` is still encoded as an additional require:
+                // selecting a replacer forces the replaced package to
+                // sit at the replace version, mirroring Composer's
+                // "no coexistence" rule.
                 //
-                // Two known limitations, both documented:
-                // - Platform replaces (`replace: { php: "8.0.x" }`
-                //   on polyfills) still skip — platform packages
-                //   are filtered before they reach pubgrub. Tracked
-                //   in issue #118.
-                // - Monolith replacers (a package replacing one
-                //   that has no standalone Packagist entry) will
-                //   fail resolution. Rare in practice; surfaces as
-                //   a fixture failure if it bites.
+                // `provide` is no longer encoded here — it's a
+                // capability declaration, not a requirement. The
+                // virtual-provider index registered earlier makes the
+                // provided name resolvable for any consumer that
+                // requires it, without forcing the provider to also
+                // require the (often virtual) provided name.
+                //
+                // Platform replaces (`replace: { php: "..." }`) still
+                // skip — tracked in issue #118.
                 push_constraint_map(&mut out, &entry.replace, name, owner_version, "replace")?;
-                push_constraint_map(&mut out, &entry.provide, name, owner_version, "provide")?;
                 out
             }
         };
@@ -571,18 +812,30 @@ pub fn dry_run_update(
         opts.no_dev,
     )
     .map_err(|e| eyre!(e))?;
+    provider
+        .pre_fetch_closure()
+        .map_err(|e| eyre!("pre-fetching metadata closure: {}", e.0))?;
     let root = provider.root_version();
 
     match resolve(&provider, PubGrubPackage::Root, root) {
         Ok(solution) => {
+            let virtual_selections = provider.virtual_selections.borrow();
             let mut packages: Vec<ResolvedPackage> = solution
                 .into_iter()
                 .filter_map(|(pkg, version)| match pkg {
                     PubGrubPackage::Root => None,
-                    PubGrubPackage::Package(name) => Some(ResolvedPackage {
-                        name,
-                        version: version.to_string(),
-                    }),
+                    PubGrubPackage::Package(name) => {
+                        // Drop virtual selections — the real provider
+                        // is in the same solution and is already
+                        // accounted for.
+                        if virtual_selections.contains_key(&(name.clone(), version.clone())) {
+                            return None;
+                        }
+                        Some(ResolvedPackage {
+                            name,
+                            version: version.to_string(),
+                        })
+                    }
                 })
                 .collect();
             packages.sort_by(|a, b| a.name.cmp(&b.name));
@@ -708,6 +961,12 @@ fn solve_into_lock_packages(
         no_dev,
     )
     .map_err(|e| eyre!(e))?;
+    // Eager pre-fetch: load every reachable package's metadata
+    // before the solver runs so virtual providers are registered.
+    // Mirrors Composer's PoolBuilder.
+    provider
+        .pre_fetch_closure()
+        .map_err(|e| eyre!("pre-fetching metadata closure: {}", e.0))?;
     let root = provider.root_version();
 
     let solution = match resolve(&provider, PubGrubPackage::Root, root) {
@@ -738,8 +997,17 @@ fn solve_into_lock_packages(
     };
 
     let mut packages: Vec<LockPackage> = Vec::new();
+    let virtual_selections = provider.virtual_selections.borrow();
     for (pkg, version) in solution {
         let PubGrubPackage::Package(name) = pkg else { continue };
+        // Drop virtual selections from the output — the real
+        // providing package is also in the solution and will land
+        // in the lock through that path. Composer's install would
+        // reject a `psr/http-client-implementation` entry it can't
+        // fetch.
+        if virtual_selections.contains_key(&(name.clone(), version.clone())) {
+            continue;
+        }
         let Some(entry) = provider.lock_package_for(&name, &version) else {
             // Should not happen — pubgrub only picked versions we
             // returned from `choose_version`, and those entries are
@@ -750,6 +1018,7 @@ fn solve_into_lock_packages(
         };
         packages.push(entry);
     }
+    drop(virtual_selections);
     packages.sort_by(|a, b| a.name.cmp(&b.name));
 
     Ok(SolutionSummary {

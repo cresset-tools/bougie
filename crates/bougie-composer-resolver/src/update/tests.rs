@@ -914,3 +914,233 @@ fn combined_stable_plus_dev_versions_sort_descending() {
     assert_eq!(foo.to_string(), "2.0.0.0", "stable 2.0.0 > dev 1.x-dev");
 }
 
+// ===================== Virtual packages =====================
+
+/// Tiny project + provider scenario for virtual-package tests.
+/// `provider` declares it provides `virtual_name` at `provided`;
+/// `consumer` requires `virtual_name` somewhere in its graph.
+fn build_virtual_scenario(
+    provider_name: &str,
+    provider_version: &str,
+    virtual_name: &str,
+    virtual_provided: &str,
+    consumer_name: &str,
+    consumer_version: &str,
+    consumer_requires_virtual: &str,
+) -> (String, String) {
+    let provider_doc = p2_body_with_extras(
+        provider_name,
+        &[(
+            provider_version,
+            json!({}),
+            json!({"provide": {virtual_name: virtual_provided}}),
+        )],
+    );
+    let consumer_doc = p2_body(
+        consumer_name,
+        &[(consumer_version, json!({virtual_name: consumer_requires_virtual}))],
+    );
+    (provider_doc, consumer_doc)
+}
+
+#[test]
+fn virtual_package_satisfied_by_provide_clause() {
+    // The canonical psr/http-client-implementation pattern:
+    // guzzle provides the virtual, some-client requires it.
+    let tmp = TempDir::new().unwrap();
+    let paths = paths_in(tmp.path());
+
+    let (guzzle, some_client) = build_virtual_scenario(
+        "acme/guzzle",
+        "7.4.0",
+        "acme/http-impl",
+        "1.0",
+        "acme/some-client",
+        "1.0.0",
+        "^1.0",
+    );
+
+    let rt = rt();
+    let (uri, _server) = rt.block_on(async {
+        let server = MockServer::start().await;
+        mount_p2(&server, "acme/guzzle", guzzle).await;
+        mount_p2(&server, "acme/some-client", some_client).await;
+        // Deliberately no /p2/acme/http-impl.json mock — wiremock
+        // returns 404, which is exactly what Packagist does for a
+        // virtual name. The resolver must satisfy it from the
+        // provider's `provide` clause instead.
+        (server.uri(), server)
+    });
+
+    let composer_json = json!({
+        "require": {
+            "acme/guzzle": "^7.0",
+            "acme/some-client": "^1.0",
+        },
+    });
+    let client = crate::metadata::build_client().unwrap();
+    let provider =
+        ResolveProvider::build(client, paths, uri, &composer_json, true).unwrap();
+    provider.pre_fetch_closure().unwrap();
+    let root = provider.root_version();
+
+    let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
+    // Both real packages are in the solution.
+    assert!(solution
+        .get(&PubGrubPackage::Package("acme/guzzle".into()))
+        .is_some());
+    assert!(solution
+        .get(&PubGrubPackage::Package("acme/some-client".into()))
+        .is_some());
+    // The virtual itself is in pubgrub's raw solution but the
+    // dry-run / lockfile output filters it out (see the orchestrator
+    // tests below). Confirm the virtual selection map has it.
+    assert!(
+        !provider.virtual_selections.borrow().is_empty(),
+        "virtual_selections should record the resolution",
+    );
+}
+
+#[test]
+fn virtual_package_with_no_provider_yields_no_solution() {
+    // Project requires a virtual nobody provides. Pubgrub must
+    // produce NoSolution, not crash.
+    let tmp = TempDir::new().unwrap();
+    let paths = paths_in(tmp.path());
+
+    let lonely = p2_body(
+        "acme/lonely",
+        &[("1.0.0", json!({"acme/missing-impl": "^1.0"}))],
+    );
+
+    let rt = rt();
+    let (uri, _server) = rt.block_on(async {
+        let server = MockServer::start().await;
+        mount_p2(&server, "acme/lonely", lonely).await;
+        // No provider for acme/missing-impl, and no Packagist entry.
+        (server.uri(), server)
+    });
+
+    let composer_json = json!({"require": {"acme/lonely": "^1.0"}});
+    let client = crate::metadata::build_client().unwrap();
+    let provider =
+        ResolveProvider::build(client, paths, uri, &composer_json, true).unwrap();
+    provider.pre_fetch_closure().unwrap();
+    let root = provider.root_version();
+
+    let err = resolve(&provider, PubGrubPackage::Root, root).unwrap_err();
+    matches!(err, pubgrub::PubGrubError::NoSolution(_))
+        .then_some(())
+        .expect("expected NoSolution");
+}
+
+#[test]
+fn replace_clause_with_range_constraint_registers_virtual() {
+    // Real-world pattern from magento/zend-cache (replaces
+    // zfs1/zend-cache: ^1.12). The replace clause is a range, not a
+    // bare version — our parser falls back to the replacer's own
+    // version as the synthetic candidate.
+    let tmp = TempDir::new().unwrap();
+    let paths = paths_in(tmp.path());
+
+    let monolith = p2_body_with_extras(
+        "acme/big-cache",
+        &[(
+            "1.16.0",
+            json!({}),
+            json!({"replace": {"acme/legacy-cache": "^1.12"}}),
+        )],
+    );
+    // Something requires the legacy cache somewhere in the graph.
+    let consumer = p2_body(
+        "acme/consumer",
+        &[("1.0.0", json!({"acme/legacy-cache": "^1.12"}))],
+    );
+
+    let rt = rt();
+    let (uri, _server) = rt.block_on(async {
+        let server = MockServer::start().await;
+        mount_p2(&server, "acme/big-cache", monolith).await;
+        mount_p2(&server, "acme/consumer", consumer).await;
+        // No /p2/acme/legacy-cache.json — only the replace clause
+        // makes it resolvable.
+        (server.uri(), server)
+    });
+
+    let composer_json = json!({
+        "require": {
+            "acme/big-cache": "^1.16",
+            "acme/consumer": "^1.0",
+        },
+    });
+    let client = crate::metadata::build_client().unwrap();
+    let provider =
+        ResolveProvider::build(client, paths, uri, &composer_json, true).unwrap();
+    provider.pre_fetch_closure().unwrap();
+    let root = provider.root_version();
+
+    let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
+    assert!(solution
+        .get(&PubGrubPackage::Package("acme/big-cache".into()))
+        .is_some());
+    assert!(solution
+        .get(&PubGrubPackage::Package("acme/consumer".into()))
+        .is_some());
+}
+
+#[test]
+fn multiple_providers_at_same_virtual_version_dedup() {
+    // Two providers offer the same virtual at the same version.
+    // versions_for must return a single virtual candidate, not two,
+    // and virtual_selections records exactly one mapping
+    // (first-write-wins).
+    let tmp = TempDir::new().unwrap();
+    let paths = paths_in(tmp.path());
+
+    let p1 = p2_body_with_extras(
+        "acme/p1",
+        &[("1.0.0", json!({}), json!({"provide": {"acme/iface": "1.0.0"}}))],
+    );
+    let p2 = p2_body_with_extras(
+        "acme/p2",
+        &[("2.0.0", json!({}), json!({"provide": {"acme/iface": "1.0.0"}}))],
+    );
+
+    let rt = rt();
+    let (uri, _server) = rt.block_on(async {
+        let server = MockServer::start().await;
+        mount_p2(&server, "acme/p1", p1).await;
+        mount_p2(&server, "acme/p2", p2).await;
+        (server.uri(), server)
+    });
+
+    let composer_json = json!({
+        "require": {
+            "acme/p1": "^1.0",
+            "acme/p2": "^2.0",
+            "acme/iface": "^1.0",
+        },
+    });
+    let client = crate::metadata::build_client().unwrap();
+    let provider =
+        ResolveProvider::build(client, paths, uri, &composer_json, true).unwrap();
+    provider.pre_fetch_closure().unwrap();
+    let root = provider.root_version();
+
+    let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
+    // Both providers are explicitly required by root.
+    assert!(solution
+        .get(&PubGrubPackage::Package("acme/p1".into()))
+        .is_some());
+    assert!(solution
+        .get(&PubGrubPackage::Package("acme/p2".into()))
+        .is_some());
+    // Only one virtual selection mapping exists for acme/iface@1.0.0.
+    let selections = provider.virtual_selections.borrow();
+    let iface_entries: Vec<_> = selections
+        .keys()
+        .filter(|(name, _)| name == "acme/iface")
+        .collect();
+    assert_eq!(iface_entries.len(), 1);
+}
+
