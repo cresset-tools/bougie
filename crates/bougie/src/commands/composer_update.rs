@@ -13,7 +13,7 @@ use std::process::ExitCode;
 
 use bougie_cli::OutputFormat;
 use bougie_composer::lockfile::{self, canonical_readme, Lock};
-use bougie_composer_resolver::metadata::base_url;
+use bougie_composer_resolver::metadata::Repo;
 use bougie_composer_resolver::{
     dry_run_update, resolve_for_lockfile, DryRunOptions, LockfileSolveOutcome, ResolvedPackage,
     UpdateSummary,
@@ -93,7 +93,7 @@ pub fn run(
         // + versions. Useful when the user wants a quick "what would
         // change" without paying for the second prod-only solve.
         let summary: UpdateSummary =
-            dry_run_update(&paths, &project_root, &base_url(), DryRunOptions { no_dev })?;
+            dry_run_update(&paths, &project_root, Repo::packagist(), DryRunOptions { no_dev })?;
         let result = UpdateResult {
             schema_version: 1,
             project_root,
@@ -109,7 +109,7 @@ pub fn run(
 
     // Write-mode path: resolve, build a Lock, atomic write.
     let (composer_json_bytes, outcome): (Vec<u8>, LockfileSolveOutcome) =
-        resolve_for_lockfile(&paths, &project_root, &base_url())?;
+        resolve_for_lockfile(&paths, &project_root, Repo::packagist())?;
     let lock_path = project_root.join("composer.lock");
 
     let content_hash = lockfile::content_hash(&composer_json_bytes)

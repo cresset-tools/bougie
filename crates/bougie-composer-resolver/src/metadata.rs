@@ -34,12 +34,79 @@ use std::path::{Path, PathBuf};
 const DEFAULT_BASE_URL: &str = "https://repo.packagist.org";
 
 /// Production base URL. Reads `BOUGIE_PACKAGIST_BASE_URL` for mirrors
-/// / air-gapped installs / tests, defaulting to Packagist. Pass the
-/// returned string into [`fetch_package_metadata`] explicitly rather
-/// than relying on a global — keeps the fetcher pure and lets the
-/// prefetcher hold one resolved URL per session.
+/// / air-gapped installs / tests, defaulting to Packagist. Use
+/// [`Repo::packagist`] to get a pre-built repo wrapping this URL.
 pub fn base_url() -> String {
     std::env::var("BOUGIE_PACKAGIST_BASE_URL").unwrap_or_else(|_| DEFAULT_BASE_URL.into())
+}
+
+/// A Composer-protocol repository. Holds the base URL the resolver
+/// fetches `/p2/<vendor>/<name>.json` from, plus a cache-namespace
+/// string (typically the URL's host) so two repos at different hosts
+/// can each cache a package with the same name without collision.
+///
+/// Authentication, custom `packages.json` metadata-url discovery,
+/// non-Composer types (`vcs`, `path`, `package`, `artifact`) are
+/// out of scope for this first repository slice — see the module
+/// docs for follow-up status.
+#[derive(Debug, Clone)]
+pub struct Repo {
+    pub url: String,
+    /// Filesystem-safe cache namespace. For production this is the
+    /// URL's host (e.g. `repo.packagist.org`). For tests, set
+    /// explicitly so the wiremock-rooted URLs collide cleanly per
+    /// scenario.
+    pub cache_namespace: String,
+}
+
+impl Repo {
+    /// Build a repo from a URL. The cache namespace is taken from
+    /// the URL's host; for URLs without a host (e.g. `file:` URIs
+    /// in tests), a hash-like fallback is used. Trailing slash on
+    /// the URL is stripped.
+    pub fn from_url(raw: impl Into<String>) -> Self {
+        let url = raw.into().trim_end_matches('/').to_owned();
+        let cache_namespace = extract_cache_namespace(&url);
+        Self { url, cache_namespace }
+    }
+
+    /// Convenience for the implicit public Packagist repository,
+    /// honoring `BOUGIE_PACKAGIST_BASE_URL` for tests / air-gapped
+    /// installs / mirrors.
+    pub fn packagist() -> Self {
+        Self::from_url(base_url())
+    }
+}
+
+/// Extract a filesystem-safe namespace from a repo URL. Strategy:
+/// take the host portion (between `://` and the next `/` or end of
+/// string). Falls back to a base64-flavored hash of the full URL
+/// when no host is parseable (rare; mostly `file:` test URIs).
+fn extract_cache_namespace(url: &str) -> String {
+    if let Some(after_scheme) = url.split_once("://").map(|(_, rest)| rest) {
+        let host = after_scheme
+            .split('/')
+            .next()
+            .unwrap_or("")
+            .split(':') // strip port
+            .next()
+            .unwrap_or("");
+        if !host.is_empty()
+            && host
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
+        {
+            return host.to_owned();
+        }
+    }
+    // Fallback: a short hex digest of the full URL. Use a cheap
+    // FNV-style hash rather than pulling sha2 here.
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in url.as_bytes() {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    format!("url-{h:016x}")
 }
 
 /// Build the default blocking HTTP client used by the metadata
@@ -75,21 +142,17 @@ impl Variant {
     }
 }
 
-/// Fetch parsed metadata for one package. Performs conditional GET
-/// against the on-disk cache; on a 304 the cached body is reused
-/// without re-parsing the wire response.
-///
-/// `base_url` is the Packagist host without a trailing slash, e.g.
-/// `"https://repo.packagist.org"`. Use [`base_url()`] to derive it
-/// from env, or pass a mock server's URI in tests.
+/// Fetch parsed metadata for one package from a specific repo.
+/// Performs conditional GET against the on-disk cache; on a 304 the
+/// cached body is reused without re-parsing the wire response.
 pub fn fetch_package_metadata(
     client: &reqwest::blocking::Client,
     paths: &Paths,
-    base_url: &str,
+    repo: &Repo,
     package_name: &str,
     variant: Variant,
 ) -> Result<PackageMetadata> {
-    let (json_path, etag_path) = cache_paths(paths, package_name, variant);
+    let (json_path, etag_path) = cache_paths(paths, repo, package_name, variant);
     if let Some(parent) = json_path.parent() {
         fs::create_dir_all(parent)
             .wrap_err_with(|| format!("creating {}", parent.display()))?;
@@ -97,7 +160,7 @@ pub fn fetch_package_metadata(
 
     let url = format!(
         "{}/p2/{}{}.json",
-        base_url.trim_end_matches('/'),
+        repo.url,
         package_name,
         variant.suffix(),
     );
@@ -155,11 +218,11 @@ pub fn fetch_package_metadata(
 pub fn fetch_package_metadata_optional(
     client: &reqwest::blocking::Client,
     paths: &Paths,
-    base_url: &str,
+    repo: &Repo,
     package_name: &str,
     variant: Variant,
 ) -> Result<Option<PackageMetadata>> {
-    let (json_path, etag_path) = cache_paths(paths, package_name, variant);
+    let (json_path, etag_path) = cache_paths(paths, repo, package_name, variant);
     if let Some(parent) = json_path.parent() {
         fs::create_dir_all(parent)
             .wrap_err_with(|| format!("creating {}", parent.display()))?;
@@ -167,7 +230,7 @@ pub fn fetch_package_metadata_optional(
 
     let url = format!(
         "{}/p2/{}{}.json",
-        base_url.trim_end_matches('/'),
+        repo.url,
         package_name,
         variant.suffix(),
     );
@@ -226,10 +289,21 @@ fn read_cached(json_path: &Path) -> Result<PackageMetadata> {
     })
 }
 
-/// Compute the on-disk cache locations for a package. Returns
-/// `(json_path, etag_path)`. Exposed for tests + the prefetcher.
-pub fn cache_paths(paths: &Paths, package_name: &str, variant: Variant) -> (PathBuf, PathBuf) {
-    let root = paths.cache_composer_metadata().join("p2");
+/// Compute the on-disk cache locations for a package's metadata
+/// from a specific repo. Returns `(json_path, etag_path)`. The
+/// repo's `cache_namespace` segments the cache so the same package
+/// name on different hosts doesn't collide. Exposed for tests + the
+/// prefetcher.
+pub fn cache_paths(
+    paths: &Paths,
+    repo: &Repo,
+    package_name: &str,
+    variant: Variant,
+) -> (PathBuf, PathBuf) {
+    let root = paths
+        .cache_composer_metadata()
+        .join(&repo.cache_namespace)
+        .join("p2");
     let json = root.join(format!("{package_name}{}.json", variant.suffix()));
     let etag = root.join(format!("{package_name}{}.etag", variant.suffix()));
     (json, etag)
