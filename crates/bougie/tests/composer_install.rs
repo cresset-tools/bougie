@@ -134,25 +134,73 @@ fn install_against_wiremock_dist_emits_vendor_and_autoload() {
 }
 
 #[test]
-fn install_fails_with_helpful_message_when_lock_missing() {
+fn install_resolves_and_writes_lock_when_missing() {
+    // Composer-compatible behavior: missing composer.lock triggers
+    // an in-process resolve + write rather than a hard error.
+    // Mirrors `Composer\Installer::run`'s
+    // "No composer.lock file present. Updating dependencies to
+    // latest instead..." path.
     let env = TestEnv::new();
     let proj = TempDir::new().unwrap();
+
+    let top = "acme-foo-aaaaaaaaaa";
+    let zip_body = build_fixture_zip(top);
+    let dist_hash = sha1_hex(&zip_body);
+
+    let rt = rt();
+    let (uri, _server) = rt.block_on(async {
+        let server = MockServer::start().await;
+        let server_uri = server.uri();
+        // Metadata response with the dist URL pointing at this same
+        // mock server — assembled now that we know the URI.
+        let metadata = format!(
+            r#"{{"packages":{{"acme/foo":[{{
+                "name":"acme/foo",
+                "version":"1.0.0",
+                "version_normalized":"1.0.0.0",
+                "type":"library",
+                "dist":{{"type":"zip","url":"{server_uri}/dists/acme-foo.zip","shasum":"{dist_hash}"}},
+                "autoload":{{"psr-4":{{"Acme\\Foo\\":"src/"}}}}
+            }}]}}}}"#,
+        );
+        Mock::given(method("GET"))
+            .and(wm_path("/p2/acme/foo.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(metadata))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(wm_path("/dists/acme-foo.zip"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(zip_body))
+            .mount(&server)
+            .await;
+        (server_uri, server)
+    });
+
     std::fs::write(
         proj.path().join("composer.json"),
-        r#"{"name":"test/lonely","require":{}}"#,
+        r#"{"name":"test/lonely","require":{"acme/foo":"^1.0"}}"#,
     )
     .unwrap();
 
     let output = env
         .bougie()
+        .env("BOUGIE_PACKAGIST_BASE_URL", &uri)
         .args(["composer", "install", "-d"])
         .arg(proj.path())
         .output()
         .expect("run bougie");
-    assert!(!output.status.success(), "expected failure exit");
+    assert!(
+        output.status.success(),
+        "expected install to succeed; stderr={}",
+        String::from_utf8_lossy(&output.stderr),
+    );
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("composer.lock"), "{stderr}");
-    assert!(stderr.contains("composer update"), "{stderr}");
+    assert!(
+        stderr.contains("composer.lock not found"),
+        "missing fallback warning: {stderr}",
+    );
+    assert!(proj.path().join("composer.lock").is_file());
+    assert!(proj.path().join("vendor/acme/foo").is_dir());
 }
 
 #[test]

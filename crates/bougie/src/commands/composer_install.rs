@@ -106,6 +106,24 @@ pub fn run(
         return Ok(if valid { ExitCode::SUCCESS } else { ExitCode::FAILURE });
     }
     let paths = Paths::from_env()?;
+
+    // Composer-compatible fallback: when composer.lock is absent,
+    // resolve from composer.json + write the lock first, then run
+    // the normal install-from-lock path. Mirrors
+    // `Composer\Installer::run` —
+    //   "No composer.lock file present. Updating dependencies to
+    //    latest instead of installing from lock file."
+    // (See https://getcomposer.org/install.) The warning goes to
+    // stderr so JSON-output consumers on stdout aren't affected.
+    let lock_path = project_root.join("composer.lock");
+    if !lock_path.is_file() {
+        eprintln!(
+            "warning: composer.lock not found; resolving dependencies from composer.json. \
+             A fresh composer.lock will be written.",
+        );
+        super::composer_update::resolve_and_write_lock(&paths, &project_root)?;
+    }
+
     let summary = install_from_lock(&paths, &project_root, InstallOptions { no_dev })?;
     emit(format, &InstallResult::from(summary))?;
     Ok(ExitCode::SUCCESS)
