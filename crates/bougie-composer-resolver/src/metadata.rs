@@ -45,10 +45,9 @@ pub fn base_url() -> String {
 /// string (typically the URL's host) so two repos at different hosts
 /// can each cache a package with the same name without collision.
 ///
-/// Authentication, custom `packages.json` metadata-url discovery,
-/// non-Composer types (`vcs`, `path`, `package`, `artifact`) are
-/// out of scope for this first repository slice — see the module
-/// docs for follow-up status.
+/// Custom `packages.json` metadata-url discovery and non-Composer
+/// types (`vcs`, `path`, `package`, `artifact`) are still out of
+/// scope — see the module docs for follow-up status.
 #[derive(Debug, Clone)]
 pub struct Repo {
     pub url: String,
@@ -57,17 +56,78 @@ pub struct Repo {
     /// explicitly so the wiremock-rooted URLs collide cleanly per
     /// scenario.
     pub cache_namespace: String,
+    /// Optional credentials to attach as the `Authorization` header
+    /// on every request to this repo. Read from composer.json's
+    /// `config.http-basic` / `config.bearer` (or a project-level
+    /// `auth.json`) by `read_repository_auth`. Public Packagist
+    /// is unauthenticated; private mirrors / satis usually need
+    /// HTTP Basic, GitLab-CI Composer endpoints use Bearer.
+    pub auth: Option<AuthCredentials>,
+}
+
+/// Auth credentials for a single repository. Skipped from `Debug`
+/// output so credentials never leak into logs / error messages.
+#[derive(Clone)]
+pub enum AuthCredentials {
+    /// HTTP Basic — Composer's `http-basic` shape.
+    Basic { username: String, password: String },
+    /// Bearer token — Composer's `bearer` shape.
+    Bearer { token: String },
+}
+
+impl std::fmt::Debug for AuthCredentials {
+    /// Redacted Debug. Crucial for not leaking creds into eyre
+    /// chains or telemetry. The structural distinction (Basic vs
+    /// Bearer) is fine to print; the actual secret material isn't.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Basic { username, .. } => {
+                f.debug_struct("Basic")
+                    .field("username", username)
+                    .field("password", &"<redacted>")
+                    .finish()
+            }
+            Self::Bearer { .. } => f.debug_struct("Bearer")
+                .field("token", &"<redacted>")
+                .finish(),
+        }
+    }
+}
+
+impl AuthCredentials {
+    /// Render the credentials as an `Authorization` header value.
+    /// For Basic, this is `Basic <base64(user:pass)>`; for Bearer,
+    /// `Bearer <token>`.
+    pub fn header_value(&self) -> String {
+        use base64::Engine;
+        match self {
+            Self::Basic { username, password } => {
+                let raw = format!("{username}:{password}");
+                let encoded = base64::engine::general_purpose::STANDARD.encode(raw);
+                format!("Basic {encoded}")
+            }
+            Self::Bearer { token } => format!("Bearer {token}"),
+        }
+    }
 }
 
 impl Repo {
     /// Build a repo from a URL. The cache namespace is taken from
     /// the URL's host; for URLs without a host (e.g. `file:` URIs
     /// in tests), a hash-like fallback is used. Trailing slash on
-    /// the URL is stripped.
+    /// the URL is stripped. Auth defaults to `None`; attach via
+    /// [`Repo::with_auth`] when registering against a host that
+    /// requires credentials.
     pub fn from_url(raw: impl Into<String>) -> Self {
         let url = raw.into().trim_end_matches('/').to_owned();
         let cache_namespace = extract_cache_namespace(&url);
-        Self { url, cache_namespace }
+        Self { url, cache_namespace, auth: None }
+    }
+
+    /// Attach auth credentials. Chainable on `Repo::from_url`.
+    pub fn with_auth(mut self, auth: Option<AuthCredentials>) -> Self {
+        self.auth = auth;
+        self
     }
 
     /// Convenience for the implicit public Packagist repository,
@@ -165,6 +225,9 @@ pub fn fetch_package_metadata(
         variant.suffix(),
     );
     let mut req = client.get(&url);
+    if let Some(auth) = &repo.auth {
+        req = req.header(reqwest::header::AUTHORIZATION, auth.header_value());
+    }
     if let Ok(etag) = fs::read_to_string(&etag_path) {
         let etag = etag.trim();
         if !etag.is_empty() {
@@ -235,6 +298,9 @@ pub fn fetch_package_metadata_optional(
         variant.suffix(),
     );
     let mut req = client.get(&url);
+    if let Some(auth) = &repo.auth {
+        req = req.header(reqwest::header::AUTHORIZATION, auth.header_value());
+    }
     if let Ok(etag) = fs::read_to_string(&etag_path) {
         let etag = etag.trim();
         if !etag.is_empty() {

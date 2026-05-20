@@ -12,6 +12,7 @@ authors.workspace = true
 eyre = "0.6"
 pubgrub = "0.4"
 rayon = "1.10"
+base64 = "0.22"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
