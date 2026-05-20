@@ -19,11 +19,44 @@
 use crate::php_json::{self, Mode};
 use eyre::{eyre, Result, WrapErr};
 use md5::{Digest, Md5};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+
+/// Deserialize a `BTreeMap<String, String>` that accepts PHP's empty-
+/// `array` quirk: in PHP, `[]` (array) and `{}` (object) serialize
+/// identically when empty, and Composer's older writers sometimes
+/// emit `"require": []` instead of `"require": {}` for packages with
+/// no dependencies. The default Serde Deserialize would reject the
+/// array as "expected a map." This helper accepts either: empty
+/// array → empty map; non-empty array → error (genuine type bug).
+fn map_or_empty_array<'de, D>(deserializer: D) -> Result<BTreeMap<String, String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    use serde::de::Error;
+    let v = Value::deserialize(deserializer)?;
+    match v {
+        Value::Object(map) => map
+            .into_iter()
+            .map(|(k, v)| match v {
+                Value::String(s) => Ok((k, s)),
+                other => Err(D::Error::custom(format!(
+                    "map value for `{k}` must be a string, got {other:?}",
+                ))),
+            })
+            .collect(),
+        Value::Array(arr) if arr.is_empty() => Ok(BTreeMap::new()),
+        Value::Array(_) => Err(D::Error::custom(
+            "expected a map or an empty array (the PHP empty-object quirk); got a non-empty array",
+        )),
+        other => Err(D::Error::custom(format!(
+            "expected a map, got {other:?}",
+        ))),
+    }
+}
 
 /// Keys that participate in Composer's content-hash, in the order
 /// PHP's `array_intersect($relevantKeys, array_keys($content))` would
@@ -520,12 +553,17 @@ pub struct Lock {
     /// Platform requirements mirrored by `apply_require_change`. Map
     /// from platform-package name (e.g. `"php"`, `"ext-redis"`) to a
     /// constraint string.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "map_or_empty_array")]
     pub platform: BTreeMap<String, String>,
-    #[serde(rename = "platform-dev", default)]
+    #[serde(rename = "platform-dev", default, deserialize_with = "map_or_empty_array")]
     pub platform_dev: BTreeMap<String, String>,
     /// `platform-overrides` from composer.json, copied through.
-    #[serde(rename = "platform-overrides", default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[serde(
+        rename = "platform-overrides",
+        default,
+        deserialize_with = "map_or_empty_array",
+        skip_serializing_if = "BTreeMap::is_empty"
+    )]
     pub platform_overrides: BTreeMap<String, String>,
     /// Reported by the Composer build that wrote the lockfile; e.g.
     /// `"2.6.0"`. Carried through verbatim by the writer.
@@ -564,12 +602,12 @@ pub struct LockPackage {
     /// about ordering iterate in insertion order via `serde_json`'s
     /// `preserve_order` (which `BTreeMap` does *not* do — we use it
     /// here because the resolver only needs set semantics).
-    #[serde(default)]
+    #[serde(default, deserialize_with = "map_or_empty_array")]
     pub require: BTreeMap<String, String>,
     /// Transitive dev dependencies (rarely populated inside the lock —
     /// dev-only constraints land on the root package's
     /// `composer.json`, not on transitive packages).
-    #[serde(rename = "require-dev", default)]
+    #[serde(rename = "require-dev", default, deserialize_with = "map_or_empty_array")]
     pub require_dev: BTreeMap<String, String>,
     /// Package type: `"library"`, `"composer-plugin"`,
     /// `"metapackage"`, etc. Drives plugin-detection in the eventual
@@ -592,14 +630,14 @@ pub struct LockPackage {
     /// entry maps `vendor/name → version-constraint`. Phase C feeds
     /// this into the pubgrub replace/provide encoding; Phase A
     /// ignores it.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "map_or_empty_array")]
     pub replace: BTreeMap<String, String>,
     /// Same shape as `replace` for `provide`.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "map_or_empty_array")]
     pub provide: BTreeMap<String, String>,
     /// Inverse: packages this one conflicts with. Phase C uses this;
     /// Phase A ignores it.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "map_or_empty_array")]
     pub conflict: BTreeMap<String, String>,
     /// `bin` listing for the package — each path is relative to the
     /// package root and gets symlinked into `vendor/bin/` at install
@@ -1631,5 +1669,49 @@ mod tests {
         write_lock(&path, &lock).unwrap();
         let body = std::fs::read_to_string(&path).unwrap();
         assert!(!body.contains("_readme"), "{body}");
+    }
+
+    /// PHP serializes an empty associative array as `[]`, not `{}`,
+    /// so older Composer-produced composer.lock files (and
+    /// hand-written ones via PHP code) may carry `"platform-dev": []`
+    /// or `"require": []` instead of the JSON-object form. Our
+    /// reader must accept both.
+    #[test]
+    fn reads_lock_with_php_empty_array_for_empty_maps() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("composer.lock");
+        // Top-level `platform-dev` and a package-level `require` /
+        // `replace` / `provide` / `conflict` / `require-dev` all
+        // exercised as `[]`.
+        let body = r#"{
+            "content-hash": "0123456789abcdef0123456789abcdef",
+            "packages": [
+                {
+                    "name": "acme/foo",
+                    "version": "1.2.3",
+                    "version_normalized": "1.2.3.0",
+                    "dist": {"type":"zip","url":"https://e/a","shasum":"aa"},
+                    "require": [],
+                    "require-dev": [],
+                    "replace": [],
+                    "provide": [],
+                    "conflict": []
+                }
+            ],
+            "packages-dev": [],
+            "minimum-stability": "stable",
+            "stability-flags": {},
+            "prefer-stable": false,
+            "prefer-lowest": false,
+            "platform": [],
+            "platform-dev": []
+        }"#;
+        std::fs::write(&path, body).unwrap();
+        let lock = Lock::read(&path).expect("lock with [] empty-maps must parse");
+        assert_eq!(lock.packages.len(), 1);
+        assert!(lock.platform.is_empty());
+        assert!(lock.platform_dev.is_empty());
+        assert!(lock.packages[0].require.is_empty());
+        assert!(lock.packages[0].replace.is_empty());
     }
 }
