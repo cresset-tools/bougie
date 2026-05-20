@@ -123,7 +123,7 @@ pub fn run(
         aliases: Vec::new(),
         minimum_stability: Some(outcome.minimum_stability.clone()),
         stability_flags: outcome.stability_flags.clone(),
-        prefer_stable: false,
+        prefer_stable: outcome.prefer_stable,
         prefer_lowest: false,
         platform: BTreeMap::new(),
         platform_dev: BTreeMap::new(),

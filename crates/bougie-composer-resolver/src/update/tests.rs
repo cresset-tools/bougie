@@ -1144,3 +1144,162 @@ fn multiple_providers_at_same_virtual_version_dedup() {
     assert_eq!(iface_entries.len(), 1);
 }
 
+// ===================== prefer-stable =====================
+
+#[test]
+fn prefer_stable_picks_stable_over_higher_beta() {
+    // minimum-stability=beta opens betas; prefer-stable=true says
+    // "use stable if any matches in range." 1.0.0 stable wins over
+    // 2.0.0-beta1 even though the beta is higher.
+    let tmp = TempDir::new().unwrap();
+    let paths = paths_in(tmp.path());
+    let body = p2_body(
+        "acme/foo",
+        &[("2.0.0-beta1", json!({})), ("1.0.0", json!({}))],
+    );
+
+    let rt = rt();
+    let (uri, _server) = rt.block_on(async {
+        let server = MockServer::start().await;
+        mount_p2(&server, "acme/foo", body).await;
+        (server.uri(), server)
+    });
+
+    let composer_json = json!({
+        "minimum-stability": "beta",
+        "prefer-stable": true,
+        "require": {"acme/foo": ">=1.0"},
+    });
+    let client = crate::metadata::build_client().unwrap();
+    let provider =
+        ResolveProvider::build(client, paths, uri, &composer_json, true).unwrap();
+    let root = provider.root_version();
+
+    let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
+    let foo = solution
+        .get(&PubGrubPackage::Package("acme/foo".into()))
+        .unwrap();
+    assert_eq!(foo.to_string(), "1.0.0.0", "expected stable; got {foo}");
+}
+
+#[test]
+fn without_prefer_stable_highest_beta_still_wins() {
+    // Same fixture, prefer-stable disabled → beta wins.
+    let tmp = TempDir::new().unwrap();
+    let paths = paths_in(tmp.path());
+    let body = p2_body(
+        "acme/foo",
+        &[("2.0.0-beta1", json!({})), ("1.0.0", json!({}))],
+    );
+
+    let rt = rt();
+    let (uri, _server) = rt.block_on(async {
+        let server = MockServer::start().await;
+        mount_p2(&server, "acme/foo", body).await;
+        (server.uri(), server)
+    });
+
+    let composer_json = json!({
+        "minimum-stability": "beta",
+        "require": {"acme/foo": ">=1.0"},
+    });
+    let client = crate::metadata::build_client().unwrap();
+    let provider =
+        ResolveProvider::build(client, paths, uri, &composer_json, true).unwrap();
+    let root = provider.root_version();
+
+    let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
+    let foo = solution
+        .get(&PubGrubPackage::Package("acme/foo".into()))
+        .unwrap();
+    assert_eq!(foo.to_string(), "2.0.0.0-beta1");
+}
+
+#[test]
+fn prefer_stable_falls_back_to_unstable_when_no_stable_in_range() {
+    // Only betas available in range. prefer-stable can't find a
+    // stable match, so it falls back to the highest in range.
+    let tmp = TempDir::new().unwrap();
+    let paths = paths_in(tmp.path());
+    let body = p2_body(
+        "acme/foo",
+        &[("2.0.0-beta2", json!({})), ("2.0.0-beta1", json!({}))],
+    );
+
+    let rt = rt();
+    let (uri, _server) = rt.block_on(async {
+        let server = MockServer::start().await;
+        mount_p2(&server, "acme/foo", body).await;
+        (server.uri(), server)
+    });
+
+    let composer_json = json!({
+        "minimum-stability": "beta",
+        "prefer-stable": true,
+        // Explicit beta-anchored caret so the lower bound admits
+        // betas — the synthesized lower bound from `^2.0` would
+        // be `2.0.0-stable` and would exclude `2.0.0-beta1`.
+        "require": {"acme/foo": "^2.0.0-beta1"},
+    });
+    let client = crate::metadata::build_client().unwrap();
+    let provider =
+        ResolveProvider::build(client, paths, uri, &composer_json, true).unwrap();
+    let root = provider.root_version();
+
+    let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
+    let foo = solution
+        .get(&PubGrubPackage::Package("acme/foo".into()))
+        .unwrap();
+    assert_eq!(foo.to_string(), "2.0.0.0-beta2", "fallback to highest");
+}
+
+#[test]
+fn prefer_stable_is_noop_when_floor_is_stable() {
+    // minimum-stability=stable (default) means every candidate is
+    // already stable. prefer-stable is a no-op; the resolver picks
+    // the highest in range as usual.
+    let tmp = TempDir::new().unwrap();
+    let paths = paths_in(tmp.path());
+    let body = p2_body(
+        "acme/foo",
+        &[("2.0.0", json!({})), ("1.0.0", json!({}))],
+    );
+
+    let rt = rt();
+    let (uri, _server) = rt.block_on(async {
+        let server = MockServer::start().await;
+        mount_p2(&server, "acme/foo", body).await;
+        (server.uri(), server)
+    });
+
+    let composer_json = json!({
+        "prefer-stable": true,
+        "require": {"acme/foo": ">=1.0"},
+    });
+    let client = crate::metadata::build_client().unwrap();
+    let provider =
+        ResolveProvider::build(client, paths, uri, &composer_json, true).unwrap();
+    let root = provider.root_version();
+
+    let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
+    let foo = solution
+        .get(&PubGrubPackage::Package("acme/foo".into()))
+        .unwrap();
+    assert_eq!(foo.to_string(), "2.0.0.0");
+}
+
+#[test]
+fn unknown_prefer_stable_type_is_a_build_error() {
+    let tmp = TempDir::new().unwrap();
+    let paths = paths_in(tmp.path());
+    let composer_json = json!({
+        "prefer-stable": "yes",
+        "require": {},
+    });
+    let client = crate::metadata::build_client().unwrap();
+    let err = ResolveProvider::build(client, paths, "http://x".into(), &composer_json, true)
+        .unwrap_err();
+    let msg = format!("{err}");
+    assert!(msg.contains("prefer-stable"), "{msg}");
+}
+
