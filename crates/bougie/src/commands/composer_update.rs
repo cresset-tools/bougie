@@ -1,20 +1,26 @@
 //! `bougie composer update` — resolve `composer.json` from scratch
-//! and report what the new `composer.lock` would contain.
+//! and either preview (`--dry-run`) or write a fresh `composer.lock`.
 //!
-//! Currently ships **dry-run only**: the lockfile writer is a
-//! follow-up. Running the verb without `--dry-run` errors out with a
-//! pointer to the issue tracking the write-path.
+//! Default mode writes the lock atomically; `--dry-run` skips the
+//! write and prints what would land. `vendor/` is still not touched
+//! here — that's `composer install`'s job. Matches Composer's
+//! split: `update` builds the lock, `install` materializes it.
 
+use std::collections::BTreeMap;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use bougie_cli::OutputFormat;
+use bougie_composer::lockfile::{self, canonical_readme, Lock};
 use bougie_composer_resolver::metadata::base_url;
-use bougie_composer_resolver::{dry_run_update, DryRunOptions, ResolvedPackage, UpdateSummary};
+use bougie_composer_resolver::{
+    dry_run_update, resolve_for_lockfile, DryRunOptions, LockfileSolveOutcome, ResolvedPackage,
+    UpdateSummary,
+};
 use bougie_output::output::{emit, Render};
 use bougie_paths::Paths;
-use eyre::{eyre, Context, Result};
+use eyre::{Context, Result};
 use serde::Serialize;
 
 #[derive(Debug, Serialize)]
@@ -24,31 +30,48 @@ pub struct UpdateResult {
     pub no_dev: bool,
     pub dry_run: bool,
     pub packages: Vec<ResolvedPackage>,
+    pub packages_dev: Vec<ResolvedPackage>,
+    /// When `dry_run = false`, the path the lockfile was written to.
+    /// Omitted from the dry-run output.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lock_path: Option<PathBuf>,
 }
 
 impl Render for UpdateResult {
     fn render_text(&self, w: &mut dyn Write) -> io::Result<()> {
-        if self.packages.is_empty() {
+        let total = self.packages.len() + self.packages_dev.len();
+        if total == 0 {
             writeln!(
                 w,
-                "composer update --dry-run: no packages to install (composer.json has no external requires)",
+                "composer update: no packages to install (composer.json has no external requires)",
             )?;
             return Ok(());
         }
-        let mode = if self.no_dev { " (no-dev)" } else { "" };
+        let mode_dev = if self.no_dev { " (no-dev)" } else { "" };
+        let mode_dry = if self.dry_run { " --dry-run" } else { "" };
         writeln!(
             w,
-            "composer update --dry-run{mode}: {} packages",
+            "composer update{mode_dry}{mode_dev}: {} packages ({} prod, {} dev)",
+            total,
             self.packages.len(),
+            self.packages_dev.len(),
         )?;
         for p in &self.packages {
             writeln!(w, "  {} {}", p.name, p.version)?;
         }
-        writeln!(w)?;
-        writeln!(
-            w,
-            "(read-only preview — `composer.lock` is not written until the lockfile writer lands)",
-        )?;
+        for p in &self.packages_dev {
+            writeln!(w, "  {} {} (dev)", p.name, p.version)?;
+        }
+        if self.dry_run {
+            writeln!(w)?;
+            writeln!(
+                w,
+                "(read-only preview — pass without --dry-run to write composer.lock)",
+            )?;
+        } else if let Some(path) = &self.lock_path {
+            writeln!(w)?;
+            writeln!(w, "wrote {}", path.display())?;
+        }
         Ok(())
     }
 }
@@ -59,28 +82,82 @@ pub fn run(
     no_dev: bool,
     dry_run: bool,
 ) -> Result<ExitCode> {
-    if !dry_run {
-        return Err(eyre!(
-            "writing `composer.lock` isn't implemented yet — pass `--dry-run` to preview \
-             the resolution. The lockfile writer is the next slice of Phase C.",
-        ));
-    }
-
     let project_root = match working_dir {
         Some(p) => p,
         None => std::env::current_dir().wrap_err("reading current directory")?,
     };
     let paths = Paths::from_env()?;
-    let summary: UpdateSummary =
-        dry_run_update(&paths, &project_root, &base_url(), DryRunOptions { no_dev })?;
+
+    if dry_run {
+        // Preserve the lighter dry-run path: single solve, just names
+        // + versions. Useful when the user wants a quick "what would
+        // change" without paying for the second prod-only solve.
+        let summary: UpdateSummary =
+            dry_run_update(&paths, &project_root, &base_url(), DryRunOptions { no_dev })?;
+        let result = UpdateResult {
+            schema_version: 1,
+            project_root,
+            no_dev: summary.no_dev,
+            dry_run: true,
+            packages: summary.packages,
+            packages_dev: Vec::new(),
+            lock_path: None,
+        };
+        emit(format, &result)?;
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    // Write-mode path: resolve, build a Lock, atomic write.
+    let (composer_json_bytes, outcome): (Vec<u8>, LockfileSolveOutcome) =
+        resolve_for_lockfile(&paths, &project_root, &base_url())?;
+    let lock_path = project_root.join("composer.lock");
+
+    let content_hash = lockfile::content_hash(&composer_json_bytes)
+        .wrap_err("computing composer.json content-hash")?;
+
+    let lock = Lock {
+        readme: canonical_readme(),
+        content_hash: Some(content_hash),
+        packages: outcome.packages.clone(),
+        packages_dev: outcome.packages_dev.clone(),
+        aliases: Vec::new(),
+        minimum_stability: Some(outcome.minimum_stability.clone()),
+        stability_flags: outcome.stability_flags.clone(),
+        prefer_stable: false,
+        prefer_lowest: false,
+        platform: BTreeMap::new(),
+        platform_dev: BTreeMap::new(),
+        platform_overrides: BTreeMap::new(),
+        plugin_api_version: Some("2.6.0".into()),
+    };
+
+    lockfile::write_lock(&lock_path, &lock)
+        .wrap_err_with(|| format!("writing {}", lock_path.display()))?;
 
     let result = UpdateResult {
         schema_version: 1,
         project_root,
-        no_dev: summary.no_dev,
-        dry_run: true,
-        packages: summary.packages,
+        no_dev,
+        dry_run: false,
+        packages: outcome
+            .packages
+            .iter()
+            .map(|p| ResolvedPackage {
+                name: p.name.clone(),
+                version: p.version.clone(),
+            })
+            .collect(),
+        packages_dev: outcome
+            .packages_dev
+            .iter()
+            .map(|p| ResolvedPackage {
+                name: p.name.clone(),
+                version: p.version.clone(),
+            })
+            .collect(),
+        lock_path: Some(lock_path),
     };
     emit(format, &result)?;
     Ok(ExitCode::SUCCESS)
 }
+

@@ -16,4 +16,7 @@ pub use install::{
     fetch_and_extract_dists, install_from_lock, DistOutcome, DistRequest, InstallOptions,
     InstallSummary,
 };
-pub use update::{dry_run_update, DryRunOptions, ResolvedPackage, UpdateSummary};
+pub use update::{
+    dry_run_update, resolve_for_lockfile, DryRunOptions, LockfileSolveOutcome, ResolvedPackage,
+    UpdateSummary,
+};
