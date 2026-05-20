@@ -19,7 +19,7 @@
 use crate::php_json::{self, Mode};
 use eyre::{eyre, Result, WrapErr};
 use md5::{Digest, Md5};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -137,6 +137,39 @@ pub fn encode_for_disk(value: &Value) -> Vec<u8> {
     let mut bytes = php_json::encode(value, Mode::Pretty);
     bytes.push(b'\n');
     bytes
+}
+
+/// Composer's canonical `_readme` preamble — the three short strings
+/// every Composer-generated `composer.lock` carries verbatim. Exposed
+/// as a constructor so callers don't hard-code the wording.
+pub fn canonical_readme() -> Vec<String> {
+    vec![
+        "This file locks the dependencies of your project to a known state".into(),
+        "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies".into(),
+        "This file is @generated automatically".into(),
+    ]
+}
+
+/// Serialize a `Lock` value to bytes in Composer's on-disk format
+/// (4-space indent + trailing newline via [`encode_for_disk`]).
+///
+/// The caller is responsible for setting `lock.content_hash` to the
+/// hash of the corresponding `composer.json` — see [`content_hash`].
+/// Returning bytes (rather than writing directly) lets the caller
+/// hash the output, log it, or write atomically via a different
+/// strategy.
+pub fn serialize_lock(lock: &Lock) -> Result<Vec<u8>> {
+    let value = serde_json::to_value(lock)
+        .map_err(|e| eyre!("serializing lockfile: {e}"))?;
+    Ok(encode_for_disk(&value))
+}
+
+/// Write a `Lock` to disk atomically in Composer's on-disk format.
+/// Convenience over [`serialize_lock`] for the common case where the
+/// caller just wants the file on disk.
+pub fn write_lock(path: &Path, lock: &Lock) -> Result<()> {
+    let bytes = serialize_lock(lock)?;
+    write_json_bytes(path, &bytes)
 }
 
 /// Atomic write: tempfile in the destination directory, `fsync`,
@@ -448,8 +481,14 @@ pub fn apply_require_change(
 /// Parsed `composer.lock`. Round-trips through `serde_json` but loses
 /// the byte-exact representation — for in-place edits use
 /// [`read_json_file`] + the `lock_*` helpers above.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Lock {
+    /// Composer's standard `_readme` preamble. Three short
+    /// human-readable strings the upstream writer always emits.
+    /// Skipped on read by `serde(default)` if absent (older locks
+    /// may not have it); always emitted on write.
+    #[serde(rename = "_readme", default, skip_serializing_if = "Vec::is_empty")]
+    pub readme: Vec<String>,
     /// Set on every lockfile produced by Composer 1.10+; absence means
     /// the lockfile predates the algorithm and the install command
     /// should refuse with a clear error.
@@ -459,12 +498,21 @@ pub struct Lock {
     pub packages: Vec<LockPackage>,
     #[serde(rename = "packages-dev", default)]
     pub packages_dev: Vec<LockPackage>,
+    /// Composer's `aliases` array. Empty in practice for projects
+    /// without VCS sources; populated by `dev-X as Y` declarations.
+    #[serde(default)]
+    pub aliases: Vec<Value>,
     /// Top-level `minimum-stability` (string, e.g. `"stable"`,
     /// `"dev"`). Drives the eventual resolver's stability filter; the
     /// installer doesn't act on it but exposes it so the verifier in
     /// Phase B can.
     #[serde(rename = "minimum-stability", default)]
     pub minimum_stability: Option<String>,
+    /// Composer's per-package stability flag map (`"acme/foo": 20`
+    /// where the integer is Composer's stability constant —
+    /// dev=20, alpha=15, beta=10, RC=5, stable=0).
+    #[serde(rename = "stability-flags", default)]
+    pub stability_flags: BTreeMap<String, i32>,
     #[serde(rename = "prefer-stable", default)]
     pub prefer_stable: bool,
     #[serde(rename = "prefer-lowest", default)]
@@ -476,6 +524,9 @@ pub struct Lock {
     pub platform: BTreeMap<String, String>,
     #[serde(rename = "platform-dev", default)]
     pub platform_dev: BTreeMap<String, String>,
+    /// `platform-overrides` from composer.json, copied through.
+    #[serde(rename = "platform-overrides", default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub platform_overrides: BTreeMap<String, String>,
     /// Reported by the Composer build that wrote the lockfile; e.g.
     /// `"2.6.0"`. Carried through verbatim by the writer.
     #[serde(rename = "plugin-api-version", default)]
@@ -483,7 +534,7 @@ pub struct Lock {
 }
 
 /// One package entry from `packages` or `packages-dev`.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct LockPackage {
     /// `vendor/package` exactly as Composer writes it (case-preserved;
     /// Composer canonicalizes case on resolve but the lock keeps the
@@ -574,7 +625,7 @@ pub struct LockPackage {
 /// information needed to materialize the package; `reference` carries
 /// the upstream commit hash (used for the wrapping-directory name in
 /// Packagist zipballs, and for verification debugging).
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct LockDist {
     /// `"zip"` for Packagist API zipballs, `"tar"` for tarballs (rare,
     /// not yet supported by the downloader — `RESOLVER_PLAN.md` Phase
@@ -601,7 +652,7 @@ pub struct LockDist {
 /// `source` block — VCS coordinates. Phase D will use this when we
 /// add git-clone-as-source-install; Phase A only surfaces it so error
 /// messages can name the source URL when a dist is missing.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct LockSource {
     #[serde(rename = "type")]
     pub kind: String,
@@ -618,7 +669,7 @@ pub struct LockSource {
 /// - `files`: list of files to `require_once` from `vendor/autoload.php`.
 /// - `exclude-from-classmap`: glob patterns the autoloader skips when
 ///   building the classmap.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct LockAutoload {
     /// `psr-4` maps a namespace prefix (with trailing `\\`) to one or
     /// more directories. Each value is either a single string or an
@@ -1473,5 +1524,112 @@ mod tests {
         let err = Lock::read(&path).expect_err("must error");
         let msg = format!("{err:#}");
         assert!(msg.contains("composer.lock"), "error must name the file: {msg}");
+    }
+
+    #[test]
+    fn write_lock_round_trips_through_read() {
+        // Build a small Lock, serialize it, read it back, assert
+        // structural equivalence. Catches obvious renames /
+        // missing-fields issues in the new Serialize derives.
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("composer.lock");
+        let original = Lock {
+            readme: canonical_readme(),
+            content_hash: Some("0123456789abcdef0123456789abcdef".into()),
+            packages: vec![LockPackage {
+                name: "acme/foo".into(),
+                version: "1.2.3".into(),
+                version_normalized: Some("1.2.3.0".into()),
+                dist: Some(LockDist {
+                    kind: "zip".into(),
+                    url: "https://example.test/acme-foo.zip".into(),
+                    shasum: Some(
+                        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+                    ),
+                    reference: Some("abc1234".into()),
+                    transport_options: Default::default(),
+                }),
+                source: None,
+                require: BTreeMap::from([("php".into(), ">=8.1".into())]),
+                require_dev: BTreeMap::new(),
+                package_type: Some("library".into()),
+                autoload: LockAutoload::default(),
+                autoload_dev: Value::Null,
+                replace: BTreeMap::new(),
+                provide: BTreeMap::new(),
+                conflict: BTreeMap::new(),
+                bin: vec![],
+                extra: Value::Null,
+                time: Some("2024-01-01T00:00:00+00:00".into()),
+            }],
+            packages_dev: vec![],
+            aliases: vec![],
+            minimum_stability: Some("stable".into()),
+            stability_flags: BTreeMap::new(),
+            prefer_stable: false,
+            prefer_lowest: false,
+            platform: BTreeMap::new(),
+            platform_dev: BTreeMap::new(),
+            platform_overrides: BTreeMap::new(),
+            plugin_api_version: Some("2.6.0".into()),
+        };
+        // Sanity: stability_flags should serialize as `{}` even when
+        // empty (Composer expects the key present).
+        write_lock(&path, &original).unwrap();
+        let round_tripped = Lock::read(&path).unwrap();
+
+        // Spot-check fields that round-trip through the rename
+        // attributes — those are the easy ones to typo.
+        assert_eq!(
+            round_tripped.content_hash,
+            Some("0123456789abcdef0123456789abcdef".into()),
+        );
+        assert_eq!(round_tripped.readme.len(), 3);
+        assert_eq!(round_tripped.minimum_stability.as_deref(), Some("stable"));
+        assert_eq!(round_tripped.plugin_api_version.as_deref(), Some("2.6.0"));
+        assert_eq!(round_tripped.packages.len(), 1);
+        let p = &round_tripped.packages[0];
+        assert_eq!(p.name, "acme/foo");
+        assert_eq!(p.version, "1.2.3");
+        assert_eq!(p.version_normalized.as_deref(), Some("1.2.3.0"));
+        let dist = p.dist.as_ref().unwrap();
+        assert_eq!(dist.kind, "zip");
+        assert_eq!(dist.url, "https://example.test/acme-foo.zip");
+        assert_eq!(p.require.get("php").unwrap(), ">=8.1");
+        // And the file itself ends with a newline like Composer
+        // expects.
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(bytes.last(), Some(&b'\n'));
+
+        // Cosmetic check: the readme is the canonical strings, not
+        // something we accidentally substituted.
+        assert!(original.readme[0].contains("locks the dependencies"));
+    }
+
+    #[test]
+    fn write_lock_omits_readme_when_empty() {
+        // Round-tripping a Lock with an empty readme should not
+        // emit an empty `_readme: []` — Composer's older locks
+        // (and synthetic minimal locks) don't carry the key at all.
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("composer.lock");
+        let lock = Lock {
+            readme: vec![],
+            content_hash: Some("0123".into()),
+            packages: vec![],
+            packages_dev: vec![],
+            aliases: vec![],
+            minimum_stability: None,
+            stability_flags: BTreeMap::new(),
+            prefer_stable: false,
+            prefer_lowest: false,
+            platform: BTreeMap::new(),
+            platform_dev: BTreeMap::new(),
+            platform_overrides: BTreeMap::new(),
+            plugin_api_version: None,
+        };
+        write_lock(&path, &lock).unwrap();
+        let body = std::fs::read_to_string(&path).unwrap();
+        assert!(!body.contains("_readme"), "{body}");
     }
 }

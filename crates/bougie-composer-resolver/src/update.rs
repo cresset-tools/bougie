@@ -36,6 +36,12 @@
 //! the stable doc. A 404 on the dev variant is absorbed silently
 //! (many packages have no branches); other errors propagate.
 //!
+//! Lockfile writing goes through [`resolve_for_lockfile`], which runs
+//! the solver twice (full graph + prod-only) and partitions the
+//! difference into Composer's `packages` / `packages-dev` arrays.
+//! The CLI shim wraps the outcome in a `Lock` and hands it to
+//! `bougie_composer::lockfile::write_lock`.
+//!
 //! Out of scope (follow-ups):
 //! - `prefer-stable` candidate-ordering
 //! - Platform-package version checks against the bougie-pinned PHP
@@ -43,7 +49,9 @@
 //!   declarations too)
 //! - Custom repositories beyond Packagist
 //! - Streaming parse + fan-out-on-discovery prefetcher
-//! - Lockfile writer (the `--dry-run` orchestrator ships in this PR)
+//! - Byte-equivalence with Composer's own lockfile output (we
+//!   promise semantic equivalence: composer install accepts our
+//!   lock; key order and topological sort may diverge)
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -151,6 +159,19 @@ impl ResolveProvider {
     /// debug verbs.
     pub fn cache_size(&self) -> usize {
         self.cache.borrow().len()
+    }
+
+    /// Return the cached [`LockPackage`] for `(name, version)` if it
+    /// was loaded during the current solve. Used by the lockfile
+    /// writer to recover the full Packagist entry (dist, require,
+    /// autoload, etc.) for each resolved version.
+    pub fn lock_package_for(&self, name: &str, version: &Version) -> Option<LockPackage> {
+        let cache = self.cache.borrow();
+        let entries = cache.get(name)?;
+        entries
+            .iter()
+            .find(|(v, _)| v == version)
+            .map(|(_, p)| p.clone())
     }
 
     /// Effective stability floor for `name`: per-package `@<flag>`
@@ -347,17 +368,29 @@ impl std::error::Error for BuildError {}
 /// is the source label used in error messages so a malformed
 /// constraint reports whether it came from a require, a replace,
 /// or a provide.
+///
+/// `owner_version` is the version string of the package the map
+/// belongs to. Used to resolve Composer's `"self.version"` sentinel
+/// — common in `replace` declarations like
+/// `ramsey/uuid 4.9.2 replace: { rhumsaa/uuid: "self.version" }`,
+/// meaning "I replace rhumsaa/uuid at exactly my own version."
 fn push_constraint_map(
     out: &mut Vec<(String, ComposerRange)>,
     map: &std::collections::BTreeMap<String, String>,
     owner: &str,
+    owner_version: &str,
     clause_kind: &'static str,
 ) -> Result<(), ProviderError> {
     for (dep_name, raw) in map {
         if is_platform(dep_name) {
             continue;
         }
-        let constraint = Constraint::parse(raw).map_err(|e| {
+        let effective = if raw == "self.version" {
+            owner_version
+        } else {
+            raw
+        };
+        let constraint = Constraint::parse(effective).map_err(|e| {
             ProviderError(format!(
                 "constraint {raw:?} on `{dep_name}` ({clause_kind} from `{owner}`): {e}",
             ))
@@ -439,7 +472,8 @@ impl DependencyProvider for ResolveProvider {
                     )));
                 };
                 let mut out: Vec<(String, ComposerRange)> = Vec::new();
-                push_constraint_map(&mut out, &entry.require, name, "require")?;
+                let owner_version = &entry.version;
+                push_constraint_map(&mut out, &entry.require, name, owner_version, "require")?;
                 // `replace` and `provide` get encoded as additional
                 // requires: selecting this package forces the named
                 // alternative to satisfy the replace/provide
@@ -463,8 +497,8 @@ impl DependencyProvider for ResolveProvider {
                 //   that has no standalone Packagist entry) will
                 //   fail resolution. Rare in practice; surfaces as
                 //   a fixture failure if it bites.
-                push_constraint_map(&mut out, &entry.replace, name, "replace")?;
-                push_constraint_map(&mut out, &entry.provide, name, "provide")?;
+                push_constraint_map(&mut out, &entry.replace, name, owner_version, "replace")?;
+                push_constraint_map(&mut out, &entry.provide, name, owner_version, "provide")?;
                 out
             }
         };
@@ -558,7 +592,189 @@ pub fn dry_run_update(
             "no valid dependency resolution exists:\n\n{}",
             DefaultStringReporter::report(&tree),
         )),
+        Err(PubGrubError::ErrorChoosingVersion { package, source }) => Err(eyre!(
+            "solver could not choose a version for {package}: {}",
+            source.0,
+        )),
+        Err(PubGrubError::ErrorRetrievingDependencies {
+            package,
+            version,
+            source,
+        }) => Err(eyre!(
+            "solver could not retrieve dependencies of {package}@{version}: {}",
+            source.0,
+        )),
         Err(other) => Err(eyre!("solver error: {other}")),
+    }
+}
+
+/// Outcome of [`resolve_for_lockfile`]: the resolved package set,
+/// already partitioned into Composer's `packages` and `packages-dev`
+/// arrays.
+///
+/// Production vs dev is determined by running the solver twice — once
+/// with the full graph (`require` + `require-dev`) and once with
+/// `require` only — and treating anything that disappears in the
+/// prod-only solve as dev-only. Matches Composer's semantics: a
+/// package reachable from `require` is production, even if it's
+/// *also* reachable from `require-dev`.
+///
+/// Stability fields are pre-converted to Composer's wire form
+/// (`minimum-stability` keyword string, `stability-flags` integer
+/// constants) so callers don't need to depend on `bougie-semver` to
+/// build a `Lock`.
+#[derive(Debug, Clone)]
+pub struct LockfileSolveOutcome {
+    /// Resolved packages reachable from `composer.json`'s `require`.
+    pub packages: Vec<LockPackage>,
+    /// Resolved packages reachable ONLY from `require-dev`.
+    pub packages_dev: Vec<LockPackage>,
+    /// Composer-style keyword for the global stability floor
+    /// (`"stable"`, `"dev"`, ...). Matches the lockfile's
+    /// `minimum-stability` field verbatim.
+    pub minimum_stability: String,
+    /// Per-package stability flags in Composer's wire form: the
+    /// integer constants used in the lockfile's `stability-flags`
+    /// map. Composer's `BasePackage::STABILITIES`:
+    /// stable=0, RC=5, beta=10, alpha=15, dev=20.
+    pub stability_flags: std::collections::BTreeMap<String, i32>,
+}
+
+/// Resolve `composer.json` end-to-end for lockfile writing: solves
+/// the full graph + a prod-only graph, then partitions the
+/// difference into [`LockfileSolveOutcome::packages_dev`].
+///
+/// Returns the parsed composer.json bytes alongside the outcome so
+/// the caller can compute content-hash without re-reading.
+pub fn resolve_for_lockfile(
+    paths: &Paths,
+    project_root: &Path,
+    base_url: &str,
+) -> Result<(Vec<u8>, LockfileSolveOutcome)> {
+    let composer_json_path = project_root.join("composer.json");
+    if !composer_json_path.is_file() {
+        return Err(eyre!(
+            "{} not found — not a Composer project",
+            composer_json_path.display(),
+        ));
+    }
+    let composer_json_bytes = std::fs::read(&composer_json_path)
+        .wrap_err_with(|| format!("reading {}", composer_json_path.display()))?;
+    let composer_json: Value = serde_json::from_slice(&composer_json_bytes)
+        .map_err(|e| eyre!("parsing composer.json: {e}"))?;
+
+    let full = solve_into_lock_packages(paths, base_url, &composer_json, false)?;
+    let prod = solve_into_lock_packages(paths, base_url, &composer_json, true)?;
+
+    let prod_names: std::collections::HashSet<&str> =
+        prod.packages.iter().map(|p| p.name.as_str()).collect();
+    let (packages, packages_dev): (Vec<LockPackage>, Vec<LockPackage>) = full
+        .packages
+        .into_iter()
+        .partition(|p| prod_names.contains(p.name.as_str()));
+
+    let stability_flags = full
+        .stability_flags
+        .iter()
+        .map(|(name, stability)| (name.clone(), stability_to_composer_int(*stability)))
+        .collect();
+
+    Ok((
+        composer_json_bytes,
+        LockfileSolveOutcome {
+            packages,
+            packages_dev,
+            minimum_stability: full.minimum_stability.as_str().to_owned(),
+            stability_flags,
+        },
+    ))
+}
+
+/// Inner helper: build a provider with the given `no_dev` flag, solve,
+/// pull the full `LockPackage` entries out of the cache, return them
+/// sorted by name plus the metadata fields the lockfile writer needs.
+fn solve_into_lock_packages(
+    paths: &Paths,
+    base_url: &str,
+    composer_json: &Value,
+    no_dev: bool,
+) -> Result<SolutionSummary> {
+    let client = build_client()?;
+    let provider = ResolveProvider::build(
+        client,
+        paths.clone(),
+        base_url.to_owned(),
+        composer_json,
+        no_dev,
+    )
+    .map_err(|e| eyre!(e))?;
+    let root = provider.root_version();
+
+    let solution = match resolve(&provider, PubGrubPackage::Root, root) {
+        Ok(s) => s,
+        Err(PubGrubError::NoSolution(tree)) => {
+            return Err(eyre!(
+                "no valid dependency resolution exists:\n\n{}",
+                DefaultStringReporter::report(&tree),
+            ));
+        }
+        Err(PubGrubError::ErrorChoosingVersion { package, source }) => {
+            return Err(eyre!(
+                "solver could not choose a version for {package}: {}",
+                source.0,
+            ));
+        }
+        Err(PubGrubError::ErrorRetrievingDependencies {
+            package,
+            version,
+            source,
+        }) => {
+            return Err(eyre!(
+                "solver could not retrieve dependencies of {package}@{version}: {}",
+                source.0,
+            ));
+        }
+        Err(other) => return Err(eyre!("solver error: {other}")),
+    };
+
+    let mut packages: Vec<LockPackage> = Vec::new();
+    for (pkg, version) in solution {
+        let PubGrubPackage::Package(name) = pkg else { continue };
+        let Some(entry) = provider.lock_package_for(&name, &version) else {
+            // Should not happen — pubgrub only picked versions we
+            // returned from `choose_version`, and those entries are
+            // in the cache by construction.
+            return Err(eyre!(
+                "internal: solver picked {name}@{version} but it's not in the metadata cache",
+            ));
+        };
+        packages.push(entry);
+    }
+    packages.sort_by(|a, b| a.name.cmp(&b.name));
+
+    Ok(SolutionSummary {
+        packages,
+        minimum_stability: provider.minimum_stability,
+        stability_flags: provider.stability_flags.clone(),
+    })
+}
+
+struct SolutionSummary {
+    packages: Vec<LockPackage>,
+    minimum_stability: Stability,
+    stability_flags: HashMap<String, Stability>,
+}
+
+/// Composer's per-package stability constants for the lockfile's
+/// `stability-flags` map. Matches
+/// `Composer\Package\BasePackage::STABILITIES`.
+fn stability_to_composer_int(s: Stability) -> i32 {
+    match s {
+        Stability::Stable => 0,
+        Stability::Rc => 5,
+        Stability::Beta => 10,
+        Stability::Alpha => 15,
+        Stability::Dev => 20,
     }
 }
 
