@@ -942,26 +942,31 @@ fn load_real_candidates_isolated(
                         repo.url,
                     ))
                 })?;
-        if let Some(md) = stable_md {
-            if let Some(entries) = md.packages.get(name) {
-                versions.extend(entries.iter().cloned());
-            }
-            if floor == Stability::Dev {
-                let dev_md =
-                    fetch_one_isolated(client, paths, repo, v1_tables, name, Variant::Dev)
-                        .map_err(|e| {
-                            ProviderError(format!(
-                                "fetching dev metadata for {name} from {}: {e:#}",
-                                repo.url,
-                            ))
-                        })?;
-                if let Some(md) = dev_md {
-                    if let Some(extra) = md.packages.get(name) {
-                        versions.extend(extra.iter().cloned());
-                    }
+        // Union across every repo's hit rather than stopping at the
+        // first non-404 — matches the synchronous `load_real_candidates`
+        // path (see commit 126d0c6 / PR #135). Magento-style setups
+        // commonly have a broad mirror repo listing stale slices
+        // alongside a specific repo serving the requested version
+        // range; a first-wins filter here would shadow the specific
+        // repo and break the resolve.
+        let Some(md) = stable_md else { continue };
+        if let Some(entries) = md.packages.get(name) {
+            versions.extend(entries.iter().cloned());
+        }
+        if floor == Stability::Dev {
+            let dev_md =
+                fetch_one_isolated(client, paths, repo, v1_tables, name, Variant::Dev)
+                    .map_err(|e| {
+                        ProviderError(format!(
+                            "fetching dev metadata for {name} from {}: {e:#}",
+                            repo.url,
+                        ))
+                    })?;
+            if let Some(md) = dev_md {
+                if let Some(extra) = md.packages.get(name) {
+                    versions.extend(extra.iter().cloned());
                 }
             }
-            break;
         }
     }
     let raw_versions = versions.clone();
