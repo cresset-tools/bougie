@@ -52,6 +52,15 @@ version = "0.13"
 default-features = false
 features = ["blocking", "rustls", "gzip"]
 
+# Parallel metadata pre-fetch (`update::pre_fetch_closure_inner`) runs a
+# Semaphore-bounded fan-out on a small tokio runtime, dispatching the
+# actual blocking HTTP calls via `spawn_blocking`. `rt` gives us the
+# current-thread executor + the blocking thread-pool; `sync` is for
+# `tokio::sync::Semaphore`. `macros` is dev-only.
+[dependencies.tokio]
+version = "1"
+features = ["rt", "sync"]
+
 [dev-dependencies]
 tempfile = "3.10"
 sha1 = "0.10"

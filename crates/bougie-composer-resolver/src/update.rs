@@ -50,14 +50,21 @@
 //!   (issue #118 — affects polyfill-style `replace: { php: "..." }`
 //!   declarations too)
 //! - Custom repositories beyond Packagist
-//! - Streaming parse + fan-out-on-discovery prefetcher
 //! - Byte-equivalence with Composer's own lockfile output (we
 //!   promise semantic equivalence: composer install accepts our
 //!   lock; key order and topological sort may diverge)
+//!
+//! The pre-fetch closure dispatches HTTP via a Semaphore-bounded
+//! `tokio::task::JoinSet` so unrelated packages download in parallel
+//! (cribbed from uv's `UV_CONCURRENT_DOWNLOADS` model); cap defaults
+//! to 50 and is tunable via `BOUGIE_CONCURRENT_FETCHES`. Virtual
+//! providers are still registered single-threaded after the fan-out
+//! settles so `provide`/`replace` indexing stays deterministic.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
 
 use bougie_composer::lockfile::LockPackage;
 use bougie_paths::Paths;
@@ -727,48 +734,295 @@ impl ResolveProvider {
         &self,
         progress: ClosureProgress,
     ) -> Result<(), ProviderError> {
-        use std::collections::HashSet;
-        let mut visited: HashSet<String> = HashSet::new();
-        let mut queue: Vec<String> = self
+        // v1 provider tables: load synchronously before the parallel
+        // fan-out so each task sees them as a read-only `Arc<HashMap>`
+        // snapshot. Composer v1 repos are rare — one-shot per resolve
+        // is the natural granularity, and threading the existing
+        // `RefCell` through `Send` tasks would just add Mutex overhead.
+        for repo in &self.repos {
+            if let Some(RepoProtocol::V1(discovery)) = &repo.protocol {
+                if self.v1_provider_tables.borrow().contains_key(&repo.url) {
+                    continue;
+                }
+                let table =
+                    load_v1_provider_table(&self.client, &self.paths, repo, discovery)
+                        .map_err(|e| {
+                            ProviderError(format!(
+                                "loading v1 provider table for {}: {e:#}",
+                                repo.url,
+                            ))
+                        })?;
+                self.v1_provider_tables
+                    .borrow_mut()
+                    .insert(repo.url.clone(), table);
+            }
+        }
+        let v1_tables: Arc<HashMap<String, HashMap<String, String>>> =
+            Arc::new(self.v1_provider_tables.borrow().clone());
+
+        let initial: Vec<String> = self
             .root_deps
             .iter()
             .map(|(n, _)| n.clone())
+            .filter(|n| !is_platform(n))
             .collect();
-        while let Some(name) = queue.pop() {
-            if is_platform(&name) {
-                continue;
-            }
-            if !visited.insert(name.clone()) {
-                continue;
-            }
-            // Bump the spinner *before* the fetch so the displayed
-            // package name reflects the one we're currently waiting
-            // on, not the one we just finished.
-            progress.tick(&name);
-            // versions_for both loads metadata and registers
-            // virtuals as a side effect.
-            let versions = self.versions_for(&name)?;
-            for (_, pkg) in &versions {
-                for req in pkg.require.keys() {
-                    if !visited.contains(req) {
-                        queue.push(req.clone());
-                    }
-                }
-            }
+
+        // A current-thread runtime is enough: the only async work is
+        // `JoinSet::join_next` + `Semaphore::acquire_owned`. All HTTP
+        // I/O runs on `spawn_blocking`'s separate thread-pool, so the
+        // executor itself does no real work between completions.
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .map_err(|e| ProviderError(format!("building tokio runtime for prefetch: {e}")))?;
+
+        let outcomes = runtime.block_on(run_prefetch_fanout(
+            self.client.clone(),
+            self.paths.clone(),
+            self.repos.clone(),
+            v1_tables,
+            initial,
+            self.minimum_stability,
+            Arc::new(self.stability_flags.clone()),
+            prefetch_concurrency_limit(),
+            progress,
+        ))?;
+
+        // Post-process on the main thread so virtual-provider
+        // registration is single-threaded (the registry uses RefCells
+        // by design — `ResolveProvider` is one-thread-only once the
+        // solver starts). Name-sorted for determinism: the original
+        // BFS visit order was implementation-defined (LIFO from
+        // `Vec::pop`); name-sort is what someone reading the lockfile
+        // would expect.
+        let mut sorted = outcomes;
+        sorted.sort_by(|a, b| a.name.cmp(&b.name));
+        for outcome in sorted {
+            self.register_virtuals_from(&outcome.name, &outcome.raw_versions);
+            self.cache
+                .borrow_mut()
+                .insert(outcome.name, outcome.filtered);
         }
-        progress.finish();
         Ok(())
     }
 }
 
-/// Spinner that ticks once per visited package during
+/// Maximum concurrent metadata HTTP requests during the prefetch
+/// fan-out. Override with `BOUGIE_CONCURRENT_FETCHES`. Default 50
+/// matches uv's `UV_CONCURRENT_DOWNLOADS` — that's the regime where
+/// per-request latency stops being the bottleneck on a typical
+/// Packagist resolve without flooding the connection pool.
+fn prefetch_concurrency_limit() -> usize {
+    std::env::var("BOUGIE_CONCURRENT_FETCHES")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(50)
+}
+
+/// Result of fetching one package's metadata during the prefetch
+/// fan-out. `raw_versions` is the pre-filter list (used by
+/// `register_virtuals_from` so `provide`/`replace` clauses on
+/// stability-filtered-out versions are still indexed); `filtered`
+/// is what lands in `ResolveProvider::cache`.
+struct PrefetchOutcome {
+    name: String,
+    raw_versions: Vec<LockPackage>,
+    filtered: Vec<(Version, LockPackage)>,
+}
+
+/// Drive a Semaphore-bounded BFS over the require closure, fetching
+/// each visited package's metadata via `spawn_blocking` so they run
+/// concurrently. As each completes, its (filtered) versions' require
+/// keys become new BFS nodes. Returns one [`PrefetchOutcome`] per
+/// visited name; the caller registers virtuals and populates the
+/// resolver's cache from these in deterministic order.
+async fn run_prefetch_fanout(
+    client: reqwest::blocking::Client,
+    paths: Paths,
+    repos: Vec<Repo>,
+    v1_tables: Arc<HashMap<String, HashMap<String, String>>>,
+    initial: Vec<String>,
+    minimum_stability: Stability,
+    stability_flags: Arc<HashMap<String, Stability>>,
+    concurrency: usize,
+    progress: ClosureProgress,
+) -> Result<Vec<PrefetchOutcome>, ProviderError> {
+    use std::collections::HashSet;
+    let sem = Arc::new(tokio::sync::Semaphore::new(concurrency));
+    let mut visited: HashSet<String> = HashSet::new();
+    let mut tasks: tokio::task::JoinSet<Result<PrefetchOutcome, ProviderError>> =
+        tokio::task::JoinSet::new();
+    let mut outcomes: Vec<PrefetchOutcome> = Vec::new();
+
+    let spawn_fetch =
+        |name: String,
+         tasks: &mut tokio::task::JoinSet<Result<PrefetchOutcome, ProviderError>>| {
+            let client = client.clone();
+            let paths = paths.clone();
+            let repos = repos.clone();
+            let v1_tables = Arc::clone(&v1_tables);
+            let stability_flags = Arc::clone(&stability_flags);
+            let sem = Arc::clone(&sem);
+            tasks.spawn(async move {
+                let _permit = sem
+                    .acquire_owned()
+                    .await
+                    .map_err(|e| ProviderError(format!("semaphore closed: {e}")))?;
+                let floor = stability_flags
+                    .get(&name)
+                    .copied()
+                    .unwrap_or(minimum_stability);
+                tokio::task::spawn_blocking(move || {
+                    load_real_candidates_isolated(
+                        &client,
+                        &paths,
+                        &repos,
+                        &v1_tables,
+                        &name,
+                        floor,
+                    )
+                })
+                .await
+                .map_err(|e| ProviderError(format!("prefetch task panicked: {e}")))?
+            });
+        };
+
+    for name in initial {
+        if visited.insert(name.clone()) {
+            spawn_fetch(name, &mut tasks);
+        }
+    }
+
+    while let Some(joined) = tasks.join_next().await {
+        let outcome = joined
+            .map_err(|e| ProviderError(format!("prefetch task join error: {e}")))??;
+        // Tick on completion (not on spawn) so the count reflects
+        // packages whose metadata has actually landed. Displayed
+        // name flickers across in-flight tasks; users only see the
+        // running total most of the time anyway.
+        progress.tick(&outcome.name);
+        for (_, pkg) in &outcome.filtered {
+            for req in pkg.require.keys() {
+                if is_platform(req) {
+                    continue;
+                }
+                if !visited.insert(req.clone()) {
+                    continue;
+                }
+                spawn_fetch(req.clone(), &mut tasks);
+            }
+        }
+        outcomes.push(outcome);
+    }
+    progress.finish();
+    Ok(outcomes)
+}
+
+/// Stateless counterpart to [`ResolveProvider::load_real_candidates`]
+/// — no `&self`, no `RefCell`s, safe to call from a `spawn_blocking`
+/// task. Walks the repo list in priority order, returns the first
+/// non-404 hit's stable (+ optionally dev) versions, filters by
+/// stability floor, and sorts version-descending. v1 provider tables
+/// are passed in pre-loaded so this path never mutates them.
+fn load_real_candidates_isolated(
+    client: &reqwest::blocking::Client,
+    paths: &Paths,
+    repos: &[Repo],
+    v1_tables: &HashMap<String, HashMap<String, String>>,
+    name: &str,
+    floor: Stability,
+) -> Result<PrefetchOutcome, ProviderError> {
+    let mut versions: Vec<LockPackage> = Vec::new();
+    for repo in repos {
+        let stable_md =
+            fetch_one_isolated(client, paths, repo, v1_tables, name, Variant::Stable)
+                .map_err(|e| {
+                    ProviderError(format!(
+                        "fetching metadata for {name} from {}: {e:#}",
+                        repo.url,
+                    ))
+                })?;
+        if let Some(md) = stable_md {
+            if let Some(entries) = md.packages.get(name) {
+                versions.extend(entries.iter().cloned());
+            }
+            if floor == Stability::Dev {
+                let dev_md =
+                    fetch_one_isolated(client, paths, repo, v1_tables, name, Variant::Dev)
+                        .map_err(|e| {
+                            ProviderError(format!(
+                                "fetching dev metadata for {name} from {}: {e:#}",
+                                repo.url,
+                            ))
+                        })?;
+                if let Some(md) = dev_md {
+                    if let Some(extra) = md.packages.get(name) {
+                        versions.extend(extra.iter().cloned());
+                    }
+                }
+            }
+            break;
+        }
+    }
+    let raw_versions = versions.clone();
+    let mut filtered: Vec<(Version, LockPackage)> = versions
+        .into_iter()
+        .filter_map(|p| {
+            Version::parse(&p.version)
+                .ok()
+                .filter(|v| v.stability() >= floor)
+                .map(|v| (v, p))
+        })
+        .collect();
+    filtered.sort_by(|a, b| b.0.cmp(&a.0));
+    Ok(PrefetchOutcome { name: name.to_owned(), raw_versions, filtered })
+}
+
+/// Stateless v1/v2 dispatch — same as [`ResolveProvider::fetch_one`]
+/// but reads pre-loaded v1 provider tables from a passed-in map
+/// instead of `RefCell`s on `&self`, so it works inside a
+/// `spawn_blocking` task.
+fn fetch_one_isolated(
+    client: &reqwest::blocking::Client,
+    paths: &Paths,
+    repo: &Repo,
+    v1_tables: &HashMap<String, HashMap<String, String>>,
+    package: &str,
+    variant: Variant,
+) -> eyre::Result<Option<bougie_composer::metadata::PackageMetadata>> {
+    match &repo.protocol {
+        Some(RepoProtocol::V1(discovery)) => {
+            if variant == Variant::Dev {
+                // v1 stuffs branches into the single per-package
+                // document; `Variant::Stable` already returned
+                // everything. Skip the redundant request.
+                return Ok(None);
+            }
+            let table = v1_tables.get(&repo.url).ok_or_else(|| {
+                eyre::eyre!(
+                    "internal: v1 provider table not pre-loaded for {}",
+                    repo.url,
+                )
+            })?;
+            fetch_package_metadata_v1_optional(
+                client, paths, repo, discovery, table, package,
+            )
+        }
+        _ => fetch_package_metadata_optional(client, paths, repo, package, variant),
+    }
+}
+
+/// Spinner that ticks once per *completed* fetch during
 /// `pre_fetch_closure`, gated on the global `progress_visible` flag
 /// (which the CLI flips off for `--quiet` and `--format json`).
 /// Hidden in tests + JSON output by construction — `ProgressBar`
 /// with a hidden draw target is a cheap no-op for every `tick` /
 /// `finish` call.
 ///
-/// The closure is invoked twice per `composer update` (once for the
+/// The displayed package name is whichever fetch landed most
+/// recently; with concurrent fan-out it flickers across in-flight
+/// names, and the running count is the real signal anyway. The
+/// closure is invoked twice per `composer update` (once for the
 /// full graph, once for prod-only) so this is created twice; the
 /// second pass typically blows through cache hits in milliseconds
 /// and the bar finish-and-clears before the user notices it.
