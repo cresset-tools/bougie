@@ -160,9 +160,23 @@ pub struct ResolveProvider {
     /// `choose_version` time (when the consumer's range is known).
     virtual_wildcards: RefCell<HashMap<String, Vec<WildcardProvider>>>,
     /// Reverse-lookup: for each (virtual_name, selected_version),
-    /// which (provider_name, provider_version) backed it. Used by
-    /// `get_dependencies` to add the require that pins the provider.
-    virtual_selections: RefCell<HashMap<(String, Version), (String, Version)>>,
+    /// every (provider_name, provider_version) pair that registered
+    /// it. Used by `get_dependencies` to pin the providing real
+    /// package(s).
+    ///
+    /// A virtual is often registered by more than one provider at
+    /// the same version: e.g. several versions of one library that
+    /// each `replace: { renamed/pkg: 1.0.0 }` to keep the renamed
+    /// virtual stable across the library's own version bumps. When
+    /// every registration shares the same provider name, the pin
+    /// emitted by `get_dependencies` is the union of those provider
+    /// versions so pubgrub can pick whichever fits the surrounding
+    /// constraints. When distinct provider packages compete (the
+    /// classic "multiple PSR implementations" case), we fall back
+    /// to the first registration — pubgrub has no OR for the
+    /// constraints `get_dependencies` returns, so emitting all of
+    /// them would over-constrain.
+    virtual_selections: RefCell<HashMap<(String, Version), Vec<(String, Version)>>>,
     /// Per-v1-repo merged provider lookup tables (package name →
     /// sha256). Lazily populated on the first per-package lookup
     /// against a given v1 repo, keyed by `repo.url`. Composer v1
@@ -388,23 +402,34 @@ impl ResolveProvider {
         Ok(out)
     }
 
-    /// Fetch + parse + filter the real-package candidate list,
-    /// walking repos in priority order and stopping at the first
-    /// non-404 hit. Side-effects: every loaded version's `provide`
-    /// / `replace` declarations get registered in the
+    /// Fetch + parse + filter the real-package candidate list by
+    /// walking every configured repo and unioning the per-repo
+    /// version listings. Side-effects: every loaded version's
+    /// `provide` / `replace` declarations get registered in the
     /// virtual-provider index. Returns the filtered parsed entries
     /// (no virtual candidates merged — that happens in
     /// `versions_for`).
+    ///
+    /// Why union rather than Composer's strict canonical (first
+    /// repo wins): in real Magento-style projects a broad mirror
+    /// repo often lists a stale slice of a package (e.g. phpstan up
+    /// to 1.9.9) while a later, specific repo serves the
+    /// requested newer range (2.1.x). Composer continues past the
+    /// broad mirror because its canonical filter is constraint-
+    /// aware ("first repo with a *matching* version"). Bougie's
+    /// version-selection lives in pubgrub's `choose_version` and
+    /// doesn't have access to the active range here, so we keep
+    /// every repo's candidates and let `choose_version` pick the
+    /// highest in range. The trade-off vs. strict canonical: when
+    /// two repos both host a matching version, bougie picks the
+    /// highest rather than the earlier repo's — close enough for
+    /// the cases we've seen.
     fn load_real_candidates(
         &self,
         name: &str,
         floor: Stability,
     ) -> Result<Vec<(Version, LockPackage)>, ProviderError> {
         let mut versions: Vec<LockPackage> = Vec::new();
-        // Repository priority: declarations first, public Packagist
-        // last (mirrors Composer). First repo with a non-404 hit
-        // wins; subsequent repos are skipped — Composer's "first
-        // matching repository" precedence rule.
         for repo in &self.repos {
             let stable_md = self
                 .fetch_one(repo, name, Variant::Stable)
@@ -414,26 +439,24 @@ impl ResolveProvider {
                         repo.url,
                     ))
                 })?;
-            if let Some(md) = stable_md {
-                if let Some(entries) = md.packages.get(name) {
-                    versions.extend(entries.iter().cloned());
-                }
-                if floor == Stability::Dev {
-                    let dev_md = self
-                        .fetch_one(repo, name, Variant::Dev)
-                        .map_err(|e| {
-                            ProviderError(format!(
-                                "fetching dev metadata for {name} from {}: {e:#}",
-                                repo.url,
-                            ))
-                        })?;
-                    if let Some(md) = dev_md {
-                        if let Some(extra) = md.packages.get(name) {
-                            versions.extend(extra.iter().cloned());
-                        }
+            let Some(md) = stable_md else { continue };
+            if let Some(entries) = md.packages.get(name) {
+                versions.extend(entries.iter().cloned());
+            }
+            if floor == Stability::Dev {
+                let dev_md = self
+                    .fetch_one(repo, name, Variant::Dev)
+                    .map_err(|e| {
+                        ProviderError(format!(
+                            "fetching dev metadata for {name} from {}: {e:#}",
+                            repo.url,
+                        ))
+                    })?;
+                if let Some(md) = dev_md {
+                    if let Some(extra) = md.packages.get(name) {
+                        versions.extend(extra.iter().cloned());
                     }
                 }
-                break;
             }
         }
 
@@ -576,13 +599,16 @@ impl ResolveProvider {
                                 provided_version: v.clone(),
                             });
                         // Map the (virtual, provided) tuple back to
-                        // the provider. First-write-wins for
-                        // determinism when multiple providers offer
-                        // the same virtual at the same version (e.g.
-                        // several PSR implementations).
+                        // every provider that registered it.
+                        // `get_dependencies` later groups by
+                        // provider name and emits a union pin when
+                        // there's only one distinct provider, so
+                        // pubgrub can pick whichever provider
+                        // version satisfies the wider resolution.
                         selections
                             .entry((virtual_name.clone(), v))
-                            .or_insert((provider_name.to_owned(), provider_version.clone()));
+                            .or_default()
+                            .push((provider_name.to_owned(), provider_version.clone()));
                     } else if let Ok(constraint) = Constraint::parse(effective) {
                         wildcards
                             .entry(virtual_name.clone())
@@ -690,7 +716,7 @@ impl ResolveProvider {
             };
             self.virtual_selections.borrow_mut().insert(
                 (name.to_owned(), picked.clone()),
-                (entry.provider_name.clone(), entry.provider_version.clone()),
+                vec![(entry.provider_name.clone(), entry.provider_version.clone())],
             );
             return Some(picked);
         }
@@ -1375,19 +1401,49 @@ impl DependencyProvider for ResolveProvider {
                 // provider then carries its own require chain
                 // through pubgrub naturally.
                 let virtual_key = (name.clone(), version.clone());
-                if let Some((provider_name, provider_version)) =
+                if let Some(providers) =
                     self.virtual_selections.borrow().get(&virtual_key).cloned()
                 {
-                    let pinned = Constraint::Op {
-                        op: bougie_semver::version::CmpOp::Eq,
-                        version: provider_version,
-                        explicit_lower_bound: true,
+                    // Group registrations by provider name. With one
+                    // distinct provider we can pin to the union of
+                    // its versions and pubgrub picks whichever fits
+                    // the rest of the resolution. With multiple
+                    // distinct providers — the classic
+                    // `psr/http-client-implementation` case where
+                    // guzzle, symfony/http-client, and various
+                    // libraries all advertise `provide: { ...: '1.0' }`
+                    // — pubgrub's `Dependencies::Available` has no
+                    // OR across distinct package names, so we emit
+                    // no constraint at all. The virtual still appears
+                    // in the solution as a marker; the real provider
+                    // is expected to be pulled in via another require
+                    // edge (e.g. magento → guzzle). Composer's solver
+                    // expresses this naturally as an OR-of-providers
+                    // rule; bougie's modeling lacks that today, so
+                    // accept the looser semantics until the resolver
+                    // grows a proper provider-selector.
+                    let mut by_name: std::collections::BTreeMap<String, Vec<Version>> =
+                        std::collections::BTreeMap::new();
+                    for (pname, pver) in &providers {
+                        by_name.entry(pname.clone()).or_default().push(pver.clone());
+                    }
+                    let constraints: DependencyConstraints<Self::P, Self::VS> = if by_name.len() == 1
+                    {
+                        let (pname, versions) = by_name.iter().next().expect("non-empty");
+                        let range = versions
+                            .iter()
+                            .map(|v| {
+                                to_range(&Constraint::Op {
+                                    op: bougie_semver::version::CmpOp::Eq,
+                                    version: v.clone(),
+                                    explicit_lower_bound: true,
+                                })
+                            })
+                            .fold(ComposerRange::empty(), |acc, r| acc.union(&r));
+                        std::iter::once((PubGrubPackage::Package(pname.clone()), range)).collect()
+                    } else {
+                        DependencyConstraints::default()
                     };
-                    let constraints: DependencyConstraints<Self::P, Self::VS> = std::iter::once((
-                        PubGrubPackage::Package(provider_name),
-                        to_range(&pinned),
-                    ))
-                    .collect();
                     return Ok(Dependencies::Available(constraints));
                 }
                 let versions = self.versions_for(name)?;
