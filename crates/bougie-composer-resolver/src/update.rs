@@ -61,7 +61,7 @@
 //! providers are still registered single-threaded after the fan-out
 //! settles so `provide`/`replace` indexing stays deterministic.
 
-use std::cell::RefCell;
+use std::cell::{Ref, RefCell};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
@@ -148,6 +148,16 @@ pub struct ResolveProvider {
     /// visible (the pre-fetch queue can visit a virtual name before
     /// its provider is loaded).
     cache: RefCell<HashMap<String, Vec<(Version, LockPackage)>>>,
+    /// Memoized merge of [`Self::cache`] + virtuals, sorted +
+    /// deduplicated. This is the shape pubgrub actually consumes via
+    /// [`Self::versions_for`]; populating it lazily on first lookup
+    /// and borrowing it on subsequent ones is the main reason
+    /// `versions_for` can hand pubgrub a `Ref<[..]>` instead of
+    /// cloning the cache vec on every probe. Pre-fetch closes before
+    /// pubgrub runs and `register_virtuals_from` only runs there, so
+    /// the virtual index is stable from this cache's perspective —
+    /// invalidation isn't needed.
+    merged_cache: RefCell<HashMap<String, Vec<(Version, LockPackage)>>>,
     /// Index of virtual provider entries: maps each virtual package
     /// name (e.g. `psr/http-client-implementation`) to the list of
     /// real packages that provide or replace it. Populated by
@@ -302,6 +312,7 @@ impl ResolveProvider {
             prefer_stable,
             stability_flags,
             cache: RefCell::new(HashMap::new()),
+            merged_cache: RefCell::new(HashMap::new()),
             virtual_providers: RefCell::new(HashMap::new()),
             virtual_wildcards: RefCell::new(HashMap::new()),
             virtual_selections: RefCell::new(HashMap::new()),
@@ -357,17 +368,21 @@ impl ResolveProvider {
     }
 
     /// Inspect what's been fetched so far. Exposed for tests + future
-    /// debug verbs.
+    /// debug verbs. Counts both the pre-fetch staging cache and the
+    /// post-merge cache `versions_for` drains into, so a package
+    /// counts once regardless of whether pubgrub has consulted it yet.
     pub fn cache_size(&self) -> usize {
-        self.cache.borrow().len()
+        self.cache.borrow().len() + self.merged_cache.borrow().len()
     }
 
     /// Return the cached [`LockPackage`] for `(name, version)` if it
     /// was loaded during the current solve. Used by the lockfile
     /// writer to recover the full Packagist entry (dist, require,
-    /// autoload, etc.) for each resolved version.
+    /// autoload, etc.) for each resolved version. Looks in the
+    /// post-merge cache because `versions_for` moves entries out of
+    /// the staging cache on first probe.
     pub fn lock_package_for(&self, name: &str, version: &Version) -> Option<LockPackage> {
-        let cache = self.cache.borrow();
+        let cache = self.merged_cache.borrow();
         let entries = cache.get(name)?;
         entries
             .iter()
@@ -402,35 +417,56 @@ impl ResolveProvider {
     /// The combined list is sorted version-descending so pubgrub's
     /// "first in range" candidate selection still picks the highest
     /// matching version regardless of which document supplied it.
-    fn versions_for(&self, name: &str) -> Result<Vec<(Version, LockPackage)>, ProviderError> {
+    fn versions_for(
+        &self,
+        name: &str,
+    ) -> Result<Ref<'_, Vec<(Version, LockPackage)>>, ProviderError> {
         self.solve_progress.borrow().tick(name);
         tracing::trace!(package = %name, "versions_for");
-        let floor = self.effective_stability(name);
 
-        // The Packagist side is cached — once we've made the network
-        // call for a name, we don't repeat it.
-        let real_candidates = if let Some(v) = self.cache.borrow().get(name) {
-            v.clone()
+        // Fast path: post-merge form already memoized. Hands pubgrub
+        // a borrow of the cached vec; previously this method cloned
+        // a `Vec<(Version, LockPackage)>` (with full BTreeMap + Value
+        // trees per entry) on every `choose_version` /
+        // `get_dependencies` probe. The clone showed up as ~11–14% of
+        // total CPU on a Laravel-sized resolve, with a matching slug
+        // of `drop_in_place<LockPackage>` cost on top — see commit
+        // body for the profiler numbers.
+        if self.merged_cache.borrow().contains_key(name) {
+            return Ok(Ref::map(self.merged_cache.borrow(), |m| {
+                m.get(name).expect("present check just succeeded")
+            }));
+        }
+
+        // Slow path: compute the merged-with-virtuals form once and
+        // stash it for the next probe of the same name. We MOVE the
+        // entry out of `cache` (the prefetch staging area) into
+        // `merged_cache` — no clone — because every reachable
+        // package is consulted at most once for its real-candidate
+        // list. `lock_package_for` reads from `merged_cache` so the
+        // entry is still reachable after this drain.
+        let floor = self.effective_stability(name);
+        let real_candidates = if let Some(v) = self.cache.borrow_mut().remove(name) {
+            v
         } else {
-            let real = self.load_real_candidates(name, floor)?;
-            self.cache.borrow_mut().insert(name.to_owned(), real.clone());
-            real
+            self.load_real_candidates(name, floor)?
         };
 
-        // Virtual candidates are merged in on every call so a
-        // late-registered provider becomes visible even after the
-        // first cache populate. (Pre-fetch can hit a virtual name
-        // before any of its providers have been loaded.)
-        let mut out: Vec<(Version, LockPackage)> = real_candidates;
-        out.extend(self.synthesize_virtual_candidates(name, floor));
-        out.sort_by(|a, b| b.0.cmp(&a.0));
+        let mut merged: Vec<(Version, LockPackage)> = real_candidates;
+        merged.extend(self.synthesize_virtual_candidates(name, floor));
+        merged.sort_by(|a, b| b.0.cmp(&a.0));
         // Deduplicate consecutive entries with the same parsed
         // version — when both Packagist and a virtual provider
         // register the same name+version, prefer the real entry
         // (sort is stable; real Packagist entries are at the front
         // because they were extended in first).
-        out.dedup_by(|a, b| a.0 == b.0);
-        Ok(out)
+        merged.dedup_by(|a, b| a.0 == b.0);
+        self.merged_cache
+            .borrow_mut()
+            .insert(name.to_owned(), merged);
+        Ok(Ref::map(self.merged_cache.borrow(), |m| {
+            m.get(name).expect("just inserted")
+        }))
     }
 
     /// Fetch + parse + filter the real-package candidate list by
@@ -1687,13 +1723,13 @@ impl DependencyProvider for ResolveProvider {
                 // fallback. Skip it.
                 let floor = self.effective_stability(name);
                 if self.prefer_stable && floor != Stability::Stable {
-                    for (v, _) in &versions {
+                    for (v, _) in versions.iter() {
                         if v.stability() == Stability::Stable && range.contains(v) {
                             return Ok(Some(v.clone()));
                         }
                     }
                 }
-                for (v, _) in &versions {
+                for (v, _) in versions.iter() {
                     if range.contains(v) {
                         return Ok(Some(v.clone()));
                     }
