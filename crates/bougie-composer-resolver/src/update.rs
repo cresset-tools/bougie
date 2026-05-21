@@ -74,6 +74,17 @@ use serde_json::Value;
 
 use crate::metadata::build_client;
 
+/// Whether `solve_into_lock_packages` should render a progress
+/// spinner during its pre-fetch closure. `resolve_for_lockfile`
+/// drives the spinner during the full-graph solve and hides it
+/// for the prod-only solve that follows (cache hits, instant —
+/// flashing a fresh spinner would just be noise).
+#[derive(Copy, Clone)]
+enum ProgressMode {
+    Visible,
+    Hidden,
+}
+
 use crate::metadata::{
     fetch_package_metadata_optional, fetch_package_metadata_v1_optional,
     load_v1_provider_table, probe_protocol, Repo, RepoProtocol, Variant,
@@ -699,8 +710,24 @@ impl ResolveProvider {
     /// silently — that's the expected shape for virtual names that
     /// have no real Packagist entry.
     pub fn pre_fetch_closure(&self) -> Result<(), ProviderError> {
+        self.pre_fetch_closure_inner(ClosureProgress::new())
+    }
+
+    /// Same as [`Self::pre_fetch_closure`] but suppresses the
+    /// progress spinner. Used for the prod-only second pass in
+    /// `resolve_for_lockfile`: the work is the same shape as the
+    /// first pass but every fetch is a cache hit, so an animated
+    /// bar would flash on-and-off in a confusing way. The first
+    /// pass already gave the user the visibility they needed.
+    pub fn pre_fetch_closure_silent(&self) -> Result<(), ProviderError> {
+        self.pre_fetch_closure_inner(ClosureProgress::hidden())
+    }
+
+    fn pre_fetch_closure_inner(
+        &self,
+        progress: ClosureProgress,
+    ) -> Result<(), ProviderError> {
         use std::collections::HashSet;
-        let progress = ClosureProgress::new();
         let mut visited: HashSet<String> = HashSet::new();
         let mut queue: Vec<String> = self
             .root_deps
@@ -752,9 +779,7 @@ struct ClosureProgress {
 impl ClosureProgress {
     fn new() -> Self {
         if !bougie_output::output::progress_visible() {
-            let pb = indicatif::ProgressBar::new(0);
-            pb.set_draw_target(indicatif::ProgressDrawTarget::hidden());
-            return Self { pb };
+            return Self::hidden();
         }
         let pb = indicatif::ProgressBar::new(0);
         pb.set_draw_target(indicatif::ProgressDrawTarget::stderr_with_hz(15));
@@ -764,6 +789,15 @@ impl ClosureProgress {
         .unwrap_or_else(|_| indicatif::ProgressStyle::default_spinner());
         pb.set_style(style);
         pb.enable_steady_tick(std::time::Duration::from_millis(120));
+        Self { pb }
+    }
+
+    /// No-op variant. Used by [`ResolveProvider::pre_fetch_closure_silent`]
+    /// for the prod-only second pass, where rendering a fresh
+    /// spinner would just be noise.
+    fn hidden() -> Self {
+        let pb = indicatif::ProgressBar::new(0);
+        pb.set_draw_target(indicatif::ProgressDrawTarget::hidden());
         Self { pb }
     }
 
@@ -1555,13 +1589,20 @@ pub fn resolve_for_lockfile(
         &composer_json,
         false,
         auth.clone(),
+        ProgressMode::Visible,
     )?;
+    // Second pass is the same closure walk against the same disk
+    // cache — every fetch is an instant cache hit. Re-running the
+    // spinner would flash a redundant "fetching metadata" line, so
+    // hide it. The user already saw the work happen during the full
+    // pass.
     let prod = solve_into_lock_packages(
         paths,
         default_packagist,
         &composer_json,
         true,
         auth,
+        ProgressMode::Hidden,
     )?;
 
     let prod_names: std::collections::HashSet<&str> =
@@ -1598,6 +1639,7 @@ fn solve_into_lock_packages(
     composer_json: &Value,
     no_dev: bool,
     auth: HashMap<String, crate::metadata::AuthCredentials>,
+    progress: ProgressMode,
 ) -> Result<SolutionSummary> {
     let client = build_client()?;
     let mut provider = ResolveProvider::build_with_auth(
@@ -1617,9 +1659,11 @@ fn solve_into_lock_packages(
     // Eager pre-fetch: load every reachable package's metadata
     // before the solver runs so virtual providers are registered.
     // Mirrors Composer's PoolBuilder.
-    provider
-        .pre_fetch_closure()
-        .map_err(|e| eyre!("pre-fetching metadata closure: {}", e.0))?;
+    let prefetch = match progress {
+        ProgressMode::Visible => provider.pre_fetch_closure(),
+        ProgressMode::Hidden => provider.pre_fetch_closure_silent(),
+    };
+    prefetch.map_err(|e| eyre!("pre-fetching metadata closure: {}", e.0))?;
     let root = provider.root_version();
 
     let solution = match resolve(&provider, PubGrubPackage::Root, root) {
