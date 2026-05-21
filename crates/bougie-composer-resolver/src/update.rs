@@ -917,10 +917,78 @@ fn read_prefer_stable(composer_json: &Value) -> Result<bool, BuildError> {
 ///   path repositories need different machinery and are tracked as
 ///   follow-ups.
 ///
+/// True for an array-form entry that disables the implicit public
+/// Packagist: `{"packagist.org": false}`. The named/object form
+/// uses a different spelling (`"packagist.org"` as a top-level key
+/// with value `false`) and is handled inline in [`read_repositories`].
+fn entry_is_disable_packagist(entry: &serde_json::Map<String, Value>) -> bool {
+    entry.get("packagist.org").and_then(Value::as_bool) == Some(false)
+}
+
+/// Parse one repository entry (a Composer-protocol `{type, url}`
+/// object, or one of the not-yet-supported VCS/path/package/artifact
+/// shapes) and append to `repos` on success. Auth is looked up by
+/// the URL's host. Used by both wire shapes [`read_repositories`]
+/// accepts.
+fn parse_repo_entry(
+    entry: &serde_json::Map<String, Value>,
+    auth: &HashMap<String, crate::metadata::AuthCredentials>,
+    repos: &mut Vec<Repo>,
+) -> Result<(), BuildError> {
+    let r#type = entry.get("type").and_then(Value::as_str);
+    match r#type {
+        Some("composer") => {
+            let url = entry
+                .get("url")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    BuildError::Internal(
+                        "repository entry of type \"composer\" is missing `url`".into(),
+                    )
+                })?;
+            let repo = Repo::from_url(url);
+            let creds = auth.get(&repo.cache_namespace).cloned();
+            repos.push(repo.with_auth(creds));
+            Ok(())
+        }
+        Some(
+            "vcs" | "github" | "git" | "bitbucket" | "gitlab" | "git-bitbucket" | "hg"
+            | "fossil" | "svn",
+        ) => {
+            // VCS family — not supported yet. Silently ignore so the
+            // resolver can still make progress on packages that
+            // happen to be on Packagist too. Follow-up issue.
+            Ok(())
+        }
+        Some("path" | "package" | "artifact") => {
+            // Same story; non-Composer-protocol shapes need distinct
+            // machinery.
+            Ok(())
+        }
+        Some(other) => Err(BuildError::Internal(format!(
+            "unknown repository type {other:?}; supported: composer (others coming)",
+        ))),
+        None => Err(BuildError::Internal(
+            "repository entry has no `type` field and is not `packagist.org: false`".into(),
+        )),
+    }
+}
+
 /// Composer's repository ordering: declarations come first (highest
 /// priority), with the implicit public Packagist appended last
 /// unless disabled. Mirrors `Composer\Repository\
 /// RepositoryFactory::createDefaultRepositories`.
+///
+/// Both wire shapes Composer accepts are honored:
+///
+/// - Array form: `"repositories": [{"type": "composer", "url": "..."},
+///   {"packagist.org": false}]`.
+/// - Named/object form: `"repositories": {"foo": {"type": "composer",
+///   "url": "..."}, "packagist.org": false}` — the keys name each
+///   entry (used as a hint when nothing else identifies it; the
+///   per-host cache namespace still comes from the URL itself), and
+///   the literal value `false` for `"packagist.org"` disables the
+///   implicit public Packagist.
 fn read_repositories(
     composer_json: &Value,
     default_packagist: Repo,
@@ -931,54 +999,40 @@ fn read_repositories(
     })?;
     let mut repos: Vec<Repo> = Vec::new();
     let mut keep_default_packagist = true;
-    if let Some(entries) = obj.get("repositories").and_then(Value::as_array) {
-        for entry in entries {
-            let Some(entry_obj) = entry.as_object() else { continue };
-            // `{ "packagist.org": false }` is the disable form.
-            if let Some(val) = entry_obj.get("packagist.org") {
-                if val.as_bool() == Some(false) {
-                    keep_default_packagist = false;
+    if let Some(entry) = obj.get("repositories") {
+        match entry {
+            Value::Array(entries) => {
+                for entry in entries {
+                    let Some(entry_obj) = entry.as_object() else { continue };
+                    if entry_is_disable_packagist(entry_obj) {
+                        keep_default_packagist = false;
+                        continue;
+                    }
+                    parse_repo_entry(entry_obj, auth, &mut repos)?;
                 }
-                continue;
             }
-            let r#type = entry_obj.get("type").and_then(Value::as_str);
-            match r#type {
-                Some("composer") => {
-                    let url = entry_obj
-                        .get("url")
-                        .and_then(Value::as_str)
-                        .ok_or_else(|| {
-                            BuildError::Internal(
-                                "repository entry of type \"composer\" is missing `url`".into(),
-                            )
-                        })?;
-                    let repo = Repo::from_url(url);
-                    // Look up auth by host.
-                    let creds = auth.get(&repo.cache_namespace).cloned();
-                    repos.push(repo.with_auth(creds));
+            Value::Object(named) => {
+                for (_name, value) in named {
+                    // `"packagist.org": false` — the named-form
+                    // disable spelling. Composer also accepts
+                    // `false` against any other repo key as "disable
+                    // a previously-declared default repo," but
+                    // Packagist is the only default we ship, so we
+                    // only handle the one well-defined case.
+                    if value.as_bool() == Some(false) {
+                        if _name == "packagist.org" {
+                            keep_default_packagist = false;
+                        }
+                        continue;
+                    }
+                    let Some(entry_obj) = value.as_object() else { continue };
+                    parse_repo_entry(entry_obj, auth, &mut repos)?;
                 }
-                Some("vcs" | "github" | "git" | "bitbucket" | "gitlab" | "git-bitbucket"
-                    | "hg" | "fossil" | "svn") => {
-                    // VCS family — not supported yet. Silently
-                    // ignore so the resolver can still make progress
-                    // on packages that happen to be on Packagist
-                    // too. Follow-up issue.
-                }
-                Some("path" | "package" | "artifact") => {
-                    // Same story; non-Composer-protocol shapes need
-                    // distinct machinery.
-                }
-                Some(other) => {
-                    return Err(BuildError::Internal(format!(
-                        "unknown repository type {other:?}; supported: composer (others coming)",
-                    )));
-                }
-                None => {
-                    return Err(BuildError::Internal(
-                        "repository entry has no `type` field and is not `packagist.org: false`"
-                            .into(),
-                    ));
-                }
+            }
+            _ => {
+                return Err(BuildError::Internal(
+                    "`repositories` must be an array or an object".into(),
+                ));
             }
         }
     }

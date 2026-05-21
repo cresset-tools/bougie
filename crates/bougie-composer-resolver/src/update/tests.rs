@@ -1562,6 +1562,63 @@ fn packagist_org_false_disables_public_fallback() {
 }
 
 #[test]
+fn packagist_org_false_disables_public_fallback_named_object_form() {
+    // Same intent as the array-form test above, but with the
+    // named/object `repositories` shape Composer also accepts:
+    //   "repositories": {
+    //       "private": {"type": "composer", "url": "..."},
+    //       "packagist.org": false
+    //   }
+    // bougie used to only parse the array form and silently
+    // dropped the entire block, leaving Packagist enabled and the
+    // private repo unregistered — opposite of what the user
+    // declared.
+    let tmp = TempDir::new().unwrap();
+    let paths = paths_in(tmp.path());
+
+    let foo = p2_body("acme/foo", &[("1.0.0", json!({}))]);
+
+    let rt = rt();
+    let (custom_uri, packagist_uri, _custom, _pkgst) = rt.block_on(async {
+        let custom = MockServer::start().await;
+        mount_p2(&custom, "acme/foo", foo).await;
+        let pkgst = MockServer::start().await;
+        // Trap: any request to public Packagist fails the test —
+        // proves both that the disable took effect AND that the
+        // private repo was actually registered (otherwise the
+        // resolver would have no source for acme/foo).
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&pkgst)
+            .await;
+        (custom.uri(), pkgst.uri(), custom, pkgst)
+    });
+
+    let composer_json = json!({
+        "repositories": {
+            "private": {"type": "composer", "url": custom_uri},
+            "packagist.org": false,
+        },
+        "require": {"acme/foo": "^1.0"},
+    });
+    let client = crate::metadata::build_client().unwrap();
+    let provider = ResolveProvider::build(
+        client,
+        paths,
+        crate::metadata::Repo::from_url(packagist_uri),
+        &composer_json,
+        true,
+    )
+    .unwrap();
+    let root = provider.root_version();
+
+    let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
+    assert!(solution
+        .get(&PubGrubPackage::Package("acme/foo".into()))
+        .is_some());
+}
+
+#[test]
 fn unknown_repo_type_yields_build_error() {
     // `vcs` / `path` / `package` / `artifact` are ignored silently
     // (follow-up work). A genuinely unrecognized type errors so
