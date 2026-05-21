@@ -18,8 +18,9 @@ pub(crate) mod cleaner;
 pub(crate) mod exclude;
 pub(crate) mod filter;
 pub(crate) mod finder;
-mod walker;
+pub(crate) mod walker;
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use rayon::prelude::*;
@@ -27,35 +28,69 @@ use rayon::prelude::*;
 pub(crate) use exclude::ExcludePatterns;
 pub(crate) use filter::NamespaceFilter;
 
-/// Scan a single classmap directory (or file). Returns
-/// `(class_name, absolute_path)` pairs in walker order. Deduplication
-/// and sort happen at a higher layer (`collect::classmap`) so this
-/// module stays mechanical.
+/// Walk a task's `scan_root` and return per-file class lists keyed by
+/// the file's path relative to `install_abs`. Used by
+/// [`crate::Autoloader::bootstrap`] so each file's contribution is
+/// individually addressable for incremental patches — when a file is
+/// later edited, `apply_changed_path` re-scans just that one file
+/// and replaces its entry without re-walking the whole task.
 ///
-/// `filter` is [`NamespaceFilter::None`] for classmap-style scans
-/// (every class kept) and `Psr4` / `Psr0` for the optimize-mode
-/// PSR-* directory scans (class must match the namespace+path rule).
-/// `exclude` is the precompiled exclude-from-classmap regex set;
-/// files whose path matches it are skipped before they're read.
-pub(crate) fn scan(
+/// Iteration order of `BTreeMap<PathBuf, _>` is path-sorted, which
+/// matches the walker's sort order: `walker::enumerate` sorts
+/// absolute paths, and all files in a single task share the same
+/// `install_abs` prefix, so relative-path sort is identical to
+/// absolute-path sort. That equivalence is load-bearing — it
+/// preserves first-seen-wins dedup behaviour now that the merge
+/// walks per-file BTreeMaps instead of a flat per-task `Vec`.
+///
+/// Files whose filtered class list is empty are omitted: bootstrap
+/// would not have recorded them, and `apply_changed_path` removes a
+/// file's entry when its post-edit class list is empty.
+pub(crate) fn scan_per_file(
     root: &Path,
+    install_abs: &Path,
     filter: &NamespaceFilter,
     exclude: &ExcludePatterns,
-) -> Vec<(String, PathBuf)> {
+) -> BTreeMap<PathBuf, Vec<String>> {
     let files = walker::enumerate(root, walker::DEFAULT_EXTENSIONS);
-    files
+    let pairs: Vec<(PathBuf, Vec<String>)> = files
         .par_iter()
-        .filter(|path| !exclude.matches(path))
-        .flat_map_iter(|path| {
-            let Ok(bytes) = std::fs::read(path) else {
-                return Vec::new().into_iter();
-            };
+        .filter(|p| !exclude.matches(p))
+        .filter_map(|p| {
+            let bytes = std::fs::read(p).ok()?;
             let classes = finder::find_classes(&bytes);
-            let kept = filter::apply(filter, classes, path);
-            kept.into_iter()
-                .map(|c| (c, path.clone()))
-                .collect::<Vec<_>>()
-                .into_iter()
+            let kept = filter::apply(filter, classes, p);
+            if kept.is_empty() {
+                return None;
+            }
+            let rel = p
+                .strip_prefix(install_abs)
+                .unwrap_or(p.as_path())
+                .to_path_buf();
+            Some((rel, kept))
         })
-        .collect()
+        .collect();
+    pairs.into_iter().collect()
+}
+
+/// Run the same cleaner+finder+filter pipeline a full-task scan
+/// applies, but for a single file. Returns `None` when the file is
+/// excluded, unreadable, or has zero classes after the namespace
+/// filter — same callable shape as `scan_per_file`'s per-file
+/// `filter_map` step.
+///
+/// Callers (`Autoloader::apply_changed_path`) supply an absolute
+/// path that already passed walker-style extension filtering.
+pub(crate) fn scan_one(
+    file_abs: &Path,
+    filter: &NamespaceFilter,
+    exclude: &ExcludePatterns,
+) -> Option<Vec<String>> {
+    if exclude.matches(file_abs) {
+        return None;
+    }
+    let bytes = std::fs::read(file_abs).ok()?;
+    let classes = finder::find_classes(&bytes);
+    let kept = filter::apply(filter, classes, file_abs);
+    if kept.is_empty() { None } else { Some(kept) }
 }

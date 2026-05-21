@@ -33,6 +33,19 @@ pub(crate) struct Package {
     /// constraints we don't care about — only the keys matter.
     #[serde(default)]
     pub require: std::collections::BTreeMap<String, String>,
+    /// `dist` block — only the `type` discriminant is read. Path-repo
+    /// packages (`dist.type == "path"`) need their classmap scan roots
+    /// added to the user-code watcher set so live patches see changes
+    /// inside those directories. Other kinds (zip, tar, …) live in
+    /// `vendor/` proper and are covered by the `composer.lock` watcher.
+    #[serde(default)]
+    pub dist: Option<LockDist>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct LockDist {
+    #[serde(default, rename = "type")]
+    pub kind: String,
 }
 
 #[derive(Debug, Default, Deserialize)]
