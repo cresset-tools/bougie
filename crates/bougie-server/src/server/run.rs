@@ -16,12 +16,14 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Duration;
 
+use super::autoloader_manager::AutoloaderManager;
 use super::config;
 use super::control;
 use super::log::{self, LogFormat};
 use super::paths::ServerPaths;
 use super::pool::{self, PoolManager};
 use super::router::{self, AppState};
+use super::watch_registry::WatchRegistry;
 use super::watcher;
 
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
@@ -56,12 +58,32 @@ pub fn run(
         max_concurrent_pools,
     ));
 
+    // Unique project list dedup'd here so two hostnames pointing at
+    // the same project share one filesystem watch + autoloader entry.
+    let projects: Vec<std::path::PathBuf> = {
+        let mut seen = std::collections::HashSet::new();
+        cfg.hosts
+            .iter()
+            .map(|h| h.project.clone())
+            .filter(|p| seen.insert(p.clone()))
+            .collect()
+    };
+
+    // The watch registry is shared between the watcher dispatch loop
+    // (which routes events into it) and the autoloader manager
+    // (which arms new user-code roots into it on Cold → Warming).
+    // Construct it empty here; `watcher::start` installs the notify
+    // watcher into it once the initial static prefixes are armed.
+    let registry = Arc::new(WatchRegistry::new());
+    let autoloader_manager = Arc::new(AutoloaderManager::new(&projects, Arc::clone(&registry)));
+
     // Hostname-collision check happens here so config errors surface
     // before we bind a port (§spec implementation note).
     let state = Arc::new(AppState::build(
         &cfg,
         config_path.clone(),
         Arc::clone(&pools),
+        Arc::clone(&autoloader_manager),
         listen.port(),
     )?);
 
@@ -80,17 +102,6 @@ pub fn run(
     for host in &cfg.hosts {
         super::helpers::warn_host(host);
     }
-
-    // Unique project list dedup'd here so two hostnames pointing at
-    // the same project share one filesystem watch.
-    let projects: Vec<std::path::PathBuf> = {
-        let mut seen = std::collections::HashSet::new();
-        cfg.hosts
-            .iter()
-            .map(|h| h.project.clone())
-            .filter(|p| seen.insert(p.clone()))
-            .collect()
-    };
 
     // Prune stale per-project runtime dirs from earlier server runs
     // that exited abnormally (SIGKILL, panic, machine reboot leaving
@@ -111,8 +122,17 @@ pub fn run(
         .wrap_err("building tokio runtime")?;
 
     let control_endpoint = control_endpoint_path()?;
-    let exit = rt
-        .block_on(async move { serve(listen, state, projects, control_endpoint).await })?;
+    let exit = rt.block_on(async move {
+        serve(
+            listen,
+            state,
+            projects,
+            registry,
+            autoloader_manager,
+            control_endpoint,
+        )
+        .await
+    })?;
     Ok(exit)
 }
 
@@ -135,6 +155,8 @@ async fn serve(
     listen: SocketAddr,
     state: Arc<AppState>,
     projects: Vec<std::path::PathBuf>,
+    registry: Arc<WatchRegistry>,
+    autoloader: Arc<AutoloaderManager>,
     control_socket: std::path::PathBuf,
 ) -> Result<ExitCode> {
     let listener = tokio::net::TcpListener::bind(listen)
@@ -154,7 +176,7 @@ async fn serve(
     let signal_rx = shutdown_rx.clone();
     let pools_for_shutdown = Arc::clone(&state.pools);
     let reaper_task = pool::start_idle_reaper(Arc::clone(&state.pools));
-    let _watcher_handle = match watcher::start(&projects, &state.pools) {
+    let _watcher_handle = match watcher::start(&projects, &state.pools, &autoloader, &registry) {
         Ok(h) => Some(h),
         Err(e) => {
             // A failure here is non-fatal — pools still serve, reload

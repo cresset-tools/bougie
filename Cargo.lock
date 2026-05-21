@@ -694,6 +694,7 @@ dependencies = [
  "anstream",
  "anstyle",
  "axum",
+ "bougie-autoloader",
  "bougie-cli",
  "bougie-config",
  "bougie-errors",
