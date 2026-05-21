@@ -304,3 +304,120 @@ fn no_dev_skips_dev_only_packages_in_preflight() {
     assert_eq!(summary.packages_already_present, 0);
     assert!(summary.no_dev);
 }
+
+#[test]
+fn install_attaches_per_host_auth_to_dist_download() {
+    // Real-world Magento-style topology: dist URLs live on the same
+    // host as the (auth-gated) metadata. The orchestrator must
+    // recognise the URL's host, look up `config.http-basic.<host>`
+    // from composer.json (or `auth.json`), and send the
+    // `Authorization` header on each ZIP download. Without this
+    // wiring, `bougie composer install` 401s on every private dist.
+    use sha1::Digest as _;
+    use std::io::Write as _;
+    use wiremock::matchers::{header, method, path as wm_path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn rt() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+    }
+
+    fn sha1_hex(bytes: &[u8]) -> String {
+        let digest = sha1::Sha1::digest(bytes);
+        let mut s = String::with_capacity(40);
+        for b in digest {
+            use std::fmt::Write as _;
+            let _ = write!(s, "{b:02x}");
+        }
+        s
+    }
+
+    // Minimal zip with a `composer.json` at the top level. The
+    // orchestrator's preflight wants the dist sha1 to round-trip; we
+    // hash the bytes we serve.
+    fn build_zip(top: &str) -> Vec<u8> {
+        let mut buf: Vec<u8> = Vec::new();
+        let cursor = std::io::Cursor::new(&mut buf);
+        let mut zw = zip::ZipWriter::new(cursor);
+        let opts = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        zw.start_file(format!("{top}/composer.json"), opts).unwrap();
+        zw.write_all(br#"{"name":"acme/foo"}"#).unwrap();
+        zw.finish().unwrap();
+        buf
+    }
+
+    let tmp = TempDir::new().unwrap();
+    let paths = paths_in(tmp.path());
+    let proj = tmp.path().join("p");
+    std::fs::create_dir_all(&proj).unwrap();
+
+    let zip_body = build_zip("acme-foo-abc");
+    let zip_sha1 = sha1_hex(&zip_body);
+
+    let rt = rt();
+    let (uri, _server) = rt.block_on(async {
+        let server = MockServer::start().await;
+        // Authenticated path returns the ZIP; unauthenticated
+        // fall-through returns 401, fails the test.
+        Mock::given(method("GET"))
+            .and(wm_path("/dists/acme-foo.zip"))
+            .and(header("Authorization", "Basic dXNlcjpwYXNz"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(zip_body))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(wm_path("/dists/acme-foo.zip"))
+            .respond_with(ResponseTemplate::new(401))
+            .mount(&server)
+            .await;
+        (server.uri(), server)
+    });
+
+    // composer.json declares per-host basic auth for the mock's host
+    // (everything after `http://`, port included would be the
+    // full authority; we strip the port to match host-only).
+    let host = uri.trim_start_matches("http://").split(':').next().unwrap();
+    let composer_json = format!(
+        r#"{{
+            "name": "acme/test",
+            "require": {{"acme/foo": "1.0.0"}},
+            "config": {{
+                "http-basic": {{
+                    "{host}": {{"username": "user", "password": "pass"}}
+                }}
+            }}
+        }}"#
+    );
+    let content_hash = hash_for(&composer_json);
+    let lock = format!(
+        r#"{{
+            "content-hash": "{content_hash}",
+            "packages": [
+                {{
+                    "name": "acme/foo",
+                    "version": "1.0.0",
+                    "type": "library",
+                    "dist": {{
+                        "type": "zip",
+                        "url": "{uri}/dists/acme-foo.zip",
+                        "shasum": "{zip_sha1}"
+                    }}
+                }}
+            ],
+            "packages-dev": []
+        }}"#
+    );
+    write_project(&proj, &composer_json, &lock);
+
+    let summary = install_from_lock(&paths, &proj, InstallOptions::default())
+        .expect("install must succeed with the auth header attached");
+    assert_eq!(summary.packages_installed, 1);
+    assert!(
+        proj.join("vendor/acme/foo/composer.json").is_file(),
+        "package must be extracted into vendor/",
+    );
+}

@@ -147,6 +147,7 @@ pub fn fetch_phar(
         // this call onto fetch_blob. Same logic for `archive`.
         strip_prefix: "",
         archive: ArchiveKind::TarZst,
+        auth_header: None,
     };
     // `getcomposer.org/versions` doesn't carry a `size` field and
     // the .sha256sum sidecar only carries the hash, so we have no
