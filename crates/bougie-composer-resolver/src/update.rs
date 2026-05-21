@@ -81,17 +81,6 @@ use serde_json::Value;
 
 use crate::metadata::build_client;
 
-/// Whether `solve_into_lock_packages` should render a progress
-/// spinner during its pre-fetch closure. `resolve_for_lockfile`
-/// drives the spinner during the full-graph solve and hides it
-/// for the prod-only solve that follows (cache hits, instant —
-/// flashing a fresh spinner would just be noise).
-#[derive(Copy, Clone)]
-enum ProgressMode {
-    Visible,
-    Hidden,
-}
-
 use crate::metadata::{
     fetch_package_metadata_optional, fetch_package_metadata_v1_optional,
     load_v1_provider_table, probe_protocol, Repo, RepoProtocol, Variant,
@@ -317,6 +306,41 @@ impl ResolveProvider {
             virtual_wildcards: RefCell::new(HashMap::new()),
             virtual_selections: RefCell::new(HashMap::new()),
             v1_provider_tables: RefCell::new(HashMap::new()),
+            solve_progress: RefCell::new(SolveProgress::hidden()),
+        })
+    }
+
+    /// Clone the full provider's populated state (cache,
+    /// merged_cache, virtual indices, ...) and swap `root_deps` to
+    /// the prod-only set read from `composer_json` (`no_dev: true`).
+    /// Used by `resolve_for_lockfile` to run pubgrub a second time
+    /// against the exact universe of candidates the first solve had,
+    /// without re-walking Packagist's closure.
+    ///
+    /// Stability flags carry over from the full solve — they
+    /// determine which versions made it into the cache in the first
+    /// place, so reusing them keeps the candidate pool identical
+    /// even when `require-dev` originally pinned a per-package
+    /// `@dev` flag. `solve_progress` resets to hidden; the caller
+    /// can re-arm it around the second resolve if it wants a
+    /// spinner.
+    pub fn clone_with_no_dev_root(&self, composer_json: &Value) -> Result<Self, BuildError> {
+        let (root_deps, _) = read_root_requires(composer_json, true)?;
+        Ok(Self {
+            client: self.client.clone(),
+            paths: self.paths.clone(),
+            repos: self.repos.clone(),
+            root_deps,
+            root_version: self.root_version.clone(),
+            minimum_stability: self.minimum_stability,
+            prefer_stable: self.prefer_stable,
+            stability_flags: self.stability_flags.clone(),
+            cache: self.cache.clone(),
+            merged_cache: self.merged_cache.clone(),
+            virtual_providers: self.virtual_providers.clone(),
+            virtual_wildcards: self.virtual_wildcards.clone(),
+            virtual_selections: self.virtual_selections.clone(),
+            v1_provider_tables: self.v1_provider_tables.clone(),
             solve_progress: RefCell::new(SolveProgress::hidden()),
         })
     }
@@ -803,23 +827,7 @@ impl ResolveProvider {
     /// silently — that's the expected shape for virtual names that
     /// have no real Packagist entry.
     pub fn pre_fetch_closure(&self) -> Result<(), ProviderError> {
-        self.pre_fetch_closure_inner(ClosureProgress::new())
-    }
-
-    /// Same as [`Self::pre_fetch_closure`] but suppresses the
-    /// progress spinner. Used for the prod-only second pass in
-    /// `resolve_for_lockfile`: the work is the same shape as the
-    /// first pass but every fetch is a cache hit, so an animated
-    /// bar would flash on-and-off in a confusing way. The first
-    /// pass already gave the user the visibility they needed.
-    pub fn pre_fetch_closure_silent(&self) -> Result<(), ProviderError> {
-        self.pre_fetch_closure_inner(ClosureProgress::hidden())
-    }
-
-    fn pre_fetch_closure_inner(
-        &self,
-        progress: ClosureProgress,
-    ) -> Result<(), ProviderError> {
+        let progress = ClosureProgress::new();
         // v1 provider tables: load synchronously before the parallel
         // fan-out so each task sees them as a read-only `Arc<HashMap>`
         // snapshot. Composer v1 repos are rare — one-shot per resolve
@@ -1123,26 +1131,21 @@ struct ClosureProgress {
 
 impl ClosureProgress {
     fn new() -> Self {
-        if !bougie_output::output::progress_visible() {
-            return Self::hidden();
-        }
-        let pb = indicatif::ProgressBar::new(0);
-        pb.set_draw_target(indicatif::ProgressDrawTarget::stderr_with_hz(15));
-        let style = indicatif::ProgressStyle::with_template(
-            "  fetching metadata  {spinner:.magenta} {pos} packages  {wide_msg:.dim}",
-        )
-        .unwrap_or_else(|_| indicatif::ProgressStyle::default_spinner());
-        pb.set_style(style);
-        pb.enable_steady_tick(std::time::Duration::from_millis(120));
-        Self { pb }
-    }
-
-    /// No-op variant. Used by [`ResolveProvider::pre_fetch_closure_silent`]
-    /// for the prod-only second pass, where rendering a fresh
-    /// spinner would just be noise.
-    fn hidden() -> Self {
-        let pb = indicatif::ProgressBar::new(0);
-        pb.set_draw_target(indicatif::ProgressDrawTarget::hidden());
+        let pb = if bougie_output::output::progress_visible() {
+            let pb = indicatif::ProgressBar::new(0);
+            pb.set_draw_target(indicatif::ProgressDrawTarget::stderr_with_hz(15));
+            let style = indicatif::ProgressStyle::with_template(
+                "  fetching metadata  {spinner:.magenta} {pos} packages  {wide_msg:.dim}",
+            )
+            .unwrap_or_else(|_| indicatif::ProgressStyle::default_spinner());
+            pb.set_style(style);
+            pb.enable_steady_tick(std::time::Duration::from_millis(120));
+            pb
+        } else {
+            let pb = indicatif::ProgressBar::new(0);
+            pb.set_draw_target(indicatif::ProgressDrawTarget::hidden());
+            pb
+        };
         Self { pb }
     }
 
@@ -2079,27 +2082,19 @@ pub fn resolve_for_lockfile(
     let mut auth = read_auth_from_composer_json(&composer_json).map_err(|e| eyre!(e))?;
     auth.extend(read_auth_json(project_root).map_err(|e| eyre!(e))?);
 
-    let full = solve_into_lock_packages(
-        paths,
-        default_packagist.clone(),
-        &composer_json,
-        false,
-        auth.clone(),
-        ProgressMode::Visible,
-    )?;
-    // Second pass is the same closure walk against the same disk
-    // cache — every fetch is an instant cache hit. Re-running the
-    // spinner would flash a redundant "fetching metadata" line, so
-    // hide it. The user already saw the work happen during the full
-    // pass.
-    let prod = solve_into_lock_packages(
+    let (full, full_provider) = solve_into_lock_packages(
         paths,
         default_packagist,
         &composer_json,
-        true,
+        false,
         auth,
-        ProgressMode::Hidden,
     )?;
+    // Prod-only second pass reuses the full solve's populated
+    // provider state — same cache, same virtual indices — and only
+    // swaps `root_deps` to the no-dev set. Skips the second
+    // `pre_fetch_closure`, which on a Magento-sized graph is the
+    // bulk of the silent pause after the visible bars finish.
+    let prod = solve_prod_only_reusing_state(&composer_json, &full_provider)?;
 
     let t_partition = std::time::Instant::now();
     let prod_names: std::collections::HashSet<&str> =
@@ -2133,17 +2128,18 @@ pub fn resolve_for_lockfile(
     ))
 }
 
-/// Inner helper: build a provider with the given `no_dev` flag, solve,
-/// pull the full `LockPackage` entries out of the cache, return them
-/// sorted by name plus the metadata fields the lockfile writer needs.
+/// Build a provider, run discover_repos + pre_fetch_closure +
+/// pubgrub, assemble the chosen `LockPackage`s. Returns the populated
+/// provider alongside the summary so a follow-up pass (e.g. the prod-
+/// only re-solve in `resolve_for_lockfile`) can clone its state
+/// instead of repeating the closure walk.
 fn solve_into_lock_packages(
     paths: &Paths,
     default_packagist: Repo,
     composer_json: &Value,
     no_dev: bool,
     auth: HashMap<String, crate::metadata::AuthCredentials>,
-    progress: ProgressMode,
-) -> Result<SolutionSummary> {
+) -> Result<(SolutionSummary, ResolveProvider)> {
     let client = build_client()?;
     let mut provider = ResolveProvider::build_with_auth(
         client,
@@ -2154,10 +2150,6 @@ fn solve_into_lock_packages(
         auth,
     )
     .map_err(|e| eyre!(e))?;
-    // Record discovered Composer protocols on each repo (see
-    // [`ResolveProvider::discover_repos`]). Done here too because
-    // `solve_into_lock_packages` builds its own provider for the
-    // full-graph and prod-only solves.
     let t_discover = std::time::Instant::now();
     provider.discover_repos();
     tracing::info!(
@@ -2170,31 +2162,58 @@ fn solve_into_lock_packages(
     // before the solver runs so virtual providers are registered.
     // Mirrors Composer's PoolBuilder.
     let t_prefetch = std::time::Instant::now();
-    let prefetch = match progress {
-        ProgressMode::Visible => provider.pre_fetch_closure(),
-        ProgressMode::Hidden => provider.pre_fetch_closure_silent(),
-    };
-    prefetch.map_err(|e| eyre!("pre-fetching metadata closure: {}", e.0))?;
+    provider
+        .pre_fetch_closure()
+        .map_err(|e| eyre!("pre-fetching metadata closure: {}", e.0))?;
     tracing::info!(
         elapsed_ms = t_prefetch.elapsed().as_millis() as u64,
         cached_packages = provider.cache_size(),
         no_dev,
         "pre_fetch_closure",
     );
-    let root = provider.root_version();
 
-    if matches!(progress, ProgressMode::Visible) {
-        provider.begin_solve_progress();
-    }
-    let t_solve = std::time::Instant::now();
-    let solve_result = resolve(&provider, PubGrubPackage::Root, root);
-    let solve_elapsed = t_solve.elapsed();
+    provider.begin_solve_progress();
+    let summary = run_solve_and_assemble(&provider, no_dev, "pubgrub_resolve")?;
     provider.finish_solve_progress();
+    Ok((summary, provider))
+}
+
+/// Prod-only re-solve that reuses the full solve's populated provider
+/// state. Clones `cache` / `merged_cache` / virtual indices verbatim
+/// and only swaps `root_deps` to the no-dev set — so pubgrub solves
+/// over the exact universe of candidates the first pass already
+/// validated. Mirrors Composer's `Installer::extractDevPackages` in
+/// spirit (re-solve to find dev-only packages) without the second
+/// `pre_fetch_closure`, which on a Magento-sized graph is ~580
+/// conditional GETs that all 304.
+fn solve_prod_only_reusing_state(
+    composer_json: &Value,
+    full_provider: &ResolveProvider,
+) -> Result<SolutionSummary> {
+    let provider = full_provider
+        .clone_with_no_dev_root(composer_json)
+        .map_err(|e| eyre!(e))?;
+    run_solve_and_assemble(&provider, true, "pubgrub_resolve_prod_reuse")
+}
+
+/// Run pubgrub on `provider`, translate errors into eyre, and
+/// assemble the solution into a `SolutionSummary`. Shared by the
+/// full-graph and prod-only re-solve paths. `tracing_event` names
+/// the timing log so the two passes are distinguishable in traces.
+fn run_solve_and_assemble(
+    provider: &ResolveProvider,
+    no_dev: bool,
+    tracing_event: &'static str,
+) -> Result<SolutionSummary> {
+    let root = provider.root_version();
+    let t_solve = std::time::Instant::now();
+    let solve_result = resolve(provider, PubGrubPackage::Root, root);
+    let solve_elapsed = t_solve.elapsed();
     tracing::info!(
         elapsed_ms = solve_elapsed.as_millis() as u64,
         ok = solve_result.is_ok(),
         no_dev,
-        "pubgrub_resolve",
+        event = tracing_event,
     );
     let solution = match solve_result {
         Ok(s) => s,
