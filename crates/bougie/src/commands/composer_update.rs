@@ -157,8 +157,14 @@ pub fn resolve_and_write_lock(
         resolve_for_lockfile(paths, project_root, Repo::packagist())?;
     let lock_path = project_root.join("composer.lock");
 
+    let t_hash = std::time::Instant::now();
     let content_hash = lockfile::content_hash(&composer_json_bytes)
         .wrap_err("computing composer.json content-hash")?;
+    tracing::info!(
+        elapsed_ms = t_hash.elapsed().as_millis() as u64,
+        composer_json_bytes = composer_json_bytes.len(),
+        "content_hash",
+    );
 
     let lock = Lock {
         readme: canonical_readme(),
@@ -176,8 +182,16 @@ pub fn resolve_and_write_lock(
         plugin_api_version: Some("2.6.0".into()),
     };
 
+    let t_write = std::time::Instant::now();
     lockfile::write_lock(&lock_path, &lock)
         .wrap_err_with(|| format!("writing {}", lock_path.display()))?;
+    tracing::info!(
+        elapsed_ms = t_write.elapsed().as_millis() as u64,
+        packages = outcome.packages.len(),
+        packages_dev = outcome.packages_dev.len(),
+        lock_path = %lock_path.display(),
+        "write_lock",
+    );
     Ok((lock_path, outcome))
 }
 

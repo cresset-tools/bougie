@@ -274,10 +274,18 @@ pub fn probe_protocol(
     if let Some(auth) = &repo.auth {
         req = req.header(reqwest::header::AUTHORIZATION, auth.header_value());
     }
+    let start = std::time::Instant::now();
     let resp = req.send().map_err(|e| BougieError::Network {
         operation: format!("GET {url}"),
         detail: e.to_string(),
     })?;
+    tracing::debug!(
+        url = %url,
+        status = %resp.status(),
+        elapsed_ms = start.elapsed().as_millis() as u64,
+        phase = "probe",
+        "GET",
+    );
     if !resp.status().is_success() {
         return Err(BougieError::Network {
             operation: format!("GET {url}"),
@@ -391,10 +399,20 @@ pub fn fetch_package_metadata(
         }
     }
 
+    let start = std::time::Instant::now();
     let resp = req.send().map_err(|e| BougieError::Network {
         operation: format!("GET {url}"),
         detail: e.to_string(),
     })?;
+    tracing::debug!(
+        url = %url,
+        status = %resp.status(),
+        elapsed_ms = start.elapsed().as_millis() as u64,
+        package = %package_name,
+        variant = ?variant,
+        phase = "fetch",
+        "GET",
+    );
 
     if resp.status() == reqwest::StatusCode::NOT_MODIFIED {
         return read_cached(&json_path);
@@ -475,10 +493,20 @@ pub fn fetch_package_metadata_optional(
         }
     }
 
+    let start = std::time::Instant::now();
     let resp = req.send().map_err(|e| BougieError::Network {
         operation: format!("GET {url}"),
         detail: e.to_string(),
     })?;
+    tracing::debug!(
+        url = %url,
+        status = %resp.status(),
+        elapsed_ms = start.elapsed().as_millis() as u64,
+        package = %package_name,
+        variant = ?variant,
+        phase = "fetch_optional",
+        "GET",
+    );
 
     if resp.status() == reqwest::StatusCode::NOT_MODIFIED {
         return read_cached(&json_path).map(Some);

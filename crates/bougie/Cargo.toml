@@ -153,6 +153,18 @@ version = "3.10"
 version = "0.25"
 features = ["serde"]
 
+# Opt-in diagnostic logging. The binary installs a `tracing-subscriber`
+# in `main` that's inert unless `BOUGIE_LOG` (or `RUST_LOG`) is set —
+# zero-overhead for normal users, full visibility when the user wants
+# to investigate timing or hangs (e.g. `BOUGIE_LOG=bougie_composer_resolver=debug`).
+[dependencies.tracing]
+version = "0.1"
+
+[dependencies.tracing-subscriber]
+version = "0.3"
+default-features = false
+features = ["env-filter", "fmt", "std"]
+
 [dependencies.walkdir]
 version = "2.5"
 
