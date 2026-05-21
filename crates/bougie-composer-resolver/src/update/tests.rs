@@ -1562,6 +1562,63 @@ fn packagist_org_false_disables_public_fallback() {
 }
 
 #[test]
+fn packagist_org_false_disables_public_fallback_named_object_form() {
+    // Same intent as the array-form test above, but with the
+    // named/object `repositories` shape Composer also accepts:
+    //   "repositories": {
+    //       "private": {"type": "composer", "url": "..."},
+    //       "packagist.org": false
+    //   }
+    // bougie used to only parse the array form and silently
+    // dropped the entire block, leaving Packagist enabled and the
+    // private repo unregistered — opposite of what the user
+    // declared.
+    let tmp = TempDir::new().unwrap();
+    let paths = paths_in(tmp.path());
+
+    let foo = p2_body("acme/foo", &[("1.0.0", json!({}))]);
+
+    let rt = rt();
+    let (custom_uri, packagist_uri, _custom, _pkgst) = rt.block_on(async {
+        let custom = MockServer::start().await;
+        mount_p2(&custom, "acme/foo", foo).await;
+        let pkgst = MockServer::start().await;
+        // Trap: any request to public Packagist fails the test —
+        // proves both that the disable took effect AND that the
+        // private repo was actually registered (otherwise the
+        // resolver would have no source for acme/foo).
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&pkgst)
+            .await;
+        (custom.uri(), pkgst.uri(), custom, pkgst)
+    });
+
+    let composer_json = json!({
+        "repositories": {
+            "private": {"type": "composer", "url": custom_uri},
+            "packagist.org": false,
+        },
+        "require": {"acme/foo": "^1.0"},
+    });
+    let client = crate::metadata::build_client().unwrap();
+    let provider = ResolveProvider::build(
+        client,
+        paths,
+        crate::metadata::Repo::from_url(packagist_uri),
+        &composer_json,
+        true,
+    )
+    .unwrap();
+    let root = provider.root_version();
+
+    let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
+    assert!(solution
+        .get(&PubGrubPackage::Package("acme/foo".into()))
+        .is_some());
+}
+
+#[test]
 fn unknown_repo_type_yields_build_error() {
     // `vcs` / `path` / `package` / `artifact` are ignored silently
     // (follow-up work). A genuinely unrecognized type errors so
@@ -1847,4 +1904,127 @@ fn auth_credentials_debug_redacts_password_and_token() {
     assert!(basic_dbg.contains("redacted"), "{basic_dbg}");
     assert!(!bearer_dbg.contains("tokenZZ"), "{bearer_dbg}");
     assert!(bearer_dbg.contains("redacted"), "{bearer_dbg}");
+}
+
+#[test]
+fn discover_repos_resolves_via_v1_protocol_end_to_end() {
+    // Stand up a v1 Composer repo (packages.json → provider-includes
+    // → per-package), `discover_repos` records the protocol on the
+    // Repo, and the resolver fetches a package through the v1
+    // lookup path. Traps on `/p2/` ensure we don't accidentally fall
+    // back to v2 against the v1 server. Mirrors the Magento topology:
+    // one provider-include carrying one package, per-package file
+    // keyed by version string.
+    let tmp = TempDir::new().unwrap();
+    let paths = paths_in(tmp.path());
+
+    let include_sha = "deadbeef00000000000000000000000000000000000000000000000000000001";
+    let pkg_sha = "deadbeef00000000000000000000000000000000000000000000000000000002";
+
+    let packages_json = format!(
+        r#"{{
+            "packages": [],
+            "providers-url": "/p/%package%$%hash%.json",
+            "provider-includes": {{
+                "p/providers-main$%hash%.json": {{"sha256": "{include_sha}"}}
+            }}
+        }}"#
+    );
+    let provider_include = format!(
+        r#"{{"providers": {{"acme/foo": {{"sha256": "{pkg_sha}"}}}}}}"#,
+    );
+    let per_package = r#"{
+        "packages": {
+            "acme/foo": {
+                "1.0.0": {
+                    "name": "acme/foo",
+                    "version": "1.0.0",
+                    "version_normalized": "1.0.0.0",
+                    "type": "library",
+                    "dist": {
+                        "type": "zip",
+                        "url": "https://example.test/foo-1.0.0.zip",
+                        "shasum": "aaa",
+                        "reference": null
+                    },
+                    "uid": "ignored-v1-internal-id"
+                },
+                "1.1.0": {
+                    "name": "acme/foo",
+                    "version": "1.1.0",
+                    "version_normalized": "1.1.0.0",
+                    "type": "library",
+                    "dist": {
+                        "type": "zip",
+                        "url": "https://example.test/foo-1.1.0.zip",
+                        "shasum": "bbb",
+                        "reference": null
+                    }
+                }
+            }
+        }
+    }"#;
+
+    let rt = rt();
+    let (v1_uri, packagist_uri, _v1, _pkgst) = rt.block_on(async {
+        let v1 = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(wm_path("/packages.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(packages_json))
+            .mount(&v1)
+            .await;
+        Mock::given(method("GET"))
+            .and(wm_path(format!("/p/providers-main${include_sha}.json")))
+            .respond_with(ResponseTemplate::new(200).set_body_string(provider_include))
+            .mount(&v1)
+            .await;
+        Mock::given(method("GET"))
+            .and(wm_path(format!("/p/acme/foo${pkg_sha}.json")))
+            .respond_with(ResponseTemplate::new(200).set_body_string(per_package))
+            .mount(&v1)
+            .await;
+        // Trap: any /p2/ request to the v1 server is a bug — the
+        // dispatcher must take the v1 path, not the v2 path.
+        Mock::given(method("GET"))
+            .and(wiremock::matchers::path_regex(r"^/p2/.*"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&v1)
+            .await;
+        let pkgst = MockServer::start().await;
+        (v1.uri(), pkgst.uri(), v1, pkgst)
+    });
+
+    let composer_json = json!({
+        "repositories": [
+            {"type": "composer", "url": v1_uri},
+            {"packagist.org": false},
+        ],
+        "require": {"acme/foo": "^1.0"},
+    });
+    let client = crate::metadata::build_client().unwrap();
+    let mut provider = ResolveProvider::build(
+        client,
+        paths,
+        crate::metadata::Repo::from_url(packagist_uri),
+        &composer_json,
+        true,
+    )
+    .unwrap();
+    provider.discover_repos();
+    let root = provider.root_version();
+
+    let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
+    let foo = solution
+        .get(&PubGrubPackage::Package("acme/foo".into()))
+        .expect("acme/foo should resolve via the v1 lookup path");
+    assert_eq!(foo.to_string(), "1.1.0.0", "highest matching version wins");
+
+    // Round-trip the LockPackage back out to confirm dist + version
+    // fields parsed cleanly — the v1 entry shape includes `uid` and
+    // `reference: null` which both must be tolerated.
+    let lp = provider
+        .lock_package_for("acme/foo", foo)
+        .expect("cached lock package");
+    assert_eq!(lp.version, "1.1.0");
+    assert_eq!(lp.dist.expect("dist").url, "https://example.test/foo-1.1.0.zip");
 }

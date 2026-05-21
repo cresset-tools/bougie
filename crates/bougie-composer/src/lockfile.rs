@@ -58,6 +58,49 @@ where
     }
 }
 
+/// Deserialize a `Vec<String>` while mirroring Composer's quirky
+/// tolerance for malformed list items in `autoload.classmap` /
+/// `autoload.files` / `autoload.exclude-from-classmap` / `bin`.
+///
+/// Composer's `AutoloadGenerator::parseAutoloadsType` does
+/// `(array) $paths` on each list item and then iterates the
+/// resulting array's *values*. The practical effect is:
+///
+/// - Strings pass through verbatim.
+/// - Objects (a real-world quirk: `amphp/process` v0.1.3 ships
+///   `classmap: [{"Amp\\Process": "Process.php"}]`, almost certainly
+///   a `psr-4` declaration that landed in `classmap`) contribute
+///   each string-typed value, keys discarded. So that v0.1.3 entry
+///   yields a classmap path of `Process.php` — matches what
+///   Composer's own autoloader writes.
+/// - Other types (numbers, booleans, null, nested arrays) are
+///   dropped silently rather than failing the whole entry.
+///
+/// Bougie's pre-fix strict `Vec<String>` deserialize rejected the
+/// whole `LockPackage` over the object item, which broke any
+/// resolve that walked across the offending version.
+fn string_list_lenient<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let raw = <Vec<Value>>::deserialize(deserializer)?;
+    let mut out: Vec<String> = Vec::with_capacity(raw.len());
+    for item in raw {
+        match item {
+            Value::String(s) => out.push(s),
+            Value::Object(map) => {
+                for (_k, v) in map {
+                    if let Value::String(s) = v {
+                        out.push(s);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(out)
+}
+
 /// Keys that participate in Composer's content-hash, in the order
 /// PHP's `array_intersect($relevantKeys, array_keys($content))` would
 /// produce. Order doesn't actually affect the hash (we `ksort` before
@@ -643,7 +686,7 @@ pub struct LockPackage {
     /// package root and gets symlinked into `vendor/bin/` at install
     /// time. Captured for the bin-linker that lands alongside the
     /// install command.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "string_list_lenient")]
     pub bin: Vec<String>,
     /// Free-form package metadata Composer copies through verbatim.
     /// `extra.branch-alias` matters for resolution; everything else is
@@ -718,11 +761,11 @@ pub struct LockAutoload {
     pub psr_4: BTreeMap<String, Value>,
     #[serde(rename = "psr-0", default)]
     pub psr_0: BTreeMap<String, Value>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "string_list_lenient")]
     pub classmap: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "string_list_lenient")]
     pub files: Vec<String>,
-    #[serde(rename = "exclude-from-classmap", default)]
+    #[serde(rename = "exclude-from-classmap", default, deserialize_with = "string_list_lenient")]
     pub exclude_from_classmap: Vec<String>,
 }
 
@@ -1713,5 +1756,44 @@ mod tests {
         assert!(lock.platform_dev.is_empty());
         assert!(lock.packages[0].require.is_empty());
         assert!(lock.packages[0].replace.is_empty());
+    }
+
+    #[test]
+    fn autoload_lists_mirror_composers_array_cast() {
+        // Reproduces the wire shape Packagist returns for
+        // amphp/process v0.1.3:
+        // `autoload.classmap = [{"Amp\\Process": "Process.php"}]`.
+        // Composer's `(array) $paths` cast extracts the object's
+        // values into the classmap, so the autoloader ends up
+        // scanning `Process.php`. Our lenient deserializer must
+        // produce the same flattened list — that way an autoload
+        // built from the resulting LockPackage matches what
+        // Composer would write.
+        let entry: LockPackage = serde_json::from_str(
+            r#"{
+                "name": "amphp/process",
+                "version": "v0.1.3",
+                "version_normalized": "0.1.3.0",
+                "type": "library",
+                "autoload": {
+                    "classmap": [
+                        "lib/",
+                        {"Amp\\Process": "Process.php", "Amp\\Other": "Other.php"},
+                        "extras/"
+                    ],
+                    "files": ["bootstrap.php", {"key": "init.php"}, 42],
+                    "exclude-from-classmap": ["legacy/", 42, null]
+                },
+                "bin": ["bin/run", {"label": "bin/other"}]
+            }"#,
+        )
+        .expect("entry with non-string list items must deserialize");
+        assert_eq!(
+            entry.autoload.classmap,
+            vec!["lib/", "Process.php", "Other.php", "extras/"]
+        );
+        assert_eq!(entry.autoload.files, vec!["bootstrap.php", "init.php"]);
+        assert_eq!(entry.autoload.exclude_from_classmap, vec!["legacy/"]);
+        assert_eq!(entry.bin, vec!["bin/run", "bin/other"]);
     }
 }

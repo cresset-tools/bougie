@@ -236,6 +236,141 @@ fn server_error_is_surfaced() {
 }
 
 #[test]
+fn non_json_2xx_body_is_treated_as_miss_not_parse_error() {
+    // Reproduces the Composer v1 repo case (repo.magento.com):
+    // `/p2/<name>.json` returns 200 `text/html` (after reqwest
+    // transparently follows a 302 to a marketing landing page).
+    // The optional fetcher must treat this as a repo miss — not
+    // crash with "expected value at line 1 column 1" — and must
+    // *not* write the HTML body to the on-disk metadata cache.
+    let tmp = TempDir::new().unwrap();
+    let paths = paths_in(tmp.path());
+
+    let rt = rt();
+    let (uri, _server) = rt.block_on(async {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(wm_path("/p2/acme/notmine.json"))
+            .respond_with(
+                // `set_body_raw` takes an explicit MIME — wiremock's
+                // `set_body_string` hardcodes `text/plain` regardless
+                // of any later `insert_header`.
+                ResponseTemplate::new(200).set_body_raw(
+                    "<html><body>hi</body></html>".as_bytes().to_vec(),
+                    "text/html",
+                ),
+            )
+            .mount(&server)
+            .await;
+        (server.uri(), server)
+    });
+
+    let client = build_client().unwrap();
+    let repo = Repo::from_url(&uri);
+    let got = fetch_package_metadata_optional(
+        &client, &paths, &repo, "acme/notmine", Variant::Stable,
+    )
+    .unwrap();
+    assert!(got.is_none(), "non-JSON body should be Ok(None), got {got:?}");
+
+    let (json_path, _etag_path) = cache_paths(&paths, &repo, "acme/notmine", Variant::Stable);
+    assert!(
+        !json_path.exists(),
+        "HTML body must not be cached at {}",
+        json_path.display(),
+    );
+}
+
+#[test]
+fn probe_protocol_classifies_v2_repo_by_metadata_url() {
+    // Composer v2 servers (Packagist, satis with v2 build) advertise
+    // a top-level `metadata-url` string. Presence of that field is
+    // the canonical signal that `/p2/<name>.json` lookups are valid.
+    let rt = rt();
+    let (uri, _server) = rt.block_on(async {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(wm_path("/packages.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"{
+                    "metadata-url": "/p2/%package%.json",
+                    "providers-api": "https://x/y/%package%",
+                    "search": "https://x/search.json?q=%query%"
+                }"#,
+            ))
+            .mount(&server)
+            .await;
+        (server.uri(), server)
+    });
+
+    let client = build_client().unwrap();
+    let protocol = probe_protocol(&client, &Repo::from_url(&uri)).unwrap();
+    assert!(matches!(protocol, RepoProtocol::V2), "got {protocol:?}");
+}
+
+#[test]
+fn probe_protocol_classifies_v1_repo_when_metadata_url_missing() {
+    // Composer v1 servers (repo.magento.com, older satis builds)
+    // ship `provider-includes` / `providers-url` and have no
+    // `metadata-url`. The probe must capture the providers-url
+    // template + each include's path/sha256 so the v1 fetcher can
+    // drive the lookup.
+    let rt = rt();
+    let (uri, _server) = rt.block_on(async {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(wm_path("/packages.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"{
+                    "packages": [],
+                    "provider-includes": {
+                        "p/providers-2024$%hash%.json": {"sha256": "aa"}
+                    },
+                    "providers-url": "/p/%package%$%hash%.json"
+                }"#,
+            ))
+            .mount(&server)
+            .await;
+        (server.uri(), server)
+    });
+
+    let client = build_client().unwrap();
+    let protocol = probe_protocol(&client, &Repo::from_url(&uri)).unwrap();
+    let RepoProtocol::V1(discovery) = protocol else {
+        panic!("expected V1, got {protocol:?}");
+    };
+    assert_eq!(discovery.providers_url, "/p/%package%$%hash%.json");
+    assert_eq!(discovery.provider_includes.len(), 1);
+    assert_eq!(
+        discovery.provider_includes[0].path_template,
+        "p/providers-2024$%hash%.json",
+    );
+    assert_eq!(discovery.provider_includes[0].sha256, "aa");
+}
+
+#[test]
+fn probe_protocol_propagates_http_failure() {
+    // 401 / 5xx from packages.json must surface as Err so the
+    // orchestrator's "probe failed → keep the repo" branch fires
+    // instead of mis-classifying a credentialed v2 repo as v1.
+    let rt = rt();
+    let (uri, _server) = rt.block_on(async {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(wm_path("/packages.json"))
+            .respond_with(ResponseTemplate::new(401))
+            .mount(&server)
+            .await;
+        (server.uri(), server)
+    });
+
+    let client = build_client().unwrap();
+    let err = probe_protocol(&client, &Repo::from_url(&uri)).unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(msg.contains("401"), "{msg}");
+}
+
+#[test]
 fn outbound_request_carries_bougie_user_agent() {
     // The wire-test for the shared UA: a mock that only matches when
     // the request's `User-Agent` starts with `bougie/`. If the client

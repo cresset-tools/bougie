@@ -74,7 +74,21 @@ use serde_json::Value;
 
 use crate::metadata::build_client;
 
-use crate::metadata::{fetch_package_metadata_optional, Repo, Variant};
+/// Whether `solve_into_lock_packages` should render a progress
+/// spinner during its pre-fetch closure. `resolve_for_lockfile`
+/// drives the spinner during the full-graph solve and hides it
+/// for the prod-only solve that follows (cache hits, instant —
+/// flashing a fresh spinner would just be noise).
+#[derive(Copy, Clone)]
+enum ProgressMode {
+    Visible,
+    Hidden,
+}
+
+use crate::metadata::{
+    fetch_package_metadata_optional, fetch_package_metadata_v1_optional,
+    load_v1_provider_table, probe_protocol, Repo, RepoProtocol, Variant,
+};
 use crate::verify::{is_platform, to_range, ComposerRange, ProviderError, PubGrubPackage};
 
 /// pubgrub provider that resolves a fresh `composer.json` against
@@ -149,6 +163,14 @@ pub struct ResolveProvider {
     /// which (provider_name, provider_version) backed it. Used by
     /// `get_dependencies` to add the require that pins the provider.
     virtual_selections: RefCell<HashMap<(String, Version), (String, Version)>>,
+    /// Per-v1-repo merged provider lookup tables (package name →
+    /// sha256). Lazily populated on the first per-package lookup
+    /// against a given v1 repo, keyed by `repo.url`. Composer v1
+    /// requires loading every `provider-includes` file before any
+    /// package can be resolved (the includes are the only index
+    /// telling us which package's hash to use); this cache makes
+    /// that load happen at most once per resolve per repo.
+    v1_provider_tables: RefCell<HashMap<String, HashMap<String, String>>>,
 }
 
 /// One entry in the virtual provider index — "real package
@@ -255,12 +277,40 @@ impl ResolveProvider {
             virtual_providers: RefCell::new(HashMap::new()),
             virtual_wildcards: RefCell::new(HashMap::new()),
             virtual_selections: RefCell::new(HashMap::new()),
+            v1_provider_tables: RefCell::new(HashMap::new()),
         })
     }
 
     /// The synthetic root version pubgrub should `resolve` against.
     pub fn root_version(&self) -> Version {
         self.root_version.clone()
+    }
+
+    /// Probe each configured repository's `packages.json` and record
+    /// the discovered Composer protocol (v2 with `/p2/` direct
+    /// fetches, or v1 with `provider-includes` + `providers-url`) on
+    /// the [`Repo`] itself. The per-package fetcher dispatches on
+    /// that stored protocol; without this step every repo is treated
+    /// as v2 and v1 repos (like `repo.magento.com`) crash on a
+    /// 302→HTML response.
+    ///
+    /// Probe failures (network blip, malformed `packages.json`) leave
+    /// the protocol as `None` — the fetcher then falls back to the v2
+    /// `/p2/` path with the defensive HTML-body guard. That gives a
+    /// transient hiccup a chance to be a no-op rather than silently
+    /// de-listing a working repo.
+    ///
+    /// Idempotent and cheap to re-run; call once after
+    /// `build_with_auth` and before any `pre_fetch_closure` /
+    /// `resolve` so the probe runs before any per-package traffic.
+    pub fn discover_repos(&mut self) {
+        let original = std::mem::take(&mut self.repos);
+        let mut updated = Vec::with_capacity(original.len());
+        for repo in original {
+            let protocol = probe_protocol(&self.client, &repo).ok();
+            updated.push(repo.with_protocol(protocol));
+        }
+        self.repos = updated;
     }
 
     /// Inspect what's been fetched so far. Exposed for tests + future
@@ -356,37 +406,27 @@ impl ResolveProvider {
         // wins; subsequent repos are skipped — Composer's "first
         // matching repository" precedence rule.
         for repo in &self.repos {
-            let stable_md = fetch_package_metadata_optional(
-                &self.client,
-                &self.paths,
-                repo,
-                name,
-                Variant::Stable,
-            )
-            .map_err(|e| {
-                ProviderError(format!(
-                    "fetching metadata for {name} from {}: {e:#}",
-                    repo.url,
-                ))
-            })?;
+            let stable_md = self
+                .fetch_one(repo, name, Variant::Stable)
+                .map_err(|e| {
+                    ProviderError(format!(
+                        "fetching metadata for {name} from {}: {e:#}",
+                        repo.url,
+                    ))
+                })?;
             if let Some(md) = stable_md {
                 if let Some(entries) = md.packages.get(name) {
                     versions.extend(entries.iter().cloned());
                 }
                 if floor == Stability::Dev {
-                    let dev_md = fetch_package_metadata_optional(
-                        &self.client,
-                        &self.paths,
-                        repo,
-                        name,
-                        Variant::Dev,
-                    )
-                    .map_err(|e| {
-                        ProviderError(format!(
-                            "fetching dev metadata for {name} from {}: {e:#}",
-                            repo.url,
-                        ))
-                    })?;
+                    let dev_md = self
+                        .fetch_one(repo, name, Variant::Dev)
+                        .map_err(|e| {
+                            ProviderError(format!(
+                                "fetching dev metadata for {name} from {}: {e:#}",
+                                repo.url,
+                            ))
+                        })?;
                     if let Some(md) = dev_md {
                         if let Some(extra) = md.packages.get(name) {
                             versions.extend(extra.iter().cloned());
@@ -413,6 +453,63 @@ impl ResolveProvider {
             .collect();
         out.sort_by(|a, b| b.0.cmp(&a.0));
         Ok(out)
+    }
+
+    /// Protocol-dispatching fetch for one (repo, package, variant)
+    /// triple. Hides the v1 vs v2 split from `load_real_candidates`:
+    ///
+    /// - **v2** (or unknown protocol — typical for Packagist and any
+    ///   repo whose probe failed): direct `/p2/<name>.json` GET.
+    /// - **v1**: lazily load the repo's merged provider lookup table
+    ///   (once per resolve, cached on the provider), look up the
+    ///   package's sha256, and fetch the per-package file. v1 has no
+    ///   `~dev.json` equivalent — branch versions are listed in the
+    ///   same per-package document — so `Variant::Dev` returns
+    ///   `Ok(None)` to avoid a second wasted request.
+    fn fetch_one(
+        &self,
+        repo: &Repo,
+        package: &str,
+        variant: Variant,
+    ) -> eyre::Result<Option<bougie_composer::metadata::PackageMetadata>> {
+        match &repo.protocol {
+            Some(RepoProtocol::V1(discovery)) => {
+                if variant == Variant::Dev {
+                    // v1 stuffs branches into the single per-package
+                    // document — `Variant::Stable` already returned
+                    // everything. Save the round-trip.
+                    return Ok(None);
+                }
+                if !self.v1_provider_tables.borrow().contains_key(&repo.url) {
+                    let table = load_v1_provider_table(
+                        &self.client,
+                        &self.paths,
+                        repo,
+                        discovery,
+                    )?;
+                    self.v1_provider_tables
+                        .borrow_mut()
+                        .insert(repo.url.clone(), table);
+                }
+                let tables = self.v1_provider_tables.borrow();
+                let table = tables.get(&repo.url).expect("just inserted");
+                fetch_package_metadata_v1_optional(
+                    &self.client,
+                    &self.paths,
+                    repo,
+                    discovery,
+                    table,
+                    package,
+                )
+            }
+            _ => fetch_package_metadata_optional(
+                &self.client,
+                &self.paths,
+                repo,
+                package,
+                variant,
+            ),
+        }
     }
 
     /// Walk a freshly-loaded package's versions and register every
@@ -613,6 +710,23 @@ impl ResolveProvider {
     /// silently — that's the expected shape for virtual names that
     /// have no real Packagist entry.
     pub fn pre_fetch_closure(&self) -> Result<(), ProviderError> {
+        self.pre_fetch_closure_inner(ClosureProgress::new())
+    }
+
+    /// Same as [`Self::pre_fetch_closure`] but suppresses the
+    /// progress spinner. Used for the prod-only second pass in
+    /// `resolve_for_lockfile`: the work is the same shape as the
+    /// first pass but every fetch is a cache hit, so an animated
+    /// bar would flash on-and-off in a confusing way. The first
+    /// pass already gave the user the visibility they needed.
+    pub fn pre_fetch_closure_silent(&self) -> Result<(), ProviderError> {
+        self.pre_fetch_closure_inner(ClosureProgress::hidden())
+    }
+
+    fn pre_fetch_closure_inner(
+        &self,
+        progress: ClosureProgress,
+    ) -> Result<(), ProviderError> {
         use std::collections::HashSet;
         let mut visited: HashSet<String> = HashSet::new();
         let mut queue: Vec<String> = self
@@ -627,6 +741,10 @@ impl ResolveProvider {
             if !visited.insert(name.clone()) {
                 continue;
             }
+            // Bump the spinner *before* the fetch so the displayed
+            // package name reflects the one we're currently waiting
+            // on, not the one we just finished.
+            progress.tick(&name);
             // versions_for both loads metadata and registers
             // virtuals as a side effect.
             let versions = self.versions_for(&name)?;
@@ -638,7 +756,58 @@ impl ResolveProvider {
                 }
             }
         }
+        progress.finish();
         Ok(())
+    }
+}
+
+/// Spinner that ticks once per visited package during
+/// `pre_fetch_closure`, gated on the global `progress_visible` flag
+/// (which the CLI flips off for `--quiet` and `--format json`).
+/// Hidden in tests + JSON output by construction — `ProgressBar`
+/// with a hidden draw target is a cheap no-op for every `tick` /
+/// `finish` call.
+///
+/// The closure is invoked twice per `composer update` (once for the
+/// full graph, once for prod-only) so this is created twice; the
+/// second pass typically blows through cache hits in milliseconds
+/// and the bar finish-and-clears before the user notices it.
+struct ClosureProgress {
+    pb: indicatif::ProgressBar,
+}
+
+impl ClosureProgress {
+    fn new() -> Self {
+        if !bougie_output::output::progress_visible() {
+            return Self::hidden();
+        }
+        let pb = indicatif::ProgressBar::new(0);
+        pb.set_draw_target(indicatif::ProgressDrawTarget::stderr_with_hz(15));
+        let style = indicatif::ProgressStyle::with_template(
+            "  fetching metadata  {spinner:.magenta} {pos} packages  {wide_msg:.dim}",
+        )
+        .unwrap_or_else(|_| indicatif::ProgressStyle::default_spinner());
+        pb.set_style(style);
+        pb.enable_steady_tick(std::time::Duration::from_millis(120));
+        Self { pb }
+    }
+
+    /// No-op variant. Used by [`ResolveProvider::pre_fetch_closure_silent`]
+    /// for the prod-only second pass, where rendering a fresh
+    /// spinner would just be noise.
+    fn hidden() -> Self {
+        let pb = indicatif::ProgressBar::new(0);
+        pb.set_draw_target(indicatif::ProgressDrawTarget::hidden());
+        Self { pb }
+    }
+
+    fn tick(&self, current_package: &str) {
+        self.pb.set_message(current_package.to_owned());
+        self.pb.inc(1);
+    }
+
+    fn finish(&self) {
+        self.pb.finish_and_clear();
     }
 }
 
@@ -748,10 +917,78 @@ fn read_prefer_stable(composer_json: &Value) -> Result<bool, BuildError> {
 ///   path repositories need different machinery and are tracked as
 ///   follow-ups.
 ///
+/// True for an array-form entry that disables the implicit public
+/// Packagist: `{"packagist.org": false}`. The named/object form
+/// uses a different spelling (`"packagist.org"` as a top-level key
+/// with value `false`) and is handled inline in [`read_repositories`].
+fn entry_is_disable_packagist(entry: &serde_json::Map<String, Value>) -> bool {
+    entry.get("packagist.org").and_then(Value::as_bool) == Some(false)
+}
+
+/// Parse one repository entry (a Composer-protocol `{type, url}`
+/// object, or one of the not-yet-supported VCS/path/package/artifact
+/// shapes) and append to `repos` on success. Auth is looked up by
+/// the URL's host. Used by both wire shapes [`read_repositories`]
+/// accepts.
+fn parse_repo_entry(
+    entry: &serde_json::Map<String, Value>,
+    auth: &HashMap<String, crate::metadata::AuthCredentials>,
+    repos: &mut Vec<Repo>,
+) -> Result<(), BuildError> {
+    let r#type = entry.get("type").and_then(Value::as_str);
+    match r#type {
+        Some("composer") => {
+            let url = entry
+                .get("url")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    BuildError::Internal(
+                        "repository entry of type \"composer\" is missing `url`".into(),
+                    )
+                })?;
+            let repo = Repo::from_url(url);
+            let creds = auth.get(&repo.cache_namespace).cloned();
+            repos.push(repo.with_auth(creds));
+            Ok(())
+        }
+        Some(
+            "vcs" | "github" | "git" | "bitbucket" | "gitlab" | "git-bitbucket" | "hg"
+            | "fossil" | "svn",
+        ) => {
+            // VCS family — not supported yet. Silently ignore so the
+            // resolver can still make progress on packages that
+            // happen to be on Packagist too. Follow-up issue.
+            Ok(())
+        }
+        Some("path" | "package" | "artifact") => {
+            // Same story; non-Composer-protocol shapes need distinct
+            // machinery.
+            Ok(())
+        }
+        Some(other) => Err(BuildError::Internal(format!(
+            "unknown repository type {other:?}; supported: composer (others coming)",
+        ))),
+        None => Err(BuildError::Internal(
+            "repository entry has no `type` field and is not `packagist.org: false`".into(),
+        )),
+    }
+}
+
 /// Composer's repository ordering: declarations come first (highest
 /// priority), with the implicit public Packagist appended last
 /// unless disabled. Mirrors `Composer\Repository\
 /// RepositoryFactory::createDefaultRepositories`.
+///
+/// Both wire shapes Composer accepts are honored:
+///
+/// - Array form: `"repositories": [{"type": "composer", "url": "..."},
+///   {"packagist.org": false}]`.
+/// - Named/object form: `"repositories": {"foo": {"type": "composer",
+///   "url": "..."}, "packagist.org": false}` — the keys name each
+///   entry (used as a hint when nothing else identifies it; the
+///   per-host cache namespace still comes from the URL itself), and
+///   the literal value `false` for `"packagist.org"` disables the
+///   implicit public Packagist.
 fn read_repositories(
     composer_json: &Value,
     default_packagist: Repo,
@@ -762,54 +999,40 @@ fn read_repositories(
     })?;
     let mut repos: Vec<Repo> = Vec::new();
     let mut keep_default_packagist = true;
-    if let Some(entries) = obj.get("repositories").and_then(Value::as_array) {
-        for entry in entries {
-            let Some(entry_obj) = entry.as_object() else { continue };
-            // `{ "packagist.org": false }` is the disable form.
-            if let Some(val) = entry_obj.get("packagist.org") {
-                if val.as_bool() == Some(false) {
-                    keep_default_packagist = false;
+    if let Some(entry) = obj.get("repositories") {
+        match entry {
+            Value::Array(entries) => {
+                for entry in entries {
+                    let Some(entry_obj) = entry.as_object() else { continue };
+                    if entry_is_disable_packagist(entry_obj) {
+                        keep_default_packagist = false;
+                        continue;
+                    }
+                    parse_repo_entry(entry_obj, auth, &mut repos)?;
                 }
-                continue;
             }
-            let r#type = entry_obj.get("type").and_then(Value::as_str);
-            match r#type {
-                Some("composer") => {
-                    let url = entry_obj
-                        .get("url")
-                        .and_then(Value::as_str)
-                        .ok_or_else(|| {
-                            BuildError::Internal(
-                                "repository entry of type \"composer\" is missing `url`".into(),
-                            )
-                        })?;
-                    let repo = Repo::from_url(url);
-                    // Look up auth by host.
-                    let creds = auth.get(&repo.cache_namespace).cloned();
-                    repos.push(repo.with_auth(creds));
+            Value::Object(named) => {
+                for (_name, value) in named {
+                    // `"packagist.org": false` — the named-form
+                    // disable spelling. Composer also accepts
+                    // `false` against any other repo key as "disable
+                    // a previously-declared default repo," but
+                    // Packagist is the only default we ship, so we
+                    // only handle the one well-defined case.
+                    if value.as_bool() == Some(false) {
+                        if _name == "packagist.org" {
+                            keep_default_packagist = false;
+                        }
+                        continue;
+                    }
+                    let Some(entry_obj) = value.as_object() else { continue };
+                    parse_repo_entry(entry_obj, auth, &mut repos)?;
                 }
-                Some("vcs" | "github" | "git" | "bitbucket" | "gitlab" | "git-bitbucket"
-                    | "hg" | "fossil" | "svn") => {
-                    // VCS family — not supported yet. Silently
-                    // ignore so the resolver can still make progress
-                    // on packages that happen to be on Packagist
-                    // too. Follow-up issue.
-                }
-                Some("path" | "package" | "artifact") => {
-                    // Same story; non-Composer-protocol shapes need
-                    // distinct machinery.
-                }
-                Some(other) => {
-                    return Err(BuildError::Internal(format!(
-                        "unknown repository type {other:?}; supported: composer (others coming)",
-                    )));
-                }
-                None => {
-                    return Err(BuildError::Internal(
-                        "repository entry has no `type` field and is not `packagist.org: false`"
-                            .into(),
-                    ));
-                }
+            }
+            _ => {
+                return Err(BuildError::Internal(
+                    "`repositories` must be an array or an object".into(),
+                ));
             }
         }
     }
@@ -1289,7 +1512,7 @@ pub fn dry_run_update(
     // top (auth.json wins — matches Composer's precedence).
     let mut auth = read_auth_from_composer_json(&composer_json).map_err(|e| eyre!(e))?;
     auth.extend(read_auth_json(project_root).map_err(|e| eyre!(e))?);
-    let provider = ResolveProvider::build_with_auth(
+    let mut provider = ResolveProvider::build_with_auth(
         client,
         paths.clone(),
         default_packagist,
@@ -1298,6 +1521,10 @@ pub fn dry_run_update(
         auth,
     )
     .map_err(|e| eyre!(e))?;
+    // Probe each repo's `packages.json` and record the discovered
+    // Composer protocol (v1 vs v2) so the per-package fetcher
+    // dispatches correctly. Required before any pre-fetch traffic.
+    provider.discover_repos();
     provider
         .pre_fetch_closure()
         .map_err(|e| eyre!("pre-fetching metadata closure: {}", e.0))?;
@@ -1416,13 +1643,20 @@ pub fn resolve_for_lockfile(
         &composer_json,
         false,
         auth.clone(),
+        ProgressMode::Visible,
     )?;
+    // Second pass is the same closure walk against the same disk
+    // cache — every fetch is an instant cache hit. Re-running the
+    // spinner would flash a redundant "fetching metadata" line, so
+    // hide it. The user already saw the work happen during the full
+    // pass.
     let prod = solve_into_lock_packages(
         paths,
         default_packagist,
         &composer_json,
         true,
         auth,
+        ProgressMode::Hidden,
     )?;
 
     let prod_names: std::collections::HashSet<&str> =
@@ -1459,9 +1693,10 @@ fn solve_into_lock_packages(
     composer_json: &Value,
     no_dev: bool,
     auth: HashMap<String, crate::metadata::AuthCredentials>,
+    progress: ProgressMode,
 ) -> Result<SolutionSummary> {
     let client = build_client()?;
-    let provider = ResolveProvider::build_with_auth(
+    let mut provider = ResolveProvider::build_with_auth(
         client,
         paths.clone(),
         default_packagist,
@@ -1470,12 +1705,19 @@ fn solve_into_lock_packages(
         auth,
     )
     .map_err(|e| eyre!(e))?;
+    // Record discovered Composer protocols on each repo (see
+    // [`ResolveProvider::discover_repos`]). Done here too because
+    // `solve_into_lock_packages` builds its own provider for the
+    // full-graph and prod-only solves.
+    provider.discover_repos();
     // Eager pre-fetch: load every reachable package's metadata
     // before the solver runs so virtual providers are registered.
     // Mirrors Composer's PoolBuilder.
-    provider
-        .pre_fetch_closure()
-        .map_err(|e| eyre!("pre-fetching metadata closure: {}", e.0))?;
+    let prefetch = match progress {
+        ProgressMode::Visible => provider.pre_fetch_closure(),
+        ProgressMode::Hidden => provider.pre_fetch_closure_silent(),
+    };
+    prefetch.map_err(|e| eyre!("pre-fetching metadata closure: {}", e.0))?;
     let root = provider.root_version();
 
     let solution = match resolve(&provider, PubGrubPackage::Root, root) {
