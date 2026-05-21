@@ -32,9 +32,16 @@ version = "0.4.0"
 path = "../bougie-fetch"
 version = "0.4.0"
 
+[dependencies.bougie-output]
+path = "../bougie-output"
+version = "0.4.0"
+
 [dependencies.bougie-paths]
 path = "../bougie-paths"
 version = "0.4.0"
+
+[dependencies.indicatif]
+version = "0.18"
 
 [dependencies.bougie-semver]
 path = "../bougie-semver"

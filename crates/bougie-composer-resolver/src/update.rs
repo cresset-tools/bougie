@@ -700,6 +700,7 @@ impl ResolveProvider {
     /// have no real Packagist entry.
     pub fn pre_fetch_closure(&self) -> Result<(), ProviderError> {
         use std::collections::HashSet;
+        let progress = ClosureProgress::new();
         let mut visited: HashSet<String> = HashSet::new();
         let mut queue: Vec<String> = self
             .root_deps
@@ -713,6 +714,10 @@ impl ResolveProvider {
             if !visited.insert(name.clone()) {
                 continue;
             }
+            // Bump the spinner *before* the fetch so the displayed
+            // package name reflects the one we're currently waiting
+            // on, not the one we just finished.
+            progress.tick(&name);
             // versions_for both loads metadata and registers
             // virtuals as a side effect.
             let versions = self.versions_for(&name)?;
@@ -724,7 +729,51 @@ impl ResolveProvider {
                 }
             }
         }
+        progress.finish();
         Ok(())
+    }
+}
+
+/// Spinner that ticks once per visited package during
+/// `pre_fetch_closure`, gated on the global `progress_visible` flag
+/// (which the CLI flips off for `--quiet` and `--format json`).
+/// Hidden in tests + JSON output by construction — `ProgressBar`
+/// with a hidden draw target is a cheap no-op for every `tick` /
+/// `finish` call.
+///
+/// The closure is invoked twice per `composer update` (once for the
+/// full graph, once for prod-only) so this is created twice; the
+/// second pass typically blows through cache hits in milliseconds
+/// and the bar finish-and-clears before the user notices it.
+struct ClosureProgress {
+    pb: indicatif::ProgressBar,
+}
+
+impl ClosureProgress {
+    fn new() -> Self {
+        if !bougie_output::output::progress_visible() {
+            let pb = indicatif::ProgressBar::new(0);
+            pb.set_draw_target(indicatif::ProgressDrawTarget::hidden());
+            return Self { pb };
+        }
+        let pb = indicatif::ProgressBar::new(0);
+        pb.set_draw_target(indicatif::ProgressDrawTarget::stderr_with_hz(15));
+        let style = indicatif::ProgressStyle::with_template(
+            "  fetching metadata  {spinner:.magenta} {pos} packages  {wide_msg:.dim}",
+        )
+        .unwrap_or_else(|_| indicatif::ProgressStyle::default_spinner());
+        pb.set_style(style);
+        pb.enable_steady_tick(std::time::Duration::from_millis(120));
+        Self { pb }
+    }
+
+    fn tick(&self, current_package: &str) {
+        self.pb.set_message(current_package.to_owned());
+        self.pb.inc(1);
+    }
+
+    fn finish(&self) {
+        self.pb.finish_and_clear();
     }
 }
 
