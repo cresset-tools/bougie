@@ -185,6 +185,13 @@ pub struct ResolveProvider {
     /// telling us which package's hash to use); this cache makes
     /// that load happen at most once per resolve per repo.
     v1_provider_tables: RefCell<HashMap<String, HashMap<String, String>>>,
+    /// Spinner ticked on every `versions_for` call so the pubgrub
+    /// `resolve` phase has visible progress. Defaults to hidden;
+    /// orchestrators flip it on with `begin_solve_progress` around
+    /// the `resolve` call and clear it with `finish_solve_progress`.
+    /// Without this the solver phase is silent — for projects with
+    /// hundreds of dependencies that silence reads as a hang.
+    solve_progress: RefCell<SolveProgress>,
 }
 
 /// One entry in the virtual provider index — "real package
@@ -292,7 +299,22 @@ impl ResolveProvider {
             virtual_wildcards: RefCell::new(HashMap::new()),
             virtual_selections: RefCell::new(HashMap::new()),
             v1_provider_tables: RefCell::new(HashMap::new()),
+            solve_progress: RefCell::new(SolveProgress::hidden()),
         })
+    }
+
+    /// Begin rendering the solve-phase progress spinner. Call after
+    /// `pre_fetch_closure` (whose own spinner has already finished)
+    /// and before `pubgrub::resolve`.
+    pub fn begin_solve_progress(&self) {
+        *self.solve_progress.borrow_mut() = SolveProgress::new();
+    }
+
+    /// Finish and clear the solve-phase progress spinner. Safe to
+    /// call when the spinner is already hidden.
+    pub fn finish_solve_progress(&self) {
+        self.solve_progress.borrow().finish();
+        *self.solve_progress.borrow_mut() = SolveProgress::hidden();
     }
 
     /// The synthetic root version pubgrub should `resolve` against.
@@ -374,6 +396,8 @@ impl ResolveProvider {
     /// "first in range" candidate selection still picks the highest
     /// matching version regardless of which document supplied it.
     fn versions_for(&self, name: &str) -> Result<Vec<(Version, LockPackage)>, ProviderError> {
+        self.solve_progress.borrow().tick(name);
+        tracing::trace!(package = %name, "versions_for");
         let floor = self.effective_stability(name);
 
         // The Packagist side is cached — once we've made the network
@@ -821,6 +845,51 @@ impl ClosureProgress {
     /// No-op variant. Used by [`ResolveProvider::pre_fetch_closure_silent`]
     /// for the prod-only second pass, where rendering a fresh
     /// spinner would just be noise.
+    fn hidden() -> Self {
+        let pb = indicatif::ProgressBar::new(0);
+        pb.set_draw_target(indicatif::ProgressDrawTarget::hidden());
+        Self { pb }
+    }
+
+    fn tick(&self, current_package: &str) {
+        self.pb.set_message(current_package.to_owned());
+        self.pb.inc(1);
+    }
+
+    fn finish(&self) {
+        self.pb.finish_and_clear();
+    }
+}
+
+/// Spinner that ticks once per `versions_for` call during the
+/// pubgrub `resolve` phase. Same visibility gating as
+/// [`ClosureProgress`] — hidden under `--quiet` and `--format json`.
+///
+/// Pubgrub doesn't expose progress callbacks, but it routes every
+/// candidate enumeration through `versions_for`, so the count of
+/// visits is a reasonable "is the solver doing work?" signal.
+/// Backtracking shows up as the count climbing without resolution
+/// — which still beats the silent stall this replaces.
+struct SolveProgress {
+    pb: indicatif::ProgressBar,
+}
+
+impl SolveProgress {
+    fn new() -> Self {
+        if !bougie_output::output::progress_visible() {
+            return Self::hidden();
+        }
+        let pb = indicatif::ProgressBar::new(0);
+        pb.set_draw_target(indicatif::ProgressDrawTarget::stderr_with_hz(15));
+        let style = indicatif::ProgressStyle::with_template(
+            "  resolving         {spinner:.cyan} {pos} visits     {wide_msg:.dim}",
+        )
+        .unwrap_or_else(|_| indicatif::ProgressStyle::default_spinner());
+        pb.set_style(style);
+        pb.enable_steady_tick(std::time::Duration::from_millis(120));
+        Self { pb }
+    }
+
     fn hidden() -> Self {
         let pb = indicatif::ProgressBar::new(0);
         pb.set_draw_target(indicatif::ProgressDrawTarget::hidden());
@@ -1580,13 +1649,35 @@ pub fn dry_run_update(
     // Probe each repo's `packages.json` and record the discovered
     // Composer protocol (v1 vs v2) so the per-package fetcher
     // dispatches correctly. Required before any pre-fetch traffic.
+    let t_discover = std::time::Instant::now();
     provider.discover_repos();
+    tracing::info!(
+        elapsed_ms = t_discover.elapsed().as_millis() as u64,
+        repos = provider.repos.len(),
+        "discover_repos",
+    );
+    let t_prefetch = std::time::Instant::now();
     provider
         .pre_fetch_closure()
         .map_err(|e| eyre!("pre-fetching metadata closure: {}", e.0))?;
+    tracing::info!(
+        elapsed_ms = t_prefetch.elapsed().as_millis() as u64,
+        cached_packages = provider.cache_size(),
+        "pre_fetch_closure",
+    );
     let root = provider.root_version();
 
-    match resolve(&provider, PubGrubPackage::Root, root) {
+    provider.begin_solve_progress();
+    let t_solve = std::time::Instant::now();
+    let result = resolve(&provider, PubGrubPackage::Root, root);
+    let solve_elapsed = t_solve.elapsed();
+    provider.finish_solve_progress();
+    tracing::info!(
+        elapsed_ms = solve_elapsed.as_millis() as u64,
+        ok = result.is_ok(),
+        "pubgrub_resolve",
+    );
+    match result {
         Ok(solution) => {
             let virtual_selections = provider.virtual_selections.borrow();
             let mut packages: Vec<ResolvedPackage> = solution
@@ -1765,18 +1856,45 @@ fn solve_into_lock_packages(
     // [`ResolveProvider::discover_repos`]). Done here too because
     // `solve_into_lock_packages` builds its own provider for the
     // full-graph and prod-only solves.
+    let t_discover = std::time::Instant::now();
     provider.discover_repos();
+    tracing::info!(
+        elapsed_ms = t_discover.elapsed().as_millis() as u64,
+        repos = provider.repos.len(),
+        no_dev,
+        "discover_repos",
+    );
     // Eager pre-fetch: load every reachable package's metadata
     // before the solver runs so virtual providers are registered.
     // Mirrors Composer's PoolBuilder.
+    let t_prefetch = std::time::Instant::now();
     let prefetch = match progress {
         ProgressMode::Visible => provider.pre_fetch_closure(),
         ProgressMode::Hidden => provider.pre_fetch_closure_silent(),
     };
     prefetch.map_err(|e| eyre!("pre-fetching metadata closure: {}", e.0))?;
+    tracing::info!(
+        elapsed_ms = t_prefetch.elapsed().as_millis() as u64,
+        cached_packages = provider.cache_size(),
+        no_dev,
+        "pre_fetch_closure",
+    );
     let root = provider.root_version();
 
-    let solution = match resolve(&provider, PubGrubPackage::Root, root) {
+    if matches!(progress, ProgressMode::Visible) {
+        provider.begin_solve_progress();
+    }
+    let t_solve = std::time::Instant::now();
+    let solve_result = resolve(&provider, PubGrubPackage::Root, root);
+    let solve_elapsed = t_solve.elapsed();
+    provider.finish_solve_progress();
+    tracing::info!(
+        elapsed_ms = solve_elapsed.as_millis() as u64,
+        ok = solve_result.is_ok(),
+        no_dev,
+        "pubgrub_resolve",
+    );
+    let solution = match solve_result {
         Ok(s) => s,
         Err(PubGrubError::NoSolution(tree)) => {
             return Err(eyre!(
