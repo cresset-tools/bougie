@@ -185,6 +185,103 @@ fn conditional_get_returns_cached_body_on_304() {
 }
 
 #[test]
+fn msgpack_sidecar_is_preferred_over_json_on_304() {
+    // After a 200 the fetcher writes both the JSON body and the
+    // MessagePack-encoded `PackageMetadata`. To prove a subsequent
+    // 304 path consumes the sidecar (and not the JSON), corrupt the
+    // JSON *cache* after the warm-up: a sidecar-less code path would
+    // now surface a parse error; the sidecar path returns the
+    // metadata.
+    let tmp = TempDir::new().unwrap();
+    let paths = paths_in(tmp.path());
+    let etag = "\"sidecar-tag\"";
+    let body = fixture_body("acme/sidecached", "4.2.0");
+
+    let rt = rt();
+    let (uri, _server) = rt.block_on(async {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(wm_path("/p2/acme/sidecached.json"))
+            .and(header("If-None-Match", etag))
+            .respond_with(ResponseTemplate::new(304))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(wm_path("/p2/acme/sidecached.json"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("ETag", etag)
+                    .set_body_string(body),
+            )
+            .mount(&server)
+            .await;
+        (server.uri(), server)
+    });
+
+    let client = build_client().unwrap();
+    let repo = Repo::from_url(&uri);
+    fetch_package_metadata(&client, &paths, &repo, "acme/sidecached", Variant::Stable).unwrap();
+
+    // Overwrite the JSON cache with garbage. If the 304 path still
+    // tried to re-parse JSON it would fail; the sidecar lets it
+    // skip JSON entirely.
+    let (json_path, _) = cache_paths(&paths, &repo, "acme/sidecached", Variant::Stable);
+    std::fs::write(&json_path, b"not json at all").unwrap();
+
+    let md = fetch_package_metadata(&client, &paths, &repo, "acme/sidecached", Variant::Stable)
+        .expect("304 should serve from the postcard sidecar");
+    assert_eq!(md.packages["acme/sidecached"][0].version, "4.2.0");
+}
+
+#[test]
+fn corrupted_msgpack_sidecar_falls_back_to_json_reparse() {
+    // The MessagePack sidecar is a parse-skip optimization, not a
+    // source of truth — the JSON body next to it is authoritative.
+    // A truncated / format-drift sidecar must transparently fall
+    // back to JSON re-parse rather than failing the resolve.
+    let tmp = TempDir::new().unwrap();
+    let paths = paths_in(tmp.path());
+    let etag = "\"fallback-tag\"";
+    let body = fixture_body("acme/fallback", "7.1.0");
+
+    let rt = rt();
+    let (uri, _server) = rt.block_on(async {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(wm_path("/p2/acme/fallback.json"))
+            .and(header("If-None-Match", etag))
+            .respond_with(ResponseTemplate::new(304))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(wm_path("/p2/acme/fallback.json"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("ETag", etag)
+                    .set_body_string(body),
+            )
+            .mount(&server)
+            .await;
+        (server.uri(), server)
+    });
+
+    let client = build_client().unwrap();
+    let repo = Repo::from_url(&uri);
+    fetch_package_metadata(&client, &paths, &repo, "acme/fallback", Variant::Stable).unwrap();
+
+    // Locate and corrupt the sidecar. The JSON body stays intact, so
+    // the 304 path should re-parse it without surfacing an error.
+    let (json_path, _) = cache_paths(&paths, &repo, "acme/fallback", Variant::Stable);
+    let sidecar = json_path.with_extension("v1.msgpack");
+    assert!(sidecar.exists(), "warm-up should have written the sidecar");
+    std::fs::write(&sidecar, b"\x00\xff\x00 not msgpack at all").unwrap();
+
+    let md = fetch_package_metadata(&client, &paths, &repo, "acme/fallback", Variant::Stable)
+        .expect("corrupted sidecar must fall back to JSON re-parse");
+    assert_eq!(md.packages["acme/fallback"][0].version, "7.1.0");
+}
+
+#[test]
 fn dev_variant_hits_tilde_dev_url() {
     let tmp = TempDir::new().unwrap();
     let paths = paths_in(tmp.path());

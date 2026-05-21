@@ -21,7 +21,7 @@
 
 use crate::lockfile::LockPackage;
 use eyre::{Result, WrapErr};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 
@@ -41,7 +41,12 @@ pub struct RawPackageDocument {
 
 /// Expanded `/p2/` document: each package's version list contains
 /// fully-materialized `LockPackage` entries with inheritance applied.
-#[derive(Debug, Clone)]
+///
+/// `Serialize`/`Deserialize` exist for the postcard sidecar cache in
+/// `bougie-composer-resolver` — a warm-cache resolve reads the parsed
+/// shape directly instead of re-running JSON + minified-expansion.
+/// `LockPackage` and its nested types already derive both.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PackageMetadata {
     /// Maps `vendor/name` to its version list (newest-first, matching
     /// Packagist's output order).

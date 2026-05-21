@@ -52,6 +52,18 @@ version = "0.13"
 default-features = false
 features = ["blocking", "rustls", "gzip"]
 
+# Binary sidecar cache for parsed Packagist metadata. On a 304
+# conditional GET we read the MessagePack sidecar instead of
+# re-parsing the JSON body. `LockPackage` already derives
+# `serde::{Serialize, Deserialize}` so rmp-serde reuses those impls
+# with no type surgery — *self-describing* matters here because
+# `LockPackage.{autoload_dev, extra}` are `serde_json::Value`, whose
+# `Deserialize` needs `deserialize_any`. Postcard / bincode are
+# schema-less and won't round-trip Value; MessagePack and CBOR will.
+# rmp-serde is meaningfully faster than ciborium on this shape.
+[dependencies.rmp-serde]
+version = "1"
+
 [dev-dependencies]
 tempfile = "3.10"
 sha1 = "0.10"

@@ -422,8 +422,10 @@ pub fn fetch_package_metadata(
         let _ = write_atomic(&etag_path, t.as_bytes());
     }
 
-    PackageMetadata::parse(&bytes)
-        .wrap_err_with(|| format!("parsing metadata for {package_name}"))
+    let md = PackageMetadata::parse(&bytes)
+        .wrap_err_with(|| format!("parsing metadata for {package_name}"))?;
+    write_parsed_cache(&json_path, &md);
+    Ok(md)
 }
 
 /// Like [`fetch_package_metadata`] but returns `Ok(None)` when the
@@ -521,9 +523,10 @@ pub fn fetch_package_metadata_optional(
         let _ = write_atomic(&etag_path, t.as_bytes());
     }
 
-    PackageMetadata::parse(&bytes)
-        .wrap_err_with(|| format!("parsing metadata for {package_name}"))
-        .map(Some)
+    let md = PackageMetadata::parse(&bytes)
+        .wrap_err_with(|| format!("parsing metadata for {package_name}"))?;
+    write_parsed_cache(&json_path, &md);
+    Ok(Some(md))
 }
 
 /// True when a response's `Content-Type` advertises HTML — the
@@ -546,11 +549,53 @@ fn response_is_html(resp: &reqwest::blocking::Response) -> bool {
 }
 
 fn read_cached(json_path: &Path) -> Result<PackageMetadata> {
+    // Prefer the postcard sidecar: it's the same `PackageMetadata`
+    // shape, pre-expanded (no minified-diff replay), pre-deserialized
+    // (no `serde_json::from_slice` allocation tree). Falls back to the
+    // JSON body on any read/decode failure so a corrupt or
+    // format-version-stale sidecar never blocks the resolve — the JSON
+    // body is the source of truth.
+    if let Some(md) = read_parsed_cache(&parsed_cache_path(json_path)) {
+        return Ok(md);
+    }
     let bytes = fs::read(json_path)
         .wrap_err_with(|| format!("reading cached metadata at {}", json_path.display()))?;
     PackageMetadata::parse(&bytes).wrap_err_with(|| {
         format!("re-parsing cached metadata at {}", json_path.display())
     })
+}
+
+/// MessagePack sidecar for the parsed `PackageMetadata`. Lives next
+/// to the JSON body so a single `cache_paths` lookup gets us both.
+/// The filename embeds a format-version stamp (`v1`) so a future
+/// schema change (e.g. adding a field to `LockPackage`) is
+/// invalidated by rename rather than needing in-file magic-byte
+/// checks — bump to `v2.msgpack` and v1 files become unread orphans
+/// the next disk cleanup would sweep.
+fn parsed_cache_path(json_path: &Path) -> PathBuf {
+    json_path.with_extension("v1.msgpack")
+}
+
+/// Decode the MessagePack sidecar at `path` into a `PackageMetadata`,
+/// returning `None` on any failure (file missing, truncated, version
+/// stamp mismatch, schema drift, …). The caller falls back to the
+/// JSON body so a sidecar that fails to decode is silently rebuilt
+/// on the next successful fetch.
+fn read_parsed_cache(path: &Path) -> Option<PackageMetadata> {
+    let bytes = fs::read(path).ok()?;
+    rmp_serde::from_slice::<PackageMetadata>(&bytes).ok()
+}
+
+/// Best-effort write of the MessagePack sidecar. Failures are
+/// swallowed because the JSON body is the source of truth — a
+/// missing sidecar just means the next read will reparse JSON once,
+/// then write the sidecar on its own subsequent fetch. No reason to
+/// fail the resolve over a cache-acceleration write that didn't land.
+fn write_parsed_cache(json_path: &Path, md: &PackageMetadata) {
+    let Ok(bytes) = rmp_serde::to_vec(md) else {
+        return;
+    };
+    let _ = write_atomic(&parsed_cache_path(json_path), &bytes);
 }
 
 /// Compute the on-disk cache locations for a package's metadata
@@ -723,42 +768,54 @@ pub fn fetch_package_metadata_v1_optional(
         return Ok(None);
     };
     let cache_path = v1_package_cache_path(paths, repo, package_name, sha);
-    let bytes = if let Ok(bytes) = fs::read(&cache_path) {
-        bytes
-    } else {
-        let url_path = discovery
-            .providers_url
-            .replace("%package%", package_name)
-            .replace("%hash%", sha);
-        let url = format!("{}/{}", repo.url, url_path.trim_start_matches('/'));
-        let mut req = client.get(&url);
-        if let Some(auth) = &repo.auth {
-            req = req.header(reqwest::header::AUTHORIZATION, auth.header_value());
+    // v1 per-package bodies are content-addressed (sha256 in the URL),
+    // so the on-disk JSON cache is the source of truth. The postcard
+    // sidecar is a parse-skip optimization — try it first, fall back
+    // to JSON + parse on any failure, same as the v2 conditional-GET
+    // path. Cache hit short-circuits both reads when the sidecar is
+    // already written.
+    if let Ok(md_bytes) = fs::read(&cache_path) {
+        if let Some(md) = read_parsed_cache(&parsed_cache_path(&cache_path)) {
+            return Ok(Some(md));
         }
-        let resp = req.send().map_err(|e| BougieError::Network {
+        let md = parse_v1_per_package(&md_bytes, package_name)?;
+        write_parsed_cache(&cache_path, &md);
+        return Ok(Some(md));
+    }
+
+    let url_path = discovery
+        .providers_url
+        .replace("%package%", package_name)
+        .replace("%hash%", sha);
+    let url = format!("{}/{}", repo.url, url_path.trim_start_matches('/'));
+    let mut req = client.get(&url);
+    if let Some(auth) = &repo.auth {
+        req = req.header(reqwest::header::AUTHORIZATION, auth.header_value());
+    }
+    let resp = req.send().map_err(|e| BougieError::Network {
+        operation: format!("GET {url}"),
+        detail: e.to_string(),
+    })?;
+    if resp.status() == reqwest::StatusCode::NOT_FOUND {
+        // sha was in the listing but the file is missing — treat
+        // like any other miss rather than crashing the resolve.
+        return Ok(None);
+    }
+    if !resp.status().is_success() {
+        return Err(BougieError::Network {
             operation: format!("GET {url}"),
-            detail: e.to_string(),
-        })?;
-        if resp.status() == reqwest::StatusCode::NOT_FOUND {
-            // sha was in the listing but the file is missing — treat
-            // like any other miss rather than crashing the resolve.
-            return Ok(None);
+            detail: format!("server returned HTTP {}", resp.status()),
         }
-        if !resp.status().is_success() {
-            return Err(BougieError::Network {
-                operation: format!("GET {url}"),
-                detail: format!("server returned HTTP {}", resp.status()),
-            }
-            .into());
-        }
-        let body = resp.bytes().map_err(|e| BougieError::Network {
-            operation: format!("reading body of {url}"),
-            detail: e.to_string(),
-        })?;
-        write_atomic(&cache_path, &body)?;
-        body.to_vec()
-    };
-    parse_v1_per_package(&bytes, package_name).map(Some)
+        .into());
+    }
+    let body = resp.bytes().map_err(|e| BougieError::Network {
+        operation: format!("reading body of {url}"),
+        detail: e.to_string(),
+    })?;
+    write_atomic(&cache_path, &body)?;
+    let md = parse_v1_per_package(&body, package_name)?;
+    write_parsed_cache(&cache_path, &md);
+    Ok(Some(md))
 }
 
 /// Convert a v1 per-package response body
