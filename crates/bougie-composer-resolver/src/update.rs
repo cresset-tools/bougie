@@ -1806,6 +1806,7 @@ pub fn resolve_for_lockfile(
         ProgressMode::Hidden,
     )?;
 
+    let t_partition = std::time::Instant::now();
     let prod_names: std::collections::HashSet<&str> =
         prod.packages.iter().map(|p| p.name.as_str()).collect();
     let (packages, packages_dev): (Vec<LockPackage>, Vec<LockPackage>) = full
@@ -1818,6 +1819,12 @@ pub fn resolve_for_lockfile(
         .iter()
         .map(|(name, stability)| (name.clone(), stability_to_composer_int(*stability)))
         .collect();
+    tracing::info!(
+        elapsed_ms = t_partition.elapsed().as_millis() as u64,
+        packages = packages.len(),
+        packages_dev = packages_dev.len(),
+        "partition_prod_dev",
+    );
 
     Ok((
         composer_json_bytes,
@@ -1921,6 +1928,7 @@ fn solve_into_lock_packages(
         Err(other) => return Err(eyre!("solver error: {other}")),
     };
 
+    let t_assemble = std::time::Instant::now();
     let mut packages: Vec<LockPackage> = Vec::new();
     let virtual_selections = provider.virtual_selections.borrow();
     for (pkg, version) in solution {
@@ -1945,6 +1953,12 @@ fn solve_into_lock_packages(
     }
     drop(virtual_selections);
     packages.sort_by(|a, b| a.name.cmp(&b.name));
+    tracing::info!(
+        elapsed_ms = t_assemble.elapsed().as_millis() as u64,
+        packages = packages.len(),
+        no_dev,
+        "assemble_lock_packages",
+    );
 
     Ok(SolutionSummary {
         packages,
