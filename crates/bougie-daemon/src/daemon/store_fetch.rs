@@ -244,6 +244,7 @@ fn install_into(
         // convention as the interpreter tarball.
         strip_prefix: "install",
         archive: ArchiveKind::TarZst,
+        auth_header: None,
     };
     fetch_blob(client, &spec, bar)?;
 

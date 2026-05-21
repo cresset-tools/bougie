@@ -151,6 +151,15 @@ pub struct BlobSpec<'a> {
     pub strip_prefix: &'a str,
     /// How to decode the downloaded bytes. Ignored by [`fetch_file`].
     pub archive: ArchiveKind,
+    /// Pre-rendered `Authorization` header value (e.g. `Bearer <token>`
+    /// or `Basic <base64>`). Attached verbatim on every request for
+    /// this blob. `None` means no auth — appropriate for public CDN
+    /// URLs (bougie's own publishes, public Packagist dists). Set
+    /// when the blob lives behind credentials, like a private satis
+    /// dist or `repo.magento.com/archives/...`. Keep the field tiny
+    /// and opaque so this crate stays uncoupled from the higher-level
+    /// `AuthCredentials` shape that lives in `bougie-composer-resolver`.
+    pub auth_header: Option<&'a str>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -225,7 +234,11 @@ fn fetch_to_partial(
 ) -> Result<PathBuf> {
     let tmp = spec.partial_dir.join(format!("{}.partial", spec.hash.hex));
 
-    let mut resp = client.get(spec.url).send().map_err(|e| BougieError::Network {
+    let mut req = client.get(spec.url);
+    if let Some(value) = spec.auth_header {
+        req = req.header(reqwest::header::AUTHORIZATION, value);
+    }
+    let mut resp = req.send().map_err(|e| BougieError::Network {
         operation: format!("fetching blob {}", spec.url),
         detail: e.to_string(),
     })?;

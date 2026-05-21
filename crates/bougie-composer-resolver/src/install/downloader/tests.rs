@@ -12,7 +12,7 @@ use bougie_paths::Paths;
 use sha1::Digest as _;
 use std::io::Write as _;
 use tempfile::TempDir;
-use wiremock::matchers::{method, path as wm_path};
+use wiremock::matchers::{header, method, path as wm_path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 fn rt() -> tokio::runtime::Runtime {
@@ -91,6 +91,7 @@ fn downloads_single_zip_and_extracts_with_strip_prefix() {
         archive: ArchiveKind::Zip,
         strip_prefix: Some("acme-foo-abc1234"),
         vendor_dest: &vendor_dest,
+        auth_header: None,
     }];
 
     fetch_and_extract_dists(&client, &paths, &dists, &bar).unwrap();
@@ -138,6 +139,7 @@ fn cache_hit_short_circuits_network() {
         archive: ArchiveKind::Zip,
         strip_prefix: Some("acme-foo-deadbeef"),
         vendor_dest: &vendor_dest,
+        auth_header: None,
     }];
 
     let outcomes = fetch_and_extract_dists(&client, &paths, &dists, &bar).unwrap();
@@ -178,6 +180,7 @@ fn hash_mismatch_aborts_install_cleanly() {
         archive: ArchiveKind::Zip,
         strip_prefix: Some("acme-foo-aaaa"),
         vendor_dest: &vendor_dest,
+        auth_header: None,
     }];
 
     let err = fetch_and_extract_dists(&client, &paths, &dists, &bar)
@@ -243,6 +246,7 @@ fn parallel_four_dists_share_one_bar() {
             archive: ArchiveKind::Zip,
             strip_prefix: Some(&pkgs[i].0),
             vendor_dest: &dests[i],
+            auth_header: None,
         })
         .collect();
 
@@ -292,6 +296,7 @@ fn extract_strips_top_level_directory_via_auto_detect() {
         archive: ArchiveKind::Zip,
         strip_prefix: None,
         vendor_dest: &vendor_dest,
+        auth_header: None,
     }];
     let outcomes = fetch_and_extract_dists(&client, &paths, &dists, &bar).unwrap();
     assert_eq!(outcomes, vec![DistOutcome::Downloaded]);
@@ -308,6 +313,108 @@ fn extract_strips_top_level_directory_via_auto_detect() {
         }
     }
     assert!(count > 0, "no files extracted");
+}
+
+#[test]
+fn dist_request_auth_header_is_sent_on_get() {
+    // Wiremock only responds with the ZIP when the request carries
+    // the exact `Authorization` header the caller pre-rendered. With
+    // it, download + extract succeeds. Without it (the default
+    // `auth_header: None` everywhere else), the same wiremock would
+    // fall through to a 401 — proves the field is actually wired
+    // through to the HTTP request.
+    let tmp = TempDir::new().unwrap();
+    let paths = paths_in(tmp.path());
+    let vendor_dest = tmp.path().join("vendor").join("acme").join("foo");
+
+    let body = build_fixture_zip("acme-foo-abc");
+    let hash = sha1_hex(&body);
+
+    let rt = rt();
+    let (uri, _server) = rt.block_on(async {
+        let server = MockServer::start().await;
+        // Auth-gated path: only matches when the header is present
+        // and exact. Register *first* so wiremock evaluates it before
+        // the default 401 fall-through.
+        Mock::given(method("GET"))
+            .and(wm_path("/dists/acme-foo.zip"))
+            .and(header("Authorization", "Basic dXNlcjpwYXNz"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(body.clone()))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(wm_path("/dists/acme-foo.zip"))
+            .respond_with(ResponseTemplate::new(401))
+            .mount(&server)
+            .await;
+        (server.uri(), server)
+    });
+
+    let url = format!("{uri}/dists/acme-foo.zip");
+    let client = reqwest::blocking::Client::new();
+    let bar = DownloadBar::hidden();
+    let auth = "Basic dXNlcjpwYXNz";
+    let dists = [DistRequest {
+        package_name: "acme/foo",
+        url: &url,
+        sha1: &hash,
+        archive: ArchiveKind::Zip,
+        strip_prefix: Some("acme-foo-abc"),
+        vendor_dest: &vendor_dest,
+        auth_header: Some(auth),
+    }];
+
+    fetch_and_extract_dists(&client, &paths, &dists, &bar)
+        .expect("download must succeed when the Authorization header matches");
+    assert!(vendor_dest.join("composer.json").is_file());
+}
+
+#[test]
+fn dist_request_without_auth_fails_when_server_requires_it() {
+    // Mirror of the above with `auth_header: None`: the wiremock now
+    // matches only the unauthenticated path (401), and the install
+    // surfaces an HTTP error rather than silently succeeding.
+    let tmp = TempDir::new().unwrap();
+    let paths = paths_in(tmp.path());
+    let vendor_dest = tmp.path().join("vendor").join("acme").join("foo");
+
+    let body = build_fixture_zip("acme-foo-abc");
+    let hash = sha1_hex(&body);
+
+    let rt = rt();
+    let (uri, _server) = rt.block_on(async {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(wm_path("/dists/acme-foo.zip"))
+            .and(header("Authorization", "Basic dXNlcjpwYXNz"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(body.clone()))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(wm_path("/dists/acme-foo.zip"))
+            .respond_with(ResponseTemplate::new(401))
+            .mount(&server)
+            .await;
+        (server.uri(), server)
+    });
+
+    let url = format!("{uri}/dists/acme-foo.zip");
+    let client = reqwest::blocking::Client::new();
+    let bar = DownloadBar::hidden();
+    let dists = [DistRequest {
+        package_name: "acme/foo",
+        url: &url,
+        sha1: &hash,
+        archive: ArchiveKind::Zip,
+        strip_prefix: Some("acme-foo-abc"),
+        vendor_dest: &vendor_dest,
+        auth_header: None,
+    }];
+
+    let err = fetch_and_extract_dists(&client, &paths, &dists, &bar)
+        .expect_err("unauthenticated request must fail");
+    let msg = format!("{err:#}");
+    assert!(msg.contains("401"), "{msg}");
 }
 
 /// Minimal recursive walk: returns every path under `root` relative

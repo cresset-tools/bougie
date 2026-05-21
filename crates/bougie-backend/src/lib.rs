@@ -178,6 +178,7 @@ impl BlobRef {
             dest,
             strip_prefix: &self.strip_prefix,
             archive: self.archive,
+            auth_header: None,
         }
     }
 }
