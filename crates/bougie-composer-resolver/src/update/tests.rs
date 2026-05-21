@@ -1144,6 +1144,57 @@ fn multiple_providers_at_same_virtual_version_dedup() {
     assert_eq!(iface_entries.len(), 1);
 }
 
+#[test]
+fn many_versions_of_same_provider_replacing_one_virtual_picks_any() {
+    // Magento-style scenario: every patch of magento2-base declares
+    // `replace: { components/jquery: "1.11.0" }`. Root pins a
+    // specific patch (transitively, via product-community-edition).
+    // The virtual selection must not pin magento2-base to the first
+    // registered version — that would force every other patch out
+    // and produce NoSolution.
+    let tmp = TempDir::new().unwrap();
+    let paths = paths_in(tmp.path());
+
+    let base = p2_body_with_extras(
+        "acme/base",
+        &[
+            ("1.0.0-beta1", json!({}), json!({"replace": {"acme/sub": "1.0.0"}})),
+            ("1.0.0", json!({}), json!({"replace": {"acme/sub": "1.0.0"}})),
+            ("1.0.0-p1", json!({}), json!({"replace": {"acme/sub": "1.0.0"}})),
+            ("1.0.0-p2", json!({}), json!({"replace": {"acme/sub": "1.0.0"}})),
+        ],
+    );
+    // Edition pins a specific (non-beta) base patch.
+    let edition = p2_body(
+        "acme/edition",
+        &[("1.0.0-p2", json!({"acme/base": "1.0.0-p2"}))],
+    );
+
+    let rt = rt();
+    let (uri, _server) = rt.block_on(async {
+        let server = MockServer::start().await;
+        mount_p2(&server, "acme/base", base).await;
+        mount_p2(&server, "acme/edition", edition).await;
+        (server.uri(), server)
+    });
+
+    let composer_json = json!({
+        "minimum-stability": "beta",
+        "require": {"acme/edition": "1.0.0-p2"},
+    });
+    let client = crate::metadata::build_client().unwrap();
+    let provider =
+        ResolveProvider::build(client, paths, crate::metadata::Repo::from_url(uri), &composer_json, true).unwrap();
+    provider.pre_fetch_closure().unwrap();
+    let root = provider.root_version();
+
+    let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
+    let base_version = solution
+        .get(&PubGrubPackage::Package("acme/base".into()))
+        .expect("base must be in solution");
+    assert_eq!(base_version.to_string(), "1.0.0.0-patch2");
+}
+
 // ===================== prefer-stable =====================
 
 #[test]
