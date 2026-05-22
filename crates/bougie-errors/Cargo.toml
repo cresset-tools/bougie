@@ -1,6 +1,6 @@
 [package]
 name = "bougie-errors"
-version = "0.4.0"
+version.workspace = true
 edition = "2024"
 description = "Domain error taxonomy + exit-code map for bougie."
 license = "EUPL-1.2"
