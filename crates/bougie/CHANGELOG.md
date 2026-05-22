@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.2](https://github.com/cresset-tools/bougie/compare/bougie-v0.5.1...bougie-v0.5.2) - 2026-05-22
+
+### Fixed
+
+- *(sync)* accept Composer wildcards in require.php ([#106](https://github.com/cresset-tools/bougie/pull/106)) ([#150](https://github.com/cresset-tools/bougie/pull/150))
+
+### Other
+
+- mechanical sweep + missing_panics_doc ([#149](https://github.com/cresset-tools/bougie/pull/149)) ([#156](https://github.com/cresset-tools/bougie/pull/156))
+- audit numeric casts (zero remaining) ([#154](https://github.com/cresset-tools/bougie/pull/154))
+- cargo clippy --fix mechanical sweep ([#149](https://github.com/cresset-tools/bougie/pull/149)) ([#153](https://github.com/cresset-tools/bougie/pull/153))
+
 ## [0.5.1](https://github.com/cresset-tools/bougie/compare/bougie-v0.5.0...bougie-v0.5.1) - 2026-05-22
 
 ### Fixed
