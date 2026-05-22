@@ -160,6 +160,19 @@ fn re_branch_alias() -> &'static Regex {
     })
 }
 
+fn re_normalize_branch() -> &'static Regex {
+    static R: OnceLock<Regex> = OnceLock::new();
+    R.get_or_init(|| Regex::new(r"^(\d+)(\.(?:\d+|[xX*]))*$").unwrap())
+}
+
+fn re_parse_stability() -> &'static Regex {
+    static R: OnceLock<Regex> = OnceLock::new();
+    R.get_or_init(|| {
+        let pat = format!(r"(?i){}(?:\+.*)?$", re_modifier_str());
+        Regex::new(&pat).unwrap()
+    })
+}
+
 /// True iff `s` matches the Composer branch-alias form
 /// `Nx-dev` / `N.x-dev` / `N.M.x-dev` (etc.). These appear both as
 /// versions (Packagist's dev document lists them) and as constraints
@@ -191,6 +204,15 @@ fn re_dev_prefix() -> &'static Regex {
 impl Version {
     /// Parse a Composer version string into its normalized form.
     /// Equivalent to PHP's `VersionParser::normalize($s)`.
+    ///
+    /// # Panics
+    ///
+    /// Doesn't, despite the internal `unwrap`s on `caps.get(N)`:
+    /// every group those reach is statically guaranteed to capture
+    /// by the regex shape (`\d{1,5}` at position 1 etc.). The
+    /// compile-time regex constructors also `.unwrap()` — those run
+    /// once at first call and would only fire if the regex literal
+    /// itself were ill-formed (caught at test time).
     pub fn parse(s: &str) -> Result<Self, ParseError> {
         let raw = s.trim();
         if raw.is_empty() {
@@ -254,9 +276,9 @@ impl Version {
         if let Some(caps) = re_classical().captures(&numeric_candidate) {
             let segs = collect_classical_segments(&caps);
             let suffix = parse_modifier(
-                caps.get(5).map(|m| m.as_str()).unwrap_or(""),
-                caps.get(6).map(|m| m.as_str()).unwrap_or(""),
-                caps.get(7).map(|m| m.as_str()).unwrap_or(""),
+                caps.get(5).map_or("", |m| m.as_str()),
+                caps.get(6).map_or("", |m| m.as_str()),
+                caps.get(7).map_or("", |m| m.as_str()),
             )?;
             let normalized = render_numeric(&segs, &suffix);
             return Ok(Version {
@@ -270,9 +292,9 @@ impl Version {
             let body = caps.get(1).unwrap().as_str();
             let segs = split_date_segments(body);
             let suffix = parse_modifier(
-                caps.get(2).map(|m| m.as_str()).unwrap_or(""),
-                caps.get(3).map(|m| m.as_str()).unwrap_or(""),
-                caps.get(4).map(|m| m.as_str()).unwrap_or(""),
+                caps.get(2).map_or("", |m| m.as_str()),
+                caps.get(3).map_or("", |m| m.as_str()),
+                caps.get(4).map_or("", |m| m.as_str()),
             )?;
             let normalized = render_numeric(&segs, &suffix);
             return Ok(Version {
@@ -343,11 +365,7 @@ impl Version {
     /// becomes `dev-<name>`.
     pub fn normalize_branch(branch: &str) -> String {
         let stripped = strip_v_prefix(branch);
-        static R: OnceLock<Regex> = OnceLock::new();
-        let r = R.get_or_init(|| {
-            Regex::new(r"^(\d+)(\.(?:\d+|[xX*]))*$").unwrap()
-        });
-        if r.is_match(stripped) {
+        if re_normalize_branch().is_match(stripped) {
             let mut segs_raw: Vec<String> = Vec::new();
             for part in stripped.split('.') {
                 if matches!(part, "x" | "X" | "*") {
@@ -383,13 +401,8 @@ impl Version {
         }
         // Anchored-at-end modifier match (lowercased) — same shape
         // as `VersionParser::parseStability`.
-        static R: OnceLock<Regex> = OnceLock::new();
-        let r = R.get_or_init(|| {
-            let pat = format!(r"(?i){}(?:\+.*)?$", re_modifier_str());
-            Regex::new(&pat).unwrap()
-        });
         let lower = cleaned.to_ascii_lowercase();
-        if let Some(caps) = r.captures(&lower) {
+        if let Some(caps) = re_parse_stability().captures(&lower) {
             // Group 3 is the trailing `-dev` capture.
             if caps.get(3).is_some_and(|m| !m.as_str().is_empty()) {
                 return Stability::Dev;
@@ -604,17 +617,11 @@ fn split_aliased(s: &str) -> Option<(&str, &str)> {
 fn collect_classical_segments(caps: &regex::Captures) -> Vec<String> {
     let s1 = caps.get(1).unwrap().as_str().to_owned();
     let s2 = caps
-        .get(2)
-        .map(|m| m.as_str().trim_start_matches('.').to_owned())
-        .unwrap_or_else(|| "0".to_owned());
+        .get(2).map_or_else(|| "0".to_owned(), |m| m.as_str().trim_start_matches('.').to_owned());
     let s3 = caps
-        .get(3)
-        .map(|m| m.as_str().trim_start_matches('.').to_owned())
-        .unwrap_or_else(|| "0".to_owned());
+        .get(3).map_or_else(|| "0".to_owned(), |m| m.as_str().trim_start_matches('.').to_owned());
     let s4 = caps
-        .get(4)
-        .map(|m| m.as_str().trim_start_matches('.').to_owned())
-        .unwrap_or_else(|| "0".to_owned());
+        .get(4).map_or_else(|| "0".to_owned(), |m| m.as_str().trim_start_matches('.').to_owned());
     vec![s1, s2, s3, s4]
 }
 

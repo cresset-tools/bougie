@@ -281,7 +281,7 @@ fn locate_project_root_inner(
     let p = Path::new(argv0);
     let has_dir_part = p
         .parent()
-        .map_or(false, |q| !q.as_os_str().is_empty());
+        .is_some_and(|q| !q.as_os_str().is_empty());
     if has_dir_part {
         let abs = if p.is_absolute() {
             p.to_path_buf()

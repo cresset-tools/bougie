@@ -413,6 +413,7 @@ dependencies = [
  "bougie-platform",
  "bougie-recipe",
  "bougie-resolver",
+ "bougie-semver",
  "bougie-server",
  "bougie-version",
  "clap",
@@ -474,6 +475,7 @@ dependencies = [
  "bougie-paths",
  "bougie-platform",
  "bougie-resolver",
+ "bougie-semver",
  "bougie-version",
  "eyre",
  "reqwest 0.13.3",
@@ -705,6 +707,7 @@ version = "0.5.1"
 dependencies = [
  "bougie-errors",
  "bougie-index",
+ "bougie-semver",
  "bougie-version",
  "eyre",
 ]
@@ -756,6 +759,7 @@ dependencies = [
 name = "bougie-version"
 version = "0.5.1"
 dependencies = [
+ "bougie-semver",
  "eyre",
 ]
 

@@ -11,12 +11,13 @@ use bougie_installer::install::{
 };
 use bougie_output::output::{emit, Render};
 use bougie_paths::Paths;
+use bougie_semver::Constraint;
 use bougie_version::request::{Flavor, Request, VersionLike};
 use bougie_resolver::{intersect_php, ResolveOptions};
 use bougie_fs::state::{write_project_resolved, write_project_resolved_composer, GlobalState};
 use bougie_fs::store::list_installed;
 use bougie_platform::target::Triple;
-use bougie_version::version::{Constraint, PartialVersion, Version};
+use bougie_version::version::{PartialVersion, Version};
 use eyre::{eyre, Result};
 use serde::Serialize;
 use std::collections::BTreeSet;
@@ -139,7 +140,7 @@ fn default_php_inputs(paths: &Paths, project: &ProjectConfig) -> Result<(Version
             flavor,
         ));
     }
-    let c = Constraint::parse(">=8.0")?;
+    let c = Constraint::parse(">=8.0").map_err(|e| eyre!("default constraint: {e}"))?;
     Ok((VersionLike::Constraint(c), flavor))
 }
 
@@ -369,7 +370,10 @@ pub fn project_php_inputs(project: &ProjectConfig) -> Result<(VersionLike, Flavo
 
 fn resolve_php_inputs(project: &ProjectConfig) -> Result<(VersionLike, Flavor)> {
     let public = match project.composer.as_ref().and_then(|c| c.require_php.clone()) {
-        Some(s) => Some(Constraint::parse(&s)?),
+        Some(s) => Some(
+            Constraint::parse(&s)
+                .map_err(|e| eyre!("composer.json require.php {s:?}: {e}"))?,
+        ),
         None => None,
     };
     let override_spec = project
@@ -430,7 +434,9 @@ fn replicate_install_conf_d(
         for entry in entries.flatten() {
             let name = entry.file_name();
             let Some(name) = name.to_str() else { continue };
-            if name.starts_with("00-") && name.ends_with(".ini") {
+            if name.starts_with("00-")
+                && std::path::Path::new(name).extension().is_some_and(|e| e == "ini")
+            {
                 let _ = std::fs::remove_file(entry.path());
             }
         }
@@ -440,7 +446,7 @@ fn replicate_install_conf_d(
         let entry = entry.map_err(|e| eyre!("dir entry: {e}"))?;
         let name = entry.file_name();
         let Some(name) = name.to_str() else { continue };
-        if !name.ends_with(".ini") {
+        if std::path::Path::new(name).extension().is_none_or(|e| e != "ini") {
             continue;
         }
         if let Some(ext_name) = ext_name_from_fragment(name)
@@ -561,6 +567,91 @@ fn baseline_opt_outs(project: &ProjectConfig) -> BTreeSet<String> {
         .collect()
 }
 
+fn write_shims(project_root: &std::path::Path) -> Result<PathBuf> {
+    let bin_dir = project_root.join(".bougie").join("bin");
+    std::fs::create_dir_all(&bin_dir)?;
+    let bougie_bin =
+        std::env::current_exe().map_err(|e| eyre!("locating current executable: {e}"))?;
+    // On Windows the shim is an NTFS hard link, which can't cross
+    // volumes — the bougie binary may live on a different drive from
+    // the project (`bougie.exe` on `C:\`, project tempdir on `D:\` is
+    // the common GH-Actions shape). Stage a same-volume copy first
+    // and hard-link the four shim names to *that*, so the link
+    // creation is always intra-volume. The copy is skipped when
+    // bytes already match — bougie ships with a stable exe size, so
+    // a re-sync of an unchanged binary is just four `metadata()`
+    // calls. Unix doesn't need this (`symlink` is happy across
+    // mounts).
+    #[cfg(not(unix))]
+    let bougie_bin = stage_local_bougie(&bin_dir, &bougie_bin)?;
+    // `unzip` is here because Composer's ZipDownloader does a PATH
+    // lookup for it and prefers it over PHP's ZipArchive (§3.7,
+    // commands::unzip). Materialising it as a sibling shim keeps the
+    // composer subprocess discovery path inside `.bougie/bin/`.
+    for name in ["php", "php-fpm", "composer", "unzip"] {
+        // On Windows, PATH resolution wants `.exe`; on Unix the bare
+        // name is what Composer's ExecutableFinder searches for.
+        #[cfg(unix)]
+        let link = bin_dir.join(name);
+        #[cfg(not(unix))]
+        let link = bin_dir.join(format!("{name}.exe"));
+        if link.exists() || link.symlink_metadata().is_ok() {
+            std::fs::remove_file(&link)?;
+        }
+        link_shim(&bougie_bin, &link)?;
+    }
+    Ok(bin_dir)
+}
+
+/// Copy `bougie.exe` into `<bin_dir>/_bougie-shim.exe` so the four
+/// shim hard links land on the same volume as the staged binary
+/// (cross-volume NTFS hard links fail with ERROR_NOT_SAME_DEVICE).
+/// Returns the staged path; the four shim links point at that file.
+///
+/// Refreshes when either the size OR the mtime indicates the
+/// canonical `bougie.exe` has moved on (`cargo install --force`,
+/// `bougie self upgrade`, …). Size alone misses same-length
+/// rebuilds — the symptom is `.bougie/bin/unzip.EXE` running stale
+/// code after a binary upgrade and Composer's `ZipDownloader`
+/// reporting "the argument '--quiet' cannot be used multiple times"
+/// because the older shim didn't strip `.EXE` case-insensitively.
+/// `fs::copy` to the existing path truncates in place (CREATE_ALWAYS
+/// on Windows preserves the inode), so the refresh propagates to
+/// every hard link transparently.
+#[cfg(not(unix))]
+fn stage_local_bougie(
+    bin_dir: &std::path::Path,
+    bougie_bin: &std::path::Path,
+) -> Result<PathBuf> {
+    let staged = bin_dir.join("_bougie-shim.exe");
+    let needs_copy = match (std::fs::metadata(&staged), std::fs::metadata(bougie_bin)) {
+        (Ok(s), Ok(b)) => {
+            s.len() != b.len() || s.modified().ok() < b.modified().ok()
+        }
+        _ => true,
+    };
+    if needs_copy {
+        std::fs::copy(bougie_bin, &staged)
+            .map_err(|e| eyre!("copying bougie shim to {}: {e}", staged.display()))?;
+    }
+    Ok(staged)
+}
+
+/// Materialize a shim that re-enters the bougie binary under a
+/// different `argv[0]` (see [`crate::shim`]).
+///
+/// Unix: symlink — cheap, role-detected from the link path's basename.
+/// Windows: hard link — `std::os::windows::fs::symlink_file` requires
+/// Developer Mode or admin, while NTFS hard links don't. The bougie
+/// binary uses `std::env::args_os().next()` to recover `argv[0]`, and
+/// Windows passes the invoked path (including `.exe`) verbatim — so
+/// hardlinking `php.exe` to `bougie.exe` is enough for the shim
+/// dispatcher to detect the `Role::Php` invocation.
+#[cfg(unix)]
+fn link_shim(target: &std::path::Path, link: &std::path::Path) -> io::Result<()> {
+    std::os::unix::fs::symlink(target, link)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -616,6 +707,47 @@ mod tests {
         assert!(is_ext_enabled_in_project(&dir, "redis"));
         assert!(!is_ext_enabled_in_project(&dir, "xdebug"));
         assert!(!is_ext_enabled_in_project(&dir, "pdo_mysql"));
+    }
+
+    /// Regression for #106: bougie run -- composer update used to
+    /// fail with `invalid patch version component: "*"` whenever a
+    /// project's composer.json declared a Composer-style wildcard in
+    /// `require.php`. `bougie-semver`'s parser handles the full
+    /// Composer grammar (wildcards, hyphen ranges, unions, ...), so
+    /// these now parse and lower to a constraint the resolver can
+    /// satisfy against bougie's exact-triple PHP versions.
+    #[test]
+    fn require_php_accepts_composer_wildcards_and_unions() {
+        use bougie_config::ComposerJson;
+        use std::collections::{BTreeMap, BTreeSet};
+        for require_php in [
+            "8.3.*",
+            "8.*",
+            "^8.0 || 8.*",
+            ">=8.0",
+            "^8.3",
+            "7.4 - 8.4",
+            ">=8.0,<9",
+            "*",
+        ] {
+            let project = ProjectConfig {
+                composer: Some(ComposerJson {
+                    require_php: Some(require_php.to_string()),
+                    require_extensions: BTreeSet::new(),
+                    extra_bougie: None,
+                    scripts: BTreeMap::new(),
+                }),
+                bougie: BougieConfig::default(),
+            };
+            let (spec, _flavor) = resolve_php_inputs(&project)
+                .unwrap_or_else(|e| panic!("resolve_php_inputs({require_php:?}) failed: {e}"));
+            // The wildcard cases must produce a Constraint, not a
+            // bare-version VersionLike — they're ranges, not pins.
+            assert!(
+                matches!(spec, VersionLike::Constraint(_)),
+                "{require_php:?} should produce a Constraint, got {spec:?}"
+            );
+        }
     }
 
     #[test]
@@ -706,91 +838,6 @@ mod tests {
         // User-authored fragment at a different prefix is preserved.
         assert!(dst.join("25-ftp.ini").exists());
     }
-}
-
-fn write_shims(project_root: &std::path::Path) -> Result<PathBuf> {
-    let bin_dir = project_root.join(".bougie").join("bin");
-    std::fs::create_dir_all(&bin_dir)?;
-    let bougie_bin =
-        std::env::current_exe().map_err(|e| eyre!("locating current executable: {e}"))?;
-    // On Windows the shim is an NTFS hard link, which can't cross
-    // volumes — the bougie binary may live on a different drive from
-    // the project (`bougie.exe` on `C:\`, project tempdir on `D:\` is
-    // the common GH-Actions shape). Stage a same-volume copy first
-    // and hard-link the four shim names to *that*, so the link
-    // creation is always intra-volume. The copy is skipped when
-    // bytes already match — bougie ships with a stable exe size, so
-    // a re-sync of an unchanged binary is just four `metadata()`
-    // calls. Unix doesn't need this (`symlink` is happy across
-    // mounts).
-    #[cfg(not(unix))]
-    let bougie_bin = stage_local_bougie(&bin_dir, &bougie_bin)?;
-    // `unzip` is here because Composer's ZipDownloader does a PATH
-    // lookup for it and prefers it over PHP's ZipArchive (§3.7,
-    // commands::unzip). Materialising it as a sibling shim keeps the
-    // composer subprocess discovery path inside `.bougie/bin/`.
-    for name in ["php", "php-fpm", "composer", "unzip"] {
-        // On Windows, PATH resolution wants `.exe`; on Unix the bare
-        // name is what Composer's ExecutableFinder searches for.
-        #[cfg(unix)]
-        let link = bin_dir.join(name);
-        #[cfg(not(unix))]
-        let link = bin_dir.join(format!("{name}.exe"));
-        if link.exists() || link.symlink_metadata().is_ok() {
-            std::fs::remove_file(&link)?;
-        }
-        link_shim(&bougie_bin, &link)?;
-    }
-    Ok(bin_dir)
-}
-
-/// Copy `bougie.exe` into `<bin_dir>/_bougie-shim.exe` so the four
-/// shim hard links land on the same volume as the staged binary
-/// (cross-volume NTFS hard links fail with ERROR_NOT_SAME_DEVICE).
-/// Returns the staged path; the four shim links point at that file.
-///
-/// Refreshes when either the size OR the mtime indicates the
-/// canonical `bougie.exe` has moved on (`cargo install --force`,
-/// `bougie self upgrade`, …). Size alone misses same-length
-/// rebuilds — the symptom is `.bougie/bin/unzip.EXE` running stale
-/// code after a binary upgrade and Composer's `ZipDownloader`
-/// reporting "the argument '--quiet' cannot be used multiple times"
-/// because the older shim didn't strip `.EXE` case-insensitively.
-/// `fs::copy` to the existing path truncates in place (CREATE_ALWAYS
-/// on Windows preserves the inode), so the refresh propagates to
-/// every hard link transparently.
-#[cfg(not(unix))]
-fn stage_local_bougie(
-    bin_dir: &std::path::Path,
-    bougie_bin: &std::path::Path,
-) -> Result<PathBuf> {
-    let staged = bin_dir.join("_bougie-shim.exe");
-    let needs_copy = match (std::fs::metadata(&staged), std::fs::metadata(bougie_bin)) {
-        (Ok(s), Ok(b)) => {
-            s.len() != b.len() || s.modified().ok() < b.modified().ok()
-        }
-        _ => true,
-    };
-    if needs_copy {
-        std::fs::copy(bougie_bin, &staged)
-            .map_err(|e| eyre!("copying bougie shim to {}: {e}", staged.display()))?;
-    }
-    Ok(staged)
-}
-
-/// Materialize a shim that re-enters the bougie binary under a
-/// different `argv[0]` (see [`crate::shim`]).
-///
-/// Unix: symlink — cheap, role-detected from the link path's basename.
-/// Windows: hard link — `std::os::windows::fs::symlink_file` requires
-/// Developer Mode or admin, while NTFS hard links don't. The bougie
-/// binary uses `std::env::args_os().next()` to recover `argv[0]`, and
-/// Windows passes the invoked path (including `.exe`) verbatim — so
-/// hardlinking `php.exe` to `bougie.exe` is enough for the shim
-/// dispatcher to detect the `Role::Php` invocation.
-#[cfg(unix)]
-fn link_shim(target: &std::path::Path, link: &std::path::Path) -> io::Result<()> {
-    std::os::unix::fs::symlink(target, link)
 }
 #[cfg(not(unix))]
 fn link_shim(target: &std::path::Path, link: &std::path::Path) -> io::Result<()> {

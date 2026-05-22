@@ -48,6 +48,15 @@ pub struct InstallSummary {
 
 /// Apply `composer.lock` to `project_root`. See module docs for the
 /// flow.
+///
+/// # Panics
+///
+/// Panics on internal preflight invariant violations — the inner
+/// unwraps on `p.dist` / `dist.shasum` rely on `preflight` having
+/// already rejected source-only and missing-shasum packages. If you
+/// changed the preflight rules and forgot to update this consumer,
+/// you'll hit the unwrap; that's the failure mode the comment at
+/// the unwrap is guarding against.
 pub fn install_from_lock(
     paths: &Paths,
     project_root: &Path,
@@ -115,7 +124,7 @@ pub fn install_from_lock(
             let dist = p.dist.as_ref().unwrap();
             host_from_url(&dist.url)
                 .and_then(|host| auth.get(host))
-                .map(|creds| creds.header_value())
+                .map(super::super::metadata::AuthCredentials::header_value)
         })
         .collect();
     let dists: Vec<DistRequest<'_>> = install_set
@@ -154,14 +163,20 @@ pub fn install_from_lock(
     })
     .map_err(|e| eyre!("autoload dump failed: {e}"))?;
 
-    let packages_installed = outcomes
-        .iter()
-        .filter(|o| **o == DistOutcome::Downloaded)
-        .count() as u32;
-    let packages_already_present = outcomes
-        .iter()
-        .filter(|o| **o == DistOutcome::CacheHit)
-        .count() as u32;
+    let packages_installed = u32::try_from(
+        outcomes
+            .iter()
+            .filter(|o| **o == DistOutcome::Downloaded)
+            .count(),
+    )
+    .unwrap_or(u32::MAX);
+    let packages_already_present = u32::try_from(
+        outcomes
+            .iter()
+            .filter(|o| **o == DistOutcome::CacheHit)
+            .count(),
+    )
+    .unwrap_or(u32::MAX);
     Ok(InstallSummary {
         project_root: project_root.to_path_buf(),
         packages_installed,
@@ -212,8 +227,8 @@ fn preflight(composer_json_bytes: &[u8], lock: &Lock, no_dev: bool) -> Result<()
     let mut reasons: Vec<String> = Vec::new();
 
     // composer.json scripts → fallback, we don't run them.
-    if let Ok(Value::Object(obj)) = serde_json::from_slice::<Value>(composer_json_bytes) {
-        if obj
+    if let Ok(Value::Object(obj)) = serde_json::from_slice::<Value>(composer_json_bytes)
+        && obj
             .get("scripts")
             .and_then(Value::as_object)
             .is_some_and(|s| !s.is_empty())
@@ -224,7 +239,6 @@ fn preflight(composer_json_bytes: &[u8], lock: &Lock, no_dev: bool) -> Result<()
                     .into(),
             );
         }
-    }
 
     let packages: Vec<&LockPackage> = if no_dev {
         lock.packages.iter().collect()

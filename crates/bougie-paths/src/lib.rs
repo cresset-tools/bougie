@@ -4,7 +4,7 @@
 //! Three roots, not two:
 //!
 //! - **`home`** — small, user-shaped state that should follow the user.
-//!   On Unix it's XDG_DATA_HOME (per CLI.md §2.1); on Windows it's
+//!   On Unix it's `XDG_DATA_HOME` (per CLI.md §2.1); on Windows it's
 //!   `%APPDATA%/Roaming/bougie` so `state/state.json` (which composer
 //!   /php versions are installed where) and `state/public-keys/` (TUF
 //!   trust anchors) roam across machines in a domain environment.
@@ -13,7 +13,7 @@
 //!   on Windows it's `%LOCALAPPDATA%/bougie` so the multi-GB
 //!   `installs/` + `store/` trees and the per-machine `bin/` shim
 //!   directory stay out of roaming profiles.
-//! - **`cache`** — transient: XDG_CACHE_HOME on Unix, `%LOCALAPPDATA%`
+//! - **`cache`** — transient: `XDG_CACHE_HOME` on Unix, `%LOCALAPPDATA%`
 //!   on Windows. Index responses and in-flight blob downloads.
 //!
 //! Override the lot via `BOUGIE_HOME` / `BOUGIE_LOCAL` / `BOUGIE_CACHE`.
@@ -210,7 +210,7 @@ impl Paths {
     }
     /// Persistent cache of Packagist v2 metadata documents at
     /// `$BOUGIE_CACHE/composer-metadata/p2/<vendor>/<name>.json` (plus
-    /// `~dev.json`) with ETag sidecars alongside each. Shared across
+    /// `~dev.json`) with `ETag` sidecars alongside each. Shared across
     /// projects: a `monolog/monolog` metadata fetch from project A is
     /// reused by project B via conditional GET, avoiding the multi-MB
     /// re-download Composer is forced into without a warm cache.
@@ -354,7 +354,7 @@ mod tests {
     }
 
     /// Downloads + shims compose under `local`; state composes under
-    /// `home`. With_local exposes both so the assertions can split them
+    /// `home`. `With_local` exposes both so the assertions can split them
     /// cleanly.
     #[test]
     fn download_paths_use_local_state_paths_use_home() {

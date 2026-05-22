@@ -109,9 +109,7 @@ pub fn run(format: OutputFormat, names: Vec<String>) -> Result<ExitCode> {
         .iter()
         .map(|(name, pin)| {
             let tenant = pin
-                .tenant()
-                .map(str::to_owned)
-                .unwrap_or_else(|| default_tenant.clone());
+                .tenant().map_or_else(|| default_tenant.clone(), str::to_owned);
             json!({"name": name, "tenant": tenant})
         })
         .collect();
@@ -140,13 +138,11 @@ fn derive_default_tenant(
     // so re-read it. Falls back to cwd basename on any parse error.
     if let Some(_c) = composer {
         let path = project_root.join("composer.json");
-        if let Ok(text) = std::fs::read_to_string(&path) {
-            if let Ok(v) = serde_json::from_str::<Value>(&text) {
-                if let Some(name) = v.get("name").and_then(Value::as_str) {
+        if let Ok(text) = std::fs::read_to_string(&path)
+            && let Ok(v) = serde_json::from_str::<Value>(&text)
+                && let Some(name) = v.get("name").and_then(Value::as_str) {
                     return sanitize_tenant(name);
                 }
-            }
-        }
     }
     let base = project_root
         .file_name()

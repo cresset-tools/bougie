@@ -62,14 +62,14 @@
 //! settles so `provide`/`replace` indexing stays deterministic.
 
 use std::cell::{Ref, RefCell};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use std::sync::Arc;
 
 use crate::hash::FxHashMap;
 use crate::package_name::PackageName;
 
-use bougie_composer::lockfile::LockPackage;
+use bougie_composer::lockfile::{LockAutoload, LockPackage};
 use bougie_paths::Paths;
 use bougie_semver::constraint::Constraint;
 use bougie_semver::stability::Stability;
@@ -181,8 +181,8 @@ pub struct ResolveProvider {
     /// and synthesizing a candidate inside the consumer's range at
     /// `choose_version` time (when the consumer's range is known).
     virtual_wildcards: RefCell<FxHashMap<PackageName, Vec<WildcardProvider>>>,
-    /// Reverse-lookup: for each (virtual_name, selected_version),
-    /// every (provider_name, provider_version) pair that registered
+    /// Reverse-lookup: for each (`virtual_name`, `selected_version`),
+    /// every (`provider_name`, `provider_version`) pair that registered
     /// it. Used by `get_dependencies` to pin the providing real
     /// package(s).
     ///
@@ -631,11 +631,10 @@ impl ResolveProvider {
                             repo.url,
                         ))
                     })?;
-                if let Some(md) = dev_md {
-                    if let Some(extra) = md.packages.get(name) {
+                if let Some(md) = dev_md
+                    && let Some(extra) = md.packages.get(name) {
                         versions.extend(extra.iter().cloned());
                     }
-                }
             }
         }
 
@@ -890,15 +889,15 @@ impl ResolveProvider {
                     version_normalized: Some(entry.provided_version.normalized.clone()),
                     dist: None,
                     source: None,
-                    require: Default::default(),
-                    require_dev: Default::default(),
+                    require: BTreeMap::default(),
+                    require_dev: BTreeMap::default(),
                     package_type: Some("metapackage".into()),
-                    autoload: Default::default(),
+                    autoload: LockAutoload::default(),
                     autoload_dev: serde_json::Value::Null,
-                    replace: Default::default(),
-                    provide: Default::default(),
-                    conflict: Default::default(),
-                    bin: Default::default(),
+                    replace: BTreeMap::default(),
+                    provide: BTreeMap::default(),
+                    conflict: BTreeMap::default(),
+                    bin: Vec::default(),
                     extra: serde_json::Value::Null,
                     time: None,
                 },
@@ -1237,11 +1236,10 @@ async fn load_real_candidates_isolated(
                             repo.url,
                         ))
                     })?;
-            if let Some(md) = dev_md {
-                if let Some(extra) = md.packages.get(name) {
+            if let Some(md) = dev_md
+                && let Some(extra) = md.packages.get(name) {
                     versions.extend(extra.iter().cloned());
                 }
-            }
         }
     }
     // Pre-parse provide/replace clauses while we're already off the
@@ -1651,7 +1649,7 @@ fn read_repositories(
 
 /// Read auth credentials from composer.json's `config.http-basic`
 /// and `config.bearer` maps. Composer's auth.json (project-level)
-/// is merged in by the orchestrators with project_root context —
+/// is merged in by the orchestrators with `project_root` context —
 /// this function only handles the in-composer.json side.
 ///
 /// Returns a map keyed by hostname. `http-basic` and `bearer` are
@@ -2293,7 +2291,7 @@ pub fn dry_run_update(
     let t_discover = std::time::Instant::now();
     provider.discover_repos();
     tracing::info!(
-        elapsed_ms = t_discover.elapsed().as_millis() as u64,
+        elapsed_ms = crate::elapsed_ms(t_discover.elapsed()),
         repos = provider.repos.len(),
         "discover_repos",
     );
@@ -2302,7 +2300,7 @@ pub fn dry_run_update(
         .pre_fetch_closure()
         .map_err(|e| eyre!("pre-fetching metadata closure: {}", e.0))?;
     tracing::info!(
-        elapsed_ms = t_prefetch.elapsed().as_millis() as u64,
+        elapsed_ms = crate::elapsed_ms(t_prefetch.elapsed()),
         cached_packages = provider.cache_size(),
         "pre_fetch_closure",
     );
@@ -2314,7 +2312,7 @@ pub fn dry_run_update(
     let solve_elapsed = t_solve.elapsed();
     provider.finish_solve_progress();
     tracing::info!(
-        elapsed_ms = solve_elapsed.as_millis() as u64,
+        elapsed_ms = crate::elapsed_ms(solve_elapsed),
         ok = result.is_ok(),
         "pubgrub_resolve",
     );
@@ -2478,7 +2476,7 @@ pub fn resolve_for_lockfile(
         .map(|(name, stability)| (name.clone(), stability_to_composer_int(*stability)))
         .collect();
     tracing::info!(
-        elapsed_ms = t_partition.elapsed().as_millis() as u64,
+        elapsed_ms = crate::elapsed_ms(t_partition.elapsed()),
         packages = packages.len(),
         packages_dev = packages_dev.len(),
         "partition_prod_dev",
@@ -2524,7 +2522,7 @@ fn solve_into_lock_packages(
     let t_discover = std::time::Instant::now();
     provider.discover_repos();
     tracing::info!(
-        elapsed_ms = t_discover.elapsed().as_millis() as u64,
+        elapsed_ms = crate::elapsed_ms(t_discover.elapsed()),
         repos = provider.repos.len(),
         no_dev,
         "discover_repos",
@@ -2539,7 +2537,7 @@ fn solve_into_lock_packages(
     };
     prefetch.map_err(|e| eyre!("pre-fetching metadata closure: {}", e.0))?;
     tracing::info!(
-        elapsed_ms = t_prefetch.elapsed().as_millis() as u64,
+        elapsed_ms = crate::elapsed_ms(t_prefetch.elapsed()),
         cached_packages = provider.cache_size(),
         no_dev,
         "pre_fetch_closure",
@@ -2554,7 +2552,7 @@ fn solve_into_lock_packages(
     let solve_elapsed = t_solve.elapsed();
     provider.finish_solve_progress();
     tracing::info!(
-        elapsed_ms = solve_elapsed.as_millis() as u64,
+        elapsed_ms = crate::elapsed_ms(solve_elapsed),
         ok = solve_result.is_ok(),
         no_dev,
         "pubgrub_resolve",
@@ -2612,7 +2610,7 @@ fn solve_into_lock_packages(
     drop(virtual_selections);
     packages.sort_by(|a, b| a.name.cmp(&b.name));
     tracing::info!(
-        elapsed_ms = t_assemble.elapsed().as_millis() as u64,
+        elapsed_ms = crate::elapsed_ms(t_assemble.elapsed()),
         packages = packages.len(),
         no_dev,
         "assemble_lock_packages",

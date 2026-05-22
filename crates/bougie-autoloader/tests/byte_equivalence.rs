@@ -43,7 +43,7 @@ fn fixtures_are_well_formed() {
 }
 
 /// Files bougie currently emits. Other files in `expected/`
-/// (autoload_real.php, autoload_static.php, installed.{json,php}) are
+/// (`autoload_real.php`, `autoload_static.php`, installed.{json,php}) are
 /// produced by later phases or by full `composer install`; the
 /// harness ignores them until those phases land.
 const EMITTED: &[&str] = &[
@@ -101,15 +101,13 @@ fn byte_equivalence_against_composer() {
                 (false, false) => continue,
                 (true, false) => {
                     failures.push(format!(
-                        "{name}: bougie did not produce {} (Composer did)",
-                        rel
+                        "{name}: bougie did not produce {rel} (Composer did)"
                     ));
                     continue;
                 }
                 (false, true) => {
                     failures.push(format!(
-                        "{name}: bougie produced {} but Composer did not",
-                        rel
+                        "{name}: bougie produced {rel} but Composer did not"
                     ));
                     continue;
                 }
@@ -123,13 +121,11 @@ fn byte_equivalence_against_composer() {
         }
     }
 
-    if !failures.is_empty() {
-        panic!(
-            "{} byte-equivalence failures:\n\n{}",
-            failures.len(),
-            failures.join("\n\n")
-        );
-    }
+    assert!(failures.is_empty(), 
+        "{} byte-equivalence failures:\n\n{}",
+        failures.len(),
+        failures.join("\n\n")
+    );
 }
 
 fn format_diff(name: &str, rel: &str, expected: &[u8], actual: &[u8]) -> String {
@@ -191,7 +187,7 @@ fn parse_flags(input_dir: &Path) -> FixtureFlags {
 fn fixture_dirs() -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = std::fs::read_dir(FIXTURES_DIR)
         .expect("read fixtures dir")
-        .filter_map(|e| e.ok())
+        .filter_map(std::result::Result::ok)
         .map(|e| e.path())
         .filter(|p| p.is_dir())
         .collect();
@@ -210,15 +206,14 @@ fn walk_into(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
-    for entry in entries.filter_map(|e| e.ok()) {
+    for entry in entries.filter_map(std::result::Result::ok) {
         let p = entry.path();
         if p.is_dir() {
             walk_into(root, &p, out);
-        } else if p.is_file() {
-            if let Ok(rel) = p.strip_prefix(root) {
+        } else if p.is_file()
+            && let Ok(rel) = p.strip_prefix(root) {
                 out.push(rel.to_path_buf());
             }
-        }
     }
 }
 

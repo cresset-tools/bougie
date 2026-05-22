@@ -14,10 +14,10 @@
 //!   second `composer update` only re-validates the packages whose
 //!   server-side mtime advanced.
 //!
-//! - **`If-None-Match` + ETag sidecar.** Packagist's response sets
+//! - **`If-None-Match` + `ETag` sidecar.** Packagist's response sets
 //!   both `ETag` and `Last-Modified`; we follow the existing
 //!   `bougie_composer::fetch` convention (`fetch_channels`) and use
-//!   ETag. A 304 short-circuits to the cached body without an extra
+//!   `ETag`. A 304 short-circuits to the cached body without an extra
 //!   round-trip.
 //!
 //! The prefetcher (background tokio task that warms metadata for
@@ -181,10 +181,11 @@ fn extract_cache_namespace(url: &str) -> String {
     }
     // Fallback: a short hex digest of the full URL. Use a cheap
     // FNV-style hash rather than pulling sha2 here.
-    let mut h: u64 = 0xcbf29ce484222325;
+    // FNV-1a 64-bit offset basis and prime.
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for b in url.as_bytes() {
         h ^= u64::from(*b);
-        h = h.wrapping_mul(0x100000001b3);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
     }
     format!("url-{h:016x}")
 }
@@ -284,7 +285,7 @@ pub fn probe_protocol(
     tracing::debug!(
         url = %url,
         status = %resp.status(),
-        elapsed_ms = start.elapsed().as_millis() as u64,
+        elapsed_ms = crate::elapsed_ms(start.elapsed()),
         phase = "probe",
         "GET",
     );
@@ -409,7 +410,7 @@ pub fn fetch_package_metadata(
     tracing::debug!(
         url = %url,
         status = %resp.status(),
-        elapsed_ms = start.elapsed().as_millis() as u64,
+        elapsed_ms = crate::elapsed_ms(start.elapsed()),
         package = %package_name,
         variant = ?variant,
         phase = "fetch",
@@ -503,7 +504,7 @@ pub fn fetch_package_metadata_optional(
     tracing::debug!(
         url = %url,
         status = %resp.status(),
-        elapsed_ms = start.elapsed().as_millis() as u64,
+        elapsed_ms = crate::elapsed_ms(start.elapsed()),
         package = %package_name,
         variant = ?variant,
         phase = "fetch_optional",
@@ -909,7 +910,7 @@ pub async fn fetch_package_metadata_optional_async(
     tracing::debug!(
         url = %url,
         status = %resp.status(),
-        elapsed_ms = start.elapsed().as_millis() as u64,
+        elapsed_ms = crate::elapsed_ms(start.elapsed()),
         package = %package_name,
         variant = ?variant,
         phase = "fetch_optional_async",

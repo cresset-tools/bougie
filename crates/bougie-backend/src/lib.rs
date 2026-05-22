@@ -5,7 +5,7 @@
 //! download and how to extract it. Today there's exactly one
 //! implementation, [`bougie_index::BougieIndexBackend`], which talks to
 //! `index.bougie.tools` (or a configured mirror) using the signed
-//! root → section → manifest protocol. Phase 3 of WINDOWS_PLAN.md adds
+//! root → section → manifest protocol. Phase 3 of `WINDOWS_PLAN.md` adds
 //! `WindowsPhpNetBackend`, which fetches `releases.json` from
 //! windows.php.net and synthesizes a `PhpRecipe` for that distribution.
 //!
@@ -60,7 +60,7 @@ pub trait Backend {
     /// `$BOUGIE_HOME`. `version_pin` and `opts` are bougie-index
     /// concepts; the windows.php.net backend ignores them (the
     /// compile-time `WINDOWS_PECL_VERSIONS` table is the version oracle
-    /// — see WINDOWS_PLAN.md §Phase 4).
+    /// — see `WINDOWS_PLAN.md` §Phase 4).
     ///
     /// [`resolve_php`]: Self::resolve_php
     fn resolve_extension(

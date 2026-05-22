@@ -62,6 +62,12 @@ impl std::fmt::Display for ParseError {
 impl std::error::Error for ParseError {}
 
 impl Constraint {
+    /// Parse a Composer constraint string.
+    ///
+    /// # Panics
+    ///
+    /// Doesn't: the internal `.unwrap()`s reach `parsed.into_iter().next()`
+    /// only when `parsed.len() == 1` was just checked.
     pub fn parse(input: &str) -> Result<Self, ParseError> {
         let trimmed = input.trim();
         if trimmed.is_empty() {
@@ -131,7 +137,7 @@ fn matches_atom(candidate: &Version, op: CmpOp, target: &Version, explicit_lower
 
 /// True iff `a` and `b` are both numeric, have the same numeric
 /// segments, and exactly one is a prerelease (Prerelease /
-/// PrereleaseDev / PatchDev / Dev) while the other is Stable.
+/// `PrereleaseDev` / `PatchDev` / Dev) while the other is Stable.
 fn same_numeric_prerelease_vs_stable(a: &Version, b: &Version) -> bool {
     let (
         VersionKind::Numeric { segments_raw: sa, suffix: suf_a },
@@ -473,7 +479,7 @@ fn parse_wildcard(s: &str) -> Result<Constraint, ParseError> {
     let lower_segs: Vec<String> = numeric_prefix
         .iter()
         .map(u32::to_string)
-        .chain(std::iter::repeat("0".to_owned()).take(4usize.saturating_sub(first_wild)))
+        .chain(std::iter::repeat_n("0".to_owned(), 4usize.saturating_sub(first_wild)))
         .collect();
     let lower = Version::parse(&lower_segs.join("."))
         .map_err(|e| ParseError::Invalid(format!("{s} lower: {e}")))?;
@@ -487,7 +493,7 @@ fn parse_wildcard(s: &str) -> Result<Constraint, ParseError> {
     let upper_str: String = upper_segs
         .iter()
         .map(u32::to_string)
-        .chain(std::iter::repeat("0".to_owned()).take(4usize.saturating_sub(upper_segs.len())))
+        .chain(std::iter::repeat_n("0".to_owned(), 4usize.saturating_sub(upper_segs.len())))
         .collect::<Vec<_>>()
         .join(".");
     let upper = Version::parse(&upper_str)

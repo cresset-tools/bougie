@@ -3,7 +3,7 @@
 //!
 //! Each test spawns the bougie binary through a symlink so
 //! `role_from_argv0` routes into `babysit::run`. A socketpair is
-//! handed to the child as fd 3 (dup2'd in pre_exec). The parent end
+//! handed to the child as fd 3 (dup2'd in `pre_exec`). The parent end
 //! stays in this process and is used both to read the `pgid=` line
 //! the babysit emits and to simulate "bougied died" by dropping it.
 
@@ -29,7 +29,7 @@ fn babysit_shim(td: &TempDir) -> PathBuf {
 }
 
 /// Spawn the babysit shim with one end of a `socketpair` dup2'd onto
-/// fd 3 in the child. Returns (child, parent_end_of_socketpair).
+/// fd 3 in the child. Returns (child, `parent_end_of_socketpair`).
 fn spawn_babysit(shim: &PathBuf, grace_secs: u64, exec: &str, exec_args: &[&str]) -> (std::process::Child, UnixStream) {
     let (parent, child_end) = UnixStream::pair().expect("socketpair");
     let child_raw = child_end.as_raw_fd();
@@ -79,10 +79,10 @@ fn libc_dup2(src: i32, dst: i32) -> i32 {
     unsafe { dup2(src, dst) }
 }
 
-/// Read one `\n`-terminated line from the socket WITHOUT a BufReader.
-/// A BufReader would issue an 8 KiB read on the underlying fd and
+/// Read one `\n`-terminated line from the socket WITHOUT a `BufReader`.
+/// A `BufReader` would issue an 8 KiB read on the underlying fd and
 /// buffer everything it got — when the function returns and the
-/// BufReader is dropped, any bytes past the first newline are
+/// `BufReader` is dropped, any bytes past the first newline are
 /// silently discarded. Under GHA load the babysit frequently writes
 /// `pgid=…\nexited=…\n` back-to-back before this thread is scheduled
 /// to read, so a BufReader-based reader would consume both lines in
@@ -102,12 +102,12 @@ fn read_pgid_line(sock: &mut UnixStream) -> i32 {
         line.push(byte[0]);
     }
     let line = std::str::from_utf8(&line).expect("pgid line is utf-8");
-    let pgid = line
+    
+    line
         .strip_prefix("pgid=")
         .unwrap_or_else(|| panic!("expected pgid= line, got {line:?}"))
         .parse::<i32>()
-        .expect("parsing pgid");
-    pgid
+        .expect("parsing pgid")
 }
 
 /// Returns true iff the given process group has any live members.
@@ -212,7 +212,7 @@ fn babysit_kills_group_on_sigterm() {
     assert!(pgrp_alive(pgid));
 
     // SIGTERM to the babysit. It must proxy to the group.
-    let bpid = child.id() as i32;
+    let bpid = i32::try_from(child.id()).expect("test pid fits in i32");
     assert_eq!(kill_pid(bpid, 15), 0, "kill(babysit, SIGTERM) failed");
 
     // 30s deadline for SIGTERM-propagation + group teardown — see the
@@ -236,7 +236,7 @@ fn babysit_service_runs_in_its_own_pgid() {
     // service is in a separate group. (Same group would mean killpg
     // from babysit would also signal itself, which is what we want
     // to avoid.)
-    let bpid = child.id() as i32;
+    let bpid = i32::try_from(child.id()).expect("test pid fits in i32");
     assert_ne!(
         pgid, bpid,
         "service pgid {pgid} should differ from babysit pid {bpid}"

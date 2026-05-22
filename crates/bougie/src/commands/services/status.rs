@@ -59,7 +59,13 @@ impl Render for ServicesStatusResult {
                 .map_or_else(|| "-".into(), |p| p.to_string());
             let uptime = row.uptime_ms.map_or_else(
                 || "-".into(),
-                |ms| format!("{:.1}s", ms as f64 / 1000.0),
+                |ms| {
+                    // u64 ms → f64 loses precision past 2^52 ms (~143k
+                    // years of uptime), which won't happen.
+                    #[allow(clippy::cast_precision_loss)]
+                    let secs = ms as f64 / 1000.0;
+                    format!("{secs:.1}s")
+                },
             );
             writeln!(
                 w,

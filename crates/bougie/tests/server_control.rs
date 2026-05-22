@@ -55,9 +55,11 @@ fn wait_for_listening(stderr: &mut Box<dyn BufRead + Send>) -> String {
 fn wait_for_socket(path: &std::path::Path, timeout: Duration) {
     let deadline = Instant::now() + timeout;
     while !path.exists() {
-        if Instant::now() >= deadline {
-            panic!("control socket {} didn't appear within {timeout:?}", path.display());
-        }
+        assert!(
+            Instant::now() < deadline,
+            "control socket {} didn't appear within {timeout:?}",
+            path.display()
+        );
         std::thread::sleep(Duration::from_millis(25));
     }
 }

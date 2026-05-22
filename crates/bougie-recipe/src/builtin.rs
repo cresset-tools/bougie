@@ -29,8 +29,7 @@ pub fn detect_from_text(composer_json: Option<&str>) -> &'static str {
     let require = v.get("require").and_then(|r| r.as_object());
     let has = |pkg: &str| {
         require
-            .map(|r| r.contains_key(pkg))
-            .unwrap_or(false)
+            .is_some_and(|r| r.contains_key(pkg))
     };
     let name = v.get("name").and_then(|n| n.as_str()).unwrap_or("");
     if has("magento/product-community-edition")
@@ -47,9 +46,13 @@ pub fn detect_from_text(composer_json: Option<&str>) -> &'static str {
     "generic"
 }
 
-/// Look up a builtin recipe by name and parse it. Panics on a
-/// programming error (a malformed builtin would mean the binary
-/// shipped broken).
+/// Look up a builtin recipe by name and parse it.
+///
+/// # Panics
+///
+/// Panics on a programming error: a builtin recipe TOML literal
+/// embedded in this crate fails to parse. Caught at test time, so
+/// in production this never fires.
 pub fn load_builtin(name: &str) -> Option<Recipe> {
     let (_, text) = BUILTINS.iter().find(|(n, _)| *n == name)?;
     Some(parse(text).expect("builtin recipe must parse"))

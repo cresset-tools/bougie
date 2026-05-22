@@ -244,20 +244,18 @@ fn dispatch(
                     .iter()
                     .map(|v| v.as_str().unwrap().to_owned())
                     .collect();
-                if let Some(got) = sort_versions(&input, true) {
-                    if got != want_asc {
+                if let Some(got) = sort_versions(&input, true)
+                    && got != want_asc {
                         failures.push(format!(
                             "{id}: sort_asc({input:?}) expected={want_asc:?} actual={got:?}"
                         ));
                     }
-                }
-                if let Some(got) = sort_versions(&input, false) {
-                    if got != want_desc {
+                if let Some(got) = sort_versions(&input, false)
+                    && got != want_desc {
                         failures.push(format!(
                             "{id}: sort_desc({input:?}) expected={want_desc:?} actual={got:?}"
                         ));
                     }
-                }
                 *covered += 2;
             }
             true

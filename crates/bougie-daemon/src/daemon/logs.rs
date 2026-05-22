@@ -9,7 +9,7 @@
 
 use eyre::{Result, WrapErr};
 use std::fs::{File, OpenOptions};
-use std::io::Write;
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 /// Default rotate-at threshold; SERVICES.md §5.5.
@@ -48,7 +48,7 @@ impl LogWriter {
             .append(true)
             .open(&base)
             .wrap_err_with(|| format!("opening {}", base.display()))?;
-        let bytes_written = file.metadata().map(|m| m.len()).unwrap_or(0);
+        let bytes_written = file.metadata().map_or(0, |m| m.len());
         Ok(Self {
             base,
             file,
@@ -139,25 +139,35 @@ impl LogWriter {
 /// so a multi-GB log doesn't get pulled into memory. Returns the
 /// lines in original order. If the file has fewer than `n` lines, the
 /// whole file is returned.
+///
+/// # Panics
+///
+/// Doesn't in practice: the only inner `expect` is a `usize::try_from`
+/// on a value capped to `CHUNK` (8 KiB), which fits even on 32-bit
+/// targets bougie doesn't ship for anyway.
 pub fn tail_lines(path: &Path, n: usize) -> Result<Vec<String>> {
-    use std::io::{Read, Seek, SeekFrom};
+    // 8 KiB at a time, walking backwards. Plenty to find the last
+    // few hundred lines without thrashing.
+    const CHUNK: usize = 8 * 1024;
     if n == 0 || !path.exists() {
         return Ok(Vec::new());
     }
     let mut f = File::open(path).wrap_err_with(|| format!("opening {}", path.display()))?;
     let len = f.metadata()?.len();
-    // 8 KiB at a time, walking backwards. Plenty to find the last
-    // few hundred lines without thrashing.
-    const CHUNK: u64 = 8 * 1024;
     let mut pos = len;
-    let mut buf = Vec::with_capacity(CHUNK as usize);
+    let mut buf = Vec::with_capacity(CHUNK);
     let mut lines: Vec<String> = Vec::new();
     while pos > 0 && lines.len() <= n {
-        let take = std::cmp::min(CHUNK, pos);
+        let take = std::cmp::min(CHUNK as u64, pos);
         pos -= take;
         f.seek(SeekFrom::Start(pos))?;
         buf.clear();
-        buf.resize(take as usize, 0);
+        // `take` is bounded above by `CHUNK` (8 KiB), so this fits
+        // even on 32-bit targets.
+        buf.resize(
+            usize::try_from(take).expect("take ≤ CHUNK fits in usize"),
+            0,
+        );
         f.read_exact(&mut buf)?;
         // Split and prepend in reverse so order survives.
         let text = String::from_utf8_lossy(&buf).into_owned();

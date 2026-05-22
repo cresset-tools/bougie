@@ -1,4 +1,4 @@
-//! RabbitMQ tenancy: per-tenant vhost + user. SERVICES.md §3.5.
+//! `RabbitMQ` tenancy: per-tenant vhost + user. SERVICES.md §3.5.
 //!
 //! Per-project tenant gets:
 //!   - a vhost named `<tenant>`,
@@ -28,7 +28,7 @@ use tokio::time::Instant;
 /// as `inet_tcp_listener:5672` binds, but the broker still needs
 /// another moment to load mnesia + finish boot before `add_vhost`
 /// works.
-const RABBITMQCTL_READY_TIMEOUT: Duration = Duration::from_secs(60);
+const RABBITMQCTL_READY_TIMEOUT: Duration = Duration::from_mins(1);
 
 /// rabbitmq pre-start hook. Creates the directories rabbitmq writes
 /// to under our RW allowlist. No bootstrap step — rabbitmq creates
@@ -309,11 +309,11 @@ fn is_safe_identifier(s: &str) -> bool {
 fn generate_password() -> String {
     use std::fs::File;
     use std::io::Read;
+    const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut buf = [0u8; 24];
     File::open("/dev/urandom")
         .and_then(|mut f| f.read_exact(&mut buf))
         .expect("/dev/urandom should be readable for password generation");
-    const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut out = String::with_capacity(48);
     for &b in &buf {
         out.push(HEX[(b >> 4) as usize] as char);
@@ -355,9 +355,9 @@ mod tests {
         let paths = Paths::new(tmp.path().into(), tmp.path().into());
         let env: std::collections::HashMap<_, _> =
             rabbitmq_env(&paths).into_iter().collect();
-        assert_eq!(env.get("RABBITMQ_NODENAME").map(|s| s.as_str()), Some("rabbit@localhost"));
-        assert_eq!(env.get("RABBITMQ_NODE_IP_ADDRESS").map(|s| s.as_str()), Some("127.0.0.1"));
-        assert_eq!(env.get("RABBITMQ_NODE_PORT").map(|s| s.as_str()), Some("5672"));
+        assert_eq!(env.get("RABBITMQ_NODENAME").map(std::string::String::as_str), Some("rabbit@localhost"));
+        assert_eq!(env.get("RABBITMQ_NODE_IP_ADDRESS").map(std::string::String::as_str), Some("127.0.0.1"));
+        assert_eq!(env.get("RABBITMQ_NODE_PORT").map(std::string::String::as_str), Some("5672"));
         assert!(env
             .get("RABBITMQ_MNESIA_BASE")
             .is_some_and(|p| p.contains("mnesia")));

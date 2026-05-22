@@ -25,7 +25,7 @@ use tokio::sync::Mutex;
 /// significantly more because the JVM has to JIT-compile + bootstrap
 /// the cluster state. `health_timeout_for` overrides this per
 /// service for the slow ones.
-const HEALTH_TIMEOUT_DEFAULT: Duration = Duration::from_secs(60);
+const HEALTH_TIMEOUT_DEFAULT: Duration = Duration::from_mins(1);
 const HEALTH_POLL: Duration = Duration::from_millis(250);
 
 /// Auto-restart on failure. Exponential backoff, capped, with a
@@ -33,10 +33,10 @@ const HEALTH_POLL: Duration = Duration::from_millis(250);
 /// passes then dies 2s later doesn't masquerade as a first failure
 /// each cycle. See SERVICES.md §5.1.
 const BASE_BACKOFF: Duration = Duration::from_secs(1);
-const MAX_BACKOFF: Duration = Duration::from_secs(300);
+const MAX_BACKOFF: Duration = Duration::from_mins(5);
 /// If the previous successful Running window exceeded this, treat
 /// the next failure as "first failure" again (`failure_count = 1`).
-const FAILURE_RESET_THRESHOLD: Duration = Duration::from_secs(60);
+const FAILURE_RESET_THRESHOLD: Duration = Duration::from_mins(1);
 /// After this many consecutive failures, stop respawning. The
 /// service is conclusively broken; the operator can `bougie
 /// services up <name>` to retry manually.
@@ -71,7 +71,7 @@ const BABYSIT_GRACE_SECS: u64 = 7;
 const BABYSIT_READY_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// Fd number on which the babysit expects its end of the control
-/// socketpair after `dup2` in pre_exec.
+/// socketpair after `dup2` in `pre_exec`.
 const BABYSIT_CONTROL_FD: i32 = 3;
 
 /// Lifecycle states. The same shape as project-supervisor's
@@ -160,7 +160,7 @@ pub struct ServiceStatus {
     pub failure_count: u32,
     /// Milliseconds until the supervisor will respawn this service.
     /// `Some` only while state == Failed and a respawn is scheduled
-    /// (i.e. failure_count <= MAX_RESTART_ATTEMPTS).
+    /// (i.e. `failure_count` <= `MAX_RESTART_ATTEMPTS`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_restart_ms: Option<u64>,
 }
@@ -193,7 +193,7 @@ impl Supervisor {
             .filter_map(|svc| {
                 let entry = catalog::find(svc.name)?;
                 let next_restart_ms = svc.restart_at.map(|deadline| {
-                    deadline.saturating_duration_since(now).as_millis() as u64
+                    super::duration_to_ms_u64(deadline.saturating_duration_since(now))
                 });
                 Some(ServiceStatus {
                     name: svc.name.to_string(),
@@ -201,7 +201,7 @@ impl Supervisor {
                     pid: svc.pid,
                     uptime_ms: svc
                         .started_at
-                        .map(|t| t.elapsed().as_millis() as u64),
+                        .map(|t| super::duration_to_ms_u64(t.elapsed())),
                     binding: entry.binding,
                     failure_count: svc.failure_count,
                     next_restart_ms,
@@ -220,9 +220,16 @@ impl Supervisor {
     }
 
     /// Spawn a service if it isn't already running. Walks
-    /// Stopped → Starting → HealthChecking → Running. Returns `true`
+    /// Stopped → Starting → `HealthChecking` → Running. Returns `true`
     /// if this call brought the service up; `false` if it was already
     /// running.
+    ///
+    /// # Panics
+    ///
+    /// Panics on a BUG: the inner `services.get_mut(name).unwrap()`
+    /// calls assume `name` is in the map, which `Supervisor::new`
+    /// populates from the catalog. A panic here means the catalog
+    /// shifted under us mid-call.
     pub async fn start(&mut self, name: &str) -> Result<bool> {
         let entry = catalog::find(name)
             .ok_or_else(|| eyre!("unknown service `{name}`"))?;
@@ -536,7 +543,7 @@ impl Supervisor {
                     tracing::warn!(
                         service = svc.name,
                         failure_count = next_count,
-                        backoff_ms = svc.restart_at.map(|t| (t - now).as_millis() as u64),
+                        backoff_ms = svc.restart_at.map(|t| super::duration_to_ms_u64(t - now)),
                         "service crashed; respawn scheduled"
                     );
                 }
@@ -599,7 +606,7 @@ fn compute_backoff(failure_count: u32) -> Duration {
 
 // -------------------- helpers --------------------
 
-/// Per-service current_dir override. Returns `None` to inherit
+/// Per-service `current_dir` override. Returns `None` to inherit
 /// bougied's CWD. Today only opensearch uses this — its bundled
 /// `config/jvm.options` writes the GC log to a relative `logs/`
 /// path that the JVM resolves *before* opensearch.yml's `path.logs`
@@ -796,7 +803,7 @@ where
                         return;
                     }
                 }
-                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
                 Err(e) => {
                     tracing::warn!(service, error = %e, "reading from child pipe");
                     return;
@@ -904,35 +911,35 @@ fn reap_orphan_group(service: &str, pgid: i32) {
     // `kill(pgid, 0)` — existence check. `Errno::SRCH` means no
     // members left, which is the normal path (babysit cleaned up
     // before exiting).
-    match rustix::process::test_kill_process_group(pgrp) {
-        Ok(()) => {
-            tracing::warn!(
-                service,
-                pgid,
-                "babysit exited with live process group; reaping"
-            );
-            let _ = rustix::process::kill_process_group(pgrp, rustix::process::Signal::TERM);
-            std::thread::sleep(Duration::from_millis(250));
-            let _ = rustix::process::kill_process_group(pgrp, rustix::process::Signal::KILL);
-        }
-        Err(_) => { /* group already empty — normal path */ }
-    }
+    if let Ok(()) = rustix::process::test_kill_process_group(pgrp) {
+        tracing::warn!(
+            service,
+            pgid,
+            "babysit exited with live process group; reaping"
+        );
+        let _ = rustix::process::kill_process_group(pgrp, rustix::process::Signal::TERM);
+        std::thread::sleep(Duration::from_millis(250));
+        let _ = rustix::process::kill_process_group(pgrp, rustix::process::Signal::KILL);
+    } else { /* group already empty — normal path */ }
 }
 
 async fn stop_child(child: &mut Child, pid: Option<u32>) {
     if let Some(pid) = pid {
         // SIGTERM via rustix — the bougie codebase already pulls it in.
-        if let Some(rpid) = rustix::process::Pid::from_raw(pid as i32) {
+        // POSIX `pid_t` is `i32`; a pid that doesn't round-trip there
+        // shouldn't exist (Linux `pid_max` caps below `i32::MAX`).
+        let pid_i32 = match i32::try_from(pid) {
+            Ok(p) => p,
+            Err(_) => return,
+        };
+        if let Some(rpid) = rustix::process::Pid::from_raw(pid_i32) {
             let _ = rustix::process::kill_process(rpid, rustix::process::Signal::TERM);
         }
     }
     // Wait up to the grace window. If still running, SIGKILL.
-    match tokio::time::timeout(STOP_GRACE, child.wait()).await {
-        Ok(Ok(_)) => {}
-        _ => {
-            let _ = child.start_kill();
-            let _ = child.wait().await;
-        }
+    if let Ok(Ok(_)) = tokio::time::timeout(STOP_GRACE, child.wait()).await {} else {
+        let _ = child.start_kill();
+        let _ = child.wait().await;
     }
 }
 
@@ -942,6 +949,12 @@ async fn stop_child(child: &mut Child, pid: Option<u32>) {
 /// services in the order they should be started; cycles return an
 /// error (catalog tests catch typos already, so a cycle is the only
 /// remaining failure mode).
+///
+/// # Panics
+///
+/// Panics on a BUG: the inner `edges.get_mut`/`indeg.get_mut`
+/// calls assume every name in `wanted` got an entry, which is
+/// established right before the topological walk.
 pub fn compute_start_order(target: &[&str]) -> Result<Vec<&'static str>> {
     // Resolve every target name + transitively every dep.
     let mut wanted: HashSet<&'static str> = HashSet::new();

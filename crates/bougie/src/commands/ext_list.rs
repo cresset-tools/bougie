@@ -71,7 +71,7 @@ impl Render for ListResult {
             // status when neither applies. Ext rows currently have no
             // resolved path (the .so location isn't carried through
             // the index data), so paths never appear here.
-            let tag_refs: Vec<&str> = row.status.to_vec();
+            let tag_refs: Vec<&str> = row.status.clone();
             let suffix = match &row.url {
                 Some(u) => Suffix::Url(u.as_str()),
                 None => Suffix::Status(&tag_refs),

@@ -152,9 +152,11 @@ async fn serve(cfg: Config) -> Result<ExitCode> {
             cfg.exec.to_string_lossy()
         )
     })?;
-    let pid = child
+    let pid_u32 = child
         .id()
-        .ok_or_else(|| eyre!("spawned child has no pid"))? as i32;
+        .ok_or_else(|| eyre!("spawned child has no pid"))?;
+    let pid = i32::try_from(pid_u32)
+        .wrap_err_with(|| format!("child pid {pid_u32} doesn't fit in pid_t (i32)"))?;
     // setpgid(0, 0) made the child its own pgrp leader; pgid == pid.
     let pgid = pid;
 
@@ -173,7 +175,9 @@ async fn serve(cfg: Config) -> Result<ExitCode> {
             let _ = control
                 .write_all(format!("exited={code}\n").as_bytes())
                 .await;
-            Ok(ExitCode::from(code.clamp(0, 255) as u8))
+            let clamped = u8::try_from(code.clamp(0, 255))
+                .expect("clamped to 0..=255 fits in u8");
+            Ok(ExitCode::from(clamped))
         }
         // Control socket closed → bougied died. Take the group down.
         () = wait_socket_eof(&mut control) => {
@@ -194,9 +198,8 @@ async fn wait_socket_eof(s: &mut tokio::net::UnixStream) {
     let mut buf = [0u8; 64];
     loop {
         match s.read(&mut buf).await {
-            Ok(0) => return,
-            Ok(_) => continue,
-            Err(_) => return,
+            Ok(0) | Err(_) => return,
+            Ok(_) => {}
         }
     }
 }

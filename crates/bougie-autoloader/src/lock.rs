@@ -138,6 +138,30 @@ impl LockFile {
 /// usage graph (`who requires me` chained recursively). Tie-break
 /// alphabetically (Composer uses `strnatcasecmp`; we use plain ASCII
 /// `cmp` since real package names are lowercase ASCII).
+fn importance<'a>(
+    name: &'a str,
+    usage: &std::collections::HashMap<&'a str, Vec<&'a str>>,
+    computed: &mut std::collections::HashMap<&'a str, i32>,
+    computing: &mut std::collections::HashSet<&'a str>,
+) -> i32 {
+    if let Some(&v) = computed.get(name) {
+        return v;
+    }
+    if !computing.insert(name) {
+        // cycle — Composer returns 0.
+        return 0;
+    }
+    let mut weight = 0;
+    if let Some(users) = usage.get(name) {
+        for u in users {
+            weight -= 1 - importance(u, usage, computed, computing);
+        }
+    }
+    computing.remove(name);
+    computed.insert(name, weight);
+    weight
+}
+
 fn sort_packages(packages: Vec<&Package>) -> Vec<&Package> {
     use std::collections::HashMap;
 
@@ -153,29 +177,6 @@ fn sort_packages(packages: Vec<&Package>) -> Vec<&Package> {
     // "computing" guard (matches Composer's $computing array).
     let mut computed: HashMap<&str, i32> = HashMap::new();
     let mut computing: std::collections::HashSet<&str> = std::collections::HashSet::new();
-    fn importance<'a>(
-        name: &'a str,
-        usage: &HashMap<&'a str, Vec<&'a str>>,
-        computed: &mut HashMap<&'a str, i32>,
-        computing: &mut std::collections::HashSet<&'a str>,
-    ) -> i32 {
-        if let Some(&v) = computed.get(name) {
-            return v;
-        }
-        if !computing.insert(name) {
-            // cycle — Composer returns 0.
-            return 0;
-        }
-        let mut weight = 0;
-        if let Some(users) = usage.get(name) {
-            for u in users {
-                weight -= 1 - importance(u, usage, computed, computing);
-            }
-        }
-        computing.remove(name);
-        computed.insert(name, weight);
-        weight
-    }
 
     let mut weighted: Vec<(i32, &Package)> = packages
         .iter()
@@ -194,19 +195,19 @@ fn sort_packages(packages: Vec<&Package>) -> Vec<&Package> {
 pub(crate) fn read_lock(project_root: &Path) -> Result<LockFile, DumpError> {
     let path = project_root.join("composer.lock");
     let bytes = std::fs::read(&path)?;
-    serde_json::from_slice(&bytes).map_err(|e| DumpError::Lock(format!("{path:?}: {e}")))
+    serde_json::from_slice(&bytes).map_err(|e| DumpError::Lock(format!("{}: {e}", path.display())))
 }
 
 pub(crate) fn read_root_manifest(project_root: &Path) -> Result<RootManifest, DumpError> {
     let path = project_root.join("composer.json");
     let bytes = std::fs::read(&path)?;
-    serde_json::from_slice(&bytes).map_err(|e| DumpError::Manifest(format!("{path:?}: {e}")))
+    serde_json::from_slice(&bytes).map_err(|e| DumpError::Manifest(format!("{}: {e}", path.display())))
 }
 
 /// Composer's PSR-4 / PSR-0 maps accept either a single string or an
 /// array of strings as the value. Both shapes get normalized to
 /// `Vec<String>`. Order is preserved (we requested `preserve_order`
-/// from serde_json at the crate level).
+/// from `serde_json` at the crate level).
 fn de_namespace_map<'de, D>(d: D) -> Result<Vec<(String, Vec<String>)>, D::Error>
 where
     D: serde::Deserializer<'de>,

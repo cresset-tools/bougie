@@ -102,6 +102,10 @@ version = "0.5.0"
 path = "../bougie-version"
 version = "0.5.0"
 
+[dependencies.bougie-semver]
+path = "../bougie-semver"
+version = "0.1.0"
+
 # `bougied` (process supervisor), the embedded HTTP/FastCGI server, and
 # the recipe engine all rely on Unix-only APIs (domain sockets, POSIX
 # signals, sandbox-run's Landlock/SBPL backends, utimensat, /bin/sh).

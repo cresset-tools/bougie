@@ -22,6 +22,15 @@ pub mod store_layout;
 pub mod supervisor;
 pub mod tenants;
 
+/// Saturating conversion of a `Duration` to `u64` of milliseconds.
+/// Used for tracing fields and IPC payloads; `Duration::as_millis()`
+/// returns `u128`, but truncation is only theoretically reachable past
+/// ~584 million years.
+#[inline]
+fn duration_to_ms_u64(d: std::time::Duration) -> u64 {
+    u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
+}
+
 use bougie_paths::Paths;
 use eyre::{Result, WrapErr};
 use rustix::fs::{flock, FlockOperation};

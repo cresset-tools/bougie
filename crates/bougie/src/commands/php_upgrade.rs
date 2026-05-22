@@ -2,10 +2,11 @@ use bougie_cli::OutputFormat;
 use bougie_installer::install::install_php;
 use bougie_output::output::{emit, Render};
 use bougie_paths::Paths;
+use bougie_semver::Constraint;
 use bougie_version::request::{Flavor, Request, VersionLike};
 use bougie_resolver::ResolveOptions;
 use bougie_fs::store::list_installed;
-use bougie_version::version::{Constraint, Op, PartialVersion};
+use bougie_version::version::PartialVersion;
 use eyre::{eyre, Result};
 use serde::Serialize;
 use std::io::{self, Write};
@@ -55,10 +56,10 @@ pub fn run(format: OutputFormat, minor_filter: Option<&str>) -> Result<ExitCode>
             }
         }
         // Resolve the highest patch within (major, minor).
-        let spec = VersionLike::Constraint(Constraint::Op(
-            Op::Gte,
-            PartialVersion { major: v.major, minor: Some(v.minor), patch: None },
-        ));
+        let spec = VersionLike::Constraint(
+            Constraint::parse(&format!(">={}.{}", v.major, v.minor))
+                .map_err(|e| eyre!("constructing upgrade constraint: {e}"))?,
+        );
         let request = Request::VersionLike { spec, flavor: Some(flavor) };
         let installed_now =
             install_php(&paths, &request, Some(flavor), ResolveOptions::default())?;

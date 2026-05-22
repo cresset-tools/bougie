@@ -655,7 +655,7 @@ fn minimum_stability_beta_accepts_beta_rejects_alpha() {
     let foo = solution
         .get(&PubGrubPackage::Package("acme/foo".into()))
         .unwrap();
-    assert_eq!(foo.to_string(), "1.5.0.0-beta1", "got {}", foo);
+    assert_eq!(foo.to_string(), "1.5.0.0-beta1", "got {foo}");
 }
 
 #[test]

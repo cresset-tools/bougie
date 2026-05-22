@@ -22,7 +22,7 @@
 //!
 //! The closure body inside `getInitializer` emits one
 //! `$loader->X = ComposerStaticInit<hash>::$X;` per non-empty
-//! ClassLoader property, in declaration order:
+//! `ClassLoader` property, in declaration order:
 //! `prefixLengthsPsr4`, `prefixDirsPsr4`, `fallbackDirsPsr4`,
 //! `prefixesPsr0`, `fallbackDirsPsr0`, `classMap`. `$files` is
 //! referenced separately by `autoload_real.php` and has no closure
@@ -110,7 +110,7 @@ pub(crate) fn emit(
 /// `ClassLoader::set("", paths)` / `setPsr4("", paths)` routes those
 /// to `fallbackDirsPsr0` / `fallbackDirsPsr4` at runtime. Within the
 /// fallback list, ordering is the same as the input (which is itself
-/// reverseSortedMap order from aggregate_psr).
+/// reverseSortedMap order from `aggregate_psr`).
 fn split_fallback(entries: &[Entry]) -> (Vec<&Entry>, Vec<&str>) {
     let mut named: Vec<&Entry> = Vec::with_capacity(entries.len());
     let mut fallback: Vec<&str> = Vec::new();

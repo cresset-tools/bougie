@@ -149,8 +149,7 @@ fn apply_modifier(base: String, c: &regex::Captures<'_>, index: usize) -> String
         }
         let expanded = expand_stability(&lower);
         let tail = stability_num
-            .map(|s| s.trim_start_matches(['.', '-']))
-            .unwrap_or("");
+            .map_or("", |s| s.trim_start_matches(['.', '-']));
         version.push('-');
         version.push_str(expanded);
         version.push_str(tail);

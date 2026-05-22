@@ -46,6 +46,12 @@ pub fn emit<R: Render>(format: OutputFormat, result: &R) -> Result<()> {
 /// Like `emit`, but pipes the rendered output through `$PAGER` (default
 /// `less`) when stdout is a terminal and the user isn't asking for JSON.
 /// Falls back to direct stdout if the pager can't be spawned.
+///
+/// # Panics
+///
+/// Panics if the pager child process is spawned but its `stdin` isn't
+/// pipeable — shouldn't happen since `Stdio::piped()` is set right
+/// before the spawn.
 pub fn emit_paged<R: Render>(format: OutputFormat, result: &R) -> Result<()> {
     use std::io::IsTerminal;
 

@@ -1,14 +1,14 @@
-//! FastCGI 1.0 client over a unix socket. Spec: SERVER.md §7.6, §5.5,
-//! plus the FastCGI 1.0 wire format (https://fastcgi-archives.github.io/FastCGI_Specification.html).
+//! `FastCGI` 1.0 client over a unix socket. Spec: SERVER.md §7.6, §5.5,
+//! plus the `FastCGI` 1.0 wire format (<https://fastcgi-archives.github.io/FastCGI_Specification.html>).
 //!
 //! What this module provides:
 //!
-//! - [`encode_params`] — pack the FastCGI name/value pair format used
+//! - [`encode_params`] — pack the `FastCGI` name/value pair format used
 //!   by the `PARAMS` record body.
 //! - [`Record`] / [`RecordType`] — opcodes + a small writer for the
 //!   header + body.
-//! - [`dispatch`] — high-level "open a UnixStream, send PARAMS +
-//!   optional STDIN, read STDOUT + STDERR until END_REQUEST". This is
+//! - [`dispatch`] — high-level "open a `UnixStream`, send PARAMS +
+//!   optional STDIN, read STDOUT + STDERR until `END_REQUEST`". This is
 //!   the function the router uses for each `.php` request.
 //! - [`probe`] — `FCGI_GET_VALUES` health check used right after a
 //!   pool spawn. 2s timeout per SERVER.md §7.6.
@@ -17,7 +17,7 @@
 //! and do not implement multiplexing. The protocol allows multiplexed
 //! requests on a single connection via the request-id field, but
 //! php-fpm's default workers are single-request-at-a-time anyway, so
-//! the only thing multiplexing buys us in practice is fewer connect()
+//! the only thing multiplexing buys us in practice is fewer `connect()`
 //! syscalls. We can revisit if a perf trace shows it dominating.
 
 use eyre::{eyre, Result, WrapErr};
@@ -30,7 +30,7 @@ use tokio::net::TcpStream;
 #[cfg(unix)]
 use tokio::net::UnixStream;
 
-/// Where to connect for FastCGI dispatch. Unix uses a per-pool socket
+/// Where to connect for `FastCGI` dispatch. Unix uses a per-pool socket
 /// (php-fpm convention); Windows uses TCP loopback because php-cgi.exe
 /// only supports `-b host:port` (no Unix sockets, no named pipes for
 /// `-b`).
@@ -93,8 +93,8 @@ impl RecordType {
     }
 }
 
-/// Pack a list of `(name, value)` byte pairs into the FastCGI
-/// name-value-pair format used by PARAMS / GET_VALUES records.
+/// Pack a list of `(name, value)` byte pairs into the `FastCGI`
+/// name-value-pair format used by PARAMS / `GET_VALUES` records.
 ///
 /// Each pair is `<name-len><value-len><name><value>` where each length
 /// is encoded as a 1-byte form (top bit clear, value ≤ 127) or a
@@ -161,7 +161,7 @@ fn read_len(body: &[u8]) -> Result<(usize, &[u8])> {
     Ok((len as usize, &body[4..]))
 }
 
-/// Wire-format header. Bodies fragment at FastCGI's 65,535-byte ceiling
+/// Wire-format header. Bodies fragment at `FastCGI`'s 65,535-byte ceiling
 /// per record — [`write_record`] handles the fragmentation.
 fn write_header(buf: &mut Vec<u8>, kind: RecordType, content_len: u16, padding_len: u8) {
     buf.push(FCGI_VERSION_1);
@@ -175,6 +175,11 @@ fn write_header(buf: &mut Vec<u8>, kind: RecordType, content_len: u16, padding_l
 /// Append one or more record frames for `body` under the given record
 /// type. Bodies longer than 65,535 bytes are split across multiple
 /// frames per the spec.
+///
+/// # Panics
+///
+/// Doesn't: the inner `u16::try_from(chunk.len())` is gated by
+/// `body.chunks(65_535)`, so each chunk's length always fits.
 pub fn write_record(buf: &mut Vec<u8>, kind: RecordType, body: &[u8]) {
     if body.is_empty() {
         // Empty record = "end of stream" sentinel for PARAMS / STDIN.
@@ -202,7 +207,7 @@ pub struct Frame {
     pub body: Vec<u8>,
 }
 
-/// Read one full FastCGI record (header + body + padding).
+/// Read one full `FastCGI` record (header + body + padding).
 async fn read_frame<S>(stream: &mut S) -> Result<Frame>
 where
     S: AsyncRead + Unpin,
@@ -236,8 +241,8 @@ where
     Ok(Frame { kind, body })
 }
 
-/// Open a connection to `socket`, send the BEGIN_REQUEST + PARAMS +
-/// STDIN sequence, then read STDOUT + STDERR + END_REQUEST.
+/// Open a connection to `socket`, send the `BEGIN_REQUEST` + PARAMS +
+/// STDIN sequence, then read STDOUT + STDERR + `END_REQUEST`.
 ///
 /// Returns `(stdout, stderr, app_status)`. `stdout` is the raw response
 /// PHP wrote — it has its own header section (HTTP-shaped) followed by
@@ -340,7 +345,7 @@ pub struct DispatchResult {
     pub app_status: u32,
 }
 
-/// Probe a freshly-spawned pool by issuing FCGI_GET_VALUES and parsing
+/// Probe a freshly-spawned pool by issuing `FCGI_GET_VALUES` and parsing
 /// the response. 2s timeout (SERVER.md §7.6). The caller treats any
 /// error here as "pool failed to start" and returns 502 to the client.
 pub async fn probe(transport: &Transport) -> Result<Vec<(String, String)>> {

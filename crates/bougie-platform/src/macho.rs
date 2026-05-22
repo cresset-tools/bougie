@@ -6,14 +6,14 @@
 //!
 //! ## References
 //!
-//! - Apple's `<mach-o/loader.h>` (load-command layout, mach_header_64
+//! - Apple's `<mach-o/loader.h>` (load-command layout, `mach_header_64`
 //!   field offsets, `MH_MAGIC_64`).
 //! - Apple's `<mach-o/nlist.h>` (`struct nlist_64` — 16 bytes).
 //! - LLVM `include/llvm/BinaryFormat/MachO.h` (cross-check of
 //!   constant values).
 //! - PHP source `Zend/zend_modules.h` / `Zend/zend_extensions.h` for
 //!   the struct layouts whose `name` field we walk to. On Apple
-//!   Silicon and x86_64 macOS both structs follow the same LP64
+//!   Silicon and `x86_64` macOS both structs follow the same LP64
 //!   layout used in [`crate::elf`], so the field offsets are reused.
 //!
 //! ## Why no rebase opcode walker?
@@ -25,6 +25,15 @@
 //! file — dyld just adds the load slide. The file already contains a
 //! correct vmaddr we can resolve through segments. Hand-verified
 //! against the Tideways arm64 bundle.
+
+// File offsets and virtual addresses are u64 in Mach-O. Bougie's
+// supported targets (Linux/macOS/Windows on x86_64 / aarch64) are all
+// 64-bit, so `u64 as usize` is lossless. Symbol/string-table sizes
+// we write back are our own buffers — never approach 4 GB.
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+)]
 
 use crate::binfmt::DetectedExt;
 use eyre::{eyre, Result};
@@ -39,7 +48,7 @@ const LC_REQ_DYLD: u32 = 0x8000_0000;
 
 /// Field offsets in `zend_module_entry` / `zend_extension`. These are
 /// the same as in [`crate::elf`] because both Mach-O targets we
-/// support (arm64, x86_64) use the same LP64 struct layout PHP was
+/// support (arm64, `x86_64`) use the same LP64 struct layout PHP was
 /// compiled against.
 const ZEND_MODULE_ENTRY_NAME_OFFSET: u64 = 32;
 const ZEND_EXTENSION_ENTRY_NAME_OFFSET: u64 = 0;
@@ -178,7 +187,7 @@ impl MachHeader {
         if buf.len() < 32 {
             return Err(eyre!("file too small for a Mach-O 64 header"));
         }
-        if &buf[0..4] != MH_MAGIC_64 {
+        if buf[0..4] != MH_MAGIC_64 {
             return Err(eyre!("not an MH_MAGIC_64 Mach-O file"));
         }
         let ncmds      = u32::from_le_bytes(buf[16..20].try_into().unwrap());
@@ -310,9 +319,9 @@ mod tests {
     use super::*;
 
     /// Hand-roll a minimal Mach-O 64-bit bundle. Lays out:
-    ///   - mach_header_64 (32 bytes)
-    ///   - LC_SEGMENT_64 (72 bytes, 0 sections) covering __DATA
-    ///   - LC_SYMTAB (24 bytes)
+    ///   - `mach_header_64` (32 bytes)
+    ///   - `LC_SEGMENT_64` (72 bytes, 0 sections) covering __DATA
+    ///   - `LC_SYMTAB` (24 bytes)
     ///   - segment payload (the struct + name string)
     ///   - symbol table + string table
     struct MachOBuilder {

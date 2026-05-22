@@ -44,13 +44,13 @@ use crate::DumpError;
 fn read_lock_value(project_root: &Path) -> Result<Value, DumpError> {
     let path = project_root.join("composer.lock");
     let bytes = std::fs::read(&path)?;
-    serde_json::from_slice(&bytes).map_err(|e| DumpError::Lock(format!("{path:?}: {e}")))
+    serde_json::from_slice(&bytes).map_err(|e| DumpError::Lock(format!("{}: {e}", path.display())))
 }
 
 fn read_manifest_value(project_root: &Path) -> Result<Value, DumpError> {
     let path = project_root.join("composer.json");
     let bytes = std::fs::read(&path)?;
-    serde_json::from_slice(&bytes).map_err(|e| DumpError::Manifest(format!("{path:?}: {e}")))
+    serde_json::from_slice(&bytes).map_err(|e| DumpError::Manifest(format!("{}: {e}", path.display())))
 }
 
 pub(crate) fn emit_installed_json(
@@ -116,7 +116,7 @@ pub(crate) fn emit_installed_json(
 /// Reshape one `composer.lock` package entry into its
 /// `installed.json` form. Field order mirrors
 /// `Composer\Package\Dumper\ArrayDumper::dump`: name, version,
-/// version_normalized, target-dir, source, dist, link types (require,
+/// `version_normalized`, target-dir, source, dist, link types (require,
 /// conflict, provide, replace, require-dev), suggest, time, bin, type,
 /// extra, installation-source, autoload, autoload-dev,
 /// notification-url, include-path, php-ext, archive, scripts, license,

@@ -33,7 +33,7 @@ const CONTROL_TIMEOUT: Duration = Duration::from_secs(5);
 /// make sure the per-service config dir exists so `provision` can
 /// write `server.toml` into it. (The sandbox layer also creates
 /// the dir, but it does so via `build_strict` which is *not* called
-/// for the LightHome stance the server entry uses.)
+/// for the `LightHome` stance the server entry uses.)
 pub async fn pre_start(paths: &Paths) -> Result<()> {
     let conf = paths.service_conf("server");
     tokio::fs::create_dir_all(&conf)
@@ -105,9 +105,7 @@ pub async fn deprovision(
     let hostname = target
         .alloc
         .get("hostname")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| derive_hostname(tenant_name));
+        .and_then(|v| v.as_str()).map_or_else(|| derive_hostname(tenant_name), std::string::ToString::to_string);
 
     // Best-effort: server.toml might already have lost the block,
     // and the running server might be down. Either way we still
@@ -118,15 +116,13 @@ pub async fn deprovision(
     }
     let _ = ping_reload_config(paths).await;
 
-    if purge {
-        if let Some(rt) = project_runtime_dir(&target.project) {
-            if tokio::fs::try_exists(&rt).await.unwrap_or(false) {
+    if purge
+        && let Some(rt) = project_runtime_dir(&target.project)
+            && tokio::fs::try_exists(&rt).await.unwrap_or(false) {
                 tokio::fs::remove_dir_all(&rt)
                     .await
                     .wrap_err_with(|| format!("removing {}", rt.display()))?;
             }
-        }
-    }
 
     tenants::rewrite(tenants_path, |t| t.tenant != tenant_name).await?;
     Ok(())
@@ -296,9 +292,7 @@ async fn ping_reload_config(_paths: &Paths) -> Result<()> {
 /// path through `ServerPaths::from_env`, which the daemon would
 /// otherwise have to instantiate just to derive a string).
 fn control_socket_path() -> PathBuf {
-    let xdg = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
+    let xdg = std::env::var_os("XDG_RUNTIME_DIR").map_or_else(|| {
             #[cfg(unix)]
             {
                 PathBuf::from(format!("/tmp/bougie-server-{}", rustix::process::geteuid().as_raw()))
@@ -307,7 +301,7 @@ fn control_socket_path() -> PathBuf {
             {
                 PathBuf::from("/tmp/bougie-server")
             }
-        });
+        }, PathBuf::from);
     xdg.join("bougie").join("server").join("control.sock")
 }
 
@@ -316,12 +310,12 @@ fn control_socket_path() -> PathBuf {
 /// project path).
 fn project_runtime_dir(project: &Path) -> Option<PathBuf> {
     use sha2::{Digest, Sha256};
+    const HEX: &[u8; 16] = b"0123456789abcdef";
     let canonical = project.canonicalize().ok()?;
     let hash = {
         let mut h = Sha256::new();
         h.update(canonical.as_os_str().to_string_lossy().as_bytes());
         let digest = h.finalize();
-        const HEX: &[u8; 16] = b"0123456789abcdef";
         let mut out = String::with_capacity(12);
         for &b in &digest[..6] {
             out.push(HEX[(b >> 4) as usize] as char);

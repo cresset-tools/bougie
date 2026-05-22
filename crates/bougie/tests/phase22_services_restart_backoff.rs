@@ -93,7 +93,7 @@ where
     None
 }
 
-fn kill_pid(pid: u32) {
+fn kill_pid(pid: u64) {
     use std::process::Command;
     let _ = Command::new("kill")
         .args(["-9", &pid.to_string()])
@@ -120,7 +120,7 @@ fn crashed_service_is_auto_restarted_with_new_pid() {
 
     let snap = status_snapshot(&env, proj.path());
     let row = service_row(&snap, "redis").expect("redis in status");
-    let pid_before = row["pid"].as_u64().expect("pid present") as u32;
+    let pid_before = row["pid"].as_u64().expect("pid present");
     assert_eq!(row["state"], "running");
     assert_eq!(row["failure_count"].as_u64().unwrap_or(0), 0);
 
@@ -139,12 +139,12 @@ fn crashed_service_is_auto_restarted_with_new_pid() {
                 return false;
             };
             row["state"] == "running"
-                && row["pid"].as_u64().is_some_and(|p| p as u32 != pid_before)
+                && row["pid"].as_u64().is_some_and(|p| p != pid_before)
         },
     )
     .expect("redis should respawn with a new pid");
     let row_after = service_row(&post_crash, "redis").unwrap();
-    let pid_after = row_after["pid"].as_u64().unwrap() as u32;
+    let pid_after = row_after["pid"].as_u64().unwrap();
     assert_ne!(pid_after, pid_before, "expected new pid");
     // failure_count should be exactly 1 — one crash recorded since
     // the daemon started managing this service.
@@ -184,7 +184,7 @@ fn repeated_crashes_increment_failure_count_and_grow_backoff() {
     let snap = status_snapshot(&env, proj.path());
     let pid1 = service_row(&snap, "redis").unwrap()["pid"]
         .as_u64()
-        .unwrap() as u32;
+        .unwrap();
     kill_pid(pid1);
 
     // Wait for the first respawn.
@@ -197,13 +197,13 @@ fn repeated_crashes_increment_failure_count_and_grow_backoff() {
                 return false;
             };
             r["state"] == "running"
-                && r["pid"].as_u64().is_some_and(|p| p as u32 != pid1)
+                && r["pid"].as_u64().is_some_and(|p| p != pid1)
         },
     )
     .expect("first respawn");
     let pid2 = service_row(&after_first, "redis").unwrap()["pid"]
         .as_u64()
-        .unwrap() as u32;
+        .unwrap();
     kill_pid(pid2);
 
     // Wait for the second respawn or the Failed-pending-restart

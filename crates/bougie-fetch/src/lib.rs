@@ -49,7 +49,7 @@ pub fn default_client() -> Result<reqwest::blocking::Client> {
     reqwest::blocking::Client::builder()
         .user_agent(USER_AGENT)
         .connect_timeout(Duration::from_secs(10))
-        .timeout(Duration::from_secs(300))
+        .timeout(Duration::from_mins(5))
         .build()
         .map_err(|e| {
             BougieError::Network {
@@ -70,7 +70,7 @@ pub fn default_async_client() -> Result<reqwest::Client> {
     reqwest::Client::builder()
         .user_agent(USER_AGENT)
         .connect_timeout(Duration::from_secs(10))
-        .timeout(Duration::from_secs(300))
+        .timeout(Duration::from_mins(5))
         .build()
         .map_err(|e| {
             BougieError::Network {
@@ -885,6 +885,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn extract_rewrites_hardlink_targets_with_strip_prefix() {
+        use std::os::unix::fs::MetadataExt;
         // Mirrors the rabbitmq tarball shape that previously broke
         // `services up`: a regular file at `install/escript/rabbitmq-
         // diagnostics` followed by several hardlinks whose tar header
@@ -937,7 +938,6 @@ mod tests {
         // Same inode → same hardlink target, same contents.
         let m1 = std::fs::metadata(&orig).unwrap();
         let m2 = std::fs::metadata(&linked).unwrap();
-        use std::os::unix::fs::MetadataExt;
         assert_eq!(m1.ino(), m2.ino());
         assert_eq!(std::fs::read(&linked).unwrap(), body);
     }

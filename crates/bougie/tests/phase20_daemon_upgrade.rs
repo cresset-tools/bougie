@@ -24,12 +24,11 @@ fn wait_for_no_socket(env: &TestEnv) {
     let sock = env.home_path().join("state").join("bougied.sock");
     let deadline = Instant::now() + STEP_TIMEOUT;
     while sock.exists() {
-        if Instant::now() >= deadline {
-            panic!(
-                "bougied.sock at {} did not disappear within timeout",
-                sock.display()
-            );
-        }
+        assert!(
+            Instant::now() < deadline,
+            "bougied.sock at {} did not disappear within timeout",
+            sock.display()
+        );
         std::thread::sleep(Duration::from_millis(25));
     }
 }
@@ -44,7 +43,7 @@ fn read_pid(env: &TestEnv) -> String {
 }
 
 /// Ask the running daemon what version it thinks it is. Uses the
-/// daemon-control bypass (caller_method == "daemon.version"), so it
+/// daemon-control bypass (`caller_method` == "daemon.version"), so it
 /// doesn't trigger a recursive upgrade check.
 fn read_daemon_version(env: &TestEnv) -> String {
     let out = env

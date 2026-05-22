@@ -90,7 +90,7 @@ fn remove_from_composer_json(path: &Path, name: &str) -> Result<bool> {
         .and_then(|e| e.get("bougie"))
         .and_then(|b| b.get("services"))
         .and_then(Value::as_object)
-        .map_or(false, |m| m.contains_key(name));
+        .is_some_and(|m| m.contains_key(name));
     if !services_present {
         return Ok(false);
     }
@@ -163,8 +163,7 @@ fn add_to_bougie_toml(path: &Path, name: &str, version: &str) -> Result<bool> {
     // the careful compare for a UX detail.)
     let already_same = services
         .get(name)
-        .and_then(toml_edit::Item::as_str)
-        .map_or(false, |s| s == version);
+        .and_then(toml_edit::Item::as_str) == Some(version);
     if already_same {
         return Ok(false);
     }

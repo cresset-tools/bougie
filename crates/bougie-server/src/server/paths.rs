@@ -3,10 +3,10 @@
 //! Unix: `$XDG_RUNTIME_DIR/bougie/server/<project-hash>/`. Spec:
 //! SERVER.md §7.3. tmpfs-backed on systemd systems, wiped at logout,
 //! 0700 by default. Falls back to `/tmp/bougie-server-<uid>` when
-//! XDG_RUNTIME_DIR is unset.
+//! `XDG_RUNTIME_DIR` is unset.
 //!
 //! Windows: `%LOCALAPPDATA%\bougie\server\<project-hash>\` — same
-//! layout shape; LocalAppData is per-user, not roamed, which mirrors
+//! layout shape; `LocalAppData` is per-user, not roamed, which mirrors
 //! the Unix-runtime-dir guarantees we care about (private, machine-
 //! local). Falls back to `%TEMP%\bougie\bougie\server\` when LOCALAPPDATA
 //! is somehow unset.
@@ -18,6 +18,7 @@
 
 use eyre::{Result, WrapErr};
 use sha2::{Digest, Sha256};
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 /// Per-server-instance directory layout. Constructed once at server
@@ -45,9 +46,7 @@ impl ServerPaths {
     /// can exercise the fallback without mutating process-global state.
     #[cfg(unix)]
     pub fn from_xdg_runtime_dir(xdg: Option<std::ffi::OsString>) -> Self {
-        let root = xdg
-            .map(PathBuf::from)
-            .unwrap_or_else(fallback_root);
+        let root = xdg.map_or_else(fallback_root, PathBuf::from);
         Self { runtime_root: root.join("bougie").join("server") }
     }
 
@@ -198,7 +197,7 @@ pub fn project_hash(project: &Path) -> String {
     let digest = hasher.finalize();
     let mut out = String::with_capacity(12);
     for b in digest.iter().take(6) {
-        out.push_str(&format!("{b:02x}"));
+        write!(out, "{b:02x}").expect("writing to String");
     }
     out
 }

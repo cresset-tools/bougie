@@ -10,7 +10,7 @@
 //!   - cross-tenant isolation: tenant A cannot reach tenant B's database,
 //!   - `services down --purge` drops the DB + user, leaving the data
 //!     directory but removing the tenant record,
-//!   - `bougie run` env injection surfaces BOUGIE_SERVICE_MARIADB_*.
+//!   - `bougie run` env injection surfaces `BOUGIE_SERVICE_MARIADB_*`.
 //!
 //! Skipped under `BOUGIE_SKIP_REAL_MARIADB=1` for CI environments where
 //! downloading the 25 MB tarball is undesirable.
@@ -44,7 +44,7 @@ fn mariadb_test_lock() -> MutexGuard<'static, ()> {
 /// Generous because cold-start `mariadb-install-db` can take ~5s and a
 /// first mariadbd start takes ~3s on a warm cache box; CI under load
 /// can push these higher.
-const STEP_TIMEOUT: Duration = Duration::from_secs(2 * 60);
+const STEP_TIMEOUT: Duration = Duration::from_mins(2);
 
 fn should_skip() -> bool {
     std::env::var_os("BOUGIE_SKIP_REAL_MARIADB").is_some()

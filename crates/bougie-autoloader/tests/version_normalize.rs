@@ -91,13 +91,11 @@ fn matches_composer_for_normalizable_inputs() {
             )),
         }
     }
-    if !failures.is_empty() {
-        panic!(
-            "{} version inputs diverge from Composer's normalize() output:\n  {}",
-            failures.len(),
-            failures.join("\n  ")
-        );
-    }
+    assert!(failures.is_empty(), 
+        "{} version inputs diverge from Composer's normalize() output:\n  {}",
+        failures.len(),
+        failures.join("\n  ")
+    );
 }
 
 #[test]
@@ -116,11 +114,9 @@ fn errors_on_inputs_composer_rejects() {
             )),
         }
     }
-    if !failures.is_empty() {
-        panic!(
-            "{} inputs Composer rejects, bougie accepted:\n  {}",
-            failures.len(),
-            failures.join("\n  ")
-        );
-    }
+    assert!(failures.is_empty(), 
+        "{} inputs Composer rejects, bougie accepted:\n  {}",
+        failures.len(),
+        failures.join("\n  ")
+    );
 }
