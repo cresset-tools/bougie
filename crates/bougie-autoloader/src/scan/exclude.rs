@@ -26,6 +26,7 @@ use regex::bytes::Regex;
 
 /// Compiled exclude-from-classmap set. `regex == None` means no
 /// patterns applied — scan is unfiltered.
+#[derive(Debug)]
 pub(crate) struct ExcludePatterns {
     regex: Option<Regex>,
 }

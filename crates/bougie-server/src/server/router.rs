@@ -23,6 +23,7 @@ use std::sync::{Arc, RwLock};
 use std::time::Instant;
 use tokio::io::AsyncReadExt;
 
+use super::autoloader_manager::AutoloaderManager;
 use super::config::{HostBlock, ServerConfig};
 use super::fastcgi;
 use super::log::{emit_request, RequestRow};
@@ -45,6 +46,11 @@ pub struct AppState {
     /// rare (only on config reload).
     pub hosts: RwLock<HashMap<String, Arc<HostBlock>>>,
     pub pools: Arc<PoolManager>,
+    /// Manages per-project [`bougie_autoloader::Autoloader`] state.
+    /// `dispatch` calls `ensure_bootstrap` on the first request to a
+    /// project so the in-memory classmap converges to Live without
+    /// blocking the request itself.
+    pub autoloader: Arc<AutoloaderManager>,
     /// Bound listen port. Read by `serve_php` for `SERVER_PORT` and
     /// by the control socket's status response. Wrapped in an
     /// `AtomicU16` because the actual port is only known after
@@ -62,12 +68,14 @@ impl AppState {
         config: &ServerConfig,
         config_path: PathBuf,
         pools: Arc<PoolManager>,
+        autoloader: Arc<AutoloaderManager>,
         listen_port: u16,
     ) -> eyre::Result<Self> {
         let hosts = build_hosts_map(config)?;
         Ok(Self {
             hosts: RwLock::new(hosts),
             pools,
+            autoloader,
             listen_port: std::sync::atomic::AtomicU16::new(listen_port),
             config_path,
         })
@@ -213,6 +221,13 @@ async fn serve(
     variant: Variant,
     req: Request<Body>,
 ) -> Response {
+    // Lazy in-memory autoloader bootstrap. Non-blocking: the call
+    // either finds the project already Warming/Live (fast return) or
+    // arms the watcher + spawns the bootstrap task and returns. The
+    // request below dispatches to fpm against the on-disk autoload —
+    // the live in-memory model takes over once the scan completes.
+    state.autoloader.ensure_bootstrap(&host.project).await;
+
     match static_files::resolve(host, path, query) {
         Resolution::Static { path: file } => serve_static(&file).await,
         Resolution::Php { script_filename, script_name, path_info, rewritten_query } => {
@@ -578,6 +593,7 @@ mod tests {
     }
 
     fn empty_state(cfg: &ServerConfig) -> eyre::Result<AppState> {
+        use crate::server::watch_registry::WatchRegistry;
         let bp = bougie_paths::Paths::new(PathBuf::from("/tmp/bh"), PathBuf::from("/tmp/bc"));
         let sp = ServerPaths::from_root(PathBuf::from("/tmp/sp"));
         let pm = Arc::new(PoolManager::new(
@@ -586,7 +602,9 @@ mod tests {
             std::time::Duration::from_secs(600),
             16,
         ));
-        AppState::build(cfg, PathBuf::from("/dev/null"), pm, 7080)
+        let registry = Arc::new(WatchRegistry::new());
+        let am = Arc::new(AutoloaderManager::new(&[], registry));
+        AppState::build(cfg, PathBuf::from("/dev/null"), pm, am, 7080)
     }
 
     #[test]
