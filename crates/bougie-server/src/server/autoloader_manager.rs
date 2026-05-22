@@ -451,12 +451,18 @@ mod tests {
     }
 
     fn temp() -> PathBuf {
+        // Process-unique counter — `as_nanos()` + PID isn't enough on
+        // macOS where two `#[tokio::test]` threads can hit the same
+        // nanosecond, end up sharing a dir, and then trample each
+        // other's `remove_dir_all` at the end of the test.
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
         let p = std::env::temp_dir().join(format!(
-            "bougie-server-am-{nanos}-{}",
+            "bougie-server-am-{nanos}-{}-{n}",
             std::process::id()
         ));
         std::fs::create_dir_all(&p).unwrap();
