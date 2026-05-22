@@ -175,6 +175,18 @@ Acceptance: every map pubgrub reads through uses `FxHasher`.
 Benchmark moves; expect a smaller win than PR 1 (single-digit
 percent) but it's nearly free.
 
+Result: **no measurable change within bench noise.** Three back-to-back
+runs of the PR 0 bench against this change reported 140–147 / 135–137 /
+143–156 ms, vs the 135–137 ms baseline. The bench's per-iteration
+setup (wiremock + provider rebuild + pre-fetch fan-out) introduces
+±5–10% variance that swamps any single-digit-percent hasher delta.
+Shipped because the change is mechanical, follows uv's pattern
+verbatim, and the on-CPU cost of `FxHasher` vs the default `SipHash`
+on short `vendor/name` keys is unambiguously lower; the bench just
+can't resolve the difference. Revisit the bench harness (lower-noise
+setup, e.g. snapshot a warmed provider via a custom `Clone`) when a
+later PR needs a tighter signal.
+
 ## PR 3 — interned `PackageName` (`Arc<str>`-backed)
 
 The same `vendor/name` lives in `cache`, `merged_cache`,

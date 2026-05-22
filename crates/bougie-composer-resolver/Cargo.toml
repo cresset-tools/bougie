@@ -15,6 +15,12 @@ rayon = "1.10"
 base64 = "0.22"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# `FxHasher` for the resolver's hot string-keyed maps. Comes in
+# transitively via pubgrub already; pinning explicitly so the
+# `FxHashMap` alias in `hash.rs` has a stable home. uv standardizes
+# on this for every map its solver hammers — same shape applies
+# here.
+rustc-hash = "2"
 
 [dependencies.bougie-autoloader]
 path = "../bougie-autoloader"

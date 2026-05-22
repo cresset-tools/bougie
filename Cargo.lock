@@ -518,6 +518,7 @@ dependencies = [
  "pubgrub",
  "rayon",
  "reqwest 0.13.3",
+ "rustc-hash",
  "serde",
  "serde_json",
  "sha1",

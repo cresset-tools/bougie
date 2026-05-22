@@ -66,6 +66,8 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
+use crate::hash::FxHashMap;
+
 use bougie_composer::lockfile::LockPackage;
 use bougie_paths::Paths;
 use bougie_semver::constraint::Constraint;
@@ -149,7 +151,7 @@ pub struct ResolveProvider {
     /// `versions_for` call so a late provider registration becomes
     /// visible (the pre-fetch queue can visit a virtual name before
     /// its provider is loaded).
-    cache: RefCell<HashMap<String, Vec<(Version, LockPackage)>>>,
+    cache: RefCell<FxHashMap<String, Vec<(Version, LockPackage)>>>,
     /// Memoized merge of [`Self::cache`] + virtuals, sorted +
     /// deduplicated. This is the shape pubgrub actually consumes via
     /// [`Self::versions_for`]; populating it lazily on first lookup
@@ -159,7 +161,7 @@ pub struct ResolveProvider {
     /// pubgrub runs and `register_virtuals_from` only runs there, so
     /// the virtual index is stable from this cache's perspective —
     /// invalidation isn't needed.
-    merged_cache: RefCell<HashMap<String, Vec<(Version, LockPackage)>>>,
+    merged_cache: RefCell<FxHashMap<String, Vec<(Version, LockPackage)>>>,
     /// Index of virtual provider entries: maps each virtual package
     /// name (e.g. `psr/http-client-implementation`) to the list of
     /// real packages that provide or replace it. Populated by
@@ -168,7 +170,7 @@ pub struct ResolveProvider {
     /// `choose_version("psr/http-client-implementation", ^1)` the
     /// answer can come from the index even though Packagist has no
     /// `/p2/psr/http-client-implementation.json`.
-    virtual_providers: RefCell<HashMap<String, Vec<VirtualProvider>>>,
+    virtual_providers: RefCell<FxHashMap<String, Vec<VirtualProvider>>>,
     /// Wildcard / range-shaped replace+provide clauses. Composer's
     /// `replace: { codeception/phpunit-wrapper: "*" }` on
     /// codeception 5.x says "I replace any version of
@@ -177,7 +179,7 @@ pub struct ResolveProvider {
     /// We model this by remembering the range the provider declares
     /// and synthesizing a candidate inside the consumer's range at
     /// `choose_version` time (when the consumer's range is known).
-    virtual_wildcards: RefCell<HashMap<String, Vec<WildcardProvider>>>,
+    virtual_wildcards: RefCell<FxHashMap<String, Vec<WildcardProvider>>>,
     /// Reverse-lookup: for each (virtual_name, selected_version),
     /// every (provider_name, provider_version) pair that registered
     /// it. Used by `get_dependencies` to pin the providing real
@@ -195,7 +197,7 @@ pub struct ResolveProvider {
     /// to the first registration — pubgrub has no OR for the
     /// constraints `get_dependencies` returns, so emitting all of
     /// them would over-constrain.
-    virtual_selections: RefCell<HashMap<(String, Version), Vec<(String, Version)>>>,
+    virtual_selections: RefCell<FxHashMap<(String, Version), Vec<(String, Version)>>>,
     /// Per-v1-repo merged provider lookup tables (package name →
     /// sha256). Lazily populated on the first per-package lookup
     /// against a given v1 repo, keyed by `repo.url`. Composer v1
@@ -203,7 +205,7 @@ pub struct ResolveProvider {
     /// package can be resolved (the includes are the only index
     /// telling us which package's hash to use); this cache makes
     /// that load happen at most once per resolve per repo.
-    v1_provider_tables: RefCell<HashMap<String, HashMap<String, String>>>,
+    v1_provider_tables: RefCell<FxHashMap<String, FxHashMap<String, String>>>,
     /// Memoized `get_dependencies` output. pubgrub asks for the same
     /// `(package, version)` pair repeatedly during conflict analysis;
     /// without this cache we re-run `Constraint::parse` + `to_range`
@@ -222,7 +224,7 @@ pub struct ResolveProvider {
     /// makes constraint re-parsing the next-worst hot spot for the
     /// same structural reason.
     parsed_deps: RefCell<
-        HashMap<(PubGrubPackage, Version), Arc<Vec<(PubGrubPackage, ComposerRange)>>>,
+        FxHashMap<(PubGrubPackage, Version), Arc<Vec<(PubGrubPackage, ComposerRange)>>>,
     >,
     /// Spinner ticked on every `versions_for` call so the pubgrub
     /// `resolve` phase has visible progress. Defaults to hidden;
@@ -415,13 +417,13 @@ impl ResolveProvider {
             minimum_stability,
             prefer_stable,
             stability_flags,
-            cache: RefCell::new(HashMap::new()),
-            merged_cache: RefCell::new(HashMap::new()),
-            virtual_providers: RefCell::new(HashMap::new()),
-            virtual_wildcards: RefCell::new(HashMap::new()),
-            virtual_selections: RefCell::new(HashMap::new()),
-            v1_provider_tables: RefCell::new(HashMap::new()),
-            parsed_deps: RefCell::new(HashMap::new()),
+            cache: RefCell::new(FxHashMap::default()),
+            merged_cache: RefCell::new(FxHashMap::default()),
+            virtual_providers: RefCell::new(FxHashMap::default()),
+            virtual_wildcards: RefCell::new(FxHashMap::default()),
+            virtual_selections: RefCell::new(FxHashMap::default()),
+            v1_provider_tables: RefCell::new(FxHashMap::default()),
+            parsed_deps: RefCell::new(FxHashMap::default()),
             solve_progress: RefCell::new(SolveProgress::hidden()),
         })
     }
@@ -1024,7 +1026,7 @@ impl ResolveProvider {
                     .insert(repo.url.clone(), table);
             }
         }
-        let v1_tables: Arc<HashMap<String, HashMap<String, String>>> =
+        let v1_tables: Arc<FxHashMap<String, FxHashMap<String, String>>> =
             Arc::new(self.v1_provider_tables.borrow().clone());
 
         let outcomes = runtime.block_on(run_prefetch_fanout(
@@ -1093,7 +1095,7 @@ async fn run_prefetch_fanout(
     client: reqwest::Client,
     paths: Paths,
     repos: Vec<Repo>,
-    v1_tables: Arc<HashMap<String, HashMap<String, String>>>,
+    v1_tables: Arc<FxHashMap<String, FxHashMap<String, String>>>,
     initial: Vec<String>,
     minimum_stability: Stability,
     stability_flags: Arc<HashMap<String, Stability>>,
@@ -1182,7 +1184,7 @@ async fn load_real_candidates_isolated(
     client: &reqwest::Client,
     paths: &Paths,
     repos: &[Repo],
-    v1_tables: &HashMap<String, HashMap<String, String>>,
+    v1_tables: &FxHashMap<String, FxHashMap<String, String>>,
     name: &str,
     floor: Stability,
 ) -> Result<PrefetchOutcome, ProviderError> {
@@ -1255,7 +1257,7 @@ async fn fetch_one_isolated(
     client: &reqwest::Client,
     paths: &Paths,
     repo: &Repo,
-    v1_tables: &HashMap<String, HashMap<String, String>>,
+    v1_tables: &FxHashMap<String, FxHashMap<String, String>>,
     package: &str,
     variant: Variant,
 ) -> eyre::Result<Option<bougie_composer::metadata::PackageMetadata>> {

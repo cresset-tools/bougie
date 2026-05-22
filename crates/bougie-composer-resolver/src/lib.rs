@@ -7,6 +7,7 @@
 //! tree. The pubgrub-based solver, metadata fetcher, and lockfile
 //! reader land in later phases.
 
+pub mod hash;
 pub mod install;
 pub mod metadata;
 pub mod update;

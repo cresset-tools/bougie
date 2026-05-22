@@ -9,9 +9,9 @@
 //! candidates sourced from the bougie-pinned PHP + loaded
 //! extensions.
 
-use std::collections::HashMap;
-
 use bougie_composer::lockfile::{Lock, LockPackage};
+
+use crate::hash::FxHashMap;
 use bougie_semver::constraint::Constraint;
 use bougie_semver::version::Version;
 use pubgrub::{Dependencies, DependencyConstraints, DependencyProvider, PackageResolutionStatistics};
@@ -58,9 +58,9 @@ impl std::error::Error for ProviderError {}
 pub struct LockVerifyProvider {
     /// Locked version for each package. Built by walking
     /// `Lock::all_packages` (or `Lock::packages` if `no_dev`).
-    locked: HashMap<String, Version>,
+    locked: FxHashMap<String, Version>,
     /// Each package's runtime dependencies, pre-converted to ranges.
-    deps: HashMap<String, Vec<(String, ComposerRange)>>,
+    deps: FxHashMap<String, Vec<(String, ComposerRange)>>,
     /// Root package's dependencies (composer.json's `require`, plus
     /// `require-dev` when `no_dev` is false).
     root_deps: Vec<(String, ComposerRange)>,
@@ -76,8 +76,8 @@ impl LockVerifyProvider {
         composer_json: &Value,
         no_dev: bool,
     ) -> Result<Self, BuildError> {
-        let mut locked: HashMap<String, Version> = HashMap::new();
-        let mut deps: HashMap<String, Vec<(String, ComposerRange)>> = HashMap::new();
+        let mut locked: FxHashMap<String, Version> = FxHashMap::default();
+        let mut deps: FxHashMap<String, Vec<(String, ComposerRange)>> = FxHashMap::default();
         let pkg_iter: Box<dyn Iterator<Item = &LockPackage>> = if no_dev {
             Box::new(lock.packages.iter())
         } else {
