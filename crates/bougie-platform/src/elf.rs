@@ -17,6 +17,18 @@
 //! are 64-bit LE; ELF32 / BE builds aren't relevant. Mach-O / PE
 //! aren't ELF and aren't handled here.
 
+// File offsets, virtual addresses, and addends are u64 in the ELF64
+// wire format. Bougie's supported targets (Linux/macOS/Windows on
+// x86_64 / aarch64 — see CI matrix) are all 64-bit, so `u64 as usize`
+// is lossless. `r_addend as u64` is gated on a `< 0` check above the
+// cast. Section sizes we write back (`self.dynstr.len() as u32`) are
+// our own buffers that never approach 4 GB.
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+)]
+
 use crate::binfmt::DetectedExt;
 use eyre::{eyre, Result};
 

@@ -180,15 +180,36 @@ fn now_rfc3339() -> String {
 fn unix_to_ymdhms(secs: u64) -> (i32, u32, u32, u32, u32, u32) {
     let days_since_epoch = secs / 86_400;
     let seconds_today = secs % 86_400;
-    let hour = (seconds_today / 3600) as u32;
-    let minute = ((seconds_today % 3600) / 60) as u32;
-    let second = (seconds_today % 60) as u32;
-    let (year, month, day) = civil_from_days(days_since_epoch as i64);
-    (year, month, day, hour, minute, second)
+    // `seconds_today < 86400` and `days_since_epoch < i64::MAX / 86400`
+    // for any plausible Unix timestamp, so all the casts here are
+    // lossless by construction.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        reason = "seconds_today < 86400; days_since_epoch fits in i64"
+    )]
+    {
+        let hour = (seconds_today / 3600) as u32;
+        let minute = ((seconds_today % 3600) / 60) as u32;
+        let second = (seconds_today % 60) as u32;
+        let (year, month, day) = civil_from_days(days_since_epoch as i64);
+        (year, month, day, hour, minute, second)
+    }
 }
 
 /// Howard Hinnant's `civil_from_days` algorithm. Converts a count of
-/// days since 1970-01-01 into a (year, month, day) tuple.
+/// days since 1970-01-01 into a (year, month, day) tuple. The algorithm
+/// is published with these exact signed/unsigned conversions; the
+/// intermediate values stay in well-defined ranges (proven in the
+/// source paper) so the casts are correct by construction even though
+/// they look sketchy. See
+/// <http://howardhinnant.github.io/date_algorithms.html#civil_from_days>.
+#[allow(
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_truncation,
+    reason = "Hinnant's reference algorithm; intermediates stay in proven bounds"
+)]
 fn civil_from_days(z: i64) -> (i32, u32, u32) {
     let z = z + 719_468;
     let era = if z >= 0 { z } else { z - 146_096 } / 146_097;

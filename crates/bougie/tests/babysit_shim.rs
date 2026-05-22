@@ -212,7 +212,7 @@ fn babysit_kills_group_on_sigterm() {
     assert!(pgrp_alive(pgid));
 
     // SIGTERM to the babysit. It must proxy to the group.
-    let bpid = child.id() as i32;
+    let bpid = i32::try_from(child.id()).expect("test pid fits in i32");
     assert_eq!(kill_pid(bpid, 15), 0, "kill(babysit, SIGTERM) failed");
 
     // 30s deadline for SIGTERM-propagation + group teardown — see the
@@ -236,7 +236,7 @@ fn babysit_service_runs_in_its_own_pgid() {
     // service is in a separate group. (Same group would mean killpg
     // from babysit would also signal itself, which is what we want
     // to avoid.)
-    let bpid = child.id() as i32;
+    let bpid = i32::try_from(child.id()).expect("test pid fits in i32");
     assert_ne!(
         pgid, bpid,
         "service pgid {pgid} should differ from babysit pid {bpid}"

@@ -402,7 +402,20 @@ fn parse_human_size(s: &str) -> Option<u64> {
         "G" | "GB" | "GIB" => 1024.0 * 1024.0 * 1024.0,
         _ => return None,
     };
-    Some((num * multiplier).round() as u64)
+    let bytes = (num * multiplier).round();
+    // Already filtered NaN/negative above; reject anything beyond
+    // 2^63 (exactly representable in f64) so the cast below is safe
+    // by construction. PHP releases are tens of megabytes — this
+    // branch only fires on garbage input.
+    if !bytes.is_finite() || bytes < 0.0 || bytes >= 2f64.powi(63) {
+        return None;
+    }
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "finite, in [0, 2^63) by the checks above"
+    )]
+    Some(bytes as u64)
 }
 
 fn flavor_tag(flavor: Flavor) -> Result<&'static str> {

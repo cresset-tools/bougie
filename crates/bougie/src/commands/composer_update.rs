@@ -161,7 +161,7 @@ pub fn resolve_and_write_lock(
     let content_hash = lockfile::content_hash(&composer_json_bytes)
         .wrap_err("computing composer.json content-hash")?;
     tracing::info!(
-        elapsed_ms = t_hash.elapsed().as_millis() as u64,
+        elapsed_ms = u64::try_from(t_hash.elapsed().as_millis()).unwrap_or(u64::MAX),
         composer_json_bytes = composer_json_bytes.len(),
         "content_hash",
     );
@@ -186,7 +186,7 @@ pub fn resolve_and_write_lock(
     lockfile::write_lock(&lock_path, &lock)
         .wrap_err_with(|| format!("writing {}", lock_path.display()))?;
     tracing::info!(
-        elapsed_ms = t_write.elapsed().as_millis() as u64,
+        elapsed_ms = u64::try_from(t_write.elapsed().as_millis()).unwrap_or(u64::MAX),
         packages = outcome.packages.len(),
         packages_dev = outcome.packages_dev.len(),
         lock_path = %lock_path.display(),

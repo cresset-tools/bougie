@@ -26,6 +26,15 @@
 //! correct vmaddr we can resolve through segments. Hand-verified
 //! against the Tideways arm64 bundle.
 
+// File offsets and virtual addresses are u64 in Mach-O. Bougie's
+// supported targets (Linux/macOS/Windows on x86_64 / aarch64) are all
+// 64-bit, so `u64 as usize` is lossless. Symbol/string-table sizes
+// we write back are our own buffers — never approach 4 GB.
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+)]
+
 use crate::binfmt::DetectedExt;
 use eyre::{eyre, Result};
 

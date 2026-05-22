@@ -148,16 +148,21 @@ pub fn tail_lines(path: &Path, n: usize) -> Result<Vec<String>> {
     let len = f.metadata()?.len();
     // 8 KiB at a time, walking backwards. Plenty to find the last
     // few hundred lines without thrashing.
-    const CHUNK: u64 = 8 * 1024;
+    const CHUNK: usize = 8 * 1024;
     let mut pos = len;
-    let mut buf = Vec::with_capacity(CHUNK as usize);
+    let mut buf = Vec::with_capacity(CHUNK);
     let mut lines: Vec<String> = Vec::new();
     while pos > 0 && lines.len() <= n {
-        let take = std::cmp::min(CHUNK, pos);
+        let take = std::cmp::min(CHUNK as u64, pos);
         pos -= take;
         f.seek(SeekFrom::Start(pos))?;
         buf.clear();
-        buf.resize(take as usize, 0);
+        // `take` is bounded above by `CHUNK` (8 KiB), so this fits
+        // even on 32-bit targets.
+        buf.resize(
+            usize::try_from(take).expect("take ≤ CHUNK fits in usize"),
+            0,
+        );
         f.read_exact(&mut buf)?;
         // Split and prepend in reverse so order survives.
         let text = String::from_utf8_lossy(&buf).into_owned();
