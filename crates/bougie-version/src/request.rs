@@ -4,7 +4,8 @@
 //! [`Request`]. Resolution against the index / installed set lives in
 //! the resolver (phase 5).
 
-use crate::version::{Constraint, PartialVersion};
+use crate::version::PartialVersion;
+use bougie_semver::Constraint;
 use eyre::{eyre, Result};
 use std::path::PathBuf;
 
@@ -117,7 +118,9 @@ pub fn parse_request(input: &str) -> Result<Request> {
 fn parse_versionlike_with_flavor(s: &str) -> Result<Request> {
     let (head, flavor) = strip_flavor_suffix(s);
     let spec = if head.starts_with(is_constraint_lead) || head.contains(',') || head.contains("||") {
-        VersionLike::Constraint(Constraint::parse(head)?)
+        VersionLike::Constraint(
+            Constraint::parse(head).map_err(|e| eyre!("invalid constraint: {e}"))?,
+        )
     } else {
         VersionLike::Version(PartialVersion::parse(head)?)
     };
@@ -210,7 +213,6 @@ fn strip_flavor_suffix(s: &str) -> (&str, Option<Flavor>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::version::Op;
 
     fn pv(major: u32, minor: Option<u32>, patch: Option<u32>) -> PartialVersion {
         PartialVersion { major, minor, patch }
@@ -241,14 +243,14 @@ mod tests {
         assert_eq!(
             parse_request("^8.3").unwrap(),
             version_request(
-                VersionLike::Constraint(Constraint::Caret(pv(8, Some(3), None))),
+                VersionLike::Constraint(Constraint::parse("^8.3").unwrap()),
                 None,
             )
         );
         let req = parse_request(">=8.3,<8.5").unwrap();
         assert!(matches!(
             req,
-            Request::VersionLike { spec: VersionLike::Constraint(Constraint::All(_)), flavor: None }
+            Request::VersionLike { spec: VersionLike::Constraint(Constraint::And(_)), flavor: None }
         ));
     }
 
@@ -313,12 +315,13 @@ mod tests {
 
     #[test]
     fn php_prefix_with_constraint() {
+        use bougie_semver::version::CmpOp;
         let req = parse_request("php>=8.3,<8.4").unwrap();
         match req {
-            Request::VersionLike { spec: VersionLike::Constraint(Constraint::All(parts)), .. } => {
+            Request::VersionLike { spec: VersionLike::Constraint(Constraint::And(parts)), .. } => {
                 assert_eq!(parts.len(), 2);
-                assert!(matches!(parts[0], Constraint::Op(Op::Gte, _)));
-                assert!(matches!(parts[1], Constraint::Op(Op::Lt, _)));
+                assert!(matches!(parts[0], Constraint::Op { op: CmpOp::Ge, .. }));
+                assert!(matches!(parts[1], Constraint::Op { op: CmpOp::Lt, .. }));
             }
             other => panic!("unexpected: {other:?}"),
         }

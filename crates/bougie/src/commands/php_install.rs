@@ -6,9 +6,10 @@ use bougie_installer::install::{
 };
 use bougie_output::output::{emit, Render};
 use bougie_paths::Paths;
+use bougie_semver::Constraint;
 use bougie_version::request::{parse_request, Flavor, Request, VersionLike};
 use bougie_resolver::ResolveOptions;
-use bougie_version::version::{Constraint, Op, PartialVersion};
+use bougie_version::version::PartialVersion;
 use eyre::{eyre, Result};
 use serde::Serialize;
 use std::io::{self, Write};
@@ -188,14 +189,13 @@ fn resolve_baseline_filter(
     parse_without(without).map_err(|m| eyre!("{m}"))
 }
 
-/// `>= 0` — match anything (highest non-yanked overall). Used when the
+/// `*` — match anything (highest non-yanked overall). Used when the
 /// user runs `bougie php install` with no argument.
 fn default_latest_request() -> Request {
     Request::VersionLike {
-        spec: VersionLike::Constraint(Constraint::Op(
-            Op::Gte,
-            PartialVersion { major: 0, minor: None, patch: None },
-        )),
+        spec: VersionLike::Constraint(
+            Constraint::parse("*").expect("static constraint string is valid"),
+        ),
         flavor: None,
     }
 }

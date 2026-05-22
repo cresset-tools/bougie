@@ -11,12 +11,13 @@ use bougie_installer::install::{
 };
 use bougie_output::output::{emit, Render};
 use bougie_paths::Paths;
+use bougie_semver::Constraint;
 use bougie_version::request::{Flavor, Request, VersionLike};
 use bougie_resolver::{intersect_php, ResolveOptions};
 use bougie_fs::state::{write_project_resolved, write_project_resolved_composer, GlobalState};
 use bougie_fs::store::list_installed;
 use bougie_platform::target::Triple;
-use bougie_version::version::{Constraint, PartialVersion, Version};
+use bougie_version::version::{PartialVersion, Version};
 use eyre::{eyre, Result};
 use serde::Serialize;
 use std::collections::BTreeSet;
@@ -139,7 +140,7 @@ fn default_php_inputs(paths: &Paths, project: &ProjectConfig) -> Result<(Version
             flavor,
         ));
     }
-    let c = Constraint::parse(">=8.0")?;
+    let c = Constraint::parse(">=8.0").map_err(|e| eyre!("default constraint: {e}"))?;
     Ok((VersionLike::Constraint(c), flavor))
 }
 
@@ -369,7 +370,10 @@ pub fn project_php_inputs(project: &ProjectConfig) -> Result<(VersionLike, Flavo
 
 fn resolve_php_inputs(project: &ProjectConfig) -> Result<(VersionLike, Flavor)> {
     let public = match project.composer.as_ref().and_then(|c| c.require_php.clone()) {
-        Some(s) => Some(Constraint::parse(&s)?),
+        Some(s) => Some(
+            Constraint::parse(&s)
+                .map_err(|e| eyre!("composer.json require.php {s:?}: {e}"))?,
+        ),
         None => None,
     };
     let override_spec = project
@@ -616,6 +620,47 @@ mod tests {
         assert!(is_ext_enabled_in_project(&dir, "redis"));
         assert!(!is_ext_enabled_in_project(&dir, "xdebug"));
         assert!(!is_ext_enabled_in_project(&dir, "pdo_mysql"));
+    }
+
+    /// Regression for #106: bougie run -- composer update used to
+    /// fail with `invalid patch version component: "*"` whenever a
+    /// project's composer.json declared a Composer-style wildcard in
+    /// `require.php`. `bougie-semver`'s parser handles the full
+    /// Composer grammar (wildcards, hyphen ranges, unions, ...), so
+    /// these now parse and lower to a constraint the resolver can
+    /// satisfy against bougie's exact-triple PHP versions.
+    #[test]
+    fn require_php_accepts_composer_wildcards_and_unions() {
+        use bougie_config::ComposerJson;
+        use std::collections::{BTreeMap, BTreeSet};
+        for require_php in [
+            "8.3.*",
+            "8.*",
+            "^8.0 || 8.*",
+            ">=8.0",
+            "^8.3",
+            "7.4 - 8.4",
+            ">=8.0,<9",
+            "*",
+        ] {
+            let project = ProjectConfig {
+                composer: Some(ComposerJson {
+                    require_php: Some(require_php.to_string()),
+                    require_extensions: BTreeSet::new(),
+                    extra_bougie: None,
+                    scripts: BTreeMap::new(),
+                }),
+                bougie: BougieConfig::default(),
+            };
+            let (spec, _flavor) = resolve_php_inputs(&project)
+                .unwrap_or_else(|e| panic!("resolve_php_inputs({require_php:?}) failed: {e}"));
+            // The wildcard cases must produce a Constraint, not a
+            // bare-version VersionLike — they're ranges, not pins.
+            assert!(
+                matches!(spec, VersionLike::Constraint(_)),
+                "{require_php:?} should produce a Constraint, got {spec:?}"
+            );
+        }
     }
 
     #[test]
