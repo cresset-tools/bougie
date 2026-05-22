@@ -1,35 +1,44 @@
 //! Per-project filesystem watcher. Spec: SERVER.md §7.2.
 //!
-//! Watches each project's `.bougie/conf.d/`, `composer.json`, and
-//! (if present) `bougie.toml`. Events are coalesced under a 250 ms
-//! debounce window per (project, kind) so a flurry of editor saves
-//! collapses into one reload.
+//! Watches each project's `.bougie/conf.d/`, `composer.json`,
+//! `bougie.toml`, `composer.lock`, and the per-project autoload
+//! scan-roots the [`AutoloaderManager`] arms dynamically. Events are
+//! coalesced under a per-(project, kind) debounce window so a flurry
+//! of editor saves collapses into one action.
 //!
-//! Two reload paths:
+//! Three reload paths:
 //!
 //! - **conf.d touch** → SIGUSR2 the master via [`PoolManager::reload_project`].
 //! - **composer.json / bougie.toml touch** → recompute resolved PHP
 //!   version. If unchanged, treat as a conf.d-style reload. If
 //!   changed, drop every pool for the project so the next request
 //!   spawns afresh against the new install.
-//!
-//! Out of scope: dynamic add/remove of `[[host]]` blocks (would
-//! require AppState re-build; phase 6's control socket).
+//! - **composer.lock touch** or **user-code save** → routed to
+//!   [`AutoloaderManager`] so the in-memory classmap stays in sync
+//!   with the on-disk source tree. See
+//!   `INCREMENTAL_AUTOLOADER_PLAN.md`.
 
 use eyre::{Result, WrapErr};
-use notify::{RecursiveMode, Watcher as _};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
+use super::autoloader_manager::AutoloaderManager;
 use super::pool::PoolManager;
+use super::watch_registry::{PathMap, WatchRegistry};
 use bougie_fs::state::read_project_resolved;
 
-const DEBOUNCE_WINDOW: Duration = Duration::from_millis(250);
+const DEBOUNCE_CONFD: Duration = Duration::from_millis(250);
+const DEBOUNCE_VERSION_INPUT: Duration = Duration::from_millis(250);
+const DEBOUNCE_LOCKFILE: Duration = Duration::from_millis(250);
+/// Devs notice longer than ~50 ms between save and reload — pick a
+/// window short enough to feel instant but long enough to coalesce
+/// an editor's write-and-rename flurry.
+const DEBOUNCE_USER_CODE: Duration = Duration::from_millis(50);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum ChangeKind {
     /// `<project>/.bougie/conf.d/*.ini` was touched. Reload (SIGUSR2)
     /// every variant for the project.
@@ -38,134 +47,230 @@ enum ChangeKind {
     /// touched. Recompute resolved version; restart on change,
     /// reload otherwise.
     VersionInput,
+    /// `<project>/composer.lock` was touched. Route to
+    /// [`AutoloaderManager::handle_lockfile`] so the in-memory model
+    /// re-bootstraps against the new dependency set.
+    Lockfile,
 }
 
-#[derive(Debug)]
-struct PendingEvent {
-    project: PathBuf,
-    kind: ChangeKind,
+#[derive(Debug, Clone)]
+enum PendingEvent {
+    Touch { project: PathBuf, kind: ChangeKind },
+    UserCodeChange { project: PathBuf, path: PathBuf, deleted: bool },
 }
 
-/// Spawn the watcher + dispatch loop. Returns a handle bundling both
-/// the notify watcher (kept alive to keep events flowing) and the
-/// dispatch JoinHandle (aborted at shutdown).
+/// Spawn the watcher + dispatch loop. The returned [`WatcherHandle`]
+/// keeps the notify watcher alive and aborts the dispatch task on
+/// drop. The same registry the watcher built is plumbed back into
+/// the [`AutoloaderManager`] so user-code roots can be armed
+/// dynamically on first request.
 pub fn start(
     projects: &[PathBuf],
     pool_manager: &Arc<PoolManager>,
+    autoloader_manager: &Arc<AutoloaderManager>,
+    registry: &Arc<WatchRegistry>,
 ) -> Result<WatcherHandle> {
-    // Set up the path → project resolution table once. The notify
-    // callback runs on its own thread; we need a synchronously-shared
-    // mapping it can consult to label events without doing IO.
-    let path_to_project = build_path_map(projects);
-
     let (tx, mut rx) = mpsc::unbounded_channel::<PendingEvent>();
 
-    let path_to_project_for_cb = path_to_project.clone();
     let tx_for_cb = tx.clone();
+    let registry_for_cb = Arc::clone(registry);
+    // The notify callback runs on its own thread; we plumb a sync
+    // handle into it. `classify` takes a read guard on the path map
+    // for each event — short reads + many writes-from-arm = RwLock.
     let mut watcher: notify::RecommendedWatcher = notify::recommended_watcher(
         move |res: notify::Result<notify::Event>| {
             let Ok(event) = res else { return };
             if !is_relevant(&event.kind) {
                 return;
             }
+            let deleted = matches!(event.kind, notify::EventKind::Remove(_));
+            let map = registry_for_cb.path_map();
             for path in &event.paths {
-                if let Some((project, kind)) = classify(&path_to_project_for_cb, path) {
-                    let _ = tx_for_cb.send(PendingEvent { project, kind });
+                for ev in classify(&map, path, deleted) {
+                    let _ = tx_for_cb.send(ev);
                 }
             }
         },
     )
     .wrap_err("creating notify watcher")?;
 
+    // Build the initial path map and watch the static prefixes
+    // (conf.d, project root for composer.json/bougie.toml/composer.lock).
+    // user_code_roots are armed lazily via `WatchRegistry::arm_user_code_roots`
+    // when the autoloader manager flips a project Cold → Warming.
     let mut watched: Vec<PathBuf> = Vec::new();
-    for project in projects {
-        // Both `.bougie/conf.d/` (regular extensions) and
-        // `.bougie/conf.d-debug/` (xdebug et al.) feed pool variants;
-        // either changing means the running pools need fresh symlinks.
-        for sub in [
-            bougie_installer::conf_d::project_confd_dir(project),
-            bougie_installer::conf_d::project_confd_debug_dir(project),
-            bougie_installer::conf_d::project_confd_local_dir(project),
-        ] {
-            if sub.is_dir() {
-                if let Err(e) = watcher.watch(&sub, RecursiveMode::Recursive) {
-                    eprintln!(
-                        "bougie server: failed to watch {}: {e}",
-                        sub.display()
-                    );
-                    continue;
+    {
+        use notify::{RecursiveMode, Watcher as _};
+        for project in projects {
+            for sub in [
+                bougie_installer::conf_d::project_confd_dir(project),
+                bougie_installer::conf_d::project_confd_debug_dir(project),
+                bougie_installer::conf_d::project_confd_local_dir(project),
+            ] {
+                if sub.is_dir() {
+                    if let Err(e) = watcher.watch(&sub, RecursiveMode::Recursive) {
+                        eprintln!(
+                            "bougie server: failed to watch {}: {e}",
+                            sub.display()
+                        );
+                        continue;
+                    }
+                    registry.with_path_map_mut(|map| {
+                        map.push_confd(sub.clone(), project.clone())
+                    });
+                    watched.push(sub);
                 }
-                watched.push(sub);
             }
-        }
-        // Watch the parent directory of composer.json/bougie.toml
-        // rather than the files themselves: many editors do
-        // write-and-rename, which would invalidate a file-target
-        // watch. The dispatch loop filters by basename.
-        if let Err(e) = watcher.watch(project, RecursiveMode::NonRecursive) {
-            eprintln!(
-                "bougie server: failed to watch {}: {e}",
-                project.display()
-            );
-        } else {
-            watched.push(project.clone());
+            // Parent of composer.json / bougie.toml / composer.lock so
+            // editors' write-and-rename doesn't invalidate the watch.
+            if let Err(e) = watcher.watch(project, RecursiveMode::NonRecursive) {
+                eprintln!(
+                    "bougie server: failed to watch {}: {e}",
+                    project.display()
+                );
+            } else {
+                registry.with_path_map_mut(|map| map.push_version_input(project.clone()));
+                watched.push(project.clone());
+            }
         }
     }
 
-    let manager_for_task = Arc::clone(pool_manager);
-    let dispatch = tokio::spawn(async move {
-        // Per-(project, kind) debounce timers. When a new event for
-        // the same key arrives during the window, we just push the
-        // deadline out — coalescing the burst into one reload.
-        let mut pending: HashMap<(PathBuf, ChangeKind), tokio::time::Instant> = HashMap::new();
+    // Hand the constructed watcher to the registry. Subsequent
+    // `arm_user_code_roots` calls (from the autoloader manager) will
+    // extend it.
+    registry.install_watcher(watcher);
 
-        loop {
-            // Either pull a new event, or fire whichever debounce
-            // deadline lands first.
-            let next_deadline = pending.values().min().copied();
-            tokio::select! {
-                evt = rx.recv() => {
-                    let Some(evt) = evt else { break };
-                    let key = (evt.project, evt.kind);
-                    pending.insert(key, tokio::time::Instant::now() + DEBOUNCE_WINDOW);
-                }
-                () = sleep_until_opt(next_deadline) => {
-                    let now = tokio::time::Instant::now();
-                    let due: Vec<(PathBuf, ChangeKind)> = pending
-                        .iter()
-                        .filter(|(_, when)| **when <= now)
-                        .map(|(k, _)| k.clone())
-                        .collect();
-                    for key in due {
-                        pending.remove(&key);
-                        let (project, kind) = key;
-                        if let Err(e) = apply(&manager_for_task, &project, kind).await {
-                            eprintln!(
-                                "bougie server: reload failed for {} ({kind:?}): {e:#}",
-                                project.display(),
-                            );
+    let pool_manager = Arc::clone(pool_manager);
+    let autoloader_manager = Arc::clone(autoloader_manager);
+    let dispatch = tokio::spawn(async move {
+        run_dispatch(&mut rx, &pool_manager, &autoloader_manager).await;
+    });
+
+    Ok(WatcherHandle {
+        registry: Arc::clone(registry),
+        _watched: watched,
+        dispatch,
+    })
+}
+
+/// Per-(project, kind) debounce timers + user-code batched path sets.
+/// `pending_user_code` maps a project to (paths_changed, paths_deleted)
+/// + the next-fire instant; the merge is path-set, not timer-merge,
+/// because devs may touch many files inside one window.
+async fn run_dispatch(
+    rx: &mut mpsc::UnboundedReceiver<PendingEvent>,
+    pools: &Arc<PoolManager>,
+    autoloader: &Arc<AutoloaderManager>,
+) {
+    let mut pending: HashMap<(PathBuf, ChangeKind), tokio::time::Instant> = HashMap::new();
+    let mut pending_user_code: HashMap<PathBuf, UserCodeBatch> = HashMap::new();
+
+    loop {
+        let next_deadline = soonest_deadline(&pending, &pending_user_code);
+        tokio::select! {
+            evt = rx.recv() => {
+                let Some(evt) = evt else { break };
+                match evt {
+                    PendingEvent::Touch { project, kind } => {
+                        let window = debounce_window(&kind);
+                        pending.insert((project, kind), tokio::time::Instant::now() + window);
+                    }
+                    PendingEvent::UserCodeChange { project, path, deleted } => {
+                        let batch = pending_user_code.entry(project).or_default();
+                        if deleted {
+                            batch.deleted.push(path);
+                        } else {
+                            batch.changed.push(path);
                         }
+                        batch.deadline = tokio::time::Instant::now() + DEBOUNCE_USER_CODE;
+                    }
+                }
+            }
+            () = sleep_until_opt(next_deadline) => {
+                let now = tokio::time::Instant::now();
+
+                let due_touches: Vec<(PathBuf, ChangeKind)> = pending
+                    .iter()
+                    .filter(|(_, when)| **when <= now)
+                    .map(|(k, _)| k.clone())
+                    .collect();
+                for key in due_touches {
+                    pending.remove(&key);
+                    let (project, kind) = key;
+                    apply_touch(pools, autoloader, &project, kind).await;
+                }
+
+                let due_user_code: Vec<PathBuf> = pending_user_code
+                    .iter()
+                    .filter(|(_, b)| b.deadline <= now)
+                    .map(|(p, _)| p.clone())
+                    .collect();
+                for project in due_user_code {
+                    let Some(batch) = pending_user_code.remove(&project) else {
+                        continue;
+                    };
+                    if !batch.changed.is_empty() {
+                        autoloader.handle_user_code(&project, batch.changed).await;
+                    }
+                    if !batch.deleted.is_empty() {
+                        autoloader
+                            .handle_user_code_deleted(&project, batch.deleted)
+                            .await;
                     }
                 }
             }
         }
-    });
+    }
+}
 
-    Ok(WatcherHandle { _watcher: watcher, _watched: watched, dispatch })
+#[derive(Debug)]
+struct UserCodeBatch {
+    changed: Vec<PathBuf>,
+    deleted: Vec<PathBuf>,
+    deadline: tokio::time::Instant,
+}
+
+impl Default for UserCodeBatch {
+    fn default() -> Self {
+        Self {
+            changed: Vec::new(),
+            deleted: Vec::new(),
+            // `tokio::time::Instant` has no `Default`; use a sentinel
+            // in the past so a freshly-initialised batch fires
+            // immediately if (defensively) it's never updated. The
+            // event-arrival path always sets a concrete deadline
+            // before the batch is observed by the select! loop.
+            deadline: tokio::time::Instant::now(),
+        }
+    }
+}
+
+fn soonest_deadline(
+    touches: &HashMap<(PathBuf, ChangeKind), tokio::time::Instant>,
+    user_code: &HashMap<PathBuf, UserCodeBatch>,
+) -> Option<tokio::time::Instant> {
+    let touch_min = touches.values().min().copied();
+    let uc_min = user_code.values().map(|b| b.deadline).min();
+    match (touch_min, uc_min) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    }
+}
+
+fn debounce_window(kind: &ChangeKind) -> Duration {
+    match kind {
+        ChangeKind::ConfD => DEBOUNCE_CONFD,
+        ChangeKind::VersionInput => DEBOUNCE_VERSION_INPUT,
+        ChangeKind::Lockfile => DEBOUNCE_LOCKFILE,
+    }
 }
 
 /// Decide whether a `notify` event represents an actual filesystem
-/// change we need to react to. Access events (open, read, close-nowrite,
-/// metadata-only) are filtered out — they don't change what php-fpm
-/// would load, AND `build_variant_confd`'s own `read_dir` of the
-/// watched directory triggers them, which would set up an infinite
-/// reload loop:
-///
-///   request → spawn → read_dir → IN_OPEN → debounce → reload →
-///   read_dir → IN_OPEN → debounce → reload → …
-///
-/// Only Create / Modify / Remove imply a real change to the conf.d
-/// or composer.json contents.
+/// change we need to react to. Access events (open, read,
+/// close-nowrite, metadata-only) are filtered out — they don't change
+/// what php-fpm would load, AND `build_variant_confd`'s own `read_dir`
+/// of the watched directory triggers them, which would set up an
+/// infinite reload loop.
 fn is_relevant(kind: &notify::EventKind) -> bool {
     use notify::EventKind;
     matches!(
@@ -174,9 +279,6 @@ fn is_relevant(kind: &notify::EventKind) -> bool {
     )
 }
 
-/// Future that resolves at the given deadline, or never if `None`.
-/// Used in `select!` so the dispatch loop blocks on the next event
-/// when there's nothing pending.
 async fn sleep_until_opt(when: Option<tokio::time::Instant>) {
     match when {
         Some(t) => tokio::time::sleep_until(t).await,
@@ -184,108 +286,146 @@ async fn sleep_until_opt(when: Option<tokio::time::Instant>) {
     }
 }
 
-/// Per-project notify roots indexed for O(1) lookup. Each entry maps
-/// a *prefix* path back to the canonical project root + the kind of
-/// event a hit under that prefix represents.
-type PathMap = Vec<(PathBuf, PathBuf, ChangeKind)>;
+/// Map a notify event path to one or more outgoing events. Multiple
+/// returns are possible: a user-code path that also lives under the
+/// project's static watches would produce two — but conf.d and
+/// version-input are filtered by basename inside `classify`, so the
+/// only way to double-fire is if a user-code root literally contains
+/// `composer.json` (extremely unusual; we accept the redundant
+/// Lockfile/VersionInput fire as harmless).
+fn classify(map: &PathMap, path: &Path, deleted: bool) -> Vec<PendingEvent> {
+    let mut out: Vec<PendingEvent> = Vec::new();
 
-fn build_path_map(projects: &[PathBuf]) -> PathMap {
-    let mut out = PathMap::new();
-    for project in projects {
-        out.push((bougie_installer::conf_d::project_confd_dir(project), project.clone(), ChangeKind::ConfD));
-        out.push((bougie_installer::conf_d::project_confd_debug_dir(project), project.clone(), ChangeKind::ConfD));
-        out.push((bougie_installer::conf_d::project_confd_local_dir(project), project.clone(), ChangeKind::ConfD));
-        // Composer + bougie.toml share the version-input kind; we
-        // distinguish their basenames inside `classify` so unrelated
-        // files in the project root (README.md, src/, etc.) don't
-        // trigger reloads.
-        out.push((project.clone(), project.clone(), ChangeKind::VersionInput));
+    // User-code roots first. Longest-prefix match across user-code
+    // entries; nested user-code roots shouldn't happen in practice
+    // (each scan_root is distinct), but pick the longest to be safe.
+    let mut uc_candidates: Vec<&super::watch_registry::UserCodeRoot> = map
+        .user_code
+        .iter()
+        .filter(|u| path.starts_with(&u.root))
+        .collect();
+    uc_candidates.sort_by_key(|u| std::cmp::Reverse(u.root.as_os_str().len()));
+    if let Some(best) = uc_candidates.first() {
+        if has_php_or_inc_extension(path) {
+            out.push(PendingEvent::UserCodeChange {
+                project: best.project.clone(),
+                path: path.to_path_buf(),
+                deleted,
+            });
+        }
     }
+
+    // conf.d
+    let mut confd_candidates: Vec<&(PathBuf, PathBuf)> = map
+        .confd
+        .iter()
+        .filter(|(prefix, _)| path.starts_with(prefix))
+        .collect();
+    confd_candidates.sort_by_key(|(p, _)| std::cmp::Reverse(p.as_os_str().len()));
+    if let Some((_, project)) = confd_candidates.first() {
+        out.push(PendingEvent::Touch {
+            project: (*project).clone(),
+            kind: ChangeKind::ConfD,
+        });
+        return out;
+    }
+
+    // version-input / lockfile — basename-filtered. Walk longest-
+    // prefix so a future per-host nested layout still routes to its
+    // own project.
+    let mut vi_candidates: Vec<&PathBuf> = map
+        .version_input
+        .iter()
+        .filter(|prefix| path.starts_with(prefix))
+        .collect();
+    vi_candidates.sort_by_key(|p| std::cmp::Reverse(p.as_os_str().len()));
+    if let Some(project) = vi_candidates.first() {
+        if let Some(basename) = path.file_name().and_then(|s| s.to_str()) {
+            match basename {
+                "composer.json" | "bougie.toml" => out.push(PendingEvent::Touch {
+                    project: (*project).clone(),
+                    kind: ChangeKind::VersionInput,
+                }),
+                "composer.lock" => out.push(PendingEvent::Touch {
+                    project: (*project).clone(),
+                    kind: ChangeKind::Lockfile,
+                }),
+                _ => {}
+            }
+        }
+    }
+
     out
 }
 
-/// Map a notify event path to a `(project, kind)` pair if it's one we
-/// care about. Returns `None` for noise (unrelated files in the
-/// project root, hidden tempfiles, etc.).
-fn classify(map: &PathMap, path: &Path) -> Option<(PathBuf, ChangeKind)> {
-    // Walk longest-prefix first so `<project>/.bougie/conf.d/` wins
-    // over `<project>/` when both match.
-    let mut candidates: Vec<&(PathBuf, PathBuf, ChangeKind)> = map
-        .iter()
-        .filter(|(prefix, _, _)| path.starts_with(prefix))
-        .collect();
-    candidates.sort_by_key(|(p, _, _)| std::cmp::Reverse(p.as_os_str().len()));
-    let (_, project, kind) = candidates.first()?;
+fn has_php_or_inc_extension(p: &Path) -> bool {
+    p.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("php") || e.eq_ignore_ascii_case("inc"))
+        .unwrap_or(false)
+}
+
+async fn apply_touch(
+    pools: &Arc<PoolManager>,
+    autoloader: &Arc<AutoloaderManager>,
+    project: &Path,
+    kind: ChangeKind,
+) {
     match kind {
-        ChangeKind::ConfD => Some((project.clone(), ChangeKind::ConfD)),
-        ChangeKind::VersionInput => {
-            let basename = path.file_name()?.to_str()?;
-            if basename == "composer.json" || basename == "bougie.toml" {
-                Some((project.clone(), ChangeKind::VersionInput))
-            } else {
-                None
+        ChangeKind::ConfD => {
+            match pools.reload_project(project).await {
+                Ok(count) if count > 0 => eprintln!(
+                    "[pool_reload] project={} variants={count} reason=conf.d",
+                    project.display()
+                ),
+                Ok(_) => {}
+                Err(e) => eprintln!(
+                    "bougie server: reload failed for {} (ConfD): {e:#}",
+                    project.display()
+                ),
             }
+        }
+        ChangeKind::VersionInput => apply_version_input(pools, project).await,
+        ChangeKind::Lockfile => {
+            autoloader.handle_lockfile(project).await;
         }
     }
 }
 
-async fn apply(
-    manager: &Arc<PoolManager>,
-    project: &Path,
-    kind: ChangeKind,
-) -> Result<()> {
-    match kind {
-        ChangeKind::ConfD => {
-            let count = manager.reload_project(project).await?;
-            if count > 0 {
-                eprintln!(
-                    "[pool_reload] project={} variants={count} reason=conf.d",
-                    project.display()
-                );
-            }
-        }
-        ChangeKind::VersionInput => {
-            // Recompute resolved. If the file disappeared mid-flight
-            // (atomic-rename mid-write), the read fails — fall back
-            // to a reload, which is safe either way.
-            let new_resolved = read_project_resolved(project).ok();
-            // Compare against any one of the pools' resolved version
-            // — they all share it; if pools is empty, treat as reload.
-            let pids = manager.pids().await;
-            let existing = pids
-                .iter()
-                .find(|(k, _)| k.project == project)
-                .map(|(k, _)| (k.version.clone(), k.flavor.clone()));
-            let version_changed = match (&new_resolved, &existing) {
-                (Some((nv, nf)), Some((ov, of))) => (nv, nf) != (ov, of),
-                (None, _) | (_, None) => false,
-            };
-            if version_changed {
-                let count = manager.restart_project(project).await;
-                eprintln!(
-                    "[pool_restart] project={} variants={count} reason=version-change",
-                    project.display()
-                );
-            } else {
-                let count = manager.reload_project(project).await.unwrap_or(0);
-                if count > 0 {
-                    eprintln!(
-                        "[pool_reload] project={} variants={count} reason=composer-or-bougie-toml",
-                        project.display()
-                    );
-                }
-            }
+async fn apply_version_input(pools: &Arc<PoolManager>, project: &Path) {
+    let new_resolved = read_project_resolved(project).ok();
+    let pids = pools.pids().await;
+    let existing = pids
+        .iter()
+        .find(|(k, _)| k.project == project)
+        .map(|(k, _)| (k.version.clone(), k.flavor.clone()));
+    let version_changed = match (&new_resolved, &existing) {
+        (Some((nv, nf)), Some((ov, of))) => (nv, nf) != (ov, of),
+        (None, _) | (_, None) => false,
+    };
+    if version_changed {
+        let count = pools.restart_project(project).await;
+        eprintln!(
+            "[pool_restart] project={} variants={count} reason=version-change",
+            project.display()
+        );
+    } else {
+        let count = pools.reload_project(project).await.unwrap_or(0);
+        if count > 0 {
+            eprintln!(
+                "[pool_reload] project={} variants={count} reason=composer-or-bougie-toml",
+                project.display()
+            );
         }
     }
-    Ok(())
 }
 
 /// Returned from [`start`]; keep alive as long as the watcher should
 /// run. `Drop` aborts the dispatch task and lets the underlying notify
-/// watcher tear itself down.
+/// watcher tear itself down when the registry's last `Arc` drops.
 #[derive(Debug)]
 pub struct WatcherHandle {
-    _watcher: notify::RecommendedWatcher,
+    registry: Arc<WatchRegistry>,
     _watched: Vec<PathBuf>,
     dispatch: tokio::task::JoinHandle<()>,
 }
@@ -293,6 +433,12 @@ pub struct WatcherHandle {
 impl WatcherHandle {
     pub fn abort(&self) {
         self.dispatch.abort();
+    }
+
+    /// Read-only access used by tests + run.rs to keep the registry
+    /// alive alongside the handle.
+    pub fn registry(&self) -> &Arc<WatchRegistry> {
+        &self.registry
     }
 }
 
@@ -305,65 +451,116 @@ impl Drop for WatcherHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::server::watch_registry::PathMap;
+
+    fn map_for(project: &Path) -> PathMap {
+        let mut m = PathMap::default();
+        m.push_confd(
+            bougie_installer::conf_d::project_confd_dir(project),
+            project.to_path_buf(),
+        );
+        m.push_confd(
+            bougie_installer::conf_d::project_confd_debug_dir(project),
+            project.to_path_buf(),
+        );
+        m.push_confd(
+            bougie_installer::conf_d::project_confd_local_dir(project),
+            project.to_path_buf(),
+        );
+        m.push_version_input(project.to_path_buf());
+        m
+    }
 
     #[test]
     fn classify_routes_confd_files() {
         let project = PathBuf::from("/p/myapp");
-        let map = build_path_map(std::slice::from_ref(&project));
-        let hit = classify(&map, &project.join(".bougie/conf.d/20-redis.ini"));
-        assert_eq!(hit, Some((project, ChangeKind::ConfD)));
+        let map = map_for(&project);
+        let evs = classify(&map, &project.join(".bougie/conf.d/20-redis.ini"), false);
+        assert!(evs.iter().any(|e| matches!(
+            e,
+            PendingEvent::Touch { project: p, kind: ChangeKind::ConfD } if p == &project
+        )));
     }
 
     #[test]
     fn classify_routes_composer_json() {
         let project = PathBuf::from("/p/myapp");
-        let map = build_path_map(std::slice::from_ref(&project));
-        let hit = classify(&map, &project.join("composer.json"));
-        assert_eq!(hit, Some((project, ChangeKind::VersionInput)));
+        let map = map_for(&project);
+        let evs = classify(&map, &project.join("composer.json"), false);
+        assert!(evs.iter().any(|e| matches!(
+            e,
+            PendingEvent::Touch { project: p, kind: ChangeKind::VersionInput } if p == &project
+        )));
     }
 
     #[test]
-    fn classify_routes_bougie_toml() {
+    fn classify_routes_composer_lock() {
         let project = PathBuf::from("/p/myapp");
-        let map = build_path_map(std::slice::from_ref(&project));
-        let hit = classify(&map, &project.join("bougie.toml"));
-        assert_eq!(hit, Some((project, ChangeKind::VersionInput)));
+        let map = map_for(&project);
+        let evs = classify(&map, &project.join("composer.lock"), false);
+        assert!(evs.iter().any(|e| matches!(
+            e,
+            PendingEvent::Touch { project: p, kind: ChangeKind::Lockfile } if p == &project
+        )));
+    }
+
+    #[test]
+    fn classify_routes_user_code_php_file() {
+        let project = PathBuf::from("/p/myapp");
+        let mut map = map_for(&project);
+        let user_root = project.join("src");
+        map.push_user_code_root(project.clone(), user_root.clone());
+        let evs = classify(&map, &user_root.join("Foo.php"), false);
+        assert!(evs.iter().any(|e| matches!(
+            e,
+            PendingEvent::UserCodeChange { project: p, path: _, deleted: false } if p == &project
+        )));
+    }
+
+    #[test]
+    fn classify_ignores_user_code_non_php() {
+        let project = PathBuf::from("/p/myapp");
+        let mut map = map_for(&project);
+        let user_root = project.join("src");
+        map.push_user_code_root(project.clone(), user_root.clone());
+        let evs = classify(&map, &user_root.join("README.md"), false);
+        assert!(!evs.iter().any(|e| matches!(e, PendingEvent::UserCodeChange { .. })));
+    }
+
+    #[test]
+    fn classify_user_code_with_deleted_flag() {
+        let project = PathBuf::from("/p/myapp");
+        let mut map = map_for(&project);
+        let user_root = project.join("src");
+        map.push_user_code_root(project.clone(), user_root.clone());
+        let evs = classify(&map, &user_root.join("Foo.php"), true);
+        assert!(evs.iter().any(|e| matches!(
+            e,
+            PendingEvent::UserCodeChange { deleted: true, .. }
+        )));
     }
 
     #[test]
     fn classify_ignores_unrelated_project_files() {
         let project = PathBuf::from("/p/myapp");
-        let map = build_path_map(std::slice::from_ref(&project));
-        assert!(classify(&map, Path::new("/p/myapp/README.md")).is_none());
-        assert!(classify(&map, Path::new("/p/myapp/src/app.php")).is_none());
+        let map = map_for(&project);
+        assert!(classify(&map, &project.join("README.md"), false).is_empty());
+        assert!(classify(&map, &project.join("src/app.php"), false).is_empty());
     }
 
     #[test]
     fn is_relevant_filters_access_events() {
         use notify::event::{AccessKind, AccessMode, CreateKind, ModifyKind, RemoveKind};
         use notify::EventKind;
-        // Access events come from us reading the directory — must not
-        // trigger reloads.
         assert!(!is_relevant(&EventKind::Access(AccessKind::Open(AccessMode::Read))));
         assert!(!is_relevant(&EventKind::Access(AccessKind::Close(AccessMode::Read))));
         assert!(!is_relevant(&EventKind::Access(AccessKind::Any)));
-        // Real changes do.
         assert!(is_relevant(&EventKind::Create(CreateKind::File)));
-        assert!(is_relevant(&EventKind::Modify(ModifyKind::Data(notify::event::DataChange::Any))));
+        assert!(is_relevant(&EventKind::Modify(ModifyKind::Data(
+            notify::event::DataChange::Any
+        ))));
         assert!(is_relevant(&EventKind::Remove(RemoveKind::File)));
-        // Catch-all kinds we don't care about.
         assert!(!is_relevant(&EventKind::Any));
         assert!(!is_relevant(&EventKind::Other));
-    }
-
-    #[test]
-    fn classify_distinguishes_confd_from_root() {
-        let project = PathBuf::from("/p/myapp");
-        let map = build_path_map(std::slice::from_ref(&project));
-        // Longest-prefix wins: a path under conf.d is ConfD, not
-        // VersionInput (which would also match the project-root
-        // prefix).
-        let hit = classify(&map, &project.join(".bougie/conf.d/30-xdebug.ini"));
-        assert_eq!(hit.map(|(_, k)| k), Some(ChangeKind::ConfD));
     }
 }

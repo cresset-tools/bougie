@@ -18,6 +18,7 @@
 //! `platform_check.php` (needs a constraint-parsing facility we don't
 //! yet have).
 
+mod autoloader;
 mod collect;
 mod emit;
 mod installed;
@@ -25,6 +26,8 @@ mod lock;
 mod scan;
 mod vendored;
 mod version;
+
+pub use autoloader::{user_code_roots, AutoloadHeader, Autoloader, HeaderFlags};
 
 /// Internal entry points exposed only so the in-tree
 /// `benches/scan.rs` criterion harness can call them. Not a stable
@@ -150,134 +153,18 @@ impl From<std::io::Error> for DumpError {
 
 /// Generate `vendor/composer/autoload_*.php` for the given project.
 ///
-/// Phase 1+2 emits: `vendor/autoload.php`,
-/// `vendor/composer/autoload_namespaces.php` (PSR-0),
-/// `vendor/composer/autoload_psr4.php`,
-/// `vendor/composer/autoload_classmap.php` (always — at minimum the
-/// `Composer\InstalledVersions` stub), and
-/// `vendor/composer/autoload_files.php` (only if any package or root
-/// declares `files`). Phase 3 adds `autoload_real.php` +
-/// `autoload_static.php` and the vendored runtime files;
-/// `--optimize` / `--classmap-authoritative` / `exclude-from-classmap`
-/// are still pending wiring.
+/// Thin wrapper around [`Autoloader::bootstrap`] + [`Autoloader::emit`].
+/// CLI callers (`bougie composer dump-autoloader`) and the in-process
+/// install path (`bougie_composer_resolver::install::orchestrate`)
+/// both use this. The long-running server holds an `Autoloader`
+/// directly so it can apply incremental edits without re-walking the
+/// whole project; see `INCREMENTAL_AUTOLOADER_PLAN.md`.
 pub fn dump_autoload(req: &DumpRequest<'_>) -> Result<DumpReport, DumpError> {
-    let lock = lock::read_lock(req.project_root)?;
-    let manifest = lock::read_root_manifest(req.project_root)?;
-
-    let composer_dir = req.project_root.join("vendor").join("composer");
-    std::fs::create_dir_all(&composer_dir)?;
-
-    // Composer's resolution order (mirrors getAutoloadFile in
-    // AutoloadGenerator.php): explicit setter → `config.autoloader-
-    // suffix` from composer.json → existing `vendor/autoload.php`
-    // suffix → `composer.lock` content-hash → random hex. We
-    // implement the first two and fall through to content-hash. The
-    // "scrape existing autoload.php" step matters only for re-dump
-    // scenarios; bougie's harness always starts fresh.
-    let suffix: String = req
-        .autoloader_suffix
-        .clone()
-        .or_else(|| manifest.config.autoloader_suffix.clone())
-        .unwrap_or_else(|| lock.content_hash.clone());
-
-    // APCu prefix: explicit override → Composer's
-    // `bin2hex(random_bytes(10))` default. Random is fine here — the
-    // value is purely a cache namespace; cross-process collision risk
-    // is what the 20 hex chars are sized against.
-    let apcu_prefix: Option<String> = if req.apcu_autoloader {
-        Some(
-            req.apcu_prefix
-                .clone()
-                .unwrap_or_else(|| random_hex_chars(20)),
-        )
-    } else {
-        None
-    };
-
-    let psr4 = collect::psr4(&manifest, &lock, req.no_dev);
-    let psr0 = collect::psr0(&manifest, &lock, req.no_dev);
-    let files = collect::files(&manifest, &lock, req.no_dev);
-    // `--classmap-authoritative` implies `--optimize` (Composer's
-    // dump() does `if (classmapAuthoritative) $scanPsrPackages = true`).
-    // The flag's other effect — narrowing autoload_real.php's runtime
-    // lookup — lives in the static-loader emit, which is Phase 3.
-    let optimize = req.optimize || req.classmap_authoritative;
-    let classmap_out = collect::classmap(&manifest, &lock, req.no_dev, optimize, req.project_root);
-    let classmap = classmap_out.entries;
-
-    write_atomic(
-        &composer_dir.join("autoload_psr4.php"),
-        emit::psr4(&psr4).as_bytes(),
-    )?;
-    write_atomic(
-        &composer_dir.join("autoload_namespaces.php"),
-        emit::psr0(&psr0).as_bytes(),
-    )?;
-    write_atomic(
-        &composer_dir.join("autoload_classmap.php"),
-        emit::classmap(&classmap).as_bytes(),
-    )?;
-    if !files.is_empty() {
-        write_atomic(
-            &composer_dir.join("autoload_files.php"),
-            emit::files(&files).as_bytes(),
-        )?;
-    }
-
-    write_atomic(
-        &req.project_root.join("vendor").join("autoload.php"),
-        emit::entry(&suffix).as_bytes(),
-    )?;
-
-    write_atomic(
-        &composer_dir.join("autoload_real.php"),
-        emit::real::emit(
-            &suffix,
-            !files.is_empty(),
-            req.classmap_authoritative,
-            apcu_prefix.as_deref(),
-        )
-        .as_bytes(),
-    )?;
-
-    write_atomic(
-        &composer_dir.join("autoload_static.php"),
-        emit::static_loader::emit(&suffix, &psr4, &psr0, &classmap, &files).as_bytes(),
-    )?;
-
-    // Composer copies ClassLoader.php, InstalledVersions.php, and
-    // LICENSE verbatim from its own source into vendor/composer/ —
-    // we ship pinned copies under crates/bougie-autoloader/vendored/
-    // and write them the same way.
-    vendored::write_runtime_files(&composer_dir, write_atomic)?;
-
-    // `vendor/composer/installed.{json,php}` mirror Composer's
-    // `FilesystemRepository::write` — installed.json re-serializes
-    // composer.lock's package metadata, installed.php is the runtime
-    // target for `Composer\InstalledVersions::getVersion(...)` etc.
-    write_atomic(
-        &composer_dir.join("installed.json"),
-        installed::emit_installed_json(req.project_root, req.no_dev)?.as_bytes(),
-    )?;
-    write_atomic(
-        &composer_dir.join("installed.php"),
-        installed::emit_installed_php(req.project_root, req.no_dev)?.as_bytes(),
-    )?;
-
-    let class_count = classmap.len();
-    let warnings = classmap_out
-        .warnings
-        .into_iter()
-        .map(|w| PsrWarning {
-            class: w.class,
-            relative_path: format_relative_path(&w.file, req.project_root),
-            psr_version: if w.psr0 { 0 } else { 4 },
-        })
-        .collect();
-
+    let loader = Autoloader::bootstrap(req)?;
+    loader.emit()?;
     Ok(DumpReport {
-        class_count,
-        warnings,
+        class_count: loader.class_count(),
+        warnings: loader.warnings().to_vec(),
     })
 }
 
@@ -286,7 +173,7 @@ pub fn dump_autoload(req: &DumpRequest<'_>) -> Result<DumpReport, DumpError> {
 /// (so output starts with `./`) and normalize to forward slashes for
 /// cross-platform-consistent display. Falls back to the input path
 /// when the prefix doesn't match (canonicalize mismatch, etc.).
-fn format_relative_path(file: &Path, project_root: &Path) -> String {
+pub(crate) fn format_relative_path(file: &Path, project_root: &Path) -> String {
     let canon_root = std::fs::canonicalize(project_root).unwrap_or_else(|_| project_root.into());
     let rel = file.strip_prefix(&canon_root).unwrap_or(file);
     let rel_str = rel.to_string_lossy().replace('\\', "/");

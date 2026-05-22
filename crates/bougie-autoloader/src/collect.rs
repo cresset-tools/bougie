@@ -7,15 +7,14 @@
 //! `AutoloadGenerator`).
 
 use md5::{Digest, Md5};
-use rayon::prelude::*;
-use std::collections::BTreeMap;
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
 
 use crate::lock::{LockFile, RootManifest};
-use crate::scan::{self, ExcludePatterns, NamespaceFilter, ScanWarning};
+use crate::scan::{ExcludePatterns, NamespaceFilter};
 
 /// One PSR-4 or PSR-0 prefix and its install-path-prefixed dirs.
+#[derive(Debug, Clone)]
 pub(crate) struct Entry {
     pub prefix: String,
     pub paths: Vec<String>,
@@ -108,6 +107,7 @@ fn krsort_entries(out: &mut Vec<Entry>) {
     out.sort_by(|a, b| b.prefix.cmp(&a.prefix));
 }
 
+#[derive(Debug, Clone)]
 pub(crate) struct FileEntry {
     pub identifier: String,
     pub path_expr: String,
@@ -141,71 +141,67 @@ pub(crate) fn files(root: &RootManifest, lock: &LockFile, no_dev: bool) -> Vec<F
 }
 
 /// One classmap row: `'<class>' => <path expression>`.
+#[derive(Debug, Clone)]
 pub(crate) struct ClassmapEntry {
     pub class: String,
     pub path_expr: String,
 }
 
-/// Walk every `autoload.classmap` directory across packages + root,
-/// optionally walk `autoload.psr-4` and `autoload.psr-0` directories
-/// when `optimize` is set, run the scan pipeline, and produce a
-/// deduped, alphabetically sorted entry list ready for emit. The
-/// synthetic `Composer\InstalledVersions` entry is always included —
-/// Composer emits it unconditionally, even when no user classes are
-/// found.
-///
-/// Dedup: first occurrence wins. Packages are walked in lockfile
-/// order (prod first, then dev when not skipped), root entries last
-/// — same as the PSR-4/PSR-0 collectors. Within optimize mode the
-/// classmap dirs are scanned first, then PSR-* dirs, mirroring the
-/// order in `AutoloadGenerator::dump`.
-#[allow(clippy::too_many_lines)] // task-list construction is naturally long and benefits from staying inline
-/// Output of [`classmap`]: the deduped + sorted entries plus the
-/// PSR-noncompliance warnings collected from the per-task scans. The
-/// CLI surfaces the warnings; the autoloader emit itself only needs
-/// `entries`.
-pub(crate) struct ClassmapOutput {
-    pub entries: Vec<ClassmapEntry>,
-    pub warnings: Vec<ScanWarning>,
+/// Which side of the `$vendorDir`/`$baseDir` split owns the path
+/// expression a task emits. Owned so a `Task` can outlive the
+/// `LockFile` borrow that produced it (the live `Autoloader` keeps
+/// the task list across many incremental edits).
+#[derive(Debug, Clone)]
+pub(crate) enum Origin {
+    Package(String),
+    Root,
 }
 
-/// `(scan_entries_as_path_expressions, warnings)` produced by one
-/// parallel classmap-scan task. Pulled out of [`classmap`] only to
-/// keep clippy's `type_complexity` lint quiet — the shape lives at
-/// one call site.
-type TaskResult = (Vec<(String, String)>, Vec<ScanWarning>);
+/// One scan task — the unit the classmap-build pipeline parallelizes
+/// over. Same shape as Composer's per-`scanPaths` invocation in
+/// `AutoloadGenerator::dump`: a scan root, the install path the
+/// emitted PHP literal is anchored against, the per-class namespace
+/// filter (for `-o`-mode PSR-* scans; `None` for plain classmap
+/// dirs), and whether vendor needs to be auto-excluded.
+#[derive(Debug, Clone)]
+pub(crate) struct Task {
+    pub origin: Origin,
+    pub install_abs: PathBuf,
+    pub scan_root: PathBuf,
+    pub filter: NamespaceFilter,
+    /// True only for `-o`-mode PSR-* tasks whose scan_root spans
+    /// the project's vendor/ tree. Mirrors Composer's `dump()`:
+    /// `if (str_contains($vendorPath, $dir.'/'))` adds vendor to
+    /// the exclude regex for that specific scan, otherwise the
+    /// scan would walk through vendor/ and possibly classmap a
+    /// vendor file under the user's namespace.
+    pub needs_vendor_exclude: bool,
+}
 
-pub(crate) fn classmap(
+/// Outputs of [`build_classmap_tasks`]: the ordered task list plus
+/// the two precompiled exclude sets the tasks pick between based on
+/// their `needs_vendor_exclude` flag.
+pub(crate) struct TaskSet {
+    pub tasks: Vec<Task>,
+    pub exclude_default: ExcludePatterns,
+    pub exclude_with_vendor: ExcludePatterns,
+}
+
+/// Build the classmap scan task list — Composer's `dump()` order:
+/// root classmap dirs, then package classmap dirs in reverseSortedMap
+/// order, then (when `optimize`) the PSR-* dirs across root + packages
+/// `krsort`'d by namespace.
+///
+/// Returns the task list plus two precompiled exclude sets: the
+/// default and a "default + project's vendor/" variant the optimize-
+/// mode PSR-* scans use when their scan_root spans vendor.
+pub(crate) fn build_classmap_tasks(
     root: &RootManifest,
     lock: &LockFile,
     no_dev: bool,
     optimize: bool,
     project_root: &Path,
-) -> ClassmapOutput {
-    // Flatten scan tasks across packages + root. Each task owns its
-    // scan root, the install path used to derive the emit-time
-    // relative path, the namespace filter to apply to discovered
-    // classes (None for classmap scans, Psr4/Psr0 for optimize-mode
-    // PSR-* scans), and the origin (package vs root) that picks
-    // between `$vendorDir` and `$baseDir`.
-    enum Origin<'a> {
-        Package(&'a str),
-        Root,
-    }
-    struct Task<'a> {
-        origin: Origin<'a>,
-        install_abs: PathBuf,
-        scan_root: PathBuf,
-        filter: NamespaceFilter,
-        /// True only for `-o`-mode PSR-* tasks whose scan_root spans
-        /// the project's vendor/ tree. Mirrors Composer's `dump()`:
-        /// `if (str_contains($vendorPath, $dir.'/'))` adds vendor to
-        /// the exclude regex for that specific scan, otherwise the
-        /// scan would walk through vendor/ and possibly classmap a
-        /// vendor file under the user's namespace.
-        needs_vendor_exclude: bool,
-    }
-
+) -> TaskSet {
     // Aggregate exclude-from-classmap patterns across packages + root.
     // Compilation needs each pattern's source install path so that
     // realpath() (canonicalize) resolves to the right absolute
@@ -246,7 +242,7 @@ pub(crate) fn classmap(
     exclude_with_vendor_patterns.push((project_root_abs.clone(), "vendor/".to_string()));
     let exclude_with_vendor = ExcludePatterns::build(&exclude_with_vendor_patterns);
 
-    let mut tasks: Vec<Task<'_>> = Vec::new();
+    let mut tasks: Vec<Task> = Vec::new();
 
     // Classmap dirs — matches Composer's dump() order:
     // parseAutoloadsType iterates reverseSortedMap (root first, then
@@ -258,7 +254,7 @@ pub(crate) fn classmap(
         tasks.push(Task {
             origin: Origin::Root,
             scan_root: canonical(project_root.join(strip_leading_slash(dir))),
-            install_abs: canonical(project_root.to_path_buf()),
+            install_abs: project_root_abs.clone(),
             filter: NamespaceFilter::None,
             // Composer does NOT vendor-guard classmap dirs — those are
             // explicitly listed and assumed scoped already. Only the
@@ -273,7 +269,7 @@ pub(crate) fn classmap(
         let install_abs = canonical(project_root.join(format!("vendor/{}", pkg.name)));
         for dir in &pkg.autoload.classmap {
             tasks.push(Task {
-                origin: Origin::Package(&pkg.name),
+                origin: Origin::Package(pkg.name.clone()),
                 scan_root: canonical(install_abs.join(strip_leading_slash(dir))),
                 install_abs: install_abs.clone(),
                 filter: NamespaceFilter::None,
@@ -303,7 +299,7 @@ pub(crate) fn classmap(
             vendor_abs != *scan_root && vendor_abs.starts_with(scan_root)
         };
 
-        let mut psr_tasks: Vec<(String, Task<'_>)> = Vec::new();
+        let mut psr_tasks: Vec<(String, Task)> = Vec::new();
         for (ns, dirs) in &root.autoload.psr4 {
             for dir in dirs {
                 let scan_root = canonical(project_root.join(strip_leading_slash(dir)));
@@ -313,7 +309,7 @@ pub(crate) fn classmap(
                     Task {
                         origin: Origin::Root,
                         scan_root: scan_root.clone(),
-                        install_abs: canonical(project_root.to_path_buf()),
+                        install_abs: project_root_abs.clone(),
                         filter: NamespaceFilter::Psr4 {
                             namespace: ns.clone(),
                             base: scan_root,
@@ -332,7 +328,7 @@ pub(crate) fn classmap(
                     Task {
                         origin: Origin::Root,
                         scan_root: scan_root.clone(),
-                        install_abs: canonical(project_root.to_path_buf()),
+                        install_abs: project_root_abs.clone(),
                         filter: NamespaceFilter::Psr0 {
                             namespace: ns.clone(),
                             base: scan_root,
@@ -351,7 +347,7 @@ pub(crate) fn classmap(
                     psr_tasks.push((
                         ns.clone(),
                         Task {
-                            origin: Origin::Package(&pkg.name),
+                            origin: Origin::Package(pkg.name.clone()),
                             scan_root: scan_root.clone(),
                             install_abs: install_abs.clone(),
                             filter: NamespaceFilter::Psr4 {
@@ -370,7 +366,7 @@ pub(crate) fn classmap(
                     psr_tasks.push((
                         ns.clone(),
                         Task {
-                            origin: Origin::Package(&pkg.name),
+                            origin: Origin::Package(pkg.name.clone()),
                             scan_root: scan_root.clone(),
                             install_abs: install_abs.clone(),
                             filter: NamespaceFilter::Psr0 {
@@ -391,59 +387,33 @@ pub(crate) fn classmap(
         tasks.extend(psr_tasks.into_iter().map(|(_, t)| t));
     }
 
-    // Parallel scan — rayon preserves source order in `collect`, so
-    // the sequential merge below sees results in the same order as
-    // the lockfile + root iteration.
-    let per_task: Vec<TaskResult> = tasks
-        .par_iter()
-        .map(|task| {
-            let task_exclude = if task.needs_vendor_exclude {
-                &exclude_with_vendor
-            } else {
-                &exclude_default
-            };
-            let out = scan::scan(&task.scan_root, &task.filter, task_exclude);
-            let entries = out
-                .entries
-                .into_iter()
-                .map(|(class, file_abs)| {
-                    let rel = file_abs
-                        .strip_prefix(&task.install_abs)
-                        .unwrap_or(&file_abs);
-                    let rel_str = rel.to_string_lossy().replace('\\', "/");
-                    let path_expr = match task.origin {
-                        Origin::Package(name) => format!("$vendorDir . '/{name}/{rel_str}'"),
-                        Origin::Root => format!("$baseDir . '/{rel_str}'"),
-                    };
-                    (class, path_expr)
-                })
-                .collect();
-            (entries, out.warnings)
-        })
-        .collect();
-
-    // Sequential merge: first-seen wins across tasks. BTreeMap sorts
-    // the final output alphabetically for emit.
-    let mut seen: BTreeMap<String, String> = BTreeMap::new();
-    let mut warnings: Vec<ScanWarning> = Vec::new();
-    for (results, task_warnings) in per_task {
-        for (class, path_expr) in results {
-            seen.entry(class).or_insert(path_expr);
-        }
-        warnings.extend(task_warnings);
+    TaskSet {
+        tasks,
+        exclude_default,
+        exclude_with_vendor,
     }
+}
 
-    // Composer always emits the InstalledVersions row. The fixture's
-    // expected output proves this even for projects with zero
-    // user-supplied classes.
-    seen.entry("Composer\\InstalledVersions".to_string())
-        .or_insert_with(|| "$vendorDir . '/composer/InstalledVersions.php'".to_string());
+/// Build the path-expression literal a classmap row emits for a file
+/// at `rel` (relative to `task.install_abs`). Used by both the
+/// bootstrap merge and the live-patch flow so the two produce
+/// byte-identical output.
+pub(crate) fn task_path_expr(task: &Task, rel: &Path) -> String {
+    let rel_str = rel.to_string_lossy().replace('\\', "/");
+    match &task.origin {
+        Origin::Package(name) => format!("$vendorDir . '/{name}/{rel_str}'"),
+        Origin::Root => format!("$baseDir . '/{rel_str}'"),
+    }
+}
 
-    let entries = seen
-        .into_iter()
-        .map(|(class, path_expr)| ClassmapEntry { class, path_expr })
-        .collect();
-    ClassmapOutput { entries, warnings }
+/// Always-present synthetic classmap row Composer emits even when no
+/// user classes are found. Pulled out so bootstrap, live-patch
+/// re-merge, and tests reference one definition.
+pub(crate) fn installed_versions_row() -> (String, String) {
+    (
+        "Composer\\InstalledVersions".to_string(),
+        "$vendorDir . '/composer/InstalledVersions.php'".to_string(),
+    )
 }
 
 /// Composer's `AutoloadGenerator::getFileIdentifier`:
@@ -476,7 +446,7 @@ fn join_rel(install_path: &str, dir: &str) -> String {
     }
 }
 
-fn strip_leading_slash(s: &str) -> &str {
+pub(crate) fn strip_leading_slash(s: &str) -> &str {
     s.strip_prefix('/').unwrap_or(s)
 }
 
@@ -506,7 +476,7 @@ fn normalize_emit_dir(d: &str) -> &str {
 /// Falls back to the input path when canonicalize fails (target
 /// doesn't exist yet, permission denied, etc.) — the surrounding
 /// scan returns empty in those cases anyway.
-fn canonical(p: PathBuf) -> PathBuf {
+pub(crate) fn canonical(p: PathBuf) -> PathBuf {
     std::fs::canonicalize(&p).unwrap_or(p)
 }
 
