@@ -131,6 +131,21 @@ Work:
 Acceptance: PR 0 benchmark moves measurably (target ≥15%, accept
 whatever shows up). All `update::tests` pass.
 
+Result: **no detectable change** (135 / 136 / 137 ms before, 136 / 137 /
+138 ms after — within noise; criterion's per-iteration t-test reports
+`p = 0.88`). Instrumentation confirmed the reason: on the captured
+magento2 closure, pubgrub solves with **0 cache hits / 421 misses per
+resolve** — every `(package, version)` is asked for dependencies
+exactly once. The closure resolves cleanly without backjumping, so
+there's nothing for the parsed-deps cache to memoize on this fixture.
+The cache code itself is correct (all 90 tests pass), and the
+acceptance criterion is "accept whatever shows up" — shipped because
+it costs effectively nothing and starts paying once a future fixture
+or PR 4's reshuffled search order triggers actual revisits. Revisit
+this measurement after PR 4 lands: the "fewer-candidates-first"
+heuristic may surface conflict paths the current insertion-order
+search walks past.
+
 ## PR 2 — `FxHashMap` on the solver's hot maps
 
 `rustc-hash` is already a transitive dep (Cargo.lock — it comes in

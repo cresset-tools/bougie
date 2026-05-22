@@ -204,6 +204,26 @@ pub struct ResolveProvider {
     /// telling us which package's hash to use); this cache makes
     /// that load happen at most once per resolve per repo.
     v1_provider_tables: RefCell<HashMap<String, HashMap<String, String>>>,
+    /// Memoized `get_dependencies` output. pubgrub asks for the same
+    /// `(package, version)` pair repeatedly during conflict analysis;
+    /// without this cache we re-run `Constraint::parse` + `to_range`
+    /// for every require + replace clause on every call. Storing the
+    /// parsed result as `Arc<Vec<_>>` lets cache hits hand pubgrub a
+    /// shallow `Arc::clone` and walk the cached slice straight into a
+    /// fresh `DependencyConstraints` map. Covers both real packages
+    /// and the virtual-selection branch; `Root` skips the cache (its
+    /// deps come pre-parsed from `root_deps` and pubgrub only asks
+    /// for them once).
+    ///
+    /// Mirror of the `merged_cache` pattern (which already pays the
+    /// same memoization toll on `versions_for`). The `versions_for`
+    /// note records that the prior un-memoized version cost 11–14%
+    /// of CPU on a Laravel-sized resolve; magento2's deeper graph
+    /// makes constraint re-parsing the next-worst hot spot for the
+    /// same structural reason.
+    parsed_deps: RefCell<
+        HashMap<(PubGrubPackage, Version), Arc<Vec<(PubGrubPackage, ComposerRange)>>>,
+    >,
     /// Spinner ticked on every `versions_for` call so the pubgrub
     /// `resolve` phase has visible progress. Defaults to hidden;
     /// orchestrators flip it on with `begin_solve_progress` around
@@ -401,6 +421,7 @@ impl ResolveProvider {
             virtual_wildcards: RefCell::new(HashMap::new()),
             virtual_selections: RefCell::new(HashMap::new()),
             v1_provider_tables: RefCell::new(HashMap::new()),
+            parsed_deps: RefCell::new(HashMap::new()),
             solve_progress: RefCell::new(SolveProgress::hidden()),
         })
     }
@@ -1915,124 +1936,177 @@ impl DependencyProvider for ResolveProvider {
         package: &Self::P,
         version: &Self::V,
     ) -> Result<Dependencies<Self::P, Self::VS, Self::M>, Self::Err> {
-        let deps: Vec<(String, ComposerRange)> = match package {
-            PubGrubPackage::Root => self.root_deps.clone(),
-            PubGrubPackage::Package(name) => {
-                // Virtual selections take priority: if pubgrub picked
-                // a virtual (e.g. `psr/http-client-implementation @
-                // 1.0`), the only dependency we emit is a tight pin
-                // on the real providing package. That binds the
-                // virtual selection to the concrete provider; the
-                // provider then carries its own require chain
-                // through pubgrub naturally.
-                let virtual_key = (name.clone(), version.clone());
-                if let Some(providers) =
-                    self.virtual_selections.borrow().get(&virtual_key).cloned()
-                {
-                    // Group registrations by provider name. With one
-                    // distinct provider we can pin to the union of
-                    // its versions and pubgrub picks whichever fits
-                    // the rest of the resolution. With multiple
-                    // distinct providers — the classic
-                    // `psr/http-client-implementation` case where
-                    // guzzle, symfony/http-client, and various
-                    // libraries all advertise `provide: { ...: '1.0' }`
-                    // — pubgrub's `Dependencies::Available` has no
-                    // OR across distinct package names, so we emit
-                    // no constraint at all. The virtual still appears
-                    // in the solution as a marker; the real provider
-                    // is expected to be pulled in via another require
-                    // edge (e.g. magento → guzzle). Composer's solver
-                    // expresses this naturally as an OR-of-providers
-                    // rule; bougie's modeling lacks that today, so
-                    // accept the looser semantics until the resolver
-                    // grows a proper provider-selector.
-                    let mut by_name: std::collections::BTreeMap<String, Vec<Version>> =
-                        std::collections::BTreeMap::new();
-                    for (pname, pver) in &providers {
-                        by_name.entry(pname.clone()).or_default().push(pver.clone());
-                    }
-                    let constraints: DependencyConstraints<Self::P, Self::VS> = if by_name.len() == 1
-                    {
-                        let (pname, versions) = by_name.iter().next().expect("non-empty");
-                        let range = versions
-                            .iter()
-                            .map(|v| {
-                                to_range(&Constraint::Op {
-                                    op: bougie_semver::version::CmpOp::Eq,
-                                    version: v.clone(),
-                                    explicit_lower_bound: true,
-                                })
-                            })
-                            .fold(ComposerRange::empty(), |acc, r| acc.union(&r));
-                        std::iter::once((PubGrubPackage::Package(pname.clone()), range)).collect()
-                    } else {
-                        DependencyConstraints::default()
-                    };
-                    return Ok(Dependencies::Available(constraints));
-                }
-                let versions = self.versions_for(name)?;
-                // Find the entry by reference equality on the cached
-                // `Version` — same instance `choose_version` returned,
-                // no re-parse, no chance of a Packagist
-                // `version_normalized` quirk masquerading as a missing
-                // version.
-                let Some((_, entry)) = versions.iter().find(|(v, _)| v == version) else {
-                    // Shouldn't happen — pubgrub only asks for
-                    // dependencies of a version we just returned from
-                    // `choose_version`. Surface as a hard error so a
-                    // future refactor doesn't silently mask the bug.
-                    return Err(ProviderError(format!(
-                        "internal: get_dependencies({name}@{}) but version not in cache",
-                        version,
-                    )));
-                };
-                let mut out: Vec<(String, ComposerRange)> = Vec::new();
-                let owner_version = &entry.version;
-                push_constraint_map(&mut out, &entry.require, name, owner_version, "require")?;
-                // `replace` is encoded as an additional require ONLY
-                // when the clause is a bare version
-                // (`replace: { sub: 2.0.0 }`). This emits
-                // `sub: ==2.0.0` from the replacer, mirroring
-                // Composer's "no coexistence" rule: selecting the
-                // replacer forces the replaced package to its
-                // exact replace-version (preventing real sub at any
-                // other version from being selected alongside).
-                //
-                // For range/wildcard replaces
-                // (`replace: { sub: * }`, `replace: { sub: ^1.0 }`),
-                // there's no single version to pin — the replacer
-                // simply offers a capability. Those flow through the
-                // virtual-provider index alone; emitting them here
-                // would pull a virtual name into the graph
-                // unnecessarily and force a wildcard synthesis even
-                // when no real consumer needs the replaced name.
-                //
-                // `provide` follows the same logic: capability
-                // declaration via the virtual index, never an
-                // additional require.
-                let exact_replaces: std::collections::BTreeMap<String, String> = entry
-                    .replace
-                    .iter()
-                    .filter(|(_, v)| {
-                        let effective = if v.as_str() == "self.version" {
-                            owner_version.as_str()
-                        } else {
-                            v.as_str()
-                        };
-                        Version::parse(effective).is_ok()
-                    })
-                    .map(|(k, v)| (k.clone(), v.clone()))
-                    .collect();
-                push_constraint_map(&mut out, &exact_replaces, name, owner_version, "replace")?;
-                out
-            }
+        // Root is asked exactly once; skip the cache so we don't pay
+        // the hash + insert cost or the `Arc` allocation for a path
+        // that doesn't repeat.
+        if matches!(package, PubGrubPackage::Root) {
+            let constraints: DependencyConstraints<Self::P, Self::VS> = self
+                .root_deps
+                .iter()
+                .cloned()
+                .map(|(n, r)| (PubGrubPackage::Package(n), r))
+                .collect();
+            return Ok(Dependencies::Available(constraints));
+        }
+        let parsed = self.parsed_deps_for(package, version)?;
+        // Re-collect into a fresh `DependencyConstraints` per call —
+        // pubgrub consumes it by value. The cached slice is shared
+        // via `Arc`; only the `(P, VS)` pair clones run on a hit
+        // (avoiding the `Constraint::parse` + `to_range` per dep).
+        let constraints: DependencyConstraints<Self::P, Self::VS> =
+            parsed.iter().cloned().collect();
+        Ok(Dependencies::Available(constraints))
+    }
+}
+
+impl ResolveProvider {
+    /// Parsed-deps cache lookup + populate. Returns the shared
+    /// `Arc<Vec<_>>` for `(package, version)`; pubgrub's
+    /// `get_dependencies` rebuilds a fresh `DependencyConstraints`
+    /// from the slice on every call (the per-call clone of two
+    /// items — `PubGrubPackage` + `ComposerRange` — is cheap next to
+    /// the `Constraint::parse` + `to_range` work the cache skips).
+    ///
+    /// Caller must ensure `package` is `PubGrubPackage::Package(_)`;
+    /// `Root` is handled inline in `get_dependencies` to skip the
+    /// hash + insert cost on a path that doesn't repeat.
+    fn parsed_deps_for(
+        &self,
+        package: &PubGrubPackage,
+        version: &Version,
+    ) -> Result<Arc<Vec<(PubGrubPackage, ComposerRange)>>, ProviderError> {
+        let key = (package.clone(), version.clone());
+        if let Some(hit) = self.parsed_deps.borrow().get(&key) {
+            return Ok(Arc::clone(hit));
+        }
+        let parsed = self.compute_parsed_deps(package, version)?;
+        let arc = Arc::new(parsed);
+        self.parsed_deps
+            .borrow_mut()
+            .insert(key, Arc::clone(&arc));
+        Ok(arc)
+    }
+
+    /// Cache-miss path: do the actual work `get_dependencies` used
+    /// to do inline. Covers both the virtual-selection branch and
+    /// the real-package branch, in that order — the same priority
+    /// the pre-refactor body had.
+    fn compute_parsed_deps(
+        &self,
+        package: &PubGrubPackage,
+        version: &Version,
+    ) -> Result<Vec<(PubGrubPackage, ComposerRange)>, ProviderError> {
+        let PubGrubPackage::Package(name) = package else {
+            // Caller guarantees this. If it ever reaches here, the
+            // refactor lost the early return in `get_dependencies` —
+            // surface as an internal error rather than panicking.
+            return Err(ProviderError(
+                "internal: parsed_deps_for called with Root".to_owned(),
+            ));
         };
-        let constraints: DependencyConstraints<Self::P, Self::VS> = deps
+
+        // Virtual selections take priority: if pubgrub picked a
+        // virtual (e.g. `psr/http-client-implementation @ 1.0`), the
+        // only dependency we emit is a tight pin on the real
+        // providing package. That binds the virtual selection to the
+        // concrete provider; the provider then carries its own
+        // require chain through pubgrub naturally.
+        let virtual_key = (name.clone(), version.clone());
+        if let Some(providers) =
+            self.virtual_selections.borrow().get(&virtual_key).cloned()
+        {
+            // Group registrations by provider name. With one distinct
+            // provider we can pin to the union of its versions and
+            // pubgrub picks whichever fits the rest of the
+            // resolution. With multiple distinct providers — the
+            // classic `psr/http-client-implementation` case where
+            // guzzle, symfony/http-client, and various libraries all
+            // advertise `provide: { ...: '1.0' }` — pubgrub's
+            // `Dependencies::Available` has no OR across distinct
+            // package names, so we emit no constraint at all. The
+            // virtual still appears in the solution as a marker; the
+            // real provider is expected to be pulled in via another
+            // require edge (e.g. magento → guzzle). Composer's
+            // solver expresses this naturally as an OR-of-providers
+            // rule; bougie's modeling lacks that today, so accept
+            // the looser semantics until the resolver grows a proper
+            // provider-selector.
+            let mut by_name: std::collections::BTreeMap<String, Vec<Version>> =
+                std::collections::BTreeMap::new();
+            for (pname, pver) in &providers {
+                by_name.entry(pname.clone()).or_default().push(pver.clone());
+            }
+            let mut out: Vec<(PubGrubPackage, ComposerRange)> = Vec::new();
+            if by_name.len() == 1 {
+                let (pname, versions) = by_name.iter().next().expect("non-empty");
+                let range = versions
+                    .iter()
+                    .map(|v| {
+                        to_range(&Constraint::Op {
+                            op: bougie_semver::version::CmpOp::Eq,
+                            version: v.clone(),
+                            explicit_lower_bound: true,
+                        })
+                    })
+                    .fold(ComposerRange::empty(), |acc, r| acc.union(&r));
+                out.push((PubGrubPackage::Package(pname.clone()), range));
+            }
+            return Ok(out);
+        }
+
+        let versions = self.versions_for(name)?;
+        // Find the entry by reference equality on the cached
+        // `Version` — same instance `choose_version` returned, no
+        // re-parse, no chance of a Packagist `version_normalized`
+        // quirk masquerading as a missing version.
+        let Some((_, entry)) = versions.iter().find(|(v, _)| v == version) else {
+            // Shouldn't happen — pubgrub only asks for dependencies
+            // of a version we just returned from `choose_version`.
+            // Surface as a hard error so a future refactor doesn't
+            // silently mask the bug.
+            return Err(ProviderError(format!(
+                "internal: get_dependencies({name}@{version}) but version not in cache",
+            )));
+        };
+        let mut staging: Vec<(String, ComposerRange)> = Vec::new();
+        let owner_version = &entry.version;
+        push_constraint_map(&mut staging, &entry.require, name, owner_version, "require")?;
+        // `replace` is encoded as an additional require ONLY when
+        // the clause is a bare version (`replace: { sub: 2.0.0 }`).
+        // This emits `sub: ==2.0.0` from the replacer, mirroring
+        // Composer's "no coexistence" rule: selecting the replacer
+        // forces the replaced package to its exact replace-version
+        // (preventing real sub at any other version from being
+        // selected alongside).
+        //
+        // For range/wildcard replaces (`replace: { sub: * }`,
+        // `replace: { sub: ^1.0 }`), there's no single version to
+        // pin — the replacer simply offers a capability. Those flow
+        // through the virtual-provider index alone; emitting them
+        // here would pull a virtual name into the graph
+        // unnecessarily and force a wildcard synthesis even when no
+        // real consumer needs the replaced name.
+        //
+        // `provide` follows the same logic: capability declaration
+        // via the virtual index, never an additional require.
+        let exact_replaces: std::collections::BTreeMap<String, String> = entry
+            .replace
+            .iter()
+            .filter(|(_, v)| {
+                let effective = if v.as_str() == "self.version" {
+                    owner_version.as_str()
+                } else {
+                    v.as_str()
+                };
+                Version::parse(effective).is_ok()
+            })
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        push_constraint_map(&mut staging, &exact_replaces, name, owner_version, "replace")?;
+        Ok(staging
             .into_iter()
             .map(|(n, r)| (PubGrubPackage::Package(n), r))
-            .collect();
-        Ok(Dependencies::Available(constraints))
+            .collect())
     }
 }
 
