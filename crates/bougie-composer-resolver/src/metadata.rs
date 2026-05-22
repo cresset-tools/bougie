@@ -848,5 +848,246 @@ fn v1_package_cache_path(paths: &Paths, repo: &Repo, package_name: &str, sha256:
         .join(format!("{package_name}${sha256}.json"))
 }
 
+// ===========================================================================
+// Async siblings
+// ---------------------------------------------------------------------------
+// Used by `update::run_prefetch_fanout`. The blocking versions above
+// stay in place for the lazy fallback path in `ResolveProvider::
+// load_real_candidates` and for `probe_protocol`/`discover_repos`
+// (one-shot, called outside the fan-out). The duplication is ugly
+// but the alternative — making the blocking callers go through
+// `Runtime::block_on` of the async path — drags a runtime
+// requirement into every sync call site.
+//
+// Filesystem ops (`fs::read`, `fs::write`, etc.) stay sync inside
+// these async functions. For the small ETag + JSON files we deal
+// with (a few KB), `tokio::fs` adds spawn-blocking overhead without
+// material benefit; a blocking syscall on the local cache is cheap
+// compared to network RTT.
+
+/// Async sibling of [`fetch_package_metadata_optional`]. Same
+/// 404/HTML-fallback behavior, same ETag-conditional-GET shape,
+/// same on-disk cache layout — just `client.get(...).send().await`
+/// instead of blocking.
+pub async fn fetch_package_metadata_optional_async(
+    client: &reqwest::Client,
+    paths: &Paths,
+    repo: &Repo,
+    package_name: &str,
+    variant: Variant,
+) -> Result<Option<PackageMetadata>> {
+    let (json_path, etag_path) = cache_paths(paths, repo, package_name, variant);
+    if let Some(parent) = json_path.parent() {
+        fs::create_dir_all(parent)
+            .wrap_err_with(|| format!("creating {}", parent.display()))?;
+    }
+
+    let url = format!(
+        "{}/p2/{}{}.json",
+        repo.url,
+        package_name,
+        variant.suffix(),
+    );
+    let mut req = client.get(&url);
+    if let Some(auth) = &repo.auth {
+        req = req.header(reqwest::header::AUTHORIZATION, auth.header_value());
+    }
+    if let Ok(etag) = fs::read_to_string(&etag_path) {
+        let etag = etag.trim();
+        if !etag.is_empty() {
+            req = req.header(reqwest::header::IF_NONE_MATCH, etag);
+        }
+    }
+
+    let start = std::time::Instant::now();
+    let resp = req.send().await.map_err(|e| BougieError::Network {
+        operation: format!("GET {url}"),
+        detail: e.to_string(),
+    })?;
+    tracing::debug!(
+        url = %url,
+        status = %resp.status(),
+        elapsed_ms = start.elapsed().as_millis() as u64,
+        package = %package_name,
+        variant = ?variant,
+        phase = "fetch_optional_async",
+        "GET",
+    );
+
+    if resp.status() == reqwest::StatusCode::NOT_MODIFIED {
+        return read_cached(&json_path).map(Some);
+    }
+    if resp.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
+    if !resp.status().is_success() {
+        return Err(BougieError::Network {
+            operation: format!("GET {url}"),
+            detail: format!("server returned HTTP {}", resp.status()),
+        }
+        .into());
+    }
+
+    if response_is_html_async(&resp) {
+        return Ok(None);
+    }
+
+    let etag = resp
+        .headers()
+        .get(reqwest::header::ETAG)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+    let bytes = resp.bytes().await.map_err(|e| BougieError::Network {
+        operation: format!("reading body of {url}"),
+        detail: e.to_string(),
+    })?;
+
+    write_atomic(&json_path, &bytes)?;
+    if let Some(t) = etag {
+        let _ = write_atomic(&etag_path, t.as_bytes());
+    }
+
+    PackageMetadata::parse(&bytes)
+        .wrap_err_with(|| format!("parsing metadata for {package_name}"))
+        .map(Some)
+}
+
+/// True when an async response advertises HTML — same content-type
+/// guard as [`response_is_html`], adapted for `reqwest::Response`.
+fn response_is_html_async(resp: &reqwest::Response) -> bool {
+    let Some(raw) = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+    else {
+        return false;
+    };
+    let mime = raw.split(';').next().unwrap_or("").trim().to_ascii_lowercase();
+    mime == "text/html" || mime == "application/xhtml+xml"
+}
+
+/// Async sibling of [`load_v1_provider_table`]. Same content-
+/// addressed disk cache layout, same merge semantics; just
+/// `await`s the include fetches sequentially. v1 repos are rare
+/// and the includes per repo are few — no need to parallelize the
+/// inner loop.
+pub async fn load_v1_provider_table_async(
+    client: &reqwest::Client,
+    paths: &Paths,
+    repo: &Repo,
+    discovery: &V1Discovery,
+) -> Result<HashMap<String, String>> {
+    let mut table: HashMap<String, String> = HashMap::new();
+    for include in &discovery.provider_includes {
+        let body = fetch_v1_include_cached_async(client, paths, repo, include).await?;
+        let parsed: serde_json::Value = serde_json::from_slice(&body)
+            .wrap_err_with(|| {
+                format!(
+                    "parsing v1 provider-include from {} (sha256 {})",
+                    include.path_template, include.sha256,
+                )
+            })?;
+        let Some(providers) = parsed.get("providers").and_then(serde_json::Value::as_object)
+        else {
+            continue;
+        };
+        for (name, entry) in providers {
+            let Some(sha) = entry
+                .get("sha256")
+                .and_then(serde_json::Value::as_str)
+            else {
+                continue;
+            };
+            table.insert(name.clone(), sha.to_owned());
+        }
+    }
+    Ok(table)
+}
+
+async fn fetch_v1_include_cached_async(
+    client: &reqwest::Client,
+    paths: &Paths,
+    repo: &Repo,
+    include: &ProviderInclude,
+) -> Result<Vec<u8>> {
+    let cache_path = v1_include_cache_path(paths, repo, &include.sha256);
+    if let Ok(bytes) = fs::read(&cache_path) {
+        return Ok(bytes);
+    }
+    let url_path = include.path_template.replace("%hash%", &include.sha256);
+    let url = format!("{}/{}", repo.url, url_path.trim_start_matches('/'));
+    let mut req = client.get(&url);
+    if let Some(auth) = &repo.auth {
+        req = req.header(reqwest::header::AUTHORIZATION, auth.header_value());
+    }
+    let resp = req.send().await.map_err(|e| BougieError::Network {
+        operation: format!("GET {url}"),
+        detail: e.to_string(),
+    })?;
+    if !resp.status().is_success() {
+        return Err(BougieError::Network {
+            operation: format!("GET {url}"),
+            detail: format!("server returned HTTP {}", resp.status()),
+        }
+        .into());
+    }
+    let bytes = resp.bytes().await.map_err(|e| BougieError::Network {
+        operation: format!("reading body of {url}"),
+        detail: e.to_string(),
+    })?;
+    write_atomic(&cache_path, &bytes)?;
+    Ok(bytes.to_vec())
+}
+
+/// Async sibling of [`fetch_package_metadata_v1_optional`]. Same
+/// content-addressed disk cache + 404 semantics.
+pub async fn fetch_package_metadata_v1_optional_async(
+    client: &reqwest::Client,
+    paths: &Paths,
+    repo: &Repo,
+    discovery: &V1Discovery,
+    provider_table: &HashMap<String, String>,
+    package_name: &str,
+) -> Result<Option<PackageMetadata>> {
+    let Some(sha) = provider_table.get(package_name) else {
+        return Ok(None);
+    };
+    let cache_path = v1_package_cache_path(paths, repo, package_name, sha);
+    let bytes = if let Ok(bytes) = fs::read(&cache_path) {
+        bytes
+    } else {
+        let url_path = discovery
+            .providers_url
+            .replace("%package%", package_name)
+            .replace("%hash%", sha);
+        let url = format!("{}/{}", repo.url, url_path.trim_start_matches('/'));
+        let mut req = client.get(&url);
+        if let Some(auth) = &repo.auth {
+            req = req.header(reqwest::header::AUTHORIZATION, auth.header_value());
+        }
+        let resp = req.send().await.map_err(|e| BougieError::Network {
+            operation: format!("GET {url}"),
+            detail: e.to_string(),
+        })?;
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        if !resp.status().is_success() {
+            return Err(BougieError::Network {
+                operation: format!("GET {url}"),
+                detail: format!("server returned HTTP {}", resp.status()),
+            }
+            .into());
+        }
+        let body = resp.bytes().await.map_err(|e| BougieError::Network {
+            operation: format!("reading body of {url}"),
+            detail: e.to_string(),
+        })?;
+        write_atomic(&cache_path, &body)?;
+        body.to_vec()
+    };
+    parse_v1_per_package(&bytes, package_name).map(Some)
+}
+
 #[cfg(test)]
 mod tests;

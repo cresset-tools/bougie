@@ -60,6 +60,27 @@ pub fn default_client() -> Result<reqwest::blocking::Client> {
         })
 }
 
+/// Async sibling of [`default_client`] — same `User-Agent`, same
+/// timeout policy, but the non-blocking `reqwest::Client`. Used by
+/// the composer-resolver's parallel pre-fetch fan-out so concurrent
+/// fetches share a single async client (one connection pool, no
+/// `spawn_blocking` thread per in-flight request) instead of N
+/// blocking clients each driving their own internal runtime.
+pub fn default_async_client() -> Result<reqwest::Client> {
+    reqwest::Client::builder()
+        .user_agent(USER_AGENT)
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(300))
+        .build()
+        .map_err(|e| {
+            BougieError::Network {
+                operation: "building async HTTP client".into(),
+                detail: e.to_string(),
+            }
+            .into()
+        })
+}
+
 /// Which hash algorithm verifies a download. Bougie's own published
 /// blobs use sha256; Composer's Packagist dist `shasum` field is sha1.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

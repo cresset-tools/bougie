@@ -55,14 +55,14 @@ version = "0.13"
 default-features = false
 features = ["blocking", "rustls", "gzip"]
 
-# Parallel metadata pre-fetch (`update::pre_fetch_closure_inner`) runs a
-# Semaphore-bounded fan-out on a small tokio runtime, dispatching the
-# actual blocking HTTP calls via `spawn_blocking`. `rt` gives us the
-# current-thread executor + the blocking thread-pool; `sync` is for
-# `tokio::sync::Semaphore`. `macros` is dev-only.
+# Parallel metadata pre-fetch (`update::pre_fetch_closure_inner`) runs
+# a Semaphore-bounded fan-out on a small current-thread tokio runtime.
+# `rt` is the executor itself, `sync` is for `tokio::sync::Semaphore`,
+# `net` + `time` let the runtime drive `reqwest::Client`'s async HTTP
+# I/O (otherwise the futures park forever). `macros` is dev-only.
 [dependencies.tokio]
 version = "1"
-features = ["rt", "sync"]
+features = ["rt", "sync", "net", "time"]
 
 [dev-dependencies]
 tempfile = "3.10"
