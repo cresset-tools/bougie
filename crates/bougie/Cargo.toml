@@ -1,6 +1,6 @@
 [package]
 name = "bougie"
-version = "0.5.0"
+version.workspace = true
 edition = "2024"
 description = "PHP toolchain management the luxury way."
 license = "EUPL-1.2"
@@ -39,68 +39,52 @@ dev-trust-root = ["bougie-index/dev-trust-root"]
 
 [dependencies.bougie-backend]
 path = "../bougie-backend"
-version = "0.4.0"
 
 [dependencies.bougie-autoloader]
 path = "../bougie-autoloader"
-version = "0.1.0"
 
 [dependencies.bougie-cli]
 path = "../bougie-cli"
-version = "0.4.0"
 
 [dependencies.bougie-composer]
 path = "../bougie-composer"
-version = "0.4.0"
 
 [dependencies.bougie-composer-resolver]
 path = "../bougie-composer-resolver"
-version = "0.1.0"
 
 [dependencies.bougie-config]
 path = "../bougie-config"
-version = "0.4.0"
 
 [dependencies.bougie-errors]
 path = "../bougie-errors"
-version = "0.4.0"
 
 [dependencies.bougie-fetch]
 path = "../bougie-fetch"
-version = "0.4.0"
 
 [dependencies.bougie-fs]
 path = "../bougie-fs"
-version = "0.4.0"
 
 [dependencies.bougie-index]
 path = "../bougie-index"
 default-features = false
-version = "0.4.0"
 
 [dependencies.bougie-installer]
 path = "../bougie-installer"
-version = "0.4.0"
 
 [dependencies.bougie-output]
 path = "../bougie-output"
-version = "0.4.0"
 
 [dependencies.bougie-paths]
 path = "../bougie-paths"
-version = "0.4.0"
 
 [dependencies.bougie-platform]
 path = "../bougie-platform"
-version = "0.4.0"
 
 [dependencies.bougie-resolver]
 path = "../bougie-resolver"
-version = "0.4.0"
 
 [dependencies.bougie-version]
 path = "../bougie-version"
-version = "0.4.0"
 
 # `bougied` (process supervisor), the embedded HTTP/FastCGI server, and
 # the recipe engine all rely on Unix-only APIs (domain sockets, POSIX
@@ -110,14 +94,13 @@ version = "0.4.0"
 # `php-cgi.exe -b 127.0.0.1:<port>` and uses named pipes for the
 # control endpoint) and stays in the regular [dependencies] block.
 [target.'cfg(unix)'.dependencies]
-bougie-babysit = { path = "../bougie-babysit", version = "0.4.0" }
-bougie-daemon = { path = "../bougie-daemon", version = "0.4.0" }
-bougie-recipe = { path = "../bougie-recipe", version = "0.4.0" }
-sandbox-run = { path = "../sandbox-run", version = "0.1.0" }
+bougie-babysit = { path = "../bougie-babysit" }
+bougie-daemon = { path = "../bougie-daemon" }
+bougie-recipe = { path = "../bougie-recipe" }
+sandbox-run = { path = "../sandbox-run" }
 
 [dependencies.bougie-server]
 path = "../bougie-server"
-version = "0.4.0"
 
 # --- External deps still used directly by the bin (CLI dispatch,
 #     commands/ handlers, the unzip-shim role, etc.) ---

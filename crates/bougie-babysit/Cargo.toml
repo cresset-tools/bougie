@@ -1,6 +1,6 @@
 [package]
 name = "bougie-babysit"
-version = "0.4.0"
+version.workspace = true
 edition = "2024"
 description = "Per-service babysitter shim spawned by bougied to own a service's process group."
 license = "EUPL-1.2"
