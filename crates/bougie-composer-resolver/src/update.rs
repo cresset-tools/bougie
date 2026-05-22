@@ -62,11 +62,11 @@
 //! settles so `provide`/`replace` indexing stays deterministic.
 
 use std::cell::{Ref, RefCell};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use std::sync::Arc;
 
-use bougie_composer::lockfile::LockPackage;
+use bougie_composer::lockfile::{LockAutoload, LockPackage};
 use bougie_paths::Paths;
 use bougie_semver::constraint::Constraint;
 use bougie_semver::stability::Stability;
@@ -856,15 +856,15 @@ impl ResolveProvider {
                     version_normalized: Some(entry.provided_version.normalized.clone()),
                     dist: None,
                     source: None,
-                    require: Default::default(),
-                    require_dev: Default::default(),
+                    require: BTreeMap::default(),
+                    require_dev: BTreeMap::default(),
                     package_type: Some("metapackage".into()),
-                    autoload: Default::default(),
+                    autoload: LockAutoload::default(),
                     autoload_dev: serde_json::Value::Null,
-                    replace: Default::default(),
-                    provide: Default::default(),
-                    conflict: Default::default(),
-                    bin: Default::default(),
+                    replace: BTreeMap::default(),
+                    provide: BTreeMap::default(),
+                    conflict: BTreeMap::default(),
+                    bin: Vec::default(),
                     extra: serde_json::Value::Null,
                     time: None,
                 },

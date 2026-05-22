@@ -17,9 +17,11 @@ fn wait_for_no_socket(env: &TestEnv) {
     let sock = env.home_path().join("state").join("bougied.sock");
     let deadline = Instant::now() + STEP_TIMEOUT;
     while sock.exists() {
-        if Instant::now() >= deadline {
-            panic!("bougied.sock at {} did not disappear within timeout", sock.display());
-        }
+        assert!(
+            Instant::now() < deadline,
+            "bougied.sock at {} did not disappear within timeout",
+            sock.display()
+        );
         std::thread::sleep(Duration::from_millis(25));
     }
 }

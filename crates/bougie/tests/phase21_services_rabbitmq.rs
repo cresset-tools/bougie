@@ -41,7 +41,7 @@ fn rabbitmq_test_lock() -> MutexGuard<'static, ()> {
 
 /// Erlang VM cold-start + mnesia bootstrap dominate timing; allow a
 /// generous ceiling.
-const STEP_TIMEOUT: Duration = Duration::from_secs(3 * 60);
+const STEP_TIMEOUT: Duration = Duration::from_mins(3);
 
 fn should_skip() -> bool {
     std::env::var_os("BOUGIE_SKIP_REAL_RABBITMQ").is_some()
@@ -65,7 +65,7 @@ fn stop_daemon(env: &TestEnv) {
         .assert();
     // Give the Erlang VM a moment to release 5672 + 4369 (epmd)
     // before the next test's daemon comes up.
-    std::thread::sleep(Duration::from_millis(2000));
+    std::thread::sleep(Duration::from_secs(2));
 }
 
 fn services_up_or_dump(env: &TestEnv, proj_path: &Path, extra_args: &[&str]) {
@@ -193,7 +193,7 @@ fn up_starts_rabbitmq_and_provisions_vhost_user() {
         .success();
     services_up_or_dump(&env, proj.path(), &["--format", "json-v1"]);
 
-    if !wait_for_tcp("127.0.0.1:5672", Duration::from_secs(120)) {
+    if !wait_for_tcp("127.0.0.1:5672", Duration::from_mins(2)) {
         dump_rabbitmq_log(&env, "wait_for_tcp timeout");
         panic!("rabbitmq AMQP listener never bound 127.0.0.1:5672");
     }
@@ -249,7 +249,7 @@ fn down_purge_drops_vhost_and_user() {
         .assert()
         .success();
     services_up_or_dump(&env, proj.path(), &[]);
-    if !wait_for_tcp("127.0.0.1:5672", Duration::from_secs(120)) {
+    if !wait_for_tcp("127.0.0.1:5672", Duration::from_mins(2)) {
         dump_rabbitmq_log(&env, "wait_for_tcp timeout");
         panic!("rabbitmq listener never bound");
     }
@@ -291,7 +291,7 @@ fn bougie_run_exports_rabbitmq_env_vars() {
         .assert()
         .success();
     services_up_or_dump(&env, proj.path(), &[]);
-    if !wait_for_tcp("127.0.0.1:5672", Duration::from_secs(120)) {
+    if !wait_for_tcp("127.0.0.1:5672", Duration::from_mins(2)) {
         dump_rabbitmq_log(&env, "wait_for_tcp timeout");
         panic!("rabbitmq listener never bound");
     }
@@ -338,9 +338,9 @@ fn bougie_run_exports_rabbitmq_env_vars() {
 /// no-op on `add_user → "already exists"` while still writing a
 /// freshly-generated password into the ledger. The broker kept the
 /// *old* password; the ledger advertised the *new* one; AMQP login
-/// with `BOUGIE_SERVICE_RABBITMQ_PASSWORD` returned ACCESS_REFUSED.
+/// with `BOUGIE_SERVICE_RABBITMQ_PASSWORD` returned `ACCESS_REFUSED`.
 ///
-/// Fix: when add_user errors duplicate, chain `change_password`
+/// Fix: when `add_user` errors duplicate, chain `change_password`
 /// against the new password so the broker and the ledger stay in
 /// sync. This test runs `down` (no purge) + `up` and verifies that
 /// `rabbitmqctl authenticate_user <tenant> <ledger_password>`
@@ -363,7 +363,7 @@ fn re_up_after_plain_down_resyncs_password_to_broker() {
         .assert()
         .success();
     services_up_or_dump(&env, proj.path(), &[]);
-    if !wait_for_tcp("127.0.0.1:5672", Duration::from_secs(120)) {
+    if !wait_for_tcp("127.0.0.1:5672", Duration::from_mins(2)) {
         dump_rabbitmq_log(&env, "wait_for_tcp timeout (first up)");
         panic!("rabbitmq listener never bound");
     }
@@ -398,7 +398,7 @@ fn re_up_after_plain_down_resyncs_password_to_broker() {
     // calls add_user → duplicate (user persisted in mnesia) →
     // must chain change_password.
     services_up_or_dump(&env, proj.path(), &[]);
-    if !wait_for_tcp("127.0.0.1:5672", Duration::from_secs(120)) {
+    if !wait_for_tcp("127.0.0.1:5672", Duration::from_mins(2)) {
         dump_rabbitmq_log(&env, "wait_for_tcp timeout (second up)");
         panic!("rabbitmq listener never bound on re-up");
     }

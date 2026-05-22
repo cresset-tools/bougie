@@ -48,6 +48,15 @@ pub struct InstallSummary {
 
 /// Apply `composer.lock` to `project_root`. See module docs for the
 /// flow.
+///
+/// # Panics
+///
+/// Panics on internal preflight invariant violations — the inner
+/// unwraps on `p.dist` / `dist.shasum` rely on `preflight` having
+/// already rejected source-only and missing-shasum packages. If you
+/// changed the preflight rules and forgot to update this consumer,
+/// you'll hit the unwrap; that's the failure mode the comment at
+/// the unwrap is guarding against.
 pub fn install_from_lock(
     paths: &Paths,
     project_root: &Path,

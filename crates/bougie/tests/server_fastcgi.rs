@@ -1,5 +1,5 @@
 //! Phase 2 integration test: hits a real php-fpm via the bougie server's
-//! FastCGI dispatcher. Gated on a real bougie PHP install being present
+//! `FastCGI` dispatcher. Gated on a real bougie PHP install being present
 //! at `$BOUGIE_HOME/installs/<resolved>/bin/php-fpm`; without one, the
 //! test exits early with a stderr note and counts as a pass.
 //!
@@ -10,6 +10,7 @@
 mod common;
 
 use common::TestEnv;
+use std::fmt::Write as _;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Command as StdCommand, Stdio};
@@ -339,10 +340,12 @@ fn write_server_toml(xdg: &Path, body: &str, hosts: &[(&str, &Path)]) -> PathBuf
     let mut s = body.to_string();
     s.push('\n');
     for (host, project) in hosts {
-        s.push_str(&format!(
+        write!(
+            s,
             "[[host]]\nhostname = \"{host}\"\nproject = \"{}\"\nroot = \"public\"\n\n",
             project.display()
-        ));
+        )
+        .unwrap();
     }
     std::fs::write(&cfg, s).unwrap();
     cfg

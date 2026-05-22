@@ -72,11 +72,8 @@ pub fn evaluate(
             Some(t) if t > our_mtime => {
                 return Ok(Verdict::Run(format!("{file} newer than {}", display_creates(creates))));
             }
-            None => {
-                // A non-existent file dep is "infinitely old"; treat
-                // as clean rather than re-running endlessly.
-                continue;
-            }
+            // None: a non-existent file dep is "infinitely old"; treat
+            // as clean rather than re-running endlessly.
             _ => {}
         }
     }

@@ -85,7 +85,7 @@ fn ensure_blob_cached() -> PathBuf {
         .connect_timeout(std::time::Duration::from_secs(15))
         // 274 MB; CI runners on slow networks have been seen needing
         // a few minutes. Keep the total cap generous.
-        .timeout(std::time::Duration::from_secs(10 * 60))
+        .timeout(std::time::Duration::from_mins(10))
         .build()
         .expect("reqwest client");
     let resp = client

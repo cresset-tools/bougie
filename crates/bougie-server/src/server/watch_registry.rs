@@ -95,6 +95,11 @@ impl WatchRegistry {
     /// are armed; this hands ownership of the OS resources into the
     /// registry so subsequent `arm_user_code_roots` calls extend the
     /// same watcher.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the watcher mutex is poisoned — i.e. a previous
+    /// holder panicked.
     pub fn install_watcher(&self, watcher: notify::RecommendedWatcher) {
         *self.watcher.lock().expect("notify watcher poisoned") = Some(watcher);
     }
@@ -108,6 +113,13 @@ impl WatchRegistry {
     /// record them in the path map. Idempotent per `(project, root)`
     /// pair so a Lockfile re-bootstrap can call this without
     /// double-watching directories that were already armed.
+    ///
+    /// # Panics
+    ///
+    /// Panics if either the watcher mutex or the path-map `RwLock`
+    /// is poisoned — i.e. a previous holder panicked. Bougie treats
+    /// lock poisoning as unrecoverable since recovering would mean
+    /// running with possibly-torn state.
     pub fn arm_user_code_roots(
         &self,
         project: &Path,
@@ -148,6 +160,11 @@ impl WatchRegistry {
     /// Snapshot view for the dispatch loop's `classify`. Returns a
     /// read guard; callers should drop it promptly so concurrent
     /// `arm_user_code_roots` writers don't starve.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the path-map `RwLock` is poisoned (see
+    /// [`Self::arm_user_code_roots`] for the rationale).
     pub fn path_map(&self) -> std::sync::RwLockReadGuard<'_, PathMap> {
         self.path_map.read().expect("path map poisoned")
     }

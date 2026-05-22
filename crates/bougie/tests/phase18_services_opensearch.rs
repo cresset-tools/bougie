@@ -10,7 +10,7 @@
 //!     project B searches across its prefix,
 //!   - `services down --purge` drops both the index template and any
 //!     indices the tenant created,
-//!   - `bougie run` env injection exports BOUGIE_SERVICE_OPENSEARCH_*.
+//!   - `bougie run` env injection exports `BOUGIE_SERVICE_OPENSEARCH_*`.
 //!
 //! Skipped under `BOUGIE_SKIP_REAL_OPENSEARCH=1` for CI environments
 //! where downloading the 274 MB tarball is undesirable.
@@ -39,7 +39,7 @@ fn opensearch_test_lock() -> MutexGuard<'static, ()> {
 
 /// Opensearch cold-start dominates timing. JVM bootstrap + cluster
 /// state initialisation runs ~15s on a warm cache box.
-const STEP_TIMEOUT: Duration = Duration::from_secs(3 * 60);
+const STEP_TIMEOUT: Duration = Duration::from_mins(3);
 
 fn should_skip() -> bool {
     std::env::var_os("BOUGIE_SKIP_REAL_OPENSEARCH").is_some()
@@ -176,7 +176,7 @@ fn up_starts_opensearch_and_provisions_index_template() {
         .success();
     services_up_or_dump(&env, proj.path(), &["--format", "json-v1"]);
 
-    if !wait_for_http_root(Duration::from_secs(60)) {
+    if !wait_for_http_root(Duration::from_mins(1)) {
         dump_opensearch_log(&env, "wait_for_http_root timeout");
         panic!("opensearch HTTP root never responded on 127.0.0.1:9200");
     }
@@ -255,7 +255,7 @@ fn two_projects_have_separate_index_prefixes() {
             .success();
         services_up_or_dump(&env, p, &[]);
     }
-    if !wait_for_http_root(Duration::from_secs(60)) {
+    if !wait_for_http_root(Duration::from_mins(1)) {
         dump_opensearch_log(&env, "wait_for_http_root timeout (two_projects)");
         panic!("opensearch HTTP root never responded");
     }
@@ -303,7 +303,7 @@ fn down_purge_drops_template_and_indices() {
         .assert()
         .success();
     services_up_or_dump(&env, proj.path(), &[]);
-    if !wait_for_http_root(Duration::from_secs(60)) {
+    if !wait_for_http_root(Duration::from_mins(1)) {
         dump_opensearch_log(&env, "wait_for_http_root timeout (down_purge)");
         panic!("opensearch HTTP root never responded");
     }
@@ -342,7 +342,7 @@ fn down_purge_drops_template_and_indices() {
         .assert()
         .success();
     services_up_or_dump(&env, proj2.path(), &[]);
-    if !wait_for_http_root(Duration::from_secs(60)) {
+    if !wait_for_http_root(Duration::from_mins(1)) {
         dump_opensearch_log(&env, "wait_for_http_root timeout (post-purge re-up)");
         panic!("opensearch HTTP root never responded");
     }

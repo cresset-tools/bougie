@@ -213,8 +213,8 @@ fn assert_classmap_matches(a: &Path, b: &Path) {
     for rel in candidates {
         let pa = a.join(rel);
         let pb = b.join(rel);
-        let ba = std::fs::read(&pa).unwrap_or_else(|_| panic!("read {pa:?}"));
-        let bb = std::fs::read(&pb).unwrap_or_else(|_| panic!("read {pb:?}"));
+        let ba = std::fs::read(&pa).unwrap_or_else(|_| panic!("read {}", pa.display()));
+        let bb = std::fs::read(&pb).unwrap_or_else(|_| panic!("read {}", pb.display()));
         assert!(ba == bb, 
             "{rel} differs between live-patched and fresh-bootstrap state\n--- live ---\n{}\n--- baseline ---\n{}",
             String::from_utf8_lossy(&ba),

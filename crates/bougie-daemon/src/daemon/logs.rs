@@ -9,7 +9,7 @@
 
 use eyre::{Result, WrapErr};
 use std::fs::{File, OpenOptions};
-use std::io::Write;
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 /// Default rotate-at threshold; SERVICES.md §5.5.
@@ -139,16 +139,21 @@ impl LogWriter {
 /// so a multi-GB log doesn't get pulled into memory. Returns the
 /// lines in original order. If the file has fewer than `n` lines, the
 /// whole file is returned.
+///
+/// # Panics
+///
+/// Doesn't in practice: the only inner `expect` is a `usize::try_from`
+/// on a value capped to `CHUNK` (8 KiB), which fits even on 32-bit
+/// targets bougie doesn't ship for anyway.
 pub fn tail_lines(path: &Path, n: usize) -> Result<Vec<String>> {
-    use std::io::{Read, Seek, SeekFrom};
+    // 8 KiB at a time, walking backwards. Plenty to find the last
+    // few hundred lines without thrashing.
+    const CHUNK: usize = 8 * 1024;
     if n == 0 || !path.exists() {
         return Ok(Vec::new());
     }
     let mut f = File::open(path).wrap_err_with(|| format!("opening {}", path.display()))?;
     let len = f.metadata()?.len();
-    // 8 KiB at a time, walking backwards. Plenty to find the last
-    // few hundred lines without thrashing.
-    const CHUNK: usize = 8 * 1024;
     let mut pos = len;
     let mut buf = Vec::with_capacity(CHUNK);
     let mut lines: Vec<String> = Vec::new();

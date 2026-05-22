@@ -12,11 +12,11 @@ use tempfile::TempDir;
 const STEP_TIMEOUT: Duration = Duration::from_secs(15);
 
 fn install_fake_redis(env: &TestEnv) {
+    use std::os::unix::fs::PermissionsExt;
     let store = env.home_path().join("store").join("redis-8.6.3").join("bin");
     fs::create_dir_all(&store).unwrap();
     let dst = store.join("redis-server");
     fs::copy(cargo_bin("fake-redis"), &dst).unwrap();
-    use std::os::unix::fs::PermissionsExt;
     let mut perms = fs::metadata(&dst).unwrap().permissions();
     perms.set_mode(0o755);
     fs::set_permissions(&dst, perms).unwrap();

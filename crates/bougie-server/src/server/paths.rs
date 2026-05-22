@@ -18,6 +18,7 @@
 
 use eyre::{Result, WrapErr};
 use sha2::{Digest, Sha256};
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 /// Per-server-instance directory layout. Constructed once at server
@@ -196,7 +197,7 @@ pub fn project_hash(project: &Path) -> String {
     let digest = hasher.finalize();
     let mut out = String::with_capacity(12);
     for b in digest.iter().take(6) {
-        out.push_str(&format!("{b:02x}"));
+        write!(out, "{b:02x}").expect("writing to String");
     }
     out
 }

@@ -6,7 +6,10 @@ mod common;
 
 use assert_cmd::cargo::cargo_bin;
 use common::TestEnv;
+use std::fmt::Write as _;
 use std::fs;
+use std::io::Write;
+use std::os::unix::fs::PermissionsExt;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
@@ -18,7 +21,6 @@ fn install_fake_redis(env: &TestEnv) {
     fs::create_dir_all(&store).unwrap();
     let dst = store.join("redis-server");
     fs::copy(cargo_bin("fake-redis"), &dst).unwrap();
-    use std::os::unix::fs::PermissionsExt;
     let mut perms = fs::metadata(&dst).unwrap().permissions();
     perms.set_mode(0o755);
     fs::set_permissions(&dst, perms).unwrap();
@@ -67,9 +69,11 @@ fn logs_tail_shows_lines_the_service_wrote() {
         .join("state/services/redis/log/redis.log");
     let deadline = Instant::now() + STEP_TIMEOUT;
     while !log_path.exists() || fs::metadata(&log_path).map(|m| m.len()).unwrap_or(0) == 0 {
-        if Instant::now() >= deadline {
-            panic!("log file at {} never received bytes", log_path.display());
-        }
+        assert!(
+            Instant::now() < deadline,
+            "log file at {} never received bytes",
+            log_path.display()
+        );
         std::thread::sleep(Duration::from_millis(50));
     }
 
@@ -114,9 +118,8 @@ fn logs_n_truncates_to_requested_lines() {
     std::thread::sleep(Duration::from_millis(100)); // let forwarder settle
     let mut text = String::new();
     for i in 0..10 {
-        text.push_str(&format!("synthetic-line-{i}\n"));
+        writeln!(text, "synthetic-line-{i}").unwrap();
     }
-    use std::io::Write;
     let mut f = fs::OpenOptions::new().append(true).open(&log_path).unwrap();
     f.write_all(text.as_bytes()).unwrap();
     f.sync_all().unwrap();
@@ -203,7 +206,6 @@ fn logs_follow_streams_new_bytes_then_ends_on_disconnect() {
     let log_path = env
         .home_path()
         .join("state/services/redis/log/redis.log");
-    use std::io::Write;
     let mut f = fs::OpenOptions::new().append(true).open(&log_path).unwrap();
     f.write_all(b"FOLLOW-MARKER\n").unwrap();
     f.sync_all().unwrap();

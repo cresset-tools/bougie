@@ -21,8 +21,9 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::fmt::Write as _;
 use std::sync::Arc;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tokio::sync::watch;
 
@@ -423,7 +424,6 @@ async fn dispatch_logs(
 
     // 2. Follow: seek to current end-of-file, poll for growth, stream
     // new bytes. Buffer reused across iterations to avoid alloc churn.
-    use tokio::io::{AsyncReadExt as _, AsyncSeekExt as _};
     let mut f = match tokio::fs::OpenOptions::new().read(true).open(&log_path).await {
         Ok(f) => f,
         Err(e) => {
@@ -482,7 +482,7 @@ fn urlencode(s: &str) -> String {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
                 out.push(b as char);
             }
-            _ => out.push_str(&format!("%{b:02X}")),
+            _ => write!(out, "%{b:02X}").expect("writing to String"),
         }
     }
     out

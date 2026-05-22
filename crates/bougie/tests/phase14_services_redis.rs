@@ -5,7 +5,7 @@
 //! - the unix socket the supervisor health-probes ends up bound,
 //! - a tenant record lands in tenants.json with a redis DB number,
 //! - a second project gets a distinct DB number,
-//! - hitting the 16-tenant cap surfaces a redis_db_exhausted error,
+//! - hitting the 16-tenant cap surfaces a `redis_db_exhausted` error,
 //! - `services down` removes the tenant and stops the service when
 //!   the last tenant goes away.
 //!
@@ -27,6 +27,7 @@ const STEP_TIMEOUT: Duration = Duration::from_secs(15);
 /// Put the fake-redis binary at the catalog's expected store path so
 /// the supervisor finds it.
 fn install_fake_redis(env: &TestEnv) {
+    use std::os::unix::fs::PermissionsExt;
     let store = env.home_path().join("store").join("redis-8.6.3").join("bin");
     fs::create_dir_all(&store).expect("mkdir store");
     let dst = store.join("redis-server");
@@ -34,7 +35,6 @@ fn install_fake_redis(env: &TestEnv) {
     // make it executable (cargo_bin already is, but make it explicit
     // in case the test env strips perms).
     let mut perms = fs::metadata(&dst).unwrap().permissions();
-    use std::os::unix::fs::PermissionsExt;
     perms.set_mode(0o755);
     fs::set_permissions(&dst, perms).unwrap();
 }

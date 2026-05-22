@@ -12,7 +12,7 @@
 //!     server reports both via its status endpoint,
 //!   - `bougie services down --purge` drops the host block and the
 //!     reload propagates,
-//!   - `bougie run` env injection exports BOUGIE_SERVICE_SERVER_*.
+//!   - `bougie run` env injection exports `BOUGIE_SERVICE_SERVER_*`.
 //!
 //! This test doesn't actually drive HTTP traffic through the dev
 //! server (that needs a synced PHP interpreter — out of scope for
