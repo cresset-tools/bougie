@@ -93,8 +93,10 @@ enum ProgressMode {
 }
 
 use crate::metadata::{
-    fetch_package_metadata_optional, fetch_package_metadata_v1_optional,
-    load_v1_provider_table, probe_protocol, Repo, RepoProtocol, Variant,
+    fetch_package_metadata_optional, fetch_package_metadata_optional_async,
+    fetch_package_metadata_v1_optional, fetch_package_metadata_v1_optional_async,
+    load_v1_provider_table, load_v1_provider_table_async, probe_protocol, Repo,
+    RepoProtocol, Variant,
 };
 use crate::verify::{is_platform, to_range, ComposerRange, ProviderError, PubGrubPackage};
 
@@ -951,24 +953,51 @@ impl ResolveProvider {
         &self,
         progress: ClosureProgress,
     ) -> Result<(), ProviderError> {
-        // v1 provider tables: load synchronously before the parallel
-        // fan-out so each task sees them as a read-only `Arc<HashMap>`
-        // snapshot. Composer v1 repos are rare — one-shot per resolve
-        // is the natural granularity, and threading the existing
-        // `RefCell` through `Send` tasks would just add Mutex overhead.
+        let initial: Vec<String> = self
+            .root_deps
+            .iter()
+            .map(|(n, _)| n.clone())
+            .filter(|n| !is_platform(n))
+            .collect();
+
+        // Current-thread runtime with I/O + time enabled is what
+        // drives `reqwest::Client`'s async sockets. The fan-out runs
+        // 50-ish concurrent in-flight requests on this single
+        // executor thread — no `spawn_blocking`, no nested
+        // reqwest-internal runtimes, one connection pool shared
+        // across all tasks.
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .enable_time()
+            .build()
+            .map_err(|e| ProviderError(format!("building tokio runtime for prefetch: {e}")))?;
+        let async_client = bougie_fetch::default_async_client()
+            .map_err(|e| ProviderError(format!("building async HTTP client: {e:#}")))?;
+
+        // v1 provider tables: load on the runtime *before* the
+        // parallel fan-out so each task sees them as a read-only
+        // `Arc<HashMap>` snapshot. Composer v1 repos are rare —
+        // one-shot per resolve is the natural granularity, and
+        // threading the existing `RefCell` through `Send` tasks
+        // would just add Mutex overhead.
         for repo in &self.repos {
             if let Some(RepoProtocol::V1(discovery)) = &repo.protocol {
                 if self.v1_provider_tables.borrow().contains_key(&repo.url) {
                     continue;
                 }
-                let table =
-                    load_v1_provider_table(&self.client, &self.paths, repo, discovery)
-                        .map_err(|e| {
-                            ProviderError(format!(
-                                "loading v1 provider table for {}: {e:#}",
-                                repo.url,
-                            ))
-                        })?;
+                let table = runtime
+                    .block_on(load_v1_provider_table_async(
+                        &async_client,
+                        &self.paths,
+                        repo,
+                        discovery,
+                    ))
+                    .map_err(|e| {
+                        ProviderError(format!(
+                            "loading v1 provider table for {}: {e:#}",
+                            repo.url,
+                        ))
+                    })?;
                 self.v1_provider_tables
                     .borrow_mut()
                     .insert(repo.url.clone(), table);
@@ -977,23 +1006,8 @@ impl ResolveProvider {
         let v1_tables: Arc<HashMap<String, HashMap<String, String>>> =
             Arc::new(self.v1_provider_tables.borrow().clone());
 
-        let initial: Vec<String> = self
-            .root_deps
-            .iter()
-            .map(|(n, _)| n.clone())
-            .filter(|n| !is_platform(n))
-            .collect();
-
-        // A current-thread runtime is enough: the only async work is
-        // `JoinSet::join_next` + `Semaphore::acquire_owned`. All HTTP
-        // I/O runs on `spawn_blocking`'s separate thread-pool, so the
-        // executor itself does no real work between completions.
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .build()
-            .map_err(|e| ProviderError(format!("building tokio runtime for prefetch: {e}")))?;
-
         let outcomes = runtime.block_on(run_prefetch_fanout(
-            self.client.clone(),
+            async_client,
             self.paths.clone(),
             self.repos.clone(),
             v1_tables,
@@ -1055,7 +1069,7 @@ struct PrefetchOutcome {
 /// visited name; the caller registers virtuals and populates the
 /// resolver's cache from these in deterministic order.
 async fn run_prefetch_fanout(
-    client: reqwest::blocking::Client,
+    client: reqwest::Client,
     paths: Paths,
     repos: Vec<Repo>,
     v1_tables: Arc<HashMap<String, HashMap<String, String>>>,
@@ -1090,18 +1104,15 @@ async fn run_prefetch_fanout(
                     .get(&name)
                     .copied()
                     .unwrap_or(minimum_stability);
-                tokio::task::spawn_blocking(move || {
-                    load_real_candidates_isolated(
-                        &client,
-                        &paths,
-                        &repos,
-                        &v1_tables,
-                        &name,
-                        floor,
-                    )
-                })
+                load_real_candidates_isolated(
+                    &client,
+                    &paths,
+                    &repos,
+                    &v1_tables,
+                    &name,
+                    floor,
+                )
                 .await
-                .map_err(|e| ProviderError(format!("prefetch task panicked: {e}")))?
             });
         };
 
@@ -1137,13 +1148,17 @@ async fn run_prefetch_fanout(
 }
 
 /// Stateless counterpart to [`ResolveProvider::load_real_candidates`]
-/// — no `&self`, no `RefCell`s, safe to call from a `spawn_blocking`
+/// — no `&self`, no `RefCell`s, safe to call from a spawned async
 /// task. Walks the repo list in priority order, returns the first
 /// non-404 hit's stable (+ optionally dev) versions, filters by
 /// stability floor, and sorts version-descending. v1 provider tables
 /// are passed in pre-loaded so this path never mutates them.
-fn load_real_candidates_isolated(
-    client: &reqwest::blocking::Client,
+///
+/// `await`s the per-repo fetches sequentially within one task —
+/// the parallelism is *across* tasks (one per package name) in
+/// [`run_prefetch_fanout`].
+async fn load_real_candidates_isolated(
+    client: &reqwest::Client,
     paths: &Paths,
     repos: &[Repo],
     v1_tables: &HashMap<String, HashMap<String, String>>,
@@ -1154,6 +1169,7 @@ fn load_real_candidates_isolated(
     for repo in repos {
         let stable_md =
             fetch_one_isolated(client, paths, repo, v1_tables, name, Variant::Stable)
+                .await
                 .map_err(|e| {
                     ProviderError(format!(
                         "fetching metadata for {name} from {}: {e:#}",
@@ -1174,6 +1190,7 @@ fn load_real_candidates_isolated(
         if floor == Stability::Dev {
             let dev_md =
                 fetch_one_isolated(client, paths, repo, v1_tables, name, Variant::Dev)
+                    .await
                     .map_err(|e| {
                         ProviderError(format!(
                             "fetching dev metadata for {name} from {}: {e:#}",
@@ -1187,8 +1204,8 @@ fn load_real_candidates_isolated(
             }
         }
     }
-    // Pre-parse provide/replace clauses while we're already on a
-    // worker thread. The previous code cloned the entire pre-filter
+    // Pre-parse provide/replace clauses while we're already off the
+    // main thread. The previous code cloned the entire pre-filter
     // `versions` vec into `raw_versions` so the main thread could
     // call `register_virtuals_from` on it later; doing the parsing
     // here instead removes that clone (~150 ms on a magento2-sized
@@ -1209,12 +1226,12 @@ fn load_real_candidates_isolated(
     Ok(PrefetchOutcome { name: name.to_owned(), contributions, filtered })
 }
 
-/// Stateless v1/v2 dispatch — same as [`ResolveProvider::fetch_one`]
-/// but reads pre-loaded v1 provider tables from a passed-in map
-/// instead of `RefCell`s on `&self`, so it works inside a
-/// `spawn_blocking` task.
-fn fetch_one_isolated(
-    client: &reqwest::blocking::Client,
+/// Stateless v1/v2 dispatch — same shape as
+/// [`ResolveProvider::fetch_one`] but reads pre-loaded v1 provider
+/// tables from a passed-in map instead of `RefCell`s on `&self`,
+/// so it works inside a spawned async task.
+async fn fetch_one_isolated(
+    client: &reqwest::Client,
     paths: &Paths,
     repo: &Repo,
     v1_tables: &HashMap<String, HashMap<String, String>>,
@@ -1235,11 +1252,15 @@ fn fetch_one_isolated(
                     repo.url,
                 )
             })?;
-            fetch_package_metadata_v1_optional(
+            fetch_package_metadata_v1_optional_async(
                 client, paths, repo, discovery, table, package,
             )
+            .await
         }
-        _ => fetch_package_metadata_optional(client, paths, repo, package, variant),
+        _ => {
+            fetch_package_metadata_optional_async(client, paths, repo, package, variant)
+                .await
+        }
     }
 }
 
