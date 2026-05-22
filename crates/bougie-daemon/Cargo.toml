@@ -10,36 +10,47 @@ authors.workspace = true
 
 [dependencies.bougie-config]
 path = "../bougie-config"
+version = "0.5.0"
 
 [dependencies.bougie-errors]
 path = "../bougie-errors"
+version = "0.5.0"
 
 [dependencies.bougie-fetch]
 path = "../bougie-fetch"
+version = "0.5.0"
 
 [dependencies.bougie-fs]
 path = "../bougie-fs"
+version = "0.5.0"
 
 [dependencies.bougie-index]
 path = "../bougie-index"
+version = "0.5.0"
 
 [dependencies.bougie-backend]
 path = "../bougie-backend"
+version = "0.5.0"
 
 [dependencies.bougie-installer]
 path = "../bougie-installer"
+version = "0.5.0"
 
 [dependencies.bougie-output]
 path = "../bougie-output"
+version = "0.5.0"
 
 [dependencies.bougie-paths]
 path = "../bougie-paths"
+version = "0.5.0"
 
 [dependencies.bougie-platform]
 path = "../bougie-platform"
+version = "0.5.0"
 
 [dependencies.bougie-server]
 path = "../bougie-server"
+version = "0.5.0"
 
 [dependencies.eyre]
 version = "0.6"
@@ -56,6 +67,7 @@ features = ["std", "fs", "process"]
 
 [dependencies.sandbox-run]
 path = "../sandbox-run"
+version = "0.1.0"
 
 [dependencies.serde]
 version = "1.0"
