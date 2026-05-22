@@ -70,6 +70,21 @@ sha1 = "0.10"
 zip = { version = "8.0", default-features = false, features = ["deflate"] }
 wiremock = "0.6"
 tokio = { version = "1", features = ["rt", "macros"] }
+criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
+zstd = { version = "0.13", default-features = false }
+
+[features]
+# Enables the criterion bench `resolve` to load the captured magento2
+# closure from `tests/fixtures/magento2/packagist-index.json.zst`.
+# Off by default so the fixture bytes don't ship with `cargo install`
+# / `cargo build`. Mirrors the `test-fixtures` pattern in the `bougie`
+# crate.
+bench-fixtures = []
+
+[[bench]]
+name = "resolve"
+harness = false
+required-features = ["bench-fixtures"]
 
 [lints]
 workspace = true

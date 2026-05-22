@@ -83,6 +83,21 @@ Acceptance: `cargo bench -p bougie-composer-resolver --bench resolve`
 runs reproducibly and reports a magento2 solve-only time. No
 behavior change.
 
+Baseline (this PR — release profile, `criterion 0.5`, `sample_size = 10`,
+on the captured magento2 closure, root pinned to
+`magento/community-edition 2.4.8`): **~136 ms** (135.02 / 135.94 /
+136.90 ms low / median / high across 10 samples). The captured
+fixture lives at `crates/bougie-composer-resolver/tests/fixtures/
+magento2/packagist-index.json.zst` (~800 KB compressed; 2510 packages
+in the closure); regenerate with the `scripts/capture-magento2-*.py`
+trio. PR 0 chose 2.4.8 over 2.4.9 because the 2.4.9 closure transitively
+requires `magento/composer ^1.10.2` whose stable release hadn't landed
+on public Packagist when the snapshot was taken (only `1.10.2-beta4`
+was available; with `minimum-stability: stable` that would be filtered
+out and the resolve would fail). Run with `--features bench-fixtures`;
+the fixture is gated behind that feature so the bytes don't ship in
+the binary.
+
 ## PR 1 — memoize `get_dependencies`
 
 The `versions_for` path already pays similar memoization

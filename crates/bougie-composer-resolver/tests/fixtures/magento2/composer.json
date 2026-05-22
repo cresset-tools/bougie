@@ -1,0 +1,10 @@
+{
+  "name": "bougie/bench-magento2",
+  "description": "Synthetic root for the magento2 solve-phase benchmark. Pins magento/community-edition 2.4.8 (released 2025-04-02), the latest release whose full closure is published as stable on public packagist.org. 2.4.9 carries a transitive constraint on magento/composer ^1.10.2 whose stable release hadn't landed on Packagist when this fixture was captured (only -beta4 was available). No repo.magento.com auth needed either way.",
+  "type": "project",
+  "require": {
+    "magento/community-edition": "2.4.8"
+  },
+  "minimum-stability": "stable",
+  "prefer-stable": true
+}

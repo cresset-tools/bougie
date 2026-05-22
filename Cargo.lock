@@ -512,6 +512,7 @@ dependencies = [
  "bougie-output",
  "bougie-paths",
  "bougie-semver",
+ "criterion",
  "eyre",
  "indicatif",
  "pubgrub",
@@ -525,6 +526,7 @@ dependencies = [
  "tracing",
  "wiremock",
  "zip",
+ "zstd",
 ]
 
 [[package]]
