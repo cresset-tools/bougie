@@ -234,6 +234,36 @@ Acceptance: benchmark improves further. All tests pass.
 `lock_package_for`, `synthesize_*`, and `register_virtuals_from`
 consume `&PackageName` or `&str` rather than owned `String`.
 
+Result: **no measurable change within bench noise**, same shape as
+PR 2. Three runs back-to-back: 143–146 / 141–144 / 143–145 ms; each
+landed inside the prior run's confidence interval (`p` between 0.07
+and 0.21 — no rejection of the null at α=0.05). The interning is
+real: hot maps (`cache`, `merged_cache`, `virtual_providers`,
+`virtual_wildcards`, `virtual_selections`, `parsed_deps`, plus the
+prefetch BFS `visited` set), the `(provider_name, virtual_name)`
+pairs in `VirtualProvider` / `WildcardProvider` /
+`ExactContribution` / `WildcardContribution`, and the
+`PubGrubPackage::Package(_)` value pubgrub clones during conflict
+analysis all now refcount-bump instead of allocating per clone. The
+bench harness's per-iteration setup variance (still ±5–10%) just
+swamps it.
+
+PR 3 also derived `Ord` + `PartialOrd` on `PackageName` so it can
+sit in a `BTreeMap` — load-bearing for `compute_parsed_deps`'
+provider-name grouping and `pre_fetch_closure_inner`'s
+alphabetical-by-name registration order (which previously sorted on
+`String::cmp`; both `PackageName::cmp` and `as_str().cmp(..)` give
+the same lexicographic result, but the `Ord` derive avoids the
+`.as_str()` plumbing everywhere it's now needed).
+
+Skipped: `v1_provider_tables`'s inner map (outer key is repo URL,
+not `vendor/name`, and the v1 path isn't on the bench's hot path —
+migrating its inner String→PackageName would cascade through
+`bougie-composer-resolver::metadata::{load_v1_provider_table,
+fetch_package_metadata_v1_optional}` for cold-path code).
+`stability_flags` similarly kept `HashMap<String, _>` — small, lookup-
+by-str works via `Borrow<str>`, no allocator pressure.
+
 ## PR 4 — `prioritize` heuristic
 
 The TODO at `update.rs:1857` is explicit: "Tsai-style 'fewer

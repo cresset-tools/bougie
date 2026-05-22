@@ -10,6 +10,7 @@
 pub mod hash;
 pub mod install;
 pub mod metadata;
+pub mod package_name;
 pub mod update;
 pub mod verify;
 

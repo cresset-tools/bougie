@@ -67,6 +67,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::hash::FxHashMap;
+use crate::package_name::PackageName;
 
 use bougie_composer::lockfile::LockPackage;
 use bougie_paths::Paths;
@@ -120,7 +121,7 @@ pub struct ResolveProvider {
     /// `versions_for(name)` walks this list and takes the first
     /// non-404 hit.
     repos: Vec<Repo>,
-    root_deps: Vec<(String, ComposerRange)>,
+    root_deps: Vec<(PackageName, ComposerRange)>,
     root_version: Version,
     /// Composer's top-level `minimum-stability` (`stable` by default).
     /// Sets the floor for candidate stability; any version whose
@@ -151,7 +152,7 @@ pub struct ResolveProvider {
     /// `versions_for` call so a late provider registration becomes
     /// visible (the pre-fetch queue can visit a virtual name before
     /// its provider is loaded).
-    cache: RefCell<FxHashMap<String, Vec<(Version, LockPackage)>>>,
+    cache: RefCell<FxHashMap<PackageName, Vec<(Version, LockPackage)>>>,
     /// Memoized merge of [`Self::cache`] + virtuals, sorted +
     /// deduplicated. This is the shape pubgrub actually consumes via
     /// [`Self::versions_for`]; populating it lazily on first lookup
@@ -161,7 +162,7 @@ pub struct ResolveProvider {
     /// pubgrub runs and `register_virtuals_from` only runs there, so
     /// the virtual index is stable from this cache's perspective —
     /// invalidation isn't needed.
-    merged_cache: RefCell<FxHashMap<String, Vec<(Version, LockPackage)>>>,
+    merged_cache: RefCell<FxHashMap<PackageName, Vec<(Version, LockPackage)>>>,
     /// Index of virtual provider entries: maps each virtual package
     /// name (e.g. `psr/http-client-implementation`) to the list of
     /// real packages that provide or replace it. Populated by
@@ -170,7 +171,7 @@ pub struct ResolveProvider {
     /// `choose_version("psr/http-client-implementation", ^1)` the
     /// answer can come from the index even though Packagist has no
     /// `/p2/psr/http-client-implementation.json`.
-    virtual_providers: RefCell<FxHashMap<String, Vec<VirtualProvider>>>,
+    virtual_providers: RefCell<FxHashMap<PackageName, Vec<VirtualProvider>>>,
     /// Wildcard / range-shaped replace+provide clauses. Composer's
     /// `replace: { codeception/phpunit-wrapper: "*" }` on
     /// codeception 5.x says "I replace any version of
@@ -179,7 +180,7 @@ pub struct ResolveProvider {
     /// We model this by remembering the range the provider declares
     /// and synthesizing a candidate inside the consumer's range at
     /// `choose_version` time (when the consumer's range is known).
-    virtual_wildcards: RefCell<FxHashMap<String, Vec<WildcardProvider>>>,
+    virtual_wildcards: RefCell<FxHashMap<PackageName, Vec<WildcardProvider>>>,
     /// Reverse-lookup: for each (virtual_name, selected_version),
     /// every (provider_name, provider_version) pair that registered
     /// it. Used by `get_dependencies` to pin the providing real
@@ -197,7 +198,7 @@ pub struct ResolveProvider {
     /// to the first registration — pubgrub has no OR for the
     /// constraints `get_dependencies` returns, so emitting all of
     /// them would over-constrain.
-    virtual_selections: RefCell<FxHashMap<(String, Version), Vec<(String, Version)>>>,
+    virtual_selections: RefCell<FxHashMap<(PackageName, Version), Vec<(PackageName, Version)>>>,
     /// Per-v1-repo merged provider lookup tables (package name →
     /// sha256). Lazily populated on the first per-package lookup
     /// against a given v1 repo, keyed by `repo.url`. Composer v1
@@ -240,7 +241,7 @@ pub struct ResolveProvider {
 /// the virtual name at version `provided_version`."
 #[derive(Debug, Clone)]
 pub struct VirtualProvider {
-    pub provider_name: String,
+    pub provider_name: PackageName,
     pub provider_version: Version,
     pub provided_version: Version,
 }
@@ -254,7 +255,7 @@ pub struct VirtualProvider {
 /// the consumer's required range at `choose_version` time.
 #[derive(Debug, Clone)]
 pub struct WildcardProvider {
-    pub provider_name: String,
+    pub provider_name: PackageName,
     pub provider_version: Version,
     /// The range the provider declared it covers. For `*` this is
     /// `Ranges::full()` (matches every consumer constraint). For
@@ -283,15 +284,15 @@ struct VirtualContributions {
 }
 
 struct ExactContribution {
-    virtual_name: String,
-    provider_name: String,
+    virtual_name: PackageName,
+    provider_name: PackageName,
     provider_version: Version,
     provided_version: Version,
 }
 
 struct WildcardContribution {
-    virtual_name: String,
-    provider_name: String,
+    virtual_name: PackageName,
+    provider_name: PackageName,
     provider_version: Version,
     provided_range: ComposerRange,
 }
@@ -304,7 +305,7 @@ struct WildcardContribution {
 /// per clause; on a magento2-sized resolve that totals ~150 ms of
 /// previously-serial main-thread work.
 fn compute_virtual_contributions(
-    provider_name: &str,
+    provider_name: &PackageName,
     versions: &[LockPackage],
 ) -> VirtualContributions {
     let mut out = VirtualContributions::default();
@@ -324,15 +325,15 @@ fn compute_virtual_contributions(
                 };
                 if let Ok(v) = Version::parse(effective) {
                     out.exacts.push(ExactContribution {
-                        virtual_name: virtual_name.clone(),
-                        provider_name: provider_name.to_owned(),
+                        virtual_name: PackageName::from(virtual_name.as_str()),
+                        provider_name: provider_name.clone(),
                         provider_version: provider_version.clone(),
                         provided_version: v,
                     });
                 } else if let Ok(constraint) = Constraint::parse(effective) {
                     out.wildcards.push(WildcardContribution {
-                        virtual_name: virtual_name.clone(),
-                        provider_name: provider_name.to_owned(),
+                        virtual_name: PackageName::from(virtual_name.as_str()),
+                        provider_name: provider_name.clone(),
                         provider_version: provider_version.clone(),
                         provided_range: to_range(&constraint),
                     });
@@ -568,9 +569,13 @@ impl ResolveProvider {
         // (sort is stable; real Packagist entries are at the front
         // because they were extended in first).
         merged.dedup_by(|a, b| a.0 == b.0);
+        // One `PackageName` intern per cache miss — amortized over
+        // every subsequent `versions_for(name)` probe, every
+        // `PubGrubPackage::Package(name.clone())` pubgrub allocates,
+        // and the lock-package lookup path through `lock_package_for`.
         self.merged_cache
             .borrow_mut()
-            .insert(name.to_owned(), merged);
+            .insert(PackageName::from(name), merged);
         Ok(Ref::map(self.merged_cache.borrow(), |m| {
             m.get(name).expect("just inserted")
         }))
@@ -634,8 +639,12 @@ impl ResolveProvider {
             }
         }
 
-        // Register virtuals as a side effect of loading.
-        self.register_virtuals_from(name, &versions);
+        // Register virtuals as a side effect of loading. Intern the
+        // name once here; `register_virtuals_from` clones it (refcount
+        // bump) into every `VirtualProvider` / `WildcardProvider` /
+        // `virtual_selections` entry it emits.
+        let interned = PackageName::from(name);
+        self.register_virtuals_from(&interned, &versions);
 
         // Filter by effective stability, drop unparseable versions,
         // keep the parsed `Version` alongside the raw `LockPackage`.
@@ -763,7 +772,7 @@ impl ResolveProvider {
     /// prefetch hot path computes contributions in worker tasks and
     /// applies them via [`Self::apply_virtual_contributions`] for
     /// the wall-clock savings.
-    fn register_virtuals_from(&self, provider_name: &str, versions: &[LockPackage]) {
+    fn register_virtuals_from(&self, provider_name: &PackageName, versions: &[LockPackage]) {
         let mut index = self.virtual_providers.borrow_mut();
         let mut wildcards = self.virtual_wildcards.borrow_mut();
         let mut selections = self.virtual_selections.borrow_mut();
@@ -812,12 +821,13 @@ impl ResolveProvider {
                     // phpunit-wrapper's incompatible deps. The
                     // wildcard path picks a version *in the
                     // consumer's range* instead.
+                    let interned_virtual = PackageName::from(virtual_name.as_str());
                     if let Ok(v) = Version::parse(effective) {
                         index
-                            .entry(virtual_name.clone())
+                            .entry(interned_virtual.clone())
                             .or_default()
                             .push(VirtualProvider {
-                                provider_name: provider_name.to_owned(),
+                                provider_name: provider_name.clone(),
                                 provider_version: provider_version.clone(),
                                 provided_version: v.clone(),
                             });
@@ -829,15 +839,15 @@ impl ResolveProvider {
                         // pubgrub can pick whichever provider
                         // version satisfies the wider resolution.
                         selections
-                            .entry((virtual_name.clone(), v))
+                            .entry((interned_virtual, v))
                             .or_default()
-                            .push((provider_name.to_owned(), provider_version.clone()));
+                            .push((provider_name.clone(), provider_version.clone()));
                     } else if let Ok(constraint) = Constraint::parse(effective) {
                         wildcards
-                            .entry(virtual_name.clone())
+                            .entry(interned_virtual)
                             .or_default()
                             .push(WildcardProvider {
-                                provider_name: provider_name.to_owned(),
+                                provider_name: provider_name.clone(),
                                 provider_version: provider_version.clone(),
                                 provided_range: to_range(&constraint),
                             });
@@ -875,7 +885,7 @@ impl ResolveProvider {
             out.push((
                 entry.provided_version.clone(),
                 LockPackage {
-                    name: name.to_owned(),
+                    name: name.to_string(),
                     version: entry.provided_version.normalized.clone(),
                     version_normalized: Some(entry.provided_version.normalized.clone()),
                     dist: None,
@@ -909,7 +919,7 @@ impl ResolveProvider {
     /// pick back to its concrete provider.
     fn synthesize_wildcard_candidate(
         &self,
-        name: &str,
+        name: &PackageName,
         range: &ComposerRange,
     ) -> Option<Version> {
         let wildcards = self.virtual_wildcards.borrow();
@@ -919,7 +929,7 @@ impl ResolveProvider {
         }
         // Deterministic order: smallest provider name first.
         let mut sorted: Vec<&WildcardProvider> = entries.iter().collect();
-        sorted.sort_by(|a, b| a.provider_name.cmp(&b.provider_name));
+        sorted.sort_by(|a, b| a.provider_name.as_str().cmp(b.provider_name.as_str()));
 
         for entry in sorted {
             let intersection = range.intersection(&entry.provided_range);
@@ -938,7 +948,7 @@ impl ResolveProvider {
                 _ => continue,
             };
             self.virtual_selections.borrow_mut().insert(
-                (name.to_owned(), picked.clone()),
+                (name.clone(), picked.clone()),
                 vec![(entry.provider_name.clone(), entry.provider_version.clone())],
             );
             return Some(picked);
@@ -976,11 +986,11 @@ impl ResolveProvider {
         &self,
         progress: ClosureProgress,
     ) -> Result<(), ProviderError> {
-        let initial: Vec<String> = self
+        let initial: Vec<PackageName> = self
             .root_deps
             .iter()
             .map(|(n, _)| n.clone())
-            .filter(|n| !is_platform(n))
+            .filter(|n| !is_platform(n.as_str()))
             .collect();
 
         // Current-thread runtime with I/O + time enabled is what
@@ -1049,7 +1059,7 @@ impl ResolveProvider {
         // `Vec::pop`); name-sort is what someone reading the lockfile
         // would expect.
         let mut sorted = outcomes;
-        sorted.sort_by(|a, b| a.name.cmp(&b.name));
+        sorted.sort_by(|a, b| a.name.as_str().cmp(b.name.as_str()));
         for outcome in sorted {
             self.apply_virtual_contributions(outcome.contributions);
             self.cache
@@ -1080,7 +1090,7 @@ fn prefetch_concurrency_limit() -> usize {
 /// versions are still indexed, matching the original sync semantics).
 /// `filtered` is what lands in `ResolveProvider::cache`.
 struct PrefetchOutcome {
-    name: String,
+    name: PackageName,
     contributions: VirtualContributions,
     filtered: Vec<(Version, LockPackage)>,
 }
@@ -1096,7 +1106,7 @@ async fn run_prefetch_fanout(
     paths: Paths,
     repos: Vec<Repo>,
     v1_tables: Arc<FxHashMap<String, FxHashMap<String, String>>>,
-    initial: Vec<String>,
+    initial: Vec<PackageName>,
     minimum_stability: Stability,
     stability_flags: Arc<HashMap<String, Stability>>,
     concurrency: usize,
@@ -1104,13 +1114,16 @@ async fn run_prefetch_fanout(
 ) -> Result<Vec<PrefetchOutcome>, ProviderError> {
     use std::collections::HashSet;
     let sem = Arc::new(tokio::sync::Semaphore::new(concurrency));
-    let mut visited: HashSet<String> = HashSet::new();
+    // BFS `visited` set keyed by `PackageName` — cheap-clone Arc<str>,
+    // so the once-per-name insert + the spawn-task clone are refcount
+    // bumps rather than allocations.
+    let mut visited: HashSet<PackageName> = HashSet::new();
     let mut tasks: tokio::task::JoinSet<Result<PrefetchOutcome, ProviderError>> =
         tokio::task::JoinSet::new();
     let mut outcomes: Vec<PrefetchOutcome> = Vec::new();
 
     let spawn_fetch =
-        |name: String,
+        |name: PackageName,
          tasks: &mut tokio::task::JoinSet<Result<PrefetchOutcome, ProviderError>>| {
             let client = client.clone();
             let paths = paths.clone();
@@ -1124,7 +1137,7 @@ async fn run_prefetch_fanout(
                     .await
                     .map_err(|e| ProviderError(format!("semaphore closed: {e}")))?;
                 let floor = stability_flags
-                    .get(&name)
+                    .get(name.as_str())
                     .copied()
                     .unwrap_or(minimum_stability);
                 load_real_candidates_isolated(
@@ -1132,7 +1145,7 @@ async fn run_prefetch_fanout(
                     &paths,
                     &repos,
                     &v1_tables,
-                    &name,
+                    name.as_str(),
                     floor,
                 )
                 .await
@@ -1152,16 +1165,20 @@ async fn run_prefetch_fanout(
         // packages whose metadata has actually landed. Displayed
         // name flickers across in-flight tasks; users only see the
         // running total most of the time anyway.
-        progress.tick(&outcome.name);
+        progress.tick(outcome.name.as_str());
         for (_, pkg) in &outcome.filtered {
             for req in pkg.require.keys() {
                 if is_platform(req) {
                     continue;
                 }
-                if !visited.insert(req.clone()) {
+                // Intern transitive require names once at the BFS
+                // boundary. The `PackageName` clone going into the
+                // visited set + the spawn is a refcount bump.
+                let interned = PackageName::from(req.as_str());
+                if !visited.insert(interned.clone()) {
                     continue;
                 }
-                spawn_fetch(req.clone(), &mut tasks);
+                spawn_fetch(interned, &mut tasks);
             }
         }
         outcomes.push(outcome);
@@ -1235,7 +1252,10 @@ async fn load_real_candidates_isolated(
     // resolve) AND shifts ~150 ms of `Version::parse` /
     // `Constraint::parse` cost off the post-prefetch single-threaded
     // phase.
-    let contributions = compute_virtual_contributions(name, &versions);
+    // Intern once on the worker; the resulting `PackageName` lives in
+    // every contribution + the `PrefetchOutcome::name` field.
+    let interned = PackageName::from(name);
+    let contributions = compute_virtual_contributions(&interned, &versions);
     let mut filtered: Vec<(Version, LockPackage)> = versions
         .into_iter()
         .filter_map(|p| {
@@ -1246,7 +1266,7 @@ async fn load_real_candidates_isolated(
         })
         .collect();
     filtered.sort_by(|a, b| b.0.cmp(&a.0));
-    Ok(PrefetchOutcome { name: name.to_owned(), contributions, filtered })
+    Ok(PrefetchOutcome { name: interned, contributions, filtered })
 }
 
 /// Stateless v1/v2 dispatch — same shape as
@@ -1393,8 +1413,8 @@ impl SolveProgress {
 fn read_root_requires(
     composer_json: &Value,
     no_dev: bool,
-) -> Result<(Vec<(String, ComposerRange)>, HashMap<String, Stability>), BuildError> {
-    let mut out: Vec<(String, ComposerRange)> = Vec::new();
+) -> Result<(Vec<(PackageName, ComposerRange)>, HashMap<String, Stability>), BuildError> {
+    let mut out: Vec<(PackageName, ComposerRange)> = Vec::new();
     let mut flags: HashMap<String, Stability> = HashMap::new();
     let obj = composer_json
         .as_object()
@@ -1435,7 +1455,7 @@ fn read_root_requires(
                     reason: e.to_string(),
                 }
             })?;
-            out.push((dep_name.clone(), to_range(&constraint)));
+            out.push((PackageName::from(dep_name.as_str()), to_range(&constraint)));
         }
     }
     Ok((out, flags))
@@ -1832,7 +1852,7 @@ impl std::error::Error for BuildError {}
 /// `ramsey/uuid 4.9.2 replace: { rhumsaa/uuid: "self.version" }`,
 /// meaning "I replace rhumsaa/uuid at exactly my own version."
 fn push_constraint_map(
-    out: &mut Vec<(String, ComposerRange)>,
+    out: &mut Vec<(PackageName, ComposerRange)>,
     map: &std::collections::BTreeMap<String, String>,
     owner: &str,
     owner_version: &str,
@@ -1858,7 +1878,7 @@ fn push_constraint_map(
                 "constraint {raw:?} on `{dep_name}` ({clause_kind} from `{owner}`): {e}",
             ))
         })?;
-        out.push((dep_name.clone(), to_range(&constraint)));
+        out.push((PackageName::from(dep_name.as_str()), to_range(&constraint)));
     }
     Ok(())
 }
@@ -1894,7 +1914,7 @@ impl DependencyProvider for ResolveProvider {
                 None
             }),
             PubGrubPackage::Package(name) => {
-                let versions = self.versions_for(name)?;
+                let versions = self.versions_for(name.as_str())?;
                 // `versions_for` sorts descending. With
                 // `prefer-stable`, do a two-pass scan: first pick the
                 // highest *stable* in range, then fall back to the
@@ -1905,7 +1925,7 @@ impl DependencyProvider for ResolveProvider {
                 // already `Stable`, every candidate is stable, so
                 // the prefer-stable pass would just duplicate the
                 // fallback. Skip it.
-                let floor = self.effective_stability(name);
+                let floor = self.effective_stability(name.as_str());
                 if self.prefer_stable && floor != Stability::Stable {
                     for (v, _) in versions.iter() {
                         if v.stability() == Stability::Stable && range.contains(v) {
@@ -2033,7 +2053,11 @@ impl ResolveProvider {
             // rule; bougie's modeling lacks that today, so accept
             // the looser semantics until the resolver grows a proper
             // provider-selector.
-            let mut by_name: std::collections::BTreeMap<String, Vec<Version>> =
+            // Group registrations by provider name. `PackageName`
+            // hashes/orders as its inner string, so a `BTreeMap`
+            // keyed by it gives the same lexicographic grouping as
+            // the previous `String`-keyed version.
+            let mut by_name: std::collections::BTreeMap<PackageName, Vec<Version>> =
                 std::collections::BTreeMap::new();
             for (pname, pver) in &providers {
                 by_name.entry(pname.clone()).or_default().push(pver.clone());
@@ -2056,7 +2080,7 @@ impl ResolveProvider {
             return Ok(out);
         }
 
-        let versions = self.versions_for(name)?;
+        let versions = self.versions_for(name.as_str())?;
         // Find the entry by reference equality on the cached
         // `Version` — same instance `choose_version` returned, no
         // re-parse, no chance of a Packagist `version_normalized`
@@ -2070,9 +2094,15 @@ impl ResolveProvider {
                 "internal: get_dependencies({name}@{version}) but version not in cache",
             )));
         };
-        let mut staging: Vec<(String, ComposerRange)> = Vec::new();
+        let mut staging: Vec<(PackageName, ComposerRange)> = Vec::new();
         let owner_version = &entry.version;
-        push_constraint_map(&mut staging, &entry.require, name, owner_version, "require")?;
+        push_constraint_map(
+            &mut staging,
+            &entry.require,
+            name.as_str(),
+            owner_version,
+            "require",
+        )?;
         // `replace` is encoded as an additional require ONLY when
         // the clause is a bare version (`replace: { sub: 2.0.0 }`).
         // This emits `sub: ==2.0.0` from the replacer, mirroring
@@ -2104,7 +2134,13 @@ impl ResolveProvider {
             })
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
-        push_constraint_map(&mut staging, &exact_replaces, name, owner_version, "replace")?;
+        push_constraint_map(
+            &mut staging,
+            &exact_replaces,
+            name.as_str(),
+            owner_version,
+            "replace",
+        )?;
         Ok(staging
             .into_iter()
             .map(|(n, r)| (PubGrubPackage::Package(n), r))
@@ -2224,7 +2260,7 @@ pub fn dry_run_update(
                             return None;
                         }
                         Some(ResolvedPackage {
-                            name,
+                            name: name.to_string(),
                             version: version.to_string(),
                         })
                     }
@@ -2490,7 +2526,7 @@ fn solve_into_lock_packages(
         if virtual_selections.contains_key(&(name.clone(), version.clone())) {
             continue;
         }
-        let Some(entry) = provider.lock_package_for(&name, &version) else {
+        let Some(entry) = provider.lock_package_for(name.as_str(), &version) else {
             // Should not happen — pubgrub only picked versions we
             // returned from `choose_version`, and those entries are
             // in the cache by construction.

@@ -21,6 +21,14 @@ serde_json = "1"
 # on this for every map its solver hammers — same shape applies
 # here.
 rustc-hash = "2"
+# Niche-optimized `Arc<str>` for `PackageName` interning. uv uses
+# this for the same purpose (`uv-normalize::PackageName` wraps
+# `arcstr::ArcStr`) — cheap clone, hash-friendly, no allocator churn
+# once interned. One `vendor/name` string lives across every cache
+# key and every `PubGrubPackage::Package` value pubgrub clones during
+# conflict analysis; interning collapses those clones to refcount
+# bumps.
+arcstr = "1"
 
 [dependencies.bougie-autoloader]
 path = "../bougie-autoloader"
