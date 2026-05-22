@@ -1,8 +1,9 @@
 # bougie
 
 A "uv for PHP": Composer-compatible package manager + PHP toolchain manager
-+ dev server, written in Rust. Cross-platform (Linux / macOS / Windows for
-the CLI subset; services and `bougie server` are Unix-only).
++ dev server, written in Rust. Cross-platform (Linux / macOS / Windows).
+The `services` daemon stack (bougied + babysit + sandbox-run) is Unix-only;
+`bougie server` runs on Windows via `php-cgi.exe`.
 
 Repo: `cresset-tools/bougie`. Spec sibling: `cresset-tools/php-build-standalone`
 (see `SERVER.md`, `DISTRIBUTION.md`, `SERVICES.md` upstream — they are the
