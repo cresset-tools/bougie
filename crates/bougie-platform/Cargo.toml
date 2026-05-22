@@ -10,6 +10,7 @@ authors.workspace = true
 
 [dependencies.bougie-errors]
 path = "../bougie-errors"
+version = "0.5.0"
 
 [dependencies.eyre]
 version = "0.6"

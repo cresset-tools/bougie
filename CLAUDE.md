@@ -147,6 +147,15 @@ PR that bumps the version and updates `CHANGELOG.md`. Merging the PR tags
 - `release = false` on all leaf + vendored crates; only `bougie` gets
   tagged. Leaf changes only flow to releases via that tag.
 - `git_only = true` for `bougie` — no crates.io comparison.
+- **Intra-workspace path deps must keep their `version = "..."` pin.**
+  Every `[dependencies.bougie-*]` (and the vendored `sandbox-run` /
+  `macos-sandbox-sys`) needs both `path = "..."` *and* `version = "..."`,
+  pinned to the dep crate's current `Cargo.toml` version. Release-plz
+  runs `cargo package` for version detection, and its manifest-verify
+  step rejects path deps without a version — *even with*
+  `publish = false` and release-plz's `publish_no_verify = true`. Don't
+  "clean up" the version fields thinking they're inert; CI will break
+  on the next release-PR cron (see PR #143's regression).
 
 **Use conventional commit prefixes** or release-plz won't pick the
 change up. Examples in `git log`: `feat(composer-resolver): ...`,
