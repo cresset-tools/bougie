@@ -239,6 +239,88 @@ pub struct WildcardProvider {
     pub provided_range: ComposerRange,
 }
 
+/// Pre-parsed contributions one package's `provide`/`replace` clauses
+/// make to the virtual-provider indexes. Pure data — no `&self` —
+/// safe to compute inside a `spawn_blocking` worker. The expensive
+/// work (`Version::parse` / `Constraint::parse` / `to_range`) happens
+/// during the network-bound fetch phase; the main thread later
+/// applies these in deterministic order via
+/// [`ResolveProvider::apply_virtual_contributions`], which is just
+/// a handful of `HashMap::entry().or_default().push(_)` calls.
+#[derive(Default)]
+struct VirtualContributions {
+    /// Specific-version clauses (`replace: { foo: "1.2.3" }` or
+    /// `provide: { bar: self.version }`). Land in
+    /// `virtual_providers` + `virtual_selections`.
+    exacts: Vec<ExactContribution>,
+    /// Range / wildcard clauses (`replace: { foo: "*" }`,
+    /// `provide: { foo: "^1.0" }`). Land in `virtual_wildcards`.
+    wildcards: Vec<WildcardContribution>,
+}
+
+struct ExactContribution {
+    virtual_name: String,
+    provider_name: String,
+    provider_version: Version,
+    provided_version: Version,
+}
+
+struct WildcardContribution {
+    virtual_name: String,
+    provider_name: String,
+    provider_version: Version,
+    provided_range: ComposerRange,
+}
+
+/// Pure counterpart to [`ResolveProvider::register_virtuals_from`]:
+/// walks one package's versions and decodes every `provide`/`replace`
+/// clause into a [`VirtualContributions`] payload. No `&self`, no
+/// `RefCell` access — safe to call from a worker thread. The
+/// expensive cost here is the `Version::parse` / `Constraint::parse`
+/// per clause; on a magento2-sized resolve that totals ~150 ms of
+/// previously-serial main-thread work.
+fn compute_virtual_contributions(
+    provider_name: &str,
+    versions: &[LockPackage],
+) -> VirtualContributions {
+    let mut out = VirtualContributions::default();
+    for p in versions {
+        let Ok(provider_version) = Version::parse(&p.version) else {
+            continue;
+        };
+        for clause_map in [&p.replace, &p.provide] {
+            for (virtual_name, raw_constraint) in clause_map {
+                if is_platform(virtual_name) {
+                    continue;
+                }
+                let effective = if raw_constraint == "self.version" {
+                    &p.version
+                } else {
+                    raw_constraint
+                };
+                if let Ok(v) = Version::parse(effective) {
+                    out.exacts.push(ExactContribution {
+                        virtual_name: virtual_name.clone(),
+                        provider_name: provider_name.to_owned(),
+                        provider_version: provider_version.clone(),
+                        provided_version: v,
+                    });
+                } else if let Ok(constraint) = Constraint::parse(effective) {
+                    out.wildcards.push(WildcardContribution {
+                        virtual_name: virtual_name.clone(),
+                        provider_name: provider_name.to_owned(),
+                        provider_version: provider_version.clone(),
+                        provided_range: to_range(&constraint),
+                    });
+                }
+                // Unparseable as either Version or Constraint: skip
+                // (same fail-soft behavior as the original).
+            }
+        }
+    }
+    out
+}
+
 impl std::fmt::Debug for ResolveProvider {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ResolveProvider")
@@ -602,11 +684,60 @@ impl ResolveProvider {
         }
     }
 
+    /// Apply pre-computed [`VirtualContributions`] (built by
+    /// [`compute_virtual_contributions`] inside the prefetch worker)
+    /// to the virtual-provider indexes. Holds all three index
+    /// `RefCell`s briefly to do hashmap inserts only — none of the
+    /// expensive parsing work happens here. Callers must drive this
+    /// in name-sorted order so `virtual_selections.or_default()`
+    /// keeps first-write-wins determinism across runs.
+    fn apply_virtual_contributions(&self, contributions: VirtualContributions) {
+        let mut index = self.virtual_providers.borrow_mut();
+        let mut wildcards = self.virtual_wildcards.borrow_mut();
+        let mut selections = self.virtual_selections.borrow_mut();
+        for e in contributions.exacts {
+            let ExactContribution {
+                virtual_name,
+                provider_name,
+                provider_version,
+                provided_version,
+            } = e;
+            index.entry(virtual_name.clone()).or_default().push(VirtualProvider {
+                provider_name: provider_name.clone(),
+                provider_version: provider_version.clone(),
+                provided_version: provided_version.clone(),
+            });
+            selections
+                .entry((virtual_name, provided_version))
+                .or_default()
+                .push((provider_name, provider_version));
+        }
+        for w in contributions.wildcards {
+            let WildcardContribution {
+                virtual_name,
+                provider_name,
+                provider_version,
+                provided_range,
+            } = w;
+            wildcards.entry(virtual_name).or_default().push(WildcardProvider {
+                provider_name,
+                provider_version,
+                provided_range,
+            });
+        }
+    }
+
     /// Walk a freshly-loaded package's versions and register every
     /// `provide` / `replace` entry in the virtual-provider index.
     /// `provider_name` is the name we just loaded metadata for.
     /// Platform names (`php`, `ext-*`, ...) are skipped — they're
     /// filtered before reaching pubgrub anyway (issue #118).
+    ///
+    /// Used by the lazy fallback in [`Self::load_real_candidates`]
+    /// (pubgrub asked about a name that wasn't pre-fetched); the
+    /// prefetch hot path computes contributions in worker tasks and
+    /// applies them via [`Self::apply_virtual_contributions`] for
+    /// the wall-clock savings.
     fn register_virtuals_from(&self, provider_name: &str, versions: &[LockPackage]) {
         let mut index = self.virtual_providers.borrow_mut();
         let mut wildcards = self.virtual_wildcards.borrow_mut();
@@ -883,7 +1014,7 @@ impl ResolveProvider {
         let mut sorted = outcomes;
         sorted.sort_by(|a, b| a.name.cmp(&b.name));
         for outcome in sorted {
-            self.register_virtuals_from(&outcome.name, &outcome.raw_versions);
+            self.apply_virtual_contributions(outcome.contributions);
             self.cache
                 .borrow_mut()
                 .insert(outcome.name, outcome.filtered);
@@ -906,13 +1037,14 @@ fn prefetch_concurrency_limit() -> usize {
 }
 
 /// Result of fetching one package's metadata during the prefetch
-/// fan-out. `raw_versions` is the pre-filter list (used by
-/// `register_virtuals_from` so `provide`/`replace` clauses on
-/// stability-filtered-out versions are still indexed); `filtered`
-/// is what lands in `ResolveProvider::cache`.
+/// fan-out. `contributions` is the pre-parsed virtual-provider
+/// payload (computed from the *pre-filter* version list inside the
+/// worker so `provide`/`replace` clauses on stability-filtered-out
+/// versions are still indexed, matching the original sync semantics).
+/// `filtered` is what lands in `ResolveProvider::cache`.
 struct PrefetchOutcome {
     name: String,
-    raw_versions: Vec<LockPackage>,
+    contributions: VirtualContributions,
     filtered: Vec<(Version, LockPackage)>,
 }
 
@@ -1055,7 +1187,15 @@ fn load_real_candidates_isolated(
             }
         }
     }
-    let raw_versions = versions.clone();
+    // Pre-parse provide/replace clauses while we're already on a
+    // worker thread. The previous code cloned the entire pre-filter
+    // `versions` vec into `raw_versions` so the main thread could
+    // call `register_virtuals_from` on it later; doing the parsing
+    // here instead removes that clone (~150 ms on a magento2-sized
+    // resolve) AND shifts ~150 ms of `Version::parse` /
+    // `Constraint::parse` cost off the post-prefetch single-threaded
+    // phase.
+    let contributions = compute_virtual_contributions(name, &versions);
     let mut filtered: Vec<(Version, LockPackage)> = versions
         .into_iter()
         .filter_map(|p| {
@@ -1066,7 +1206,7 @@ fn load_real_candidates_isolated(
         })
         .collect();
     filtered.sort_by(|a, b| b.0.cmp(&a.0));
-    Ok(PrefetchOutcome { name: name.to_owned(), raw_versions, filtered })
+    Ok(PrefetchOutcome { name: name.to_owned(), contributions, filtered })
 }
 
 /// Stateless v1/v2 dispatch — same as [`ResolveProvider::fetch_one`]
@@ -1972,7 +2112,7 @@ pub fn dry_run_update(
         ok = result.is_ok(),
         "pubgrub_resolve",
     );
-    match result {
+    let summary = match result {
         Ok(solution) => {
             let virtual_selections = provider.virtual_selections.borrow();
             let mut packages: Vec<ResolvedPackage> = solution
@@ -1994,26 +2134,43 @@ pub fn dry_run_update(
                 })
                 .collect();
             packages.sort_by(|a, b| a.name.cmp(&b.name));
-            Ok(UpdateSummary { packages, no_dev: opts.no_dev })
+            drop(virtual_selections);
+            UpdateSummary { packages, no_dev: opts.no_dev }
         }
-        Err(PubGrubError::NoSolution(tree)) => Err(eyre!(
-            "no valid dependency resolution exists:\n\n{}",
-            DefaultStringReporter::report(&tree),
-        )),
-        Err(PubGrubError::ErrorChoosingVersion { package, source }) => Err(eyre!(
-            "solver could not choose a version for {package}: {}",
-            source.0,
-        )),
+        Err(PubGrubError::NoSolution(tree)) => {
+            return Err(eyre!(
+                "no valid dependency resolution exists:\n\n{}",
+                DefaultStringReporter::report(&tree),
+            ));
+        }
+        Err(PubGrubError::ErrorChoosingVersion { package, source }) => {
+            return Err(eyre!(
+                "solver could not choose a version for {package}: {}",
+                source.0,
+            ));
+        }
         Err(PubGrubError::ErrorRetrievingDependencies {
             package,
             version,
             source,
-        }) => Err(eyre!(
-            "solver could not retrieve dependencies of {package}@{version}: {}",
-            source.0,
-        )),
-        Err(other) => Err(eyre!("solver error: {other}")),
-    }
+        }) => {
+            return Err(eyre!(
+                "solver could not retrieve dependencies of {package}@{version}: {}",
+                source.0,
+            ));
+        }
+        Err(other) => return Err(eyre!("solver error: {other}")),
+    };
+    // Skip `drop_in_place<ResolveProvider>` — the process exits
+    // immediately after we return, and the cached LockPackage tree
+    // (~580 entries on a magento2-sized resolve) accounts for ~22%
+    // of main-thread time on the profile-bench fixture. The kernel
+    // reclaims the memory cleanly; nothing in the provider holds an
+    // OS resource that requires Drop to release (the reqwest client
+    // pools connections via its own internal runtime, which is
+    // already winding down).
+    std::mem::forget(provider);
+    Ok(summary)
 }
 
 /// Outcome of [`resolve_for_lockfile`]: the resolved package set,
@@ -2255,12 +2412,17 @@ fn solve_into_lock_packages(
         "assemble_lock_packages",
     );
 
-    Ok(SolutionSummary {
+    let summary = SolutionSummary {
         packages,
         minimum_stability: provider.minimum_stability,
         prefer_stable: provider.prefer_stable,
         stability_flags: provider.stability_flags.clone(),
-    })
+    };
+    // See `dry_run_update` for the rationale; `resolve_for_lockfile`
+    // builds *two* providers (full graph + prod-only solve) so the
+    // savings double here.
+    std::mem::forget(provider);
+    Ok(summary)
 }
 
 struct SolutionSummary {
