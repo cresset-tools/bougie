@@ -371,24 +371,28 @@ New `AutoloaderManager` in `bougie-server`:
 
 Three PRs.
 
-1. **PR1 — `Autoloader` refactor.** Carve `Autoloader::bootstrap` /
-   `apply_changed_path` / `apply_deleted_path` / `emit` and the
-   free-function `user_code_roots` out of the existing
-   `dump_autoload` machinery. Pure refactor; no behavior change for
-   CLI users. Introduces `TaskState` + per-file class-list storage.
-   Adds the apply-path code that PR2 needs. Also lands the change
+1. **PR1 — `Autoloader` refactor.** ✅ **Landed as `152fd04`** (stacked
+   on this PR). Carved `Autoloader::bootstrap` / `apply_changed_path`
+   / `apply_deleted_path` / `emit` and the free-function
+   `user_code_roots` out of the existing `dump_autoload` machinery.
+   Pure refactor; no behavior change for CLI users. Introduces
+   `TaskState` + per-file class-list storage. Also landed the change
    to `bougie composer install` to default to unoptimized
-   (`optimize: false, classmap_authoritative: false`).
-2. **PR2 — server-resident autoloader.** `AutoloaderManager` in
-   `bougie-server`; `ProjectState::{Cold, Warming, Live}`;
-   `ensure_bootstrap` called from `router.rs::dispatch`;
-   `ChangeKind::UserCode` + `ChangeKind::Lockfile` in `watcher.rs`
-   with dynamic per-project `notify::Watcher::watch`; event
-   buffering during Warming; dispatch loop wires events through the
-   manager.
-3. **PR3 (optional) — opcache reset.** Touch / signal fpm pool after
-   each emit. Standard dev `opcache.revalidate_freq=0` makes this a
-   convenience, not a requirement.
+   (`optimize: false, classmap_authoritative: false`). 15-fixture
+   byte-equivalence harness still passes; 7 new patch-flow unit
+   tests.
+2. **PR2 — server-resident autoloader.** ✅ **Landed as `fd032d2`**
+   (stacked on this PR). `AutoloaderManager` in `bougie-server`;
+   `ProjectState::{Cold, Warming, Live, Failed}`; `ensure_bootstrap`
+   called from `router.rs::dispatch`; `ChangeKind::Lockfile` +
+   per-file user-code events with 50 ms debounce + batched path
+   coalescing in `watcher.rs`; `WatchRegistry` for dynamic
+   per-project `notify::Watcher::watch`; warming-buffer drain
+   covered by a load-bearing test. 5 new tokio tests.
+3. **PR3 (optional) — opcache reset.** Not yet landed. Touch / signal
+   fpm pool after each emit. Standard dev
+   `opcache.revalidate_freq=0` makes this a convenience, not a
+   requirement.
 
 ## Critical files
 
