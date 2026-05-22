@@ -193,7 +193,7 @@ impl Supervisor {
             .filter_map(|svc| {
                 let entry = catalog::find(svc.name)?;
                 let next_restart_ms = svc.restart_at.map(|deadline| {
-                    deadline.saturating_duration_since(now).as_millis() as u64
+                    super::duration_to_ms_u64(deadline.saturating_duration_since(now))
                 });
                 Some(ServiceStatus {
                     name: svc.name.to_string(),
@@ -201,7 +201,7 @@ impl Supervisor {
                     pid: svc.pid,
                     uptime_ms: svc
                         .started_at
-                        .map(|t| t.elapsed().as_millis() as u64),
+                        .map(|t| super::duration_to_ms_u64(t.elapsed())),
                     binding: entry.binding,
                     failure_count: svc.failure_count,
                     next_restart_ms,
@@ -536,7 +536,7 @@ impl Supervisor {
                     tracing::warn!(
                         service = svc.name,
                         failure_count = next_count,
-                        backoff_ms = svc.restart_at.map(|t| (t - now).as_millis() as u64),
+                        backoff_ms = svc.restart_at.map(|t| super::duration_to_ms_u64(t - now)),
                         "service crashed; respawn scheduled"
                     );
                 }
@@ -919,7 +919,13 @@ fn reap_orphan_group(service: &str, pgid: i32) {
 async fn stop_child(child: &mut Child, pid: Option<u32>) {
     if let Some(pid) = pid {
         // SIGTERM via rustix — the bougie codebase already pulls it in.
-        if let Some(rpid) = rustix::process::Pid::from_raw(pid as i32) {
+        // POSIX `pid_t` is `i32`; a pid that doesn't round-trip there
+        // shouldn't exist (Linux `pid_max` caps below `i32::MAX`).
+        let pid_i32 = match i32::try_from(pid) {
+            Ok(p) => p,
+            Err(_) => return,
+        };
+        if let Some(rpid) = rustix::process::Pid::from_raw(pid_i32) {
             let _ = rustix::process::kill_process(rpid, rustix::process::Signal::TERM);
         }
     }

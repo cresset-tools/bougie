@@ -212,7 +212,8 @@ fn logs_follow_streams_new_bytes_then_ends_on_disconnect() {
     std::thread::sleep(Duration::from_millis(600));
 
     // Stop the follow via SIGTERM through rustix (no extra unsafe).
-    if let Some(rpid) = rustix::process::Pid::from_raw(child.id() as i32) {
+    let child_pid = i32::try_from(child.id()).expect("test child pid fits in i32");
+    if let Some(rpid) = rustix::process::Pid::from_raw(child_pid) {
         let _ = rustix::process::kill_process(rpid, rustix::process::Signal::TERM);
     }
     let out = child.wait_with_output().expect("waiting for follow child");

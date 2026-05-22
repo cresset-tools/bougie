@@ -2105,7 +2105,7 @@ pub fn dry_run_update(
     let t_discover = std::time::Instant::now();
     provider.discover_repos();
     tracing::info!(
-        elapsed_ms = t_discover.elapsed().as_millis() as u64,
+        elapsed_ms = crate::elapsed_ms(t_discover.elapsed()),
         repos = provider.repos.len(),
         "discover_repos",
     );
@@ -2114,7 +2114,7 @@ pub fn dry_run_update(
         .pre_fetch_closure()
         .map_err(|e| eyre!("pre-fetching metadata closure: {}", e.0))?;
     tracing::info!(
-        elapsed_ms = t_prefetch.elapsed().as_millis() as u64,
+        elapsed_ms = crate::elapsed_ms(t_prefetch.elapsed()),
         cached_packages = provider.cache_size(),
         "pre_fetch_closure",
     );
@@ -2126,7 +2126,7 @@ pub fn dry_run_update(
     let solve_elapsed = t_solve.elapsed();
     provider.finish_solve_progress();
     tracing::info!(
-        elapsed_ms = solve_elapsed.as_millis() as u64,
+        elapsed_ms = crate::elapsed_ms(solve_elapsed),
         ok = result.is_ok(),
         "pubgrub_resolve",
     );
@@ -2290,7 +2290,7 @@ pub fn resolve_for_lockfile(
         .map(|(name, stability)| (name.clone(), stability_to_composer_int(*stability)))
         .collect();
     tracing::info!(
-        elapsed_ms = t_partition.elapsed().as_millis() as u64,
+        elapsed_ms = crate::elapsed_ms(t_partition.elapsed()),
         packages = packages.len(),
         packages_dev = packages_dev.len(),
         "partition_prod_dev",
@@ -2336,7 +2336,7 @@ fn solve_into_lock_packages(
     let t_discover = std::time::Instant::now();
     provider.discover_repos();
     tracing::info!(
-        elapsed_ms = t_discover.elapsed().as_millis() as u64,
+        elapsed_ms = crate::elapsed_ms(t_discover.elapsed()),
         repos = provider.repos.len(),
         no_dev,
         "discover_repos",
@@ -2351,7 +2351,7 @@ fn solve_into_lock_packages(
     };
     prefetch.map_err(|e| eyre!("pre-fetching metadata closure: {}", e.0))?;
     tracing::info!(
-        elapsed_ms = t_prefetch.elapsed().as_millis() as u64,
+        elapsed_ms = crate::elapsed_ms(t_prefetch.elapsed()),
         cached_packages = provider.cache_size(),
         no_dev,
         "pre_fetch_closure",
@@ -2366,7 +2366,7 @@ fn solve_into_lock_packages(
     let solve_elapsed = t_solve.elapsed();
     provider.finish_solve_progress();
     tracing::info!(
-        elapsed_ms = solve_elapsed.as_millis() as u64,
+        elapsed_ms = crate::elapsed_ms(solve_elapsed),
         ok = solve_result.is_ok(),
         no_dev,
         "pubgrub_resolve",
@@ -2424,7 +2424,7 @@ fn solve_into_lock_packages(
     drop(virtual_selections);
     packages.sort_by(|a, b| a.name.cmp(&b.name));
     tracing::info!(
-        elapsed_ms = t_assemble.elapsed().as_millis() as u64,
+        elapsed_ms = crate::elapsed_ms(t_assemble.elapsed()),
         packages = packages.len(),
         no_dev,
         "assemble_lock_packages",

@@ -282,7 +282,7 @@ pub fn probe_protocol(
     tracing::debug!(
         url = %url,
         status = %resp.status(),
-        elapsed_ms = start.elapsed().as_millis() as u64,
+        elapsed_ms = crate::elapsed_ms(start.elapsed()),
         phase = "probe",
         "GET",
     );
@@ -407,7 +407,7 @@ pub fn fetch_package_metadata(
     tracing::debug!(
         url = %url,
         status = %resp.status(),
-        elapsed_ms = start.elapsed().as_millis() as u64,
+        elapsed_ms = crate::elapsed_ms(start.elapsed()),
         package = %package_name,
         variant = ?variant,
         phase = "fetch",
@@ -501,7 +501,7 @@ pub fn fetch_package_metadata_optional(
     tracing::debug!(
         url = %url,
         status = %resp.status(),
-        elapsed_ms = start.elapsed().as_millis() as u64,
+        elapsed_ms = crate::elapsed_ms(start.elapsed()),
         package = %package_name,
         variant = ?variant,
         phase = "fetch_optional",
@@ -907,7 +907,7 @@ pub async fn fetch_package_metadata_optional_async(
     tracing::debug!(
         url = %url,
         status = %resp.status(),
-        elapsed_ms = start.elapsed().as_millis() as u64,
+        elapsed_ms = crate::elapsed_ms(start.elapsed()),
         package = %package_name,
         variant = ?variant,
         phase = "fetch_optional_async",

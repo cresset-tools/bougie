@@ -154,14 +154,20 @@ pub fn install_from_lock(
     })
     .map_err(|e| eyre!("autoload dump failed: {e}"))?;
 
-    let packages_installed = outcomes
-        .iter()
-        .filter(|o| **o == DistOutcome::Downloaded)
-        .count() as u32;
-    let packages_already_present = outcomes
-        .iter()
-        .filter(|o| **o == DistOutcome::CacheHit)
-        .count() as u32;
+    let packages_installed = u32::try_from(
+        outcomes
+            .iter()
+            .filter(|o| **o == DistOutcome::Downloaded)
+            .count(),
+    )
+    .unwrap_or(u32::MAX);
+    let packages_already_present = u32::try_from(
+        outcomes
+            .iter()
+            .filter(|o| **o == DistOutcome::CacheHit)
+            .count(),
+    )
+    .unwrap_or(u32::MAX);
     Ok(InstallSummary {
         project_root: project_root.to_path_buf(),
         packages_installed,
