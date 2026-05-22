@@ -1,6 +1,6 @@
 [package]
 name = "bougie-config"
-version = "0.4.0"
+version.workspace = true
 edition = "2024"
 description = "bougie.toml / composer.json config model and merge for bougie."
 license = "EUPL-1.2"

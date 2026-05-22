@@ -1,6 +1,6 @@
 [package]
 name = "bougie-backend"
-version = "0.4.0"
+version.workspace = true
 edition = "2024"
 description = "Pluggable PHP-distribution backends (bougie index, windows.php.net) for bougie."
 license = "EUPL-1.2"
@@ -10,31 +10,24 @@ authors.workspace = true
 
 [dependencies.bougie-errors]
 path = "../bougie-errors"
-version = "0.4.0"
 
 [dependencies.bougie-fetch]
 path = "../bougie-fetch"
-version = "0.4.0"
 
 [dependencies.bougie-index]
 path = "../bougie-index"
-version = "0.4.0"
 
 [dependencies.bougie-paths]
 path = "../bougie-paths"
-version = "0.4.0"
 
 [dependencies.bougie-platform]
 path = "../bougie-platform"
-version = "0.4.0"
 
 [dependencies.bougie-resolver]
 path = "../bougie-resolver"
-version = "0.4.0"
 
 [dependencies.bougie-version]
 path = "../bougie-version"
-version = "0.4.0"
 
 [dependencies.eyre]
 version = "0.6"

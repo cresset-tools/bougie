@@ -1,6 +1,6 @@
 [package]
 name = "bougie-installer"
-version = "0.4.0"
+version.workspace = true
 edition = "2024"
 description = "PHP runtime + extension installer for bougie."
 license = "EUPL-1.2"
@@ -10,39 +10,30 @@ authors.workspace = true
 
 [dependencies.bougie-backend]
 path = "../bougie-backend"
-version = "0.4.0"
 
 [dependencies.bougie-errors]
 path = "../bougie-errors"
-version = "0.4.0"
 
 [dependencies.bougie-fetch]
 path = "../bougie-fetch"
-version = "0.4.0"
 
 [dependencies.bougie-fs]
 path = "../bougie-fs"
-version = "0.4.0"
 
 [dependencies.bougie-index]
 path = "../bougie-index"
-version = "0.4.0"
 
 [dependencies.bougie-paths]
 path = "../bougie-paths"
-version = "0.4.0"
 
 [dependencies.bougie-platform]
 path = "../bougie-platform"
-version = "0.4.0"
 
 [dependencies.bougie-resolver]
 path = "../bougie-resolver"
-version = "0.4.0"
 
 [dependencies.bougie-version]
 path = "../bougie-version"
-version = "0.4.0"
 
 [dependencies.eyre]
 version = "0.6"

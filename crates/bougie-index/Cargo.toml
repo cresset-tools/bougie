@@ -1,6 +1,6 @@
 [package]
 name = "bougie-index"
-version = "0.4.0"
+version.workspace = true
 edition = "2024"
 description = "Package index wire protocol + Sigstore TUF verifier for bougie."
 license = "EUPL-1.2"
@@ -17,7 +17,6 @@ dev-trust-root = []
 
 [dependencies.bougie-errors]
 path = "../bougie-errors"
-version = "0.4.0"
 
 [dependencies.eyre]
 version = "0.6"
