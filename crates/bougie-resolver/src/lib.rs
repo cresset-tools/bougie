@@ -8,9 +8,20 @@
 
 use bougie_errors::BougieError;
 use bougie_index::wire::{Artifact, Section};
+use bougie_semver::Constraint;
 use bougie_version::request::{Flavor, VersionLike};
-use bougie_version::version::{Constraint, PartialVersion, Version};
+use bougie_version::version::{PartialVersion, Version};
 use eyre::Result;
+
+/// Lift bougie's exact-triple Version into a Composer-flavor
+/// `bougie_semver::Version` so semver constraints can be matched
+/// against it. The triple `8.3.12` becomes the normalized `8.3.12.0`
+/// (Stable). Round-trips through Composer's parse since the canonical
+/// shape carries 4 segments + a stability suffix.
+fn lift(v: Version) -> bougie_semver::Version {
+    bougie_semver::Version::parse(&v.to_string())
+        .expect("triple version is always semver-parseable")
+}
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ResolveOptions {
@@ -110,7 +121,7 @@ fn parse_artifact_version(s: &str) -> Result<Version> {
 fn version_matches_spec(v: Version, spec: &VersionLike) -> bool {
     match spec {
         VersionLike::Version(pv) => version_matches_partial(v, *pv),
-        VersionLike::Constraint(c) => c.satisfies(v),
+        VersionLike::Constraint(c) => c.matches(&lift(v)),
     }
 }
 
@@ -162,7 +173,7 @@ pub fn intersect_php(
                 VersionLike::Version(pv) => pv.pad(),
                 VersionLike::Constraint(_) => return Ok(o.clone()),
             };
-            if c.satisfies(probe) {
+            if c.matches(&lift(probe)) {
                 Ok(o.clone())
             } else {
                 Err(BougieError::Resolution {

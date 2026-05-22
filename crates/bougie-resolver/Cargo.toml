@@ -20,6 +20,10 @@ version = "0.5.0"
 path = "../bougie-version"
 version = "0.5.0"
 
+[dependencies.bougie-semver]
+path = "../bougie-semver"
+version = "0.1.0"
+
 [dependencies.eyre]
 version = "0.6"
 
