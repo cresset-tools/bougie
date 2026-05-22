@@ -89,7 +89,7 @@ pub enum Command {
         #[arg(long)]
         no_sync: bool,
         /// Layer the server's debug overlay (`.bougie/conf.d-debug/`)
-        /// into PHP_INI_SCAN_DIR and set `XDEBUG_SESSION=1` for the
+        /// into `PHP_INI_SCAN_DIR` and set `XDEBUG_SESSION=1` for the
         /// child. Installs xdebug on first use if not already present.
         #[arg(long)]
         xdebug: bool,
@@ -336,7 +336,7 @@ pub enum PhpCommand {
         #[arg(long)]
         flavor: Option<String>,
         /// Skip the entire baseline extension set; install only the bare
-        /// Debian-aligned interpreter (REFACTOR_DEBIAN_ALIGNED.md).
+        /// Debian-aligned interpreter (`REFACTOR_DEBIAN_ALIGNED.md`).
         #[arg(long, conflicts_with = "without")]
         bare: bool,
         /// Skip a specific baseline extension. Repeatable: `--without opcache
@@ -500,10 +500,10 @@ pub enum ComposerCommand {
         /// Skip dev autoload entries (`--no-dev`).
         #[arg(long = "no-dev")]
         no_dev: bool,
-        /// Emit the APCu loader bootstrap (`--apcu-autoloader`).
+        /// Emit the `APCu` loader bootstrap (`--apcu-autoloader`).
         #[arg(long = "apcu-autoloader")]
         apcu_autoloader: bool,
-        /// Explicit APCu prefix; implies `--apcu-autoloader`.
+        /// Explicit `APCu` prefix; implies `--apcu-autoloader`.
         #[arg(long = "apcu-autoloader-prefix", value_name = "PREFIX")]
         apcu_prefix: Option<String>,
         /// Override the `ComposerAutoloaderInit<X>` class suffix —

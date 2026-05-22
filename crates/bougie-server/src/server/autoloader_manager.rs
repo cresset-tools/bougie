@@ -178,14 +178,13 @@ impl AutoloaderManager {
                         ),
                     }
                 }
-                if any {
-                    if let Err(e) = loader.emit() {
+                if any
+                    && let Err(e) = loader.emit() {
                         eprintln!(
                             "bougie server: autoloader re-emit failed for {}: {e:#}",
                             project.display()
                         );
                     }
-                }
             }
         }
     }
@@ -218,14 +217,13 @@ impl AutoloaderManager {
                         ),
                     }
                 }
-                if any {
-                    if let Err(e) = loader.emit() {
+                if any
+                    && let Err(e) = loader.emit() {
                         eprintln!(
                             "bougie server: autoloader re-emit failed for {}: {e:#}",
                             project.display()
                         );
                     }
-                }
             }
         }
     }
@@ -257,14 +255,13 @@ impl AutoloaderManager {
         // Re-arm user_code_roots in case the lockfile change added a
         // new path-repo package or autoload directive.
         let req = bootstrap_request(project);
-        if let Ok(roots) = user_code_roots(&req) {
-            if let Err(e) = self.registry.arm_user_code_roots(project, &roots) {
+        if let Ok(roots) = user_code_roots(&req)
+            && let Err(e) = self.registry.arm_user_code_roots(project, &roots) {
                 eprintln!(
                     "bougie server: re-arming watcher for {} failed: {e:#}",
                     project.display()
                 );
             }
-        }
 
         let project_owned = project.to_path_buf();
         tokio::spawn(async move {
@@ -300,7 +297,7 @@ impl std::fmt::Debug for AutoloaderManager {
 
 /// Default `DumpRequest` for a server-driven bootstrap: optimize +
 /// classmap-authoritative, dev autoload included (this is a dev
-/// server), no APCu autoload (it's a runtime nicety, not relevant to
+/// server), no `APCu` autoload (it's a runtime nicety, not relevant to
 /// the in-memory model).
 fn bootstrap_request(project: &Path) -> DumpRequest<'_> {
     DumpRequest {
@@ -437,15 +434,13 @@ mod tests {
     ) {
         let deadline = std::time::Instant::now() + timeout;
         loop {
-            if manager.state_label(project).await.as_deref() == Some(target) {
+            if manager.state_label(project).await == Some(target) {
                 return;
             }
-            if std::time::Instant::now() >= deadline {
-                panic!(
-                    "timeout waiting for state {target}; last = {:?}",
-                    manager.state_label(project).await
-                );
-            }
+            assert!(std::time::Instant::now() < deadline, 
+                "timeout waiting for state {target}; last = {:?}",
+                manager.state_label(project).await
+            );
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     }
@@ -479,7 +474,7 @@ mod tests {
             registry,
         ));
 
-        assert_eq!(manager.state_label(&dir).await.as_deref(), Some("cold"));
+        assert_eq!(manager.state_label(&dir).await, Some("cold"));
 
         manager.ensure_bootstrap(&dir).await;
 

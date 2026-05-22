@@ -115,7 +115,7 @@ pub fn install_from_lock(
             let dist = p.dist.as_ref().unwrap();
             host_from_url(&dist.url)
                 .and_then(|host| auth.get(host))
-                .map(|creds| creds.header_value())
+                .map(super::super::metadata::AuthCredentials::header_value)
         })
         .collect();
     let dists: Vec<DistRequest<'_>> = install_set
@@ -212,8 +212,8 @@ fn preflight(composer_json_bytes: &[u8], lock: &Lock, no_dev: bool) -> Result<()
     let mut reasons: Vec<String> = Vec::new();
 
     // composer.json scripts → fallback, we don't run them.
-    if let Ok(Value::Object(obj)) = serde_json::from_slice::<Value>(composer_json_bytes) {
-        if obj
+    if let Ok(Value::Object(obj)) = serde_json::from_slice::<Value>(composer_json_bytes)
+        && obj
             .get("scripts")
             .and_then(Value::as_object)
             .is_some_and(|s| !s.is_empty())
@@ -224,7 +224,6 @@ fn preflight(composer_json_bytes: &[u8], lock: &Lock, no_dev: bool) -> Result<()
                     .into(),
             );
         }
-    }
 
     let packages: Vec<&LockPackage> = if no_dev {
         lock.packages.iter().collect()

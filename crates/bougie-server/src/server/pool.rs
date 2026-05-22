@@ -81,7 +81,7 @@ impl PoolKey {
 #[derive(Debug)]
 pub struct Pool {
     pub key: PoolKey,
-    /// Where the router dispatches FastCGI requests. Unix: a per-pool
+    /// Where the router dispatches `FastCGI` requests. Unix: a per-pool
     /// `php-fpm` Unix socket. Windows: a per-pool `php-cgi.exe -b`
     /// TCP loopback endpoint.
     transport: Transport,
@@ -94,7 +94,7 @@ pub struct Pool {
     /// inside an immutable `&Pool` (no need to lock the child Mutex on
     /// the hot reload path).
     pid: u32,
-    /// Millis since UNIX_EPOCH when this pool last served a request
+    /// Millis since `UNIX_EPOCH` when this pool last served a request
     /// (or was first marked dispatchable). The reaper compares this
     /// against `idle_pool_timeout` to decide what to terminate.
     last_served_at: AtomicU64,
@@ -644,7 +644,7 @@ fn evict_lru(map: &mut HashMap<PoolKey, Arc<Pool>>) {
 }
 
 /// Wait up to [`POOL_READY_TIMEOUT`] for `socket` to appear on disk
-/// (php-fpm creates it during startup). The follow-on FCGI_GET_VALUES
+/// (php-fpm creates it during startup). The follow-on `FCGI_GET_VALUES`
 /// probe then validates that the responder is actually accepting
 /// requests.
 #[cfg(unix)]

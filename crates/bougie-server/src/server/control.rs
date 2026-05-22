@@ -1,4 +1,4 @@
-//! Control socket: phase 6 of SERVER_PLAN.md. Lets `bougie server list`
+//! Control socket: phase 6 of `SERVER_PLAN.md`. Lets `bougie server list`
 //! query a running server for live pool state.
 //!
 //! Wire format is one JSON object per request and one JSON object per

@@ -183,7 +183,7 @@ fn empty_packages_map_parses() {
 
 #[test]
 fn malformed_json_errors_with_context() {
-    let body = br#"{not json"#;
+    let body = br"{not json";
     let err = PackageMetadata::parse(body).unwrap_err();
     let msg = format!("{err:#}");
     assert!(msg.contains("Packagist v2"), "{msg}");

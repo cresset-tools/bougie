@@ -5,7 +5,7 @@
 //! the classmap scanner needs the materialized vendor layout).
 //!
 //! Usage:
-//!   cargo run --release --example dump_bench -- <project-root> [iters]
+//!   cargo run --release --example `dump_bench` -- <project-root> [iters]
 //!
 //! Reports per-iteration wall time plus min / median / max. The first
 //! iteration is treated as a warm-up (its time is reported but
@@ -45,7 +45,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         "usage: dump_bench <project-root> [iters] [-o|--optimize]\n\
          project-root must contain composer.json, composer.lock, and a populated vendor/",
     )?);
-    let iters: usize = positional.next().map(String::as_str).unwrap_or("5").parse()?;
+    let iters: usize = positional.next().map_or("5", String::as_str).parse()?;
 
     if !project.join("composer.json").is_file() {
         return Err(format!("no composer.json at {}", project.display()).into());
@@ -79,18 +79,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let bougie_summary = run_bougie(&guard.0, iters, optimize)?;
 
     let composer = locate_composer();
-    let composer_summary = match composer {
-        Some(cmd) => {
-            println!();
-            Some(run_composer(&cmd, &guard.0, iters, optimize)?)
-        }
-        None => {
-            println!(
-                "\n(skipping composer comparison: set BOUGIE_COMPOSER=<path> to a composer\n\
-                 binary or .phar, or drop the pinned phar at .cache/composer-2.8.12.phar)"
-            );
-            None
-        }
+    let composer_summary = if let Some(cmd) = composer {
+        println!();
+        Some(run_composer(&cmd, &guard.0, iters, optimize)?)
+    } else {
+        println!(
+            "\n(skipping composer comparison: set BOUGIE_COMPOSER=<path> to a composer\n\
+             binary or .phar, or drop the pinned phar at .cache/composer-2.8.12.phar)"
+        );
+        None
     };
 
     if let Some(cs) = composer_summary {
@@ -130,7 +127,7 @@ fn run_bougie(
         dump_autoload(&req)?;
         let elapsed = start.elapsed();
         let tag = if i == 0 { " (warmup)" } else { "" };
-        println!("  iter {i:>2}: {:>10.3?}{tag}", elapsed);
+        println!("  iter {i:>2}: {elapsed:>10.3?}{tag}");
         samples.push(elapsed);
     }
     Ok(summarize(samples))
@@ -208,7 +205,7 @@ fn run_composer(
             return Err(format!("composer iter {i} exited with {status}").into());
         }
         let tag = if i == 0 { " (warmup)" } else { "" };
-        println!("  iter {i:>2}: {:>10.3?}{tag}", elapsed);
+        println!("  iter {i:>2}: {elapsed:>10.3?}{tag}");
         samples.push(elapsed);
     }
     Ok(summarize(samples))
@@ -228,9 +225,9 @@ fn summarize(mut samples: Vec<Duration>) -> Summary {
     let max = samples.last().copied().unwrap_or_default();
     println!();
     println!("  summary (excluding warmup):");
-    println!("    min:    {:>10.3?}", min);
-    println!("    median: {:>10.3?}", median);
-    println!("    max:    {:>10.3?}", max);
+    println!("    min:    {min:>10.3?}");
+    println!("    median: {median:>10.3?}");
+    println!("    max:    {max:>10.3?}");
     Summary { median }
 }
 

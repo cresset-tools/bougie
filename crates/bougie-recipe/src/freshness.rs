@@ -47,9 +47,9 @@ pub fn evaluate(
     if let Some(check) = &task.check {
         let status = run_check(check, project_root)?;
         if status {
-            return Ok(Verdict::Skip(format!("check ✓ — skipping")));
+            return Ok(Verdict::Skip("check ✓ — skipping".to_string()));
         }
-        return Ok(Verdict::Run(format!("check failed → running")));
+        return Ok(Verdict::Run("check failed → running".to_string()));
     }
 
     let Some(creates) = &task.creates else {
@@ -60,7 +60,7 @@ pub fn evaluate(
     let Some(our_mtime) = oldest else {
         return Ok(Verdict::Run(format!(
             "{} missing → running",
-            creates.first().map(String::as_str).unwrap_or("<creates>")
+            creates.first().map_or("<creates>", String::as_str)
         )));
     };
 
@@ -86,14 +86,13 @@ pub fn evaluate(
         if state.check_clean.get(dep_name).copied().unwrap_or(false) {
             continue;
         }
-        if let Some(Some(dep_mtime)) = state.task_mtime.get(dep_name) {
-            if *dep_mtime > our_mtime {
+        if let Some(Some(dep_mtime)) = state.task_mtime.get(dep_name)
+            && *dep_mtime > our_mtime {
                 return Ok(Verdict::Run(format!(
                     "task `{dep_name}` newer than {}",
                     display_creates(creates)
                 )));
             }
-        }
     }
 
     Ok(Verdict::Skip(format!(

@@ -90,7 +90,7 @@ pub struct Autoloader {
     tasks: Vec<TaskState>,
     exclude_default: ExcludePatterns,
     exclude_with_vendor: ExcludePatterns,
-    /// Sorted by class name (BTreeMap iteration order) → ready for
+    /// Sorted by class name (`BTreeMap` iteration order) → ready for
     /// `emit::classmap` after a `.into_iter()` map.
     merged: BTreeMap<String, String>,
     psr4: Vec<Entry>,
@@ -175,7 +175,7 @@ impl Autoloader {
         let tasks: Vec<TaskState> = set
             .tasks
             .into_iter()
-            .zip(per_task_scans.into_iter())
+            .zip(per_task_scans)
             .map(|(task, scan_out)| {
                 raw_warnings.extend(scan_out.warnings);
                 TaskState {
@@ -238,7 +238,7 @@ impl Autoloader {
     }
 
     /// Write every `vendor/composer/autoload_*.php` file plus the
-    /// runtime ClassLoader, InstalledVersions, LICENSE, and
+    /// runtime `ClassLoader`, `InstalledVersions`, LICENSE, and
     /// `installed.{json,php}`. Atomic per file (rename-based).
     pub fn emit(&self) -> Result<(), DumpError> {
         let composer_dir = self.project_root.join("vendor").join("composer");
@@ -339,9 +339,7 @@ impl Autoloader {
                 &self.exclude_default
             };
             let rel = canon
-                .strip_prefix(&self.tasks[i].task.install_abs)
-                .map(Path::to_path_buf)
-                .unwrap_or_else(|_| canon.clone());
+                .strip_prefix(&self.tasks[i].task.install_abs).map_or_else(|_| canon.clone(), Path::to_path_buf);
 
             let new_classes = scan::scan_one(&canon, &self.tasks[i].task.filter, exclude);
             let state = &mut self.tasks[i];
@@ -385,9 +383,7 @@ impl Autoloader {
                 continue;
             }
             let rel = canon
-                .strip_prefix(&state.task.install_abs)
-                .map(Path::to_path_buf)
-                .unwrap_or_else(|_| canon.clone());
+                .strip_prefix(&state.task.install_abs).map_or_else(|_| canon.clone(), Path::to_path_buf);
             if state.per_file.remove(&rel).is_some() {
                 any_state_change = true;
             }
@@ -446,7 +442,7 @@ impl Autoloader {
 
 /// Re-merge the per-task per-file class lists into one
 /// `class → path_expr` map. First-seen wins across tasks (and across
-/// files within a task; BTreeMap iteration is path-sorted, which
+/// files within a task; `BTreeMap` iteration is path-sorted, which
 /// matches the walker's sort).
 fn merge_classmap(tasks: &[TaskState]) -> BTreeMap<String, String> {
     let mut merged: BTreeMap<String, String> = BTreeMap::new();
@@ -468,8 +464,7 @@ fn merge_classmap(tasks: &[TaskState]) -> BTreeMap<String, String> {
 fn has_php_ext(p: &Path) -> bool {
     p.extension()
         .and_then(|e| e.to_str())
-        .map(|e| e.eq_ignore_ascii_case("php") || e.eq_ignore_ascii_case("inc"))
-        .unwrap_or(false)
+        .is_some_and(|e| e.eq_ignore_ascii_case("php") || e.eq_ignore_ascii_case("inc"))
 }
 
 /// Hash of the root manifest's autoload block — covers psr-4, psr-0,
@@ -523,7 +518,7 @@ fn autoload_config_hash(manifest: &RootManifest) -> String {
 }
 
 /// Directories the server's filesystem watcher needs to arm for live
-/// patches: every root autoload `scan_root` plus the scan_roots of
+/// patches: every root autoload `scan_root` plus the `scan_roots` of
 /// any `dist.type: "path"` package in `composer.lock`. Vendor proper
 /// (`zip` / `tar` dists) is intentionally excluded — those only
 /// change via `composer install`, which rewrites `composer.lock` and

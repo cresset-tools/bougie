@@ -101,7 +101,7 @@ where
 /// PHP's `krsort` semantics: sort by key (here the namespace prefix)
 /// in descending lex order. Composer applies this to the aggregated
 /// psr-4/psr-0 maps before emit so the more-specific namespaces hit
-/// the runtime ClassLoader first. Stable so per-package insertion
+/// the runtime `ClassLoader` first. Stable so per-package insertion
 /// order is preserved within a prefix bucket.
 fn krsort_entries(out: &mut Vec<Entry>) {
     out.sort_by(|a, b| b.prefix.cmp(&a.prefix));
@@ -169,7 +169,7 @@ pub(crate) struct Task {
     pub install_abs: PathBuf,
     pub scan_root: PathBuf,
     pub filter: NamespaceFilter,
-    /// True only for `-o`-mode PSR-* tasks whose scan_root spans
+    /// True only for `-o`-mode PSR-* tasks whose `scan_root` spans
     /// the project's vendor/ tree. Mirrors Composer's `dump()`:
     /// `if (str_contains($vendorPath, $dir.'/'))` adds vendor to
     /// the exclude regex for that specific scan, otherwise the
@@ -194,7 +194,7 @@ pub(crate) struct TaskSet {
 ///
 /// Returns the task list plus two precompiled exclude sets: the
 /// default and a "default + project's vendor/" variant the optimize-
-/// mode PSR-* scans use when their scan_root spans vendor.
+/// mode PSR-* scans use when their `scan_root` spans vendor.
 pub(crate) fn build_classmap_tasks(
     root: &RootManifest,
     lock: &LockFile,
@@ -417,7 +417,7 @@ pub(crate) fn installed_versions_row() -> (String, String) {
 }
 
 /// Composer's `AutoloadGenerator::getFileIdentifier`:
-/// `md5(package_name + ':' + path)`. Uses RustCrypto's `md-5` — the
+/// `md5(package_name + ':' + path)`. Uses `RustCrypto`'s `md-5` — the
 /// same MD5 implementation `bougie-composer` already depends on for
 /// `composer.lock`'s content-hash, so we don't pull a second MD5
 /// crate into the tree.

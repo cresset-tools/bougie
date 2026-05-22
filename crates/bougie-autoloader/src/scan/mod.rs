@@ -56,7 +56,7 @@ type FileResult = (Option<(PathBuf, Vec<String>)>, Vec<ScanWarning>);
 /// `install_abs` prefix, so relative-path sort is identical to
 /// absolute-path sort. That equivalence is load-bearing — it
 /// preserves first-seen-wins dedup behaviour now that the merge
-/// walks per-file BTreeMaps instead of a flat per-task `Vec`.
+/// walks per-file `BTreeMaps` instead of a flat per-task `Vec`.
 ///
 /// Files whose filtered class list is empty are omitted: bootstrap
 /// would not have recorded them, and `apply_changed_path` removes a

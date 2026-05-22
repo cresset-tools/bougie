@@ -69,7 +69,7 @@ impl Render for ListResult {
     fn render_text(&self, w: &mut dyn Write) -> io::Result<()> {
         writeln!(w, "recipe: {}", self.recipe)?;
         for t in &self.tasks {
-            writeln!(w, "  {}", t)?;
+            writeln!(w, "  {t}")?;
         }
         Ok(())
     }
@@ -107,13 +107,13 @@ pub fn run(format: OutputFormat, opts: MakeOptions) -> Result<ExitCode> {
     if opts.print {
         let mut buf = String::new();
         for (name, def) in &recipe.tasks {
-            buf.push_str(&format!("[task.{}]\n", name));
+            buf.push_str(&format!("[task.{name}]\n"));
             if !def.deps.is_empty() {
                 buf.push_str(&format!(
                     "deps = [{}]\n",
                     def.deps
                         .iter()
-                        .map(|d| format!("{:?}", d))
+                        .map(|d| format!("{d:?}"))
                         .collect::<Vec<_>>()
                         .join(", ")
                 ));
@@ -124,12 +124,12 @@ pub fn run(format: OutputFormat, opts: MakeOptions) -> Result<ExitCode> {
                 } else {
                     buf.push_str(&format!(
                         "creates = [{}]\n",
-                        c.iter().map(|p| format!("{:?}", p)).collect::<Vec<_>>().join(", ")
+                        c.iter().map(|p| format!("{p:?}")).collect::<Vec<_>>().join(", ")
                     ));
                 }
             }
             if let Some(c) = &def.check {
-                buf.push_str(&format!("check = {:?}\n", c));
+                buf.push_str(&format!("check = {c:?}\n"));
             }
             if let Some(r) = &def.run {
                 buf.push_str(&format!("run = \"\"\"\n{r}\n\"\"\"\n"));

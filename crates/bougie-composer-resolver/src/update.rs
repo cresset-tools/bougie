@@ -178,8 +178,8 @@ pub struct ResolveProvider {
     /// and synthesizing a candidate inside the consumer's range at
     /// `choose_version` time (when the consumer's range is known).
     virtual_wildcards: RefCell<HashMap<String, Vec<WildcardProvider>>>,
-    /// Reverse-lookup: for each (virtual_name, selected_version),
-    /// every (provider_name, provider_version) pair that registered
+    /// Reverse-lookup: for each (`virtual_name`, `selected_version`),
+    /// every (`provider_name`, `provider_version`) pair that registered
     /// it. Used by `get_dependencies` to pin the providing real
     /// package(s).
     ///
@@ -603,11 +603,10 @@ impl ResolveProvider {
                             repo.url,
                         ))
                     })?;
-                if let Some(md) = dev_md {
-                    if let Some(extra) = md.packages.get(name) {
+                if let Some(md) = dev_md
+                    && let Some(extra) = md.packages.get(name) {
                         versions.extend(extra.iter().cloned());
                     }
-                }
             }
         }
 
@@ -1197,11 +1196,10 @@ async fn load_real_candidates_isolated(
                             repo.url,
                         ))
                     })?;
-            if let Some(md) = dev_md {
-                if let Some(extra) = md.packages.get(name) {
+            if let Some(md) = dev_md
+                && let Some(extra) = md.packages.get(name) {
                     versions.extend(extra.iter().cloned());
                 }
-            }
         }
     }
     // Pre-parse provide/replace clauses while we're already off the
@@ -1608,7 +1606,7 @@ fn read_repositories(
 
 /// Read auth credentials from composer.json's `config.http-basic`
 /// and `config.bearer` maps. Composer's auth.json (project-level)
-/// is merged in by the orchestrators with project_root context —
+/// is merged in by the orchestrators with `project_root` context —
 /// this function only handles the in-composer.json side.
 ///
 /// Returns a map keyed by hostname. `http-basic` and `bearer` are
@@ -1983,8 +1981,7 @@ impl DependencyProvider for ResolveProvider {
                     // `choose_version`. Surface as a hard error so a
                     // future refactor doesn't silently mask the bug.
                     return Err(ProviderError(format!(
-                        "internal: get_dependencies({name}@{}) but version not in cache",
-                        version,
+                        "internal: get_dependencies({name}@{version}) but version not in cache",
                     )));
                 };
                 let mut out: Vec<(String, ComposerRange)> = Vec::new();

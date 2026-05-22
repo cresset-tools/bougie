@@ -1,7 +1,7 @@
 //! Unit tests for the parallel dist downloader.
 //!
 //! Each test spins up a `wiremock` server (already in the workspace
-//! lockfile, used by phase7_sync) on a per-test tokio runtime. The
+//! lockfile, used by `phase7_sync`) on a per-test tokio runtime. The
 //! production code is blocking so the test driver constructs the
 //! runtime, sets up the mock, then calls into the blocking
 //! `fetch_and_extract_dists` from the main thread.

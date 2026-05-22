@@ -145,19 +145,16 @@ fn extract_from_cache(cache_root: &Path, dist: &DistRequest<'_>) -> Result<()> {
     match dist.archive {
         ArchiveKind::Zip => {
             let detected: String;
-            let strip = match dist.strip_prefix {
-                Some(s) => s,
-                None => {
-                    detected = bougie_fetch::detect_zip_top_level(&cache_path)
-                        .wrap_err_with(|| {
-                            format!(
-                                "detecting top-level dir in dist for {} ({})",
-                                dist.package_name,
-                                cache_path.display(),
-                            )
-                        })?;
-                    detected.as_str()
-                }
+            let strip = if let Some(s) = dist.strip_prefix { s } else {
+                detected = bougie_fetch::detect_zip_top_level(&cache_path)
+                    .wrap_err_with(|| {
+                        format!(
+                            "detecting top-level dir in dist for {} ({})",
+                            dist.package_name,
+                            cache_path.display(),
+                        )
+                    })?;
+                detected.as_str()
             };
             bougie_fetch::extract_zip(&cache_path, dist.vendor_dest, strip)
                 .wrap_err_with(|| {

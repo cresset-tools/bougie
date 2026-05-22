@@ -391,7 +391,7 @@ pub struct BaselineReport {
 /// changes to [`conf_d_prefix_for`] or to [`BASELINE_EXTENSIONS`]: an
 /// old `20-pdo_mysql.ini` from a previous bougie release won't linger
 /// alongside the new `35-pdo_mysql.ini`, which would otherwise
-/// trigger `undefined symbol: pdo_dbh_ce` (pdo_mysql loaded before
+/// trigger `undefined symbol: pdo_dbh_ce` (`pdo_mysql` loaded before
 /// pdo) or `Module "pdo_mysql" is already loaded` (both fragments
 /// loaded in sequence).
 ///
@@ -1085,7 +1085,7 @@ mod tests {
                 name: (*name).to_string(),
                 version: (*ver).to_string(),
                 hash: (*hash).to_string(),
-                sha256: format!("{:0>64}", i),
+                sha256: format!("{i:0>64}"),
                 url: format!("https://example.invalid/{name}.tar.zst"),
                 size: 0,
             })

@@ -1,6 +1,6 @@
 //! The baseline extension set per CLI.md §3.5.1.1.
 //!
-//! After REFACTOR_DEBIAN_ALIGNED.md (php-build-standalone), the bougie
+//! After `REFACTOR_DEBIAN_ALIGNED.md` (php-build-standalone), the bougie
 //! baseline starts from Debian's `apt install php8.2-cli` transitive
 //! closure — the `.so` extensions that `php8.2-common`,
 //! `php8.2-opcache`, and `php8.2-readline` add on top of the bare
@@ -42,7 +42,7 @@
 //!   invocation. The numeric prefix on `20-mysqlnd.ini` keeps it
 //!   loading before `35-pdo_mysql.ini` and `40-mysqli.ini`.
 //!
-//! - **SQLite** (`pdo_sqlite`, `sqlite3`). Debian ships these in a
+//! - **`SQLite`** (`pdo_sqlite`, `sqlite3`). Debian ships these in a
 //!   separate `php8.2-sqlite3` package. They're baseline because
 //!   Laravel's default `DB_CONNECTION=sqlite` and the typical Composer-
 //!   project test suite (phpunit fixtures, pest in-memory DBs) expect
@@ -74,7 +74,7 @@ use std::collections::BTreeSet;
 ///   implementation; the php-build-standalone Darwin build emits no
 ///   gettext.so, so the index has no entry to fetch.
 ///
-/// Per-PHP-minor notes (currently surfaced as a baseline_failed entry,
+/// Per-PHP-minor notes (currently surfaced as a `baseline_failed` entry,
 /// not silently skipped):
 /// - `opcache`: ships as a .so on 8.1–8.4 only. PHP 8.5+ builds
 ///   opcache statically into bin/php — `extension_loaded("Zend
@@ -177,7 +177,7 @@ pub const PREINSTALLED_EXTENSIONS: &[&str] = &["xdebug"];
 /// Derived from PHP's default `get_loaded_extensions()` set on a
 /// stock build plus the configure-time-static deps our
 /// `php-build-standalone` pipeline links in. After
-/// REFACTOR_DEBIAN_ALIGNED.md (Phase A), this matches Debian's
+/// `REFACTOR_DEBIAN_ALIGNED.md` (Phase A), this matches Debian's
 /// `php8.2-cli` static set: openssl, sodium, session, filter, pcntl
 /// joined the always-built core (Core, date, hash, json, libxml,
 /// pcre, random, Reflection, SPL, standard, zlib).

@@ -49,7 +49,7 @@ pub fn default_client() -> Result<reqwest::blocking::Client> {
     reqwest::blocking::Client::builder()
         .user_agent(USER_AGENT)
         .connect_timeout(Duration::from_secs(10))
-        .timeout(Duration::from_secs(300))
+        .timeout(Duration::from_mins(5))
         .build()
         .map_err(|e| {
             BougieError::Network {
@@ -70,7 +70,7 @@ pub fn default_async_client() -> Result<reqwest::Client> {
     reqwest::Client::builder()
         .user_agent(USER_AGENT)
         .connect_timeout(Duration::from_secs(10))
-        .timeout(Duration::from_secs(300))
+        .timeout(Duration::from_mins(5))
         .build()
         .map_err(|e| {
             BougieError::Network {

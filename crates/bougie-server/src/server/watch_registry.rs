@@ -76,6 +76,12 @@ pub struct WatchRegistry {
     pub(crate) path_map: RwLock<PathMap>,
 }
 
+impl Default for WatchRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl WatchRegistry {
     pub fn new() -> Self {
         Self {

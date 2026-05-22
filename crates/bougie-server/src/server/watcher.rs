@@ -116,7 +116,7 @@ pub fn start(
                         continue;
                     }
                     registry.with_path_map_mut(|map| {
-                        map.push_confd(sub.clone(), project.clone())
+                        map.push_confd(sub.clone(), project.clone());
                     });
                     watched.push(sub);
                 }
@@ -154,7 +154,7 @@ pub fn start(
 }
 
 /// Per-(project, kind) debounce timers + user-code batched path sets.
-/// `pending_user_code` maps a project to (paths_changed, paths_deleted)
+/// `pending_user_code` maps a project to (`paths_changed`, `paths_deleted`)
 /// + the next-fire instant; the merge is path-set, not timer-merge,
 /// because devs may touch many files inside one window.
 async fn run_dispatch(
@@ -305,15 +305,14 @@ fn classify(map: &PathMap, path: &Path, deleted: bool) -> Vec<PendingEvent> {
         .filter(|u| path.starts_with(&u.root))
         .collect();
     uc_candidates.sort_by_key(|u| std::cmp::Reverse(u.root.as_os_str().len()));
-    if let Some(best) = uc_candidates.first() {
-        if has_php_or_inc_extension(path) {
+    if let Some(best) = uc_candidates.first()
+        && has_php_or_inc_extension(path) {
             out.push(PendingEvent::UserCodeChange {
                 project: best.project.clone(),
                 path: path.to_path_buf(),
                 deleted,
             });
         }
-    }
 
     // conf.d
     let mut confd_candidates: Vec<&(PathBuf, PathBuf)> = map
@@ -339,8 +338,8 @@ fn classify(map: &PathMap, path: &Path, deleted: bool) -> Vec<PendingEvent> {
         .filter(|prefix| path.starts_with(prefix))
         .collect();
     vi_candidates.sort_by_key(|p| std::cmp::Reverse(p.as_os_str().len()));
-    if let Some(project) = vi_candidates.first() {
-        if let Some(basename) = path.file_name().and_then(|s| s.to_str()) {
+    if let Some(project) = vi_candidates.first()
+        && let Some(basename) = path.file_name().and_then(|s| s.to_str()) {
             match basename {
                 "composer.json" | "bougie.toml" => out.push(PendingEvent::Touch {
                     project: (*project).clone(),
@@ -353,7 +352,6 @@ fn classify(map: &PathMap, path: &Path, deleted: bool) -> Vec<PendingEvent> {
                 _ => {}
             }
         }
-    }
 
     out
 }
@@ -361,8 +359,7 @@ fn classify(map: &PathMap, path: &Path, deleted: bool) -> Vec<PendingEvent> {
 fn has_php_or_inc_extension(p: &Path) -> bool {
     p.extension()
         .and_then(|e| e.to_str())
-        .map(|e| e.eq_ignore_ascii_case("php") || e.eq_ignore_ascii_case("inc"))
-        .unwrap_or(false)
+        .is_some_and(|e| e.eq_ignore_ascii_case("php") || e.eq_ignore_ascii_case("inc"))
 }
 
 async fn apply_touch(

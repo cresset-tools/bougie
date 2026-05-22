@@ -128,8 +128,7 @@ pub async fn rewrite(path: &Path, keep: impl Fn(&Tenant) -> bool) -> Result<usiz
     // the same filesystem.
     let nanos = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
+        .map_or(0, |d| d.as_nanos());
     let tmp_name = format!(
         "{}.tmp.{}.{nanos}",
         file_name.to_string_lossy(),
@@ -170,8 +169,7 @@ fn now_rfc3339() -> String {
     // our audit/diagnostic use. Format: "1970-01-01T00:00:00Z" style.
     let secs = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+        .map_or(0, |d| d.as_secs());
     let (year, month, day, hour, minute, second) = unix_to_ymdhms(secs);
     format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}-{second:02}Z")
 }

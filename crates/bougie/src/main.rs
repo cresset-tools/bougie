@@ -57,7 +57,7 @@ fn init_tracing() {
 
 /// Render an error to stderr in uv's `error: <message>` style.
 ///
-/// Multi-line error messages (from BougieError variants that include
+/// Multi-line error messages (from `BougieError` variants that include
 /// hint blocks) keep their structure; subsequent lines are indented to
 /// align under the first line. Cause chain entries follow on
 /// `  caused by:` lines, mirroring uv.

@@ -7,7 +7,7 @@
 //! uses to arm its filesystem watcher.
 //!
 //! The patch flow's correctness contract is "bootstrap-after-edit ==
-//! bootstrap + apply_changed_path(edit) re-emitted". Every mutation
+//! bootstrap + `apply_changed_path(edit)` re-emitted". Every mutation
 //! test checks that equivalence against a fresh-bootstrap baseline so
 //! drift cannot hide behind the partial-update path.
 
@@ -52,7 +52,7 @@ fn bootstrap_is_deterministic_against_fresh_state() {
     assert_classmap_matches(project_a.path(), project_b.path());
 }
 
-/// Adding a new PHP file under a watched scan_root with a fresh class
+/// Adding a new PHP file under a watched `scan_root` with a fresh class
 /// must produce the same classmap as a fresh bootstrap that sees the
 /// file from the start.
 #[test]
@@ -175,7 +175,7 @@ fn apply_deleted_path_is_idempotent_for_unknown_path() {
 }
 
 /// `user_code_roots` returns root-autoload directories plus path-repo
-/// package scan_roots, canonicalized. `psr4-root-spans-vendor` is the
+/// package `scan_roots`, canonicalized. `psr4-root-spans-vendor` is the
 /// canonical fixture: root maps `App\\` → `.` and ships one path-repo
 /// dep (`acme/sneak`) with no autoload — covers both code paths.
 #[test]
@@ -215,13 +215,11 @@ fn assert_classmap_matches(a: &Path, b: &Path) {
         let pb = b.join(rel);
         let ba = std::fs::read(&pa).unwrap_or_else(|_| panic!("read {pa:?}"));
         let bb = std::fs::read(&pb).unwrap_or_else(|_| panic!("read {pb:?}"));
-        if ba != bb {
-            panic!(
-                "{rel} differs between live-patched and fresh-bootstrap state\n--- live ---\n{}\n--- baseline ---\n{}",
-                String::from_utf8_lossy(&ba),
-                String::from_utf8_lossy(&bb),
-            );
-        }
+        assert!(ba == bb, 
+            "{rel} differs between live-patched and fresh-bootstrap state\n--- live ---\n{}\n--- baseline ---\n{}",
+            String::from_utf8_lossy(&ba),
+            String::from_utf8_lossy(&bb),
+        );
     }
 }
 

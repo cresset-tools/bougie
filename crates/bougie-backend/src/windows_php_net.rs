@@ -441,9 +441,9 @@ fn join_keys(r: &Releases) -> String {
 }
 
 /// Fetch (or revalidate) releases.json. Mirrors `index::fetch::fetch_root`'s
-/// ETag dance with the body left as raw JSON since there's no signature
+/// `ETag` dance with the body left as raw JSON since there's no signature
 /// to verify — windows.php.net doesn't publish one, and the trust story
-/// here is `TLS + sha256-from-releases.json` (see WINDOWS_PLAN.md §Non-goals).
+/// here is `TLS + sha256-from-releases.json` (see `WINDOWS_PLAN.md` §Non-goals).
 fn fetch_releases(client: &reqwest::blocking::Client, cache_root: &Path) -> Result<Releases> {
     fs::create_dir_all(cache_root)
         .wrap_err_with(|| format!("creating {}", cache_root.display()))?;
@@ -530,13 +530,13 @@ struct WindowsPeclVersion {
 /// `true` when this extension's store dir must be on the PATH at run
 /// time so the Windows DLL loader can find its dependent DLLs. The
 /// imagick distribution is the canonical case — the ZIP bundles
-/// `CORE_RL_*.dll` (MagickWand, MagickCore, …) and `IM_MOD_RL_*.dll`
+/// `CORE_RL_*.dll` (`MagickWand`, `MagickCore`, …) and `IM_MOD_RL_*.dll`
 /// (codec modules) alongside `php_imagick.dll`. Pointing PATH at the
-/// store dir is enough — ImageMagick's runtime conventions find both
+/// store dir is enough — `ImageMagick`'s runtime conventions find both
 /// the link-time deps and the codec modules in that same directory,
 /// so no IM-specific env vars (`MAGICK_CODER_MODULE_PATH`,
 /// `MAGICK_CONFIGURE_PATH`) are needed. Verified empirically against
-/// imagick 3.8.1 / ImageMagick 7.1.1-46.
+/// imagick 3.8.1 / `ImageMagick` 7.1.1-46.
 fn pecl_needs_store_on_path(name: &str) -> bool {
     matches!(name, "imagick")
 }
@@ -863,7 +863,7 @@ mod tests {
 
     /// Snapshot of the real releases.json shape (trimmed to one minor)
     /// — guards against an upstream schema change that'd silently turn
-    /// resolve_php into a 404.
+    /// `resolve_php` into a 404.
     #[test]
     fn parses_minor_entry_and_extracts_zip() {
         let json = r#"{
@@ -1056,7 +1056,7 @@ mod tests {
     /// Trait surface: `Backend::resolve_extension` must wrap the
     /// inner `resolve_pecl` result into an [`ExtRecipe`] with an empty
     /// closure (windows.php.net PECL deps ride inside the ZIP) and the
-    /// correct artifact_rel (`php_<name>.dll` at the zip root).
+    /// correct `artifact_rel` (`php_<name>.dll` at the zip root).
     #[test]
     fn resolve_extension_for_imagick_produces_recipe_with_empty_closure_and_path_extras() {
         use super::super::Backend as _;

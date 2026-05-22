@@ -1,4 +1,4 @@
-//! Windows smoke test — phase 6 of WINDOWS_PLAN.md.
+//! Windows smoke test — phase 6 of `WINDOWS_PLAN.md`.
 //!
 //! Hits the real `windows.php.net` to verify the end-to-end flow:
 //! `bougie init` → `bougie sync` → `bougie ext add xdebug` →

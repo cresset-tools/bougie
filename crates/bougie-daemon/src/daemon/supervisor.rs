@@ -25,7 +25,7 @@ use tokio::sync::Mutex;
 /// significantly more because the JVM has to JIT-compile + bootstrap
 /// the cluster state. `health_timeout_for` overrides this per
 /// service for the slow ones.
-const HEALTH_TIMEOUT_DEFAULT: Duration = Duration::from_secs(60);
+const HEALTH_TIMEOUT_DEFAULT: Duration = Duration::from_mins(1);
 const HEALTH_POLL: Duration = Duration::from_millis(250);
 
 /// Auto-restart on failure. Exponential backoff, capped, with a
@@ -33,10 +33,10 @@ const HEALTH_POLL: Duration = Duration::from_millis(250);
 /// passes then dies 2s later doesn't masquerade as a first failure
 /// each cycle. See SERVICES.md §5.1.
 const BASE_BACKOFF: Duration = Duration::from_secs(1);
-const MAX_BACKOFF: Duration = Duration::from_secs(300);
+const MAX_BACKOFF: Duration = Duration::from_mins(5);
 /// If the previous successful Running window exceeded this, treat
 /// the next failure as "first failure" again (`failure_count = 1`).
-const FAILURE_RESET_THRESHOLD: Duration = Duration::from_secs(60);
+const FAILURE_RESET_THRESHOLD: Duration = Duration::from_mins(1);
 /// After this many consecutive failures, stop respawning. The
 /// service is conclusively broken; the operator can `bougie
 /// services up <name>` to retry manually.
@@ -71,7 +71,7 @@ const BABYSIT_GRACE_SECS: u64 = 7;
 const BABYSIT_READY_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// Fd number on which the babysit expects its end of the control
-/// socketpair after `dup2` in pre_exec.
+/// socketpair after `dup2` in `pre_exec`.
 const BABYSIT_CONTROL_FD: i32 = 3;
 
 /// Lifecycle states. The same shape as project-supervisor's
@@ -160,7 +160,7 @@ pub struct ServiceStatus {
     pub failure_count: u32,
     /// Milliseconds until the supervisor will respawn this service.
     /// `Some` only while state == Failed and a respawn is scheduled
-    /// (i.e. failure_count <= MAX_RESTART_ATTEMPTS).
+    /// (i.e. `failure_count` <= `MAX_RESTART_ATTEMPTS`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_restart_ms: Option<u64>,
 }
@@ -220,7 +220,7 @@ impl Supervisor {
     }
 
     /// Spawn a service if it isn't already running. Walks
-    /// Stopped → Starting → HealthChecking → Running. Returns `true`
+    /// Stopped → Starting → `HealthChecking` → Running. Returns `true`
     /// if this call brought the service up; `false` if it was already
     /// running.
     pub async fn start(&mut self, name: &str) -> Result<bool> {
@@ -599,7 +599,7 @@ fn compute_backoff(failure_count: u32) -> Duration {
 
 // -------------------- helpers --------------------
 
-/// Per-service current_dir override. Returns `None` to inherit
+/// Per-service `current_dir` override. Returns `None` to inherit
 /// bougied's CWD. Today only opensearch uses this — its bundled
 /// `config/jvm.options` writes the GC log to a relative `logs/`
 /// path that the JVM resolves *before* opensearch.yml's `path.logs`
@@ -904,19 +904,16 @@ fn reap_orphan_group(service: &str, pgid: i32) {
     // `kill(pgid, 0)` — existence check. `Errno::SRCH` means no
     // members left, which is the normal path (babysit cleaned up
     // before exiting).
-    match rustix::process::test_kill_process_group(pgrp) {
-        Ok(()) => {
-            tracing::warn!(
-                service,
-                pgid,
-                "babysit exited with live process group; reaping"
-            );
-            let _ = rustix::process::kill_process_group(pgrp, rustix::process::Signal::TERM);
-            std::thread::sleep(Duration::from_millis(250));
-            let _ = rustix::process::kill_process_group(pgrp, rustix::process::Signal::KILL);
-        }
-        Err(_) => { /* group already empty — normal path */ }
-    }
+    if let Ok(()) = rustix::process::test_kill_process_group(pgrp) {
+        tracing::warn!(
+            service,
+            pgid,
+            "babysit exited with live process group; reaping"
+        );
+        let _ = rustix::process::kill_process_group(pgrp, rustix::process::Signal::TERM);
+        std::thread::sleep(Duration::from_millis(250));
+        let _ = rustix::process::kill_process_group(pgrp, rustix::process::Signal::KILL);
+    } else { /* group already empty — normal path */ }
 }
 
 async fn stop_child(child: &mut Child, pid: Option<u32>) {
@@ -927,12 +924,9 @@ async fn stop_child(child: &mut Child, pid: Option<u32>) {
         }
     }
     // Wait up to the grace window. If still running, SIGKILL.
-    match tokio::time::timeout(STOP_GRACE, child.wait()).await {
-        Ok(Ok(_)) => {}
-        _ => {
-            let _ = child.start_kill();
-            let _ = child.wait().await;
-        }
+    if let Ok(Ok(_)) = tokio::time::timeout(STOP_GRACE, child.wait()).await {} else {
+        let _ = child.start_kill();
+        let _ = child.wait().await;
     }
 }
 
