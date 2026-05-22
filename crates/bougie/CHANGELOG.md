@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1](https://github.com/cresset-tools/bougie/compare/bougie-v0.5.0...bougie-v0.5.1) - 2026-05-22
+
+### Fixed
+
+- *(release)* re-pin `version = "..."` on every intra-workspace path
+  dependency so release-plz's `cargo package` step can verify the
+  manifest. Path-only deps were dropped in #143 on the premise that
+  `publish = false` made the version pin inert, but `cargo package`'s
+  manifest verify still rejects them, which broke every subsequent
+  release-PR run ([#148](https://github.com/cresset-tools/bougie/pull/148)).
+- *(release)* opt the newer workspace-split crates
+  (`bougie-autoloader`, `bougie-babysit`, `bougie-composer-resolver`,
+  `bougie-php-json`, `bougie-semver`) out of independent releases. They
+  were missing `release = false` in `release-plz.toml`, which caused
+  release-plz to mint per-crate `bougie-*-v0.5.0` tags alongside the
+  main `bougie-v0.5.0` tag.
+
 ## [0.5.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.4.0...bougie-v0.5.0) - 2026-05-22
 
 ### Added

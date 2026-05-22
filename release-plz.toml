@@ -31,9 +31,17 @@ git_release_body = """
 # at false and `should_update_version()` always returns false — no PR is
 # ever opened. `git_only = true` switches to the git-tag-driven flow,
 # which is the right mode for git-release-only projects.
+#
+# `git_tag_name` pins the tag pattern to `bougie-v<x.y.z>` regardless of
+# how many packages release-plz currently considers — when every other
+# crate is marked `release = false` (the default for everything except
+# `bougie` itself), release-plz collapses into single-package mode and
+# would otherwise default to the bare `v<x.y.z>` pattern that collides
+# with the legacy `v0.4.0`-era tags.
 [[package]]
 name = "bougie"
 git_only = true
+git_tag_name = "bougie-v{{ version }}"
 
 # Vendored helper crates — not released independently.
 [[package]]
@@ -48,6 +56,14 @@ release = false
 # Only the `bougie` bin gets tagged; the leaf crates ride along inside
 # the GitHub release artifacts.
 [[package]]
+name = "bougie-autoloader"
+release = false
+
+[[package]]
+name = "bougie-babysit"
+release = false
+
+[[package]]
 name = "bougie-backend"
 release = false
 
@@ -57,6 +73,10 @@ release = false
 
 [[package]]
 name = "bougie-composer"
+release = false
+
+[[package]]
+name = "bougie-composer-resolver"
 release = false
 
 [[package]]
@@ -96,6 +116,10 @@ name = "bougie-paths"
 release = false
 
 [[package]]
+name = "bougie-php-json"
+release = false
+
+[[package]]
 name = "bougie-platform"
 release = false
 
@@ -105,6 +129,10 @@ release = false
 
 [[package]]
 name = "bougie-resolver"
+release = false
+
+[[package]]
+name = "bougie-semver"
 release = false
 
 [[package]]
