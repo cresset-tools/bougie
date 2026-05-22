@@ -64,9 +64,10 @@
 use std::cell::{Ref, RefCell};
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use bougie_composer::lockfile::LockPackage;
+use bougie_composer::metadata::PackageMetadata;
 use bougie_paths::Paths;
 use bougie_semver::constraint::Constraint;
 use bougie_semver::stability::Stability;
@@ -191,6 +192,24 @@ pub struct ResolveProvider {
     /// telling us which package's hash to use); this cache makes
     /// that load happen at most once per resolve per repo.
     v1_provider_tables: RefCell<HashMap<String, HashMap<String, String>>>,
+    /// In-memory metadata cache shared across multiple solves in the
+    /// same process. Keyed by `(repo.url, package_name, variant)` —
+    /// the same triple that determines a `/p2/.../<name>.json` URL.
+    /// Pre-fetch workers check this *before* falling back to the
+    /// disk cache + conditional GET path; on a hit the fetch is O(1)
+    /// (no network, no disk read, no JSON parse).
+    ///
+    /// The whole point is the lockfile pipeline: `resolve_for_lockfile`
+    /// builds two providers (full + prod-only) that share one memo
+    /// via [`Self::shared_metadata_memo`] /
+    /// [`Self::with_metadata_memo`]. The second provider's
+    /// `pre_fetch_closure` walks the prod-only require closure
+    /// *correctly* (so its partition matches main's pre-PR semantics)
+    /// but every fetch resolves against the memo populated by the
+    /// first provider — eliminating the ~580-RTT second-pass cost
+    /// that earlier perf attempts (#141 et al.) tried to skip by
+    /// universe-restriction, at the cost of partition drift.
+    metadata_memo: MetadataMemo,
     /// Spinner ticked on every `versions_for` call so the pubgrub
     /// `resolve` phase has visible progress. Defaults to hidden;
     /// orchestrators flip it on with `begin_solve_progress` around
@@ -198,6 +217,23 @@ pub struct ResolveProvider {
     /// Without this the solver phase is silent — for projects with
     /// hundreds of dependencies that silence reads as a hang.
     solve_progress: RefCell<SolveProgress>,
+}
+
+/// Process-local in-memory cache of fetched `/p2/.../<name>.json`
+/// responses, keyed by `(repo.url, package_name, variant)`. Shared
+/// across multiple [`ResolveProvider`]s within a single
+/// `resolve_for_lockfile` invocation so the prod-only second solve
+/// can rerun `pre_fetch_closure` (for correct dev-extraction
+/// semantics) without paying the network + disk + parse cost a
+/// second time. `Option<_>` so 404s memoize too. Values are wrapped
+/// in `Arc` because `PackageMetadata` carries a `BTreeMap<String,
+/// Vec<LockPackage>>` — for a Magento-sized resolve that's hundreds
+/// of `LockPackage`s with their own `BTreeMap`s + `Value` trees per
+/// entry, and a deep clone per memo hit would eat any savings.
+type MetadataMemo = Arc<Mutex<HashMap<(String, String, Variant), Option<Arc<PackageMetadata>>>>>;
+
+fn empty_metadata_memo() -> MetadataMemo {
+    Arc::new(Mutex::new(HashMap::new()))
 }
 
 /// One entry in the virtual provider index — "real package
@@ -306,25 +342,35 @@ impl ResolveProvider {
             virtual_wildcards: RefCell::new(HashMap::new()),
             virtual_selections: RefCell::new(HashMap::new()),
             v1_provider_tables: RefCell::new(HashMap::new()),
+            metadata_memo: empty_metadata_memo(),
             solve_progress: RefCell::new(SolveProgress::hidden()),
         })
     }
 
-    /// Clone the full provider's populated state (cache,
-    /// merged_cache, virtual indices, ...) and swap `root_deps` to
-    /// the prod-only set read from `composer_json` (`no_dev: true`).
-    /// Used by `resolve_for_lockfile` to run pubgrub a second time
-    /// against the exact universe of candidates the first solve had,
-    /// without re-walking Packagist's closure.
-    ///
-    /// Stability flags carry over from the full solve — they
-    /// determine which versions made it into the cache in the first
-    /// place, so reusing them keeps the candidate pool identical
-    /// even when `require-dev` originally pinned a per-package
-    /// `@dev` flag. `solve_progress` resets to hidden; the caller
-    /// can re-arm it around the second resolve if it wants a
-    /// spinner.
-    pub fn clone_with_no_dev_root(&self, composer_json: &Value) -> Result<Self, BuildError> {
+    /// Hand the caller a clone of the `Arc` backing this provider's
+    /// metadata memo, so a follow-on solve in the same process can
+    /// share it via [`Self::with_metadata_memo`]. Cheap — just a
+    /// refcount bump. See [`MetadataMemo`] for what it caches and why.
+    pub fn shared_metadata_memo(&self) -> MetadataMemo {
+        Arc::clone(&self.metadata_memo)
+    }
+
+    /// Replace this provider's metadata memo with one shared from
+    /// another provider. Call before `pre_fetch_closure` so the
+    /// fan-out's per-package fetches consult the shared memo
+    /// instead of fresh disk + network round-trips.
+    pub fn with_metadata_memo(mut self, memo: MetadataMemo) -> Self {
+        self.metadata_memo = memo;
+        self
+    }
+
+    #[doc(hidden)]
+    #[deprecated(
+        note = "the universe-restriction approach diverges on Magento-scale partition; \
+                use a fresh provider with a shared MetadataMemo instead"
+    )]
+    #[allow(dead_code)]
+    fn clone_with_no_dev_root(&self, composer_json: &Value) -> Result<Self, BuildError> {
         let (root_deps, _) = read_root_requires(composer_json, true)?;
         Ok(Self {
             client: self.client.clone(),
@@ -341,6 +387,7 @@ impl ResolveProvider {
             virtual_wildcards: self.virtual_wildcards.clone(),
             virtual_selections: self.virtual_selections.clone(),
             v1_provider_tables: self.v1_provider_tables.clone(),
+            metadata_memo: Arc::clone(&self.metadata_memo),
             solve_progress: RefCell::new(SolveProgress::hidden()),
         })
     }
@@ -878,6 +925,7 @@ impl ResolveProvider {
             self.minimum_stability,
             Arc::new(self.stability_flags.clone()),
             prefetch_concurrency_limit(),
+            Arc::clone(&self.metadata_memo),
             progress,
         ))?;
 
@@ -939,6 +987,7 @@ async fn run_prefetch_fanout(
     minimum_stability: Stability,
     stability_flags: Arc<HashMap<String, Stability>>,
     concurrency: usize,
+    metadata_memo: MetadataMemo,
     progress: ClosureProgress,
 ) -> Result<Vec<PrefetchOutcome>, ProviderError> {
     use std::collections::HashSet;
@@ -957,6 +1006,7 @@ async fn run_prefetch_fanout(
             let v1_tables = Arc::clone(&v1_tables);
             let stability_flags = Arc::clone(&stability_flags);
             let sem = Arc::clone(&sem);
+            let memo = Arc::clone(&metadata_memo);
             tasks.spawn(async move {
                 let _permit = sem
                     .acquire_owned()
@@ -974,6 +1024,7 @@ async fn run_prefetch_fanout(
                         &v1_tables,
                         &name,
                         floor,
+                        &memo,
                     )
                 })
                 .await
@@ -1025,11 +1076,12 @@ fn load_real_candidates_isolated(
     v1_tables: &HashMap<String, HashMap<String, String>>,
     name: &str,
     floor: Stability,
+    memo: &MetadataMemo,
 ) -> Result<PrefetchOutcome, ProviderError> {
     let mut versions: Vec<LockPackage> = Vec::new();
     for repo in repos {
         let stable_md =
-            fetch_one_isolated(client, paths, repo, v1_tables, name, Variant::Stable)
+            fetch_one_isolated(client, paths, repo, v1_tables, name, Variant::Stable, memo)
                 .map_err(|e| {
                     ProviderError(format!(
                         "fetching metadata for {name} from {}: {e:#}",
@@ -1049,7 +1101,7 @@ fn load_real_candidates_isolated(
         }
         if floor == Stability::Dev {
             let dev_md =
-                fetch_one_isolated(client, paths, repo, v1_tables, name, Variant::Dev)
+                fetch_one_isolated(client, paths, repo, v1_tables, name, Variant::Dev, memo)
                     .map_err(|e| {
                         ProviderError(format!(
                             "fetching dev metadata for {name} from {}: {e:#}",
@@ -1081,6 +1133,13 @@ fn load_real_candidates_isolated(
 /// but reads pre-loaded v1 provider tables from a passed-in map
 /// instead of `RefCell`s on `&self`, so it works inside a
 /// `spawn_blocking` task.
+///
+/// Consults the in-memory metadata memo *before* falling back to
+/// the disk-cache + conditional-GET path. On a hit (which happens
+/// on every fetch of the prod-only second solve in
+/// `resolve_for_lockfile`, because the full solve populated the
+/// memo) the call is a refcount bump — no HTTP, no disk read,
+/// no JSON parse, no deep clone of the `PackageMetadata` tree.
 fn fetch_one_isolated(
     client: &reqwest::blocking::Client,
     paths: &Paths,
@@ -1088,27 +1147,41 @@ fn fetch_one_isolated(
     v1_tables: &HashMap<String, HashMap<String, String>>,
     package: &str,
     variant: Variant,
-) -> eyre::Result<Option<bougie_composer::metadata::PackageMetadata>> {
-    match &repo.protocol {
+    memo: &MetadataMemo,
+) -> eyre::Result<Option<Arc<PackageMetadata>>> {
+    let key = (repo.url.clone(), package.to_owned(), variant);
+    {
+        let m = memo.lock().expect("metadata memo mutex poisoned");
+        if let Some(cached) = m.get(&key) {
+            return Ok(cached.clone());
+        }
+    }
+    let fetched: Option<PackageMetadata> = match &repo.protocol {
         Some(RepoProtocol::V1(discovery)) => {
             if variant == Variant::Dev {
                 // v1 stuffs branches into the single per-package
                 // document; `Variant::Stable` already returned
                 // everything. Skip the redundant request.
-                return Ok(None);
+                None
+            } else {
+                let table = v1_tables.get(&repo.url).ok_or_else(|| {
+                    eyre::eyre!(
+                        "internal: v1 provider table not pre-loaded for {}",
+                        repo.url,
+                    )
+                })?;
+                fetch_package_metadata_v1_optional(
+                    client, paths, repo, discovery, table, package,
+                )?
             }
-            let table = v1_tables.get(&repo.url).ok_or_else(|| {
-                eyre::eyre!(
-                    "internal: v1 provider table not pre-loaded for {}",
-                    repo.url,
-                )
-            })?;
-            fetch_package_metadata_v1_optional(
-                client, paths, repo, discovery, table, package,
-            )
         }
-        _ => fetch_package_metadata_optional(client, paths, repo, package, variant),
-    }
+        _ => fetch_package_metadata_optional(client, paths, repo, package, variant)?,
+    };
+    let arced: Option<Arc<PackageMetadata>> = fetched.map(Arc::new);
+    memo.lock()
+        .expect("metadata memo mutex poisoned")
+        .insert(key, arced.clone());
+    Ok(arced)
 }
 
 /// Spinner that ticks once per *completed* fetch during
@@ -2082,19 +2155,35 @@ pub fn resolve_for_lockfile(
     let mut auth = read_auth_from_composer_json(&composer_json).map_err(|e| eyre!(e))?;
     auth.extend(read_auth_json(project_root).map_err(|e| eyre!(e))?);
 
-    let (full, full_provider) = solve_into_lock_packages(
+    // Single shared in-memory metadata memo across both solves.
+    // The full pass populates it; the prod-only pass reads from it,
+    // so its `pre_fetch_closure` skips network + disk + parse for
+    // every package the full pass already saw (on Magento that's
+    // all of them — ~580 packages worth of conditional GETs that
+    // would otherwise dominate the second pass). The second solve
+    // still does its own require-closure BFS, so its partition
+    // matches main's pre-PR-#141 semantics exactly: pubgrub picks
+    // freely (e.g. egulias/email-validator over a virtual provider
+    // that the full solve preferred) and packages get classified by
+    // who-actually-needs-them.
+    let memo = empty_metadata_memo();
+
+    let full = solve_into_lock_packages(
+        paths,
+        default_packagist.clone(),
+        &composer_json,
+        false,
+        auth.clone(),
+        Arc::clone(&memo),
+    )?;
+    let prod = solve_into_lock_packages(
         paths,
         default_packagist,
         &composer_json,
-        false,
+        true,
         auth,
+        memo,
     )?;
-    // Prod-only second pass reuses the full solve's populated
-    // provider state — same cache, same virtual indices — and only
-    // swaps `root_deps` to the no-dev set. Skips the second
-    // `pre_fetch_closure`, which on a Magento-sized graph is the
-    // bulk of the silent pause after the visible bars finish.
-    let prod = solve_prod_only_reusing_state(&composer_json, &full_provider)?;
 
     let t_partition = std::time::Instant::now();
     let prod_names: std::collections::HashSet<&str> =
@@ -2129,17 +2218,18 @@ pub fn resolve_for_lockfile(
 }
 
 /// Build a provider, run discover_repos + pre_fetch_closure +
-/// pubgrub, assemble the chosen `LockPackage`s. Returns the populated
-/// provider alongside the summary so a follow-up pass (e.g. the prod-
-/// only re-solve in `resolve_for_lockfile`) can clone its state
-/// instead of repeating the closure walk.
+/// pubgrub, assemble the chosen `LockPackage`s. `metadata_memo` is
+/// shared across all solves in this process — the first solve
+/// populates it, the second's `pre_fetch_closure` reads it
+/// instead of re-fetching.
 fn solve_into_lock_packages(
     paths: &Paths,
     default_packagist: Repo,
     composer_json: &Value,
     no_dev: bool,
     auth: HashMap<String, crate::metadata::AuthCredentials>,
-) -> Result<(SolutionSummary, ResolveProvider)> {
+    metadata_memo: MetadataMemo,
+) -> Result<SolutionSummary> {
     let client = build_client()?;
     let mut provider = ResolveProvider::build_with_auth(
         client,
@@ -2149,7 +2239,8 @@ fn solve_into_lock_packages(
         no_dev,
         auth,
     )
-    .map_err(|e| eyre!(e))?;
+    .map_err(|e| eyre!(e))?
+    .with_metadata_memo(metadata_memo);
     let t_discover = std::time::Instant::now();
     provider.discover_repos();
     tracing::info!(
@@ -2160,7 +2251,10 @@ fn solve_into_lock_packages(
     );
     // Eager pre-fetch: load every reachable package's metadata
     // before the solver runs so virtual providers are registered.
-    // Mirrors Composer's PoolBuilder.
+    // Mirrors Composer's PoolBuilder. On the prod-only second pass
+    // every fetch resolves against the shared `metadata_memo`
+    // populated by the full pass — no network, no disk read, no
+    // JSON parse.
     let t_prefetch = std::time::Instant::now();
     provider
         .pre_fetch_closure()
@@ -2175,25 +2269,7 @@ fn solve_into_lock_packages(
     provider.begin_solve_progress();
     let summary = run_solve_and_assemble(&provider, no_dev, "pubgrub_resolve")?;
     provider.finish_solve_progress();
-    Ok((summary, provider))
-}
-
-/// Prod-only re-solve that reuses the full solve's populated provider
-/// state. Clones `cache` / `merged_cache` / virtual indices verbatim
-/// and only swaps `root_deps` to the no-dev set — so pubgrub solves
-/// over the exact universe of candidates the first pass already
-/// validated. Mirrors Composer's `Installer::extractDevPackages` in
-/// spirit (re-solve to find dev-only packages) without the second
-/// `pre_fetch_closure`, which on a Magento-sized graph is ~580
-/// conditional GETs that all 304.
-fn solve_prod_only_reusing_state(
-    composer_json: &Value,
-    full_provider: &ResolveProvider,
-) -> Result<SolutionSummary> {
-    let provider = full_provider
-        .clone_with_no_dev_root(composer_json)
-        .map_err(|e| eyre!(e))?;
-    run_solve_and_assemble(&provider, true, "pubgrub_resolve_prod_reuse")
+    Ok(summary)
 }
 
 /// Run pubgrub on `provider`, translate errors into eyre, and
