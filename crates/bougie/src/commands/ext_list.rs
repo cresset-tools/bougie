@@ -191,12 +191,7 @@ pub fn run(format: OutputFormat, opts: Options) -> Result<ExitCode> {
         let host_str = host.to_string();
         let url = std::env::var("BOUGIE_INDEX_URL").unwrap_or_else(|_| DEFAULT_INDEX_URL.into());
         let paths = Paths::from_env()?;
-        let client = reqwest::blocking::Client::builder()
-            .build()
-            .map_err(|e| BougieError::Network {
-                operation: "building HTTP client".into(),
-                detail: e.to_string(),
-            })?;
+        let client = bougie_fetch::default_client()?;
         let cache_root = paths.cache_index(&host_to_dirname(&url));
         let fetched = fetch_root(&client, &url, &cache_root, build_verifier)?;
 

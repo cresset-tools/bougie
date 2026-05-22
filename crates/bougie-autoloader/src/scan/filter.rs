@@ -14,11 +14,28 @@
 //!   - `Other\Foo` in `vendor/acme/src/Foo.php` → drop
 //!
 //! When *no* class in a file passes the filter, Composer warns and
-//! returns zero classes for the file. We mirror the empty-return but
-//! drop the warning (bougie isn't a CLI yet, so there's nowhere
-//! useful to surface it).
+//! returns zero classes for the file. We mirror both: the empty-return
+//! and a [`ScanWarning`] per rejected class so the CLI can surface the
+//! same `Class X located in Y does not comply with psr-N autoloading
+//! standard. Skipping.` line Composer prints. When at least one class
+//! matches, Composer keeps the matches and drops the rest silently —
+//! we do the same and emit no warning in that case.
 
 use std::path::{Path, PathBuf};
+
+/// One rejected-class report produced when no class in a file matched
+/// the PSR filter. The CLI formats the file path relative to the
+/// project root; we keep the absolute path here so the caller picks
+/// the right base.
+#[derive(Debug, Clone)]
+pub(crate) struct ScanWarning {
+    pub class: String,
+    pub file: PathBuf,
+    /// `true` when the rejection came from a PSR-0 mapping, `false`
+    /// for PSR-4. Mapped onto the `psr-0` / `psr-4` literal in the
+    /// rendered warning.
+    pub psr0: bool,
+}
 
 #[derive(Debug, Clone)]
 pub(crate) enum NamespaceFilter {
@@ -88,24 +105,40 @@ impl NamespaceFilter {
 }
 
 /// Composer's filterByNamespace semantics: if zero classes in a file
-/// pass the filter, return empty (no class wins); if at least one
-/// passes, return the passing subset.
+/// pass the filter, return empty (no class wins) and emit one warning
+/// per rejected class; if at least one passes, return the passing
+/// subset with no warnings.
 pub(crate) fn apply(
     filter: &NamespaceFilter,
     classes: Vec<String>,
     file: &Path,
-) -> Vec<String> {
+) -> (Vec<String>, Vec<ScanWarning>) {
     if matches!(filter, NamespaceFilter::None) {
-        return classes;
+        return (classes, Vec::new());
     }
-    let kept: Vec<String> = classes
-        .into_iter()
-        .filter(|c| filter.accepts(c, file))
-        .collect();
-    // Composer also returns [] (with a warning) when zero classes
-    // match, but the `.filter()` already produces [] in that case —
-    // no extra work needed beyond skipping the warning.
-    kept
+    let psr0 = matches!(filter, NamespaceFilter::Psr0 { .. });
+    let mut kept = Vec::new();
+    let mut rejected = Vec::new();
+    for c in classes {
+        if filter.accepts(&c, file) {
+            kept.push(c);
+        } else {
+            rejected.push(c);
+        }
+    }
+    if kept.is_empty() {
+        let warnings = rejected
+            .into_iter()
+            .map(|class| ScanWarning {
+                class,
+                file: file.to_path_buf(),
+                psr0,
+            })
+            .collect();
+        (Vec::new(), warnings)
+    } else {
+        (kept, Vec::new())
+    }
 }
 
 #[cfg(test)]
@@ -175,22 +208,41 @@ mod tests {
     #[test]
     fn apply_returns_subset() {
         let f = psr4("Acme\\", "/v/acme/src");
-        let kept = apply(
+        let (kept, warnings) = apply(
             &f,
             vec!["Acme\\Foo".into(), "Other\\Bar".into()],
             Path::new("/v/acme/src/Foo.php"),
         );
         assert_eq!(kept, vec!["Acme\\Foo".to_string()]);
+        // At least one class matched, so Composer (and bougie) stay
+        // quiet about the rejected siblings.
+        assert!(warnings.is_empty());
     }
 
     #[test]
     fn apply_returns_empty_when_none_match() {
         let f = psr4("Acme\\", "/v/acme/src");
-        let kept = apply(
+        let (kept, warnings) = apply(
             &f,
             vec!["Other\\Bar".into()],
             Path::new("/v/acme/src/Foo.php"),
         );
         assert!(kept.is_empty());
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0].class, "Other\\Bar");
+        assert!(!warnings[0].psr0);
+    }
+
+    #[test]
+    fn apply_psr0_warnings_carry_psr0_flag() {
+        let f = psr0("Acme\\", "/v/legacy");
+        let (kept, warnings) = apply(
+            &f,
+            vec!["Other_Class".into()],
+            Path::new("/v/legacy/Other/Class.php"),
+        );
+        assert!(kept.is_empty());
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].psr0);
     }
 }

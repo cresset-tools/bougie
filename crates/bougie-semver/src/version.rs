@@ -160,6 +160,16 @@ fn re_branch_alias() -> &'static Regex {
     })
 }
 
+/// True iff `s` matches the Composer branch-alias form
+/// `Nx-dev` / `N.x-dev` / `N.M.x-dev` (etc.). These appear both as
+/// versions (Packagist's dev document lists them) and as constraints
+/// in `composer.json` (`"phpmd/phpmd": "3.x-dev"`). The constraint
+/// parser routes the form to an `==` against the same string
+/// re-parsed as a `Version`.
+pub fn is_branch_alias(s: &str) -> bool {
+    re_branch_alias().is_match(s.trim())
+}
+
 /// Strip a trailing `@stable`/`@dev`/etc. stability flag. Composer
 /// accepts these on package require strings (e.g.
 /// `name@dev`); `normalize` drops them before further parsing.
@@ -423,6 +433,20 @@ pub enum CmpOp {
 }
 
 impl Version {
+    /// Composer's `Package::getStability()` applied to a parsed
+    /// `Version`. Branch versions are always `Dev`; numeric versions
+    /// inherit their `Suffix`'s stability (`Stable` for bare,
+    /// `Patch(_)`; `Dev` for bare `-dev`; the prerelease keyword
+    /// otherwise). This is the granular stability used to filter
+    /// candidates against `minimum-stability` and per-package
+    /// stability flags.
+    pub fn stability(&self) -> Stability {
+        match &self.kind {
+            VersionKind::Numeric { suffix, .. } => suffix.stability(),
+            VersionKind::Branch(_) => Stability::Dev,
+        }
+    }
+
     /// Composer's comparator. Returns `false` for every op when the
     /// two operands are bare dev branches with different names; `==`
     /// is `true` only when both are bare branches with the same
@@ -456,6 +480,30 @@ impl Version {
         match normalized {
             "dev-master" | "dev-default" | "dev-trunk" => "9999999-dev".to_owned(),
             other => other.to_owned(),
+        }
+    }
+
+    /// Construct a Version with the same numeric body as `self` but
+    /// the given suffix. Returns `None` for [`VersionKind::Branch`]
+    /// (a branch ref has no numeric body to attach a suffix to).
+    ///
+    /// Used by the Composer-to-pubgrub `Ranges<Version>` conversion
+    /// to synthesize boundary markers: `<X` becomes
+    /// `strictly_lower_than(X.with_suffix(Suffix::Dev))` so that
+    /// every prerelease of `X` (which sorts ≥ `X-dev`) is excluded.
+    pub fn with_suffix(&self, suffix: Suffix) -> Option<Version> {
+        match &self.kind {
+            VersionKind::Numeric { segments_raw, .. } => {
+                let normalized = render_numeric(segments_raw, &suffix);
+                Some(Version {
+                    kind: VersionKind::Numeric {
+                        segments_raw: segments_raw.clone(),
+                        suffix,
+                    },
+                    normalized,
+                })
+            }
+            VersionKind::Branch(_) => None,
         }
     }
 }

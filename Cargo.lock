@@ -155,6 +155,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "async-compression"
+version = "0.4.42"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e79b3f8a79cccc2898f31920fc69f304859b3bd567490f75ebf51ae1c792a9ac"
+dependencies = [
+ "compression-codecs",
+ "compression-core",
+ "pin-project-lite",
+ "tokio",
+]
+
+[[package]]
 name = "async-recursion"
 version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -373,7 +385,7 @@ dependencies = [
 
 [[package]]
 name = "bougie"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "assert_cmd",
  "base64 0.22.1",
@@ -414,6 +426,8 @@ dependencies = [
  "tempfile",
  "tokio",
  "toml_edit",
+ "tracing",
+ "tracing-subscriber",
  "walkdir",
  "wiremock",
  "zip",
@@ -437,7 +451,7 @@ dependencies = [
 
 [[package]]
 name = "bougie-babysit"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "eyre",
  "rustix",
@@ -446,7 +460,7 @@ dependencies = [
 
 [[package]]
 name = "bougie-backend"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "bougie-errors",
  "bougie-fetch",
@@ -464,14 +478,14 @@ dependencies = [
 
 [[package]]
 name = "bougie-cli"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "clap",
 ]
 
 [[package]]
 name = "bougie-composer"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "bougie-errors",
  "bougie-fetch",
@@ -490,25 +504,32 @@ dependencies = [
 name = "bougie-composer-resolver"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "bougie-autoloader",
  "bougie-composer",
  "bougie-errors",
  "bougie-fetch",
+ "bougie-output",
  "bougie-paths",
+ "bougie-semver",
  "eyre",
+ "indicatif",
+ "pubgrub",
  "rayon",
  "reqwest 0.13.3",
+ "serde",
  "serde_json",
  "sha1",
  "tempfile",
  "tokio",
+ "tracing",
  "wiremock",
  "zip",
 ]
 
 [[package]]
 name = "bougie-config"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "eyre",
  "serde",
@@ -518,7 +539,7 @@ dependencies = [
 
 [[package]]
 name = "bougie-daemon"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "bougie-backend",
  "bougie-config",
@@ -546,7 +567,7 @@ dependencies = [
 
 [[package]]
 name = "bougie-errors"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "eyre",
  "thiserror 2.0.18",
@@ -554,7 +575,7 @@ dependencies = [
 
 [[package]]
 name = "bougie-fetch"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "bougie-errors",
  "bougie-output",
@@ -572,7 +593,7 @@ dependencies = [
 
 [[package]]
 name = "bougie-fs"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "bougie-errors",
  "bougie-paths",
@@ -585,7 +606,7 @@ dependencies = [
 
 [[package]]
 name = "bougie-index"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "base64 0.22.1",
  "bougie-errors",
@@ -600,7 +621,7 @@ dependencies = [
 
 [[package]]
 name = "bougie-installer"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "bougie-backend",
  "bougie-errors",
@@ -622,7 +643,7 @@ dependencies = [
 
 [[package]]
 name = "bougie-output"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anstream",
  "anstyle",
@@ -634,7 +655,7 @@ dependencies = [
 
 [[package]]
 name = "bougie-paths"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "etcetera",
  "eyre",
@@ -642,14 +663,14 @@ dependencies = [
 
 [[package]]
 name = "bougie-php-json"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "bougie-platform"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "bougie-errors",
  "eyre",
@@ -657,7 +678,7 @@ dependencies = [
 
 [[package]]
 name = "bougie-recipe"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "eyre",
  "rustix",
@@ -670,7 +691,7 @@ dependencies = [
 
 [[package]]
 name = "bougie-resolver"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "bougie-errors",
  "bougie-index",
@@ -689,7 +710,7 @@ dependencies = [
 
 [[package]]
 name = "bougie-server"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anstream",
  "anstyle",
@@ -723,7 +744,7 @@ dependencies = [
 
 [[package]]
 name = "bougie-version"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "eyre",
 ]
@@ -963,6 +984,23 @@ dependencies = [
  "bytes",
  "memchr",
 ]
+
+[[package]]
+name = "compression-codecs"
+version = "0.4.38"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ce2548391e9c1929c21bf6aa2680af86fe4c1b33e6cea9ac1cfeec0bd11218cf"
+dependencies = [
+ "compression-core",
+ "flate2",
+ "memchr",
+]
+
+[[package]]
+name = "compression-core"
+version = "0.4.32"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cc14f565cf027a105f7a44ccf9e5b424348421a1d8952a8fc9d499d313107789"
 
 [[package]]
 name = "console"
@@ -1584,6 +1622,7 @@ version = "1.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "843fba2746e448b37e26a819579957415c8cef339bf08564fe8b7ddbd959573c"
 dependencies = [
+ "crc32fast",
  "miniz_oxide",
  "zlib-rs",
 ]
@@ -2626,6 +2665,15 @@ name = "macos-sandbox-sys"
 version = "0.1.0"
 
 [[package]]
+name = "matchers"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d1525a2a28c7f4fa0fc98bb91ae755d1e2d1505079e05539e35bc876b5d65ae9"
+dependencies = [
+ "regex-automata",
+]
+
+[[package]]
 name = "matchit"
 version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3234,6 +3282,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "priority-queue"
+version = "2.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "93980406f12d9f8140ed5abe7155acb10bb1e69ea55c88960b9c2f117445ef96"
+dependencies = [
+ "equivalent",
+ "indexmap 2.14.0",
+ "serde",
+]
+
+[[package]]
 name = "proc-macro-error"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3372,6 +3431,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8991c4cbdb8bc5b11f0b074ffe286c30e523de90fee5ba8132f1399f23cb3dd7"
 dependencies = [
  "prost",
+]
+
+[[package]]
+name = "pubgrub"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a1c3256d319f1ed35251223140ab8f29fd6b0528a1216344efd904c651fecd5e"
+dependencies = [
+ "indexmap 2.14.0",
+ "log",
+ "priority-queue",
+ "rustc-hash",
+ "thiserror 2.0.18",
+ "version-ranges",
 ]
 
 [[package]]
@@ -4738,12 +4811,17 @@ version = "0.6.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "68d6fdd9f81c2819c9a8b0e0cd91660e7746a8e6ea2ba7c6b2b057985f6bcb51"
 dependencies = [
+ "async-compression",
  "bitflags",
  "bytes",
+ "futures-core",
  "futures-util",
  "http",
  "http-body",
+ "http-body-util",
  "pin-project-lite",
+ "tokio",
+ "tokio-util",
  "tower",
  "tower-layer",
  "tower-service",
@@ -4811,8 +4889,12 @@ version = "0.3.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cb7f578e5945fb242538965c2d0b04418d38ec25c79d160cd279bf0731c8d319"
 dependencies = [
+ "matchers",
+ "once_cell",
+ "regex-automata",
  "sharded-slab",
  "thread_local",
+ "tracing",
  "tracing-core",
 ]
 
@@ -4937,6 +5019,15 @@ name = "valuable"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
+
+[[package]]
+name = "version-ranges"
+version = "0.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "31e9bd4e9c9ff6a2a9b5969462ba26216af3e010df0377dad8320ab515262ef8"
+dependencies = [
+ "smallvec",
+]
 
 [[package]]
 name = "version_check"

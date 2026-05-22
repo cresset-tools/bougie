@@ -11,6 +11,7 @@
 //! Preflight failures are aggregated into a single error so the user
 //! sees every blocker in one pass rather than fix-one-hit-next.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use bougie_autoloader::{dump_autoload, DumpRequest};
@@ -19,6 +20,9 @@ use bougie_fetch::{ArchiveKind, DownloadBar};
 use bougie_paths::Paths;
 use eyre::{eyre, Context, Result};
 use serde_json::Value;
+
+use crate::metadata::AuthCredentials;
+use crate::update::{read_auth_from_composer_json, read_auth_json};
 
 use super::downloader::{fetch_and_extract_dists, DistOutcome, DistRequest};
 
@@ -69,6 +73,19 @@ pub fn install_from_lock(
     verify_content_hash(&composer_json_bytes, &lock)?;
     preflight(&composer_json_bytes, &lock, opts.no_dev)?;
 
+    // Assemble per-host auth the same way the resolver does for
+    // metadata requests: composer.json's `config.http-basic` /
+    // `config.bearer` first, then project-level `auth.json` (which
+    // wins on conflicts — matches Composer's precedence). Dist URLs
+    // sitting behind the same auth as the metadata (Magento's
+    // `/archives/...`, private satis, GitLab CI Composer ZIPs) need
+    // the header; public-CDN dists from Packagist do not.
+    let composer_json_value: Value = serde_json::from_slice(&composer_json_bytes)
+        .map_err(|e| eyre!("parsing composer.json: {e}"))?;
+    let mut auth: HashMap<String, AuthCredentials> =
+        read_auth_from_composer_json(&composer_json_value).map_err(|e| eyre!(e))?;
+    auth.extend(read_auth_json(project_root).map_err(|e| eyre!(e))?);
+
     // Gather the packages we'll actually install. `path` dists are
     // skipped silently here: preflight already rejected them when
     // `opts` would make them install-time relevant, but a stray
@@ -88,10 +105,24 @@ pub fn install_from_lock(
         .iter()
         .map(|p| project_root.join("vendor").join(&p.name))
         .collect();
+    // Pre-render each dist's `Authorization` header (when its host
+    // matches the auth map). String storage lives in a sibling vec so
+    // `DistRequest` can carry a borrowed `&str` — no per-request
+    // clones, no lifetime gymnastics inside `par_iter`.
+    let auth_headers: Vec<Option<String>> = install_set
+        .iter()
+        .map(|p| {
+            let dist = p.dist.as_ref().unwrap();
+            host_from_url(&dist.url)
+                .and_then(|host| auth.get(host))
+                .map(|creds| creds.header_value())
+        })
+        .collect();
     let dists: Vec<DistRequest<'_>> = install_set
         .iter()
         .zip(vendor_dirs.iter())
-        .map(|(p, dest)| {
+        .zip(auth_headers.iter())
+        .map(|((p, dest), auth_header)| {
             // unwraps: preflight guarantees every survivor has
             // `dist` with kind=="zip" and `shasum` Some.
             let dist = p.dist.as_ref().unwrap();
@@ -102,6 +133,7 @@ pub fn install_from_lock(
                 archive: ArchiveKind::Zip,
                 strip_prefix: None,
                 vendor_dest: dest,
+                auth_header: auth_header.as_deref(),
             }
         })
         .collect();
@@ -136,6 +168,20 @@ pub fn install_from_lock(
         packages_already_present,
         no_dev: opts.no_dev,
     })
+}
+
+/// Extract the host portion of a URL — the bit between `://` and
+/// the next `/`, with any `:port` suffix stripped. Returns `None`
+/// for URLs without a parseable host (e.g. file URIs in tests).
+/// Used to key per-host auth lookup the same way Composer does;
+/// path differences inside the host don't matter (everything under
+/// `repo.magento.com` shares the same credentials whether the URL
+/// targets `/p/...` for metadata or `/archives/...` for a dist).
+fn host_from_url(url: &str) -> Option<&str> {
+    let after_scheme = url.split_once("://")?.1;
+    let host_and_port = after_scheme.split('/').next()?;
+    let host = host_and_port.split(':').next()?;
+    if host.is_empty() { None } else { Some(host) }
 }
 
 /// Verify the lock's `content-hash` field against the current

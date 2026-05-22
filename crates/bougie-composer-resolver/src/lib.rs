@@ -8,8 +8,15 @@
 //! reader land in later phases.
 
 pub mod install;
+pub mod metadata;
+pub mod update;
+pub mod verify;
 
 pub use install::{
     fetch_and_extract_dists, install_from_lock, DistOutcome, DistRequest, InstallOptions,
     InstallSummary,
+};
+pub use update::{
+    dry_run_update, resolve_for_lockfile, DryRunOptions, LockfileSolveOutcome, ResolvedPackage,
+    UpdateSummary,
 };

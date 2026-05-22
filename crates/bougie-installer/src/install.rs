@@ -209,6 +209,7 @@ pub fn install_extension_with_bar(
             dest: &dest,
             strip_prefix: &recipe.blob.strip_prefix,
             archive: recipe.blob.archive,
+            auth_header: None,
         };
         bar.set_current(format!("{}-{}", recipe.name, recipe.version));
         fetch_blob(backend.client(), &blob_spec, bar)?;
@@ -805,6 +806,7 @@ pub fn install_closure_peers(
                 dest: &store_path,
                 strip_prefix: &storename,
                 archive: ArchiveKind::TarZst,
+                auth_header: None,
             };
             bar.set_current(format!("{label} ({})", entry.name));
             fetch_blob(client, &blob_spec, bar).wrap_err_with(|| {

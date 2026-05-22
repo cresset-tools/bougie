@@ -14,6 +14,73 @@ use std::io::{copy, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+/// The `User-Agent` every outbound bougie HTTP request advertises.
+/// Format: `bougie/<crate-version> (+<repo-url>)`. Identifies us
+/// specifically to upstream services (Packagist, getcomposer.org, our
+/// own index) so they can rate-limit or contact maintainers rather
+/// than blanket-blocking anonymous reqwest traffic. The version comes
+/// from `bougie-fetch`'s own `Cargo.toml` — it tracks the workspace
+/// release cadence closely enough that bumping it is a single change
+/// when the format here needs to evolve.
+pub const USER_AGENT: &str = concat!(
+    "bougie/",
+    env!("CARGO_PKG_VERSION"),
+    " (+https://github.com/cresset-tools/bougie)",
+);
+
+/// Build a `reqwest::blocking::Client` with the bougie [`USER_AGENT`]
+/// set. Every outbound external request should go through this so the
+/// UA, timeout policy, and connection settings stay consistent across
+/// crates. Tests and localhost provisioner clients can keep their own
+/// builders — they don't represent bougie to the outside world.
+///
+/// **Timeouts:**
+/// - `connect_timeout = 10s`. Bounds the TCP+TLS handshake — a slow
+///   or hung peer (network blip, captive portal) fails fast instead
+///   of blocking the resolver forever.
+/// - `timeout = 300s`. Total per-request budget. Matches Composer's
+///   own default (`Composer\Util\HttpDownloader`). Generous enough
+///   for a 100MB dist on a slow link, tight enough that a runaway
+///   read doesn't hang the install indefinitely.
+///
+/// Both are per-request, not per-keepalive — connection reuse across
+/// requests is unaffected.
+pub fn default_client() -> Result<reqwest::blocking::Client> {
+    reqwest::blocking::Client::builder()
+        .user_agent(USER_AGENT)
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(300))
+        .build()
+        .map_err(|e| {
+            BougieError::Network {
+                operation: "building HTTP client".into(),
+                detail: e.to_string(),
+            }
+            .into()
+        })
+}
+
+/// Async sibling of [`default_client`] — same `User-Agent`, same
+/// timeout policy, but the non-blocking `reqwest::Client`. Used by
+/// the composer-resolver's parallel pre-fetch fan-out so concurrent
+/// fetches share a single async client (one connection pool, no
+/// `spawn_blocking` thread per in-flight request) instead of N
+/// blocking clients each driving their own internal runtime.
+pub fn default_async_client() -> Result<reqwest::Client> {
+    reqwest::Client::builder()
+        .user_agent(USER_AGENT)
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(300))
+        .build()
+        .map_err(|e| {
+            BougieError::Network {
+                operation: "building async HTTP client".into(),
+                detail: e.to_string(),
+            }
+            .into()
+        })
+}
+
 /// Which hash algorithm verifies a download. Bougie's own published
 /// blobs use sha256; Composer's Packagist dist `shasum` field is sha1.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -105,6 +172,15 @@ pub struct BlobSpec<'a> {
     pub strip_prefix: &'a str,
     /// How to decode the downloaded bytes. Ignored by [`fetch_file`].
     pub archive: ArchiveKind,
+    /// Pre-rendered `Authorization` header value (e.g. `Bearer <token>`
+    /// or `Basic <base64>`). Attached verbatim on every request for
+    /// this blob. `None` means no auth — appropriate for public CDN
+    /// URLs (bougie's own publishes, public Packagist dists). Set
+    /// when the blob lives behind credentials, like a private satis
+    /// dist or `repo.magento.com/archives/...`. Keep the field tiny
+    /// and opaque so this crate stays uncoupled from the higher-level
+    /// `AuthCredentials` shape that lives in `bougie-composer-resolver`.
+    pub auth_header: Option<&'a str>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -179,7 +255,11 @@ fn fetch_to_partial(
 ) -> Result<PathBuf> {
     let tmp = spec.partial_dir.join(format!("{}.partial", spec.hash.hex));
 
-    let mut resp = client.get(spec.url).send().map_err(|e| BougieError::Network {
+    let mut req = client.get(spec.url);
+    if let Some(value) = spec.auth_header {
+        req = req.header(reqwest::header::AUTHORIZATION, value);
+    }
+    let mut resp = req.send().map_err(|e| BougieError::Network {
         operation: format!("fetching blob {}", spec.url),
         detail: e.to_string(),
     })?;
@@ -633,6 +713,18 @@ mod tests {
     fn format_hex_lowercase() {
         assert_eq!(format_hex(&[0xab, 0xcd]), "abcd");
         assert_eq!(format_hex(&[0]), "00");
+    }
+
+    #[test]
+    fn user_agent_has_expected_shape() {
+        // `bougie/<semver> (+https://...)`. The exact version is the
+        // bougie-fetch crate version — checking the shape, not the
+        // value, so a release-plz bump doesn't break the test.
+        assert!(USER_AGENT.starts_with("bougie/"), "{USER_AGENT}");
+        assert!(
+            USER_AGENT.contains("(+https://github.com/cresset-tools/bougie)"),
+            "{USER_AGENT}",
+        );
     }
 
     #[test]

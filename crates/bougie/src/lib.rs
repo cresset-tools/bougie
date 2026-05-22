@@ -143,7 +143,11 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
             working_dir,
             no_dev,
             frozen,
-        }) => commands::composer_install::run(format, working_dir, no_dev, frozen),
+            lock_verify,
+        }) => commands::composer_install::run(format, working_dir, no_dev, frozen, lock_verify),
+        Command::Composer(ComposerCommand::Update { working_dir, no_dev, dry_run }) => {
+            commands::composer_update::run(format, working_dir, no_dev, dry_run)
+        }
         Command::Composer(ComposerCommand::Fetch { request }) => {
             commands::composer_fetch::run(format, request.as_deref())
         }

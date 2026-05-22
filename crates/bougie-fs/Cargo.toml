@@ -1,6 +1,6 @@
 [package]
 name = "bougie-fs"
-version = "0.4.0"
+version.workspace = true
 edition = "2024"
 description = "Filesystem primitives for bougie: file locks, on-disk state, install-tree layout."
 license = "EUPL-1.2"
@@ -10,15 +10,12 @@ authors.workspace = true
 
 [dependencies.bougie-errors]
 path = "../bougie-errors"
-version = "0.4.0"
 
 [dependencies.bougie-paths]
 path = "../bougie-paths"
-version = "0.4.0"
 
 [dependencies.bougie-version]
 path = "../bougie-version"
-version = "0.4.0"
 
 [dependencies.eyre]
 version = "0.6"

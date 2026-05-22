@@ -52,15 +52,7 @@ pub fn base_url() -> String {
 }
 
 pub fn build_client() -> Result<reqwest::blocking::Client> {
-    reqwest::blocking::Client::builder()
-        .build()
-        .map_err(|e| {
-            BougieError::Network {
-                operation: "building HTTP client".into(),
-                detail: e.to_string(),
-            }
-            .into()
-        })
+    bougie_fetch::default_client()
 }
 
 /// Fetch the channels JSON, with an `If-None-Match` against the cached
@@ -155,6 +147,7 @@ pub fn fetch_phar(
         // this call onto fetch_blob. Same logic for `archive`.
         strip_prefix: "",
         archive: ArchiveKind::TarZst,
+        auth_header: None,
     };
     // `getcomposer.org/versions` doesn't carry a `size` field and
     // the .sha256sum sidecar only carries the hash, so we have no

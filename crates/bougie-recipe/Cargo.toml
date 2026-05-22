@@ -1,6 +1,6 @@
 [package]
 name = "bougie-recipe"
-version = "0.4.0"
+version.workspace = true
 edition = "2024"
 description = "Recipe engine for `bougie make` task automation."
 license = "EUPL-1.2"

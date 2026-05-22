@@ -3,6 +3,7 @@ use clap::Parser;
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
+    init_tracing();
     let argv0 = std::env::args_os().next().unwrap_or_default();
     if let Some(role) = shim::role_from_argv0(&argv0) {
         return match shim::exec(role) {
@@ -28,6 +29,30 @@ fn main() -> ExitCode {
             ExitCode::from(exit_code_for(&err))
         }
     }
+}
+
+/// Install a `tracing-subscriber` configured from the environment.
+/// Reads `BOUGIE_LOG` (preferred — namespaced so it can't collide with
+/// a dependency's `RUST_LOG` use), then falls back to `RUST_LOG`. When
+/// neither is set the subscriber is still installed but its filter
+/// rejects every record, so call sites stay zero-overhead.
+///
+/// Output goes to stderr with timestamps and target names so the user
+/// can correlate spans across crates:
+///   `BOUGIE_LOG=bougie_composer_resolver=debug bougie composer update`
+/// also shows per-package fetch timings via `tracing::debug_span!`.
+fn init_tracing() {
+    use tracing_subscriber::EnvFilter;
+    let filter = std::env::var("BOUGIE_LOG")
+        .or_else(|_| std::env::var("RUST_LOG"))
+        .ok()
+        .and_then(|s| EnvFilter::try_new(s).ok())
+        .unwrap_or_else(|| EnvFilter::new("off"));
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(std::io::stderr)
+        .with_target(true)
+        .try_init();
 }
 
 /// Render an error to stderr in uv's `error: <message>` style.

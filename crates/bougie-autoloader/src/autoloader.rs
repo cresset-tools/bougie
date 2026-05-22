@@ -38,9 +38,9 @@ use crate::collect::{
 use crate::emit;
 use crate::installed;
 use crate::lock::{self, RootManifest};
-use crate::scan::{self, ExcludePatterns};
+use crate::scan::{self, ExcludePatterns, ScanWarning};
 use crate::vendored;
-use crate::{random_hex_chars, write_atomic, DumpError, DumpRequest};
+use crate::{format_relative_path, random_hex_chars, write_atomic, DumpError, DumpRequest, PsrWarning};
 
 /// Per-task live state. `task` is the immutable scan descriptor.
 /// `per_file` maps a file's path (relative to `task.install_abs`) to
@@ -101,6 +101,13 @@ pub struct Autoloader {
     classmap_authoritative: bool,
     no_dev: bool,
     header: AutoloadHeader,
+    /// PSR-noncompliance warnings collected during the bootstrap scan.
+    /// `Autoloader::warnings()` exposes them in the `relative_path`
+    /// shape Composer renders (project-root-relative, leading `./`).
+    /// Incremental `apply_*` calls don't update this list — the CLI's
+    /// `Generated …` footer is only emitted by `dump_autoload`, so
+    /// live-patch callers don't surface warnings.
+    psr_warnings: Vec<PsrWarning>,
 }
 
 impl Autoloader {
@@ -147,8 +154,11 @@ impl Autoloader {
         let exclude_default = set.exclude_default;
         let exclude_with_vendor = set.exclude_with_vendor;
 
-        // Parallel per-task scan capturing per-file class lists.
-        let per_file_results: Vec<BTreeMap<PathBuf, Vec<String>>> = set
+        // Parallel per-task scan capturing per-file class lists +
+        // PSR-noncompliance warnings (the filter emits one per
+        // rejected class when *no* class in a file passed; classmap-
+        // style scans never produce warnings).
+        let per_task_scans: Vec<scan::PerFileScan> = set
             .tasks
             .par_iter()
             .map(|task| {
@@ -161,11 +171,27 @@ impl Autoloader {
             })
             .collect();
 
+        let mut raw_warnings: Vec<ScanWarning> = Vec::new();
         let tasks: Vec<TaskState> = set
             .tasks
             .into_iter()
-            .zip(per_file_results.into_iter())
-            .map(|(task, per_file)| TaskState { task, per_file })
+            .zip(per_task_scans.into_iter())
+            .map(|(task, scan_out)| {
+                raw_warnings.extend(scan_out.warnings);
+                TaskState {
+                    task,
+                    per_file: scan_out.per_file,
+                }
+            })
+            .collect();
+
+        let psr_warnings: Vec<PsrWarning> = raw_warnings
+            .into_iter()
+            .map(|w| PsrWarning {
+                class: w.class,
+                relative_path: format_relative_path(&w.file, req.project_root),
+                psr_version: if w.psr0 { 0 } else { 4 },
+            })
             .collect();
 
         let merged = merge_classmap(&tasks);
@@ -195,7 +221,20 @@ impl Autoloader {
             classmap_authoritative: req.classmap_authoritative,
             no_dev: req.no_dev,
             header,
+            psr_warnings,
         })
+    }
+
+    /// Total entries in the merged classmap (matches Composer's
+    /// `Generated … containing N classes` figure — always includes
+    /// the synthetic `Composer\InstalledVersions` row).
+    pub fn class_count(&self) -> usize {
+        self.merged.len()
+    }
+
+    /// PSR-noncompliance warnings collected during bootstrap.
+    pub fn warnings(&self) -> &[PsrWarning] {
+        &self.psr_warnings
     }
 
     /// Write every `vendor/composer/autoload_*.php` file plus the

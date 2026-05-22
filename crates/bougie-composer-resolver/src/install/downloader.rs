@@ -50,6 +50,15 @@ pub struct DistRequest<'a> {
     /// `<project>/vendor/<vendor>/<package>/`. The directory is
     /// created (and any existing contents replaced) by the extractor.
     pub vendor_dest: &'a Path,
+    /// Pre-rendered `Authorization` header value (e.g. `Basic <b64>`
+    /// or `Bearer <token>`) attached to the GET that fetches this
+    /// dist. `None` for public dists (Packagist's CDN); set by the
+    /// orchestrator when the dist URL's host matches an entry in
+    /// composer.json's `config.http-basic` / `config.bearer` or
+    /// project-level `auth.json`. Matches Composer's behavior of
+    /// sending the same per-host creds to dist URLs as it sends to
+    /// the corresponding metadata URLs.
+    pub auth_header: Option<&'a str>,
 }
 
 /// Per-dist outcome reported back to the caller so the install
@@ -113,6 +122,7 @@ fn download_to_cache(
         // every field.
         strip_prefix: "",
         archive: dist.archive,
+        auth_header: dist.auth_header,
     };
     bougie_fetch::fetch_file(client, &spec, bar).wrap_err_with(|| {
         format!("downloading dist for {}", dist.package_name)

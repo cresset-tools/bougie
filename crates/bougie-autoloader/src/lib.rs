@@ -58,6 +58,35 @@ use std::path::Path;
 /// `tests/fixtures/`.
 pub const REFERENCE_COMPOSER_VERSION: &str = "2.8.12";
 
+/// PSR-noncompliance report for a single class. Composer prints one
+/// of these per rejected class when a file's classes all failed the
+/// `psr-4` / `psr-0` namespace+path rule: it drops every class in
+/// the file and warns. bougie collects them so the CLI can render
+/// the same `Class X located in Y does not comply with psr-N
+/// autoloading standard. Skipping.` line.
+///
+/// `relative_path` is already prefixed with `./` to match Composer's
+/// `preg_replace('{^getcwd()}', '.', ...)` output. The string is
+/// rendered with forward slashes on every platform.
+#[derive(Debug, Clone)]
+pub struct PsrWarning {
+    pub class: String,
+    pub relative_path: String,
+    /// 0 for PSR-0, 4 for PSR-4 — used as the literal in the
+    /// rendered `psr-N` token.
+    pub psr_version: u8,
+}
+
+/// Summary returned by [`dump_autoload`]. `class_count` matches
+/// Composer's `containing N classes` figure: total entries in the
+/// emitted classmap (always includes the synthetic
+/// `Composer\InstalledVersions` row, mirroring Composer).
+#[derive(Debug, Clone)]
+pub struct DumpReport {
+    pub class_count: usize,
+    pub warnings: Vec<PsrWarning>,
+}
+
 /// Inputs for an autoload dump. Names mirror Composer terminology.
 #[derive(Debug, Clone)]
 pub struct DumpRequest<'a> {
@@ -130,9 +159,29 @@ impl From<std::io::Error> for DumpError {
 /// both use this. The long-running server holds an `Autoloader`
 /// directly so it can apply incremental edits without re-walking the
 /// whole project; see `INCREMENTAL_AUTOLOADER_PLAN.md`.
-pub fn dump_autoload(req: &DumpRequest<'_>) -> Result<(), DumpError> {
+pub fn dump_autoload(req: &DumpRequest<'_>) -> Result<DumpReport, DumpError> {
     let loader = Autoloader::bootstrap(req)?;
-    loader.emit()
+    loader.emit()?;
+    Ok(DumpReport {
+        class_count: loader.class_count(),
+        warnings: loader.warnings().to_vec(),
+    })
+}
+
+/// Format an absolute file path the way Composer does in its
+/// noncompliance warning: replace the leading project root with `.`
+/// (so output starts with `./`) and normalize to forward slashes for
+/// cross-platform-consistent display. Falls back to the input path
+/// when the prefix doesn't match (canonicalize mismatch, etc.).
+pub(crate) fn format_relative_path(file: &Path, project_root: &Path) -> String {
+    let canon_root = std::fs::canonicalize(project_root).unwrap_or_else(|_| project_root.into());
+    let rel = file.strip_prefix(&canon_root).unwrap_or(file);
+    let rel_str = rel.to_string_lossy().replace('\\', "/");
+    if rel_str.starts_with("./") || rel_str == "." {
+        rel_str
+    } else {
+        format!("./{rel_str}")
+    }
 }
 
 /// Lightweight ASCII-hex randomness for the APCu prefix default.

@@ -28,7 +28,6 @@ pub mod windows_php_net;
 pub use bougie_index_backend::BougieIndexBackend;
 pub use windows_php_net::WindowsPhpNetBackend;
 
-use bougie_errors::BougieError;
 use bougie_fetch::{fetch_blob, ArchiveKind, BlobOutcome, DownloadBar};
 use bougie_index::wire::LoadDirective;
 use bougie_paths::Paths;
@@ -120,14 +119,8 @@ pub fn select(target: &Triple, host: &str, paths: &Paths) -> Result<Box<dyn Back
     }
 }
 
-pub(crate) fn build_http_client(label: &'static str) -> Result<reqwest::blocking::Client> {
-    let client = reqwest::blocking::Client::builder()
-        .build()
-        .map_err(|e| BougieError::Network {
-            operation: format!("building HTTP client for {label}"),
-            detail: e.to_string(),
-        })?;
-    Ok(client)
+pub(crate) fn build_http_client(_label: &'static str) -> Result<reqwest::blocking::Client> {
+    bougie_fetch::default_client()
 }
 
 /// One blob to fetch and extract.
@@ -185,6 +178,7 @@ impl BlobRef {
             dest,
             strip_prefix: &self.strip_prefix,
             archive: self.archive,
+            auth_header: None,
         }
     }
 }

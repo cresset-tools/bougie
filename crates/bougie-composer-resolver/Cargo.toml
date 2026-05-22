@@ -10,33 +10,52 @@ authors.workspace = true
 
 [dependencies]
 eyre = "0.6"
+pubgrub = "0.4"
 rayon = "1.10"
+base64 = "0.22"
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 [dependencies.bougie-autoloader]
 path = "../bougie-autoloader"
-version = "0.1.0"
 
 [dependencies.bougie-composer]
 path = "../bougie-composer"
-version = "0.4.0"
 
 [dependencies.bougie-errors]
 path = "../bougie-errors"
-version = "0.4.0"
 
 [dependencies.bougie-fetch]
 path = "../bougie-fetch"
-version = "0.4.0"
+
+[dependencies.bougie-output]
+path = "../bougie-output"
 
 [dependencies.bougie-paths]
 path = "../bougie-paths"
-version = "0.4.0"
+
+[dependencies.indicatif]
+version = "0.18"
+
+[dependencies.tracing]
+version = "0.1"
+
+[dependencies.bougie-semver]
+path = "../bougie-semver"
 
 [dependencies.reqwest]
 version = "0.13"
 default-features = false
-features = ["blocking", "rustls"]
+features = ["blocking", "rustls", "gzip"]
+
+# Parallel metadata pre-fetch (`update::pre_fetch_closure_inner`) runs
+# a Semaphore-bounded fan-out on a small current-thread tokio runtime.
+# `rt` is the executor itself, `sync` is for `tokio::sync::Semaphore`,
+# `net` + `time` let the runtime drive `reqwest::Client`'s async HTTP
+# I/O (otherwise the futures park forever). `macros` is dev-only.
+[dependencies.tokio]
+version = "1"
+features = ["rt", "sync", "net", "time"]
 
 [dev-dependencies]
 tempfile = "3.10"

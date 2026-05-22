@@ -8,6 +8,7 @@
 
 pub mod fetch;
 pub mod lockfile;
+pub mod metadata;
 pub mod request;
 pub mod resolve;
 

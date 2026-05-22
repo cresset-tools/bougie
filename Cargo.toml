@@ -33,6 +33,7 @@ members = [
 ]
 
 [workspace.package]
+version = "0.5.0"
 edition = "2024"
 license = "EUPL-1.2"
 authors = ["Jelle Besseling <jelle@pingiun.com>"]
@@ -61,6 +62,11 @@ lto = "fat"
 opt-level = 3
 panic = "abort"
 strip = "symbols"
+
+[profile.profiling]
+inherits = "release"
+debug = "line-tables-only"
+strip = "none"
 
 [profile.dev]
 # Default; mostly here so developers don't get surprised by a tuned profile.
