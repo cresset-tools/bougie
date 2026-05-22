@@ -62,6 +62,12 @@ impl std::fmt::Display for ParseError {
 impl std::error::Error for ParseError {}
 
 impl Constraint {
+    /// Parse a Composer constraint string.
+    ///
+    /// # Panics
+    ///
+    /// Doesn't: the internal `.unwrap()`s reach `parsed.into_iter().next()`
+    /// only when `parsed.len() == 1` was just checked.
     pub fn parse(input: &str) -> Result<Self, ParseError> {
         let trimmed = input.trim();
         if trimmed.is_empty() {

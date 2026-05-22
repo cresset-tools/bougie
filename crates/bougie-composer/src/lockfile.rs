@@ -1628,7 +1628,7 @@ mod tests {
                         "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
                     ),
                     reference: Some("abc1234".into()),
-                    transport_options: Default::default(),
+                    transport_options: serde_json::Value::default(),
                 }),
                 source: None,
                 require: BTreeMap::from([("php".into(), ">=8.1".into())]),

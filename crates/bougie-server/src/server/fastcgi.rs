@@ -175,6 +175,11 @@ fn write_header(buf: &mut Vec<u8>, kind: RecordType, content_len: u16, padding_l
 /// Append one or more record frames for `body` under the given record
 /// type. Bodies longer than 65,535 bytes are split across multiple
 /// frames per the spec.
+///
+/// # Panics
+///
+/// Doesn't: the inner `u16::try_from(chunk.len())` is gated by
+/// `body.chunks(65_535)`, so each chunk's length always fits.
 pub fn write_record(buf: &mut Vec<u8>, kind: RecordType, body: &[u8]) {
     if body.is_empty() {
         // Empty record = "end of stream" sentinel for PARAMS / STDIN.

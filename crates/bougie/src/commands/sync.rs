@@ -434,7 +434,9 @@ fn replicate_install_conf_d(
         for entry in entries.flatten() {
             let name = entry.file_name();
             let Some(name) = name.to_str() else { continue };
-            if name.starts_with("00-") && name.ends_with(".ini") {
+            if name.starts_with("00-")
+                && std::path::Path::new(name).extension().is_some_and(|e| e == "ini")
+            {
                 let _ = std::fs::remove_file(entry.path());
             }
         }
@@ -444,7 +446,7 @@ fn replicate_install_conf_d(
         let entry = entry.map_err(|e| eyre!("dir entry: {e}"))?;
         let name = entry.file_name();
         let Some(name) = name.to_str() else { continue };
-        if !name.ends_with(".ini") {
+        if std::path::Path::new(name).extension().is_none_or(|e| e != "ini") {
             continue;
         }
         if let Some(ext_name) = ext_name_from_fragment(name)

@@ -309,11 +309,11 @@ fn is_safe_identifier(s: &str) -> bool {
 fn generate_password() -> String {
     use std::fs::File;
     use std::io::Read;
+    const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut buf = [0u8; 24];
     File::open("/dev/urandom")
         .and_then(|mut f| f.read_exact(&mut buf))
         .expect("/dev/urandom should be readable for password generation");
-    const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut out = String::with_capacity(48);
     for &b in &buf {
         out.push(HEX[(b >> 4) as usize] as char);

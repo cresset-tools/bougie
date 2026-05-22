@@ -29,6 +29,7 @@
 use bougie_index::wire::LoadDirective;
 use crate::install::conf_d_prefix_for;
 use eyre::{eyre, Result, WrapErr};
+use std::fmt::Write as _;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -182,13 +183,15 @@ fn write_fragment_into(
         // `; bougie-path: ` prefix is the structured marker. Paths
         // are absolute so `bougie run` doesn't need a project-root
         // base to resolve them.
-        body.push_str(&format!("; bougie-path: {}\n", extra.display()));
+        writeln!(body, "; bougie-path: {}", extra.display()).expect("writing to String");
     }
-    body.push_str(&format!(
-        "{directive}={so}\n",
+    writeln!(
+        body,
+        "{directive}={so}",
         directive = load.ini_directive(),
         so = format_ini_path(so_path),
-    ));
+    )
+    .expect("writing to String");
     body.push_str(default_ini_settings_for(name));
     write_atomic(&path, body.as_bytes())?;
     Ok(path)

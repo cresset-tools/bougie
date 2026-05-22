@@ -211,7 +211,9 @@ fn random_hex_chars(n: usize) -> String {
         // xorshift64-style step on each 64-bit half of the 128-bit
         // state. We don't need crypto-grade output, just uncorrelated
         // bytes for a cache-namespace tag.
-        state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        state = state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
         for byte in state.to_le_bytes() {
             if out.len() >= n {
                 break;

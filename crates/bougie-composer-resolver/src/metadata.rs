@@ -179,10 +179,11 @@ fn extract_cache_namespace(url: &str) -> String {
     }
     // Fallback: a short hex digest of the full URL. Use a cheap
     // FNV-style hash rather than pulling sha2 here.
-    let mut h: u64 = 0xcbf29ce484222325;
+    // FNV-1a 64-bit offset basis and prime.
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for b in url.as_bytes() {
         h ^= u64::from(*b);
-        h = h.wrapping_mul(0x100000001b3);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
     }
     format!("url-{h:016x}")
 }

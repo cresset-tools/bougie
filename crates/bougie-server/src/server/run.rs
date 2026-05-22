@@ -28,6 +28,12 @@ use super::watcher;
 
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 
+/// # Panics
+///
+/// Panics if installing the SIGINT/SIGTERM handlers fails (only the
+/// init step does, not anything stdlib does at the actual signal),
+/// or if any `RwLock` guarding shared state is poisoned mid-serve.
+/// Both indicate an unrecoverable shutdown state.
 pub fn run(
     _format: OutputFormat,
     config_path: &Path,

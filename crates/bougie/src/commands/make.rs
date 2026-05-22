@@ -14,6 +14,7 @@ use bougie_recipe::{
 };
 use eyre::{eyre, Result, WrapErr};
 use serde::Serialize;
+use std::fmt::Write as _;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -107,32 +108,36 @@ pub fn run(format: OutputFormat, opts: MakeOptions) -> Result<ExitCode> {
     if opts.print {
         let mut buf = String::new();
         for (name, def) in &recipe.tasks {
-            buf.push_str(&format!("[task.{name}]\n"));
+            writeln!(buf, "[task.{name}]").expect("writing to String");
             if !def.deps.is_empty() {
-                buf.push_str(&format!(
-                    "deps = [{}]\n",
+                writeln!(
+                    buf,
+                    "deps = [{}]",
                     def.deps
                         .iter()
                         .map(|d| format!("{d:?}"))
                         .collect::<Vec<_>>()
                         .join(", ")
-                ));
+                )
+                .expect("writing to String");
             }
             if let Some(c) = &def.creates {
                 if c.len() == 1 {
-                    buf.push_str(&format!("creates = {:?}\n", c[0]));
+                    writeln!(buf, "creates = {:?}", c[0]).expect("writing to String");
                 } else {
-                    buf.push_str(&format!(
-                        "creates = [{}]\n",
+                    writeln!(
+                        buf,
+                        "creates = [{}]",
                         c.iter().map(|p| format!("{p:?}")).collect::<Vec<_>>().join(", ")
-                    ));
+                    )
+                    .expect("writing to String");
                 }
             }
             if let Some(c) = &def.check {
-                buf.push_str(&format!("check = {c:?}\n"));
+                writeln!(buf, "check = {c:?}").expect("writing to String");
             }
             if let Some(r) = &def.run {
-                buf.push_str(&format!("run = \"\"\"\n{r}\n\"\"\"\n"));
+                writeln!(buf, "run = \"\"\"\n{r}\n\"\"\"").expect("writing to String");
             }
             buf.push('\n');
         }

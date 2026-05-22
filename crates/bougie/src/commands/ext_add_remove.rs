@@ -115,7 +115,7 @@ pub fn add(
         // do not touch composer.json. PHP extension names never
         // contain a dot, so the `.so` suffix is an unambiguous
         // discriminator from index names like `redis` or `redis@6.0.2`.
-        if raw.ends_with(".so") {
+        if std::path::Path::new(raw).extension().is_some_and(|e| e == "so") {
             items.push(install_local_arg(&paths, &project_root, raw, php_minor, flavor)?);
             continue;
         }

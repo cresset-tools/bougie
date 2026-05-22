@@ -223,6 +223,13 @@ impl Supervisor {
     /// Stopped → Starting → `HealthChecking` → Running. Returns `true`
     /// if this call brought the service up; `false` if it was already
     /// running.
+    ///
+    /// # Panics
+    ///
+    /// Panics on a BUG: the inner `services.get_mut(name).unwrap()`
+    /// calls assume `name` is in the map, which `Supervisor::new`
+    /// populates from the catalog. A panic here means the catalog
+    /// shifted under us mid-call.
     pub async fn start(&mut self, name: &str) -> Result<bool> {
         let entry = catalog::find(name)
             .ok_or_else(|| eyre!("unknown service `{name}`"))?;
@@ -796,7 +803,7 @@ where
                         return;
                     }
                 }
-                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
                 Err(e) => {
                     tracing::warn!(service, error = %e, "reading from child pipe");
                     return;
@@ -942,6 +949,12 @@ async fn stop_child(child: &mut Child, pid: Option<u32>) {
 /// services in the order they should be started; cycles return an
 /// error (catalog tests catch typos already, so a cycle is the only
 /// remaining failure mode).
+///
+/// # Panics
+///
+/// Panics on a BUG: the inner `edges.get_mut`/`indeg.get_mut`
+/// calls assume every name in `wanted` got an entry, which is
+/// established right before the topological walk.
 pub fn compute_start_order(target: &[&str]) -> Result<Vec<&'static str>> {
     // Resolve every target name + transitively every dep.
     let mut wanted: HashSet<&'static str> = HashSet::new();

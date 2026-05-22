@@ -88,7 +88,7 @@ fn ensure_blob_cached() -> PathBuf {
     eprintln!("[rabbitmq_fixture] downloading {BLOB_URL} -> {}", blob_path.display());
     let client = reqwest::blocking::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(15))
-        .timeout(std::time::Duration::from_secs(5 * 60))
+        .timeout(std::time::Duration::from_mins(5))
         .build()
         .expect("reqwest client");
     let resp = client

@@ -198,9 +198,8 @@ async fn wait_socket_eof(s: &mut tokio::net::UnixStream) {
     let mut buf = [0u8; 64];
     loop {
         match s.read(&mut buf).await {
-            Ok(0) => return,
-            Ok(_) => continue,
-            Err(_) => return,
+            Ok(0) | Err(_) => return,
+            Ok(_) => {}
         }
     }
 }

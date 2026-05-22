@@ -19,6 +19,7 @@ use bougie_cli::{
     ServerHostsCommand, ServerTlsCommand, ServicesCommand, ServicesDaemonCommand,
 };
 use eyre::Result;
+use std::io::IsTerminal;
 use std::process::ExitCode;
 
 #[cfg(not(unix))]
@@ -37,7 +38,6 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
     // interactive text-mode invocation: a JSON consumer would otherwise
     // see ANSI escapes mixed into stderr alongside the §9.2 event stream,
     // and `--quiet` users opted out of all non-error stderr noise.
-    use std::io::IsTerminal;
     let progress_visible = !cli.quiet
         && matches!(format, OutputFormat::Text)
         && std::io::stderr().is_terminal();

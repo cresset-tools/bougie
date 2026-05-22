@@ -46,9 +46,13 @@ pub fn detect_from_text(composer_json: Option<&str>) -> &'static str {
     "generic"
 }
 
-/// Look up a builtin recipe by name and parse it. Panics on a
-/// programming error (a malformed builtin would mean the binary
-/// shipped broken).
+/// Look up a builtin recipe by name and parse it.
+///
+/// # Panics
+///
+/// Panics on a programming error: a builtin recipe TOML literal
+/// embedded in this crate fails to parse. Caught at test time, so
+/// in production this never fires.
 pub fn load_builtin(name: &str) -> Option<Recipe> {
     let (_, text) = BUILTINS.iter().find(|(n, _)| *n == name)?;
     Some(parse(text).expect("builtin recipe must parse"))

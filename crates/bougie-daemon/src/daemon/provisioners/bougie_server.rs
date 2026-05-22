@@ -310,12 +310,12 @@ fn control_socket_path() -> PathBuf {
 /// project path).
 fn project_runtime_dir(project: &Path) -> Option<PathBuf> {
     use sha2::{Digest, Sha256};
+    const HEX: &[u8; 16] = b"0123456789abcdef";
     let canonical = project.canonicalize().ok()?;
     let hash = {
         let mut h = Sha256::new();
         h.update(canonical.as_os_str().to_string_lossy().as_bytes());
         let digest = h.finalize();
-        const HEX: &[u8; 16] = b"0123456789abcdef";
         let mut out = String::with_capacity(12);
         for &b in &digest[..6] {
             out.push(HEX[(b >> 4) as usize] as char);
