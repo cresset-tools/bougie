@@ -1887,19 +1887,47 @@ impl DependencyProvider for ResolveProvider {
     type P = PubGrubPackage;
     type V = Version;
     type VS = ComposerRange;
-    type Priority = ();
+    // `Reverse` flips the natural ordering on `u32` so the lowest
+    // candidate count maps to the highest priority. pubgrub picks
+    // the package with the largest priority on every iteration; we
+    // want it to pick whichever package has the fewest in-range
+    // candidates first (Tsai's "fewer candidates first"), so the
+    // resolver doesn't waste exploration on flexible packages while
+    // a tight constraint is sitting unsolved waiting to fail.
+    type Priority = std::cmp::Reverse<u32>;
     type M = String;
     type Err = ProviderError;
 
     fn prioritize(
         &self,
-        _package: &Self::P,
-        _range: &Self::VS,
+        package: &Self::P,
+        range: &Self::VS,
         _stats: &PackageResolutionStatistics,
     ) -> Self::Priority {
-        // First-pass: every package is equal-priority. A refined
-        // heuristic (Tsai-style "fewer candidates first") lands when
-        // benchmark fixtures exist to validate the change.
+        // Root is always decided first. `Reverse(0)` is the highest
+        // value the `Reverse<u32>` ordering admits.
+        let PubGrubPackage::Package(name) = package else {
+            return std::cmp::Reverse(0);
+        };
+        // Peek the already-populated caches; never fetch from
+        // `prioritize`. pubgrub calls this constantly (every time the
+        // partial solution changes), and pre-fetch has already closed
+        // by the time the solve loop runs, so a real candidate list
+        // either lives in `merged_cache` (post-`versions_for` shape)
+        // or `cache` (raw pre-fetch staging) by now. For virtual
+        // names, we additionally consult `virtual_providers` — those
+        // entries never land in `cache` because they're synthesized
+        // lazily by `synthesize_virtual_candidates`.
+        let count = self.priority_count(name.as_str(), range);
+        // Packages we don't have a cache entry for yet (rare —
+        // typically a virtual whose provider isn't loaded) sort
+        // between the well-known few-candidate names and the broad
+        // many-candidate names. Avoid `u32::MAX` (would never get
+        // picked) and `0` (would short-circuit Root); the midpoint
+        // is a safe "unknown so go ahead of broad packages, behind
+        // narrow ones" guess until the cache populates and a later
+        // `prioritize` call refines it.
+        std::cmp::Reverse(count.unwrap_or(u32::MAX / 2))
     }
 
     fn choose_version(
@@ -1982,6 +2010,51 @@ impl DependencyProvider for ResolveProvider {
 }
 
 impl ResolveProvider {
+    /// Count the in-range candidates for `name` without triggering a
+    /// fetch. Used by `prioritize` to feed the "fewer candidates
+    /// first" heuristic. Returns `None` when neither cache holds an
+    /// entry for `name` — `prioritize` falls back to a default in
+    /// that case rather than blocking on a network round-trip.
+    ///
+    /// Lookup order matches `versions_for`'s logical order:
+    /// post-merge `merged_cache` first (the form `choose_version`
+    /// would actually see), then the raw pre-fetch `cache` (with
+    /// virtuals merged from `virtual_providers`). The latter
+    /// approximates what `versions_for` would synthesize once it's
+    /// asked; close enough for an ordering heuristic.
+    fn priority_count(&self, name: &str, range: &ComposerRange) -> Option<u32> {
+        if let Some(entries) = self.merged_cache.borrow().get(name) {
+            let n = entries
+                .iter()
+                .filter(|(v, _)| range.contains(v))
+                .count();
+            return Some(u32::try_from(n).unwrap_or(u32::MAX));
+        }
+        let real_count = self
+            .cache
+            .borrow()
+            .get(name)
+            .map(|entries| entries.iter().filter(|(v, _)| range.contains(v)).count())
+            .unwrap_or(0);
+        let virtual_count = self
+            .virtual_providers
+            .borrow()
+            .get(name)
+            .map(|entries| {
+                entries
+                    .iter()
+                    .filter(|e| range.contains(&e.provided_version))
+                    .count()
+            })
+            .unwrap_or(0);
+        let total = real_count + virtual_count;
+        if total == 0 {
+            None
+        } else {
+            Some(u32::try_from(total).unwrap_or(u32::MAX))
+        }
+    }
+
     /// Parsed-deps cache lookup + populate. Returns the shared
     /// `Arc<Vec<_>>` for `(package, version)`; pubgrub's
     /// `get_dependencies` rebuilds a fresh `DependencyConstraints`

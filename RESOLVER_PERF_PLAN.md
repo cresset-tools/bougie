@@ -305,6 +305,38 @@ baseline (the bench tells us how much). No test regressions. The
 TODO at `update.rs:1857` is replaced with a real implementation and
 a rationale comment.
 
+Result: **no measurable change within bench noise.** Three runs:
+142–144 / 145–148 / 141–143 ms — straddling the prior PR's
+confidence interval with `p` between 0.00 and 0.11. The heuristic
++ all 90 tests pass; pubgrub's search order changed but no test
+relied on insertion-order ties. Same conceptual reason as PR 1:
+the captured magento2 closure resolves with **zero backjumping**
+(0 hits / 421 misses against the PR 1 cache, confirmed in PR 1's
+write-up). Without conflicts, search order doesn't help — the
+per-call counting cost in `priority_count` is roughly cancelled by
+the lack of benefit.
+
+The plan anticipated this exact case but for tiny graphs ("bookkeeping
+might dominate on tiny graphs"); here it dominates on a *clean*
+2510-package graph because every `choose_version` succeeds first
+try. Real shipping projects with conflicting transitive constraints
+should see PR 4 actually pay; the magento2 fixture happens to be
+the harmless case.
+
+Shipped because:
+1. The TODO at `update.rs:1857` is now resolved with a real
+   implementation, not a placeholder.
+2. The code is correctness-preserving (all tests still pass) and
+   matches uv's Tsai-style approach.
+3. PR 1's cache lights up at the same time PR 4's reordering does
+   (both pay off on backjump-heavy resolves), so the bench
+   blind-spot is shared.
+
+Future work: capture a known-conflicting fixture (e.g. magento +
+extensions whose require-dev conflicts trigger pubgrub backtracking)
+to make the post-PR-4 win visible. Without that, the bench can't
+distinguish "PR 4 helps but not here" from "PR 4 doesn't help."
+
 ## Ordering rationale
 
 - PR 0 first because every later PR cites its number.
