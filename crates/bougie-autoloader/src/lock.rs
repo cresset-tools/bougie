@@ -206,7 +206,7 @@ pub(crate) fn read_root_manifest(project_root: &Path) -> Result<RootManifest, Du
 /// Composer's PSR-4 / PSR-0 maps accept either a single string or an
 /// array of strings as the value. Both shapes get normalized to
 /// `Vec<String>`. Order is preserved (we requested `preserve_order`
-/// from serde_json at the crate level).
+/// from `serde_json` at the crate level).
 fn de_namespace_map<'de, D>(d: D) -> Result<Vec<(String, Vec<String>)>, D::Error>
 where
     D: serde::Deserializer<'de>,

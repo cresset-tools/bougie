@@ -13,7 +13,7 @@ use std::process::Command;
 use tempfile::TempDir;
 use zip::write::SimpleFileOptions;
 
-/// Path to the freshly-built `bougie` binary, courtesy of assert_cmd.
+/// Path to the freshly-built `bougie` binary, courtesy of `assert_cmd`.
 fn bougie_bin() -> PathBuf {
     assert_cmd::cargo::cargo_bin("bougie")
 }

@@ -343,7 +343,7 @@ async fn dispatch_restart(
     services: Vec<String>,
 ) -> ResultFrame {
     use crate::daemon::catalog;
-    let names: Vec<&str> = services.iter().map(|s| s.as_str()).collect();
+    let names: Vec<&str> = services.iter().map(std::string::String::as_str).collect();
     // Re-order to respect after/requires graph. Same topology used
     // by `service.up` so a `restart` of dependents lines up the same
     // way as a fresh boot.
@@ -355,7 +355,7 @@ async fn dispatch_restart(
     for name in order {
         // Skip transitively-pulled runtime deps that aren't real
         // managed processes (jdk, erlang).
-        if !catalog::find(name).map(|e| e.user_facing).unwrap_or(false) {
+        if !catalog::find(name).is_some_and(|e| e.user_facing) {
             continue;
         }
         let mut sup = state.supervisor.lock().await;
@@ -368,7 +368,7 @@ async fn dispatch_restart(
             Err(e) => {
                 return ResultFrame::err(
                     "service_stop_failed",
-                    format!("{}: {}", name, e),
+                    format!("{name}: {e}"),
                 );
             }
         };
@@ -376,7 +376,7 @@ async fn dispatch_restart(
             if let Err(e) = sup.start(name).await {
                 return ResultFrame::err(
                     "service_start_failed",
-                    format!("{}: {}", name, e),
+                    format!("{name}: {e}"),
                 );
             }
             restarted.push(name.to_string());
@@ -410,11 +410,10 @@ async fn dispatch_logs(
     // 1. Tail.
     let tail = logs::tail_lines(&log_path, args.lines).unwrap_or_default();
     let joined = tail.concat();
-    if !joined.is_empty() {
-        if !write_progress(write_half, "stdout", &joined).await {
+    if !joined.is_empty()
+        && !write_progress(write_half, "stdout", &joined).await {
             return;
         }
-    }
 
     if !args.follow {
         let frame = ResultFrame::ok(serde_json::json!({"lines_tailed": tail.len()}));
@@ -651,7 +650,7 @@ async fn dispatch_up(
                 Err(e) => {
                     return ResultFrame::err(
                         "service_tarball_fetch_failed",
-                        format!("{}: {:#}", name, e),
+                        format!("{name}: {e:#}"),
                     );
                 }
             };
@@ -673,7 +672,7 @@ async fn dispatch_up(
         if let Err(e) = pre_res {
             return ResultFrame::err(
                 "pre_start_failed",
-                format!("{}: {}", name, e),
+                format!("{name}: {e}"),
             );
         }
         // Start (idempotent).
@@ -684,7 +683,7 @@ async fn dispatch_up(
             Err(e) => {
                 return ResultFrame::err(
                     "service_start_failed",
-                    format!("{}: {}", name, e),
+                    format!("{name}: {e}"),
                 );
             }
         }
@@ -711,7 +710,7 @@ async fn dispatch_up(
                 Err(e) => {
                     return ResultFrame::err(
                         "provision_failed",
-                        format!("{}: {:#}", name, e),
+                        format!("{name}: {e:#}"),
                     );
                 }
             }
@@ -769,8 +768,7 @@ async fn dispatch_down(
             // Stop the global service iff no tenants remain.
             let remaining = tenants::load_all(&tenants_path)
                 .await
-                .map(|v| v.len())
-                .unwrap_or(0);
+                .map_or(0, |v| v.len());
             if remaining == 0 {
                 let stop_res = state.supervisor.lock().await.stop(entry.name).await;
                 if let Ok(true) = stop_res {
@@ -784,6 +782,9 @@ async fn dispatch_down(
         "deprovisioned": deprovisioned,
     }))
 }
+
+// Watch channel type re-exported for `DaemonState`.
+pub(super) type ShutdownTx = watch::Sender<bool>;
 
 #[cfg(test)]
 mod tests {
@@ -911,6 +912,3 @@ mod tests {
         assert!(s.contains("downloading redis"));
     }
 }
-
-// Watch channel type re-exported for `DaemonState`.
-pub(super) type ShutdownTx = watch::Sender<bool>;

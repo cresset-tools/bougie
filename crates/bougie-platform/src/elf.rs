@@ -223,7 +223,7 @@ fn find_relative_reloc(buf: &[u8], sections: &[Section], ptr_vaddr: u64) -> Resu
 
 /// Map a virtual address to a file offset by finding the section
 /// whose `[sh_addr, sh_addr+sh_size)` range contains it. Non-loaded
-/// sections (sh_addr == 0) are skipped — those are link-time
+/// sections (`sh_addr` == 0) are skipped — those are link-time
 /// artifacts like .symtab / .strtab that don't get a runtime mapping.
 fn vaddr_to_file_off(sections: &[Section], vaddr: u64, len: u64) -> Result<usize> {
     for s in sections {
@@ -367,7 +367,7 @@ mod tests {
         data: Vec<u8>,
         dynstr: Vec<u8>,
         symbols: Vec<(u32, u64)>, // (st_name_offset, st_value)
-        /// (r_offset, r_addend) for R_X86_64_RELATIVE entries.
+        /// (`r_offset`, `r_addend`) for `R_X86_64_RELATIVE` entries.
         relocs: Vec<(u64, u64)>,
     }
 
@@ -430,7 +430,7 @@ mod tests {
             for (r_offset, r_addend) in &self.relocs {
                 let mut entry = [0u8; 24];
                 entry[0..8].copy_from_slice(&r_offset.to_le_bytes());
-                let r_info: u64 = R_X86_64_RELATIVE as u64; // sym=0, type in low bits
+                let r_info: u64 = u64::from(R_X86_64_RELATIVE); // sym=0, type in low bits
                 entry[8..16].copy_from_slice(&r_info.to_le_bytes());
                 entry[16..24].copy_from_slice(&(*r_addend as i64).to_le_bytes());
                 buf.extend_from_slice(&entry);

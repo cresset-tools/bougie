@@ -38,12 +38,12 @@ pub fn detect_from_bytes(buf: &[u8]) -> Result<DetectedExt> {
              are universally 64-bit"
         )),
         // Big-endian Mach-O (MH_CIGAM_64 on disk = 0xcffaedfe BE).
-        [0xfe, 0xed, 0xfa, 0xcf] | [0xfe, 0xed, 0xfa, 0xce] => Err(eyre!(
+        [0xfe, 0xed, 0xfa, 0xcf | 0xce] => Err(eyre!(
             "big-endian Mach-O is not supported"
         )),
         // FAT/universal binaries (big-endian magic on disk = 0xCAFEBABE).
         // The 64-bit variant uses 0xCAFEBABF.
-        [0xca, 0xfe, 0xba, 0xbe] | [0xca, 0xfe, 0xba, 0xbf] => Err(eyre!(
+        [0xca, 0xfe, 0xba, 0xbe | 0xbf] => Err(eyre!(
             "this is a FAT/universal binary; extract a single-arch \
              slice first, e.g. `lipo <path> -thin arm64 -output <out>.so` \
              (or `x86_64` on Intel macOS)"

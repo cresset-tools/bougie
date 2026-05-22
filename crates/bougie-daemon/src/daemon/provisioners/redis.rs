@@ -61,13 +61,11 @@ pub async fn deprovision(
     let Some(target) = existing.iter().find(|t| t.tenant == tenant_name).cloned() else {
         return Ok(()); // nothing to do
     };
-    if purge {
-        if let Some(sock) = socket_path {
-            if let Some(db) = target.alloc.get("db_number").and_then(serde_json::Value::as_u64) {
+    if purge
+        && let Some(sock) = socket_path
+            && let Some(db) = target.alloc.get("db_number").and_then(serde_json::Value::as_u64) {
                 flush_db(sock, db).await?;
             }
-        }
-    }
     tenants::rewrite(tenants_path, |t| t.tenant != tenant_name).await?;
     Ok(())
 }

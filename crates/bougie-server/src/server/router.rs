@@ -4,7 +4,7 @@
 //! 2. Run `try_files` (`static_files::resolve`).
 //! 3. Serve the resolved file with `Cache-Control: no-cache` and a
 //!    mime-guessed `Content-Type`. `.php` matches dispatch to a
-//!    php-fpm pool over FastCGI via [`super::pool`].
+//!    php-fpm pool over `FastCGI` via [`super::pool`].
 //!
 //! Phase 3 layers per-request xdebug routing on top of the
 //! `variant="normal"` plumbing this module installs.
@@ -31,8 +31,8 @@ use super::pool::PoolManager;
 use super::static_files::{self, Resolution};
 use super::xdebug::{self, Variant};
 
-/// Upper bound on request body bytes forwarded to FastCGI. 32 MB
-/// matches SERVER_PLAN.md's deferred decision; the cap can be lifted
+/// Upper bound on request body bytes forwarded to `FastCGI`. 32 MB
+/// matches `SERVER_PLAN.md`'s deferred decision; the cap can be lifted
 /// to a config knob if anyone hits it.
 const MAX_REQUEST_BODY: usize = 32 * 1024 * 1024;
 
@@ -93,7 +93,7 @@ impl AppState {
     }
 
     /// Replace the in-memory hostname → host map. Atomic swap under
-    /// the RwLock: in-flight requests holding read guards continue
+    /// the `RwLock`: in-flight requests holding read guards continue
     /// against the old map; new lookups see the new one. Used by the
     /// control socket's `reload-config` method.
     pub fn replace_hosts(&self, config: &ServerConfig) -> eyre::Result<usize> {
@@ -599,7 +599,7 @@ mod tests {
         let pm = Arc::new(PoolManager::new(
             bp,
             sp,
-            std::time::Duration::from_secs(600),
+            std::time::Duration::from_mins(10),
             16,
         ));
         let registry = Arc::new(WatchRegistry::new());

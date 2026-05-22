@@ -163,7 +163,7 @@ run = "true"
 
     #[test]
     fn unknown_target_errors() {
-        let r = parse(r#"[task.x]"#).unwrap();
+        let r = parse(r"[task.x]").unwrap();
         let err = Dag::build(&r, "y").unwrap_err();
         assert!(matches!(err, DagError::UnknownTask(_)));
     }

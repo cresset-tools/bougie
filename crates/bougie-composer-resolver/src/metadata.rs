@@ -14,10 +14,10 @@
 //!   second `composer update` only re-validates the packages whose
 //!   server-side mtime advanced.
 //!
-//! - **`If-None-Match` + ETag sidecar.** Packagist's response sets
+//! - **`If-None-Match` + `ETag` sidecar.** Packagist's response sets
 //!   both `ETag` and `Last-Modified`; we follow the existing
 //!   `bougie_composer::fetch` convention (`fetch_channels`) and use
-//!   ETag. A 304 short-circuits to the cached body without an extra
+//!   `ETag`. A 304 short-circuits to the cached body without an extra
 //!   round-trip.
 //!
 //! The prefetcher (background tokio task that warms metadata for

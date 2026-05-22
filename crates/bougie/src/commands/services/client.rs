@@ -1,6 +1,6 @@
 //! Synchronous IPC client for `bougied`.
 //!
-//! The rest of bougie's CLI is sync; using a blocking UnixStream
+//! The rest of bougie's CLI is sync; using a blocking `UnixStream`
 //! against the daemon's tokio listener works fine. Tokio reads each
 //! `\n`-terminated frame as the client writes it, and the client reads
 //! frames the same way.
@@ -201,7 +201,7 @@ fn probe_daemon_version(sock: &Path) -> Option<String> {
         ResponseFrame::Result { ok: true, result: Some(v), .. } => v
             .get("version")
             .and_then(|x| x.as_str())
-            .map(|s| s.to_string()),
+            .map(std::string::ToString::to_string),
         _ => None,
     }
 }
@@ -315,15 +315,12 @@ fn issue_streaming(stream: UnixStream, request: &Value) -> Result<()> {
         let frame: ResponseFrame = serde_json::from_str(line.trim())
             .wrap_err_with(|| format!("parsing frame: {}", line.trim()))?;
         match frame {
-            ResponseFrame::Progress { stream, data } => match stream.as_str() {
-                "stdout" => {
-                    let _ = std::io::stdout().write_all(data.as_bytes());
-                    let _ = std::io::stdout().flush();
-                }
-                _ => {
-                    let _ = std::io::stderr().write_all(data.as_bytes());
-                    let _ = std::io::stderr().flush();
-                }
+            ResponseFrame::Progress { stream, data } => if stream.as_str() == "stdout" {
+                let _ = std::io::stdout().write_all(data.as_bytes());
+                let _ = std::io::stdout().flush();
+            } else {
+                let _ = std::io::stderr().write_all(data.as_bytes());
+                let _ = std::io::stderr().flush();
             },
             ResponseFrame::Result { ok: true, .. } => return Ok(()),
             ResponseFrame::Result { ok: false, error, .. } => {

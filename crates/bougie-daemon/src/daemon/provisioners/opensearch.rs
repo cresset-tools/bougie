@@ -71,7 +71,7 @@ pub async fn pre_start(paths: &Paths) -> Result<()> {
     let basedir = store_layout::basedir(paths, entry)
         .wrap_err("resolving opensearch basedir")?;
     let src_config = basedir.join("config");
-    if !tokio::fs::metadata(&src_config).await.map(|m| m.is_dir()).unwrap_or(false) {
+    if !tokio::fs::metadata(&src_config).await.is_ok_and(|m| m.is_dir()) {
         return Err(eyre!(
             "opensearch tarball missing config/ at {}",
             src_config.display()
@@ -311,11 +311,10 @@ async fn wait_for_cluster(timeout: Duration) -> Result<()> {
     let deadline = Instant::now() + timeout;
     let url = format!("{OPENSEARCH_BASE_URL}/");
     loop {
-        if let Ok(r) = client.get(&url).send().await {
-            if r.status().is_success() {
+        if let Ok(r) = client.get(&url).send().await
+            && r.status().is_success() {
                 return Ok(());
             }
-        }
         if Instant::now() >= deadline {
             return Err(eyre!(
                 "opensearch HTTP root never returned 200 within {timeout:?}"
@@ -328,7 +327,7 @@ async fn wait_for_cluster(timeout: Duration) -> Result<()> {
 /// Match `[a-z0-9_]+`. Opensearch's index template names accept a
 /// broader set than mariadb identifiers but we lowercase + strip
 /// non-word chars at the CLI layer already (composer "acme/blog" →
-/// "acme_blog"); the cap here is defence-in-depth so a malformed
+/// "`acme_blog`"); the cap here is defence-in-depth so a malformed
 /// `extra.bougie.services.tenant` can't ship malicious URL paths.
 fn is_safe_template_name(s: &str) -> bool {
     !s.is_empty()

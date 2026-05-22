@@ -175,8 +175,7 @@ mod tests {
     fn runs_phony_task_and_skips_when_creates_present() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().to_path_buf();
-        let r = parse(&format!(
-            r#"
+        let r = parse(r#"
 [task.touch]
 creates = "marker"
 run = "touch marker"
@@ -184,8 +183,7 @@ run = "touch marker"
 [task.start]
 deps = ["touch"]
 run = "echo start"
-"#
-        ))
+"#)
         .unwrap();
         let dag = Dag::build(&r, "start").unwrap();
         let opts = RunOptions {

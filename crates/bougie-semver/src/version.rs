@@ -254,9 +254,9 @@ impl Version {
         if let Some(caps) = re_classical().captures(&numeric_candidate) {
             let segs = collect_classical_segments(&caps);
             let suffix = parse_modifier(
-                caps.get(5).map(|m| m.as_str()).unwrap_or(""),
-                caps.get(6).map(|m| m.as_str()).unwrap_or(""),
-                caps.get(7).map(|m| m.as_str()).unwrap_or(""),
+                caps.get(5).map_or("", |m| m.as_str()),
+                caps.get(6).map_or("", |m| m.as_str()),
+                caps.get(7).map_or("", |m| m.as_str()),
             )?;
             let normalized = render_numeric(&segs, &suffix);
             return Ok(Version {
@@ -270,9 +270,9 @@ impl Version {
             let body = caps.get(1).unwrap().as_str();
             let segs = split_date_segments(body);
             let suffix = parse_modifier(
-                caps.get(2).map(|m| m.as_str()).unwrap_or(""),
-                caps.get(3).map(|m| m.as_str()).unwrap_or(""),
-                caps.get(4).map(|m| m.as_str()).unwrap_or(""),
+                caps.get(2).map_or("", |m| m.as_str()),
+                caps.get(3).map_or("", |m| m.as_str()),
+                caps.get(4).map_or("", |m| m.as_str()),
             )?;
             let normalized = render_numeric(&segs, &suffix);
             return Ok(Version {
@@ -604,17 +604,11 @@ fn split_aliased(s: &str) -> Option<(&str, &str)> {
 fn collect_classical_segments(caps: &regex::Captures) -> Vec<String> {
     let s1 = caps.get(1).unwrap().as_str().to_owned();
     let s2 = caps
-        .get(2)
-        .map(|m| m.as_str().trim_start_matches('.').to_owned())
-        .unwrap_or_else(|| "0".to_owned());
+        .get(2).map_or_else(|| "0".to_owned(), |m| m.as_str().trim_start_matches('.').to_owned());
     let s3 = caps
-        .get(3)
-        .map(|m| m.as_str().trim_start_matches('.').to_owned())
-        .unwrap_or_else(|| "0".to_owned());
+        .get(3).map_or_else(|| "0".to_owned(), |m| m.as_str().trim_start_matches('.').to_owned());
     let s4 = caps
-        .get(4)
-        .map(|m| m.as_str().trim_start_matches('.').to_owned())
-        .unwrap_or_else(|| "0".to_owned());
+        .get(4).map_or_else(|| "0".to_owned(), |m| m.as_str().trim_start_matches('.').to_owned());
     vec![s1, s2, s3, s4]
 }
 

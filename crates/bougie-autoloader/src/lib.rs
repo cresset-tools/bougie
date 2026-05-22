@@ -102,9 +102,9 @@ pub struct DumpRequest<'a> {
     pub no_dev: bool,
     /// `--apcu-autoloader` — emits a `setApcuPrefix` call in
     /// `autoload_real.php`. Has no effect unless the PHP runtime has
-    /// the APCu extension loaded; the line is a no-op otherwise.
+    /// the `APCu` extension loaded; the line is a no-op otherwise.
     pub apcu_autoloader: bool,
-    /// Explicit APCu prefix override (`--apcu-autoloader-prefix=X`).
+    /// Explicit `APCu` prefix override (`--apcu-autoloader-prefix=X`).
     /// When `apcu_autoloader` is true and this is None, Composer
     /// generates a random `bin2hex(random_bytes(10))` prefix; bougie
     /// does the same. Supply an explicit value for byte-equivalence
@@ -184,14 +184,14 @@ pub(crate) fn format_relative_path(file: &Path, project_root: &Path) -> String {
     }
 }
 
-/// Lightweight ASCII-hex randomness for the APCu prefix default.
+/// Lightweight ASCII-hex randomness for the `APCu` prefix default.
 /// Mirrors PHP's `bin2hex(random_bytes(n/2))`. `n` is the output
 /// length in hex chars (so `random_bytes(10)` → 20-char hex prefix).
 ///
 /// Source of entropy: nanos-since-epoch XOR'd with the process ID
 /// and the address of a stack local — enough to avoid same-tick
 /// collisions on the same host. Composer itself uses a CSPRNG; the
-/// prefix's job is purely to namespace the APCu cache so two
+/// prefix's job is purely to namespace the `APCu` cache so two
 /// unrelated projects on the same SAPI don't share entries. For
 /// byte-equivalence tests, callers should pass an explicit
 /// `apcu_prefix` (no fallback to randomness then).
@@ -202,8 +202,7 @@ fn random_hex_chars(n: usize) -> String {
     let local = 0u8;
     let mut state: u128 = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0)
+        .map_or(0, |d| d.as_nanos())
         ^ u128::from(std::process::id())
         ^ (std::ptr::addr_of!(local) as u128);
 

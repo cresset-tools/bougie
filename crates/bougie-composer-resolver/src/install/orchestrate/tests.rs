@@ -22,7 +22,7 @@ fn write_project(dir: &Path, json: &str, lock: &str) {
 }
 
 /// Compute a valid content-hash for a composer.json body so the
-/// fixture lockfile carries the right value and verify_content_hash
+/// fixture lockfile carries the right value and `verify_content_hash`
 /// passes (letting preflight be the part the test actually exercises).
 fn hash_for(composer_json: &str) -> String {
     bougie_composer::lockfile::content_hash(composer_json.as_bytes()).unwrap()

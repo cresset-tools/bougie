@@ -4,7 +4,7 @@
 //! plain `Deserialize` struct.
 //!
 //! Section rows are *lean*: they carry only what the resolver needs to
-//! choose between artifacts (tag, version, flavor, php_minor for
+//! choose between artifacts (tag, version, flavor, `php_minor` for
 //! extensions, manifest pointer, yanked, frozen). Manifests are *fat*:
 //! they carry the full ABI/libc surface, the blob URL + sha256, and the
 //! closure of bundled-library store paths. See DISTRIBUTION.md

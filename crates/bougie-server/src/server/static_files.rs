@@ -22,7 +22,7 @@ pub enum Resolution {
     /// portion *after* the script when a front-controller pattern
     /// fell through (empty for direct `.php` hits). The router uses
     /// these to populate `SCRIPT_FILENAME`, `SCRIPT_NAME`, and
-    /// `PATH_INFO` per the nginx FastCGI convention.
+    /// `PATH_INFO` per the nginx `FastCGI` convention.
     Php {
         script_filename: PathBuf,
         script_name: String,

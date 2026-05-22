@@ -104,7 +104,7 @@ pub fn xdebug_session_env_active() -> bool {
 /// comments at the top of the fragment. [`read_path_extras`] picks
 /// these up at `bougie run` time and prepends them to PATH so the
 /// Windows DLL loader resolves them (used today by imagick — its
-/// store dir holds ~170 ImageMagick `CORE_RL_*.dll` and
+/// store dir holds ~170 `ImageMagick` `CORE_RL_*.dll` and
 /// `IM_MOD_RL_*.dll` codec modules). Empty on every Unix extension and
 /// on every single-DLL Windows PECL ext.
 ///

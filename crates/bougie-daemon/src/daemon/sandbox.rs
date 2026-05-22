@@ -155,7 +155,7 @@ fn build_light_home(entry: &CatalogEntry, paths: &Paths) -> Result<Option<Sandbo
 /// Per-service open-file limit. `mariadb` 11.4 computes
 /// `open_files_limit = max_connections + table_open_cache*2 + 10` at
 /// startup, which lands above 32k with stock settings — give it 65k
-/// so we don't spam "Could not increase number of max_open_files"
+/// so we don't spam "Could not increase number of `max_open_files`"
 /// into the log. `opensearch`'s many index shards also push past
 /// the default cap.
 fn nofile_for(name: &str) -> u64 {

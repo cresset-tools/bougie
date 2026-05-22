@@ -59,8 +59,8 @@ pub fn run(
     // on Windows in Phase 1. On Windows the argv falls through to the
     // direct-exec path below.
     #[cfg(unix)]
-    if !explicit_passthrough() && !argv[0].contains('/') {
-        if let Some(steps) = lookup_composer_script(&project_root, &argv[0])? {
+    if !explicit_passthrough() && !argv[0].contains('/')
+        && let Some(steps) = lookup_composer_script(&project_root, &argv[0])? {
             return run_composer_script(
                 &project_root,
                 &argv[0],
@@ -69,7 +69,6 @@ pub fn run(
                 xdebug_flag,
             );
         }
-    }
 
     let bougie_bin = project_root.join(".bougie").join("bin");
 
@@ -134,13 +133,12 @@ pub fn run(
     //
     // Unix-only: the daemon doesn't run on Windows in Phase 1.
     #[cfg(unix)]
-    if let Ok(paths) = Paths::from_env() {
-        if paths.bougied_sock().exists() {
+    if let Ok(paths) = Paths::from_env()
+        && paths.bougied_sock().exists() {
             for (k, v) in fetch_service_env(&paths, &project_root) {
                 cmd.env(k, v);
             }
         }
-    }
 
     #[cfg(unix)]
     {

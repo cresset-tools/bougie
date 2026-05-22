@@ -48,7 +48,7 @@ impl LogWriter {
             .append(true)
             .open(&base)
             .wrap_err_with(|| format!("opening {}", base.display()))?;
-        let bytes_written = file.metadata().map(|m| m.len()).unwrap_or(0);
+        let bytes_written = file.metadata().map_or(0, |m| m.len());
         Ok(Self {
             base,
             file,

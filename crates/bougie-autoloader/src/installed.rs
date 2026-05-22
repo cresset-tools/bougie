@@ -116,7 +116,7 @@ pub(crate) fn emit_installed_json(
 /// Reshape one `composer.lock` package entry into its
 /// `installed.json` form. Field order mirrors
 /// `Composer\Package\Dumper\ArrayDumper::dump`: name, version,
-/// version_normalized, target-dir, source, dist, link types (require,
+/// `version_normalized`, target-dir, source, dist, link types (require,
 /// conflict, provide, replace, require-dev), suggest, time, bin, type,
 /// extra, installation-source, autoload, autoload-dev,
 /// notification-url, include-path, php-ext, archive, scripts, license,
