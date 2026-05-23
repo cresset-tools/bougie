@@ -4,7 +4,7 @@
 use bougie_backend;
 use crate::baseline::{BaselineFilter, BASELINE_EXTENSIONS};
 #[cfg(not(target_os = "windows"))]
-use crate::baseline::{skip_for_platform, PREINSTALLED_EXTENSIONS};
+use crate::baseline::{skip_for_php_minor, skip_for_platform, PREINSTALLED_EXTENSIONS};
 use bougie_errors::BougieError;
 use bougie_fetch::{fetch_blob, BlobSpec, DownloadBar, Hash};
 // Closure-peer tarballs are bougie-index-only; the consuming code is
@@ -457,6 +457,14 @@ pub fn install_baseline_into(
                 // entry to fetch. Silently skip; the conf.d cleanup
                 // loop above won't try to delete a fragment that was
                 // never written.
+                continue;
+            }
+            if skip_for_php_minor(name, php_minor) {
+                // opcache on PHP 8.5+ is the canonical case — upstream
+                // moved it from a shared .so to static-into-bin/php,
+                // so the index has no entry to fetch and the
+                // extension is already loaded by the interpreter
+                // itself. Silently skip.
                 continue;
             }
             match install_extension_with_bar(
