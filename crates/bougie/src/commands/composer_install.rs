@@ -25,28 +25,43 @@ pub struct InstallResult {
     pub project_root: PathBuf,
     pub packages_installed: u32,
     pub packages_already_present: u32,
+    pub packages_skipped_plugin: u32,
     pub no_dev: bool,
+    pub warnings: Vec<String>,
 }
 
 impl From<InstallSummary> for InstallResult {
     fn from(s: InstallSummary) -> Self {
         Self {
-            schema_version: 1,
+            schema_version: 2,
             project_root: s.project_root,
             packages_installed: s.packages_installed,
             packages_already_present: s.packages_already_present,
+            packages_skipped_plugin: s.packages_skipped_plugin,
             no_dev: s.no_dev,
+            warnings: s.warnings,
         }
     }
 }
 
 impl Render for InstallResult {
     fn render_text(&self, w: &mut dyn Write) -> io::Result<()> {
+        // Warnings to stderr so they survive `--format json-v1`
+        // pipelines that capture stdout. Matches the
+        // missing-composer.lock warning emitted earlier in run().
+        for warning in &self.warnings {
+            eprintln!("warning: {warning}");
+        }
         let total = self.packages_installed + self.packages_already_present;
         let mode = if self.no_dev { " (no-dev)" } else { "" };
+        let skipped = if self.packages_skipped_plugin > 0 {
+            format!(", {} plugin(s) skipped", self.packages_skipped_plugin)
+        } else {
+            String::new()
+        };
         writeln!(
             w,
-            "installed {total} packages ({} fresh, {} cached){mode} → {}",
+            "installed {total} packages ({} fresh, {} cached{skipped}){mode} → {}",
             self.packages_installed,
             self.packages_already_present,
             self.project_root.display(),
