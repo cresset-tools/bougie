@@ -1,17 +1,24 @@
 //! Parallel Composer dist downloader.
 //!
-//! Two-phase: download every dist into a persistent content-addressed
-//! cache at `$BOUGIE_CACHE/composer-dist/<sha1>.<ext>`, then extract
-//! each into its `vendor/<vendor>/<package>/` destination. Splitting
-//! the phases means a partial download failure aborts before any
-//! extraction starts — `vendor/` is either fully populated by this
-//! call (modulo what was already there) or untouched.
+//! Two-phase: download every dist into a persistent cache at
+//! `$BOUGIE_CACHE/composer-dist/<key>.<ext>`, then extract each into
+//! its `vendor/<vendor>/<package>/` destination. Splitting the phases
+//! means a partial download failure aborts before any extraction starts
+//! — `vendor/` is either fully populated by this call (modulo what was
+//! already there) or untouched.
 //!
-//! The cache is keyed by the sha1 hex that Composer publishes as
-//! `dist.shasum`. Composer itself keeps the same archives in
-//! `~/.composer/cache/files/` so the win here is moving them under
-//! bougie's XDG-strict cache root and sharing them across every
-//! project bougie installs.
+//! `<key>` is the sha1 hex Composer publishes as `dist.shasum` when
+//! present, falling back to the dist's git `reference` when shasum is
+//! empty (the normal case for GitHub/GitLab zipball dists — see
+//! Composer's `GitHubDriver::getDist()`, which emits `'shasum' => ''`).
+//! With a real shasum the cache is genuinely content-addressed; with a
+//! reference fallback it's content-*coordinate*-addressed — the git ref
+//! locks the upstream tree, so the bytes are stable in practice even if
+//! GitHub doesn't guarantee them per-request.
+//!
+//! Composer itself keeps the same archives in `~/.composer/cache/files/`
+//! under a `<vendor>/<name>/<ref>.zip` layout; we differ only in the key
+//! shape, not the cache semantics.
 
 use std::path::{Path, PathBuf};
 
@@ -32,7 +39,19 @@ pub struct DistRequest<'a> {
     /// `dist.url` straight from the lockfile.
     pub url: &'a str,
     /// `dist.shasum` straight from the lockfile (sha1 hex, lower-case).
+    /// Empty string when the upstream registry doesn't publish one —
+    /// the common case for GitHub/GitLab/Bitbucket zipball dists,
+    /// which is most of public Packagist. When empty, the downloader
+    /// skips post-download verification (matching Composer's
+    /// `FileDownloader.php:212` behavior) and falls back to
+    /// [`reference`](Self::reference) as the cache key.
     pub sha1: &'a str,
+    /// `dist.reference` from the lockfile — the upstream git ref
+    /// (full sha for git). Used as the cache key when `sha1` is empty.
+    /// Populated for every VCS-driver dist; only `path` dists lack a
+    /// reference, and those are filtered out before this struct is
+    /// built.
+    pub reference: &'a str,
     /// Archive format. Composer publishes mostly zip; tar.gz appears
     /// for some packages and is not yet supported (the variant will
     /// error at extraction time — accepted limitation for the
@@ -176,14 +195,16 @@ fn extract_from_cache(cache_root: &Path, dist: &DistRequest<'_>) -> Result<()> {
     Ok(())
 }
 
-/// `$BOUGIE_CACHE/composer-dist/<sha1>.<ext>`. The extension is for
-/// human-readable cache listings only; lookup is keyed on the hash.
+/// `$BOUGIE_CACHE/composer-dist/<key>.<ext>`. The extension is for
+/// human-readable cache listings only; lookup is keyed on the hash
+/// (or the git reference when the upstream didn't publish a hash).
 fn cache_path_for(cache_root: &Path, dist: &DistRequest<'_>) -> PathBuf {
     let ext = match dist.archive {
         ArchiveKind::Zip => "zip",
         ArchiveKind::TarZst => "tar.zst",
     };
-    cache_root.join(format!("{}.{ext}", dist.sha1))
+    let key = if dist.sha1.is_empty() { dist.reference } else { dist.sha1 };
+    cache_root.join(format!("{key}.{ext}"))
 }
 
 #[cfg(test)]

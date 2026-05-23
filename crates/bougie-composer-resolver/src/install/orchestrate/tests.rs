@@ -446,3 +446,90 @@ fn install_attaches_per_host_auth_to_dist_download() {
         "package must be extracted into vendor/",
     );
 }
+
+#[test]
+fn install_accepts_empty_shasum_via_github_zipball_style_dist() {
+    // Real-world shape: every GitHub-served dist on public Packagist
+    // ships with `shasum: ""` because Composer's `GitHubDriver::getDist`
+    // emits an empty shasum (the archive is server-generated and
+    // Packagist never sees the bytes). Composer treats that as
+    // skip-verify; bougie must match. The dist URL also lacks an
+    // upstream `.shasum`-derived cache key, so the cache must fall
+    // back to `dist.reference` (the git ref) for naming.
+    use std::io::Write as _;
+    use wiremock::matchers::{method, path as wm_path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn rt() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+    }
+
+    fn build_zip(top: &str) -> Vec<u8> {
+        let mut buf: Vec<u8> = Vec::new();
+        let cursor = std::io::Cursor::new(&mut buf);
+        let mut zw = zip::ZipWriter::new(cursor);
+        let opts = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        zw.start_file(format!("{top}/composer.json"), opts).unwrap();
+        zw.write_all(br#"{"name":"acme/zipball"}"#).unwrap();
+        zw.finish().unwrap();
+        buf
+    }
+
+    let tmp = TempDir::new().unwrap();
+    let paths = paths_in(tmp.path());
+    let proj = tmp.path().join("p");
+    std::fs::create_dir_all(&proj).unwrap();
+
+    // The git ref that doubles as the cache key.
+    let reference = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
+    let zip_body = build_zip(&format!("acme-zipball-{}", &reference[..7]));
+
+    let rt = rt();
+    let (uri, _server) = rt.block_on(async {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(wm_path(format!("/repos/acme/zipball/zipball/{reference}")))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(zip_body))
+            .mount(&server)
+            .await;
+        (server.uri(), server)
+    });
+
+    let composer_json = r#"{
+        "name": "acme/consumer",
+        "require": {"acme/zipball": "1.0.0"}
+    }"#;
+    let content_hash = hash_for(composer_json);
+    let lock = format!(
+        r#"{{
+            "content-hash": "{content_hash}",
+            "packages": [
+                {{
+                    "name": "acme/zipball",
+                    "version": "1.0.0",
+                    "type": "library",
+                    "dist": {{
+                        "type": "zip",
+                        "url": "{uri}/repos/acme/zipball/zipball/{reference}",
+                        "reference": "{reference}",
+                        "shasum": ""
+                    }}
+                }}
+            ],
+            "packages-dev": []
+        }}"#
+    );
+    write_project(&proj, composer_json, &lock);
+
+    let summary = install_from_lock(&paths, &proj, InstallOptions::default())
+        .expect("install must succeed despite empty shasum");
+    assert_eq!(summary.packages_installed, 1);
+    assert!(
+        proj.join("vendor/acme/zipball/composer.json").is_file(),
+        "package must be extracted into vendor/ via reference-keyed cache",
+    );
+}

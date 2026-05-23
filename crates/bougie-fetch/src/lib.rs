@@ -101,6 +101,16 @@ impl HashAlgo {
 /// A hex-encoded digest paired with its algorithm. Borrowed so a
 /// `BlobSpec` literal can point at the hash string from an enclosing
 /// manifest without cloning.
+///
+/// An empty `hex` is the **skip-verify** marker: the bytes are still
+/// streamed and hashed on the fly (so a future verifier could surface
+/// the actual digest), but no equality check is performed and no
+/// mismatch error is raised. This matches Composer's
+/// `FileDownloader.php:212` behavior for dists whose registry didn't
+/// publish a shasum — the common case for GitHub/GitLab zipballs. The
+/// partial-file naming under `partial_dir` falls back to a hash of
+/// `spec.url` when `hex` is empty, keeping concurrent downloads
+/// collision-free.
 #[derive(Debug, Clone, Copy)]
 pub struct Hash<'a> {
     pub algo: HashAlgo,
@@ -253,7 +263,19 @@ fn fetch_to_partial(
     spec: &BlobSpec<'_>,
     bar: &DownloadBar,
 ) -> Result<PathBuf> {
-    let tmp = spec.partial_dir.join(format!("{}.partial", spec.hash.hex));
+    // Skip-verify mode (empty hex): name the partial after a hash of
+    // the URL so concurrent fetches in the same partial_dir don't
+    // collide and a retry resumes the same path.
+    let partial_token: String;
+    let partial_name = if spec.hash.hex.is_empty() {
+        use sha1::Digest as _;
+        let digest = sha1::Sha1::digest(spec.url.as_bytes());
+        partial_token = format_hex(&digest);
+        partial_token.as_str()
+    } else {
+        spec.hash.hex
+    };
+    let tmp = spec.partial_dir.join(format!("{partial_name}.partial"));
 
     let mut req = client.get(spec.url);
     if let Some(value) = spec.auth_header {
@@ -275,7 +297,10 @@ fn fetch_to_partial(
     let actual = stream_into_file(&mut resp, &mut file, spec, bar, &tmp)?;
     file.flush().wrap_err("flushing partial blob")?;
 
-    if !actual.eq_ignore_ascii_case(spec.hash.hex) {
+    // Skip-verify when no expected digest was supplied — see
+    // [`Hash`]'s docstring for the rationale. Otherwise the streamed
+    // digest must match the expected one or we drop the partial.
+    if !spec.hash.hex.is_empty() && !actual.eq_ignore_ascii_case(spec.hash.hex) {
         let _ = fs::remove_file(&tmp);
         return Err(BougieError::BlobHashMismatch {
             url: spec.url.to_owned(),

@@ -63,11 +63,13 @@ pub struct InstallSummary {
 /// # Panics
 ///
 /// Panics on internal preflight invariant violations — the inner
-/// unwraps on `p.dist` / `dist.shasum` rely on `preflight` having
-/// already rejected source-only and missing-shasum packages. If you
-/// changed the preflight rules and forgot to update this consumer,
-/// you'll hit the unwrap; that's the failure mode the comment at
-/// the unwrap is guarding against.
+/// unwrap on `p.dist` relies on `preflight` having already rejected
+/// source-only packages. `dist.shasum` may be missing/empty (normal
+/// for GitHub-zipball dists); the downloader treats empty as
+/// skip-verify and keys its cache off `dist.reference` instead. If
+/// you changed the preflight rules and forgot to update this
+/// consumer, you'll hit the unwrap; that's the failure mode the
+/// comment at the unwrap is guarding against.
 pub fn install_from_lock(
     paths: &Paths,
     project_root: &Path,
@@ -155,13 +157,17 @@ pub fn install_from_lock(
         .zip(vendor_dirs.iter())
         .zip(auth_headers.iter())
         .map(|((p, dest), auth_header)| {
-            // unwraps: preflight guarantees every survivor has
-            // `dist` with kind=="zip" and `shasum` Some.
+            // unwrap: preflight guarantees every survivor has `dist`
+            // with kind=="zip". `shasum` may be empty/absent (normal
+            // for GitHub zipballs) — see DistRequest::sha1 for the
+            // skip-verify contract. `reference` is the dist's git ref
+            // and is populated for every VCS-driver dist.
             let dist = p.dist.as_ref().unwrap();
             DistRequest {
                 package_name: &p.name,
                 url: &dist.url,
-                sha1: dist.shasum.as_deref().unwrap(),
+                sha1: dist.shasum.as_deref().unwrap_or(""),
+                reference: dist.reference.as_deref().unwrap_or(""),
                 archive: ArchiveKind::Zip,
                 strip_prefix: None,
                 vendor_dest: dest,
@@ -329,14 +335,13 @@ fn preflight(composer_json_bytes: &[u8], lock: &Lock, no_dev: bool) -> Result<Ve
             ));
             continue;
         }
-        if dist.shasum.is_none() {
-            reasons.push(format!(
-                "package `{}` has no `dist.shasum`; bougie requires \
-                 verifiable archives. \
-                 Use `bougie run -- composer install`.",
-                p.name,
-            ));
-        }
+        // Missing/empty `dist.shasum` is normal: every VCS-driver
+        // dist (GitHub/GitLab/Bitbucket zipballs) emits an empty
+        // shasum because the archive is server-generated and the
+        // registry never sees the bytes. Composer treats empty/null
+        // as skip-verify (FileDownloader.php:212); we do the same
+        // and key the cache off `dist.reference` in that case (see
+        // downloader::cache_path_for).
     }
 
     if reasons.is_empty() {
