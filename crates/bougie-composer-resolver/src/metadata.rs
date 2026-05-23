@@ -29,7 +29,9 @@ use bougie_composer::metadata::PackageMetadata;
 use bougie_errors::BougieError;
 use bougie_paths::Paths;
 use eyre::{Result, WrapErr};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
+
+use crate::hash::FxHashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -660,8 +662,8 @@ pub fn load_v1_provider_table(
     paths: &Paths,
     repo: &Repo,
     discovery: &V1Discovery,
-) -> Result<HashMap<String, String>> {
-    let mut table: HashMap<String, String> = HashMap::new();
+) -> Result<FxHashMap<String, String>> {
+    let mut table: FxHashMap<String, String> = FxHashMap::default();
     for include in &discovery.provider_includes {
         let body = fetch_v1_include_cached(client, paths, repo, include)?;
         let parsed: serde_json::Value = serde_json::from_slice(&body)
@@ -745,7 +747,7 @@ pub fn fetch_package_metadata_v1_optional(
     paths: &Paths,
     repo: &Repo,
     discovery: &V1Discovery,
-    provider_table: &HashMap<String, String>,
+    provider_table: &FxHashMap<String, String>,
     package_name: &str,
 ) -> Result<Option<PackageMetadata>> {
     let Some(sha) = provider_table.get(package_name) else {
@@ -977,8 +979,8 @@ pub async fn load_v1_provider_table_async(
     paths: &Paths,
     repo: &Repo,
     discovery: &V1Discovery,
-) -> Result<HashMap<String, String>> {
-    let mut table: HashMap<String, String> = HashMap::new();
+) -> Result<FxHashMap<String, String>> {
+    let mut table: FxHashMap<String, String> = FxHashMap::default();
     for include in &discovery.provider_includes {
         let body = fetch_v1_include_cached_async(client, paths, repo, include).await?;
         let parsed: serde_json::Value = serde_json::from_slice(&body)
@@ -1047,7 +1049,7 @@ pub async fn fetch_package_metadata_v1_optional_async(
     paths: &Paths,
     repo: &Repo,
     discovery: &V1Discovery,
-    provider_table: &HashMap<String, String>,
+    provider_table: &FxHashMap<String, String>,
     package_name: &str,
 ) -> Result<Option<PackageMetadata>> {
     let Some(sha) = provider_table.get(package_name) else {

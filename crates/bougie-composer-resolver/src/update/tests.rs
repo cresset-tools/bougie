@@ -1139,7 +1139,7 @@ fn multiple_providers_at_same_virtual_version_dedup() {
     let selections = provider.virtual_selections.borrow();
     let iface_entries: Vec<_> = selections
         .keys()
-        .filter(|(name, _)| name == "acme/iface")
+        .filter(|(name, _)| name.as_str() == "acme/iface")
         .collect();
     assert_eq!(iface_entries.len(), 1);
 }
@@ -1420,7 +1420,7 @@ fn wildcard_replace_satisfies_unrelated_range() {
     let selections = provider.virtual_selections.borrow();
     let any_wrapper_entry = selections
         .keys()
-        .any(|(n, _)| n == "acme/wrapper");
+        .any(|(n, _)| n.as_str() == "acme/wrapper");
     assert!(any_wrapper_entry, "virtual_selections should record wrapper");
 }
 

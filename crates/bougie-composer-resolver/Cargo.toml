@@ -15,6 +15,20 @@ rayon = "1.10"
 base64 = "0.22"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# `FxHasher` for the resolver's hot string-keyed maps. Comes in
+# transitively via pubgrub already; pinning explicitly so the
+# `FxHashMap` alias in `hash.rs` has a stable home. uv standardizes
+# on this for every map its solver hammers — same shape applies
+# here.
+rustc-hash = "2"
+# Niche-optimized `Arc<str>` for `PackageName` interning. uv uses
+# this for the same purpose (`uv-normalize::PackageName` wraps
+# `arcstr::ArcStr`) — cheap clone, hash-friendly, no allocator churn
+# once interned. One `vendor/name` string lives across every cache
+# key and every `PubGrubPackage::Package` value pubgrub clones during
+# conflict analysis; interning collapses those clones to refcount
+# bumps.
+arcstr = "1"
 
 [dependencies.bougie-autoloader]
 path = "../bougie-autoloader"
@@ -70,6 +84,21 @@ sha1 = "0.10"
 zip = { version = "8.0", default-features = false, features = ["deflate"] }
 wiremock = "0.6"
 tokio = { version = "1", features = ["rt", "macros"] }
+criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
+zstd = { version = "0.13", default-features = false }
+
+[features]
+# Enables the criterion bench `resolve` to load the captured magento2
+# closure from `tests/fixtures/magento2/packagist-index.json.zst`.
+# Off by default so the fixture bytes don't ship with `cargo install`
+# / `cargo build`. Mirrors the `test-fixtures` pattern in the `bougie`
+# crate.
+bench-fixtures = []
+
+[[bench]]
+name = "resolve"
+harness = false
+required-features = ["bench-fixtures"]
 
 [lints]
 workspace = true

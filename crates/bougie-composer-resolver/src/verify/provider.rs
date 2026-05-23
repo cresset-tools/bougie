@@ -9,30 +9,31 @@
 //! candidates sourced from the bougie-pinned PHP + loaded
 //! extensions.
 
-use std::collections::HashMap;
-
 use bougie_composer::lockfile::{Lock, LockPackage};
+
+use crate::hash::FxHashMap;
 use bougie_semver::constraint::Constraint;
 use bougie_semver::version::Version;
 use pubgrub::{Dependencies, DependencyConstraints, DependencyProvider, PackageResolutionStatistics};
 use serde_json::Value;
 
 use super::range::{to_range, ComposerRange};
+use crate::package_name::PackageName;
 
 /// pubgrub Package type. `Root` is the synthetic root that represents
-/// the project itself; `Package` wraps a `vendor/name` string from
-/// the lock.
+/// the project itself; `Package` wraps an interned `vendor/name`
+/// (see [`PackageName`]).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum PubGrubPackage {
     Root,
-    Package(String),
+    Package(PackageName),
 }
 
 impl std::fmt::Display for PubGrubPackage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Root => f.write_str("<root>"),
-            Self::Package(name) => f.write_str(name),
+            Self::Package(name) => f.write_str(name.as_str()),
         }
     }
 }
@@ -58,12 +59,12 @@ impl std::error::Error for ProviderError {}
 pub struct LockVerifyProvider {
     /// Locked version for each package. Built by walking
     /// `Lock::all_packages` (or `Lock::packages` if `no_dev`).
-    locked: HashMap<String, Version>,
+    locked: FxHashMap<PackageName, Version>,
     /// Each package's runtime dependencies, pre-converted to ranges.
-    deps: HashMap<String, Vec<(String, ComposerRange)>>,
+    deps: FxHashMap<PackageName, Vec<(PackageName, ComposerRange)>>,
     /// Root package's dependencies (composer.json's `require`, plus
     /// `require-dev` when `no_dev` is false).
-    root_deps: Vec<(String, ComposerRange)>,
+    root_deps: Vec<(PackageName, ComposerRange)>,
     /// Synthetic version pubgrub uses to identify the root.
     root_version: Version,
 }
@@ -76,8 +77,9 @@ impl LockVerifyProvider {
         composer_json: &Value,
         no_dev: bool,
     ) -> Result<Self, BuildError> {
-        let mut locked: HashMap<String, Version> = HashMap::new();
-        let mut deps: HashMap<String, Vec<(String, ComposerRange)>> = HashMap::new();
+        let mut locked: FxHashMap<PackageName, Version> = FxHashMap::default();
+        let mut deps: FxHashMap<PackageName, Vec<(PackageName, ComposerRange)>> =
+            FxHashMap::default();
         let pkg_iter: Box<dyn Iterator<Item = &LockPackage>> = if no_dev {
             Box::new(lock.packages.iter())
         } else {
@@ -90,9 +92,14 @@ impl LockVerifyProvider {
                     version: p.version.clone(),
                     reason: e.to_string(),
                 })?;
-            locked.insert(p.name.clone(), version);
+            // Intern once at the `LockPackage` boundary; this single
+            // `PackageName` lives in both the `locked` and `deps`
+            // entries, plus every `PubGrubPackage::Package` clone
+            // pubgrub makes against it.
+            let owner = PackageName::from(p.name.as_str());
+            locked.insert(owner.clone(), version);
 
-            let mut pkg_deps: Vec<(String, ComposerRange)> = Vec::new();
+            let mut pkg_deps: Vec<(PackageName, ComposerRange)> = Vec::new();
             for (dep_name, raw_constraint) in &p.require {
                 if is_platform(dep_name) {
                     continue;
@@ -105,9 +112,9 @@ impl LockVerifyProvider {
                         reason: e.to_string(),
                     }
                 })?;
-                pkg_deps.push((dep_name.clone(), to_range(&constraint)));
+                pkg_deps.push((PackageName::from(dep_name.as_str()), to_range(&constraint)));
             }
-            deps.insert(p.name.clone(), pkg_deps);
+            deps.insert(owner, pkg_deps);
         }
 
         // Root deps from composer.json.
@@ -130,8 +137,8 @@ impl LockVerifyProvider {
 fn read_root_requires(
     composer_json: &Value,
     no_dev: bool,
-) -> Result<Vec<(String, ComposerRange)>, BuildError> {
-    let mut out: Vec<(String, ComposerRange)> = Vec::new();
+) -> Result<Vec<(PackageName, ComposerRange)>, BuildError> {
+    let mut out: Vec<(PackageName, ComposerRange)> = Vec::new();
     let obj = composer_json
         .as_object()
         .ok_or_else(|| BuildError::Internal("composer.json top-level is not an object".into()))?;
@@ -153,7 +160,7 @@ fn read_root_requires(
                     reason: e.to_string(),
                 }
             })?;
-            out.push((dep_name.clone(), to_range(&constraint)));
+            out.push((PackageName::from(dep_name.as_str()), to_range(&constraint)));
         }
     }
     Ok(out)
@@ -250,7 +257,7 @@ impl DependencyProvider for LockVerifyProvider {
         package: &Self::P,
         _version: &Self::V,
     ) -> Result<Dependencies<Self::P, Self::VS, Self::M>, Self::Err> {
-        let deps: &[(String, ComposerRange)] = match package {
+        let deps: &[(PackageName, ComposerRange)] = match package {
             PubGrubPackage::Root => &self.root_deps,
             PubGrubPackage::Package(name) => self
                 .deps

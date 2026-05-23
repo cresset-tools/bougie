@@ -250,13 +250,20 @@ struct TempDir {
 
 impl TempDir {
     fn new() -> std::io::Result<Self> {
+        // Process-unique counter — `as_nanos()` + PID isn't enough on
+        // macOS, where two test threads can hit the same nanosecond
+        // and trample each other (see the matching helper in
+        // `bougie-server::server::autoloader_manager::tests::temp`,
+        // fixed in 391c228).
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let base = std::env::temp_dir();
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
         let path = base.join(format!(
-            "bougie-autoloader-live-{nanos}-{}",
+            "bougie-autoloader-live-{nanos}-{}-{n}",
             std::process::id()
         ));
         std::fs::create_dir(&path)?;

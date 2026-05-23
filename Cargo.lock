@@ -130,6 +130,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
+name = "arcstr"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "03918c3dbd7701a85c6b9887732e2921175f26c350b4563841d0958c21d57e6d"
+
+[[package]]
 name = "assert-json-diff"
 version = "2.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -506,6 +512,7 @@ dependencies = [
 name = "bougie-composer-resolver"
 version = "0.1.0"
 dependencies = [
+ "arcstr",
  "base64 0.22.1",
  "bougie-autoloader",
  "bougie-composer",
@@ -514,11 +521,13 @@ dependencies = [
  "bougie-output",
  "bougie-paths",
  "bougie-semver",
+ "criterion",
  "eyre",
  "indicatif",
  "pubgrub",
  "rayon",
  "reqwest 0.13.3",
+ "rustc-hash",
  "serde",
  "serde_json",
  "sha1",
@@ -527,6 +536,7 @@ dependencies = [
  "tracing",
  "wiremock",
  "zip",
+ "zstd",
 ]
 
 [[package]]
