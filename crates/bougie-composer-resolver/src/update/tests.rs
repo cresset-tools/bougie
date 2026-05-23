@@ -2219,6 +2219,60 @@ fn read_auth_json_at_parses_basic_and_bearer_with_path_in_errors() {
 }
 
 #[test]
+fn merge_auth_sources_follows_composer_precedence() {
+    // Pins Composer's precedence order (see `Composer\Factory.php`
+    // lines 209-219 + 328-344). Lowest → highest:
+    //   1. global auth.json
+    //   2. composer.json `config`
+    //   3. project auth.json
+    //   4. COMPOSER_AUTH env
+    // We supply the same host in every source with a distinct
+    // password marker, then assert the env-var marker wins.
+    use crate::metadata::AuthCredentials;
+    fn basic(p: &str) -> AuthCredentials {
+        AuthCredentials::Basic { username: "u".into(), password: p.into() }
+    }
+    let host = "example.com";
+
+    // env wins over everything.
+    let out = crate::update::merge_auth_sources(
+        [(host.into(), basic("global"))].into_iter().collect(),
+        [(host.into(), basic("composer.json"))].into_iter().collect(),
+        [(host.into(), basic("project"))].into_iter().collect(),
+        [(host.into(), basic("env"))].into_iter().collect(),
+    );
+    match out.get(host).unwrap() {
+        AuthCredentials::Basic { password, .. } => assert_eq!(password, "env"),
+        _ => unreachable!(),
+    }
+
+    // Without env, project wins over composer.json wins over global.
+    let out = crate::update::merge_auth_sources(
+        [(host.into(), basic("global"))].into_iter().collect(),
+        [(host.into(), basic("composer.json"))].into_iter().collect(),
+        [(host.into(), basic("project"))].into_iter().collect(),
+        HashMap::new(),
+    );
+    match out.get(host).unwrap() {
+        AuthCredentials::Basic { password, .. } => assert_eq!(password, "project"),
+        _ => unreachable!(),
+    }
+
+    // Just global + composer.json: composer.json wins (this is the
+    // case the previous implementation got backwards).
+    let out = crate::update::merge_auth_sources(
+        [(host.into(), basic("global"))].into_iter().collect(),
+        [(host.into(), basic("composer.json"))].into_iter().collect(),
+        HashMap::new(),
+        HashMap::new(),
+    );
+    match out.get(host).unwrap() {
+        AuthCredentials::Basic { password, .. } => assert_eq!(password, "composer.json"),
+        _ => unreachable!(),
+    }
+}
+
+#[test]
 fn read_all_auth_merges_composer_json_and_project_auth_json() {
     // composer.json supplies one entry, project auth.json supplies a
     // different one — the merged map carries both. Project auth.json

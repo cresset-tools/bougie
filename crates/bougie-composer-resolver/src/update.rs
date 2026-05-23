@@ -1841,28 +1841,51 @@ pub fn read_composer_auth_env() -> Result<HashMap<String, crate::metadata::AuthC
 }
 
 /// Collect auth credentials from every source bougie understands and
-/// merge them with documented precedence. Later inserts win, so the
-/// order below — composer.json config (lowest), global `auth.json`,
-/// project `auth.json`, `COMPOSER_AUTH` env (highest) — is the
-/// effective priority.
+/// merge them in Composer's documented order. Later inserts win, so
+/// the order below — global `auth.json`, composer.json `config`,
+/// project `auth.json`, `COMPOSER_AUTH` (highest) — is the effective
+/// priority.
 ///
-/// `COMPOSER_AUTH` wins last because that's the CI override pattern:
-/// pipelines supply the var to mask whatever is checked in. Project
-/// `auth.json` outranks global `auth.json` because a checked-out
-/// project may need different creds than the developer's machine
-/// defaults. composer.json's `config` is the weakest source because
-/// it's the only one that's typically committed alongside source
-/// code; declared creds there are usually placeholders or
-/// non-secrets.
+/// This is what Composer itself does (see `Composer\Factory.php`
+/// lines 209-219 for the global + COMPOSER_AUTH-first-pass, then
+/// 328-344 for composer.json + project auth.json + COMPOSER_AUTH
+/// second pass). Composer applies `COMPOSER_AUTH` twice — once after
+/// global auth.json, once again at the very end — explicitly so it
+/// wins over both composer.json `config` and the project `auth.json`
+/// ("make sure we load the auth env again over the local auth.json +
+/// composer.json config"). We collapse that into one final apply
+/// since the first pass is dominated by everything that follows.
+///
+/// Intuition: global is the user's machine defaults; composer.json
+/// `config` is the project's committed intent; project `auth.json` is
+/// the developer's per-checkout override; `COMPOSER_AUTH` is the
+/// CI/runtime override.
 pub fn read_all_auth(
     composer_json: &Value,
     project_root: &Path,
 ) -> Result<HashMap<String, crate::metadata::AuthCredentials>, BuildError> {
-    let mut out = read_auth_from_composer_json(composer_json)?;
-    out.extend(read_global_auth_json()?);
-    out.extend(read_auth_json(project_root)?);
-    out.extend(read_composer_auth_env()?);
-    Ok(out)
+    Ok(merge_auth_sources(
+        read_global_auth_json()?,
+        read_auth_from_composer_json(composer_json)?,
+        read_auth_json(project_root)?,
+        read_composer_auth_env()?,
+    ))
+}
+
+/// Pure merger so the precedence order can be unit-tested without
+/// env-var or filesystem races. Arguments are listed lowest- to
+/// highest-precedence; the returned map carries the per-host winner.
+pub(crate) fn merge_auth_sources(
+    global: HashMap<String, crate::metadata::AuthCredentials>,
+    composer_json_config: HashMap<String, crate::metadata::AuthCredentials>,
+    project_auth_json: HashMap<String, crate::metadata::AuthCredentials>,
+    composer_auth_env: HashMap<String, crate::metadata::AuthCredentials>,
+) -> HashMap<String, crate::metadata::AuthCredentials> {
+    let mut out = global;
+    out.extend(composer_json_config);
+    out.extend(project_auth_json);
+    out.extend(composer_auth_env);
+    out
 }
 
 /// Split a Composer constraint string into its constraint body and
