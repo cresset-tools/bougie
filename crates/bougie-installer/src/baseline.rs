@@ -63,6 +63,8 @@
 
 use std::collections::BTreeSet;
 
+use bougie_version::version::PartialVersion;
+
 /// Ordered list of baseline extension names — Debian's `php8.2-cli`
 /// transitive closure. Order is observable (it's the order conf.d
 /// fragments and the JSON `baseline` array appear in) but PHP's
@@ -74,12 +76,13 @@ use std::collections::BTreeSet;
 ///   implementation; the php-build-standalone Darwin build emits no
 ///   gettext.so, so the index has no entry to fetch.
 ///
-/// Per-PHP-minor notes (currently surfaced as a `baseline_failed` entry,
-/// not silently skipped):
+/// Per-PHP-minor notes (applied at install time via [`skip_for_php_minor`]):
 /// - `opcache`: ships as a .so on 8.1–8.4 only. PHP 8.5+ builds
 ///   opcache statically into bin/php — `extension_loaded("Zend
-///   OPcache")` returns true already, so the failed index lookup is
-///   benign; the conf.d fragment is just unnecessary.
+///   OPcache")` returns true already, so an index lookup would fail
+///   and surface as an alarming `baseline_failed` entry. Silently
+///   skipped on 8.5+; the conf.d fragment is unnecessary because the
+///   extension is loaded by the interpreter itself.
 pub const BASELINE_EXTENSIONS: &[&str] = &[
     // php8.2-common transitive closure
     "calendar",
@@ -129,6 +132,31 @@ pub const BASELINE_EXTENSIONS: &[&str] = &[
 /// runtime probes.
 pub fn skip_for_platform(name: &str) -> bool {
     matches!(name, "gettext") && !cfg!(target_os = "linux")
+}
+
+/// `true` when the named baseline extension is statically built into
+/// the interpreter for the given PHP minor and should be skipped
+/// silently by [`crate::install::install_baseline_into`]. Mirrors
+/// [`skip_for_platform`] but for upstream-PHP-build facts that vary
+/// per minor:
+///
+/// - `opcache` on PHP 8.5+: upstream switched opcache from a shared
+///   `.so` to static-into-`bin/php`. The php-build-standalone index
+///   emits no `opcache` artifact for 8.5+, so a fetch attempt always
+///   fails. `extension_loaded("Zend OPcache")` is already true at
+///   that point — skipping silently produces the same user-visible
+///   outcome without the alarming `baseline_failed` line.
+///
+/// Anything off this list passes (returns `false`).
+pub fn skip_for_php_minor(name: &str, php_minor: PartialVersion) -> bool {
+    name == "opcache" && is_php_8_5_or_newer(php_minor)
+}
+
+fn is_php_8_5_or_newer(v: PartialVersion) -> bool {
+    match v.minor {
+        Some(minor) => v.major > 8 || (v.major == 8 && minor >= 5),
+        None => v.major >= 9,
+    }
 }
 
 /// Extensions that the Linux/Debian-aligned build statically links into
@@ -396,5 +424,30 @@ mod tests {
         // Non-gettext names always pass.
         assert!(!skip_for_platform("ffi"));
         assert!(!skip_for_platform("opcache"));
+    }
+
+    fn pv(major: u32, minor: u32) -> PartialVersion {
+        PartialVersion {
+            major,
+            minor: Some(minor),
+            patch: None,
+        }
+    }
+
+    #[test]
+    fn opcache_skipped_on_php_8_5_plus() {
+        // Upstream moved opcache to static-into-bin/php on 8.5.
+        assert!(skip_for_php_minor("opcache", pv(8, 5)));
+        assert!(skip_for_php_minor("opcache", pv(8, 6)));
+        assert!(skip_for_php_minor("opcache", pv(9, 0)));
+        // Still a .so on 8.1–8.4 — must NOT be skipped.
+        assert!(!skip_for_php_minor("opcache", pv(8, 1)));
+        assert!(!skip_for_php_minor("opcache", pv(8, 2)));
+        assert!(!skip_for_php_minor("opcache", pv(8, 3)));
+        assert!(!skip_for_php_minor("opcache", pv(8, 4)));
+        // Other baseline names are never skipped per-minor.
+        assert!(!skip_for_php_minor("readline", pv(8, 5)));
+        assert!(!skip_for_php_minor("gettext", pv(8, 5)));
+        assert!(!skip_for_php_minor("mysqlnd", pv(8, 5)));
     }
 }
