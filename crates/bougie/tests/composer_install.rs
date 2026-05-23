@@ -204,9 +204,11 @@ fn install_resolves_and_writes_lock_when_missing() {
 }
 
 #[test]
-fn install_fails_when_lock_declares_composer_plugin() {
-    // End-to-end check that the preflight error reaches the CLI exit
-    // path (not just the orchestrator unit test).
+fn install_warns_and_skips_composer_plugin() {
+    // End-to-end check that the preflight warning reaches the CLI as
+    // a `warning:` stderr line and the install still succeeds (the
+    // plugin package itself is silently skipped — its install-time
+    // hook is the PHP we won't run).
     let env = TestEnv::new();
     let proj = TempDir::new().unwrap();
     let composer_json = r#"{"name":"test/plug","require":{}}"#;
@@ -238,10 +240,17 @@ fn install_fails_when_lock_declares_composer_plugin() {
         .arg(proj.path())
         .output()
         .expect("run bougie");
-    assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "exit status: {:?}\nstderr: {stderr}", output.status);
+    assert!(stderr.contains("warning:"), "{stderr}");
     assert!(stderr.contains("evil/plugin"), "{stderr}");
-    assert!(stderr.contains("bougie run -- composer install"), "{stderr}");
+    // The plugin zip URL points at an unreachable example.com host;
+    // the test would have failed (network error / 404) if extraction
+    // were attempted, so a clean exit proves the skip works.
+    assert!(
+        !proj.path().join("vendor/evil/plugin").exists(),
+        "plugin must not be extracted",
+    );
 }
 
 #[test]

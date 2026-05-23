@@ -82,7 +82,10 @@ fn missing_composer_json_errors_with_helpful_message() {
 }
 
 #[test]
-fn composer_plugin_package_is_rejected_in_preflight() {
+fn composer_plugin_package_warns_and_is_skipped() {
+    // The plugin itself isn't extracted (bougie won't run its install
+    // hook). Install still completes and surfaces a warning naming the
+    // plugin, with the skip reflected in `packages_skipped_plugin`.
     let tmp = TempDir::new().unwrap();
     let paths = paths_in(tmp.path());
     let proj = tmp.path().join("p");
@@ -108,12 +111,22 @@ fn composer_plugin_package_is_rejected_in_preflight() {
     );
     write_project(&proj, MINIMAL_COMPOSER_JSON, &lock);
 
-    let err = install_from_lock(&paths, &proj, InstallOptions::default())
-        .expect_err("must reject composer plugin");
-    let msg = format!("{err:#}");
-    assert!(msg.contains("acme/plugin"), "{msg}");
-    assert!(msg.contains("Composer plugin"), "{msg}");
-    assert!(msg.contains("bougie run -- composer install"), "{msg}");
+    let summary = install_from_lock(&paths, &proj, InstallOptions::default())
+        .expect("install must succeed; the plugin is skipped, not rejected");
+    assert_eq!(summary.packages_installed, 0);
+    assert_eq!(summary.packages_skipped_plugin, 1);
+    assert_eq!(summary.warnings.len(), 1, "{:?}", summary.warnings);
+    let warning = &summary.warnings[0];
+    assert!(warning.contains("acme/plugin"), "{warning}");
+    assert!(warning.contains("Composer plugin"), "{warning}");
+    // The plugin's zip URL must not have been hit (the test would have
+    // failed long before this assertion if it had — there is no mock
+    // server in this test). Belt-and-suspenders: ensure no vendor dir
+    // was created for it.
+    assert!(
+        !proj.join("vendor/acme/plugin").exists(),
+        "plugin must not be extracted",
+    );
 }
 
 #[test]
@@ -185,7 +198,7 @@ fn tar_dist_kind_is_rejected() {
 }
 
 #[test]
-fn composer_json_with_scripts_is_rejected() {
+fn composer_json_with_scripts_warns() {
     let tmp = TempDir::new().unwrap();
     let paths = paths_in(tmp.path());
     let proj = tmp.path().join("p");
@@ -205,16 +218,19 @@ fn composer_json_with_scripts_is_rejected() {
     );
     write_project(&proj, composer_json, &lock);
 
-    let err = install_from_lock(&paths, &proj, InstallOptions::default())
-        .expect_err("must reject scripts");
-    let msg = format!("{err:#}");
-    assert!(msg.contains("scripts"), "{msg}");
+    let summary = install_from_lock(&paths, &proj, InstallOptions::default())
+        .expect("install must succeed; scripts produce a warning, not an error");
+    assert_eq!(summary.warnings.len(), 1, "{:?}", summary.warnings);
+    assert!(summary.warnings[0].contains("scripts"), "{:?}", summary.warnings);
 }
 
 #[test]
-fn preflight_reports_all_failures_together() {
-    // Plugin + tar + scripts — every reject path firing at once.
-    // The aggregated error must mention every one.
+fn preflight_reports_all_hard_blockers_together() {
+    // Hard blockers (tar + source-only) coexist with soft warnings
+    // (plugin + scripts). The error must aggregate every hard blocker;
+    // the soft warnings are eaten by the hard-fail path but the
+    // important thing is that the user gets the full list of blockers
+    // in one go.
     let tmp = TempDir::new().unwrap();
     let paths = paths_in(tmp.path());
     let proj = tmp.path().join("p");
@@ -247,6 +263,15 @@ fn preflight_reports_all_failures_together() {
                         "url": "https://example/t.tar.gz",
                         "shasum": "2222222222222222222222222222222222222222"
                     }}
+                }},
+                {{
+                    "name": "acme/sourceonly",
+                    "version": "1.0.0",
+                    "source": {{
+                        "type": "git",
+                        "url": "https://example/acme/sourceonly.git",
+                        "reference": "abc"
+                    }}
                 }}
             ],
             "packages-dev": []
@@ -255,17 +280,18 @@ fn preflight_reports_all_failures_together() {
     write_project(&proj, composer_json, &lock);
 
     let err = install_from_lock(&paths, &proj, InstallOptions::default())
-        .expect_err("must reject");
+        .expect_err("hard blockers must still fail install");
     let msg = format!("{err:#}");
-    assert!(msg.contains("scripts"), "scripts: {msg}");
-    assert!(msg.contains("acme/plugin"), "plugin: {msg}");
     assert!(msg.contains("acme/tar"), "tar: {msg}");
+    assert!(msg.contains("acme/sourceonly"), "sourceonly: {msg}");
 }
 
 #[test]
-fn no_dev_skips_dev_only_packages_in_preflight() {
-    // A composer-plugin in packages-dev would normally trip preflight,
-    // but with --no-dev it's invisible to the install.
+fn no_dev_hides_dev_only_packages_from_preflight() {
+    // With --no-dev, the dev-only plugin is filtered out before
+    // preflight even sees it — so no warning is emitted at all.
+    // (Without --no-dev the same lockfile would emit a warning about
+    // the plugin and install zero packages.)
     let tmp = TempDir::new().unwrap();
     let paths = paths_in(tmp.path());
     let proj = tmp.path().join("p");
@@ -291,9 +317,6 @@ fn no_dev_skips_dev_only_packages_in_preflight() {
     );
     write_project(&proj, MINIMAL_COMPOSER_JSON, &lock);
 
-    // With dev included, this would error. With --no-dev it gets past
-    // preflight; the install then proceeds to actually do work
-    // (autoload dump etc.), which succeeds against an empty package set.
     let summary = install_from_lock(
         &paths,
         &proj,
@@ -302,6 +325,8 @@ fn no_dev_skips_dev_only_packages_in_preflight() {
     .expect("preflight should pass with --no-dev");
     assert_eq!(summary.packages_installed, 0);
     assert_eq!(summary.packages_already_present, 0);
+    assert_eq!(summary.packages_skipped_plugin, 0);
+    assert!(summary.warnings.is_empty(), "{:?}", summary.warnings);
     assert!(summary.no_dev);
 }
 

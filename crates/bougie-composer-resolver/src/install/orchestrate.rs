@@ -2,14 +2,17 @@
 //! install`.
 //!
 //! Reads `composer.json` + `composer.lock`, verifies content-hash,
-//! runs preflight (rejecting anything Phase A doesn't yet handle —
-//! plugins, path/tar/vcs dists, post-install scripts), builds
-//! [`DistRequest`]s, calls [`fetch_and_extract_dists`] to populate
-//! `vendor/`, then hands off to `bougie_autoloader::dump_autoload` to
-//! emit `vendor/autoload.php` + `vendor/composer/installed.{json,php}`.
+//! runs preflight (rejecting source-only and non-zip dists which bougie
+//! cannot install at all; surfacing plugins / post-install scripts as
+//! warnings since bougie installs the package zips but never runs their
+//! PHP), builds [`DistRequest`]s, calls [`fetch_and_extract_dists`] to
+//! populate `vendor/`, then hands off to `bougie_autoloader::dump_autoload`
+//! to emit `vendor/autoload.php` + `vendor/composer/installed.{json,php}`.
 //!
 //! Preflight failures are aggregated into a single error so the user
 //! sees every blocker in one pass rather than fix-one-hit-next.
+//! Preflight warnings are returned alongside on success and surfaced
+//! to the user via [`InstallSummary::warnings`].
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -43,7 +46,15 @@ pub struct InstallSummary {
     pub project_root: PathBuf,
     pub packages_installed: u32,
     pub packages_already_present: u32,
+    /// Composer-plugin packages we skipped over (their zip was not
+    /// extracted because bougie won't run plugin install-time PHP and
+    /// the extracted tree would be inert).
+    pub packages_skipped_plugin: u32,
     pub no_dev: bool,
+    /// Soft preflight findings — one entry per Composer plugin and one
+    /// entry for a non-empty `scripts` section. The CLI prints these
+    /// as `warning: …` lines to stderr.
+    pub warnings: Vec<String>,
 }
 
 /// Apply `composer.lock` to `project_root`. See module docs for the
@@ -80,7 +91,7 @@ pub fn install_from_lock(
     };
 
     verify_content_hash(&composer_json_bytes, &lock)?;
-    preflight(&composer_json_bytes, &lock, opts.no_dev)?;
+    let warnings = preflight(&composer_json_bytes, &lock, opts.no_dev)?;
 
     // Assemble per-host auth the same way the resolver does for
     // metadata requests: composer.json's `config.http-basic` /
@@ -95,17 +106,29 @@ pub fn install_from_lock(
         read_auth_from_composer_json(&composer_json_value).map_err(|e| eyre!(e))?;
     auth.extend(read_auth_json(project_root).map_err(|e| eyre!(e))?);
 
-    // Gather the packages we'll actually install. `path` dists are
-    // skipped silently here: preflight already rejected them when
-    // `opts` would make them install-time relevant, but a stray
-    // path-dist entry in a project that the user is comfortable
-    // with shouldn't block install — the autoloader treats them by
-    // reading the lock anyway.
-    let install_set: Vec<&LockPackage> = if opts.no_dev {
-        lock.packages.iter().filter(|p| !p.is_path_dist()).collect()
+    // Gather the packages we'll actually install. Two filters:
+    //   - `path` dists: skipped silently here. Preflight already
+    //     rejected them when `opts` would make them install-time
+    //     relevant, but a stray path-dist entry in a project that
+    //     the user is comfortable with shouldn't block install — the
+    //     autoloader treats them by reading the lock anyway.
+    //   - composer-plugin packages: preflight warned about them.
+    //     We don't extract their zip because bougie won't run the
+    //     plugin's install-time hook and the extracted tree would be
+    //     inert (autoload entries pointing at code nothing loads).
+    let candidates: Vec<&LockPackage> = if opts.no_dev {
+        lock.packages.iter().collect()
     } else {
-        lock.all_packages().filter(|p| !p.is_path_dist()).collect()
+        lock.all_packages().collect()
     };
+    let packages_skipped_plugin = u32::try_from(
+        candidates.iter().filter(|p| p.is_composer_plugin()).count(),
+    )
+    .unwrap_or(u32::MAX);
+    let install_set: Vec<&LockPackage> = candidates
+        .into_iter()
+        .filter(|p| !p.is_path_dist() && !p.is_composer_plugin())
+        .collect();
 
     // Each DistRequest borrows from the LockPackage; build the
     // ancillary owned data (vendor dest paths, archive enums) in a
@@ -181,7 +204,9 @@ pub fn install_from_lock(
         project_root: project_root.to_path_buf(),
         packages_installed,
         packages_already_present,
+        packages_skipped_plugin,
         no_dev: opts.no_dev,
+        warnings,
     })
 }
 
@@ -221,24 +246,43 @@ fn verify_content_hash(composer_json_bytes: &[u8], lock: &Lock) -> Result<()> {
     Ok(())
 }
 
-/// Reject anything Phase A doesn't yet handle. Aggregates every
-/// failure into a single error so the user sees the full picture.
-fn preflight(composer_json_bytes: &[u8], lock: &Lock, no_dev: bool) -> Result<()> {
+/// Split lockfile contents into hard blockers (returned as `Err`) and
+/// soft warnings (returned as `Ok`).
+///
+/// Hard blockers are things bougie genuinely cannot install:
+/// source-only packages (no `dist`), non-zip dists, and missing
+/// `dist.shasum`. The downstream loop in `install_from_lock` relies on
+/// preflight having rejected these and unwraps accordingly.
+///
+/// Warnings are things bougie deliberately doesn't execute but can
+/// install around: Composer plugins (the package zip is skipped — the
+/// extracted tree would be inert without the install-time hook) and a
+/// non-empty `scripts` section in `composer.json` (the package set
+/// installs fine; the user's post-install hooks just don't run).
+///
+/// Every hard reason is aggregated into a single error so the user
+/// sees every blocker in one pass rather than fix-one-hit-next.
+fn preflight(composer_json_bytes: &[u8], lock: &Lock, no_dev: bool) -> Result<Vec<String>> {
     let mut reasons: Vec<String> = Vec::new();
+    let mut warnings: Vec<String> = Vec::new();
 
-    // composer.json scripts → fallback, we don't run them.
+    // composer.json scripts → not run. Warn rather than fail; the
+    // package install itself is unaffected. Users who depend on
+    // post-install scripts (cache warm-up etc.) can still run them
+    // explicitly afterwards via `bougie run -- composer run-script`.
     if let Ok(Value::Object(obj)) = serde_json::from_slice::<Value>(composer_json_bytes)
         && obj
             .get("scripts")
             .and_then(Value::as_object)
             .is_some_and(|s| !s.is_empty())
-        {
-            reasons.push(
-                "composer.json declares `scripts` (post-install / post-autoload-dump etc.); \
-                 bougie does not yet run them. Use `bougie run -- composer install`."
-                    .into(),
-            );
-        }
+    {
+        warnings.push(
+            "composer.json declares `scripts` (post-install / post-autoload-dump etc.); \
+             bougie does not run them. Invoke them manually with \
+             `bougie run -- composer run-script <name>` if required."
+                .into(),
+        );
+    }
 
     let packages: Vec<&LockPackage> = if no_dev {
         lock.packages.iter().collect()
@@ -255,10 +299,14 @@ fn preflight(composer_json_bytes: &[u8], lock: &Lock, no_dev: bool) -> Result<()
             continue;
         }
         if p.is_composer_plugin() {
-            reasons.push(format!(
+            // Plugin install-time hooks are arbitrary PHP we won't
+            // run. Surface it, skip the package — `install_from_lock`
+            // filters it out of `install_set` for the same reason.
+            warnings.push(format!(
                 "package `{}` is a Composer plugin (type `composer-plugin`); \
-                 bougie does not yet run plugin install-time hooks. \
-                 Use `bougie run -- composer install`.",
+                 bougie does not run plugin install-time hooks and skips \
+                 the package itself. Run `bougie run -- composer install` if \
+                 the plugin's behavior is required.",
                 p.name,
             ));
             continue;
@@ -292,7 +340,7 @@ fn preflight(composer_json_bytes: &[u8], lock: &Lock, no_dev: bool) -> Result<()
     }
 
     if reasons.is_empty() {
-        Ok(())
+        Ok(warnings)
     } else {
         let bullets = reasons
             .iter()
