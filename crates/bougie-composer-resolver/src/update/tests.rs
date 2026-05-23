@@ -2079,3 +2079,178 @@ fn discover_repos_resolves_via_v1_protocol_end_to_end() {
     assert_eq!(lp.version, "1.1.0");
     assert_eq!(lp.dist.expect("dist").url, "https://example.test/foo-1.1.0.zip");
 }
+
+// --- auth-source tests ---------------------------------------------
+//
+// The env-driven sources (`read_global_auth_json`, `read_composer_auth_env`)
+// can't be unit-tested directly without racing other tests that share
+// the same env. We test the pure helpers under them
+// (`global_auth_json_candidates`, `parse_composer_auth_env`,
+// `read_auth_json_at`) which carry the real logic.
+
+#[test]
+fn parse_composer_auth_env_empty_input_yields_empty_map() {
+    let out = crate::update::parse_composer_auth_env("").unwrap();
+    assert!(out.is_empty());
+    let out = crate::update::parse_composer_auth_env("   \n  ").unwrap();
+    assert!(out.is_empty());
+}
+
+#[test]
+fn parse_composer_auth_env_parses_http_basic_and_bearer() {
+    let raw = r#"{
+        "http-basic": {
+            "repo.example.com": {"username": "u", "password": "p"}
+        },
+        "bearer": {
+            "api.example.com": "tok"
+        }
+    }"#;
+    let out = crate::update::parse_composer_auth_env(raw).unwrap();
+    assert_eq!(out.len(), 2);
+    match out.get("repo.example.com").unwrap() {
+        crate::metadata::AuthCredentials::Basic { username, password } => {
+            assert_eq!(username, "u");
+            assert_eq!(password, "p");
+        }
+        other => panic!("expected Basic, got {other:?}"),
+    }
+    match out.get("api.example.com").unwrap() {
+        crate::metadata::AuthCredentials::Bearer { token } => {
+            assert_eq!(token, "tok");
+        }
+        other => panic!("expected Bearer, got {other:?}"),
+    }
+}
+
+#[test]
+fn parse_composer_auth_env_rejects_malformed_json_with_named_error() {
+    let err = crate::update::parse_composer_auth_env("not json").unwrap_err();
+    let msg = format!("{err}");
+    assert!(msg.contains("COMPOSER_AUTH"), "{msg}");
+    assert!(msg.contains("not valid JSON"), "{msg}");
+}
+
+#[test]
+fn parse_composer_auth_env_rejects_non_object_top_level() {
+    let err = crate::update::parse_composer_auth_env("[]").unwrap_err();
+    let msg = format!("{err}");
+    assert!(msg.contains("COMPOSER_AUTH"), "{msg}");
+    assert!(msg.contains("object"), "{msg}");
+}
+
+#[test]
+fn global_auth_json_candidates_honors_composer_home_first() {
+    let env = |k: &str| match k {
+        "COMPOSER_HOME" => Some("/opt/composer".into()),
+        "XDG_CONFIG_HOME" => Some("/xdg".into()),
+        "HOME" => Some("/home/u".into()),
+        _ => None,
+    };
+    let got = crate::update::global_auth_json_candidates(env);
+    assert_eq!(
+        got,
+        vec![
+            std::path::PathBuf::from("/opt/composer/auth.json"),
+            std::path::PathBuf::from("/xdg/composer/auth.json"),
+            std::path::PathBuf::from("/home/u/.config/composer/auth.json"),
+            std::path::PathBuf::from("/home/u/.composer/auth.json"),
+        ],
+    );
+}
+
+#[test]
+fn global_auth_json_candidates_falls_back_to_xdg_then_legacy() {
+    // No COMPOSER_HOME, no XDG_CONFIG_HOME — just $HOME. We expect
+    // the XDG-default path first, the legacy ~/.composer path second.
+    let env = |k: &str| if k == "HOME" { Some("/home/u".into()) } else { None };
+    let got = crate::update::global_auth_json_candidates(env);
+    assert_eq!(
+        got,
+        vec![
+            std::path::PathBuf::from("/home/u/.config/composer/auth.json"),
+            std::path::PathBuf::from("/home/u/.composer/auth.json"),
+        ],
+    );
+}
+
+#[test]
+fn global_auth_json_candidates_empty_env_yields_no_candidates() {
+    let got = crate::update::global_auth_json_candidates(|_| None);
+    assert!(got.is_empty());
+}
+
+#[test]
+fn read_auth_json_at_returns_empty_for_missing_file() {
+    let tmp = TempDir::new().unwrap();
+    let out = crate::update::read_auth_json_at(&tmp.path().join("nope.json")).unwrap();
+    assert!(out.is_empty());
+}
+
+#[test]
+fn read_auth_json_at_parses_basic_and_bearer_with_path_in_errors() {
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("auth.json");
+    std::fs::write(
+        &path,
+        r#"{
+            "http-basic": {
+                "h": {"username": "u", "password": "p"}
+            },
+            "bearer": {"b": "t"}
+        }"#,
+    )
+    .unwrap();
+    let out = crate::update::read_auth_json_at(&path).unwrap();
+    assert_eq!(out.len(), 2);
+
+    // Malformed entry must surface the file path in the error so the
+    // user knows which auth.json to fix.
+    let bad = tmp.path().join("bad.json");
+    std::fs::write(
+        &bad,
+        r#"{"http-basic": {"h": {"username": 42, "password": "p"}}}"#,
+    )
+    .unwrap();
+    let err = crate::update::read_auth_json_at(&bad).unwrap_err();
+    let msg = format!("{err}");
+    assert!(msg.contains("bad.json"), "{msg}");
+    assert!(msg.contains("http-basic.h.username"), "{msg}");
+}
+
+#[test]
+fn read_all_auth_merges_composer_json_and_project_auth_json() {
+    // composer.json supplies one entry, project auth.json supplies a
+    // different one — the merged map carries both. Project auth.json
+    // overrides composer.json on conflicts (regression guard).
+    let proj = TempDir::new().unwrap();
+    let composer_json_value = serde_json::json!({
+        "config": {
+            "http-basic": {
+                "from-composer.json": {"username": "u1", "password": "p1"},
+                "shared": {"username": "loser", "password": "loser-p"},
+            },
+        },
+    });
+    let auth_json = serde_json::json!({
+        "http-basic": {
+            "from-auth.json": {"username": "u2", "password": "p2"},
+            "shared": {"username": "winner", "password": "winner-p"},
+        },
+    });
+    std::fs::write(
+        proj.path().join("auth.json"),
+        serde_json::to_string(&auth_json).unwrap(),
+    )
+    .unwrap();
+
+    let out = crate::update::read_all_auth(&composer_json_value, proj.path()).unwrap();
+    assert!(out.contains_key("from-composer.json"));
+    assert!(out.contains_key("from-auth.json"));
+    match out.get("shared").unwrap() {
+        crate::metadata::AuthCredentials::Basic { username, .. } => {
+            assert_eq!(username, "winner", "project auth.json must win over composer.json");
+        }
+        other => panic!("{other:?}"),
+    }
+}
