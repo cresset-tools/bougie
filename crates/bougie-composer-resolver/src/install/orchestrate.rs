@@ -176,7 +176,14 @@ pub fn install_from_lock(
         })
         .collect();
 
-    let client = reqwest::blocking::Client::new();
+    // Use the bougie shared client so dist fetches carry the same
+    // `User-Agent` and timeout policy as metadata fetches. Before this
+    // the install path built a bare `reqwest::blocking::Client::new()`
+    // with no UA and no per-request budget — that got `403`s from
+    // Composer-protocol servers (repo.magento.com etc.) which gate on
+    // a `Composer/…` UA, and had no upper bound on a runaway dist
+    // download.
+    let client = bougie_fetch::default_client()?;
     let bar = DownloadBar::new("downloading");
     let outcomes = fetch_and_extract_dists(&client, paths, &dists, &bar)?;
     bar.finish();

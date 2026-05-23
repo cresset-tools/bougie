@@ -15,15 +15,22 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// The `User-Agent` every outbound bougie HTTP request advertises.
-/// Format: `bougie/<crate-version> (+<repo-url>)`. Identifies us
-/// specifically to upstream services (Packagist, getcomposer.org, our
-/// own index) so they can rate-limit or contact maintainers rather
-/// than blanket-blocking anonymous reqwest traffic. The version comes
-/// from `bougie-fetch`'s own `Cargo.toml` — it tracks the workspace
-/// release cadence closely enough that bumping it is a single change
-/// when the format here needs to evolve.
+/// Format: `Composer/2 bougie/<crate-version> (+<repo-url>)`.
+///
+/// Why the `Composer/2` prefix: some Composer-protocol servers
+/// (notably `repo.magento.com`, and likely other Private Packagist
+/// tenants behind a similar nginx config) gate dist archive
+/// downloads on the User-Agent — a plain `curl/…` or anonymous
+/// reqwest UA gets a `403`, while anything matching `Composer/…`
+/// is allowed through. Claiming Composer-2 compatibility is the
+/// simplest portable fix; we still identify ourselves as bougie
+/// after the prefix so operators can attribute traffic and reach
+/// us via the linked repo. The version comes from `bougie-fetch`'s
+/// own `Cargo.toml` — it tracks the workspace release cadence
+/// closely enough that bumping it is a single change when the
+/// format here needs to evolve.
 pub const USER_AGENT: &str = concat!(
-    "bougie/",
+    "Composer/2 bougie/",
     env!("CARGO_PKG_VERSION"),
     " (+https://github.com/cresset-tools/bougie)",
 );
@@ -742,10 +749,13 @@ mod tests {
 
     #[test]
     fn user_agent_has_expected_shape() {
-        // `bougie/<semver> (+https://...)`. The exact version is the
-        // bougie-fetch crate version — checking the shape, not the
-        // value, so a release-plz bump doesn't break the test.
-        assert!(USER_AGENT.starts_with("bougie/"), "{USER_AGENT}");
+        // `Composer/2 bougie/<semver> (+https://...)`. The exact
+        // version is the bougie-fetch crate version — checking the
+        // shape, not the value, so a release-plz bump doesn't break
+        // the test. The `Composer/2` prefix is load-bearing: some
+        // Composer-protocol servers (repo.magento.com) gate dist
+        // downloads on it. See [`USER_AGENT`] for context.
+        assert!(USER_AGENT.starts_with("Composer/2 bougie/"), "{USER_AGENT}");
         assert!(
             USER_AGENT.contains("(+https://github.com/cresset-tools/bougie)"),
             "{USER_AGENT}",
