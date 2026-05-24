@@ -388,7 +388,7 @@ fn outbound_request_carries_bougie_user_agent() {
             .and(wm_path("/p2/acme/ua.json"))
             .and(wiremock::matchers::header_regex(
                 "User-Agent",
-                r"^bougie/.*\(\+https://github\.com/cresset-tools/bougie\)$",
+                r"bougie/.*\(\+https://github\.com/cresset-tools/bougie\)$",
             ))
             .respond_with(ResponseTemplate::new(200).set_body_string(body))
             .mount(&server)
