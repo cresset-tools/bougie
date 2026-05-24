@@ -123,6 +123,8 @@ pub const BASELINE_EXTENSIONS: &[&str] = &[
     // fixture backend. See module docs.
     "pdo_sqlite",
     "sqlite3",
+    // curl, so often needed we should just have it
+    "curl",
 ];
 
 /// `true` when the named baseline extension is not available on the
