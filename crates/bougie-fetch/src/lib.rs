@@ -13,6 +13,7 @@ use std::fs::{self, File};
 use std::io::{copy, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 /// The `User-Agent` every outbound bougie HTTP request advertises.
@@ -187,6 +188,19 @@ pub trait DownloadSink: Send + Sync + std::fmt::Debug {
 pub struct DownloadBar {
     pb: ProgressBar,
     sink: Option<Arc<dyn DownloadSink>>,
+    /// Lazy-activation state for visible bars: hidden until the first
+    /// `add_planned(>0)` / `set_current` / `inc` / `set_progress` call,
+    /// then swapped to stderr + steady-tick. Avoids drawing an empty
+    /// "downloading 0/0" placeholder when the caller turns out to have
+    /// nothing to fetch (everything cached / baseline-already-loaded).
+    /// `None` for `hidden()` / `hidden_with_sink()` — those stay hidden
+    /// for life.
+    pending: Option<PendingActivation>,
+}
+
+#[derive(Debug)]
+struct PendingActivation {
+    activated: AtomicBool,
 }
 
 const RETRY_BUDGET: u32 = 1;
@@ -683,8 +697,12 @@ impl DownloadBar {
         if !bougie_output::output::progress_visible() {
             return Self::hidden();
         }
+        // Stays hidden until the first real activity (`add_planned`
+        // with >0 bytes, `set_current`, `inc`, `set_progress`). Style
+        // + prefix are wired up now so the activation path is just a
+        // draw-target swap.
         let pb = ProgressBar::new(0);
-        pb.set_draw_target(ProgressDrawTarget::stderr_with_hz(15));
+        pb.set_draw_target(ProgressDrawTarget::hidden());
         // Template-with-fallback: `indicatif`'s template parser is
         // pinned at build time, so a malformed template is a bug,
         // not a user-visible failure mode. `unwrap_or_else` keeps
@@ -700,8 +718,31 @@ impl DownloadBar {
         .progress_chars("--");
         pb.set_style(style);
         pb.set_prefix(label.to_owned());
-        pb.enable_steady_tick(Duration::from_millis(120));
-        Self { pb, sink: None }
+        Self {
+            pb,
+            sink: None,
+            pending: Some(PendingActivation { activated: AtomicBool::new(false) }),
+        }
+    }
+
+    /// Promote a lazily-constructed visible bar to actually draw. No-op
+    /// on hidden bars and on already-activated ones. Called from every
+    /// state-changing method so a stray `inc()` on a stalled fetch
+    /// still surfaces a bar.
+    fn activate(&self) {
+        let Some(pending) = self.pending.as_ref() else { return };
+        // Relaxed is fine: contention here just means two threads
+        // both call `set_draw_target` — idempotent, and the steady
+        // tick can only be enabled once anyway.
+        if pending
+            .activated
+            .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+        {
+            self.pb
+                .set_draw_target(ProgressDrawTarget::stderr_with_hz(15));
+            self.pb.enable_steady_tick(Duration::from_millis(120));
+        }
     }
 
     /// A no-op bar. Use when a caller has no aggregate of its own but
@@ -709,7 +750,7 @@ impl DownloadBar {
     pub fn hidden() -> Self {
         let pb = ProgressBar::new(0);
         pb.set_draw_target(ProgressDrawTarget::hidden());
-        Self { pb, sink: None }
+        Self { pb, sink: None, pending: None }
     }
 
     /// Hidden draw target + sink. Use when the local process has no UI
@@ -724,7 +765,7 @@ impl DownloadBar {
     pub fn hidden_with_sink(sink: Arc<dyn DownloadSink>) -> Self {
         let pb = ProgressBar::new(0);
         pb.set_draw_target(ProgressDrawTarget::hidden());
-        Self { pb, sink: Some(sink) }
+        Self { pb, sink: Some(sink), pending: None }
     }
 
     /// Grow the planned total. Safe to call repeatedly as each manifest
@@ -733,6 +774,7 @@ impl DownloadBar {
     /// such contributions just don't extend the bar).
     pub fn add_planned(&self, bytes: u64) {
         if bytes > 0 {
+            self.activate();
             self.pb.inc_length(bytes);
             if let Some(sink) = &self.sink {
                 sink.on_event(DownloadEvent::Plan { bytes });
@@ -759,6 +801,7 @@ impl DownloadBar {
     /// currently downloading. Overwrites any previous label.
     pub fn set_current(&self, name: impl Into<String>) {
         let name = name.into();
+        self.activate();
         self.pb.set_message(name.clone());
         if let Some(sink) = &self.sink {
             sink.on_event(DownloadEvent::Current { name });
@@ -777,6 +820,9 @@ impl DownloadBar {
     /// definition, so re-emitting them would either duplicate
     /// downstream state or create a feedback loop.
     pub fn set_progress(&self, pos: u64, total: u64, label: &str) {
+        if total > 0 || pos > 0 || !label.is_empty() {
+            self.activate();
+        }
         if total > 0 {
             self.pb.set_length(total);
         }
@@ -802,6 +848,9 @@ impl DownloadBar {
     /// the byte-copy loop in `fetch_to_partial`; not part of the
     /// public surface.
     fn inc(&self, n: u64) {
+        if n > 0 {
+            self.activate();
+        }
         self.pb.inc(n);
         if let Some(sink) = &self.sink {
             sink.on_event(DownloadEvent::Inc { bytes: n });
