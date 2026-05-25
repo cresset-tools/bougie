@@ -102,13 +102,35 @@ pub fn fetch_and_extract_dists(
     dists: &[DistRequest<'_>],
     bar: &DownloadBar,
 ) -> Result<Vec<DistOutcome>> {
+    fetch_and_extract_dists_with_progress(client, paths, dists, bar, |_, _| {})
+}
+
+/// Like [`fetch_and_extract_dists`], but invokes `on_dist_done` once per
+/// dist as soon as its download phase resolves (cache hit or fresh
+/// download). Used by the install orchestrator to drive a per-package
+/// progress bar: the lockfile doesn't carry dist sizes, so a bytes-based
+/// bar would be misleading — we tick once per finished package instead.
+pub fn fetch_and_extract_dists_with_progress<F>(
+    client: &reqwest::blocking::Client,
+    paths: &Paths,
+    dists: &[DistRequest<'_>],
+    bar: &DownloadBar,
+    on_dist_done: F,
+) -> Result<Vec<DistOutcome>>
+where
+    F: Fn(&str, DistOutcome) + Sync,
+{
     let cache_root = paths.cache_composer_dist();
     std::fs::create_dir_all(&cache_root)
         .wrap_err_with(|| format!("creating {}", cache_root.display()))?;
 
     let outcomes: Vec<DistOutcome> = dists
         .par_iter()
-        .map(|d| download_to_cache(client, &cache_root, d, bar))
+        .map(|d| {
+            let outcome = download_to_cache(client, &cache_root, d, bar)?;
+            on_dist_done(d.package_name, outcome);
+            Ok(outcome)
+        })
         .collect::<Result<Vec<_>>>()?;
     dists
         .par_iter()
