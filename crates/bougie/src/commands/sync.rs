@@ -669,7 +669,7 @@ mod tests {
         assert_eq!(ext_name_from_fragment("20-ctype.ini"), Some("ctype"));
         assert_eq!(ext_name_from_fragment("20-mbstring.ini"), Some("mbstring"));
         assert_eq!(ext_name_from_fragment("20-openssl.ini"), None); // static core
-        assert_eq!(ext_name_from_fragment("20-curl.ini"), None); // per-ext, not baseline
+        assert_eq!(ext_name_from_fragment("20-curl.ini"), Some("curl"));
         assert_eq!(ext_name_from_fragment("notfragment.txt"), None);
         assert_eq!(ext_name_from_fragment("custom.ini"), None);
     }

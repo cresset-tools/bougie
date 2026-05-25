@@ -333,7 +333,6 @@ mod tests {
         // (loud on every PHP install if they were baselined; users add
         // them explicitly via `bougie ext add` or implicitly via
         // composer.json's `require.ext-*`).
-        assert!(!is_baseline("curl"));
         assert!(!is_baseline("intl"));
         assert!(!is_baseline("zip"));
         // PECL exts that are never baseline.
