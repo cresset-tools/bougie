@@ -12,6 +12,7 @@ use sha2::{Digest, Sha256};
 use std::fs::{self, File};
 use std::io::{copy, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 /// The `User-Agent` every outbound bougie HTTP request advertises.
@@ -133,6 +134,33 @@ impl<'a> Hash<'a> {
     }
 }
 
+/// Semantic events emitted by [`DownloadBar`] when an external sink
+/// is attached. The bougie daemon uses this to forward bar state over
+/// IPC so the CLI client can render its own bar — see
+/// [`DownloadBar::with_sink`].
+#[derive(Debug, Clone)]
+pub enum DownloadEvent {
+    /// Caller grew the planned total by `bytes`.
+    Plan { bytes: u64 },
+    /// Caller set the right-hand-side label for the artifact now in flight.
+    Current { name: String },
+    /// `bytes` more bytes arrived. Fires from inside the byte-copy loop;
+    /// callers that forward to a slow consumer (IPC, network) should
+    /// coalesce.
+    Inc { bytes: u64 },
+    /// Aggregate fetch is done.
+    Finish,
+}
+
+/// Side-channel observer plugged into a [`DownloadBar`] via
+/// [`DownloadBar::with_sink`]. Called from the bar's own (possibly
+/// blocking) thread on every event, so implementations must be cheap
+/// and non-blocking — typical use is a `tokio::sync::mpsc::UnboundedSender`
+/// pushing the event into an async task for serialization + throttling.
+pub trait DownloadSink: Send + Sync + std::fmt::Debug {
+    fn on_event(&self, event: DownloadEvent);
+}
+
 /// Aggregate download progress bar shared across many `fetch_blob`/
 /// `fetch_file` calls. Renders a single bar with the running label of
 /// the part currently in flight; orchestrators (e.g. baseline install,
@@ -149,9 +177,16 @@ impl<'a> Hash<'a> {
 /// Hidden bars (non-TTY stderr, `--quiet`, `--format json-v1`) accept
 /// every method as a no-op so the byte-copy loop in `fetch.rs` stays
 /// branch-free.
+///
+/// When an optional [`DownloadSink`] is attached via
+/// [`Self::with_sink`], every state-changing method *also* emits a
+/// [`DownloadEvent`] to the sink. This lets a headless caller (the
+/// bougie daemon) forward bar state over IPC so a remote client can
+/// render the actual TTY bar on its side.
 #[derive(Debug)]
 pub struct DownloadBar {
     pb: ProgressBar,
+    sink: Option<Arc<dyn DownloadSink>>,
 }
 
 const RETRY_BUDGET: u32 = 1;
@@ -666,7 +701,7 @@ impl DownloadBar {
         pb.set_style(style);
         pb.set_prefix(label.to_owned());
         pb.enable_steady_tick(Duration::from_millis(120));
-        Self { pb }
+        Self { pb, sink: None }
     }
 
     /// A no-op bar. Use when a caller has no aggregate of its own but
@@ -674,7 +709,22 @@ impl DownloadBar {
     pub fn hidden() -> Self {
         let pb = ProgressBar::new(0);
         pb.set_draw_target(ProgressDrawTarget::hidden());
-        Self { pb }
+        Self { pb, sink: None }
+    }
+
+    /// Hidden draw target + sink. Use when the local process has no UI
+    /// of its own (e.g. the daemon) but wants to forward bar state to
+    /// a remote consumer that does. Every `add_planned` / `set_current`
+    /// / `inc` / `finish` call also emits a [`DownloadEvent`] to `sink`.
+    ///
+    /// The indicatif bar still tracks position + length internally —
+    /// `inc` and friends behave the same way they would on a visible
+    /// bar, just without any drawing. That keeps the sink semantics
+    /// identical to what a TTY user would see.
+    pub fn hidden_with_sink(sink: Arc<dyn DownloadSink>) -> Self {
+        let pb = ProgressBar::new(0);
+        pb.set_draw_target(ProgressDrawTarget::hidden());
+        Self { pb, sink: Some(sink) }
     }
 
     /// Grow the planned total. Safe to call repeatedly as each manifest
@@ -684,6 +734,9 @@ impl DownloadBar {
     pub fn add_planned(&self, bytes: u64) {
         if bytes > 0 {
             self.pb.inc_length(bytes);
+            if let Some(sink) = &self.sink {
+                sink.on_event(DownloadEvent::Plan { bytes });
+            }
         }
     }
 
@@ -705,12 +758,44 @@ impl DownloadBar {
     /// Set the right-hand-side label showing which artifact is
     /// currently downloading. Overwrites any previous label.
     pub fn set_current(&self, name: impl Into<String>) {
-        self.pb.set_message(name.into());
+        let name = name.into();
+        self.pb.set_message(name.clone());
+        if let Some(sink) = &self.sink {
+            sink.on_event(DownloadEvent::Current { name });
+        }
+    }
+
+    /// Replace the bar's running state with an absolute snapshot
+    /// (planned total, bytes so far, current artifact label). Used by
+    /// the CLI when it's mirroring a remote `DownloadBar` over IPC:
+    /// each `download` frame carries cumulative counters, not deltas,
+    /// so we set them directly rather than reconstructing deltas from
+    /// the previous snapshot.
+    ///
+    /// Does not fire the sink. Sinks observe local (incremental)
+    /// activity; absolute updates come from somewhere else by
+    /// definition, so re-emitting them would either duplicate
+    /// downstream state or create a feedback loop.
+    pub fn set_progress(&self, pos: u64, total: u64, label: &str) {
+        if total > 0 {
+            self.pb.set_length(total);
+        }
+        self.pb.set_position(pos);
+        // Avoid `set_message(name)` on every frame when the label
+        // hasn't changed — indicatif redraws the bar on each call,
+        // and the daemon emits ~20 frames/s of which most carry the
+        // same label.
+        if !label.is_empty() {
+            self.pb.set_message(label.to_string());
+        }
     }
 
     /// Final flush — clears the bar from the terminal.
     pub fn finish(&self) {
         self.pb.finish_and_clear();
+        if let Some(sink) = &self.sink {
+            sink.on_event(DownloadEvent::Finish);
+        }
     }
 
     /// Advance the bar by `n` freshly-downloaded bytes. Called from
@@ -718,6 +803,9 @@ impl DownloadBar {
     /// public surface.
     fn inc(&self, n: u64) {
         self.pb.inc(n);
+        if let Some(sink) = &self.sink {
+            sink.on_event(DownloadEvent::Inc { bytes: n });
+        }
     }
 }
 

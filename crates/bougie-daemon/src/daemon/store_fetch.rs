@@ -40,6 +40,7 @@ use eyre::{eyre, Result, WrapErr};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 /// Kind discriminator for [`ResolvedTool`]. Today only `tool` exists
@@ -87,6 +88,7 @@ const LOCK_TIMEOUT: Duration = Duration::from_mins(1);
 pub async fn ensure_tarball(
     paths: &Paths,
     entry: &'static CatalogEntry,
+    bar: Option<Arc<DownloadBar>>,
 ) -> Result<Vec<ResolvedTool>> {
     // The `server` catalog entry reuses the bougie binary itself —
     // nothing to fetch. Same fast-path as `store_layout::basedir`'s
@@ -98,12 +100,16 @@ pub async fn ensure_tarball(
         return Ok(Vec::new());
     }
     let paths = paths.clone();
-    tokio::task::spawn_blocking(move || fetch_blocking(&paths, entry))
+    tokio::task::spawn_blocking(move || fetch_blocking(&paths, entry, bar.as_deref()))
         .await
         .wrap_err("joining tarball-fetch task")?
 }
 
-fn fetch_blocking(paths: &Paths, entry: &CatalogEntry) -> Result<Vec<ResolvedTool>> {
+fn fetch_blocking(
+    paths: &Paths,
+    entry: &CatalogEntry,
+    external_bar: Option<&DownloadBar>,
+) -> Result<Vec<ResolvedTool>> {
     let target = Triple::detect()?.to_string();
     let host = std::env::var("BOUGIE_INDEX_URL").unwrap_or_else(|_| DEFAULT_INDEX_URL.into());
 
@@ -172,11 +178,19 @@ fn fetch_blocking(paths: &Paths, entry: &CatalogEntry) -> Result<Vec<ResolvedToo
         .wrap_err_with(|| format!("creating {}", paths.store().display()))?;
     let dest = paths.store().join(entry.tarball);
 
-    // Hidden bar: the daemon has no terminal of its own. The CLI
-    // side surfaces "(starting bougied)" + a generic up spinner; a
-    // proper IPC-streamed progress channel is future work, tracked
-    // alongside the rest of the services UX.
-    let bar = DownloadBar::hidden();
+    // Caller-supplied bar with a sink that forwards events over IPC
+    // (see `dispatch_up_streaming` in `ipc.rs`); fall back to a fully
+    // hidden, no-sink bar so the codepath stays usable from tests
+    // and direct daemon-internal callers that don't want progress
+    // streaming.
+    let owned;
+    let bar: &DownloadBar = match external_bar {
+        Some(b) => b,
+        None => {
+            owned = DownloadBar::hidden();
+            &owned
+        }
+    };
 
     // Seed the cycle-detection visited set with the outer tool so a
     // pathological `requires_tools[]` entry pointing back at the outer
@@ -191,7 +205,7 @@ fn fetch_blocking(paths: &Paths, entry: &CatalogEntry) -> Result<Vec<ResolvedToo
         paths,
         &manifest,
         &dest,
-        &bar,
+        bar,
         &fetched,
         &host,
         &cache_root,
@@ -200,7 +214,13 @@ fn fetch_blocking(paths: &Paths, entry: &CatalogEntry) -> Result<Vec<ResolvedToo
         &mut report,
     )?;
 
-    bar.finish();
+    // Only finish bars we own. A caller-supplied bar (the IPC sink in
+    // `dispatch_up_streaming`) is shared across multiple `ensure_tarball`
+    // calls within one `service.up`, so finishing here would emit a
+    // premature Finish event mid-walk.
+    if external_bar.is_none() {
+        bar.finish();
+    }
     Ok(report)
 }
 

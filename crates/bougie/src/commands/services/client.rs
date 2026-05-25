@@ -60,6 +60,20 @@ enum ResponseFrame {
         #[serde(default)]
         data: String,
     },
+    /// Aggregate download progress, emitted by `service.up` while the
+    /// daemon is fetching tarballs. Carries the bar's running snapshot
+    /// (planned total, bytes downloaded so far, label of the artifact
+    /// currently in flight); we mirror it onto a local
+    /// [`bougie_fetch::DownloadBar`] so the user sees the same widget
+    /// as for in-process fetches.
+    Download {
+        #[serde(default)]
+        pos: u64,
+        #[serde(default)]
+        total: u64,
+        #[serde(default)]
+        label: String,
+    },
     Result {
         ok: bool,
         #[serde(default)]
@@ -322,6 +336,10 @@ fn issue_streaming(stream: UnixStream, request: &Value) -> Result<()> {
                 let _ = std::io::stderr().write_all(data.as_bytes());
                 let _ = std::io::stderr().flush();
             },
+            // Streaming methods (today: `service.logs`) don't emit
+            // download frames, but tolerate them so the wire schema
+            // can grow without coupling unrelated commands.
+            ResponseFrame::Download { .. } => {}
             ResponseFrame::Result { ok: true, .. } => return Ok(()),
             ResponseFrame::Result { ok: false, error, .. } => {
                 let e = error.unwrap_or(ErrorBody {
@@ -347,12 +365,19 @@ fn issue<R: DeserializeOwned>(stream: UnixStream, request: &Value) -> Result<R> 
     // Read frames until we hit a terminal `result` frame.
     let mut reader = BufReader::new(&stream);
     let mut line = String::new();
+    // Lazy-init: only construct the bar on first `download` frame so
+    // requests that don't trigger a fetch (e.g. `service.up` against
+    // tarballs already on disk) draw nothing.
+    let mut download_bar: Option<bougie_fetch::DownloadBar> = None;
     loop {
         line.clear();
         let n = reader
             .read_line(&mut line)
             .wrap_err("reading response from bougied")?;
         if n == 0 {
+            if let Some(bar) = download_bar.take() {
+                bar.finish();
+            }
             return Err(eyre!("bougied closed connection without sending a result frame"));
         }
         let frame: ResponseFrame = serde_json::from_str(line.trim()).wrap_err_with(|| {
@@ -372,12 +397,23 @@ fn issue<R: DeserializeOwned>(stream: UnixStream, request: &Value) -> Result<R> 
                     }
                 }
             }
+            ResponseFrame::Download { pos, total, label } => {
+                let bar = download_bar
+                    .get_or_insert_with(|| bougie_fetch::DownloadBar::new("service"));
+                bar.set_progress(pos, total, &label);
+            }
             ResponseFrame::Result { ok: true, result, .. } => {
+                if let Some(bar) = download_bar.take() {
+                    bar.finish();
+                }
                 let value = result.unwrap_or(Value::Null);
                 return serde_json::from_value(value)
                     .wrap_err("deserializing daemon result payload");
             }
             ResponseFrame::Result { ok: false, error, .. } => {
+                if let Some(bar) = download_bar.take() {
+                    bar.finish();
+                }
                 let e = error.unwrap_or(ErrorBody {
                     code: "unknown".into(),
                     message: "bougied returned an error without a body".into(),

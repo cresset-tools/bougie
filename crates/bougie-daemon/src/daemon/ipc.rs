@@ -6,11 +6,12 @@
 //!
 //! Request:  `{"v": 1, "method": "<name>", "args": {...}}\n`
 //!
-//! Response: zero or more `progress` frames followed by exactly one
-//! `result` frame; both `\n`-terminated.
+//! Response: zero or more `progress` / `download` frames followed by
+//! exactly one `result` frame; all `\n`-terminated.
 //!
 //! ```jsonc
 //! {"schema_version": 1, "type": "progress", "stream": "stderr", "data": "…"}
+//! {"schema_version": 1, "type": "download", "pos": 12345, "total": 67890, "label": "opensearch-2.19.5"}
 //! {"schema_version": 1, "type": "result",   "ok": true,  "result": {...}}
 //! {"schema_version": 1, "type": "result",   "ok": false, "error": {"code": "...", "message": "..."}}
 //! ```
@@ -155,6 +156,35 @@ impl<'a> ProgressFrame<'a> {
     }
 }
 
+/// `download` frame — streamed during `service.up` to surface tarball
+/// fetch progress to the CLI. Carries the *aggregate* state of the
+/// shared [`bougie_fetch::DownloadBar`] (planned total, bytes so far,
+/// label of the artifact currently in flight) rather than per-byte
+/// deltas, so the wire bandwidth is bounded by the daemon's emit
+/// cadence (~50ms) regardless of how fast the underlying transfer is.
+///
+/// The CLI's mirror of this frame drives a local
+/// `bougie_fetch::DownloadBar` so the user sees the exact same widget
+/// they'd see from an in-process fetch (extension install, baseline
+/// PHP fetch). Old CLIs that don't know this frame type fall over at
+/// the version-skew check and trigger a daemon restart before they
+/// ever see one.
+#[derive(Debug, Serialize)]
+pub struct DownloadFrame<'a> {
+    pub schema_version: u32,
+    #[serde(rename = "type")]
+    pub typ: &'static str,
+    pub pos: u64,
+    pub total: u64,
+    pub label: &'a str,
+}
+
+impl<'a> DownloadFrame<'a> {
+    pub fn new(pos: u64, total: u64, label: &'a str) -> Self {
+        Self { schema_version: SCHEMA_VERSION, typ: "download", pos, total, label }
+    }
+}
+
 /// Terminal `result` frame — exactly one per request.
 #[derive(Debug, Serialize)]
 pub struct ResultFrame {
@@ -217,12 +247,14 @@ pub async fn handle_connection(stream: UnixStream, state: Arc<DaemonState>) {
     }
 
     match parse_request(line.trim()) {
-        // service.logs is the only streaming method today: it writes
-        // its own progress frames + a terminal frame (or never sends a
-        // terminal in follow-mode, in which case the client closes the
-        // connection).
+        // Streaming methods write their own progress frames + a
+        // terminal frame (or, for `service.logs --follow`, no terminal
+        // at all — the client closing the socket is the exit signal).
         Ok(Request::ServiceLogs(args)) => {
             dispatch_logs(&mut write_half, &state, args).await;
+        }
+        Ok(Request::ServiceUp(args)) => {
+            dispatch_up_streaming(&mut write_half, &state, args).await;
         }
         Ok(req) => {
             let frame = dispatch(req, &state).await;
@@ -310,7 +342,7 @@ async fn dispatch(req: Request, state: &Arc<DaemonState>) -> ResultFrame {
             let _ = state.shutdown_tx.send(true);
             ResultFrame::ok(serde_json::json!({"ok": true}))
         }
-        Request::ServiceUp(args) => dispatch_up(state, args.project, args.services).await,
+        Request::ServiceUp(args) => dispatch_up(state, args.project, args.services, None).await,
         Request::ServiceDown(args) => {
             dispatch_down(state, args.project, args.services, args.purge).await
         }
@@ -471,6 +503,149 @@ async fn write_progress(
     write_half.flush().await.is_ok()
 }
 
+async fn write_download(
+    write_half: &mut tokio::net::unix::OwnedWriteHalf,
+    pos: u64,
+    total: u64,
+    label: &str,
+) -> bool {
+    let frame = DownloadFrame::new(pos, total, label);
+    let bytes = match serde_json::to_vec(&frame) {
+        Ok(b) => b,
+        Err(_) => return false,
+    };
+    if write_half.write_all(&bytes).await.is_err() {
+        return false;
+    }
+    if write_half.write_all(b"\n").await.is_err() {
+        return false;
+    }
+    write_half.flush().await.is_ok()
+}
+
+/// IPC-side `DownloadSink`: pushes every `DownloadBar` event onto an
+/// unbounded mpsc; the streaming dispatcher consumes, coalesces, and
+/// throttles before serializing to the wire.
+///
+/// Unbounded is the right tradeoff here: the producer side (the
+/// blocking fetch thread) can't await, so a bounded `send` that
+/// blocks would either stall the download or have to be `try_send`'d
+/// with an "events dropped" fallback — and dropping Inc events would
+/// make the bar's position drift. The aggregate event volume per
+/// download is small enough (one Inc per 64KB chunk, plus a handful
+/// of Plan/Current/Finish bookends) that unbounded queueing is fine.
+#[derive(Debug)]
+struct IpcDownloadSink {
+    tx: tokio::sync::mpsc::UnboundedSender<bougie_fetch::DownloadEvent>,
+}
+
+impl bougie_fetch::DownloadSink for IpcDownloadSink {
+    fn on_event(&self, event: bougie_fetch::DownloadEvent) {
+        // Failure means the consumer task has dropped its receiver
+        // (e.g. the CLI hung up mid-fetch). The fetch itself keeps
+        // running — we don't have a clean cancellation path — but
+        // suppressing further events is correct.
+        let _ = self.tx.send(event);
+    }
+}
+
+/// Streaming wrapper around [`dispatch_up`] that surfaces tarball
+/// download progress to the CLI as `download` frames.
+///
+/// Sets up an unbounded mpsc + a shared [`bougie_fetch::DownloadBar`]
+/// with an [`IpcDownloadSink`], then runs the existing `dispatch_up`
+/// future. Every ~50ms (or when the future completes), the loop
+/// drains pending events, applies them to a running snapshot, and —
+/// if the snapshot changed — writes one `download` frame. The final
+/// terminal `result` is written last, identical to the non-streaming
+/// path.
+///
+/// 50ms is below indicatif's own 15Hz redraw cadence on the CLI side,
+/// so the user sees a smooth bar; it's also high enough that even a
+/// 100MB/s LAN transfer (≈1600 `inc` events/s) collapses into one
+/// frame per tick instead of one per chunk.
+async fn dispatch_up_streaming(
+    write_half: &mut tokio::net::unix::OwnedWriteHalf,
+    state: &Arc<DaemonState>,
+    args: ServiceUpArgs,
+) {
+    use bougie_fetch::DownloadEvent;
+    use std::time::Duration;
+
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<DownloadEvent>();
+    let sink: std::sync::Arc<dyn bougie_fetch::DownloadSink> =
+        std::sync::Arc::new(IpcDownloadSink { tx });
+    let bar = std::sync::Arc::new(bougie_fetch::DownloadBar::hidden_with_sink(sink));
+
+    let mut up_fut = Box::pin(dispatch_up(state, args.project, args.services, Some(bar.clone())));
+    let mut ticker = tokio::time::interval(Duration::from_millis(50));
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+    let mut pos: u64 = 0;
+    let mut total: u64 = 0;
+    let mut label = String::new();
+    let mut dirty = false;
+    let mut connected = true;
+
+    let result = loop {
+        tokio::select! {
+            // Future completes — break with its result; final flush
+            // happens after the loop.
+            result = &mut up_fut => break result,
+            // Aggregate events as they arrive.
+            ev = rx.recv() => match ev {
+                Some(DownloadEvent::Plan { bytes }) => {
+                    total = total.saturating_add(bytes);
+                    dirty = true;
+                }
+                Some(DownloadEvent::Current { name }) => {
+                    if name != label {
+                        label = name;
+                        dirty = true;
+                    }
+                }
+                Some(DownloadEvent::Inc { bytes }) => {
+                    pos = pos.saturating_add(bytes);
+                    dirty = true;
+                }
+                Some(DownloadEvent::Finish) => {
+                    // Per-fetch Finish (one per `ensure_tarball`). The
+                    // bar is shared across all services in this `up`,
+                    // so we don't tear it down here — the terminal
+                    // `result` frame signals "we're done" to the CLI.
+                }
+                None => {
+                    // Sink dropped (shouldn't happen while dispatch_up
+                    // is alive — bar holds it). Keep going on the
+                    // future itself.
+                }
+            },
+            _ = ticker.tick(), if dirty && connected => {
+                if !write_download(write_half, pos, total, &label).await {
+                    connected = false;
+                }
+                dirty = false;
+            }
+        }
+    };
+
+    // Drain anything still in flight so the bar's final state lands
+    // on the wire before the result frame (the CLI will then `finish`
+    // its local bar when the terminal arrives).
+    while let Ok(ev) = rx.try_recv() {
+        match ev {
+            DownloadEvent::Plan { bytes } => { total = total.saturating_add(bytes); dirty = true; }
+            DownloadEvent::Current { name } => { if name != label { label = name; dirty = true; } }
+            DownloadEvent::Inc { bytes } => { pos = pos.saturating_add(bytes); dirty = true; }
+            DownloadEvent::Finish => {}
+        }
+    }
+    if dirty && connected {
+        let _ = write_download(write_half, pos, total, &label).await;
+    }
+    write_terminal(write_half, &result).await;
+}
+
 /// Percent-encode the AMQP-DSN-significant characters. Tenant names
 /// and passwords today are constrained to `[a-z0-9_]+` and hex
 /// respectively, so the encoder is a no-op on the happy path; it's
@@ -625,6 +800,7 @@ async fn dispatch_up(
     state: &Arc<DaemonState>,
     project: std::path::PathBuf,
     services: Vec<ServiceRequest>,
+    bar: Option<std::sync::Arc<bougie_fetch::DownloadBar>>,
 ) -> ResultFrame {
     use crate::daemon::{catalog, provisioners};
 
@@ -645,7 +821,7 @@ async fn dispatch_up(
         // No-op once the tarball is on disk, so re-runs only pay
         // an `is_dir` check.
         let deps_for_service =
-            match super::store_fetch::ensure_tarball(&state.paths, entry).await {
+            match super::store_fetch::ensure_tarball(&state.paths, entry, bar.clone()).await {
                 Ok(deps) => deps,
                 Err(e) => {
                     return ResultFrame::err(
