@@ -47,6 +47,18 @@ bougie run -- php -d memory_limit=4G bin/magento setup:install \
   --amqp-user="$BOUGIE_SERVICE_RABBITMQ_USER" \
   --amqp-password="$BOUGIE_SERVICE_RABBITMQ_PASSWORD" \
   --amqp-virtualhost="$BOUGIE_SERVICE_RABBITMQ_VHOST" \
+  --cache-backend=redis \
+  --cache-backend-redis-server="$BOUGIE_SERVICE_REDIS_SOCKET" \
+  --cache-backend-redis-port=0 \
+  --cache-backend-redis-db="$BOUGIE_SERVICE_REDIS_DB" \
+  --page-cache=redis \
+  --page-cache-redis-server="$BOUGIE_SERVICE_REDIS_SOCKET" \
+  --page-cache-redis-port=0 \
+  --page-cache-redis-db="$BOUGIE_SERVICE_REDIS_DB" \
+  --session-save=redis \
+  --session-save-redis-host="$BOUGIE_SERVICE_REDIS_SOCKET" \
+  --session-save-redis-port=0 \
+  --session-save-redis-db="$BOUGIE_SERVICE_REDIS_DB" \
   --admin-firstname=Admin --admin-lastname=Admin \
   --admin-email=admin@example.com --admin-user=admin \
   --admin-password=admin123 --language=en_US --currency=USD \
