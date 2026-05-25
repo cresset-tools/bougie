@@ -26,7 +26,7 @@
 
 use bougie_composer::lockfile::LockPackage;
 use bougie_composer::metadata::PackageMetadata;
-use bougie_errors::BougieError;
+use bougie_errors::{error_chain, BougieError};
 use bougie_paths::Paths;
 use eyre::{Result, WrapErr};
 use std::collections::BTreeMap;
@@ -280,7 +280,7 @@ pub fn probe_protocol(
     let start = std::time::Instant::now();
     let resp = req.send().map_err(|e| BougieError::Network {
         operation: format!("GET {url}"),
-        detail: e.to_string(),
+        detail: error_chain(&e),
     })?;
     tracing::debug!(
         url = %url,
@@ -298,7 +298,7 @@ pub fn probe_protocol(
     }
     let bytes = resp.bytes().map_err(|e| BougieError::Network {
         operation: format!("reading body of {url}"),
-        detail: e.to_string(),
+        detail: error_chain(&e),
     })?;
     let root: serde_json::Value = serde_json::from_slice(&bytes)
         .wrap_err_with(|| format!("parsing packages.json from {url}"))?;
@@ -405,7 +405,7 @@ pub fn fetch_package_metadata(
     let start = std::time::Instant::now();
     let resp = req.send().map_err(|e| BougieError::Network {
         operation: format!("GET {url}"),
-        detail: e.to_string(),
+        detail: error_chain(&e),
     })?;
     tracing::debug!(
         url = %url,
@@ -435,7 +435,7 @@ pub fn fetch_package_metadata(
         .map(str::to_owned);
     let bytes = resp.bytes().map_err(|e| BougieError::Network {
         operation: format!("reading body of {url}"),
-        detail: e.to_string(),
+        detail: error_chain(&e),
     })?;
 
     write_atomic(&json_path, &bytes)?;
@@ -499,7 +499,7 @@ pub fn fetch_package_metadata_optional(
     let start = std::time::Instant::now();
     let resp = req.send().map_err(|e| BougieError::Network {
         operation: format!("GET {url}"),
-        detail: e.to_string(),
+        detail: error_chain(&e),
     })?;
     tracing::debug!(
         url = %url,
@@ -544,7 +544,7 @@ pub fn fetch_package_metadata_optional(
         .map(str::to_owned);
     let bytes = resp.bytes().map_err(|e| BougieError::Network {
         operation: format!("reading body of {url}"),
-        detail: e.to_string(),
+        detail: error_chain(&e),
     })?;
 
     write_atomic(&json_path, &bytes)?;
@@ -714,7 +714,7 @@ fn fetch_v1_include_cached(
     }
     let resp = req.send().map_err(|e| BougieError::Network {
         operation: format!("GET {url}"),
-        detail: e.to_string(),
+        detail: error_chain(&e),
     })?;
     if !resp.status().is_success() {
         return Err(BougieError::Network {
@@ -725,7 +725,7 @@ fn fetch_v1_include_cached(
     }
     let bytes = resp.bytes().map_err(|e| BougieError::Network {
         operation: format!("reading body of {url}"),
-        detail: e.to_string(),
+        detail: error_chain(&e),
     })?;
     write_atomic(&cache_path, &bytes)?;
     Ok(bytes.to_vec())
@@ -768,7 +768,7 @@ pub fn fetch_package_metadata_v1_optional(
         }
         let resp = req.send().map_err(|e| BougieError::Network {
             operation: format!("GET {url}"),
-            detail: e.to_string(),
+            detail: error_chain(&e),
         })?;
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
             // sha was in the listing but the file is missing — treat
@@ -784,7 +784,7 @@ pub fn fetch_package_metadata_v1_optional(
         }
         let body = resp.bytes().map_err(|e| BougieError::Network {
             operation: format!("reading body of {url}"),
-            detail: e.to_string(),
+            detail: error_chain(&e),
         })?;
         write_atomic(&cache_path, &body)?;
         body.to_vec()
@@ -905,7 +905,7 @@ pub async fn fetch_package_metadata_optional_async(
     let start = std::time::Instant::now();
     let resp = req.send().await.map_err(|e| BougieError::Network {
         operation: format!("GET {url}"),
-        detail: e.to_string(),
+        detail: error_chain(&e),
     })?;
     tracing::debug!(
         url = %url,
@@ -942,7 +942,7 @@ pub async fn fetch_package_metadata_optional_async(
         .map(str::to_owned);
     let bytes = resp.bytes().await.map_err(|e| BougieError::Network {
         operation: format!("reading body of {url}"),
-        detail: e.to_string(),
+        detail: error_chain(&e),
     })?;
 
     write_atomic(&json_path, &bytes)?;
@@ -1025,7 +1025,7 @@ async fn fetch_v1_include_cached_async(
     }
     let resp = req.send().await.map_err(|e| BougieError::Network {
         operation: format!("GET {url}"),
-        detail: e.to_string(),
+        detail: error_chain(&e),
     })?;
     if !resp.status().is_success() {
         return Err(BougieError::Network {
@@ -1036,7 +1036,7 @@ async fn fetch_v1_include_cached_async(
     }
     let bytes = resp.bytes().await.map_err(|e| BougieError::Network {
         operation: format!("reading body of {url}"),
-        detail: e.to_string(),
+        detail: error_chain(&e),
     })?;
     write_atomic(&cache_path, &bytes)?;
     Ok(bytes.to_vec())
@@ -1070,7 +1070,7 @@ pub async fn fetch_package_metadata_v1_optional_async(
         }
         let resp = req.send().await.map_err(|e| BougieError::Network {
             operation: format!("GET {url}"),
-            detail: e.to_string(),
+            detail: error_chain(&e),
         })?;
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
             return Ok(None);
@@ -1084,7 +1084,7 @@ pub async fn fetch_package_metadata_v1_optional_async(
         }
         let body = resp.bytes().await.map_err(|e| BougieError::Network {
             operation: format!("reading body of {url}"),
-            detail: e.to_string(),
+            detail: error_chain(&e),
         })?;
         write_atomic(&cache_path, &body)?;
         body.to_vec()

@@ -36,7 +36,7 @@
 //! `install/bin/php.exe`.
 
 use super::{build_http_client, BlobRef, ExtRecipe, PhpRecipe};
-use bougie_errors::BougieError;
+use bougie_errors::{error_chain, BougieError};
 use bougie_fetch::{fetch_blob, ArchiveKind, BlobOutcome, DownloadBar};
 use bougie_index::wire::LoadDirective;
 use bougie_paths::Paths;
@@ -470,7 +470,7 @@ fn fetch_releases(client: &reqwest::blocking::Client, cache_root: &Path) -> Resu
     }
     let resp = req.send().map_err(|e| BougieError::Network {
         operation: format!("fetching {RELEASES_URL}"),
-        detail: e.to_string(),
+        detail: error_chain(&e),
     })?;
 
     if resp.status() == reqwest::StatusCode::NOT_MODIFIED {
@@ -493,7 +493,7 @@ fn fetch_releases(client: &reqwest::blocking::Client, cache_root: &Path) -> Resu
         .map(str::to_owned);
     let body = resp.bytes().map_err(|e| BougieError::Network {
         operation: format!("reading body of {RELEASES_URL}"),
-        detail: e.to_string(),
+        detail: error_chain(&e),
     })?;
 
     fs::write(&body_path, &body)

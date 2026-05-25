@@ -7,9 +7,26 @@
 
 use thiserror::Error;
 
+/// Format a reqwest (or any `std::error::Error`) chain into a single string
+/// that includes the root cause, e.g.:
+///   "error sending request for url (…): dns error: failed to lookup address …"
+///
+/// Plain `e.to_string()` only shows the outermost message. This walks
+/// `.source()` so callers see *why* the request failed.
+pub fn error_chain(err: &dyn std::error::Error) -> String {
+    use std::fmt::Write;
+    let mut buf = err.to_string();
+    let mut cur = err.source();
+    while let Some(src) = cur {
+        let _ = write!(buf, ": {src}");
+        cur = src.source();
+    }
+    buf
+}
+
 #[derive(Debug, Error)]
 pub enum BougieError {
-    #[error("network failure while {operation}: {detail}")]
+    #[error("network failure while {operation}\n  detail: {detail}")]
     Network { operation: String, detail: String },
 
     #[error(
@@ -155,6 +172,30 @@ mod tests {
     fn exit_code_for_unknown_error_defaults_to_one() {
         let report = eyre::eyre!("something else");
         assert_eq!(exit_code_for(&report), 1);
+    }
+
+    #[derive(Debug, Error)]
+    #[error("connection failed")]
+    struct Outer {
+        #[source]
+        cause: Inner,
+    }
+
+    #[derive(Debug, Error)]
+    #[error("dns lookup failed")]
+    struct Inner;
+
+    #[test]
+    fn error_chain_walks_sources() {
+        let e = Outer { cause: Inner };
+        let chain = error_chain(&e);
+        assert_eq!(chain, "connection failed: dns lookup failed");
+    }
+
+    #[test]
+    fn error_chain_single_error() {
+        let e = std::io::Error::new(std::io::ErrorKind::NotFound, "file gone");
+        assert_eq!(error_chain(&e), "file gone");
     }
 
     #[test]
