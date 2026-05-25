@@ -687,6 +687,13 @@ async fn dispatch_env(state: &Arc<DaemonState>, project: std::path::PathBuf) -> 
         let Some(tenant) = all.into_iter().find(|t| t.project == project) else {
             continue;
         };
+        // Parked tenants (project has gone `down` without `--purge`)
+        // keep their allocation but shouldn't leak env vars into
+        // `bougie run` — the service may be stopped, so any DSN we
+        // hand out would point at nothing.
+        if !tenant.active {
+            continue;
+        }
         let prefix = format!("BOUGIE_SERVICE_{}_", entry.name.to_ascii_uppercase());
 
         // For Tcp-bound services, expose HOST/PORT alongside any
@@ -881,6 +888,22 @@ async fn dispatch_up(
             .await;
             match prov_res {
                 Ok(t) => {
+                    // `provision` is idempotent and reuses an existing
+                    // record verbatim, so a tenant that was parked by a
+                    // prior `bougie down` is still inactive=false. Flip
+                    // it on so the supervisor stop-check sees it.
+                    if let Err(e) = super::tenants::set_active(
+                        &tenants_path,
+                        &project,
+                        true,
+                    )
+                    .await
+                    {
+                        return ResultFrame::err(
+                            "activate_failed",
+                            format!("{name}: {e:#}"),
+                        );
+                    }
                     tenants_map.insert(name.to_string(), Value::String(t.tenant));
                 }
                 Err(e) => {
@@ -916,36 +939,57 @@ async fn dispatch_down(
         };
         if entry.user_facing {
             let tenants_path = state.paths.service_tenants(entry.name);
-            // Find this project's tenant; if any, deprovision it.
             let project_tenant = tenants::load_all(&tenants_path)
                 .await
                 .ok()
                 .and_then(|all| all.into_iter().find(|t| t.project == project));
             if let Some(t) = project_tenant {
-                let sock_default = state.paths.service_run(entry.name).join(format!("{}.sock", entry.name));
-                let sock_opt = sock_default.exists().then_some(sock_default);
-                let deprov_res = provisioners::deprovision(
-                    entry,
-                    &state.paths,
-                    &tenants_path,
-                    &t.tenant,
-                    sock_opt.as_deref(),
-                    purge,
-                )
-                .await;
-                if let Err(e) = deprov_res {
-                    return ResultFrame::err(
-                        "deprovision_failed",
-                        format!("{}: {:#}", entry.name, e),
-                    );
+                if purge {
+                    // Destructive path: drop the tenant record and any
+                    // provisioner-side data.
+                    let sock_default = state
+                        .paths
+                        .service_run(entry.name)
+                        .join(format!("{}.sock", entry.name));
+                    let sock_opt = sock_default.exists().then_some(sock_default);
+                    let deprov_res = provisioners::deprovision(
+                        entry,
+                        &state.paths,
+                        &tenants_path,
+                        &t.tenant,
+                        sock_opt.as_deref(),
+                        purge,
+                    )
+                    .await;
+                    if let Err(e) = deprov_res {
+                        return ResultFrame::err(
+                            "deprovision_failed",
+                            format!("{}: {:#}", entry.name, e),
+                        );
+                    }
+                    deprovisioned.push(entry.name.to_string());
+                } else {
+                    // Non-destructive: mark inactive but keep the
+                    // record so the next `bougie up` reuses the same
+                    // allocation (db number, credentials, etc.).
+                    if let Err(e) = tenants::set_active(&tenants_path, &project, false).await {
+                        return ResultFrame::err(
+                            "deactivate_failed",
+                            format!("{}: {e:#}", entry.name),
+                        );
+                    }
                 }
-                deprovisioned.push(entry.name.to_string());
             }
-            // Stop the global service iff no tenants remain.
-            let remaining = tenants::load_all(&tenants_path)
+            // Stop the global service when no tenant is currently
+            // active. Inactive (parked) tenants don't count — their
+            // project has already gone `down`.
+            let active = tenants::load_all(&tenants_path)
                 .await
-                .map_or(0, |v| v.len());
-            if remaining == 0 {
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|t| t.active)
+                .count();
+            if active == 0 {
                 let stop_res = state.supervisor.lock().await.stop(entry.name).await;
                 if let Ok(true) = stop_res {
                     stopped.push(entry.name.to_string());

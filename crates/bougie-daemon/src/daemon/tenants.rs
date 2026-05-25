@@ -34,6 +34,18 @@ pub struct Tenant {
     /// `{"vhost": "myapp"}` for rabbitmq, etc.
     #[serde(default)]
     pub alloc: BTreeMap<String, Value>,
+    /// Whether this tenant currently wants the global service running.
+    /// `up` sets true; plain `down` sets false but keeps the record so
+    /// the allocation (db number, credentials, etc.) survives until
+    /// `down --purge` removes it. Older ledgers without the field
+    /// default to `true` — they pre-date the active/registered split
+    /// and were always implicitly active.
+    #[serde(default = "default_active")]
+    pub active: bool,
+}
+
+fn default_active() -> bool {
+    true
 }
 
 impl Tenant {
@@ -45,6 +57,7 @@ impl Tenant {
             created_at: now_rfc3339(),
             secrets: BTreeMap::new(),
             alloc: BTreeMap::new(),
+            active: true,
         }
     }
 }
@@ -98,16 +111,46 @@ pub async fn append(path: &Path, tenant: &Tenant) -> Result<()> {
     Ok(())
 }
 
+/// Flip a project's tenant `active` flag and persist. Returns
+/// `Ok(true)` if a record was found and updated (including no-op writes
+/// where the value already matched). Used by `service.up` /
+/// `service.down` to track which tenants currently want the global
+/// service running, without disturbing the allocation.
+pub async fn set_active(path: &Path, project: &Path, active: bool) -> Result<bool> {
+    let mut all = load_all(path).await?;
+    let mut found = false;
+    let mut changed = false;
+    for t in &mut all {
+        if t.project == project {
+            found = true;
+            if t.active != active {
+                t.active = active;
+                changed = true;
+            }
+        }
+    }
+    if changed {
+        rewrite_all(path, &all).await?;
+    }
+    Ok(found)
+}
+
 /// Rewrite the ledger with the predicate-passing records only. Used
 /// by `service.down` to remove a project's tenant. Atomic via
 /// write-to-temp-then-rename.
 pub async fn rewrite(path: &Path, keep: impl Fn(&Tenant) -> bool) -> Result<usize> {
     let all = load_all(path).await?;
-    let kept: Vec<&Tenant> = all.iter().filter(|t| keep(t)).collect();
+    let kept: Vec<Tenant> = all.iter().filter(|t| keep(t)).cloned().collect();
     let removed = all.len() - kept.len();
     if removed == 0 {
         return Ok(0);
     }
+    rewrite_all(path, &kept).await?;
+    Ok(removed)
+}
+
+/// Internal: overwrite the ledger with exactly `records`.
+async fn rewrite_all(path: &Path, records: &[Tenant]) -> Result<()> {
     let parent = path
         .parent()
         .ok_or_else(|| eyre!("path {} has no parent", path.display()))?;
@@ -136,8 +179,8 @@ pub async fn rewrite(path: &Path, keep: impl Fn(&Tenant) -> bool) -> Result<usiz
     );
     let tmp_path = dir.join(&tmp_name);
 
-    let mut buf = Vec::with_capacity(256 * kept.len());
-    for t in &kept {
+    let mut buf = Vec::with_capacity(256 * records.len());
+    for t in records {
         serde_json::to_writer(&mut buf, t).wrap_err("serialising tenant on rewrite")?;
         buf.push(b'\n');
     }
@@ -160,7 +203,7 @@ pub async fn rewrite(path: &Path, keep: impl Fn(&Tenant) -> bool) -> Result<usiz
         let _ = tokio::fs::remove_file(&tmp_path).await;
         return Err(eyre!("renaming {} → {}: {e}", tmp_path.display(), path.display()));
     }
-    Ok(removed)
+    Ok(())
 }
 
 fn now_rfc3339() -> String {
