@@ -371,20 +371,39 @@ impl Autoloader {
         Ok(true)
     }
 
-    /// Drop a deleted file from every task's `per_file` map and
+    /// Drop a deleted path from every task's `per_file` map and
     /// re-merge. Returns `Ok(true)` iff `self.merged` changed.
     /// Idempotent: a delete for a file the autoloader never saw is
     /// a no-op.
+    ///
+    /// `abs_path` may be either a file or a directory — recursive
+    /// directory deletes on macOS often arrive as a single Remove
+    /// event for the directory with no per-file follow-ups, so we
+    /// drop every `per_file` entry whose absolute path is at or
+    /// under `abs_path`.
     pub fn apply_deleted_path(&mut self, abs_path: &Path) -> Result<bool, DumpError> {
-        let canon = canonical(abs_path.to_path_buf());
+        // A deleted path can't be canonicalized directly (the target is
+        // gone). Walk up to the nearest existing ancestor, canonicalize
+        // that, then re-attach the trailing components so the result
+        // matches the canonicalized scan_roots / install_abs.
+        let canon = canonicalize_deleted(abs_path);
         let mut any_state_change = false;
         for state in &mut self.tasks {
-            if !canon.starts_with(&state.task.scan_root) {
+            // Process this task if `canon` is inside the scan root
+            // (file or sub-dir delete) OR if `canon` is an ancestor of
+            // the scan root (a delete higher up that wipes the whole
+            // task's tree).
+            if !canon.starts_with(&state.task.scan_root)
+                && !state.task.scan_root.starts_with(&canon)
+            {
                 continue;
             }
-            let rel = canon
-                .strip_prefix(&state.task.install_abs).map_or_else(|_| canon.clone(), Path::to_path_buf);
-            if state.per_file.remove(&rel).is_some() {
+            let before = state.per_file.len();
+            state.per_file.retain(|rel, _| {
+                let full = state.task.install_abs.join(rel);
+                !full.starts_with(&canon)
+            });
+            if state.per_file.len() != before {
                 any_state_change = true;
             }
         }
@@ -593,5 +612,34 @@ pub fn user_code_roots(req: &DumpRequest<'_>) -> Result<Vec<PathBuf>, DumpError>
     }
 
     Ok(roots)
+}
+
+/// Resolve a path that may not exist on disk anymore (the typical case
+/// inside [`Autoloader::apply_deleted_path`]). `std::fs::canonicalize`
+/// fails outright for missing targets; we walk up to the nearest
+/// existing ancestor, canonicalize that, then re-attach the trailing
+/// components. The result matches a path that `canonical` would have
+/// produced *before* the delete, so it lines up with the canonicalized
+/// `scan_root` / `install_abs` stored at bootstrap time.
+fn canonicalize_deleted(p: &Path) -> PathBuf {
+    if let Ok(c) = std::fs::canonicalize(p) {
+        return c;
+    }
+    let mut trailing: Vec<&std::ffi::OsStr> = Vec::new();
+    let mut cursor = p;
+    while let Some(parent) = cursor.parent() {
+        if let Some(name) = cursor.file_name() {
+            trailing.push(name);
+        }
+        if let Ok(c) = std::fs::canonicalize(parent) {
+            let mut out = c;
+            for name in trailing.iter().rev() {
+                out.push(name);
+            }
+            return out;
+        }
+        cursor = parent;
+    }
+    p.to_path_buf()
 }
 
