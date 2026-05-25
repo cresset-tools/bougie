@@ -187,13 +187,26 @@ pub fn install_from_lock(
     // byte-total. Keep the bytes-side bar hidden and render a separate
     // "<done>/<total> packages" bar that ticks once per finished dist.
     let bar = DownloadBar::hidden();
-    let pkg_bar = new_package_bar(dists.len() as u64);
+    let total = dists.len() as u64;
+    let pkg_bar = new_package_bar(total);
+    // Two phases share one bar: download counts up to `total`, then we
+    // reset to 0 and re-count for extraction. Without the reset the bar
+    // would sit at 100% with a stale package name while extraction ran.
+    let extract_started = std::sync::atomic::AtomicBool::new(false);
     let outcomes = fetch_and_extract_dists_with_progress(
         &client,
         paths,
         &dists,
         &bar,
         |name, _| {
+            pkg_bar.set_message(name.to_owned());
+            pkg_bar.inc(1);
+        },
+        |name| {
+            if !extract_started.swap(true, std::sync::atomic::Ordering::AcqRel) {
+                pkg_bar.set_prefix("extracting");
+                pkg_bar.set_position(0);
+            }
             pkg_bar.set_message(name.to_owned());
             pkg_bar.inc(1);
         },
@@ -248,8 +261,11 @@ fn new_package_bar(total: u64) -> indicatif::ProgressBar {
     }
     let pb = indicatif::ProgressBar::new(total);
     pb.set_draw_target(indicatif::ProgressDrawTarget::stderr_with_hz(15));
+    // No `{per_sec}`/`{eta}` here: package count is uniform-looking but
+    // packages aren't uniform in size, so a per-package rate misleads
+    // (a single Magento megapackage skews it) and the eta jitters wildly.
     let style = indicatif::ProgressStyle::with_template(
-        "  {prefix:<12} {bar:32.magenta/white.dim} {pos}/{len} packages ({per_sec}, {eta}) {msg}",
+        "  {prefix:<12} {bar:32.magenta/white.dim} {pos}/{len} packages {msg}",
     )
     .unwrap_or_else(|_| indicatif::ProgressStyle::default_bar())
     .progress_chars("--");
