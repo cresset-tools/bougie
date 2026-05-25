@@ -91,7 +91,7 @@ pub fn add(
     let project_root = locate_project_root()?;
     let paths = Paths::from_env()?;
     let project = load_project(&project_root)?;
-    let (spec, flavor) = project_php_inputs(&project)?;
+    let (spec, flavor) = project_php_inputs(&project_root, &project)?;
 
     // Run the full project sync first unless --no-sync, so the project
     // ends up in a usable state (PHP installed, composer shim, bundled
@@ -208,7 +208,7 @@ pub fn remove(
     let project_root = locate_project_root()?;
     let paths = Paths::from_env()?;
     let project = load_project(&project_root)?;
-    let (spec, flavor) = project_php_inputs(&project)?;
+    let (spec, flavor) = project_php_inputs(&project_root, &project)?;
 
     if !no_sync {
         ensure_synced(&paths, &project_root, &project, spec, flavor)?;
