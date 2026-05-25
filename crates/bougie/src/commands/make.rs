@@ -194,6 +194,10 @@ pub fn run(format: OutputFormat, opts: MakeOptions) -> Result<ExitCode> {
         });
     }
 
+    if task_name == "start" && !opts.dry_run && !opts.explain {
+        print_start_hints(&recipe_name, &run_opts.project_root);
+    }
+
     emit(
         format,
         &MakeResult {
@@ -204,6 +208,41 @@ pub fn run(format: OutputFormat, opts: MakeOptions) -> Result<ExitCode> {
         },
     )?;
     Ok(ExitCode::SUCCESS)
+}
+
+/// Print a friendly "ready" banner after `bougie start` (i.e. the
+/// `start` task) completes. Pulls live service env from the daemon so
+/// the URL reflects the actual allocated hostname/port; recipe-specific
+/// extras (Magento admin credentials) are added based on the resolved
+/// recipe name. Best-effort: silent when the daemon isn't reachable or
+/// the server tenant hasn't been provisioned.
+fn print_start_hints(recipe_name: &str, project_root: &std::path::Path) {
+    let env: std::collections::BTreeMap<String, String> =
+        crate::commands::services::recipe_env_for_project(project_root)
+            .into_iter()
+            .collect();
+    let hostname = env.get("BOUGIE_SERVICE_SERVER_HOSTNAME").cloned();
+    let port = env.get("BOUGIE_SERVICE_SERVER_PORT").cloned();
+    let url = match (&hostname, &port) {
+        (Some(h), Some(p)) => Some(format!("http://{h}:{p}/")),
+        _ => env.get("BOUGIE_SERVICE_SERVER_URL").cloned(),
+    };
+    if url.is_none() && recipe_name != "magento" {
+        return;
+    }
+
+    eprintln!();
+    eprintln!("Ready.");
+    if let Some(u) = &url {
+        eprintln!("  URL:      {u}");
+    }
+    if recipe_name == "magento" {
+        if let Some(u) = &url {
+            eprintln!("  Admin:    {u}admin");
+        }
+        eprintln!("  User:     admin");
+        eprintln!("  Password: admin123");
+    }
 }
 
 /// Resolve the effective recipe per RECIPES.md §4: pick a builtin by
