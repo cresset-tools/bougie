@@ -38,7 +38,8 @@ pub fn run(
     if argv.is_empty() {
         return Err(eyre!("nothing to run"));
     }
-    let project_root = std::env::current_dir()?;
+    let cwd = std::env::current_dir()?;
+    let project_root = resolve_project_root(&cwd);
     if !no_sync && !is_environment_present(&project_root)? {
         // uv-parity: `bougie run` outside a project (no `require.php`,
         // no `[php]version`) falls back to the highest already-installed
@@ -355,4 +356,85 @@ fn run_composer_script(
         }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// Walk up from `cwd` looking for the project root, marked by any of
+/// `bougie.toml`, `composer.json`, or `.bougie/`. Falls back to `cwd`
+/// itself if no marker is found in any ancestor — that keeps uv-parity
+/// for `bougie run python` invoked outside any project, where
+/// [`sync::run_with_default_fallback`] still does the right thing.
+///
+/// Mirrors `services::config_mut::locate_project_root` but with a
+/// fallback instead of an error; `bougie run` must remain usable
+/// outside a project, while `services::*` requires a real project.
+fn resolve_project_root(cwd: &Path) -> std::path::PathBuf {
+    for anc in cwd.ancestors() {
+        if anc.join("bougie.toml").is_file()
+            || anc.join("composer.json").is_file()
+            || anc.join(".bougie").is_dir()
+        {
+            return anc.to_path_buf();
+        }
+    }
+    cwd.to_path_buf()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_project_root;
+    use std::fs;
+
+    #[test]
+    fn walks_up_to_composer_json() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        fs::write(root.join("composer.json"), "{}").unwrap();
+        let sub = root.join("dev").join("tests").join("integration");
+        fs::create_dir_all(&sub).unwrap();
+        assert_eq!(resolve_project_root(&sub), root);
+    }
+
+    #[test]
+    fn walks_up_to_bougie_toml() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        fs::write(root.join("bougie.toml"), "").unwrap();
+        let sub = root.join("a").join("b");
+        fs::create_dir_all(&sub).unwrap();
+        assert_eq!(resolve_project_root(&sub), root);
+    }
+
+    #[test]
+    fn walks_up_to_dot_bougie() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        fs::create_dir(root.join(".bougie")).unwrap();
+        let sub = root.join("x");
+        fs::create_dir_all(&sub).unwrap();
+        assert_eq!(resolve_project_root(&sub), root);
+    }
+
+    #[test]
+    fn falls_back_to_cwd_when_no_marker() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sub = tmp.path().join("nothing").join("here");
+        fs::create_dir_all(&sub).unwrap();
+        // No marker anywhere in the temp tree, so fallback returns cwd
+        // verbatim — preserves uv-parity for `bougie run python` outside
+        // any project.
+        assert_eq!(resolve_project_root(&sub), sub);
+    }
+
+    #[test]
+    fn prefers_closest_ancestor() {
+        let tmp = tempfile::tempdir().unwrap();
+        let outer = tmp.path();
+        let inner = outer.join("inner");
+        fs::create_dir_all(&inner).unwrap();
+        fs::write(outer.join("composer.json"), "{}").unwrap();
+        fs::write(inner.join("composer.json"), "{}").unwrap();
+        let sub = inner.join("deep");
+        fs::create_dir_all(&sub).unwrap();
+        assert_eq!(resolve_project_root(&sub), inner);
+    }
 }
