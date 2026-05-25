@@ -25,7 +25,7 @@ use eyre::{eyre, Context, Result};
 use serde_json::Value;
 
 use crate::metadata::AuthCredentials;
-use crate::update::{read_auth_from_composer_json, read_auth_json};
+use crate::update::read_all_auth;
 
 use super::downloader::{fetch_and_extract_dists, DistOutcome, DistRequest};
 
@@ -95,18 +95,17 @@ pub fn install_from_lock(
     verify_content_hash(&composer_json_bytes, &lock)?;
     let warnings = preflight(&composer_json_bytes, &lock, opts.no_dev)?;
 
-    // Assemble per-host auth the same way the resolver does for
-    // metadata requests: composer.json's `config.http-basic` /
-    // `config.bearer` first, then project-level `auth.json` (which
-    // wins on conflicts — matches Composer's precedence). Dist URLs
+    // Assemble per-host auth from every source bougie understands —
+    // composer.json `config`, global `$COMPOSER_HOME/auth.json`,
+    // project-level `auth.json`, and the `COMPOSER_AUTH` env var.
+    // See `read_all_auth` for the precedence rationale. Dist URLs
     // sitting behind the same auth as the metadata (Magento's
     // `/archives/...`, private satis, GitLab CI Composer ZIPs) need
     // the header; public-CDN dists from Packagist do not.
     let composer_json_value: Value = serde_json::from_slice(&composer_json_bytes)
         .map_err(|e| eyre!("parsing composer.json: {e}"))?;
-    let mut auth: HashMap<String, AuthCredentials> =
-        read_auth_from_composer_json(&composer_json_value).map_err(|e| eyre!(e))?;
-    auth.extend(read_auth_json(project_root).map_err(|e| eyre!(e))?);
+    let auth: HashMap<String, AuthCredentials> =
+        read_all_auth(&composer_json_value, project_root).map_err(|e| eyre!(e))?;
 
     // Gather the packages we'll actually install. Two filters:
     //   - `path` dists: skipped silently here. Preflight already

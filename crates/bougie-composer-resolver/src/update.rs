@@ -63,7 +63,7 @@
 
 use std::cell::{Ref, RefCell};
 use std::collections::{BTreeMap, HashMap};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::hash::FxHashMap;
@@ -1647,43 +1647,38 @@ fn read_repositories(
     Ok(repos)
 }
 
-/// Read auth credentials from composer.json's `config.http-basic`
-/// and `config.bearer` maps. Composer's auth.json (project-level)
-/// is merged in by the orchestrators with `project_root` context —
-/// this function only handles the in-composer.json side.
+/// Parse an `{http-basic, bearer}` auth object — the shape that lives
+/// at the top level of `auth.json` and (nested under `config`) inside
+/// `composer.json`. Error messages prefix each path with `source` so
+/// diagnostics name the file/env-var the bad value came from.
 ///
-/// Returns a map keyed by hostname. `http-basic` and `bearer` are
-/// mutually exclusive per host; if both are declared for the same
-/// host, `http-basic` wins (matches Composer's precedence).
-///
-/// Out of scope here: `github-oauth`, `gitlab-token`, `gitlab-oauth`
-/// — those target VCS hosts which we don't fetch from yet.
-pub fn read_auth_from_composer_json(
-    composer_json: &Value,
+/// Out of scope: `github-oauth`, `gitlab-token`, `gitlab-oauth`,
+/// `bitbucket-oauth`, `client-certificate`, `forgejo-token`,
+/// `custom-headers` — Composer reads these from the same containers,
+/// but bougie only fetches from URLs that need basic / bearer creds
+/// today. The follow-up that wires github-oauth will extend this
+/// parser without changing the outer reader functions.
+fn parse_auth_object(
+    obj: &serde_json::Map<String, Value>,
+    source: &str,
 ) -> Result<HashMap<String, crate::metadata::AuthCredentials>, BuildError> {
     use crate::metadata::AuthCredentials;
     let mut out: HashMap<String, AuthCredentials> = HashMap::new();
-    let Some(obj) = composer_json.as_object() else {
-        return Ok(out);
-    };
-    let Some(config) = obj.get("config").and_then(Value::as_object) else {
-        return Ok(out);
-    };
-    if let Some(bearer) = config.get("bearer").and_then(Value::as_object) {
+    if let Some(bearer) = obj.get("bearer").and_then(Value::as_object) {
         for (host, val) in bearer {
             let token = val.as_str().ok_or_else(|| {
                 BuildError::Internal(format!(
-                    "config.bearer.{host} must be a string token",
+                    "{source}: bearer.{host} must be a string token",
                 ))
             })?;
             out.insert(host.clone(), AuthCredentials::Bearer { token: token.to_owned() });
         }
     }
-    if let Some(http_basic) = config.get("http-basic").and_then(Value::as_object) {
+    if let Some(http_basic) = obj.get("http-basic").and_then(Value::as_object) {
         for (host, val) in http_basic {
             let entry = val.as_object().ok_or_else(|| {
                 BuildError::Internal(format!(
-                    "config.http-basic.{host} must be an object with `username` and `password`",
+                    "{source}: http-basic.{host} must be an object with `username` and `password`",
                 ))
             })?;
             let username = entry
@@ -1691,7 +1686,7 @@ pub fn read_auth_from_composer_json(
                 .and_then(Value::as_str)
                 .ok_or_else(|| {
                     BuildError::Internal(format!(
-                        "config.http-basic.{host}.username is missing or not a string",
+                        "{source}: http-basic.{host}.username is missing or not a string",
                     ))
                 })?;
             let password = entry
@@ -1699,7 +1694,7 @@ pub fn read_auth_from_composer_json(
                 .and_then(Value::as_str)
                 .ok_or_else(|| {
                     BuildError::Internal(format!(
-                        "config.http-basic.{host}.password is missing or not a string",
+                        "{source}: http-basic.{host}.password is missing or not a string",
                     ))
                 })?;
             // http-basic wins over bearer for the same host
@@ -1717,85 +1712,180 @@ pub fn read_auth_from_composer_json(
     Ok(out)
 }
 
+/// Read auth credentials from composer.json's `config.http-basic`
+/// and `config.bearer` maps. This is the lowest-precedence source —
+/// see [`read_all_auth`] for the full merge order.
+pub fn read_auth_from_composer_json(
+    composer_json: &Value,
+) -> Result<HashMap<String, crate::metadata::AuthCredentials>, BuildError> {
+    let Some(obj) = composer_json.as_object() else {
+        return Ok(HashMap::new());
+    };
+    let Some(config) = obj.get("config").and_then(Value::as_object) else {
+        return Ok(HashMap::new());
+    };
+    parse_auth_object(config, "composer.json config")
+}
+
 /// Read auth from a project-level `auth.json` (next to
 /// composer.json). The shape is the same as composer.json's
 /// `config` section but at the top level. Returns an empty map if
 /// the file doesn't exist.
-///
-/// Composer reads `auth.json` in priority over composer.json's
-/// `config` for the same host — the merge happens at the call
-/// site by writing `auth.json` entries LAST into the combined map.
 pub fn read_auth_json(
     project_root: &Path,
 ) -> Result<HashMap<String, crate::metadata::AuthCredentials>, BuildError> {
-    use crate::metadata::AuthCredentials;
-    let path = project_root.join("auth.json");
+    read_auth_json_at(&project_root.join("auth.json"))
+}
+
+/// Read auth from a specific `auth.json` path. Returns an empty map
+/// when the file doesn't exist; otherwise parses with [`parse_auth_object`].
+/// Split out from [`read_auth_json`] so the global-auth path picker
+/// can reuse it without restating the read-then-parse dance.
+pub(crate) fn read_auth_json_at(
+    path: &Path,
+) -> Result<HashMap<String, crate::metadata::AuthCredentials>, BuildError> {
     if !path.is_file() {
         return Ok(HashMap::new());
     }
-    let bytes = std::fs::read(&path).map_err(|e| {
+    let bytes = std::fs::read(path).map_err(|e| {
         BuildError::Internal(format!("reading {}: {e}", path.display()))
     })?;
     let value: Value = serde_json::from_slice(&bytes).map_err(|e| {
         BuildError::Internal(format!("parsing {}: {e}", path.display()))
     })?;
-    let mut out: HashMap<String, AuthCredentials> = HashMap::new();
     let Some(obj) = value.as_object() else {
-        return Ok(out);
+        return Ok(HashMap::new());
     };
-    // `auth.json`'s shape is exactly the `config` shape but
-    // top-level — http-basic / bearer maps. Reuse the parser by
-    // synthesizing the wrapped form, but keeping the BuildError
-    // wording focused on the file. Simpler: duplicate the small
-    // parser inline rather than introducing a helper that has to
-    // re-thread the error context.
-    if let Some(bearer) = obj.get("bearer").and_then(Value::as_object) {
-        for (host, val) in bearer {
-            let token = val.as_str().ok_or_else(|| {
-                BuildError::Internal(format!(
-                    "{}: bearer.{host} must be a string token",
-                    path.display(),
-                ))
-            })?;
-            out.insert(host.clone(), AuthCredentials::Bearer { token: token.to_owned() });
+    parse_auth_object(obj, &path.display().to_string())
+}
+
+/// Candidate locations bougie probes for the **global** Composer
+/// `auth.json`, in lookup order. Composer itself reads from
+/// `$COMPOSER_HOME/auth.json` (see `Composer\Factory::createConfig`,
+/// `Factory.php:209`); we add the XDG-strict and legacy locations
+/// because that's where the file actually lives across distributions.
+///
+/// First existing file in the returned list wins.
+///
+/// Taking `env` as a closure keeps the function pure for unit tests
+/// (no `std::env::set_var` races between threads). The public
+/// [`read_global_auth_json`] wires it to `std::env::var`.
+pub(crate) fn global_auth_json_candidates(env: impl Fn(&str) -> Option<String>) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    if let Some(h) = env("COMPOSER_HOME") {
+        out.push(PathBuf::from(h).join("auth.json"));
+    }
+    if let Some(h) = env("XDG_CONFIG_HOME") {
+        out.push(PathBuf::from(h).join("composer").join("auth.json"));
+    }
+    if let Some(h) = env("HOME") {
+        // XDG default and the historical Composer location, in
+        // Composer's own preference order.
+        out.push(PathBuf::from(&h).join(".config").join("composer").join("auth.json"));
+        out.push(PathBuf::from(&h).join(".composer").join("auth.json"));
+    }
+    out
+}
+
+/// Read auth from the global Composer `auth.json`, if present.
+/// Returns an empty map when no candidate file exists. See
+/// [`global_auth_json_candidates`] for the lookup order.
+///
+/// The high-value point of this source: agencies already keep their
+/// GitHub / private-Packagist credentials in
+/// `~/.config/composer/auth.json` for Composer itself. Reading the
+/// same file for free means bougie inherits a working credential
+/// store without any reconfiguration.
+pub fn read_global_auth_json() -> Result<HashMap<String, crate::metadata::AuthCredentials>, BuildError>
+{
+    for candidate in global_auth_json_candidates(|k| std::env::var(k).ok()) {
+        if candidate.is_file() {
+            return read_auth_json_at(&candidate);
         }
     }
-    if let Some(http_basic) = obj.get("http-basic").and_then(Value::as_object) {
-        for (host, val) in http_basic {
-            let entry = val.as_object().ok_or_else(|| {
-                BuildError::Internal(format!(
-                    "{}: http-basic.{host} must be an object",
-                    path.display(),
-                ))
-            })?;
-            let username = entry
-                .get("username")
-                .and_then(Value::as_str)
-                .ok_or_else(|| {
-                    BuildError::Internal(format!(
-                        "{}: http-basic.{host}.username missing",
-                        path.display(),
-                    ))
-                })?;
-            let password = entry
-                .get("password")
-                .and_then(Value::as_str)
-                .ok_or_else(|| {
-                    BuildError::Internal(format!(
-                        "{}: http-basic.{host}.password missing",
-                        path.display(),
-                    ))
-                })?;
-            out.insert(
-                host.clone(),
-                AuthCredentials::Basic {
-                    username: username.to_owned(),
-                    password: password.to_owned(),
-                },
-            );
-        }
+    Ok(HashMap::new())
+}
+
+/// Parse the JSON body of the `COMPOSER_AUTH` environment variable.
+/// The shape is the same as `auth.json` — a top-level object with
+/// `http-basic` / `bearer` (and Composer's other auth keys, which
+/// bougie skips today). Empty input → empty map.
+pub fn parse_composer_auth_env(
+    raw: &str,
+) -> Result<HashMap<String, crate::metadata::AuthCredentials>, BuildError> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(HashMap::new());
     }
-    Ok(out)
+    let value: Value = serde_json::from_str(trimmed).map_err(|e| {
+        BuildError::Internal(format!("COMPOSER_AUTH is not valid JSON: {e}"))
+    })?;
+    let Some(obj) = value.as_object() else {
+        return Err(BuildError::Internal(
+            "COMPOSER_AUTH must decode to a JSON object".into(),
+        ));
+    };
+    parse_auth_object(obj, "COMPOSER_AUTH")
+}
+
+/// Read auth from the `COMPOSER_AUTH` environment variable. The
+/// canonical way to inject Composer credentials in CI without
+/// committing an `auth.json` to the repo. Returns an empty map when
+/// the variable is unset or empty.
+pub fn read_composer_auth_env() -> Result<HashMap<String, crate::metadata::AuthCredentials>, BuildError>
+{
+    match std::env::var("COMPOSER_AUTH") {
+        Ok(s) => parse_composer_auth_env(&s),
+        Err(_) => Ok(HashMap::new()),
+    }
+}
+
+/// Collect auth credentials from every source bougie understands and
+/// merge them in Composer's documented order. Later inserts win, so
+/// the order below — global `auth.json`, composer.json `config`,
+/// project `auth.json`, `COMPOSER_AUTH` (highest) — is the effective
+/// priority.
+///
+/// This is what Composer itself does (see `Composer\Factory.php`
+/// lines 209-219 for the global + COMPOSER_AUTH-first-pass, then
+/// 328-344 for composer.json + project auth.json + COMPOSER_AUTH
+/// second pass). Composer applies `COMPOSER_AUTH` twice — once after
+/// global auth.json, once again at the very end — explicitly so it
+/// wins over both composer.json `config` and the project `auth.json`
+/// ("make sure we load the auth env again over the local auth.json +
+/// composer.json config"). We collapse that into one final apply
+/// since the first pass is dominated by everything that follows.
+///
+/// Intuition: global is the user's machine defaults; composer.json
+/// `config` is the project's committed intent; project `auth.json` is
+/// the developer's per-checkout override; `COMPOSER_AUTH` is the
+/// CI/runtime override.
+pub fn read_all_auth(
+    composer_json: &Value,
+    project_root: &Path,
+) -> Result<HashMap<String, crate::metadata::AuthCredentials>, BuildError> {
+    Ok(merge_auth_sources(
+        read_global_auth_json()?,
+        read_auth_from_composer_json(composer_json)?,
+        read_auth_json(project_root)?,
+        read_composer_auth_env()?,
+    ))
+}
+
+/// Pure merger so the precedence order can be unit-tested without
+/// env-var or filesystem races. Arguments are listed lowest- to
+/// highest-precedence; the returned map carries the per-host winner.
+pub(crate) fn merge_auth_sources(
+    global: HashMap<String, crate::metadata::AuthCredentials>,
+    composer_json_config: HashMap<String, crate::metadata::AuthCredentials>,
+    project_auth_json: HashMap<String, crate::metadata::AuthCredentials>,
+    composer_auth_env: HashMap<String, crate::metadata::AuthCredentials>,
+) -> HashMap<String, crate::metadata::AuthCredentials> {
+    let mut out = global;
+    out.extend(composer_json_config);
+    out.extend(project_auth_json);
+    out.extend(composer_auth_env);
+    out
 }
 
 /// Split a Composer constraint string into its constraint body and
@@ -2271,11 +2361,10 @@ pub fn dry_run_update(
         .map_err(|e| eyre!("parsing composer.json: {e}"))?;
 
     let client = build_client()?;
-    // Auth assembly: start with composer.json's `config.http-basic`
-    // / `config.bearer`, then merge `<project_root>/auth.json` on
-    // top (auth.json wins — matches Composer's precedence).
-    let mut auth = read_auth_from_composer_json(&composer_json).map_err(|e| eyre!(e))?;
-    auth.extend(read_auth_json(project_root).map_err(|e| eyre!(e))?);
+    // Auth assembly: composer.json `config`, global Composer
+    // `auth.json`, project `auth.json`, then `COMPOSER_AUTH`. See
+    // [`read_all_auth`] for the precedence rationale.
+    let auth = read_all_auth(&composer_json, project_root).map_err(|e| eyre!(e))?;
     let mut provider = ResolveProvider::build_with_auth(
         client,
         paths.clone(),
@@ -2437,8 +2526,7 @@ pub fn resolve_for_lockfile(
     let composer_json: Value = serde_json::from_slice(&composer_json_bytes)
         .map_err(|e| eyre!("parsing composer.json: {e}"))?;
 
-    let mut auth = read_auth_from_composer_json(&composer_json).map_err(|e| eyre!(e))?;
-    auth.extend(read_auth_json(project_root).map_err(|e| eyre!(e))?);
+    let auth = read_all_auth(&composer_json, project_root).map_err(|e| eyre!(e))?;
 
     let full = solve_into_lock_packages(
         paths,
