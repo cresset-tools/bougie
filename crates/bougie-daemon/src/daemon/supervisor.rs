@@ -607,14 +607,24 @@ fn compute_backoff(failure_count: u32) -> Duration {
 // -------------------- helpers --------------------
 
 /// Per-service `current_dir` override. Returns `None` to inherit
-/// bougied's CWD. Today only opensearch uses this — its bundled
-/// `config/jvm.options` writes the GC log to a relative `logs/`
-/// path that the JVM resolves *before* opensearch.yml's `path.logs`
-/// is read, so we anchor CWD to the writable data dir so `logs/`
-/// resolves under our RW allowlist.
+/// bougied's CWD.
+///
+/// - `opensearch`: its bundled `config/jvm.options` writes the GC log
+///   to a relative `logs/` path that the JVM resolves *before*
+///   opensearch.yml's `path.logs` is read, so we anchor CWD to the
+///   writable data dir so `logs/` resolves under our RW allowlist.
+/// - `rabbitmq`: Erlang's BEAM does a `getcwd()` + readdir during
+///   boot (the code/loader scans CWD before consulting any -boot
+///   path). If bougied was launched from a directory under `$HOME`
+///   — e.g. the user ran `bougie start` from their project — the
+///   strict sandbox's `ProtectHome::Yes` makes that path unreadable
+///   to the child and BEAM aborts with `invalid_current_directory`
+///   ("cannot start loader") before it can read its boot script.
+///   Anchor CWD to the service data dir, which is in the RW set.
 fn render_exec_cwd(entry: &CatalogEntry, paths: &Paths) -> Option<std::path::PathBuf> {
     match entry.name {
         "opensearch" => Some(paths.service_data("opensearch")),
+        "rabbitmq" => Some(paths.service_data("rabbitmq")),
         _ => None,
     }
 }
