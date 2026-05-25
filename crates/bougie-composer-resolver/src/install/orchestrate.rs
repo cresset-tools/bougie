@@ -277,6 +277,7 @@ fn verify_content_hash(composer_json_bytes: &[u8], lock: &Lock) -> Result<()> {
 fn preflight(composer_json_bytes: &[u8], lock: &Lock, no_dev: bool) -> Result<Vec<String>> {
     let mut reasons: Vec<String> = Vec::new();
     let mut warnings: Vec<String> = Vec::new();
+    let mut plugin_packages: Vec<String> = Vec::new();
 
     // composer.json scripts → not run. Warn rather than fail; the
     // package install itself is unaffected. Users who depend on
@@ -312,15 +313,10 @@ fn preflight(composer_json_bytes: &[u8], lock: &Lock, no_dev: bool) -> Result<Ve
         }
         if p.is_composer_plugin() {
             // Plugin install-time hooks are arbitrary PHP we won't
-            // run. Surface it, skip the package — `install_from_lock`
-            // filters it out of `install_set` for the same reason.
-            warnings.push(format!(
-                "package `{}` is a Composer plugin (type `composer-plugin`); \
-                 bougie does not run plugin install-time hooks and skips \
-                 the package itself. Run `bougie run -- composer install` if \
-                 the plugin's behavior is required.",
-                p.name,
-            ));
+            // run. Skip the package — `install_from_lock` filters it
+            // out of `install_set` for the same reason. Names are
+            // aggregated into one warning after the loop.
+            plugin_packages.push(p.name.clone());
             continue;
         }
         let Some(dist) = &p.dist else {
@@ -348,6 +344,19 @@ fn preflight(composer_json_bytes: &[u8], lock: &Lock, no_dev: bool) -> Result<Ve
         // as skip-verify (FileDownloader.php:212); we do the same
         // and key the cache off `dist.reference` in that case (see
         // downloader::cache_path_for).
+    }
+
+    if !plugin_packages.is_empty() {
+        let names = plugin_packages.join(", ");
+        let noun = if plugin_packages.len() == 1 { "package" } else { "packages" };
+        warnings.push(format!(
+            "{noun} {names} {verb} Composer plugins (type `composer-plugin`); \
+             bougie does not run plugin install-time hooks and skips \
+             {pronoun}. Run `bougie run -- composer install` if the \
+             plugin behavior is required.",
+            verb = if plugin_packages.len() == 1 { "is a" } else { "are" },
+            pronoun = if plugin_packages.len() == 1 { "the package itself" } else { "them" },
+        ));
     }
 
     if reasons.is_empty() {
