@@ -65,8 +65,11 @@ pub fn parse_request(input: &str) -> Result<Request> {
         return Err(eyre!("empty request"));
     }
 
-    // 1. Path-shaped (contains '/' or starts with '~').
-    if s.contains('/') || s.starts_with('~') {
+    // 1. Path-shaped (contains '/' or starts with '~' followed by '/',
+    //    a username char, or end-of-string). A bare '~' followed by a
+    //    digit is the Composer tilde-range operator (`~8.3`, `~8.3.0`),
+    //    not a home-dir path.
+    if s.contains('/') || is_home_path_prefix(s) {
         return Ok(Request::Path(PathBuf::from(s)));
     }
 
@@ -172,6 +175,21 @@ fn is_constraint_lead(c: char) -> bool {
     matches!(c, '>' | '<' | '=' | '^' | '~')
 }
 
+/// True when `s` looks like a `~`-prefixed home path rather than a
+/// Composer tilde-range constraint. A tilde constraint always has a
+/// digit immediately after `~` (`~8.3`, `~8.3.0`); a home path has
+/// `/`, an alphabetic username char, or nothing after it.
+fn is_home_path_prefix(s: &str) -> bool {
+    let mut chars = s.chars();
+    if chars.next() != Some('~') {
+        return false;
+    }
+    match chars.next() {
+        None => true,
+        Some(c) => !c.is_ascii_digit(),
+    }
+}
+
 fn parse_flavor_word(s: &str) -> Option<Flavor> {
     match s {
         "nts" => Some(Flavor::Nts),
@@ -252,6 +270,34 @@ mod tests {
             req,
             Request::VersionLike { spec: VersionLike::Constraint(Constraint::And(_)), flavor: None }
         ));
+    }
+
+    #[test]
+    fn tilde_range_is_constraint_not_path() {
+        // `~8.3` and `~8.3.0` are Composer tilde-range operators, not
+        // home-dir paths. They must round-trip through Constraint::parse.
+        for s in ["~8.3", "~8.3.0", "~8"] {
+            assert_eq!(
+                parse_request(s).unwrap(),
+                version_request(
+                    VersionLike::Constraint(Constraint::parse(s).unwrap()),
+                    None,
+                ),
+                "{s} should parse as a constraint",
+            );
+        }
+    }
+
+    #[test]
+    fn tilde_home_paths_still_paths() {
+        // `~/foo` and `~user/foo` are paths — they would already match
+        // the `contains('/')` arm, but `~` alone or `~user` must too.
+        for s in ["~", "~user"] {
+            assert!(
+                matches!(parse_request(s).unwrap(), Request::Path(_)),
+                "{s} should parse as a path",
+            );
+        }
     }
 
     #[test]

@@ -73,7 +73,7 @@ pub fn run(format: OutputFormat, dry_run: bool) -> Result<ExitCode> {
     let project_root = std::env::current_dir()?;
 
     let project = load_project(&project_root)?;
-    let (spec, flavor) = resolve_php_inputs(&project)?;
+    let (spec, flavor) = resolve_php_inputs(&project_root, &project)?;
 
     if dry_run {
         eprintln!("Resolving…");
@@ -87,19 +87,21 @@ pub fn run(format: OutputFormat, dry_run: bool) -> Result<ExitCode> {
 }
 
 /// Same as [`run`] but, when neither `composer.json` nor `bougie.toml`
-/// pins a PHP version, falls back to the highest already-installed
-/// interpreter (or `>=8.0` for a fresh machine) instead of erroring.
+/// pins a PHP version *and* no inference signal fires, falls back to
+/// the highest already-installed interpreter (or `>=8.0` for a fresh
+/// machine) instead of erroring.
 ///
 /// Mirrors uv's behavior for `uv run` outside a project: be useful with
 /// whatever's lying around, defer the strict-constraint requirement to
-/// the explicit `bougie sync` path. `bougie sync` itself still errors —
-/// only `bougie run` opts in via this entry point.
+/// the explicit `bougie sync` path. `bougie sync` itself still errors
+/// when inference can't help — only `bougie run` opts in via this
+/// entry point for the install-state fallback.
 pub fn run_with_default_fallback(format: OutputFormat, dry_run: bool) -> Result<ExitCode> {
     let paths = Paths::from_env()?;
     let project_root = std::env::current_dir()?;
 
     let project = load_project(&project_root)?;
-    let (spec, flavor) = match resolve_php_inputs(&project) {
+    let (spec, flavor) = match resolve_php_inputs(&project_root, &project) {
         Ok(inputs) => inputs,
         Err(err) if is_missing_php_constraint(&err) => default_php_inputs(&paths, &project)?,
         Err(err) => return Err(err),
@@ -290,11 +292,47 @@ fn install_required_extensions(
     };
     let project_conf_d = project_root.join(".bougie").join("conf.d");
     let mut installed_names = Vec::new();
+
+    // Inferred extensions (Magento recommended set ∪ ext-* listed in
+    // composer.lock) are added on top of whatever the project already
+    // declared. User-declared entries always take precedence:
+    //
+    // - explicit `require.ext-*` in composer.json is honored as-is
+    //   (the loop below picks up version pins from `[extensions]`);
+    // - `[extensions] = false` opts a name out, so we filter inferred
+    //   names against it.
+    let (inferred_names, sources) = super::infer_php::infer_extensions(project_root);
+    let inferred: BTreeSet<String> = inferred_names
+        .into_iter()
+        .filter(|n| !composer.require_extensions.contains(n))
+        .filter(|n| {
+            project
+                .bougie
+                .extensions
+                .get(n)
+                .is_none_or(|p| !p.is_disabled())
+        })
+        .collect();
+    if !inferred.is_empty() {
+        eprintln!(
+            "adding inferred extensions from {}: {}",
+            sources.join(" + "),
+            inferred
+                .iter()
+                .filter(|n| !baseline::is_builtin(n))
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", "),
+        );
+    }
+    let mut effective: BTreeSet<String> = composer.require_extensions.clone();
+    effective.extend(inferred);
+
     // One shared bar across every composer-required extension so the
     // user sees a single combined download bar even when the project
     // pulls in several non-baseline extensions.
     let bar = DownloadBar::new("downloading");
-    for name in &composer.require_extensions {
+    for name in &effective {
         if baseline::is_builtin(name) {
             continue;
         }
@@ -364,12 +402,18 @@ fn is_ext_enabled_in_project(conf_d: &std::path::Path, name: &str) -> bool {
 
 /// Resolve the project's PHP inputs (constraint + flavor). Public so
 /// callers like `ext add` can drive `ensure_synced` without re-parsing.
-pub fn project_php_inputs(project: &ProjectConfig) -> Result<(VersionLike, Flavor)> {
-    resolve_php_inputs(project)
+pub fn project_php_inputs(
+    project_root: &std::path::Path,
+    project: &ProjectConfig,
+) -> Result<(VersionLike, Flavor)> {
+    resolve_php_inputs(project_root, project)
 }
 
-fn resolve_php_inputs(project: &ProjectConfig) -> Result<(VersionLike, Flavor)> {
-    let public = match project.composer.as_ref().and_then(|c| c.require_php.clone()) {
+fn resolve_php_inputs(
+    project_root: &std::path::Path,
+    project: &ProjectConfig,
+) -> Result<(VersionLike, Flavor)> {
+    let mut public = match project.composer.as_ref().and_then(|c| c.require_php.clone()) {
         Some(s) => Some(
             Constraint::parse(&s)
                 .map_err(|e| eyre!("composer.json require.php {s:?}: {e}"))?,
@@ -393,6 +437,17 @@ fn resolve_php_inputs(project: &ProjectConfig) -> Result<(VersionLike, Flavor)> 
             }
         })
         .transpose()?;
+
+    // When neither side pins PHP, try to infer a reasonable constraint
+    // from on-disk signals (Magento recipe, then composer.lock). If
+    // anything fires, treat it as the public constraint so the rest of
+    // the pipeline behaves identically to a user-written `require.php`.
+    if public.is_none() && override_spec.is_none() {
+        if let Some((inferred, source)) = super::infer_php::infer(project_root) {
+            eprintln!("inferred php constraint from {source}");
+            public = Some(inferred);
+        }
+    }
 
     let spec = intersect_php(public.as_ref(), override_spec.as_ref())?;
     let flavor = parse_flavor(project.bougie.php.flavor.as_deref())?;
@@ -739,7 +794,8 @@ mod tests {
                 }),
                 bougie: BougieConfig::default(),
             };
-            let (spec, _flavor) = resolve_php_inputs(&project)
+            let td = TempDir::new().unwrap();
+            let (spec, _flavor) = resolve_php_inputs(td.path(), &project)
                 .unwrap_or_else(|e| panic!("resolve_php_inputs({require_php:?}) failed: {e}"));
             // The wildcard cases must produce a Constraint, not a
             // bare-version VersionLike — they're ranges, not pins.
