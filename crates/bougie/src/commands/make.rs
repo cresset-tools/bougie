@@ -237,9 +237,7 @@ fn print_start_hints(recipe_name: &str, project_root: &std::path::Path) {
         eprintln!("  URL:      {u}");
     }
     if recipe_name == "magento" {
-        let front = read_magento_backend_frontname(project_root)
-            .unwrap_or_else(|| "admin".into());
-        if let Some(u) = &url {
+        if let (Some(u), Some(front)) = (&url, read_magento_backend_frontname(project_root)) {
             eprintln!("  Admin:    {u}{front}");
         }
         eprintln!("  User:     admin");
