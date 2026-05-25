@@ -27,7 +27,7 @@ use serde_json::Value;
 use crate::metadata::AuthCredentials;
 use crate::update::read_all_auth;
 
-use super::downloader::{fetch_and_extract_dists, DistOutcome, DistRequest};
+use super::downloader::{fetch_and_extract_dists_with_progress, DistOutcome, DistRequest};
 
 /// Caller-supplied install options. Mirrors the subset of Composer's
 /// `install` flags we honor in Phase A.
@@ -183,9 +183,35 @@ pub fn install_from_lock(
     // a `Composer/…` UA, and had no upper bound on a runaway dist
     // download.
     let client = bougie_fetch::default_client()?;
-    let bar = DownloadBar::new("downloading");
-    let outcomes = fetch_and_extract_dists(&client, paths, &dists, &bar)?;
-    bar.finish();
+    // Composer lockfiles don't carry per-dist sizes, so we can't seed a
+    // byte-total. Keep the bytes-side bar hidden and render a separate
+    // "<done>/<total> packages" bar that ticks once per finished dist.
+    let bar = DownloadBar::hidden();
+    let total = dists.len() as u64;
+    let pkg_bar = new_package_bar(total);
+    // Two phases share one bar: download counts up to `total`, then we
+    // reset to 0 and re-count for extraction. Without the reset the bar
+    // would sit at 100% with a stale package name while extraction ran.
+    let extract_started = std::sync::atomic::AtomicBool::new(false);
+    let outcomes = fetch_and_extract_dists_with_progress(
+        &client,
+        paths,
+        &dists,
+        &bar,
+        |name, _| {
+            pkg_bar.set_message(name.to_owned());
+            pkg_bar.inc(1);
+        },
+        |name| {
+            if !extract_started.swap(true, std::sync::atomic::Ordering::AcqRel) {
+                pkg_bar.set_prefix("extracting");
+                pkg_bar.set_position(0);
+            }
+            pkg_bar.set_message(name.to_owned());
+            pkg_bar.inc(1);
+        },
+    )?;
+    pkg_bar.finish_and_clear();
 
     dump_autoload(&DumpRequest {
         project_root,
@@ -220,6 +246,33 @@ pub fn install_from_lock(
         no_dev: opts.no_dev,
         warnings,
     })
+}
+
+/// Build the per-package install progress bar. Renders on stderr when
+/// progress is globally enabled (TTY, not `--quiet`, not JSON output)
+/// and stays hidden otherwise — matching how `DownloadBar` gates its
+/// own rendering. Length is the total dist count; callers tick once per
+/// finished dist.
+fn new_package_bar(total: u64) -> indicatif::ProgressBar {
+    if !bougie_output::output::progress_visible() {
+        let pb = indicatif::ProgressBar::hidden();
+        pb.set_length(total);
+        return pb;
+    }
+    let pb = indicatif::ProgressBar::new(total);
+    pb.set_draw_target(indicatif::ProgressDrawTarget::stderr_with_hz(15));
+    // No `{per_sec}`/`{eta}` here: package count is uniform-looking but
+    // packages aren't uniform in size, so a per-package rate misleads
+    // (a single Magento megapackage skews it) and the eta jitters wildly.
+    let style = indicatif::ProgressStyle::with_template(
+        "  {prefix:<12} {bar:32.magenta/white.dim} {pos}/{len} packages {msg}",
+    )
+    .unwrap_or_else(|_| indicatif::ProgressStyle::default_bar())
+    .progress_chars("--");
+    pb.set_style(style);
+    pb.set_prefix("downloading");
+    pb.enable_steady_tick(std::time::Duration::from_millis(120));
+    pb
 }
 
 /// Extract the host portion of a URL — the bit between `://` and
