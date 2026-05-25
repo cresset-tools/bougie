@@ -9,7 +9,7 @@
 //! upstream compromise that didn't update both would be caught.
 
 use super::resolve::Resolved;
-use bougie_errors::BougieError;
+use bougie_errors::{error_chain, BougieError};
 use bougie_fetch::{fetch_file, ArchiveKind, BlobSpec, DownloadBar, Hash};
 use bougie_paths::Paths;
 use eyre::{Result, WrapErr};
@@ -75,7 +75,7 @@ pub fn fetch_channels(client: &reqwest::blocking::Client, paths: &Paths) -> Resu
 
     let resp = req.send().map_err(|e| BougieError::Network {
         operation: format!("GET {url}"),
-        detail: e.to_string(),
+        detail: error_chain(&e),
     })?;
 
     if resp.status() == reqwest::StatusCode::NOT_MODIFIED {
@@ -96,7 +96,7 @@ pub fn fetch_channels(client: &reqwest::blocking::Client, paths: &Paths) -> Resu
         .map(str::to_owned);
     let bytes = resp.bytes().map_err(|e| BougieError::Network {
         operation: format!("reading body of {url}"),
-        detail: e.to_string(),
+        detail: error_chain(&e),
     })?;
 
     write_atomic(&cache_path, &bytes)?;
@@ -168,7 +168,7 @@ pub fn fetch_phar(
 fn fetch_sha256sum(client: &reqwest::blocking::Client, url: &str) -> Result<String> {
     let resp = client.get(url).send().map_err(|e| BougieError::Network {
         operation: format!("GET {url}"),
-        detail: e.to_string(),
+        detail: error_chain(&e),
     })?;
     if !resp.status().is_success() {
         return Err(BougieError::Network {
@@ -179,7 +179,7 @@ fn fetch_sha256sum(client: &reqwest::blocking::Client, url: &str) -> Result<Stri
     }
     let body = resp.text().map_err(|e| BougieError::Network {
         operation: format!("reading body of {url}"),
-        detail: e.to_string(),
+        detail: error_chain(&e),
     })?;
     let token = body
         .split_ascii_whitespace()

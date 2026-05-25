@@ -5,7 +5,7 @@
 //! the final destination so the rename is on the same filesystem),
 //! atomic-rename to `<dest>`, delete `tmp`.
 
-use bougie_errors::BougieError;
+use bougie_errors::{error_chain, BougieError};
 use eyre::{Result, WrapErr};
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use sha2::{Digest, Sha256};
@@ -61,7 +61,7 @@ pub fn default_client() -> Result<reqwest::blocking::Client> {
         .map_err(|e| {
             BougieError::Network {
                 operation: "building HTTP client".into(),
-                detail: e.to_string(),
+                detail: error_chain(&e),
             }
             .into()
         })
@@ -82,7 +82,7 @@ pub fn default_async_client() -> Result<reqwest::Client> {
         .map_err(|e| {
             BougieError::Network {
                 operation: "building async HTTP client".into(),
-                detail: e.to_string(),
+                detail: error_chain(&e),
             }
             .into()
         })
@@ -290,7 +290,7 @@ fn fetch_to_partial(
     }
     let mut resp = req.send().map_err(|e| BougieError::Network {
         operation: format!("fetching blob {}", spec.url),
-        detail: e.to_string(),
+        detail: error_chain(&e),
     })?;
     if !resp.status().is_success() {
         return Err(BougieError::Network {
@@ -337,7 +337,7 @@ fn stream_into_file(
             loop {
                 let n = resp.read(&mut buf).map_err(|e| BougieError::Network {
                     operation: format!("reading blob body from {}", spec.url),
-                    detail: e.to_string(),
+                    detail: error_chain(&e),
                 })?;
                 if n == 0 {
                     break;
@@ -355,7 +355,7 @@ fn stream_into_file(
             loop {
                 let n = resp.read(&mut buf).map_err(|e| BougieError::Network {
                     operation: format!("reading blob body from {}", spec.url),
-                    detail: e.to_string(),
+                    detail: error_chain(&e),
                 })?;
                 if n == 0 {
                     break;

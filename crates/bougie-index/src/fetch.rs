@@ -6,7 +6,7 @@
 //!   - `index.json.etag`    the matching `ETag` header value
 //!   - `index.json.sig`     the matching signature sidecar
 
-use bougie_errors::BougieError;
+use bougie_errors::{error_chain, BougieError};
 use crate::verify::Verifier;
 use crate::wire::{Manifest, Root, Section};
 use eyre::{Result, WrapErr};
@@ -227,8 +227,8 @@ pub fn fetch_manifest(
     serde_json::from_slice(&body).wrap_err("parsing fetched manifest")
 }
 
-fn net_io(operation: String, e: &impl std::fmt::Display) -> BougieError {
-    BougieError::Network { operation, detail: e.to_string() }
+fn net_io(operation: String, e: &impl std::error::Error) -> BougieError {
+    BougieError::Network { operation, detail: error_chain(e) }
 }
 
 fn net_http(operation: String, status: reqwest::StatusCode) -> BougieError {
