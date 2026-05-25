@@ -20,6 +20,7 @@
 //! under a `<vendor>/<name>/<ref>.zip` layout; we differ only in the key
 //! shape, not the cache semantics.
 
+use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 
 use bougie_fetch::{ArchiveKind, DownloadBar, Hash};
@@ -157,15 +158,12 @@ fn download_to_cache(
         return Ok(DistOutcome::CacheHit);
     }
     bar.set_current(dist.package_name);
+    let url = rewrite_github_dist_url(dist.url);
     let spec = bougie_fetch::BlobSpec {
-        url: dist.url,
+        url: &url,
         hash: Hash::sha1(dist.sha1),
         partial_dir: cache_root,
         dest: &cache_path,
-        // `fetch_file` doesn't extract, so `strip_prefix` / `archive`
-        // are inert here. We keep them populated for symmetry with
-        // `fetch_blob` callers — and because BlobSpec literals require
-        // every field.
         strip_prefix: "",
         archive: dist.archive,
         auth_header: dist.auth_header,
@@ -174,6 +172,39 @@ fn download_to_cache(
         format!("downloading dist for {}", dist.package_name)
     })?;
     Ok(DistOutcome::Downloaded)
+}
+
+/// Rewrite `api.github.com` zipball URLs to `codeload.github.com`
+/// direct downloads. The API endpoint returns a 302 redirect to
+/// codeload anyway, but the redirect itself consumes one GitHub REST
+/// API rate-limit point (60/hr unauthenticated, 5 000/hr with a
+/// token). Going directly to codeload skips the redirect and avoids
+/// the rate-limit hit entirely — significant for projects with dozens
+/// of GitHub-hosted dependencies.
+///
+/// The `legacy.zip` codeload path produces archives byte-identical to
+/// what the API redirect targets (same etag, same `{owner}-{repo}-
+/// {short_sha}/` wrapper directory).
+///
+/// Non-GitHub URLs pass through unchanged.
+fn rewrite_github_dist_url(url: &str) -> Cow<'_, str> {
+    const PREFIX: &str = "https://api.github.com/repos/";
+    const ZIPBALL: &str = "/zipball/";
+
+    let Some(rest) = url.strip_prefix(PREFIX) else {
+        return Cow::Borrowed(url);
+    };
+    let Some(idx) = rest.find(ZIPBALL) else {
+        return Cow::Borrowed(url);
+    };
+    let owner_repo = &rest[..idx];
+    let reference = &rest[idx + ZIPBALL.len()..];
+    if owner_repo.is_empty() || reference.is_empty() {
+        return Cow::Borrowed(url);
+    }
+    Cow::Owned(format!(
+        "https://codeload.github.com/{owner_repo}/legacy.zip/{reference}"
+    ))
 }
 
 /// Extract one cached dist archive into its `vendor_dest`. The
