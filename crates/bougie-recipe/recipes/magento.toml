@@ -5,12 +5,19 @@
 # server` errors per SERVICES.md §3.2.
 
 [task.services]
-# `server` is added here too so the recipe is self-contained; users
-# who want a custom docroot can override the `[server]` block in
-# `bougie.toml` and the next `bougie up server` picks it up.
+# `server` is added *and* up'd here so the recipe is self-contained
+# AND the server tenant is provisioned by the time [task.install]
+# runs — Magento's `setup:install --base-url=http://...` writes the
+# URL into `app/etc/env.php` at install time, and the URL is built
+# from `$BOUGIE_SERVICE_SERVER_HOSTNAME`/`$BOUGIE_SERVICE_SERVER_PORT`
+# which only get populated once the server's tenant has been
+# allocated by the `up` path. Starting the listener this early is
+# harmless — Magento isn't installed yet, but nothing makes HTTP
+# requests until [task.start] anyway, and `bougie up server` is
+# idempotent so re-running it there is a no-op.
 run = """
 bougie services add mariadb redis opensearch rabbitmq server
-bougie up mariadb redis opensearch rabbitmq
+bougie up mariadb redis opensearch rabbitmq server
 """
 
 [task.vendor]
