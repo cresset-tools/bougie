@@ -17,6 +17,7 @@
 
 use bougie_semver::Constraint;
 use serde_json::Value;
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 
@@ -154,6 +155,108 @@ fn lockfile_intersection(composer_lock: &str) -> Option<(Constraint, String)> {
     Some((combined, "composer.lock".into()))
 }
 
+/// Adobe's required PHP extensions for Magento 2.4 ("System
+/// Requirements"). `opcache` is officially "recommended" but every
+/// production install ships with it on, so we treat it as required.
+const MAGENTO_EXTENSIONS: &[&str] = &[
+    "bcmath",
+    "ctype",
+    "curl",
+    "dom",
+    "fileinfo",
+    "gd",
+    "hash",
+    "iconv",
+    "intl",
+    "libxml",
+    "mbstring",
+    "opcache",
+    "openssl",
+    "pcre",
+    "pdo_mysql",
+    "simplexml",
+    "soap",
+    "sockets",
+    "sodium",
+    "tokenizer",
+    "xmlwriter",
+    "xsl",
+    "zip",
+];
+
+/// Try to infer a set of required PHP extensions from on-disk project
+/// files. Returns the union of:
+///
+/// - **Recipe.** When the project is a recognised framework root
+///   (today: Magento), include that framework's required extensions.
+/// - **Lockfile.** When `composer.lock` exists, include every `ext-*`
+///   listed in any locked package's `require`.
+///
+/// Returns `(names, sources)` — `sources` lists the human-readable
+/// labels for the notice (e.g. `["magento/product-community-edition
+/// 2.4.7", "composer.lock"]`). The caller emits a single notice with
+/// both. Empty set means no signal fired.
+pub fn infer_extensions(project_root: &Path) -> (BTreeSet<String>, Vec<String>) {
+    let mut names: BTreeSet<String> = BTreeSet::new();
+    let mut sources: Vec<String> = Vec::new();
+
+    if let Ok(text) = fs::read_to_string(project_root.join("composer.json"))
+        && let Some((exts, src)) = magento_extensions(&text)
+    {
+        names.extend(exts.iter().map(|s| (*s).to_string()));
+        sources.push(src);
+    }
+    if let Ok(text) = fs::read_to_string(project_root.join("composer.lock")) {
+        let from_lock = lockfile_extensions(&text);
+        if !from_lock.is_empty() {
+            names.extend(from_lock);
+            sources.push("composer.lock".into());
+        }
+    }
+    (names, sources)
+}
+
+/// Magento's required extension set, gated on the same magento-package
+/// detection used by [`magento_default`].
+fn magento_extensions(composer_json: &str) -> Option<(&'static [&'static str], String)> {
+    let v: Value = serde_json::from_str(composer_json).ok()?;
+    let require = v.get("require").and_then(Value::as_object)?;
+    let (pkg, raw) = ["magento/product-community-edition", "magento/magento2-base"]
+        .iter()
+        .find_map(|k| require.get(*k).and_then(Value::as_str).map(|s| (*k, s)))?;
+    let label = match extract_first_version(raw) {
+        Some((maj, min, Some(p))) => format!("{pkg} {maj}.{min}.{p}"),
+        Some((maj, min, None)) => format!("{pkg} {maj}.{min}"),
+        None => pkg.to_string(),
+    };
+    Some((MAGENTO_EXTENSIONS, label))
+}
+
+/// Walk `packages` + `packages-dev` and collect every `require` key
+/// starting with `ext-`, stripped of the prefix.
+fn lockfile_extensions(composer_lock: &str) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    let Ok(v) = serde_json::from_str::<Value>(composer_lock) else {
+        return out;
+    };
+    for key in ["packages", "packages-dev"] {
+        let Some(arr) = v.get(key).and_then(Value::as_array) else {
+            continue;
+        };
+        for pkg in arr {
+            let Some(req) = pkg.get("require").and_then(Value::as_object) else {
+                continue;
+            };
+            for k in req.keys() {
+                if let Some(name) = k.strip_prefix("ext-") {
+                    out.insert(name.to_string());
+                }
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -233,5 +336,61 @@ mod tests {
     fn lockfile_without_php_constraints_returns_none() {
         let lock = r#"{"packages": [{"name": "a/b", "require": {"ext-foo": "*"}}]}"#;
         assert!(lockfile_intersection(lock).is_none());
+    }
+
+    #[test]
+    fn magento_extensions_returns_recommended_set() {
+        let composer = r#"{"require":{"magento/product-community-edition":"2.4.7-p3"}}"#;
+        let (exts, src) = magento_extensions(composer).unwrap();
+        assert!(src.contains("2.4.7"));
+        assert!(exts.contains(&"pdo_mysql"));
+        assert!(exts.contains(&"intl"));
+        assert!(exts.contains(&"opcache"));
+    }
+
+    #[test]
+    fn lockfile_extensions_unions_packages() {
+        let lock = r#"{
+            "packages": [
+                {"name": "a/b", "require": {"ext-redis": "*", "ext-intl": "*"}},
+                {"name": "c/d", "require": {"ext-curl": "*", "php": ">=8.1"}}
+            ],
+            "packages-dev": [
+                {"name": "e/f", "require": {"ext-xdebug": "*"}}
+            ]
+        }"#;
+        let set = lockfile_extensions(lock);
+        assert!(set.contains("redis"));
+        assert!(set.contains("intl"));
+        assert!(set.contains("curl"));
+        assert!(set.contains("xdebug"));
+        assert!(!set.contains("php"));
+    }
+
+    #[test]
+    fn infer_extensions_unions_recipe_and_lockfile() {
+        let dir = tempfile::TempDir::new().unwrap();
+        fs::write(
+            dir.path().join("composer.json"),
+            r#"{"require":{"magento/product-community-edition":"2.4.7-p3"}}"#,
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join("composer.lock"),
+            r#"{"packages":[{"name":"a/b","require":{"ext-redis":"*"}}]}"#,
+        )
+        .unwrap();
+        let (names, sources) = infer_extensions(dir.path());
+        assert!(names.contains("pdo_mysql"));
+        assert!(names.contains("redis"));
+        assert_eq!(sources.len(), 2);
+    }
+
+    #[test]
+    fn infer_extensions_no_signals_yields_empty() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (names, sources) = infer_extensions(dir.path());
+        assert!(names.is_empty());
+        assert!(sources.is_empty());
     }
 }

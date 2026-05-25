@@ -292,11 +292,47 @@ fn install_required_extensions(
     };
     let project_conf_d = project_root.join(".bougie").join("conf.d");
     let mut installed_names = Vec::new();
+
+    // Inferred extensions (Magento recommended set ∪ ext-* listed in
+    // composer.lock) are added on top of whatever the project already
+    // declared. User-declared entries always take precedence:
+    //
+    // - explicit `require.ext-*` in composer.json is honored as-is
+    //   (the loop below picks up version pins from `[extensions]`);
+    // - `[extensions] = false` opts a name out, so we filter inferred
+    //   names against it.
+    let (inferred_names, sources) = super::infer_php::infer_extensions(project_root);
+    let inferred: BTreeSet<String> = inferred_names
+        .into_iter()
+        .filter(|n| !composer.require_extensions.contains(n))
+        .filter(|n| {
+            project
+                .bougie
+                .extensions
+                .get(n)
+                .is_none_or(|p| !p.is_disabled())
+        })
+        .collect();
+    if !inferred.is_empty() {
+        eprintln!(
+            "adding inferred extensions from {}: {}",
+            sources.join(" + "),
+            inferred
+                .iter()
+                .filter(|n| !baseline::is_builtin(n))
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", "),
+        );
+    }
+    let mut effective: BTreeSet<String> = composer.require_extensions.clone();
+    effective.extend(inferred);
+
     // One shared bar across every composer-required extension so the
     // user sees a single combined download bar even when the project
     // pulls in several non-baseline extensions.
     let bar = DownloadBar::new("downloading");
-    for name in &composer.require_extensions {
+    for name in &effective {
         if baseline::is_builtin(name) {
             continue;
         }
