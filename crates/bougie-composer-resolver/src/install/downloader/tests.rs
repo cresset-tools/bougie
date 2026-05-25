@@ -424,6 +424,43 @@ fn dist_request_without_auth_fails_when_server_requires_it() {
     assert!(msg.contains("401"), "{msg}");
 }
 
+#[test]
+fn rewrite_github_api_zipball_to_codeload() {
+    let url = "https://api.github.com/repos/Seldaek/monolog/zipball/c915e2634718dbc8a4a15c61b0e62e7a44e14448";
+    let rewritten = rewrite_github_dist_url(url);
+    assert_eq!(
+        rewritten,
+        "https://codeload.github.com/Seldaek/monolog/legacy.zip/c915e2634718dbc8a4a15c61b0e62e7a44e14448",
+    );
+}
+
+#[test]
+fn rewrite_leaves_non_github_urls_unchanged() {
+    let urls = [
+        "https://repo.packagist.org/archives/vendor/pkg.zip",
+        "https://gitlab.example.com/api/v4/projects/1/packages/composer/archives/foo.zip",
+        "https://example.test/acme-foo.zip",
+    ];
+    for url in urls {
+        assert_eq!(rewrite_github_dist_url(url).as_ref(), url);
+    }
+}
+
+#[test]
+fn rewrite_leaves_github_non_zipball_urls_unchanged() {
+    let url = "https://api.github.com/repos/owner/repo/tarball/abc123";
+    assert_eq!(rewrite_github_dist_url(url).as_ref(), url);
+}
+
+#[test]
+fn rewrite_handles_org_scoped_repos() {
+    let url = "https://api.github.com/repos/symfony/console/zipball/3156577f46a38aa1b9323aad223de7a9cd426782";
+    assert_eq!(
+        rewrite_github_dist_url(url),
+        "https://codeload.github.com/symfony/console/legacy.zip/3156577f46a38aa1b9323aad223de7a9cd426782",
+    );
+}
+
 /// Minimal recursive walk: returns every path under `root` relative
 /// to `root`. Avoids pulling `walkdir` into the test deps just for
 /// this one assertion.
