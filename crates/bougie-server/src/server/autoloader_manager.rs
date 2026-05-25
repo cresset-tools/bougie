@@ -295,15 +295,20 @@ impl std::fmt::Debug for AutoloaderManager {
     }
 }
 
-/// Default `DumpRequest` for a server-driven bootstrap: optimize +
-/// classmap-authoritative, dev autoload included (this is a dev
-/// server), no `APCu` autoload (it's a runtime nicety, not relevant to
-/// the in-memory model).
+/// Default `DumpRequest` for a server-driven bootstrap: optimize
+/// (build a full classmap up-front), but **not** classmap-authoritative.
+/// Frameworks like Magento generate classes on demand (Factories,
+/// Proxies, Interceptors under `generated/code/`) and need Composer's
+/// PSR-4/PSR-0 fallback to either pick them up post-generation or
+/// return `false` so the framework's own SPL autoloader can generate
+/// them — `classmap_authoritative` short-circuits both. Dev autoload
+/// included (this is a dev server), no `APCu` autoload (it's a runtime
+/// nicety, not relevant to the in-memory model).
 fn bootstrap_request(project: &Path) -> DumpRequest<'_> {
     DumpRequest {
         project_root: project,
         optimize: true,
-        classmap_authoritative: true,
+        classmap_authoritative: false,
         no_dev: false,
         apcu_autoloader: false,
         apcu_prefix: None,

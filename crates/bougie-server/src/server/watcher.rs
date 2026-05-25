@@ -305,8 +305,13 @@ fn classify(map: &PathMap, path: &Path, deleted: bool) -> Vec<PendingEvent> {
         .filter(|u| path.starts_with(&u.root))
         .collect();
     uc_candidates.sort_by_key(|u| std::cmp::Reverse(u.root.as_os_str().len()));
+    // For deletes we don't filter on extension — a recursive directory
+    // delete on macOS often surfaces as a single Remove event for the
+    // directory (no per-file follow-ups), so the .php files inside it
+    // would never be dropped from the in-memory classmap. Pass the dir
+    // path through and let `apply_deleted_path` drop every entry under it.
     if let Some(best) = uc_candidates.first()
-        && has_php_or_inc_extension(path) {
+        && (deleted || has_php_or_inc_extension(path)) {
             out.push(PendingEvent::UserCodeChange {
                 project: best.project.clone(),
                 path: path.to_path_buf(),
@@ -522,6 +527,28 @@ mod tests {
         map.push_user_code_root(project.clone(), user_root.clone());
         let evs = classify(&map, &user_root.join("README.md"), false);
         assert!(!evs.iter().any(|e| matches!(e, PendingEvent::UserCodeChange { .. })));
+    }
+
+    #[test]
+    fn classify_routes_user_code_directory_delete() {
+        // macOS FSEvents collapses a recursive rmdir into a single
+        // Remove for the directory; classify must let that through so
+        // the autoloader can drop every entry under it. Non-deleted
+        // dir events stay filtered (a Modify on a directory isn't a
+        // real file change).
+        let project = PathBuf::from("/p/myapp");
+        let mut map = map_for(&project);
+        let user_root = project.join("src");
+        map.push_user_code_root(project.clone(), user_root.clone());
+        let dir = user_root.join("subdir");
+        let evs_del = classify(&map, &dir, true);
+        assert!(evs_del.iter().any(|e| matches!(
+            e,
+            PendingEvent::UserCodeChange { project: p, path: q, deleted: true }
+                if p == &project && q == &dir
+        )));
+        let evs_change = classify(&map, &dir, false);
+        assert!(!evs_change.iter().any(|e| matches!(e, PendingEvent::UserCodeChange { .. })));
     }
 
     #[test]

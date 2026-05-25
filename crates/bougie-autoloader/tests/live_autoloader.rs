@@ -160,6 +160,51 @@ fn apply_deleted_path_resolves_ambiguity() {
     );
 }
 
+/// A delete event for a *directory* drops every classmap entry under
+/// that directory. macOS FSEvents (notify's recommended backend) often
+/// collapses a recursive rmdir into a single Remove event for the dir
+/// with no per-file follow-ups, so the autoloader has to honour the
+/// directory form or stale entries linger and produce
+/// "include(...): No such file or directory" warnings at request time.
+#[test]
+fn apply_deleted_path_drops_directory_subtree() {
+    let fx = fixture("psr4-optimize");
+    let project = copy_input_to_tempdir(&fx).unwrap();
+
+    let mut loader = Autoloader::bootstrap(&req(project.path(), true)).unwrap();
+    loader.emit().unwrap();
+
+    let initial_map = std::fs::read_to_string(
+        project.path().join("vendor/composer/autoload_classmap.php"),
+    )
+    .unwrap();
+    assert!(
+        initial_map.contains("'Acme\\\\Lib\\\\Thing'"),
+        "initial classmap missing Acme\\Lib\\Thing — got:\n{initial_map}"
+    );
+
+    // Wipe the whole src/ directory and signal the delete at the
+    // directory granularity — mimicking what notify delivers on macOS
+    // for a recursive rmdir.
+    let src_dir = project.path().join("vendor/acme/lib/src");
+    std::fs::remove_dir_all(&src_dir).unwrap();
+    let changed = loader.apply_deleted_path(&src_dir).unwrap();
+    assert!(
+        changed,
+        "directory delete should drop every per_file entry under it"
+    );
+    loader.emit().unwrap();
+
+    let after_map = std::fs::read_to_string(
+        project.path().join("vendor/composer/autoload_classmap.php"),
+    )
+    .unwrap();
+    assert!(
+        !after_map.contains("'Acme\\\\Lib\\\\Thing'"),
+        "Acme\\Lib\\Thing must be gone after the directory delete — got:\n{after_map}"
+    );
+}
+
 /// Deleting a path the autoloader never saw is a no-op — important
 /// because the watcher can fire spurious events for ignored files
 /// (editor tempfiles, swp files, etc.).
