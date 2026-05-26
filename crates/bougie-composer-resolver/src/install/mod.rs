@@ -5,6 +5,7 @@
 //! locked packages, call [`fetch_and_extract_dists`], then hand off to
 //! `bougie-autoloader` for `vendor/autoload.php` generation.
 
+mod bin_proxy;
 mod downloader;
 mod orchestrate;
 
