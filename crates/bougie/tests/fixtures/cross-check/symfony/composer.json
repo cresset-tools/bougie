@@ -1,0 +1,9 @@
+{
+  "name": "test/symfony-cross-check",
+  "require": {
+    "symfony/framework-bundle": "^7.0"
+  },
+  "require-dev": {
+    "phpunit/phpunit": "^11.0"
+  }
+}

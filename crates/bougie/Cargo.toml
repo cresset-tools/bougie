@@ -29,6 +29,12 @@ default = ["dev-trust-root"]
 # `cargo install` doesn't ship it; turn on with `cargo test --features
 # test-fixtures` (CI does this).
 test-fixtures = []
+# Enables the Layer 4 cross-check integration tests that load
+# pre-captured Packagist fixtures from
+# `tests/fixtures/cross-check/<slug>/`. Off by default so the
+# compressed fixture bytes don't inflate `cargo build`. Run with:
+#   cargo test -p bougie --test composer_cross_check --features cross-check-fixtures
+cross-check-fixtures = []
 # Forwards through to `bougie-index/dev-trust-root` — see that crate
 # for what the override allows. A `cargo install --no-default-features`
 # (or a release pipeline that does the same) ships a binary where the
