@@ -285,7 +285,7 @@ produce an actionable error or warning when encountered.
 | **L1** — Semver conformance | Version/constraint parsing matches `composer/semver` | `bougie-semver/tests/conformance.rs` | `conformance.json` from upstream test suite |
 | **L2** — Solver unit fixtures | Resolution logic (replace, provide, stability, conflicts) | `bougie-composer-resolver/src/update/tests.rs` | Embedded fixtures, wiremock |
 | **L3** — Lockfile fidelity | Round-trip, content-hash, field preservation | `bougie-composer/src/lockfile.rs` tests, `bougie-composer-resolver/src/verify/` | Embedded fixtures |
-| **L4** — Cross-check harness | Same inputs → same outputs vs real `composer.phar` | `bougie/tests/composer_cross_check.rs` (planned) | Frozen Packagist snapshots per corpus project |
+| **L4** — Cross-check harness | Same inputs → same outputs vs real `composer.phar` | `bougie/tests/composer_cross_check.rs` | Frozen Packagist snapshots; 9 corpus projects passing |
 | **L5** — Derivation snapshots | Error message regression | Inline in resolver error paths (planned) | |
 | **LA** — Autoloader byte-equiv | `dump-autoload` output matches Composer 2.8.12 | `bougie-autoloader/tests/byte_equivalence.rs` | 15 fixture suites, `generate-autoload-fixtures.sh` |
 
