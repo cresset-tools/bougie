@@ -2194,7 +2194,23 @@ impl ResolveProvider {
         let exact_replaces: std::collections::BTreeMap<String, String> = entry
             .replace
             .iter()
-            .filter(|(_, v)| {
+            .filter(|(k, v)| {
+                // Only emit the coexistence constraint if the
+                // replaced package is actually in the dependency
+                // graph. The pre-fetch BFS populates the cache for
+                // every reachable package; if the replaced name isn't
+                // there, nothing requires it and pulling it in would
+                // bloat the graph (e.g. magento/community-edition
+                // replaces 238 modules, most unrequired by anything).
+                // Also check root requires: pubgrub might call
+                // get_dependencies for the replacer before loading
+                // the replaced package's metadata.
+                let in_graph = self.cache.borrow().contains_key(k.as_str())
+                    || self.merged_cache.borrow().contains_key(k.as_str())
+                    || self.root_deps.iter().any(|(n, _)| n.as_str() == k.as_str());
+                if !in_graph {
+                    return false;
+                }
                 let effective = if v.as_str() == "self.version" {
                     owner_version.as_str()
                 } else {
