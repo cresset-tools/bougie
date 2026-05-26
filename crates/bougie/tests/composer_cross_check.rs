@@ -431,34 +431,16 @@ mod corpus {
     corpus_test!(phpunit);
     corpus_test!(phpstan);
     corpus_test!(flysystem);
+    corpus_test!(carbon);
+    corpus_test!(doctrine);
+    corpus_test!(laravel);
+    corpus_test!(symfony);
 
-    // Known failures: bougie picks `symfony/contracts` (a replacer
-    // metapackage) instead of the individual `symfony/*-contracts`
-    // packages. Composer prefers real packages over replacers. This
-    // is the same root cause across all five; fixing the replace
-    // preference in the resolver will unblock them.
+    // Magento has remaining divergences unrelated to replace
+    // preference: version mismatches (symfony/var-dumper v8 vs v7),
+    // missing php-http/* packages, extra legacy packages.
     #[test]
-    #[ignore = "replace preference: symfony/contracts vs individual contracts"]
-    fn carbon() {
-        run_corpus("carbon");
-    }
-    #[test]
-    #[ignore = "replace preference: symfony/contracts vs individual contracts"]
-    fn doctrine() {
-        run_corpus("doctrine");
-    }
-    #[test]
-    #[ignore = "replace preference: symfony/contracts vs individual contracts"]
-    fn laravel() {
-        run_corpus("laravel");
-    }
-    #[test]
-    #[ignore = "replace preference: symfony/contracts vs individual contracts"]
-    fn symfony() {
-        run_corpus("symfony");
-    }
-    #[test]
-    #[ignore = "replace preference: symfony/contracts vs individual contracts"]
+    #[ignore = "magento: version selection + missing package divergences under investigation"]
     fn magento() {
         run_corpus("magento");
     }

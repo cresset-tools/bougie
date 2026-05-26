@@ -561,7 +561,27 @@ impl ResolveProvider {
         };
 
         let mut merged: Vec<(Version, LockPackage)> = real_candidates;
-        merged.extend(self.synthesize_virtual_candidates(name, floor));
+        let real_versions: std::collections::HashSet<&Version> =
+            merged.iter().map(|(v, _)| v).collect();
+        let virtual_candidates = self.synthesize_virtual_candidates(name, floor);
+        // When a real package and a virtual candidate exist at the
+        // same version, the dedup below keeps the real entry. Remove
+        // the corresponding `virtual_selections` entries so
+        // downstream code (get_dependencies, post-solve filter)
+        // doesn't mistakenly treat the real package as virtual.
+        let stale: Vec<Version> = virtual_candidates
+            .iter()
+            .filter(|(v, _)| real_versions.contains(v))
+            .map(|(v, _)| v.clone())
+            .collect();
+        if !stale.is_empty() {
+            let interned = PackageName::from(name);
+            let mut sel = self.virtual_selections.borrow_mut();
+            for v in &stale {
+                sel.remove(&(interned.clone(), v.clone()));
+            }
+        }
+        merged.extend(virtual_candidates);
         merged.sort_by(|a, b| b.0.cmp(&a.0));
         // Deduplicate consecutive entries with the same parsed
         // version — when both Packagist and a virtual provider
@@ -2188,73 +2208,59 @@ impl ResolveProvider {
             ));
         };
 
-        // Virtual selections take priority: if pubgrub picked a
-        // virtual (e.g. `psr/http-client-implementation @ 1.0`), the
-        // only dependency we emit is a tight pin on the real
-        // providing package. That binds the virtual selection to the
-        // concrete provider; the provider then carries its own
-        // require chain through pubgrub naturally.
-        let virtual_key = (name.clone(), version.clone());
-        if let Some(providers) =
-            self.virtual_selections.borrow().get(&virtual_key).cloned()
-        {
-            // Group registrations by provider name. With one distinct
-            // provider we can pin to the union of its versions and
-            // pubgrub picks whichever fits the rest of the
-            // resolution. With multiple distinct providers — the
-            // classic `psr/http-client-implementation` case where
-            // guzzle, symfony/http-client, and various libraries all
-            // advertise `provide: { ...: '1.0' }` — pubgrub's
-            // `Dependencies::Available` has no OR across distinct
-            // package names, so we emit no constraint at all. The
-            // virtual still appears in the solution as a marker; the
-            // real provider is expected to be pulled in via another
-            // require edge (e.g. magento → guzzle). Composer's
-            // solver expresses this naturally as an OR-of-providers
-            // rule; bougie's modeling lacks that today, so accept
-            // the looser semantics until the resolver grows a proper
-            // provider-selector.
-            // Group registrations by provider name. `PackageName`
-            // hashes/orders as its inner string, so a `BTreeMap`
-            // keyed by it gives the same lexicographic grouping as
-            // the previous `String`-keyed version.
-            let mut by_name: std::collections::BTreeMap<PackageName, Vec<Version>> =
-                std::collections::BTreeMap::new();
-            for (pname, pver) in &providers {
-                by_name.entry(pname.clone()).or_default().push(pver.clone());
-            }
-            let mut out: Vec<(PubGrubPackage, ComposerRange)> = Vec::new();
-            if by_name.len() == 1 {
-                let (pname, versions) = by_name.iter().next().expect("non-empty");
-                let range = versions
-                    .iter()
-                    .map(|v| {
-                        to_range(&Constraint::Op {
-                            op: bougie_semver::version::CmpOp::Eq,
-                            version: v.clone(),
-                            explicit_lower_bound: true,
+        // Virtual-selection path: if pubgrub picked a synthetic
+        // candidate (from `synthesize_virtual_candidates` or
+        // `synthesize_wildcard_candidate`), emit a tight pin on the
+        // concrete provider instead of real deps.
+        //
+        // Gate: only use the virtual path when the entry in the
+        // merged cache is synthetic (metapackage, no dist) — or when
+        // the version isn't in the cache at all (wildcard-synthesized
+        // candidates are created in `choose_version`, not in
+        // `versions_for`). When `versions_for` deduped a virtual
+        // against a real entry at the same version, the cached entry
+        // is real and should use the real-package path even though
+        // `virtual_selections` still contains a stale registration.
+        let versions = self.versions_for(name.as_str())?;
+        let cached_entry = versions.iter().find(|(v, _)| v == version);
+        let is_real = cached_entry
+            .is_some_and(|(_, e)| e.dist.is_some() || e.package_type.as_deref() != Some("metapackage"));
+
+        if !is_real {
+            let virtual_key = (name.clone(), version.clone());
+            if let Some(providers) =
+                self.virtual_selections.borrow().get(&virtual_key).cloned()
+            {
+                let mut by_name: std::collections::BTreeMap<PackageName, Vec<Version>> =
+                    std::collections::BTreeMap::new();
+                for (pname, pver) in &providers {
+                    by_name.entry(pname.clone()).or_default().push(pver.clone());
+                }
+                let mut out: Vec<(PubGrubPackage, ComposerRange)> = Vec::new();
+                if by_name.len() == 1 {
+                    let (pname, versions) = by_name.iter().next().expect("non-empty");
+                    let range = versions
+                        .iter()
+                        .map(|v| {
+                            to_range(&Constraint::Op {
+                                op: bougie_semver::version::CmpOp::Eq,
+                                version: v.clone(),
+                                explicit_lower_bound: true,
+                            })
                         })
-                    })
-                    .fold(ComposerRange::empty(), |acc, r| acc.union(&r));
-                out.push((PubGrubPackage::Package(pname.clone()), range));
+                        .fold(ComposerRange::empty(), |acc, r| acc.union(&r));
+                    out.push((PubGrubPackage::Package(pname.clone()), range));
+                }
+                return Ok(out);
             }
-            return Ok(out);
         }
 
-        let versions = self.versions_for(name.as_str())?;
-        // Find the entry by reference equality on the cached
-        // `Version` — same instance `choose_version` returned, no
-        // re-parse, no chance of a Packagist `version_normalized`
-        // quirk masquerading as a missing version.
-        let Some((_, entry)) = versions.iter().find(|(v, _)| v == version) else {
-            // Shouldn't happen — pubgrub only asks for dependencies
-            // of a version we just returned from `choose_version`.
-            // Surface as a hard error so a future refactor doesn't
-            // silently mask the bug.
+        let Some((_, entry)) = cached_entry else {
             return Err(ProviderError(format!(
                 "internal: get_dependencies({name}@{version}) but version not in cache",
             )));
         };
+
         let mut staging: Vec<(PackageName, ComposerRange)> = Vec::new();
         let owner_version = &entry.version;
         push_constraint_map(
@@ -2264,24 +2270,17 @@ impl ResolveProvider {
             owner_version,
             "require",
         )?;
-        // `replace` is encoded as an additional require ONLY when
-        // the clause is a bare version (`replace: { sub: 2.0.0 }`).
-        // This emits `sub: ==2.0.0` from the replacer, mirroring
-        // Composer's "no coexistence" rule: selecting the replacer
-        // forces the replaced package to its exact replace-version
-        // (preventing real sub at any other version from being
-        // selected alongside).
+        // `replace` is encoded as an additional require when the
+        // clause is a bare version (`replace: { sub: 2.0.0 }`). This
+        // emits `sub: ==2.0.0` from the replacer, enforcing
+        // Composer's "no coexistence at wrong version" rule during
+        // solving. The post-solve filter then removes replaced
+        // packages whose replacer is in the solution (preventing
+        // double-installation of e.g. `illuminate/support` alongside
+        // `laravel/framework`).
         //
-        // For range/wildcard replaces (`replace: { sub: * }`,
-        // `replace: { sub: ^1.0 }`), there's no single version to
-        // pin — the replacer simply offers a capability. Those flow
-        // through the virtual-provider index alone; emitting them
-        // here would pull a virtual name into the graph
-        // unnecessarily and force a wildcard synthesis even when no
-        // real consumer needs the replaced name.
-        //
-        // `provide` follows the same logic: capability declaration
-        // via the virtual index, never an additional require.
+        // Range/wildcard replaces flow through the virtual-provider
+        // index alone. `provide` is capability-only; never a require.
         let exact_replaces: std::collections::BTreeMap<String, String> = entry
             .replace
             .iter()
@@ -2408,15 +2407,23 @@ pub fn dry_run_update(
     let summary = match result {
         Ok(solution) => {
             let virtual_selections = provider.virtual_selections.borrow();
+            // Build a set of package names that are replaced by
+            // another package in the solution. When a replacer (e.g.
+            // `laravel/framework`) is in the solution and its replace
+            // clause pulled the replaced package in during solving,
+            // the replaced package should not appear in the final
+            // output — the replacer provides it.
+            let solution_pairs: Vec<_> = solution.iter().collect();
+            let replaced_names = collect_active_replaces(&provider, &solution_pairs);
             let mut packages: Vec<ResolvedPackage> = solution
                 .into_iter()
                 .filter_map(|(pkg, version)| match pkg {
                     PubGrubPackage::Root => None,
                     PubGrubPackage::Package(name) => {
-                        // Drop virtual selections — the real provider
-                        // is in the same solution and is already
-                        // accounted for.
                         if virtual_selections.contains_key(&(name.clone(), version.clone())) {
+                            return None;
+                        }
+                        if replaced_names.contains(name.as_str()) {
                             return None;
                         }
                         Some(ResolvedPackage {
@@ -2675,14 +2682,14 @@ fn solve_into_lock_packages(
     let t_assemble = std::time::Instant::now();
     let mut packages: Vec<LockPackage> = Vec::new();
     let virtual_selections = provider.virtual_selections.borrow();
+    let solution_pairs: Vec<_> = solution.iter().collect();
+            let replaced_names = collect_active_replaces(&provider, &solution_pairs);
     for (pkg, version) in solution {
         let PubGrubPackage::Package(name) = pkg else { continue };
-        // Drop virtual selections from the output — the real
-        // providing package is also in the solution and will land
-        // in the lock through that path. Composer's install would
-        // reject a `psr/http-client-implementation` entry it can't
-        // fetch.
         if virtual_selections.contains_key(&(name.clone(), version.clone())) {
+            continue;
+        }
+        if replaced_names.contains(name.as_str()) {
             continue;
         }
         let Some(entry) = provider.lock_package_for(name.as_str(), &version) else {
@@ -2735,6 +2742,56 @@ fn stability_to_composer_int(s: Stability) -> i32 {
         Stability::Alpha => 15,
         Stability::Dev => 20,
     }
+}
+
+/// Build a set of package names that are actively replaced by another
+/// package in the solution. Used by the post-solve filter to suppress
+/// packages that were pulled into the graph by the replace-as-require
+/// mechanism but should not appear in the final output because their
+/// replacer provides them.
+///
+/// A replaced name is "active" when BOTH:
+/// 1. The replacer is in the solution.
+/// 2. The replaced name is also in the solution (pulled in by the
+///    replace-as-require constraint).
+///
+/// Only exact-version replaces are considered (same filter as the
+/// replace-as-require emission in `compute_parsed_deps`).
+fn collect_active_replaces(
+    provider: &ResolveProvider,
+    solution: &[(&PubGrubPackage, &Version)],
+) -> std::collections::HashSet<String> {
+    let solution_names: std::collections::HashSet<&str> = solution
+        .iter()
+        .filter_map(|(pkg, _)| match pkg {
+            PubGrubPackage::Package(n) => Some(n.as_str()),
+            PubGrubPackage::Root => None,
+        })
+        .collect();
+
+    let mut replaced: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mc = provider.merged_cache.borrow();
+    for (pkg, version) in solution {
+        let PubGrubPackage::Package(name) = pkg else { continue };
+        let Some(cached) = mc.get(name.as_str()) else { continue };
+        let Some((_, entry)) = cached.iter().find(|(v, _)| v == *version) else {
+            continue;
+        };
+        for (replaced_name, raw_ver) in &entry.replace {
+            let effective = if raw_ver == "self.version" {
+                &entry.version
+            } else {
+                raw_ver
+            };
+            if Version::parse(effective).is_err() {
+                continue;
+            }
+            if solution_names.contains(replaced_name.as_str()) {
+                replaced.insert(replaced_name.clone());
+            }
+        }
+    }
+    replaced
 }
 
 #[cfg(test)]
