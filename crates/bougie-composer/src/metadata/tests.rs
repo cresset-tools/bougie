@@ -188,3 +188,54 @@ fn malformed_json_errors_with_context() {
     let msg = format!("{err:#}");
     assert!(msg.contains("Packagist v2"), "{msg}");
 }
+
+#[test]
+fn minified_expansion_inherits_require_across_versions() {
+    // Simulates the magento/community-edition pattern:
+    // v2 (newest) has require with deps.
+    // v1 (older) has no require field → inherits from v2.
+    let body = br#"{
+        "minified": "composer/2.0",
+        "packages": {
+            "test/pkg": [
+                {
+                    "name": "test/pkg",
+                    "version": "2.0.0",
+                    "version_normalized": "2.0.0.0",
+                    "require": {
+                        "acme/foo": "^1.0",
+                        "acme/bar": "^2.0"
+                    },
+                    "replace": {
+                        "acme/replaced": "2.0.0"
+                    }
+                },
+                {
+                    "version": "1.0.0",
+                    "version_normalized": "1.0.0.0",
+                    "replace": {
+                        "acme/other-replaced": "1.0.0"
+                    }
+                }
+            ]
+        }
+    }"#;
+    let md = PackageMetadata::parse(body).unwrap();
+    let versions = md.packages.get("test/pkg").unwrap();
+    assert_eq!(versions.len(), 2);
+
+    let v2 = &versions[0];
+    assert_eq!(v2.version, "2.0.0");
+    assert_eq!(v2.require.len(), 2);
+    assert_eq!(v2.require.get("acme/foo").unwrap(), "^1.0");
+
+    let v1 = &versions[1];
+    assert_eq!(v1.version, "1.0.0");
+    // v1 should inherit require from v2 (minified format)
+    assert_eq!(v1.require.len(), 2, "v1 should inherit require from v2");
+    assert_eq!(v1.require.get("acme/foo").unwrap(), "^1.0");
+    assert_eq!(v1.require.get("acme/bar").unwrap(), "^2.0");
+    // v1's replace should be its own (not inherited from v2)
+    assert_eq!(v1.replace.get("acme/other-replaced").unwrap(), "1.0.0");
+    assert!(!v1.replace.contains_key("acme/replaced"));
+}
