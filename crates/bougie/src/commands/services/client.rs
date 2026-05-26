@@ -277,8 +277,20 @@ fn spawn_daemon() -> Result<()> {
     // intentionally don't wait on the child — when the CLI exits,
     // init reparents and reaps. Phase 9 will add `setsid` for
     // proper detach across terminal close.
+    //
+    // BOUGIE_VERSION_OVERRIDE: bougie and bougie-daemon are separate
+    // crates with independent versions (the bin owns its own version
+    // so release-plz can bump it without cascading through every leaf
+    // crate). Without this override the daemon would report its own
+    // crate's `CARGO_PKG_VERSION`, which lags the bin's; every CLI call
+    // would see a version mismatch and trigger a restart loop. Forward
+    // the CLI's reported version so the daemon mirrors it. If the env
+    // var is already set (phase20 mismatch-simulation tests do this),
+    // `cli_version()` already returned that value — re-setting is a
+    // no-op.
     let _child = std::process::Command::new(&exe)
         .arg0("bougied")
+        .env("BOUGIE_VERSION_OVERRIDE", cli_version())
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
