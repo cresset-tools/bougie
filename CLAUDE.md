@@ -144,18 +144,24 @@ PR that bumps the version and updates `CHANGELOG.md`. Merging the PR tags
 `v<version>` on the `bougie` crate and creates a GitHub release.
 
 - `publish = false` everywhere — bougie is not on crates.io.
-- `release = false` on all leaf + vendored crates; only `bougie` gets
-  tagged. Leaf changes only flow to releases via that tag.
+- **Every leaf + vendored crate has `release = true` but
+  `git_tag_enable = false`, `git_release_enable = false`, and
+  `changelog_update = false`.** Only `bougie` gets a tag, a GitHub
+  release, and a changelog entry. The leaves are *tracked* so that
+  release-plz auto-rewrites their `[workspace.dependencies]` pin and
+  per-crate `version` fields when the workspace cascades — without
+  this, release-plz#1181 bites: it leaves stale pins on `release =
+  false` crates and the next `cargo update` blows up with "failed to
+  select a version for the requirement bougie-backend = \"^0.5.0\"".
 - `git_only = true` for `bougie` — no crates.io comparison.
-- **Intra-workspace path deps must keep their `version = "..."` pin.**
-  Every `[dependencies.bougie-*]` (and the vendored `sandbox-run` /
-  `macos-sandbox-sys`) needs both `path = "..."` *and* `version = "..."`,
-  pinned to the dep crate's current `Cargo.toml` version. Release-plz
-  runs `cargo package` for version detection, and its manifest-verify
-  step rejects path deps without a version — *even with*
-  `publish = false` and release-plz's `publish_no_verify = true`. Don't
-  "clean up" the version fields thinking they're inert; CI will break
-  on the next release-PR cron (see PR #143's regression).
+- **Intra-workspace path deps keep their `version = "..."` pin** —
+  both inside `[workspace.dependencies]` (where consumers inherit them
+  via `{ workspace = true }`) and on the bin's standalone
+  `[dependencies.bougie-index]` block (which needs
+  `default-features = false`, an override workspace inheritance
+  doesn't allow). The pins are exact (e.g. `version = "0.5.1"`);
+  release-plz rewrites them in lockstep with `workspace.package.version`
+  on every bump.
 
 **Use conventional commit prefixes** or release-plz won't pick the
 change up. Examples in `git log`: `feat(composer-resolver): ...`,

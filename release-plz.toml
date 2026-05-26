@@ -46,99 +46,171 @@ git_tag_name = "bougie-v{{ version }}"
 # Vendored helper crates — not released independently.
 [[package]]
 name = "sandbox-run"
-release = false
+release = true
+git_tag_enable = false
+git_release_enable = false
+changelog_update = false
 
 [[package]]
 name = "macos-sandbox-sys"
-release = false
+release = true
+git_tag_enable = false
+git_release_enable = false
+changelog_update = false
 
 # Workspace-split helper crates introduced by the crates/* refactor.
 # Only the `bougie` bin gets tagged; the leaf crates ride along inside
 # the GitHub release artifacts.
 [[package]]
 name = "bougie-autoloader"
-release = false
+release = true
+git_tag_enable = false
+git_release_enable = false
+changelog_update = false
 
 [[package]]
 name = "bougie-babysit"
-release = false
+release = true
+git_tag_enable = false
+git_release_enable = false
+changelog_update = false
 
 [[package]]
 name = "bougie-backend"
-release = false
+release = true
+git_tag_enable = false
+git_release_enable = false
+changelog_update = false
 
 [[package]]
 name = "bougie-cli"
-release = false
+release = true
+git_tag_enable = false
+git_release_enable = false
+changelog_update = false
 
 [[package]]
 name = "bougie-composer"
-release = false
+release = true
+git_tag_enable = false
+git_release_enable = false
+changelog_update = false
 
 [[package]]
 name = "bougie-composer-resolver"
-release = false
+release = true
+git_tag_enable = false
+git_release_enable = false
+changelog_update = false
 
 [[package]]
 name = "bougie-config"
-release = false
+release = true
+git_tag_enable = false
+git_release_enable = false
+changelog_update = false
 
 [[package]]
 name = "bougie-daemon"
-release = false
+release = true
+git_tag_enable = false
+git_release_enable = false
+changelog_update = false
 
 [[package]]
 name = "bougie-errors"
-release = false
+release = true
+git_tag_enable = false
+git_release_enable = false
+changelog_update = false
 
 [[package]]
 name = "bougie-fetch"
-release = false
+release = true
+git_tag_enable = false
+git_release_enable = false
+changelog_update = false
 
 [[package]]
 name = "bougie-fs"
-release = false
+release = true
+git_tag_enable = false
+git_release_enable = false
+changelog_update = false
 
 [[package]]
 name = "bougie-index"
-release = false
+release = true
+git_tag_enable = false
+git_release_enable = false
+changelog_update = false
 
 [[package]]
 name = "bougie-installer"
-release = false
+release = true
+git_tag_enable = false
+git_release_enable = false
+changelog_update = false
 
 [[package]]
 name = "bougie-output"
-release = false
+release = true
+git_tag_enable = false
+git_release_enable = false
+changelog_update = false
 
 [[package]]
 name = "bougie-paths"
-release = false
+release = true
+git_tag_enable = false
+git_release_enable = false
+changelog_update = false
 
 [[package]]
 name = "bougie-php-json"
-release = false
+release = true
+git_tag_enable = false
+git_release_enable = false
+changelog_update = false
 
 [[package]]
 name = "bougie-platform"
-release = false
+release = true
+git_tag_enable = false
+git_release_enable = false
+changelog_update = false
 
 [[package]]
 name = "bougie-recipe"
-release = false
+release = true
+git_tag_enable = false
+git_release_enable = false
+changelog_update = false
 
 [[package]]
 name = "bougie-resolver"
-release = false
+release = true
+git_tag_enable = false
+git_release_enable = false
+changelog_update = false
 
 [[package]]
 name = "bougie-semver"
-release = false
+release = true
+git_tag_enable = false
+git_release_enable = false
+changelog_update = false
 
 [[package]]
 name = "bougie-server"
-release = false
+release = true
+git_tag_enable = false
+git_release_enable = false
+changelog_update = false
 
 [[package]]
 name = "bougie-version"
-release = false
+release = true
+git_tag_enable = false
+git_release_enable = false
+changelog_update = false
