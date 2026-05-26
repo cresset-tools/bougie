@@ -1,9 +1,6 @@
 [package]
 name = "bougie"
-# Owns its own version (not `version.workspace = true`) so release-plz
-# can bump it without cascading through every leaf crate. See the
-# workspace.package note in the root Cargo.toml.
-version = "0.5.1"
+version.workspace = true
 edition = "2024"
 description = "PHP toolchain management the luxury way."
 license = "EUPL-1.2"
@@ -50,7 +47,7 @@ bougie-config = { workspace = true }
 bougie-errors = { workspace = true }
 bougie-fetch = { workspace = true }
 bougie-fs = { workspace = true }
-bougie-index = { path = "../bougie-index", version = "0.5.1", default-features = false }
+bougie-index = { path = "../bougie-index", version = "0", default-features = false }
 bougie-installer = { workspace = true }
 bougie-output = { workspace = true }
 bougie-paths = { workspace = true }
@@ -150,7 +147,7 @@ sigstore = { version = "0.13", default-features = false, features = ["cosign", "
 zstd = { version = "0.13", default-features = false }
 tar = "0.4"
 rustix = { version = "1.0", default-features = false, features = ["std", "fs", "process"] }
-bougie-index = { path = "../bougie-index", version = "0.5.1" }
+bougie-index = { path = "../bougie-index", version = "0" }
 bougie-composer = { workspace = true }
 
 [lints]
