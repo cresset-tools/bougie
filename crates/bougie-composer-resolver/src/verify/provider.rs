@@ -169,6 +169,9 @@ fn read_root_requires(
 /// Composer platform-package detection. Phase B β skips these; the
 /// resolver in Phase C will encode them as proper pubgrub packages.
 pub fn is_platform(name: &str) -> bool {
+    if name.contains('/') {
+        return false;
+    }
     name == "php"
         || name == "hhvm"
         || name == "composer"
