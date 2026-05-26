@@ -27,7 +27,7 @@ bougie up mariadb redis opensearch rabbitmq server
 # "composer install has run" marker.
 creates = "vendor/autoload.php"
 deps = ["composer.lock", "composer.json"]
-run = "bougie run -- composer install"
+run = "bougie composer install"
 
 [task.install]
 creates = "app/etc/env.php"
