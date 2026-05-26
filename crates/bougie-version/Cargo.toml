@@ -8,12 +8,11 @@ repository = "https://github.com/cresset-tools/bougie"
 rust-version = "1.95"
 authors.workspace = true
 
+[dependencies]
+bougie-semver = { workspace = true }
+
 [dependencies.eyre]
 version = "0.6"
-
-[dependencies.bougie-semver]
-path = "../bougie-semver"
-version = "0.1.0"
 
 [lints]
 workspace = true
