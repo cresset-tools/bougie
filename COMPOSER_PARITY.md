@@ -110,7 +110,7 @@ Content-hash is the one lockfile field where byte-equivalence is
 | `config.preferred-install` | `N` | Ignored; always uses dist | Phase C |
 | `config.vendor-dir` | `N` | Hardcoded to `vendor/` | |
 | `config.bin-dir` | `N` | Hardcoded to `vendor/bin/` | |
-| Bin symlinks in `vendor/bin/` | `N` | `bin` field parsed but symlinks not yet created | |
+| Bin proxy scripts in `vendor/bin/` | `S` | PHP proxy + shell proxy matching Composer 2.8.12's `BinaryInstaller` | `.bat` proxies deferred |
 | Path repository symlinks | `N` | Recognized but not materialized | Phase D |
 | Plugin zip extraction | `–` | Skipped with warning; plugin hooks never run | |
 | `post-install-cmd` / `post-update-cmd` scripts | `–` | Warning emitted; never executed | User runs via `bougie run -- composer run-script` |
