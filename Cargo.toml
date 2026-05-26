@@ -33,50 +33,60 @@ members = [
 ]
 
 [workspace.package]
-# Shared by every crate *except* `bougie` itself. The `bougie` bin owns
-# its own `version` field so release-plz can bump it without cascading
-# through every leaf via `version.workspace = true`. The cascade would
-# break the `version = "..."` pins on intra-workspace path deps (cargo
-# package's manifest check rejects a path dep that no longer matches
-# the depended-on crate's actual version). See PR adding this comment.
 version = "0.5.1"
 edition = "2024"
 license = "EUPL-1.2"
 authors = ["Jelle Besseling <jelle@pingiun.com>"]
 
-# Intra-workspace deps centralized so the `version = "..."` pin lives in
-# one place. Consumers reference these with `{ workspace = true }` and
-# layer `default-features = false` / `features = [...]` on top as needed.
+# Intra-workspace deps centralized so consumers say
+# `bougie-foo = { workspace = true }` (and layer
+# `default-features = false` / `features = [...]` on top as needed).
+#
+# `version = "0"` is `^0`, which matches any `0.x.y`. Why so loose?
+# Every leaf crate inherits `version.workspace = true`, so when
+# release-plz bumps `workspace.package.version` (0.5.1 → 0.6.0 from a
+# `feat:` commit, etc.), every crate cascades to the new version in
+# lockstep. Release-plz then runs `cargo update` against the new
+# manifests; an exact pin like `version = "0.5.1"` would make that
+# `cargo update` fail ("failed to select a version for the requirement
+# bougie-backend = \"^0.5.1\"") because the cascaded 0.6.0 doesn't
+# satisfy `^0.5.1`. release-plz won't auto-rewrite these pins because
+# every leaf has `release = false` — it doesn't track them as bump
+# candidates (see release-plz#1181). `^0` sidesteps the problem
+# entirely: any 0.x cascade is satisfied. We can do this because
+# `publish = false` everywhere, so the pin's only job is satisfying
+# `cargo package`'s manifest-verify step (which `^0` does for 0.x
+# crates). Revisit when we approach 1.0.
 [workspace.dependencies]
-bougie-autoloader = { path = "crates/bougie-autoloader", version = "0.1.0" }
-bougie-babysit = { path = "crates/bougie-babysit", version = "0.5.1" }
-bougie-backend = { path = "crates/bougie-backend", version = "0.5.1" }
-bougie-cli = { path = "crates/bougie-cli", version = "0.5.1" }
-bougie-composer = { path = "crates/bougie-composer", version = "0.5.1" }
-bougie-composer-resolver = { path = "crates/bougie-composer-resolver", version = "0.1.0" }
-bougie-config = { path = "crates/bougie-config", version = "0.5.1" }
-bougie-daemon = { path = "crates/bougie-daemon", version = "0.5.1" }
-bougie-errors = { path = "crates/bougie-errors", version = "0.5.1" }
-bougie-fetch = { path = "crates/bougie-fetch", version = "0.5.1" }
-bougie-fs = { path = "crates/bougie-fs", version = "0.5.1" }
-# The `bougie` bin needs `default-features = false` on bougie-index
-# (gates `dev-trust-root` behind its own feature flag), and cargo's
-# workspace inheritance rejects a member override of `default-features`.
-# The bin keeps its own [dependencies.bougie-index] path-dep block;
-# every other consumer inherits this workspace entry with defaults on.
-bougie-index = { path = "crates/bougie-index", version = "0.5.1" }
-bougie-installer = { path = "crates/bougie-installer", version = "0.5.1" }
-bougie-output = { path = "crates/bougie-output", version = "0.5.1" }
-bougie-paths = { path = "crates/bougie-paths", version = "0.5.1" }
-bougie-php-json = { path = "crates/bougie-php-json", version = "0.5.1" }
-bougie-platform = { path = "crates/bougie-platform", version = "0.5.1" }
-bougie-recipe = { path = "crates/bougie-recipe", version = "0.5.1" }
-bougie-resolver = { path = "crates/bougie-resolver", version = "0.5.1" }
-bougie-semver = { path = "crates/bougie-semver", version = "0.1.0" }
-bougie-server = { path = "crates/bougie-server", version = "0.5.1" }
-bougie-version = { path = "crates/bougie-version", version = "0.5.1" }
-sandbox-run = { path = "crates/sandbox-run", version = "0.1.0" }
-macos-sandbox-sys = { path = "crates/macos-sandbox-sys", version = "0.1.0" }
+bougie-autoloader = { path = "crates/bougie-autoloader", version = "0" }
+bougie-babysit = { path = "crates/bougie-babysit", version = "0" }
+bougie-backend = { path = "crates/bougie-backend", version = "0" }
+bougie-cli = { path = "crates/bougie-cli", version = "0" }
+bougie-composer = { path = "crates/bougie-composer", version = "0" }
+bougie-composer-resolver = { path = "crates/bougie-composer-resolver", version = "0" }
+bougie-config = { path = "crates/bougie-config", version = "0" }
+bougie-daemon = { path = "crates/bougie-daemon", version = "0" }
+bougie-errors = { path = "crates/bougie-errors", version = "0" }
+bougie-fetch = { path = "crates/bougie-fetch", version = "0" }
+bougie-fs = { path = "crates/bougie-fs", version = "0" }
+# `bougie` needs `default-features = false` on bougie-index to gate
+# `dev-trust-root` behind its own feature flag, and cargo workspace
+# inheritance rejects a member override of `default-features`. The bin
+# keeps its own [dependencies.bougie-index] path-dep block; every other
+# consumer inherits this workspace entry with defaults on.
+bougie-index = { path = "crates/bougie-index", version = "0" }
+bougie-installer = { path = "crates/bougie-installer", version = "0" }
+bougie-output = { path = "crates/bougie-output", version = "0" }
+bougie-paths = { path = "crates/bougie-paths", version = "0" }
+bougie-php-json = { path = "crates/bougie-php-json", version = "0" }
+bougie-platform = { path = "crates/bougie-platform", version = "0" }
+bougie-recipe = { path = "crates/bougie-recipe", version = "0" }
+bougie-resolver = { path = "crates/bougie-resolver", version = "0" }
+bougie-semver = { path = "crates/bougie-semver", version = "0" }
+bougie-server = { path = "crates/bougie-server", version = "0" }
+bougie-version = { path = "crates/bougie-version", version = "0" }
+sandbox-run = { path = "crates/sandbox-run", version = "0" }
+macos-sandbox-sys = { path = "crates/macos-sandbox-sys", version = "0" }
 
 [workspace.lints.rust]
 # `deny` rather than `forbid` so the daemon's process-supervisor can

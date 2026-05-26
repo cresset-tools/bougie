@@ -147,15 +147,27 @@ PR that bumps the version and updates `CHANGELOG.md`. Merging the PR tags
 - `release = false` on all leaf + vendored crates; only `bougie` gets
   tagged. Leaf changes only flow to releases via that tag.
 - `git_only = true` for `bougie` — no crates.io comparison.
-- **Intra-workspace path deps must keep their `version = "..."` pin.**
-  Every `[dependencies.bougie-*]` (and the vendored `sandbox-run` /
-  `macos-sandbox-sys`) needs both `path = "..."` *and* `version = "..."`,
-  pinned to the dep crate's current `Cargo.toml` version. Release-plz
-  runs `cargo package` for version detection, and its manifest-verify
-  step rejects path deps without a version — *even with*
-  `publish = false` and release-plz's `publish_no_verify = true`. Don't
-  "clean up" the version fields thinking they're inert; CI will break
-  on the next release-PR cron (see PR #143's regression).
+- **Intra-workspace path deps go through `[workspace.dependencies]`.**
+  All `bougie-*` (and the vendored `sandbox-run` / `macos-sandbox-sys`)
+  are declared once at the root with `version = "0"` (= `^0`, matches
+  any `0.x.y`) and consumers reference them as
+  `bougie-foo = { workspace = true }`. The loose `^0` pin is deliberate:
+  every leaf inherits `version.workspace = true`, so release-plz bumping
+  `[workspace.package].version` cascades all crates to the new version
+  in lockstep. An exact pin like `version = "0.5.1"` would make
+  release-plz's internal `cargo update` fail with "failed to select a
+  version for the requirement bougie-backend = \"^0.5.1\"" because
+  release-plz doesn't auto-rewrite path-dep pins on crates marked
+  `release = false` (release-plz#1181). `^0` always satisfies any 0.x
+  cascade. `publish = false` everywhere means the pin only has to
+  satisfy `cargo package`'s manifest-verify — it never gates a
+  registry resolution. Revisit when bougie approaches 1.0.
+- **`bougie-index` is the lone exception.** The bin needs
+  `default-features = false` on it (to gate `dev-trust-root` behind its
+  own feature flag), and cargo workspace inheritance rejects a member
+  override of `default-features`. The bin keeps its own
+  `[dependencies.bougie-index]` path-dep block; every other consumer
+  inherits the `[workspace.dependencies]` entry with defaults on.
 
 **Use conventional commit prefixes** or release-plz won't pick the
 change up. Examples in `git log`: `feat(composer-resolver): ...`,
