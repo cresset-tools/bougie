@@ -1,0 +1,8 @@
+{
+  "packages": {
+    "psr/log": "3.0.2"
+  },
+  "packages_dev": {
+    "phpstan/phpstan": "2.1.55"
+  }
+}
