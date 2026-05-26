@@ -9,6 +9,13 @@ rust-version = "1.95"
 authors.workspace = true
 
 [dependencies]
+bougie-autoloader = { workspace = true }
+bougie-composer = { workspace = true }
+bougie-errors = { workspace = true }
+bougie-fetch = { workspace = true }
+bougie-output = { workspace = true }
+bougie-paths = { workspace = true }
+bougie-semver = { workspace = true }
 eyre = "0.6"
 pubgrub = "0.4"
 rayon = "1.10"
@@ -30,39 +37,11 @@ rustc-hash = "2"
 # bumps.
 arcstr = "1"
 
-[dependencies.bougie-autoloader]
-path = "../bougie-autoloader"
-version = "0.1.0"
-
-[dependencies.bougie-composer]
-path = "../bougie-composer"
-version = "0.5.0"
-
-[dependencies.bougie-errors]
-path = "../bougie-errors"
-version = "0.5.0"
-
-[dependencies.bougie-fetch]
-path = "../bougie-fetch"
-version = "0.5.0"
-
-[dependencies.bougie-output]
-path = "../bougie-output"
-version = "0.5.0"
-
-[dependencies.bougie-paths]
-path = "../bougie-paths"
-version = "0.5.0"
-
 [dependencies.indicatif]
 version = "0.18"
 
 [dependencies.tracing]
 version = "0.1"
-
-[dependencies.bougie-semver]
-path = "../bougie-semver"
-version = "0.1.0"
 
 [dependencies.reqwest]
 version = "0.13"

@@ -8,41 +8,16 @@ repository = "https://github.com/cresset-tools/bougie"
 rust-version = "1.95"
 authors.workspace = true
 
-[dependencies.bougie-backend]
-path = "../bougie-backend"
-version = "0.5.0"
-
-[dependencies.bougie-errors]
-path = "../bougie-errors"
-version = "0.5.0"
-
-[dependencies.bougie-fetch]
-path = "../bougie-fetch"
-version = "0.5.0"
-
-[dependencies.bougie-fs]
-path = "../bougie-fs"
-version = "0.5.0"
-
-[dependencies.bougie-index]
-path = "../bougie-index"
-version = "0.5.0"
-
-[dependencies.bougie-paths]
-path = "../bougie-paths"
-version = "0.5.0"
-
-[dependencies.bougie-platform]
-path = "../bougie-platform"
-version = "0.5.0"
-
-[dependencies.bougie-resolver]
-path = "../bougie-resolver"
-version = "0.5.0"
-
-[dependencies.bougie-version]
-path = "../bougie-version"
-version = "0.5.0"
+[dependencies]
+bougie-backend = { workspace = true }
+bougie-errors = { workspace = true }
+bougie-fetch = { workspace = true }
+bougie-fs = { workspace = true }
+bougie-index = { workspace = true }
+bougie-paths = { workspace = true }
+bougie-platform = { workspace = true }
+bougie-resolver = { workspace = true }
+bougie-version = { workspace = true }
 
 [dependencies.eyre]
 version = "0.6"

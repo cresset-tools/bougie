@@ -8,9 +8,8 @@ repository = "https://github.com/cresset-tools/bougie"
 rust-version = "1.95"
 authors.workspace = true
 
-[dependencies.bougie-cli]
-path = "../bougie-cli"
-version = "0.5.0"
+[dependencies]
+bougie-cli = { workspace = true }
 
 [dependencies.anstream]
 version = "1.0"
