@@ -11,9 +11,10 @@
 //! Mirrors uv's choice (see `uv-resolver/src/resolver/index.rs`) —
 //! `FxHasher` on every map pubgrub touches.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::hash::BuildHasherDefault;
 
 pub use rustc_hash::FxHasher;
 
 pub type FxHashMap<K, V> = HashMap<K, V, BuildHasherDefault<FxHasher>>;
+pub type FxHashSet<K> = HashSet<K, BuildHasherDefault<FxHasher>>;

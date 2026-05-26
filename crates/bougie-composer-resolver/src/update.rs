@@ -66,7 +66,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::hash::FxHashMap;
+use crate::hash::{FxHashMap, FxHashSet};
 use crate::package_name::PackageName;
 
 use bougie_composer::lockfile::{LockAutoload, LockPackage};
@@ -234,6 +234,11 @@ pub struct ResolveProvider {
     /// Without this the solver phase is silent — for projects with
     /// hundreds of dependencies that silence reads as a hang.
     solve_progress: RefCell<SolveProgress>,
+    /// Versions excluded by post-solve conflict validation. When the
+    /// solver picks version V for package P and V's conflict map is
+    /// violated by another package in the solution, (P, V) is added
+    /// here and the solve retries. `versions_for` filters these out.
+    conflict_excludes: RefCell<FxHashSet<(PackageName, Version)>>,
 }
 
 /// One entry in the virtual provider index — "real package
@@ -426,6 +431,7 @@ impl ResolveProvider {
             v1_provider_tables: RefCell::new(FxHashMap::default()),
             parsed_deps: RefCell::new(FxHashMap::default()),
             solve_progress: RefCell::new(SolveProgress::hidden()),
+            conflict_excludes: RefCell::new(FxHashSet::default()),
         })
     }
 
@@ -446,6 +452,62 @@ impl ResolveProvider {
     /// The synthetic root version pubgrub should `resolve` against.
     pub fn root_version(&self) -> Version {
         self.root_version.clone()
+    }
+
+    /// Clear the memoized `parsed_deps` cache. Must be called before
+    /// re-solving so that any changed `conflict_excludes` take effect
+    /// (the cached deps still contain the old version's constraints).
+    fn reset_for_re_solve(&self) {
+        self.parsed_deps.borrow_mut().clear();
+    }
+
+    /// Check the solution for conflict violations. Returns the set of
+    /// `(declarer, version)` pairs whose conflict map is violated by
+    /// another package in the solution.
+    fn check_conflict_violations(
+        &self,
+        solution: &[(&PubGrubPackage, &Version)],
+    ) -> Vec<(PackageName, Version)> {
+        let solution_map: FxHashMap<&str, &Version> = solution
+            .iter()
+            .filter_map(|(pkg, ver)| match pkg {
+                PubGrubPackage::Package(n) => Some((n.as_str(), *ver)),
+                PubGrubPackage::Root => None,
+            })
+            .collect();
+
+        let mc = self.merged_cache.borrow();
+        let mut violations = Vec::new();
+        for (pkg, version) in solution {
+            let PubGrubPackage::Package(name) = pkg else { continue };
+            let Some(cached) = mc.get(name.as_str()) else { continue };
+            let Some((_, entry)) = cached.iter().find(|(v, _)| v == *version) else {
+                continue;
+            };
+            for (conflict_name, raw_constraint) in &entry.conflict {
+                if is_platform(conflict_name) {
+                    continue;
+                }
+                let Some(target_ver) = solution_map.get(conflict_name.as_str()) else {
+                    continue;
+                };
+                let effective = if raw_constraint == "self.version" {
+                    &entry.version
+                } else {
+                    raw_constraint.as_str()
+                };
+                let (cleaned, _) = split_stability_flag(effective);
+                let Ok(constraint) = Constraint::parse(cleaned) else {
+                    continue;
+                };
+                let range = to_range(&constraint);
+                if range.contains(target_ver) {
+                    violations.push((name.clone(), (*version).clone()));
+                    break;
+                }
+            }
+        }
+        violations
     }
 
     /// Probe each configured repository's `packages.json` and record
@@ -561,7 +623,27 @@ impl ResolveProvider {
         };
 
         let mut merged: Vec<(Version, LockPackage)> = real_candidates;
-        merged.extend(self.synthesize_virtual_candidates(name, floor));
+        let real_versions: std::collections::HashSet<&Version> =
+            merged.iter().map(|(v, _)| v).collect();
+        let virtual_candidates = self.synthesize_virtual_candidates(name, floor);
+        // When a real package and a virtual candidate exist at the
+        // same version, the dedup below keeps the real entry. Remove
+        // the corresponding `virtual_selections` entries so
+        // downstream code (get_dependencies, post-solve filter)
+        // doesn't mistakenly treat the real package as virtual.
+        let stale: Vec<Version> = virtual_candidates
+            .iter()
+            .filter(|(v, _)| real_versions.contains(v))
+            .map(|(v, _)| v.clone())
+            .collect();
+        if !stale.is_empty() {
+            let interned = PackageName::from(name);
+            let mut sel = self.virtual_selections.borrow_mut();
+            for v in &stale {
+                sel.remove(&(interned.clone(), v.clone()));
+            }
+        }
+        merged.extend(virtual_candidates);
         merged.sort_by(|a, b| b.0.cmp(&a.0));
         // Deduplicate consecutive entries with the same parsed
         // version — when both Packagist and a virtual provider
@@ -1971,6 +2053,41 @@ fn push_constraint_map(
     Ok(())
 }
 
+/// Conflict declarations: `{ "dep": "<7.4" }` means "cannot coexist
+/// with dep at versions matching `<7.4`". Expressed as a pubgrub
+/// dependency on the *complement* range — "requires dep NOT `<7.4`"
+/// = "requires dep `>=7.4`". Caller pre-filters to only include
+/// entries whose target is already in the dependency graph.
+fn push_conflict_map(
+    out: &mut Vec<(PackageName, ComposerRange)>,
+    map: &std::collections::BTreeMap<String, String>,
+    owner: &str,
+    owner_version: &str,
+) -> Result<(), ProviderError> {
+    for (dep_name, raw) in map {
+        if is_platform(dep_name) {
+            continue;
+        }
+        let effective = if raw == "self.version" {
+            owner_version
+        } else {
+            raw
+        };
+        let (cleaned, _flag) = split_stability_flag(effective);
+        let constraint = Constraint::parse(cleaned).map_err(|e| {
+            ProviderError(format!(
+                "conflict constraint {raw:?} on `{dep_name}` (conflict from `{owner}`): {e}",
+            ))
+        })?;
+        let conflict_range = to_range(&constraint);
+        let allowed = conflict_range.complement();
+        if allowed != ComposerRange::empty() {
+            out.push((PackageName::from(dep_name.as_str()), allowed));
+        }
+    }
+    Ok(())
+}
+
 impl DependencyProvider for ResolveProvider {
     type P = PubGrubPackage;
     type V = Version;
@@ -2041,16 +2158,20 @@ impl DependencyProvider for ResolveProvider {
                 // already `Stable`, every candidate is stable, so
                 // the prefer-stable pass would just duplicate the
                 // fallback. Skip it.
+                let excludes = self.conflict_excludes.borrow();
+                let is_excluded = |v: &Version| -> bool {
+                    !excludes.is_empty() && excludes.contains(&(name.clone(), v.clone()))
+                };
                 let floor = self.effective_stability(name.as_str());
                 if self.prefer_stable && floor != Stability::Stable {
                     for (v, _) in versions.iter() {
-                        if v.stability() == Stability::Stable && range.contains(v) {
+                        if v.stability() == Stability::Stable && range.contains(v) && !is_excluded(v) {
                             return Ok(Some(v.clone()));
                         }
                     }
                 }
                 for (v, _) in versions.iter() {
-                    if range.contains(v) {
+                    if range.contains(v) && !is_excluded(v) {
                         return Ok(Some(v.clone()));
                     }
                 }
@@ -2188,73 +2309,59 @@ impl ResolveProvider {
             ));
         };
 
-        // Virtual selections take priority: if pubgrub picked a
-        // virtual (e.g. `psr/http-client-implementation @ 1.0`), the
-        // only dependency we emit is a tight pin on the real
-        // providing package. That binds the virtual selection to the
-        // concrete provider; the provider then carries its own
-        // require chain through pubgrub naturally.
-        let virtual_key = (name.clone(), version.clone());
-        if let Some(providers) =
-            self.virtual_selections.borrow().get(&virtual_key).cloned()
-        {
-            // Group registrations by provider name. With one distinct
-            // provider we can pin to the union of its versions and
-            // pubgrub picks whichever fits the rest of the
-            // resolution. With multiple distinct providers — the
-            // classic `psr/http-client-implementation` case where
-            // guzzle, symfony/http-client, and various libraries all
-            // advertise `provide: { ...: '1.0' }` — pubgrub's
-            // `Dependencies::Available` has no OR across distinct
-            // package names, so we emit no constraint at all. The
-            // virtual still appears in the solution as a marker; the
-            // real provider is expected to be pulled in via another
-            // require edge (e.g. magento → guzzle). Composer's
-            // solver expresses this naturally as an OR-of-providers
-            // rule; bougie's modeling lacks that today, so accept
-            // the looser semantics until the resolver grows a proper
-            // provider-selector.
-            // Group registrations by provider name. `PackageName`
-            // hashes/orders as its inner string, so a `BTreeMap`
-            // keyed by it gives the same lexicographic grouping as
-            // the previous `String`-keyed version.
-            let mut by_name: std::collections::BTreeMap<PackageName, Vec<Version>> =
-                std::collections::BTreeMap::new();
-            for (pname, pver) in &providers {
-                by_name.entry(pname.clone()).or_default().push(pver.clone());
-            }
-            let mut out: Vec<(PubGrubPackage, ComposerRange)> = Vec::new();
-            if by_name.len() == 1 {
-                let (pname, versions) = by_name.iter().next().expect("non-empty");
-                let range = versions
-                    .iter()
-                    .map(|v| {
-                        to_range(&Constraint::Op {
-                            op: bougie_semver::version::CmpOp::Eq,
-                            version: v.clone(),
-                            explicit_lower_bound: true,
+        // Virtual-selection path: if pubgrub picked a synthetic
+        // candidate (from `synthesize_virtual_candidates` or
+        // `synthesize_wildcard_candidate`), emit a tight pin on the
+        // concrete provider instead of real deps.
+        //
+        // Gate: only use the virtual path when the entry in the
+        // merged cache is synthetic (metapackage, no dist) — or when
+        // the version isn't in the cache at all (wildcard-synthesized
+        // candidates are created in `choose_version`, not in
+        // `versions_for`). When `versions_for` deduped a virtual
+        // against a real entry at the same version, the cached entry
+        // is real and should use the real-package path even though
+        // `virtual_selections` still contains a stale registration.
+        let versions = self.versions_for(name.as_str())?;
+        let cached_entry = versions.iter().find(|(v, _)| v == version);
+        let is_real = cached_entry
+            .is_some_and(|(_, e)| e.dist.is_some() || e.package_type.as_deref() != Some("metapackage"));
+
+        if !is_real {
+            let virtual_key = (name.clone(), version.clone());
+            if let Some(providers) =
+                self.virtual_selections.borrow().get(&virtual_key).cloned()
+            {
+                let mut by_name: std::collections::BTreeMap<PackageName, Vec<Version>> =
+                    std::collections::BTreeMap::new();
+                for (pname, pver) in &providers {
+                    by_name.entry(pname.clone()).or_default().push(pver.clone());
+                }
+                let mut out: Vec<(PubGrubPackage, ComposerRange)> = Vec::new();
+                if by_name.len() == 1 {
+                    let (pname, versions) = by_name.iter().next().expect("non-empty");
+                    let range = versions
+                        .iter()
+                        .map(|v| {
+                            to_range(&Constraint::Op {
+                                op: bougie_semver::version::CmpOp::Eq,
+                                version: v.clone(),
+                                explicit_lower_bound: true,
+                            })
                         })
-                    })
-                    .fold(ComposerRange::empty(), |acc, r| acc.union(&r));
-                out.push((PubGrubPackage::Package(pname.clone()), range));
+                        .fold(ComposerRange::empty(), |acc, r| acc.union(&r));
+                    out.push((PubGrubPackage::Package(pname.clone()), range));
+                }
+                return Ok(out);
             }
-            return Ok(out);
         }
 
-        let versions = self.versions_for(name.as_str())?;
-        // Find the entry by reference equality on the cached
-        // `Version` — same instance `choose_version` returned, no
-        // re-parse, no chance of a Packagist `version_normalized`
-        // quirk masquerading as a missing version.
-        let Some((_, entry)) = versions.iter().find(|(v, _)| v == version) else {
-            // Shouldn't happen — pubgrub only asks for dependencies
-            // of a version we just returned from `choose_version`.
-            // Surface as a hard error so a future refactor doesn't
-            // silently mask the bug.
+        let Some((_, entry)) = cached_entry else {
             return Err(ProviderError(format!(
                 "internal: get_dependencies({name}@{version}) but version not in cache",
             )));
         };
+
         let mut staging: Vec<(PackageName, ComposerRange)> = Vec::new();
         let owner_version = &entry.version;
         push_constraint_map(
@@ -2264,28 +2371,37 @@ impl ResolveProvider {
             owner_version,
             "require",
         )?;
-        // `replace` is encoded as an additional require ONLY when
-        // the clause is a bare version (`replace: { sub: 2.0.0 }`).
-        // This emits `sub: ==2.0.0` from the replacer, mirroring
-        // Composer's "no coexistence" rule: selecting the replacer
-        // forces the replaced package to its exact replace-version
-        // (preventing real sub at any other version from being
-        // selected alongside).
+        // `replace` is encoded as an additional require when the
+        // clause is a bare version (`replace: { sub: 2.0.0 }`). This
+        // emits `sub: ==2.0.0` from the replacer, enforcing
+        // Composer's "no coexistence at wrong version" rule during
+        // solving. The post-solve filter then removes replaced
+        // packages whose replacer is in the solution (preventing
+        // double-installation of e.g. `illuminate/support` alongside
+        // `laravel/framework`).
         //
-        // For range/wildcard replaces (`replace: { sub: * }`,
-        // `replace: { sub: ^1.0 }`), there's no single version to
-        // pin — the replacer simply offers a capability. Those flow
-        // through the virtual-provider index alone; emitting them
-        // here would pull a virtual name into the graph
-        // unnecessarily and force a wildcard synthesis even when no
-        // real consumer needs the replaced name.
-        //
-        // `provide` follows the same logic: capability declaration
-        // via the virtual index, never an additional require.
+        // Range/wildcard replaces flow through the virtual-provider
+        // index alone. `provide` is capability-only; never a require.
         let exact_replaces: std::collections::BTreeMap<String, String> = entry
             .replace
             .iter()
-            .filter(|(_, v)| {
+            .filter(|(k, v)| {
+                // Only emit the coexistence constraint if the
+                // replaced package is actually in the dependency
+                // graph. The pre-fetch BFS populates the cache for
+                // every reachable package; if the replaced name isn't
+                // there, nothing requires it and pulling it in would
+                // bloat the graph (e.g. magento/community-edition
+                // replaces 238 modules, most unrequired by anything).
+                // Also check root requires: pubgrub might call
+                // get_dependencies for the replacer before loading
+                // the replaced package's metadata.
+                let in_graph = self.cache.borrow().contains_key(k.as_str())
+                    || self.merged_cache.borrow().contains_key(k.as_str())
+                    || self.root_deps.iter().any(|(n, _)| n.as_str() == k.as_str());
+                if !in_graph {
+                    return false;
+                }
                 let effective = if v.as_str() == "self.version" {
                     owner_version.as_str()
                 } else {
@@ -2302,6 +2418,23 @@ impl ResolveProvider {
             owner_version,
             "replace",
         )?;
+        {
+            let conflict_in_graph: std::collections::BTreeMap<String, String> = entry
+                .conflict
+                .iter()
+                .filter(|(k, _)| {
+                    entry.require.contains_key(k.as_str())
+                        || self.root_deps.iter().any(|(n, _)| n.as_str() == k.as_str())
+                })
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            push_conflict_map(
+                &mut staging,
+                &conflict_in_graph,
+                name.as_str(),
+                owner_version,
+            )?;
+        }
         Ok(staging
             .into_iter()
             .map(|(n, r)| (PubGrubPackage::Package(n), r))
@@ -2397,7 +2530,32 @@ pub fn dry_run_update(
 
     provider.begin_solve_progress();
     let t_solve = std::time::Instant::now();
-    let result = resolve(&provider, PubGrubPackage::Root, root);
+    // Solve loop: after each solve, validate conflict declarations.
+    // If a package in the solution declares a conflict violated by
+    // another package in the solution, exclude the violating version
+    // and re-solve. Bounded to avoid infinite loops.
+    let mut result = resolve(&provider, PubGrubPackage::Root, root.clone());
+    for _retry in 0..10 {
+        let Ok(ref solution) = result else { break };
+        let pairs: Vec<_> = solution.iter().collect();
+        let violations = provider.check_conflict_violations(&pairs);
+        if violations.is_empty() {
+            break;
+        }
+        tracing::debug!(
+            count = violations.len(),
+            excluded = ?violations,
+            "conflict violations found, re-solving",
+        );
+        {
+            let mut excludes = provider.conflict_excludes.borrow_mut();
+            for (name, ver) in violations {
+                excludes.insert((name, ver));
+            }
+        }
+        provider.reset_for_re_solve();
+        result = resolve(&provider, PubGrubPackage::Root, root.clone());
+    }
     let solve_elapsed = t_solve.elapsed();
     provider.finish_solve_progress();
     tracing::info!(
@@ -2408,15 +2566,23 @@ pub fn dry_run_update(
     let summary = match result {
         Ok(solution) => {
             let virtual_selections = provider.virtual_selections.borrow();
+            // Build a set of package names that are replaced by
+            // another package in the solution. When a replacer (e.g.
+            // `laravel/framework`) is in the solution and its replace
+            // clause pulled the replaced package in during solving,
+            // the replaced package should not appear in the final
+            // output — the replacer provides it.
+            let solution_pairs: Vec<_> = solution.iter().collect();
+            let replaced_names = collect_active_replaces(&provider, &solution_pairs);
             let mut packages: Vec<ResolvedPackage> = solution
                 .into_iter()
                 .filter_map(|(pkg, version)| match pkg {
                     PubGrubPackage::Root => None,
                     PubGrubPackage::Package(name) => {
-                        // Drop virtual selections — the real provider
-                        // is in the same solution and is already
-                        // accounted for.
                         if virtual_selections.contains_key(&(name.clone(), version.clone())) {
+                            return None;
+                        }
+                        if replaced_names.contains(name.as_str()) {
                             return None;
                         }
                         Some(ResolvedPackage {
@@ -2636,7 +2802,28 @@ fn solve_into_lock_packages(
         provider.begin_solve_progress();
     }
     let t_solve = std::time::Instant::now();
-    let solve_result = resolve(&provider, PubGrubPackage::Root, root);
+    let mut solve_result = resolve(&provider, PubGrubPackage::Root, root.clone());
+    for _retry in 0..10 {
+        let Ok(ref solution) = solve_result else { break };
+        let pairs: Vec<_> = solution.iter().collect();
+        let violations = provider.check_conflict_violations(&pairs);
+        if violations.is_empty() {
+            break;
+        }
+        tracing::debug!(
+            count = violations.len(),
+            excluded = ?violations,
+            "conflict violations found, re-solving",
+        );
+        {
+            let mut excludes = provider.conflict_excludes.borrow_mut();
+            for (name, ver) in violations {
+                excludes.insert((name, ver));
+            }
+        }
+        provider.reset_for_re_solve();
+        solve_result = resolve(&provider, PubGrubPackage::Root, root.clone());
+    }
     let solve_elapsed = t_solve.elapsed();
     provider.finish_solve_progress();
     tracing::info!(
@@ -2675,14 +2862,14 @@ fn solve_into_lock_packages(
     let t_assemble = std::time::Instant::now();
     let mut packages: Vec<LockPackage> = Vec::new();
     let virtual_selections = provider.virtual_selections.borrow();
+    let solution_pairs: Vec<_> = solution.iter().collect();
+            let replaced_names = collect_active_replaces(&provider, &solution_pairs);
     for (pkg, version) in solution {
         let PubGrubPackage::Package(name) = pkg else { continue };
-        // Drop virtual selections from the output — the real
-        // providing package is also in the solution and will land
-        // in the lock through that path. Composer's install would
-        // reject a `psr/http-client-implementation` entry it can't
-        // fetch.
         if virtual_selections.contains_key(&(name.clone(), version.clone())) {
+            continue;
+        }
+        if replaced_names.contains(name.as_str()) {
             continue;
         }
         let Some(entry) = provider.lock_package_for(name.as_str(), &version) else {
@@ -2735,6 +2922,48 @@ fn stability_to_composer_int(s: Stability) -> i32 {
         Stability::Alpha => 15,
         Stability::Dev => 20,
     }
+}
+
+/// Build a set of package names that are actively replaced by another
+/// package in the solution. Used by the post-solve filter to suppress
+/// packages that were pulled into the graph by the replace-as-require
+/// mechanism but should not appear in the final output because their
+/// replacer provides them.
+///
+/// A replaced name is "active" when BOTH:
+/// 1. The replacer is in the solution.
+/// 2. The replaced name is also in the solution (pulled in by the
+///    replace-as-require constraint).
+///
+/// Only exact-version replaces are considered (same filter as the
+/// replace-as-require emission in `compute_parsed_deps`).
+fn collect_active_replaces(
+    provider: &ResolveProvider,
+    solution: &[(&PubGrubPackage, &Version)],
+) -> std::collections::HashSet<String> {
+    let solution_names: std::collections::HashSet<&str> = solution
+        .iter()
+        .filter_map(|(pkg, _)| match pkg {
+            PubGrubPackage::Package(n) => Some(n.as_str()),
+            PubGrubPackage::Root => None,
+        })
+        .collect();
+
+    let mut replaced: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mc = provider.merged_cache.borrow();
+    for (pkg, version) in solution {
+        let PubGrubPackage::Package(name) = pkg else { continue };
+        let Some(cached) = mc.get(name.as_str()) else { continue };
+        let Some((_, entry)) = cached.iter().find(|(v, _)| v == *version) else {
+            continue;
+        };
+        for replaced_name in entry.replace.keys() {
+            if solution_names.contains(replaced_name.as_str()) {
+                replaced.insert(replaced_name.clone());
+            }
+        }
+    }
+    replaced
 }
 
 #[cfg(test)]
