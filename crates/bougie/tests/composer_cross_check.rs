@@ -436,12 +436,5 @@ mod corpus {
     corpus_test!(laravel);
     corpus_test!(symfony);
 
-    // Magento has remaining divergences unrelated to replace
-    // preference: version mismatches (symfony/var-dumper v8 vs v7),
-    // missing php-http/* packages, extra legacy packages.
-    #[test]
-    #[ignore = "magento: version selection + missing package divergences under investigation"]
-    fn magento() {
-        run_corpus("magento");
-    }
+    corpus_test!(magento);
 }
