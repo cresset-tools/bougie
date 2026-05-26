@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.5.1...bougie-v0.6.0) - 2026-05-26
+
+### Added
+
+- *(sync)* infer PHP version and required extensions ([#178](https://github.com/cresset-tools/bougie/pull/178))
+- *(recipe)* print URL and admin creds after `bougie start` ([#171](https://github.com/cresset-tools/bougie/pull/171))
+- *(daemon)* stream tarball download progress to the CLI ([#169](https://github.com/cresset-tools/bougie/pull/169))
+- *(composer-install)* [**breaking**] warn instead of error on Composer plugins/scripts ([#160](https://github.com/cresset-tools/bougie/pull/160))
+
+### Fixed
+
+- *(release)* decouple bougie version + centralize workspace dep pins ([#180](https://github.com/cresset-tools/bougie/pull/180))
+- *(run)* walk up to project root, not cwd ([#176](https://github.com/cresset-tools/bougie/pull/176))
+- *(composer-install)* claim Composer/2 UA and reuse shared HTTP client for dist downloads ([#163](https://github.com/cresset-tools/bougie/pull/163))
+- *(sync)* accept Composer wildcards in require.php ([#106](https://github.com/cresset-tools/bougie/pull/106)) ([#150](https://github.com/cresset-tools/bougie/pull/150))
+
+### Other
+
+- *(release)* track leaves in release-plz so it rewrites path-dep pins ([#182](https://github.com/cresset-tools/bougie/pull/182))
+- mechanical sweep + missing_panics_doc ([#149](https://github.com/cresset-tools/bougie/pull/149)) ([#156](https://github.com/cresset-tools/bougie/pull/156))
+- audit numeric casts (zero remaining) ([#154](https://github.com/cresset-tools/bougie/pull/154))
+- cargo clippy --fix mechanical sweep ([#149](https://github.com/cresset-tools/bougie/pull/149)) ([#153](https://github.com/cresset-tools/bougie/pull/153))
+
 ## [0.5.1](https://github.com/cresset-tools/bougie/compare/bougie-v0.5.0...bougie-v0.5.1) - 2026-05-22
 
 ### Fixed
