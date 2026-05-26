@@ -33,12 +33,6 @@ members = [
 ]
 
 [workspace.package]
-# Shared by every crate *except* `bougie` itself. The `bougie` bin owns
-# its own `version` field so release-plz can bump it without cascading
-# through every leaf via `version.workspace = true`. The cascade would
-# break the `version = "..."` pins on intra-workspace path deps (cargo
-# package's manifest check rejects a path dep that no longer matches
-# the depended-on crate's actual version). See PR adding this comment.
 version = "0.5.1"
 edition = "2024"
 license = "EUPL-1.2"
