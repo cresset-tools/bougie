@@ -37,7 +37,7 @@ level each behavior is held, and how each claim is tested.
 | `replace` — exact version | `S` | Layer 2: dedicated replace tests | |
 | `replace` — range / wildcard (`*`) | `S` | Layer 2: wildcard synthesis tests | |
 | `provide` — virtual packages | `S` | Layer 2: provide tests | |
-| `conflict` handling | `S` | Layer 2: conflict detection tests | |
+| `conflict` handling | `S` | Layer 2: conflict detection tests; Layer 4: magento corpus validates cross-cutting conflicts | Post-solve validation loop excludes violated versions |
 | `minimum-stability` floor filtering | `S` | Layer 2: stability floor tests with dev/alpha/beta/RC/stable | |
 | Per-package stability override (`"foo/bar": "^1.0@dev"`) | `S` | Layer 2: per-package flag tests | |
 | `prefer-stable` — stable over pre-release when both match | `S` | Layer 2: two-pass selection tests | |
@@ -83,7 +83,7 @@ Each project contributes a frozen Packagist snapshot
 | `packages` / `packages-dev` ordering | `S` | Sorted by name (Composer's convention); assert sorted | Composer sorts alphabetically; bougie does the same |
 | Per-package field set in lock entries | `S` | Layer 3: assert all Composer fields preserved on round-trip | |
 | `dist.shasum` — empty string accepted | `S` | Regression test: GitHub zipballs have `""` shasum | Fixed in #161 |
-| Lockfile write (from resolver) | `N` | Dry-run only; lockfile writing not yet implemented | Phase C |
+| Lockfile write (from resolver) | `S` | `bougie composer update` writes `composer.lock` atomically; `--dry-run` previews | |
 | Empty `require`/`require-dev` as `[]` vs `{}` | `S` | Accept both on read; emit `{}` on write | Matches Composer's leniency |
 
 ### Content-hash test protocol
