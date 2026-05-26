@@ -1,0 +1,9 @@
+{
+  "name": "test/magento-cross-check",
+  "type": "project",
+  "require": {
+    "magento/community-edition": "2.4.8"
+  },
+  "minimum-stability": "stable",
+  "prefer-stable": true
+}

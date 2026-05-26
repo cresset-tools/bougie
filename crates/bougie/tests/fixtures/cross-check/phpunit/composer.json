@@ -1,0 +1,9 @@
+{
+  "name": "test/phpunit-cross-check",
+  "require": {
+    "psr/log": "^3.0"
+  },
+  "require-dev": {
+    "phpunit/phpunit": "^11.0"
+  }
+}

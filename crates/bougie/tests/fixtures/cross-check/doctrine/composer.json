@@ -1,0 +1,9 @@
+{
+  "name": "test/doctrine-cross-check",
+  "require": {
+    "doctrine/orm": "^3.0"
+  },
+  "require-dev": {
+    "phpunit/phpunit": "^11.0"
+  }
+}
