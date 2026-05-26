@@ -66,7 +66,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::hash::FxHashMap;
+use crate::hash::{FxHashMap, FxHashSet};
 use crate::package_name::PackageName;
 
 use bougie_composer::lockfile::{LockAutoload, LockPackage};
@@ -234,6 +234,11 @@ pub struct ResolveProvider {
     /// Without this the solver phase is silent — for projects with
     /// hundreds of dependencies that silence reads as a hang.
     solve_progress: RefCell<SolveProgress>,
+    /// Versions excluded by post-solve conflict validation. When the
+    /// solver picks version V for package P and V's conflict map is
+    /// violated by another package in the solution, (P, V) is added
+    /// here and the solve retries. `versions_for` filters these out.
+    conflict_excludes: RefCell<FxHashSet<(PackageName, Version)>>,
 }
 
 /// One entry in the virtual provider index — "real package
@@ -426,6 +431,7 @@ impl ResolveProvider {
             v1_provider_tables: RefCell::new(FxHashMap::default()),
             parsed_deps: RefCell::new(FxHashMap::default()),
             solve_progress: RefCell::new(SolveProgress::hidden()),
+            conflict_excludes: RefCell::new(FxHashSet::default()),
         })
     }
 
@@ -446,6 +452,62 @@ impl ResolveProvider {
     /// The synthetic root version pubgrub should `resolve` against.
     pub fn root_version(&self) -> Version {
         self.root_version.clone()
+    }
+
+    /// Clear the memoized `parsed_deps` cache. Must be called before
+    /// re-solving so that any changed `conflict_excludes` take effect
+    /// (the cached deps still contain the old version's constraints).
+    fn reset_for_re_solve(&self) {
+        self.parsed_deps.borrow_mut().clear();
+    }
+
+    /// Check the solution for conflict violations. Returns the set of
+    /// `(declarer, version)` pairs whose conflict map is violated by
+    /// another package in the solution.
+    fn check_conflict_violations(
+        &self,
+        solution: &[(&PubGrubPackage, &Version)],
+    ) -> Vec<(PackageName, Version)> {
+        let solution_map: FxHashMap<&str, &Version> = solution
+            .iter()
+            .filter_map(|(pkg, ver)| match pkg {
+                PubGrubPackage::Package(n) => Some((n.as_str(), *ver)),
+                PubGrubPackage::Root => None,
+            })
+            .collect();
+
+        let mc = self.merged_cache.borrow();
+        let mut violations = Vec::new();
+        for (pkg, version) in solution {
+            let PubGrubPackage::Package(name) = pkg else { continue };
+            let Some(cached) = mc.get(name.as_str()) else { continue };
+            let Some((_, entry)) = cached.iter().find(|(v, _)| v == *version) else {
+                continue;
+            };
+            for (conflict_name, raw_constraint) in &entry.conflict {
+                if is_platform(conflict_name) {
+                    continue;
+                }
+                let Some(target_ver) = solution_map.get(conflict_name.as_str()) else {
+                    continue;
+                };
+                let effective = if raw_constraint == "self.version" {
+                    &entry.version
+                } else {
+                    raw_constraint.as_str()
+                };
+                let (cleaned, _) = split_stability_flag(effective);
+                let Ok(constraint) = Constraint::parse(cleaned) else {
+                    continue;
+                };
+                let range = to_range(&constraint);
+                if range.contains(target_ver) {
+                    violations.push((name.clone(), (*version).clone()));
+                    break;
+                }
+            }
+        }
+        violations
     }
 
     /// Probe each configured repository's `packages.json` and record
@@ -1991,6 +2053,41 @@ fn push_constraint_map(
     Ok(())
 }
 
+/// Conflict declarations: `{ "dep": "<7.4" }` means "cannot coexist
+/// with dep at versions matching `<7.4`". Expressed as a pubgrub
+/// dependency on the *complement* range — "requires dep NOT `<7.4`"
+/// = "requires dep `>=7.4`". Caller pre-filters to only include
+/// entries whose target is already in the dependency graph.
+fn push_conflict_map(
+    out: &mut Vec<(PackageName, ComposerRange)>,
+    map: &std::collections::BTreeMap<String, String>,
+    owner: &str,
+    owner_version: &str,
+) -> Result<(), ProviderError> {
+    for (dep_name, raw) in map {
+        if is_platform(dep_name) {
+            continue;
+        }
+        let effective = if raw == "self.version" {
+            owner_version
+        } else {
+            raw
+        };
+        let (cleaned, _flag) = split_stability_flag(effective);
+        let constraint = Constraint::parse(cleaned).map_err(|e| {
+            ProviderError(format!(
+                "conflict constraint {raw:?} on `{dep_name}` (conflict from `{owner}`): {e}",
+            ))
+        })?;
+        let conflict_range = to_range(&constraint);
+        let allowed = conflict_range.complement();
+        if allowed != ComposerRange::empty() {
+            out.push((PackageName::from(dep_name.as_str()), allowed));
+        }
+    }
+    Ok(())
+}
+
 impl DependencyProvider for ResolveProvider {
     type P = PubGrubPackage;
     type V = Version;
@@ -2061,16 +2158,20 @@ impl DependencyProvider for ResolveProvider {
                 // already `Stable`, every candidate is stable, so
                 // the prefer-stable pass would just duplicate the
                 // fallback. Skip it.
+                let excludes = self.conflict_excludes.borrow();
+                let is_excluded = |v: &Version| -> bool {
+                    !excludes.is_empty() && excludes.contains(&(name.clone(), v.clone()))
+                };
                 let floor = self.effective_stability(name.as_str());
                 if self.prefer_stable && floor != Stability::Stable {
                     for (v, _) in versions.iter() {
-                        if v.stability() == Stability::Stable && range.contains(v) {
+                        if v.stability() == Stability::Stable && range.contains(v) && !is_excluded(v) {
                             return Ok(Some(v.clone()));
                         }
                     }
                 }
                 for (v, _) in versions.iter() {
-                    if range.contains(v) {
+                    if range.contains(v) && !is_excluded(v) {
                         return Ok(Some(v.clone()));
                     }
                 }
@@ -2317,6 +2418,23 @@ impl ResolveProvider {
             owner_version,
             "replace",
         )?;
+        {
+            let conflict_in_graph: std::collections::BTreeMap<String, String> = entry
+                .conflict
+                .iter()
+                .filter(|(k, _)| {
+                    entry.require.contains_key(k.as_str())
+                        || self.root_deps.iter().any(|(n, _)| n.as_str() == k.as_str())
+                })
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            push_conflict_map(
+                &mut staging,
+                &conflict_in_graph,
+                name.as_str(),
+                owner_version,
+            )?;
+        }
         Ok(staging
             .into_iter()
             .map(|(n, r)| (PubGrubPackage::Package(n), r))
@@ -2412,7 +2530,32 @@ pub fn dry_run_update(
 
     provider.begin_solve_progress();
     let t_solve = std::time::Instant::now();
-    let result = resolve(&provider, PubGrubPackage::Root, root);
+    // Solve loop: after each solve, validate conflict declarations.
+    // If a package in the solution declares a conflict violated by
+    // another package in the solution, exclude the violating version
+    // and re-solve. Bounded to avoid infinite loops.
+    let mut result = resolve(&provider, PubGrubPackage::Root, root.clone());
+    for _retry in 0..10 {
+        let Ok(ref solution) = result else { break };
+        let pairs: Vec<_> = solution.iter().collect();
+        let violations = provider.check_conflict_violations(&pairs);
+        if violations.is_empty() {
+            break;
+        }
+        tracing::debug!(
+            count = violations.len(),
+            excluded = ?violations,
+            "conflict violations found, re-solving",
+        );
+        {
+            let mut excludes = provider.conflict_excludes.borrow_mut();
+            for (name, ver) in violations {
+                excludes.insert((name, ver));
+            }
+        }
+        provider.reset_for_re_solve();
+        result = resolve(&provider, PubGrubPackage::Root, root.clone());
+    }
     let solve_elapsed = t_solve.elapsed();
     provider.finish_solve_progress();
     tracing::info!(
@@ -2659,7 +2802,28 @@ fn solve_into_lock_packages(
         provider.begin_solve_progress();
     }
     let t_solve = std::time::Instant::now();
-    let solve_result = resolve(&provider, PubGrubPackage::Root, root);
+    let mut solve_result = resolve(&provider, PubGrubPackage::Root, root.clone());
+    for _retry in 0..10 {
+        let Ok(ref solution) = solve_result else { break };
+        let pairs: Vec<_> = solution.iter().collect();
+        let violations = provider.check_conflict_violations(&pairs);
+        if violations.is_empty() {
+            break;
+        }
+        tracing::debug!(
+            count = violations.len(),
+            excluded = ?violations,
+            "conflict violations found, re-solving",
+        );
+        {
+            let mut excludes = provider.conflict_excludes.borrow_mut();
+            for (name, ver) in violations {
+                excludes.insert((name, ver));
+            }
+        }
+        provider.reset_for_re_solve();
+        solve_result = resolve(&provider, PubGrubPackage::Root, root.clone());
+    }
     let solve_elapsed = t_solve.elapsed();
     provider.finish_solve_progress();
     tracing::info!(
@@ -2793,15 +2957,7 @@ fn collect_active_replaces(
         let Some((_, entry)) = cached.iter().find(|(v, _)| v == *version) else {
             continue;
         };
-        for (replaced_name, raw_ver) in &entry.replace {
-            let effective = if raw_ver == "self.version" {
-                &entry.version
-            } else {
-                raw_ver
-            };
-            if Version::parse(effective).is_err() {
-                continue;
-            }
+        for replaced_name in entry.replace.keys() {
             if solution_names.contains(replaced_name.as_str()) {
                 replaced.insert(replaced_name.clone());
             }
