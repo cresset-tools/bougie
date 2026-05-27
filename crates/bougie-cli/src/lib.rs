@@ -429,6 +429,14 @@ pub enum ComposerCommand {
         /// or run the autoloader. CI-friendly read-only check.
         #[arg(long = "lock-verify")]
         lock_verify: bool,
+        /// Ignore all platform requirements (php, ext-*, lib-*).
+        /// Accepted for Composer parity; bougie does not enforce
+        /// platform requirements yet.
+        #[arg(long = "ignore-platform-reqs")]
+        ignore_platform_reqs: bool,
+        /// Ignore a specific platform requirement.
+        #[arg(long = "ignore-platform-req", value_name = "REQ")]
+        ignore_platform_req: Vec<String>,
     },
     /// Resolve the project's dependency graph from scratch (read
     /// `composer.json`, ignore any existing `composer.lock`) and
@@ -449,6 +457,14 @@ pub enum ComposerCommand {
         /// to run.
         #[arg(long = "dry-run")]
         dry_run: bool,
+        /// Ignore all platform requirements (php, ext-*, lib-*).
+        /// Accepted for Composer parity; bougie does not enforce
+        /// platform requirements yet.
+        #[arg(long = "ignore-platform-reqs")]
+        ignore_platform_reqs: bool,
+        /// Ignore a specific platform requirement.
+        #[arg(long = "ignore-platform-req", value_name = "REQ")]
+        ignore_platform_req: Vec<String>,
     },
     /// Download and install a Composer phar version into
     /// `$BOUGIE_LOCAL/composer/<version>/`. The verb formerly known

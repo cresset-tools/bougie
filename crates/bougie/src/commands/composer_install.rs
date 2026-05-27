@@ -7,16 +7,21 @@
 //! (`bougie composer install <version>`) lives at
 //! `bougie composer fetch <version>` now — see `composer_fetch.rs`.
 
+use std::collections::BTreeSet;
 use std::io::{self, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use bougie_cli::OutputFormat;
+use bougie_composer::lockfile::Lock;
 use bougie_composer_resolver::verify::{verify_lock, VerifyOptions, VerifyOutcome};
 use bougie_composer_resolver::{install_from_lock, InstallOptions, InstallSummary};
+use bougie_installer::baseline;
 use bougie_output::output::{emit, Render};
 use bougie_paths::Paths;
-use eyre::{Context, Result};
+use bougie_semver::constraint::Constraint;
+use bougie_semver::version::Version;
+use eyre::{eyre, Context, Result};
 use serde::Serialize;
 
 #[derive(Debug, Serialize)]
@@ -107,6 +112,8 @@ pub fn run(
     no_dev: bool,
     _frozen: bool,
     lock_verify: bool,
+    ignore_platform_reqs: bool,
+    ignore_platform_req: Vec<String>,
 ) -> Result<ExitCode> {
     let project_root = match working_dir {
         Some(p) => p,
@@ -146,7 +153,201 @@ pub fn run(
         super::composer_update::resolve_and_write_lock(&paths, &project_root)?;
     }
 
+    if !ignore_platform_reqs {
+        check_platform_requirements(
+            &project_root,
+            no_dev,
+            &ignore_platform_req,
+        )?;
+    }
+
     let summary = install_from_lock(&paths, &project_root, InstallOptions { no_dev })?;
     emit(format, &InstallResult::from(summary))?;
     Ok(ExitCode::SUCCESS)
+}
+
+fn check_platform_requirements(
+    project_root: &Path,
+    no_dev: bool,
+    ignore_specific: &[String],
+) -> Result<()> {
+    let lock_path = project_root.join("composer.lock");
+    if !lock_path.exists() {
+        return Ok(());
+    }
+    let lock = Lock::read(&lock_path)?;
+
+    let php_version = match detect_php_version(project_root) {
+        Some(v) => v,
+        None => return Ok(()),
+    };
+    let available_extensions = detect_available_extensions(project_root);
+
+    let ignored: BTreeSet<&str> = ignore_specific.iter().map(String::as_str).collect();
+
+    let packages = if no_dev {
+        lock.packages.iter().collect::<Vec<_>>()
+    } else {
+        lock.all_packages().collect::<Vec<_>>()
+    };
+
+    let mut errors: Vec<String> = Vec::new();
+
+    for pkg in &packages {
+        for (dep_name, raw_constraint) in &pkg.require {
+            if dep_name == "php" {
+                if ignored.contains("php") {
+                    continue;
+                }
+                let Ok(constraint) = Constraint::parse(raw_constraint) else {
+                    continue;
+                };
+                if !constraint.matches(&php_version) {
+                    errors.push(format!(
+                        "{} requires php {} but {} is installed",
+                        pkg.name, raw_constraint, php_version,
+                    ));
+                }
+            } else if let Some(ext_name) = dep_name.strip_prefix("ext-") {
+                if ignored.contains(dep_name.as_str()) {
+                    continue;
+                }
+                if !available_extensions.contains(ext_name) {
+                    errors.push(format!(
+                        "{} requires {} but it is not installed. \
+                         Install it with: bougie ext add {ext_name}",
+                        pkg.name, dep_name,
+                    ));
+                }
+            }
+        }
+    }
+
+    // Also check root composer.json requires
+    let composer_json_path = project_root.join("composer.json");
+    if let Ok(bytes) = std::fs::read(&composer_json_path) {
+        if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+            for key in if no_dev { &["require"][..] } else { &["require", "require-dev"] } {
+                let Some(reqs) = value.get(key).and_then(|v| v.as_object()) else {
+                    continue;
+                };
+                for (dep_name, raw) in reqs {
+                    let Some(raw_str) = raw.as_str() else { continue };
+                    if dep_name == "php" {
+                        if ignored.contains("php") {
+                            continue;
+                        }
+                        let Ok(constraint) = Constraint::parse(raw_str) else {
+                            continue;
+                        };
+                        if !constraint.matches(&php_version) {
+                            errors.push(format!(
+                                "root composer.json requires php {raw_str} but {php_version} is installed",
+                            ));
+                        }
+                    } else if let Some(ext_name) = dep_name.strip_prefix("ext-") {
+                        if ignored.contains(dep_name.as_str()) {
+                            continue;
+                        }
+                        if !available_extensions.contains(ext_name) {
+                            errors.push(format!(
+                                "root composer.json requires {dep_name} but it is not installed. \
+                                 Install it with: bougie ext add {ext_name}",
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if errors.is_empty() {
+        return Ok(());
+    }
+
+    errors.dedup();
+    let bullets = errors
+        .iter()
+        .map(|e| format!("  - {e}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    Err(eyre!(
+        "your platform does not satisfy the requirements of the installed packages:\n\
+         {bullets}\n\n\
+         Pass --ignore-platform-reqs to skip this check.",
+    ))
+}
+
+fn detect_php_version(project_root: &Path) -> Option<Version> {
+    // Try bougie's resolved PHP first
+    if let Ok((version_str, _flavor)) = bougie_fs::state::read_project_resolved(project_root) {
+        if let Ok(v) = Version::parse(&version_str) {
+            return Some(v);
+        }
+    }
+    // Fall back to system PHP
+    let output = std::process::Command::new("php")
+        .arg("-r")
+        .arg("echo PHP_MAJOR_VERSION.'.'.PHP_MINOR_VERSION.'.'.PHP_RELEASE_VERSION;")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let version_str = String::from_utf8_lossy(&output.stdout);
+    Version::parse(version_str.trim()).ok()
+}
+
+fn detect_available_extensions(project_root: &Path) -> BTreeSet<String> {
+    let mut exts: BTreeSet<String> = BTreeSet::new();
+
+    // Builtin extensions (statically compiled into PHP)
+    for ext in baseline::BUILTIN_EXTENSIONS {
+        exts.insert((*ext).to_string());
+    }
+
+    // Baseline extensions (installed by default)
+    for ext in baseline::BASELINE_EXTENSIONS {
+        exts.insert((*ext).to_string());
+    }
+
+    // Project conf.d fragments
+    let confd = project_root.join(".bougie").join("conf.d");
+    if let Ok(entries) = std::fs::read_dir(&confd) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            // Fragment names are like "20-redis.ini" or "35-pdo_mysql.ini"
+            if let Some(ext_name) = name.strip_suffix(".ini") {
+                if let Some((_prefix, ext)) = ext_name.split_once('-') {
+                    exts.insert(ext.to_string());
+                }
+            }
+        }
+    }
+
+    // Also try system PHP if no bougie state
+    if !project_root.join(".bougie").join("state").join("resolved").exists() {
+        if let Ok(output) = std::process::Command::new("php").arg("-m").output() {
+            if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let mut in_extensions = false;
+                for line in stdout.lines() {
+                    let trimmed = line.trim();
+                    if trimmed == "[PHP Modules]" {
+                        in_extensions = true;
+                        continue;
+                    }
+                    if trimmed == "[Zend Modules]" {
+                        break;
+                    }
+                    if in_extensions && !trimmed.is_empty() {
+                        exts.insert(trimmed.to_lowercase());
+                    }
+                }
+            }
+        }
+    }
+
+    exts
 }
