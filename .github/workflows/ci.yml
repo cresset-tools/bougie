@@ -46,6 +46,8 @@ jobs:
             test_cmd: cargo test -p bougie --lib --test windows_smoke
     steps:
       - uses: actions/checkout@v5
+        with:
+          lfs: true
 
       # macos-latest runners no longer ship a usable cargo on PATH, so
       # install the toolchain explicitly. rust-toolchain.toml pins the
