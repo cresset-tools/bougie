@@ -80,6 +80,11 @@ pub struct DistRequest<'a> {
     /// the corresponding metadata URLs.
     pub auth_header: Option<&'a str>,
     pub auth_header_name: Option<&'a str>,
+    /// Project root, used to resolve non-http dist URLs (Composer
+    /// `type: artifact` repositories serialize the artifact zip's
+    /// path straight into `dist.url` as a project-relative string).
+    /// Tests that only exercise HTTP dists can pass any path.
+    pub project_root: &'a Path,
 }
 
 /// Per-dist outcome reported back to the caller so the install
@@ -159,6 +164,9 @@ fn download_to_cache(
         return Ok(DistOutcome::CacheHit);
     }
     bar.set_current(dist.package_name);
+    if !is_http_url(dist.url) {
+        return copy_local_dist(dist, &cache_path);
+    }
     let url = rewrite_github_dist_url(dist.url);
     let spec = bougie_fetch::BlobSpec {
         url: &url,
@@ -171,9 +179,77 @@ fn download_to_cache(
         auth_header_name: dist.auth_header_name,
     };
     bougie_fetch::fetch_file(client, &spec, bar).wrap_err_with(|| {
-        format!("downloading dist for {}", dist.package_name)
+        format!("downloading dist for {} from {:?}", dist.package_name, url)
     })?;
     Ok(DistOutcome::Downloaded)
+}
+
+fn is_http_url(s: &str) -> bool {
+    s.starts_with("http://") || s.starts_with("https://")
+}
+
+/// Materialize a Composer `type: artifact` dist into the cache by
+/// copying the local zip. Composer serializes the artifact's path as
+/// `dist.url` relative to the project root (e.g.
+/// `artifacts/vendor-pkg-1.2.3.zip`) — resolve it against `project_root`,
+/// verify the sha1 if the lockfile carries one, then copy into the
+/// content-addressed cache so the extraction phase stays
+/// transport-agnostic. Absolute paths and `file://` URLs are accepted as
+/// they appear; relative paths are joined onto `project_root`.
+fn copy_local_dist(dist: &DistRequest<'_>, cache_path: &Path) -> Result<DistOutcome> {
+    let raw = dist.url.strip_prefix("file://").unwrap_or(dist.url);
+    let candidate = Path::new(raw);
+    let src = if candidate.is_absolute() {
+        candidate.to_path_buf()
+    } else {
+        dist.project_root.join(candidate)
+    };
+    if !src.exists() {
+        return Err(eyre::eyre!(
+            "dist for {} points to local file {} which does not exist \
+             (Composer `type: artifact` repository file missing?)",
+            dist.package_name,
+            src.display(),
+        ));
+    }
+    if !dist.sha1.is_empty() {
+        verify_local_sha1(&src, dist.sha1).wrap_err_with(|| {
+            format!("verifying local dist for {}", dist.package_name)
+        })?;
+    }
+    std::fs::copy(&src, cache_path).wrap_err_with(|| {
+        format!(
+            "copying local dist for {} ({} → {})",
+            dist.package_name,
+            src.display(),
+            cache_path.display(),
+        )
+    })?;
+    Ok(DistOutcome::Downloaded)
+}
+
+fn verify_local_sha1(path: &Path, expected_hex: &str) -> Result<()> {
+    use sha1::Digest as _;
+    let mut file = std::fs::File::open(path)
+        .wrap_err_with(|| format!("opening {}", path.display()))?;
+    let mut hasher = sha1::Sha1::new();
+    std::io::copy(&mut file, &mut hasher)
+        .wrap_err_with(|| format!("hashing {}", path.display()))?;
+    let actual = hasher.finalize();
+    let mut actual_hex = String::with_capacity(40);
+    for b in actual {
+        use std::fmt::Write as _;
+        let _ = write!(actual_hex, "{b:02x}");
+    }
+    if !actual_hex.eq_ignore_ascii_case(expected_hex) {
+        return Err(eyre::eyre!(
+            "sha1 mismatch on {}: expected {}, got {}",
+            path.display(),
+            expected_hex,
+            actual_hex,
+        ));
+    }
+    Ok(())
 }
 
 /// Rewrite `api.github.com` zipball URLs to `codeload.github.com`

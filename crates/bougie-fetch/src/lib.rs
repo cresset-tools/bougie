@@ -343,12 +343,12 @@ fn fetch_to_partial(
         req = req.header(name, value);
     }
     let mut resp = req.send().map_err(|e| BougieError::Network {
-        operation: format!("fetching blob {}", spec.url),
+        operation: format!("fetching blob from url {:?}", spec.url),
         detail: error_chain(&e),
     })?;
     if !resp.status().is_success() {
         return Err(BougieError::Network {
-            operation: format!("GET {}", spec.url),
+            operation: format!("GET {:?}", spec.url),
             detail: format!("server returned HTTP {}", resp.status()),
         }
         .into());
