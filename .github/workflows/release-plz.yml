@@ -40,8 +40,11 @@ jobs:
           token: ${{ steps.app-token.outputs.token }}
         env:
           GIT_LFS_SKIP_SMUDGE: 1
-      - name: Disable Git LFS filter globally
-        run: git lfs uninstall
+      - name: Neutralize Git LFS filter
+        run: |
+          git lfs uninstall
+          git config --global filter.lfs.smudge "git-lfs smudge --skip -- %f"
+          git config --global filter.lfs.process "git-lfs filter-process --skip"
       - uses: MarcoIeni/release-plz-action@v0.5
         with:
           command: release-pr
@@ -75,8 +78,11 @@ jobs:
           token: ${{ steps.app-token.outputs.token }}
         env:
           GIT_LFS_SKIP_SMUDGE: 1
-      - name: Disable Git LFS filter globally
-        run: git lfs uninstall
+      - name: Neutralize Git LFS filter
+        run: |
+          git lfs uninstall
+          git config --global filter.lfs.smudge "git-lfs smudge --skip -- %f"
+          git config --global filter.lfs.process "git-lfs filter-process --skip"
       - uses: MarcoIeni/release-plz-action@v0.5
         with:
           command: release
