@@ -247,8 +247,8 @@ Each of the 15 fixture suites works as follows:
 | `--no-dev` flag | `S` | Tested across install/update/dump-autoload | |
 | Exit codes (0 = success, 1 = generic error, 2 = dependency resolution failure) | `S` | Assert exit codes in integration tests | |
 | `--dry-run` on update | `S` | Only mode currently; tested | |
-| `--ignore-platform-reqs` | `N` | Not yet implemented | Phase C |
-| `--ignore-platform-req=<name>` | `N` | Not yet implemented | Phase C |
+| `--ignore-platform-reqs` | `S` | Accepted on install + update; bougie skips platform checks by default | |
+| `--ignore-platform-req=<name>` | `S` | Accepted on install + update; bougie skips platform checks by default | |
 
 ## 11. Error behavior
 
