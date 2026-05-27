@@ -88,7 +88,6 @@ pub fn run(
     let mut warnings: Vec<String> = Vec::new();
     let mut publish_errors: Vec<String> = Vec::new();
 
-    // Layer 1: JSON parse
     let value: Value = match serde_json::from_slice(&bytes) {
         Ok(v) => v,
         Err(e) => {
@@ -118,23 +117,36 @@ pub fn run(
         return Ok(ExitCode::from(2));
     };
 
-    // Layer 2+3: Structural and semantic validation
     validate_name(obj, &mut errors, &mut publish_errors);
-    validate_description(obj, &mut publish_errors);
-    validate_type(obj, &mut warnings);
+    validate_description(obj, &mut errors, &mut publish_errors);
+    validate_type(obj, &mut errors, &mut warnings);
     validate_license(obj, &mut warnings);
     validate_version(obj, &mut warnings);
-    validate_require(obj, "require", &mut errors, &mut warnings, !opts.no_check_all);
-    validate_require(obj, "require-dev", &mut errors, &mut warnings, !opts.no_check_all);
+    validate_keywords(obj, &mut errors, &mut warnings);
+    validate_homepage(obj, &mut warnings);
+    validate_time(obj, &mut errors);
+    validate_authors(obj, &mut errors, &mut warnings);
+    validate_support(obj, &mut errors, &mut warnings);
+    validate_funding(obj, &mut errors, &mut warnings);
+    for key in ["require", "require-dev", "conflict", "replace", "provide"] {
+        validate_link_section(obj, key, &mut errors, &mut warnings, !opts.no_check_all);
+    }
     validate_require_overlap(obj, &mut warnings);
+    validate_provide_replace_overlap(obj, &mut warnings);
+    validate_conflict_replace_overlap(obj, &mut errors);
     validate_autoload(obj, &mut errors, &mut warnings);
     validate_repositories(obj, &mut errors);
     validate_minimum_stability(obj, &mut errors);
     validate_bin(obj, &mut errors);
-    validate_extra_branch_alias(obj, &mut warnings);
     validate_suggest(obj, &mut errors);
+    validate_extra_branch_alias(obj, &mut warnings);
+    validate_scripts(obj, &mut errors, &mut warnings);
+    validate_extra(obj, &mut errors);
+    validate_target_dir(obj, &mut errors);
+    validate_include_path(obj, &mut errors);
+    validate_transport_options(obj, &mut errors);
+    validate_config_platform(obj, &mut errors);
 
-    // Layer 4: Lock file checks
     if !opts.no_check_lock {
         validate_lock(&project_root, &bytes, obj, &mut errors);
     }
@@ -164,7 +176,7 @@ pub fn run(
     Ok(ExitCode::from(exit_code))
 }
 
-// --- Validation checks ---
+// --- Name ---
 
 fn validate_name(
     obj: &serde_json::Map<String, Value>,
@@ -201,18 +213,8 @@ fn validate_name(
     }
 
     if let Some(slash) = name.find('/') {
-        let vendor = &name[..slash];
-        let pkg = &name[slash + 1..];
-        for part in [vendor, pkg] {
-            let lower = part.to_lowercase();
-            if matches!(
-                lower.as_str(),
-                "nul" | "con" | "prn" | "aux"
-                    | "com1" | "com2" | "com3" | "com4" | "com5"
-                    | "com6" | "com7" | "com8" | "com9"
-                    | "lpt1" | "lpt2" | "lpt3" | "lpt4" | "lpt5"
-                    | "lpt6" | "lpt7" | "lpt8" | "lpt9"
-            ) {
+        for part in [&name[..slash], &name[slash + 1..]] {
+            if is_windows_reserved(&part.to_lowercase()) {
                 errors.push(format!(
                     "name `{name}` contains reserved Windows name `{part}`",
                 ));
@@ -225,26 +227,32 @@ fn validate_name(
     }
 }
 
+// --- Description ---
+
 fn validate_description(
     obj: &serde_json::Map<String, Value>,
+    errors: &mut Vec<String>,
     publish_errors: &mut Vec<String>,
 ) {
-    if !obj.contains_key("description") {
+    let Some(val) = obj.get("description") else {
         publish_errors.push("description is required for publishing".into());
-    } else if let Some(val) = obj.get("description") {
-        if !val.is_string() {
-            publish_errors.push("description must be a string".into());
-        }
+        return;
+    };
+    if !val.is_string() {
+        errors.push("description must be a string".into());
     }
 }
 
+// --- Type ---
+
 fn validate_type(
     obj: &serde_json::Map<String, Value>,
+    errors: &mut Vec<String>,
     warnings: &mut Vec<String>,
 ) {
     let Some(val) = obj.get("type") else { return };
     let Some(t) = val.as_str() else {
-        warnings.push("type must be a string".into());
+        errors.push("type must be a string".into());
         return;
     };
     if t == "composer-installer" {
@@ -254,7 +262,14 @@ fn validate_type(
                 .into(),
         );
     }
+    if !t.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+        warnings.push(format!(
+            "type `{t}` should only contain lowercase alphanumerics and hyphens",
+        ));
+    }
 }
+
+// --- License ---
 
 fn validate_license(
     obj: &serde_json::Map<String, Value>,
@@ -268,9 +283,15 @@ fn validate_license(
     let licenses: Vec<&str> = if let Some(s) = val.as_str() {
         vec![s]
     } else if let Some(arr) = val.as_array() {
-        arr.iter()
-            .filter_map(|v| v.as_str())
-            .collect()
+        let mut out = Vec::new();
+        for v in arr {
+            let Some(s) = v.as_str() else {
+                warnings.push("license array entries must be strings".into());
+                return;
+            };
+            out.push(s);
+        }
+        out
     } else {
         warnings.push("license must be a string or array of strings".into());
         return;
@@ -310,21 +331,205 @@ fn validate_license(
     }
 }
 
+// --- Version ---
+
 fn validate_version(
     obj: &serde_json::Map<String, Value>,
     warnings: &mut Vec<String>,
 ) {
-    if obj.contains_key("version") {
-        warnings.push(
-            "`version` field is present; this is generally not \
-             recommended and should be omitted (Packagist derives \
-             versions from tags)"
-                .into(),
-        );
+    let Some(val) = obj.get("version") else { return };
+    if !val.is_string() {
+        warnings.push("`version` must be a string".into());
+        return;
+    }
+    warnings.push(
+        "`version` field is present; this is generally not \
+         recommended and should be omitted (Packagist derives \
+         versions from tags)"
+            .into(),
+    );
+}
+
+// --- Keywords ---
+
+fn validate_keywords(
+    obj: &serde_json::Map<String, Value>,
+    errors: &mut Vec<String>,
+    warnings: &mut Vec<String>,
+) {
+    let Some(val) = obj.get("keywords") else { return };
+    let Some(arr) = val.as_array() else {
+        errors.push("`keywords` must be an array".into());
+        return;
+    };
+    for entry in arr {
+        let Some(kw) = entry.as_str() else {
+            errors.push("keyword entries must be strings".into());
+            continue;
+        };
+        if !kw
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == ' ' || c == '.' || c == '_' || c == '-')
+        {
+            warnings.push(format!(
+                "keyword `{kw}` contains invalid characters; \
+                 use only alphanumerics, spaces, `.`, `_`, `-`",
+            ));
+        }
     }
 }
 
-fn validate_require(
+// --- Homepage ---
+
+fn validate_homepage(
+    obj: &serde_json::Map<String, Value>,
+    warnings: &mut Vec<String>,
+) {
+    let Some(val) = obj.get("homepage") else { return };
+    let Some(url) = val.as_str() else {
+        warnings.push("homepage must be a string".into());
+        return;
+    };
+    if !is_http_url(url) {
+        warnings.push(format!(
+            "homepage `{url}` should be an http:// or https:// URL",
+        ));
+    }
+}
+
+// --- Time ---
+
+fn validate_time(
+    obj: &serde_json::Map<String, Value>,
+    errors: &mut Vec<String>,
+) {
+    let Some(val) = obj.get("time") else { return };
+    let Some(t) = val.as_str() else {
+        errors.push("time must be a string".into());
+        return;
+    };
+    if !looks_like_datetime(t) {
+        errors.push(format!(
+            "time `{t}` is not a valid datetime",
+        ));
+    }
+}
+
+// --- Authors ---
+
+fn validate_authors(
+    obj: &serde_json::Map<String, Value>,
+    errors: &mut Vec<String>,
+    warnings: &mut Vec<String>,
+) {
+    let Some(val) = obj.get("authors") else { return };
+    let Some(arr) = val.as_array() else {
+        errors.push("`authors` must be an array".into());
+        return;
+    };
+    for (i, entry) in arr.iter().enumerate() {
+        let Some(author) = entry.as_object() else {
+            errors.push(format!("authors[{i}] must be an object"));
+            continue;
+        };
+        for field in ["name", "email", "homepage", "role"] {
+            if let Some(v) = author.get(field) {
+                if !v.is_string() {
+                    errors.push(format!("authors[{i}].{field} must be a string"));
+                }
+            }
+        }
+        if let Some(hp) = author.get("homepage").and_then(Value::as_str) {
+            if !is_http_url(hp) {
+                warnings.push(format!(
+                    "authors[{i}].homepage `{hp}` should be an http:// or https:// URL",
+                ));
+            }
+        }
+        if let Some(email) = author.get("email").and_then(Value::as_str) {
+            if !looks_like_email(email) {
+                warnings.push(format!(
+                    "authors[{i}].email `{email}` does not look like a valid email",
+                ));
+            }
+        }
+    }
+}
+
+// --- Support ---
+
+fn validate_support(
+    obj: &serde_json::Map<String, Value>,
+    errors: &mut Vec<String>,
+    warnings: &mut Vec<String>,
+) {
+    let Some(val) = obj.get("support") else { return };
+    let Some(support) = val.as_object() else {
+        errors.push("`support` must be an object".into());
+        return;
+    };
+    let url_fields = [
+        "issues", "forum", "wiki", "source", "docs", "chat", "security",
+    ];
+    for (key, v) in support {
+        if !v.is_string() {
+            errors.push(format!("support.{key} must be a string"));
+            continue;
+        }
+        let s = v.as_str().unwrap_or("");
+        if key == "email" && !looks_like_email(s) {
+            warnings.push(format!(
+                "support.email `{s}` does not look like a valid email",
+            ));
+        } else if key == "irc" && !s.starts_with("irc://") && !s.starts_with("ircs://") {
+            warnings.push(format!(
+                "support.irc `{s}` should be an irc:// or ircs:// URL",
+            ));
+        } else if url_fields.contains(&key.as_str()) && !is_http_url(s) {
+            warnings.push(format!(
+                "support.{key} `{s}` should be an http:// or https:// URL",
+            ));
+        }
+    }
+}
+
+// --- Funding ---
+
+fn validate_funding(
+    obj: &serde_json::Map<String, Value>,
+    errors: &mut Vec<String>,
+    warnings: &mut Vec<String>,
+) {
+    let Some(val) = obj.get("funding") else { return };
+    let Some(arr) = val.as_array() else {
+        errors.push("`funding` must be an array".into());
+        return;
+    };
+    for (i, entry) in arr.iter().enumerate() {
+        let Some(fund) = entry.as_object() else {
+            errors.push(format!("funding[{i}] must be an object"));
+            continue;
+        };
+        for field in ["type", "url"] {
+            if let Some(v) = fund.get(field) {
+                if !v.is_string() {
+                    errors.push(format!("funding[{i}].{field} must be a string"));
+                }
+            }
+        }
+        if let Some(url) = fund.get("url").and_then(Value::as_str) {
+            if !is_http_url(url) {
+                warnings.push(format!(
+                    "funding[{i}].url `{url}` should be an http:// or https:// URL",
+                ));
+            }
+        }
+    }
+}
+
+// --- Link sections (require, require-dev, conflict, replace, provide) ---
+
+fn validate_link_section(
     obj: &serde_json::Map<String, Value>,
     key: &str,
     errors: &mut Vec<String>,
@@ -337,22 +542,22 @@ fn validate_require(
         return;
     };
 
-    let name = obj
-        .get("name")
-        .and_then(Value::as_str)
-        .unwrap_or("");
+    let name = obj.get("name").and_then(Value::as_str).unwrap_or("");
 
     for (dep_name, constraint_val) in reqs {
         if dep_name == name && !name.is_empty() {
-            errors.push(format!(
-                "{key}: package `{dep_name}` requires itself",
-            ));
+            errors.push(format!("{key}: package `{dep_name}` requires itself"));
             continue;
         }
-        let Some(raw) = constraint_val.as_str() else {
+        if dep_name.contains(|c: char| {
+            !c.is_ascii_alphanumeric() && c != '/' && c != '_' && c != '.' && c != '-'
+        }) {
             errors.push(format!(
-                "{key}.{dep_name}: constraint must be a string",
+                "{key}.{dep_name}: package name contains invalid characters",
             ));
+        }
+        let Some(raw) = constraint_val.as_str() else {
+            errors.push(format!("{key}.{dep_name}: constraint must be a string"));
             continue;
         };
         if raw.contains('#') {
@@ -370,7 +575,10 @@ fn validate_require(
             continue;
         }
 
-        if check_all && !is_platform_name(dep_name) {
+        if check_all
+            && (key == "require" || key == "require-dev")
+            && !is_platform_name(dep_name)
+        {
             if raw == "*" || raw == ">=0" || raw.starts_with(">=0.") {
                 warnings.push(format!(
                     "{key}.{dep_name}: constraint `{raw}` is unbound; \
@@ -397,6 +605,47 @@ fn validate_require_overlap(
     }
 }
 
+fn validate_provide_replace_overlap(
+    obj: &serde_json::Map<String, Value>,
+    warnings: &mut Vec<String>,
+) {
+    for section in ["provide", "replace"] {
+        let Some(map) = obj.get(section).and_then(Value::as_object) else {
+            continue;
+        };
+        for link_key in ["require", "require-dev"] {
+            let Some(reqs) = obj.get(link_key).and_then(Value::as_object) else {
+                continue;
+            };
+            for key in map.keys() {
+                if reqs.contains_key(key) {
+                    warnings.push(format!(
+                        "`{key}` appears in both {section} and {link_key}",
+                    ));
+                }
+            }
+        }
+    }
+}
+
+fn validate_conflict_replace_overlap(
+    obj: &serde_json::Map<String, Value>,
+    errors: &mut Vec<String>,
+) {
+    let conflict = obj.get("conflict").and_then(Value::as_object);
+    let replace = obj.get("replace").and_then(Value::as_object);
+    let (Some(conflict), Some(replace)) = (conflict, replace) else { return };
+    for key in conflict.keys() {
+        if replace.contains_key(key) {
+            errors.push(format!(
+                "`{key}` appears in both conflict and replace",
+            ));
+        }
+    }
+}
+
+// --- Autoload ---
+
 fn validate_autoload(
     obj: &serde_json::Map<String, Value>,
     errors: &mut Vec<String>,
@@ -413,9 +662,7 @@ fn validate_autoload(
                 section.as_str(),
                 "psr-0" | "psr-4" | "classmap" | "files" | "exclude-from-classmap"
             ) {
-                errors.push(format!(
-                    "{key}: unknown autoload type `{section}`",
-                ));
+                errors.push(format!("{key}: unknown autoload type `{section}`"));
             }
         }
         if let Some(psr4) = al.get("psr-4").and_then(Value::as_object) {
@@ -427,17 +674,14 @@ fn validate_autoload(
                 }
             }
             if obj.contains_key("target-dir") {
-                errors.push(format!(
-                    "{key}.psr-4 cannot be used with target-dir",
-                ));
+                errors.push(format!("{key}.psr-4 cannot be used with target-dir"));
             }
         }
         if let Some(psr0) = al.get("psr-0").and_then(Value::as_object) {
             for (ns, _) in psr0 {
                 if ns.is_empty() {
                     warnings.push(format!(
-                        "{key}.psr-0: empty namespace prefix is a \
-                         performance concern",
+                        "{key}.psr-0: empty namespace prefix is a performance concern",
                     ));
                 }
             }
@@ -445,15 +689,17 @@ fn validate_autoload(
     }
 }
 
+// --- Repositories ---
+
 fn validate_repositories(
     obj: &serde_json::Map<String, Value>,
     errors: &mut Vec<String>,
 ) {
     let Some(val) = obj.get("repositories") else { return };
-    let repos = if let Some(arr) = val.as_array() {
-        arr.iter().collect::<Vec<_>>()
+    let repos: Vec<&Value> = if let Some(arr) = val.as_array() {
+        arr.iter().collect()
     } else if let Some(map) = val.as_object() {
-        map.values().collect::<Vec<_>>()
+        map.values().collect()
     } else {
         errors.push("`repositories` must be an array or object".into());
         return;
@@ -463,25 +709,15 @@ fn validate_repositories(
             continue;
         };
         if !repo_obj.contains_key("type") {
-            errors.push(
-                "repository entry is missing `type`".into(),
-            );
+            errors.push("repository entry is missing `type`".into());
         }
-        let has_url = repo_obj.contains_key("url");
-        let has_package = repo_obj.contains_key("package");
-        if !has_url && !has_package {
-            let repo_type = repo_obj
-                .get("type")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown");
-            if repo_type != "composer" || !repo_obj.contains_key("url") {
-                errors.push(
-                    "repository entry is missing `url`".into(),
-                );
-            }
+        if !repo_obj.contains_key("url") && !repo_obj.contains_key("package") {
+            errors.push("repository entry is missing `url`".into());
         }
     }
 }
+
+// --- minimum-stability ---
 
 fn validate_minimum_stability(
     obj: &serde_json::Map<String, Value>,
@@ -503,6 +739,8 @@ fn validate_minimum_stability(
     }
 }
 
+// --- bin ---
+
 fn validate_bin(
     obj: &serde_json::Map<String, Value>,
     errors: &mut Vec<String>,
@@ -522,6 +760,26 @@ fn validate_bin(
         }
     }
 }
+
+// --- suggest ---
+
+fn validate_suggest(
+    obj: &serde_json::Map<String, Value>,
+    errors: &mut Vec<String>,
+) {
+    let Some(val) = obj.get("suggest") else { return };
+    let Some(suggest) = val.as_object() else {
+        errors.push("`suggest` must be a JSON object".into());
+        return;
+    };
+    for (pkg, desc) in suggest {
+        if !desc.is_string() {
+            errors.push(format!("suggest.{pkg}: description must be a string"));
+        }
+    }
+}
+
+// --- extra.branch-alias ---
 
 fn validate_extra_branch_alias(
     obj: &serde_json::Map<String, Value>,
@@ -549,28 +807,131 @@ fn validate_extra_branch_alias(
     }
 }
 
-fn validate_suggest(
+// --- scripts ---
+
+fn validate_scripts(
+    obj: &serde_json::Map<String, Value>,
+    errors: &mut Vec<String>,
+    warnings: &mut Vec<String>,
+) {
+    let Some(val) = obj.get("scripts") else { return };
+    if !val.is_object() {
+        errors.push("`scripts` must be an object".into());
+        return;
+    }
+    if let Some(descs) = obj.get("scripts-descriptions").and_then(Value::as_object) {
+        let scripts = val.as_object().unwrap();
+        for key in descs.keys() {
+            if !scripts.contains_key(key) {
+                warnings.push(format!(
+                    "scripts-descriptions.{key} references non-existent script",
+                ));
+            }
+        }
+    }
+    if let Some(aliases) = obj.get("scripts-aliases").and_then(Value::as_object) {
+        let scripts = val.as_object().unwrap();
+        for key in aliases.keys() {
+            if !scripts.contains_key(key) {
+                warnings.push(format!(
+                    "scripts-aliases.{key} references non-existent script",
+                ));
+            }
+        }
+    }
+}
+
+// --- extra ---
+
+fn validate_extra(
     obj: &serde_json::Map<String, Value>,
     errors: &mut Vec<String>,
 ) {
-    let Some(val) = obj.get("suggest") else { return };
-    let Some(suggest) = val.as_object() else {
-        errors.push("`suggest` must be a JSON object".into());
+    let Some(val) = obj.get("extra") else { return };
+    if !val.is_object() {
+        errors.push("`extra` must be an object".into());
+    }
+}
+
+// --- target-dir ---
+
+fn validate_target_dir(
+    obj: &serde_json::Map<String, Value>,
+    errors: &mut Vec<String>,
+) {
+    let Some(val) = obj.get("target-dir") else { return };
+    if !val.is_string() {
+        errors.push("`target-dir` must be a string".into());
+    }
+}
+
+// --- include-path ---
+
+fn validate_include_path(
+    obj: &serde_json::Map<String, Value>,
+    errors: &mut Vec<String>,
+) {
+    let Some(val) = obj.get("include-path") else { return };
+    let Some(arr) = val.as_array() else {
+        errors.push("`include-path` must be an array".into());
         return;
     };
-    for (pkg, desc) in suggest {
-        if !desc.is_string() {
+    for entry in arr {
+        if !entry.is_string() {
+            errors.push("`include-path` entries must be strings".into());
+            return;
+        }
+    }
+}
+
+// --- transport-options ---
+
+fn validate_transport_options(
+    obj: &serde_json::Map<String, Value>,
+    errors: &mut Vec<String>,
+) {
+    let Some(val) = obj.get("transport-options") else { return };
+    if !val.is_object() {
+        errors.push("`transport-options` must be an object".into());
+    }
+}
+
+// --- config.platform ---
+
+fn validate_config_platform(
+    obj: &serde_json::Map<String, Value>,
+    errors: &mut Vec<String>,
+) {
+    let platform = obj
+        .get("config")
+        .and_then(Value::as_object)
+        .and_then(|c| c.get("platform"))
+        .and_then(Value::as_object);
+    let Some(platform) = platform else { return };
+    for (key, val) in platform {
+        if val.is_boolean() && !val.as_bool().unwrap_or(true) {
+            continue;
+        }
+        let Some(ver_str) = val.as_str() else {
             errors.push(format!(
-                "suggest.{pkg}: description must be a string",
+                "config.platform.{key} must be a version string or false",
+            ));
+            continue;
+        };
+        if bougie_semver::version::Version::parse(ver_str).is_err() {
+            errors.push(format!(
+                "config.platform.{key}: `{ver_str}` is not a valid version",
             ));
         }
     }
 }
 
+// --- Lock file ---
+
 fn validate_lock(
     project_root: &Path,
     composer_json_bytes: &[u8],
-    _obj: &serde_json::Map<String, Value>,
+    obj: &serde_json::Map<String, Value>,
     errors: &mut Vec<String>,
 ) {
     let lock_path = project_root.join("composer.lock");
@@ -589,6 +950,7 @@ fn validate_lock(
             return;
         }
     };
+
     if let Some(expected) = &lock.content_hash {
         match lockfile::content_hash(composer_json_bytes) {
             Ok(actual) => {
@@ -605,7 +967,56 @@ fn validate_lock(
             }
         }
     }
+
+    validate_lock_requirements(obj, &lock, errors);
 }
+
+fn validate_lock_requirements(
+    obj: &serde_json::Map<String, Value>,
+    lock: &Lock,
+    errors: &mut Vec<String>,
+) {
+    for (section, lock_packages) in [
+        ("require", &lock.packages),
+        ("require-dev", &lock.packages_dev),
+    ] {
+        let Some(reqs) = obj.get(section).and_then(Value::as_object) else {
+            continue;
+        };
+        for (dep_name, constraint_val) in reqs {
+            if is_platform_name(dep_name) {
+                continue;
+            }
+            let Some(raw) = constraint_val.as_str() else {
+                continue;
+            };
+            let cleaned = raw.split('@').next().unwrap_or(raw);
+            let Ok(constraint) = Constraint::parse(cleaned) else {
+                continue;
+            };
+            let locked_pkg = lock_packages
+                .iter()
+                .find(|p| p.name == *dep_name);
+            let Some(pkg) = locked_pkg else {
+                errors.push(format!(
+                    "{section}.{dep_name}: required but not present in composer.lock",
+                ));
+                continue;
+            };
+            if let Ok(ver) = bougie_semver::version::Version::parse(&pkg.version) {
+                if !constraint.matches(&ver) {
+                    errors.push(format!(
+                        "{section}.{dep_name}: locked version {} does not \
+                         satisfy constraint `{raw}`",
+                        pkg.version,
+                    ));
+                }
+            }
+        }
+    }
+}
+
+// --- Helpers ---
 
 fn is_valid_package_name(name: &str) -> bool {
     let Some((vendor, pkg)) = name.split_once('/') else {
@@ -614,27 +1025,36 @@ fn is_valid_package_name(name: &str) -> bool {
     if vendor.is_empty() || pkg.is_empty() {
         return false;
     }
-    let valid_part = |s: &str| -> bool {
+    fn valid_part(s: &str) -> bool {
         let bytes = s.as_bytes();
         if !bytes[0].is_ascii_lowercase() && !bytes[0].is_ascii_digit() {
             return false;
         }
-        let mut prev_sep = false;
-        for &b in &bytes[1..] {
-            if b.is_ascii_lowercase() || b.is_ascii_digit() {
-                prev_sep = false;
-            } else if b == b'_' || b == b'.' || b == b'-' {
-                if prev_sep && b != b'-' {
-                    return false;
-                }
-                prev_sep = b != b'-' || prev_sep;
-            } else {
-                return false;
-            }
+        let last = *bytes.last().unwrap();
+        if !last.is_ascii_lowercase() && !last.is_ascii_digit() {
+            return false;
         }
-        bytes.last().is_some_and(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
-    };
+        for &b in &bytes[1..] {
+            if b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'.' || b == b'-'
+            {
+                continue;
+            }
+            return false;
+        }
+        true
+    }
     valid_part(vendor) && valid_part(pkg)
+}
+
+fn is_windows_reserved(name: &str) -> bool {
+    matches!(
+        name,
+        "nul" | "con" | "prn" | "aux"
+            | "com1" | "com2" | "com3" | "com4" | "com5"
+            | "com6" | "com7" | "com8" | "com9"
+            | "lpt1" | "lpt2" | "lpt3" | "lpt4" | "lpt5"
+            | "lpt6" | "lpt7" | "lpt8" | "lpt9"
+    )
 }
 
 fn is_platform_name(name: &str) -> bool {
@@ -643,4 +1063,26 @@ fn is_platform_name(name: &str) -> bool {
         || name.starts_with("lib-")
         || name == "composer-plugin-api"
         || name == "composer-runtime-api"
+}
+
+fn is_http_url(s: &str) -> bool {
+    s.starts_with("http://") || s.starts_with("https://")
+}
+
+fn looks_like_email(s: &str) -> bool {
+    let parts: Vec<&str> = s.split('@').collect();
+    parts.len() == 2 && !parts[0].is_empty() && parts[1].contains('.')
+}
+
+fn looks_like_datetime(s: &str) -> bool {
+    // Accept ISO 8601 / RFC 3339 patterns: YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS
+    if s.len() < 10 {
+        return false;
+    }
+    let date_part = &s[..10];
+    let bytes = date_part.as_bytes();
+    bytes[4] == b'-' && bytes[7] == b'-'
+        && bytes[..4].iter().all(u8::is_ascii_digit)
+        && bytes[5..7].iter().all(u8::is_ascii_digit)
+        && bytes[8..10].iter().all(u8::is_ascii_digit)
 }
