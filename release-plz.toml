@@ -8,6 +8,9 @@
 [workspace]
 # Don't run `cargo publish` — bougie isn't on crates.io.
 publish = false
+# libgit2 (used by release-plz) doesn't support Git LFS smudge filters,
+# so it reports LFS-tracked .zst fixture blobs as dirty.
+allow_dirty = true
 # Skip `cargo package`'s verify-by-build step. The verify step strips
 # `path` from intra-workspace deps and tries to re-resolve them from
 # crates.io, which fails because none of bougie's helper crates are
