@@ -239,6 +239,7 @@ pub struct ResolveProvider {
     /// violated by another package in the solution, (P, V) is added
     /// here and the solve retries. `versions_for` filters these out.
     conflict_excludes: RefCell<FxHashSet<(PackageName, Version)>>,
+    raw_root_constraints: FxHashMap<String, String>,
 }
 
 /// One entry in the virtual provider index — "real package
@@ -407,7 +408,8 @@ impl ResolveProvider {
     ) -> Result<Self, BuildError> {
         let minimum_stability = read_minimum_stability(composer_json)?;
         let prefer_stable = read_prefer_stable(composer_json)?;
-        let (root_deps, stability_flags) = read_root_requires(composer_json, no_dev)?;
+        let (root_deps, stability_flags, raw_root_constraints) =
+            read_root_requires(composer_json, no_dev)?;
         let repos = read_repositories(composer_json, default_packagist, &auth)?;
         // Any synthetic value works for the root version — pubgrub
         // never compares it against another candidate. Match the
@@ -432,6 +434,7 @@ impl ResolveProvider {
             parsed_deps: RefCell::new(FxHashMap::default()),
             solve_progress: RefCell::new(SolveProgress::hidden()),
             conflict_excludes: RefCell::new(FxHashSet::default()),
+            raw_root_constraints,
         })
     }
 
@@ -558,6 +561,146 @@ impl ResolveProvider {
             .iter()
             .find(|(v, _)| v == version)
             .map(|(_, p)| p.clone())
+    }
+
+    /// After a `NoSolution` from pubgrub, check each root requirement
+    /// against the metadata cache to find ALL independent problems.
+    /// Returns a multi-problem error string if problems are found,
+    /// or `None` to fall back to the pubgrub derivation tree.
+    fn analyze_resolution_problems(&self) -> Option<String> {
+        let mut problems: Vec<String> = Vec::new();
+        let mut unsatisfiable: FxHashSet<String> = FxHashSet::default();
+
+        self.collect_missing_version_problems(&mut problems, &mut unsatisfiable);
+        self.collect_transitive_conflict_problems(&mut problems, &unsatisfiable);
+
+        if problems.is_empty() {
+            return None;
+        }
+        Some(problems.join("\n"))
+    }
+
+    fn raw_constraint_for(&self, name: &str) -> &str {
+        self.raw_root_constraints
+            .get(name)
+            .map_or("*", String::as_str)
+    }
+
+    fn collect_missing_version_problems(
+        &self,
+        problems: &mut Vec<String>,
+        unsatisfiable: &mut FxHashSet<String>,
+    ) {
+        for (name, range) in &self.root_deps {
+            let versions = self.peek_cached_versions(name.as_str());
+            let has_match = versions
+                .as_ref()
+                .is_some_and(|vs| vs.iter().any(|(v, _)| range.contains(v)));
+            if has_match {
+                continue;
+            }
+            unsatisfiable.insert(name.to_string());
+            let constraint = self.raw_constraint_for(name.as_str());
+
+            match &versions {
+                Some(vs) if !vs.is_empty() => {
+                    let available =
+                        format_version_list(vs.iter().map(|(v, _)| v.to_string()));
+                    problems.push(format!(
+                        "  Problem {}\n    \
+                         - Root composer.json requires {name} {constraint}, \
+                         found {name}[{available}] but these do not match the constraint.",
+                        problems.len() + 1,
+                    ));
+                }
+                _ => {
+                    problems.push(format!(
+                        "  Problem {}\n    \
+                         - Root composer.json requires {name} {constraint}, \
+                         but the package was not found in any configured repository.",
+                        problems.len() + 1,
+                    ));
+                }
+            }
+        }
+    }
+
+    fn collect_transitive_conflict_problems(
+        &self,
+        problems: &mut Vec<String>,
+        unsatisfiable: &FxHashSet<String>,
+    ) {
+        let root_map: FxHashMap<&str, &ComposerRange> = self
+            .root_deps
+            .iter()
+            .map(|(n, r)| (n.as_str(), r))
+            .collect();
+
+        for (name, range) in &self.root_deps {
+            if unsatisfiable.contains(name.as_str()) {
+                continue;
+            }
+            let Some(versions) = self.peek_cached_versions(name.as_str()) else {
+                continue;
+            };
+            let Some((version, entry)) = versions.iter().find(|(v, _)| range.contains(v))
+            else {
+                continue;
+            };
+            for (dep_name, dep_constraint_str) in &entry.require {
+                if is_platform(dep_name) {
+                    continue;
+                }
+                let Some(&root_range) = root_map.get(dep_name.as_str()) else {
+                    continue;
+                };
+                let Ok(dep_constraint) = Constraint::parse(dep_constraint_str) else {
+                    continue;
+                };
+                let dep_range = to_range(&dep_constraint);
+
+                let dep_versions = self.peek_cached_versions(dep_name);
+                let both_satisfied = dep_versions.as_ref().is_some_and(|dvs| {
+                    dvs.iter()
+                        .any(|(v, _)| root_range.contains(v) && dep_range.contains(v))
+                });
+                if both_satisfied {
+                    continue;
+                }
+
+                let constraint_str = self.raw_constraint_for(name.as_str());
+                let root_dep_constraint = self.raw_constraint_for(dep_name);
+                let dep_available = dep_versions.as_ref().map_or_else(String::new, |dvs| {
+                    format_version_list(
+                        dvs.iter()
+                            .filter(|(v, _)| dep_range.contains(v))
+                            .map(|(v, _)| v.to_string()),
+                    )
+                });
+
+                problems.push(format!(
+                    "  Problem {}\n    \
+                     - Root composer.json requires {name} {constraint_str} \
+                     -> satisfiable by {name}[{version}].\n    \
+                     - {name} {version} requires {dep_name} {dep_constraint_str} \
+                     -> found {dep_name}[{dep_available}] but it conflicts \
+                     with your root composer.json require ({root_dep_constraint}).",
+                    problems.len() + 1,
+                ));
+            }
+        }
+    }
+
+    /// Read-only peek into the version caches (merged first, then
+    /// staging). Returns `None` when the package isn't cached at all,
+    /// `Some(vec)` otherwise (vec may be empty). Unlike `versions_for`,
+    /// this never fetches from the network or mutates caches — safe to
+    /// call on the error path.
+    fn peek_cached_versions(&self, name: &str) -> Option<Vec<(Version, LockPackage)>> {
+        if let Some(vs) = self.merged_cache.borrow().get(name) {
+            return Some(vs.clone());
+        }
+        self.cache.borrow().get(name).cloned()
     }
 
     /// Effective stability floor for `name`: per-package `@<flag>`
@@ -1493,9 +1636,17 @@ impl SolveProgress {
 fn read_root_requires(
     composer_json: &Value,
     no_dev: bool,
-) -> Result<(Vec<(PackageName, ComposerRange)>, HashMap<String, Stability>), BuildError> {
+) -> Result<
+    (
+        Vec<(PackageName, ComposerRange)>,
+        HashMap<String, Stability>,
+        FxHashMap<String, String>,
+    ),
+    BuildError,
+> {
     let mut out: Vec<(PackageName, ComposerRange)> = Vec::new();
     let mut flags: HashMap<String, Stability> = HashMap::new();
+    let mut raw_constraints: FxHashMap<String, String> = FxHashMap::default();
     let obj = composer_json
         .as_object()
         .ok_or_else(|| BuildError::Internal("composer.json top-level is not an object".into()))?;
@@ -1535,10 +1686,11 @@ fn read_root_requires(
                     reason: e.to_string(),
                 }
             })?;
+            raw_constraints.insert(dep_name.clone(), raw_constraint.to_owned());
             out.push((PackageName::from(dep_name.as_str()), to_range(&constraint)));
         }
     }
-    Ok((out, flags))
+    Ok((out, flags, raw_constraints))
 }
 
 /// Read `minimum-stability` from composer.json's top-level. Default
@@ -2006,6 +2158,18 @@ pub(crate) fn merge_auth_sources(
     out.extend(project_auth_json);
     out.extend(composer_auth_env);
     out
+}
+
+/// Format a version list for error messages. Short lists are shown in
+/// full; longer lists are abbreviated with `..` like Composer does:
+/// `1.0.0, 2.10.0, .., 2.14.0`.
+fn format_version_list(versions: impl IntoIterator<Item = String>) -> String {
+    let vs: Vec<String> = versions.into_iter().collect();
+    if vs.len() <= 4 {
+        vs.join(", ")
+    } else {
+        format!("{}, {}, .., {}", vs[0], vs[1], vs[vs.len() - 1])
+    }
 }
 
 /// Split a Composer constraint string into its constraint body and
@@ -2635,10 +2799,10 @@ pub fn dry_run_update(
             UpdateSummary { packages, no_dev: opts.no_dev }
         }
         Err(PubGrubError::NoSolution(tree)) => {
-            return Err(eyre!(
-                "no valid dependency resolution exists:\n\n{}",
-                DefaultStringReporter::report(&tree),
-            ));
+            let detail = provider
+                .analyze_resolution_problems()
+                .unwrap_or_else(|| DefaultStringReporter::report(&tree));
+            return Err(eyre!("no valid dependency resolution exists:\n\n{detail}"));
         }
         Err(PubGrubError::ErrorChoosingVersion { package, source }) => {
             return Err(eyre!(
@@ -2873,10 +3037,10 @@ fn solve_into_lock_packages(
     let solution = match solve_result {
         Ok(s) => s,
         Err(PubGrubError::NoSolution(tree)) => {
-            return Err(eyre!(
-                "no valid dependency resolution exists:\n\n{}",
-                DefaultStringReporter::report(&tree),
-            ));
+            let detail = provider
+                .analyze_resolution_problems()
+                .unwrap_or_else(|| DefaultStringReporter::report(&tree));
+            return Err(eyre!("no valid dependency resolution exists:\n\n{detail}"));
         }
         Err(PubGrubError::ErrorChoosingVersion { package, source }) => {
             return Err(eyre!(

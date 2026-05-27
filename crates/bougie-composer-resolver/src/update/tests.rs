@@ -2377,3 +2377,93 @@ fn read_all_auth_merges_composer_json_and_project_auth_json() {
         other => panic!("{other:?}"),
     }
 }
+
+#[test]
+fn analyze_resolution_problems_finds_multiple_missing_versions() {
+    let tmp = TempDir::new().unwrap();
+    let paths = paths_in(tmp.path());
+
+    let foo_body = p2_body("acme/foo", &[("1.0.0", json!({})), ("2.0.0", json!({}))]);
+    let bar_body = p2_body("acme/bar", &[("3.0.0", json!({})), ("4.0.0", json!({}))]);
+
+    let rt = rt();
+    let (uri, _server) = rt.block_on(async {
+        let server = MockServer::start().await;
+        mount_p2(&server, "acme/foo", foo_body).await;
+        mount_p2(&server, "acme/bar", bar_body).await;
+        (server.uri(), server)
+    });
+
+    let composer_json = json!({
+        "require": {
+            "acme/foo": "1.5.0",
+            "acme/bar": "3.5.0",
+        },
+    });
+    let client = crate::metadata::build_client().unwrap();
+    let provider = ResolveProvider::build(
+        client,
+        paths,
+        crate::metadata::Repo::from_url(uri),
+        &composer_json,
+        true,
+    )
+    .unwrap();
+    provider.pre_fetch_closure().unwrap();
+    let root = provider.root_version();
+
+    let err = resolve(&provider, PubGrubPackage::Root, root).unwrap_err();
+    assert!(matches!(err, pubgrub::PubGrubError::NoSolution(_)));
+
+    let report = provider.analyze_resolution_problems();
+    let report = report.expect("should find problems");
+    assert!(report.contains("Problem 1"), "report:\n{report}");
+    assert!(report.contains("Problem 2"), "report:\n{report}");
+    assert!(report.contains("acme/foo"), "report:\n{report}");
+    assert!(report.contains("acme/bar"), "report:\n{report}");
+}
+
+#[test]
+fn analyze_resolution_problems_detects_transitive_conflict() {
+    let tmp = TempDir::new().unwrap();
+    let paths = paths_in(tmp.path());
+
+    let foo_body = p2_body("acme/foo", &[("1.0.0", json!({"acme/bar": "^2.0"}))]);
+    let bar_body = p2_body("acme/bar", &[("1.0.0", json!({})), ("2.0.0", json!({}))]);
+
+    let rt = rt();
+    let (uri, _server) = rt.block_on(async {
+        let server = MockServer::start().await;
+        mount_p2(&server, "acme/foo", foo_body).await;
+        mount_p2(&server, "acme/bar", bar_body).await;
+        (server.uri(), server)
+    });
+
+    let composer_json = json!({
+        "require": {
+            "acme/foo": "^1.0",
+            "acme/bar": "^1.0",
+        },
+    });
+    let client = crate::metadata::build_client().unwrap();
+    let provider = ResolveProvider::build(
+        client,
+        paths,
+        crate::metadata::Repo::from_url(uri),
+        &composer_json,
+        true,
+    )
+    .unwrap();
+    provider.pre_fetch_closure().unwrap();
+    let root = provider.root_version();
+
+    let err = resolve(&provider, PubGrubPackage::Root, root).unwrap_err();
+    assert!(matches!(err, pubgrub::PubGrubError::NoSolution(_)));
+
+    let report = provider.analyze_resolution_problems();
+    let report = report.expect("should find transitive conflict");
+    assert!(report.contains("Problem 1"), "report:\n{report}");
+    assert!(report.contains("acme/foo"), "report:\n{report}");
+    assert!(report.contains("acme/bar"), "report:\n{report}");
+    assert!(report.contains("conflicts"), "report:\n{report}");
+}
