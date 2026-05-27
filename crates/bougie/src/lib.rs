@@ -162,6 +162,22 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
             ignore_platform_reqs: _,
             ignore_platform_req: _,
         }) => commands::composer_update::run(format, working_dir, no_dev, dry_run),
+        Command::Composer(ComposerCommand::Validate {
+            working_dir,
+            strict,
+            no_check_lock,
+            no_check_publish,
+            no_check_all,
+        }) => commands::composer_validate::run(
+            format,
+            working_dir,
+            commands::composer_validate::ValidateOptions {
+                strict,
+                no_check_lock,
+                no_check_publish,
+                no_check_all,
+            },
+        ),
         Command::Composer(ComposerCommand::Fetch { request }) => {
             commands::composer_fetch::run(format, request.as_deref())
         }
