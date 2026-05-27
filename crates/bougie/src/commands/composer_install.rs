@@ -26,6 +26,7 @@ pub struct InstallResult {
     pub packages_installed: u32,
     pub packages_already_present: u32,
     pub packages_skipped_plugin: u32,
+    pub bins_installed: u32,
     pub no_dev: bool,
     pub warnings: Vec<String>,
 }
@@ -38,6 +39,7 @@ impl From<InstallSummary> for InstallResult {
             packages_installed: s.packages_installed,
             packages_already_present: s.packages_already_present,
             packages_skipped_plugin: s.packages_skipped_plugin,
+            bins_installed: s.bins_installed,
             no_dev: s.no_dev,
             warnings: s.warnings,
         }
@@ -59,9 +61,14 @@ impl Render for InstallResult {
         } else {
             String::new()
         };
+        let bins = if self.bins_installed > 0 {
+            format!(", {} bin(s)", self.bins_installed)
+        } else {
+            String::new()
+        };
         writeln!(
             w,
-            "installed {total} packages ({} fresh, {} cached{skipped}){mode} → {}",
+            "installed {total} packages ({} fresh, {} cached{skipped}{bins}){mode} → {}",
             self.packages_installed,
             self.packages_already_present,
             self.project_root.display(),

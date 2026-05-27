@@ -50,6 +50,7 @@ pub struct InstallSummary {
     /// extracted because bougie won't run plugin install-time PHP and
     /// the extracted tree would be inert).
     pub packages_skipped_plugin: u32,
+    pub bins_installed: u32,
     pub no_dev: bool,
     /// Soft preflight findings — one entry per Composer plugin and one
     /// entry for a non-empty `scripts` section. The CLI prints these
@@ -93,7 +94,7 @@ pub fn install_from_lock(
     };
 
     verify_content_hash(&composer_json_bytes, &lock)?;
-    let warnings = preflight(&composer_json_bytes, &lock, opts.no_dev)?;
+    let mut warnings = preflight(&composer_json_bytes, &lock, opts.no_dev)?;
 
     // Assemble per-host auth from every source bougie understands —
     // composer.json `config`, global `$COMPOSER_HOME/auth.json`,
@@ -127,7 +128,8 @@ pub fn install_from_lock(
     )
     .unwrap_or(u32::MAX);
     let install_set: Vec<&LockPackage> = candidates
-        .into_iter()
+        .iter()
+        .copied()
         .filter(|p| !p.is_path_dist() && !p.is_composer_plugin())
         .collect();
 
@@ -224,6 +226,9 @@ pub fn install_from_lock(
     })
     .map_err(|e| eyre!("autoload dump failed: {e}"))?;
 
+    let bin_summary = super::bin_proxy::install_bin_proxies(project_root, &candidates);
+    warnings.extend(bin_summary.warnings);
+
     let packages_installed = u32::try_from(
         outcomes
             .iter()
@@ -243,6 +248,7 @@ pub fn install_from_lock(
         packages_installed,
         packages_already_present,
         packages_skipped_plugin,
+        bins_installed: bin_summary.bins_installed,
         no_dev: opts.no_dev,
         warnings,
     })
