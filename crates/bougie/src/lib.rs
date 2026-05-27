@@ -168,6 +168,8 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
             no_check_lock,
             no_check_publish,
             no_check_all,
+            with_dependencies,
+            check_lock: _,
         }) => commands::composer_validate::run(
             format,
             working_dir,
@@ -176,6 +178,7 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
                 no_check_lock,
                 no_check_publish,
                 no_check_all,
+                with_dependencies,
             },
         ),
         Command::Composer(ComposerCommand::Fetch { request }) => {

@@ -19,6 +19,7 @@ pub struct ValidateOptions {
     pub no_check_lock: bool,
     pub no_check_publish: bool,
     pub no_check_all: bool,
+    pub with_dependencies: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -119,35 +120,7 @@ pub fn run(
         return Ok(ExitCode::from(2));
     };
 
-    validate_name(obj, &mut errors, &mut publish_errors);
-    validate_description(obj, &mut errors, &mut publish_errors);
-    validate_type(obj, &mut errors, &mut warnings);
-    validate_license(obj, &mut warnings);
-    validate_version(obj, &mut warnings);
-    validate_keywords(obj, &mut errors, &mut warnings);
-    validate_homepage(obj, &mut warnings);
-    validate_time(obj, &mut errors);
-    validate_authors(obj, &mut errors, &mut warnings);
-    validate_support(obj, &mut errors, &mut warnings);
-    validate_funding(obj, &mut errors, &mut warnings);
-    for key in ["require", "require-dev", "conflict", "replace", "provide"] {
-        validate_link_section(obj, key, &mut errors, &mut warnings, !opts.no_check_all);
-    }
-    validate_require_overlap(obj, &mut warnings);
-    validate_provide_replace_overlap(obj, &mut warnings);
-    validate_conflict_replace_overlap(obj, &mut errors);
-    validate_autoload(obj, &mut errors, &mut warnings);
-    validate_repositories(obj, &mut errors);
-    validate_minimum_stability(obj, &mut errors);
-    validate_bin(obj, &mut errors);
-    validate_suggest(obj, &mut errors);
-    validate_extra_branch_alias(obj, &mut warnings);
-    validate_scripts(obj, &mut errors, &mut warnings);
-    validate_extra(obj, &mut errors);
-    validate_target_dir(obj, &mut errors);
-    validate_include_path(obj, &mut errors);
-    validate_transport_options(obj, &mut errors);
-    validate_config_platform(obj, &mut errors);
+    validate_manifest(obj, &mut errors, &mut warnings, &mut publish_errors, !opts.no_check_all);
 
     if !opts.no_check_lock {
         validate_lock(&project_root, &bytes, obj, &mut errors);
@@ -159,13 +132,76 @@ pub fn run(
 
     let has_errors = !errors.is_empty() || !publish_errors.is_empty();
     let has_warnings = !warnings.is_empty();
-    let exit_code = if has_errors {
+    let mut exit_code: u8 = if has_errors {
         2
     } else if opts.strict && has_warnings {
         1
     } else {
         0
     };
+
+    if opts.with_dependencies {
+        let lock_path = project_root.join("composer.lock");
+        if let Ok(lock) = Lock::read(&lock_path) {
+            for pkg in lock.all_packages() {
+                let pkg_path = project_root
+                    .join("vendor")
+                    .join(&pkg.name)
+                    .join("composer.json");
+                if !pkg_path.is_file() {
+                    continue;
+                }
+                let Ok(pkg_bytes) = std::fs::read(&pkg_path) else {
+                    continue;
+                };
+                let mut dep_errors: Vec<String> = Vec::new();
+                let mut dep_warnings: Vec<String> = Vec::new();
+                let mut dep_publish: Vec<String> = Vec::new();
+
+                detect_duplicate_keys(&pkg_bytes, &mut dep_warnings);
+
+                if let Ok(pkg_value) = serde_json::from_slice::<Value>(&pkg_bytes) {
+                    if let Some(pkg_obj) = pkg_value.as_object() {
+                        validate_manifest(
+                            pkg_obj,
+                            &mut dep_errors,
+                            &mut dep_warnings,
+                            &mut dep_publish,
+                            !opts.no_check_all,
+                        );
+                    }
+                }
+
+                if opts.no_check_publish {
+                    dep_publish.clear();
+                }
+
+                let dep_has_errors = !dep_errors.is_empty() || !dep_publish.is_empty();
+                let dep_has_warnings = !dep_warnings.is_empty();
+                let dep_code: u8 = if dep_has_errors {
+                    2
+                } else if opts.strict && dep_has_warnings {
+                    1
+                } else {
+                    0
+                };
+
+                if dep_code > 0 {
+                    for e in &dep_publish {
+                        publish_errors.push(format!("{}: {e}", pkg.name));
+                    }
+                    for e in &dep_errors {
+                        errors.push(format!("{}: {e}", pkg.name));
+                    }
+                    for w in &dep_warnings {
+                        warnings.push(format!("{}: {w}", pkg.name));
+                    }
+                }
+
+                exit_code = exit_code.max(dep_code);
+            }
+        }
+    }
 
     let result = ValidateResult {
         schema_version: 1,
@@ -176,6 +212,44 @@ pub fn run(
     };
     emit(format, &result)?;
     Ok(ExitCode::from(exit_code))
+}
+
+fn validate_manifest(
+    obj: &serde_json::Map<String, Value>,
+    errors: &mut Vec<String>,
+    warnings: &mut Vec<String>,
+    publish_errors: &mut Vec<String>,
+    check_all: bool,
+) {
+    validate_name(obj, errors, publish_errors);
+    validate_description(obj, errors, publish_errors);
+    validate_type(obj, errors, warnings);
+    validate_license(obj, warnings);
+    validate_version(obj, warnings);
+    validate_keywords(obj, errors, warnings);
+    validate_homepage(obj, warnings);
+    validate_time(obj, errors);
+    validate_authors(obj, errors, warnings);
+    validate_support(obj, errors, warnings);
+    validate_funding(obj, errors, warnings);
+    for key in ["require", "require-dev", "conflict", "replace", "provide"] {
+        validate_link_section(obj, key, errors, warnings, check_all);
+    }
+    validate_require_overlap(obj, warnings);
+    validate_provide_replace_overlap(obj, warnings);
+    validate_conflict_replace_overlap(obj, errors);
+    validate_autoload(obj, errors, warnings);
+    validate_repositories(obj, errors);
+    validate_minimum_stability(obj, errors);
+    validate_bin(obj, errors);
+    validate_suggest(obj, errors);
+    validate_extra_branch_alias(obj, warnings);
+    validate_scripts(obj, errors, warnings);
+    validate_extra(obj, errors);
+    validate_target_dir(obj, errors);
+    validate_include_path(obj, errors);
+    validate_transport_options(obj, errors);
+    validate_config_platform(obj, errors);
 }
 
 // --- Name ---

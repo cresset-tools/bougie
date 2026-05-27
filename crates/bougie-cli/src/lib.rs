@@ -521,6 +521,12 @@ pub enum ComposerCommand {
         /// Skip unbound/exact version constraint warnings.
         #[arg(long = "no-check-all")]
         no_check_all: bool,
+        /// Also validate installed dependencies' composer.json files.
+        #[arg(long = "with-dependencies")]
+        with_dependencies: bool,
+        /// Force lock file checking even when `config.lock` is false.
+        #[arg(long = "check-lock")]
+        check_lock: bool,
     },
     #[command(alias = "dump-autoload")]
     DumpAutoloader {
