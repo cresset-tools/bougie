@@ -88,6 +88,8 @@ pub fn run(
     let mut warnings: Vec<String> = Vec::new();
     let mut publish_errors: Vec<String> = Vec::new();
 
+    detect_duplicate_keys(&bytes, &mut warnings);
+
     let value: Value = match serde_json::from_slice(&bytes) {
         Ok(v) => v,
         Err(e) => {
@@ -1017,6 +1019,90 @@ fn validate_lock_requirements(
 }
 
 // --- Helpers ---
+
+fn detect_duplicate_keys(bytes: &[u8], warnings: &mut Vec<String>) {
+    use std::collections::HashMap;
+
+    let Ok(text) = std::str::from_utf8(bytes) else { return };
+    let mut depth: Vec<HashMap<String, u32>> = Vec::new();
+    let mut in_string = false;
+    let mut escape = false;
+    let mut current_key = String::new();
+    let mut collecting_key = false;
+    let mut expect_key = false;
+    let mut after_colon = false;
+
+    let chars: Vec<char> = text.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if in_string {
+            if escape {
+                if collecting_key {
+                    current_key.push(c);
+                }
+                escape = false;
+            } else if c == '\\' {
+                escape = true;
+                if collecting_key {
+                    current_key.push(c);
+                }
+            } else if c == '"' {
+                in_string = false;
+                if collecting_key {
+                    collecting_key = false;
+                    if let Some(level) = depth.last_mut() {
+                        let count = level.entry(current_key.clone()).or_insert(0);
+                        *count += 1;
+                        if *count == 2 {
+                            warnings.push(format!(
+                                "key `{current_key}` is a duplicate in composer.json",
+                            ));
+                        }
+                    }
+                }
+            } else if collecting_key {
+                current_key.push(c);
+            }
+        } else {
+            match c {
+                '"' => {
+                    in_string = true;
+                    if expect_key && !after_colon {
+                        collecting_key = true;
+                        current_key.clear();
+                    } else {
+                        collecting_key = false;
+                    }
+                    after_colon = false;
+                }
+                '{' => {
+                    depth.push(HashMap::new());
+                    expect_key = true;
+                    after_colon = false;
+                }
+                '}' => {
+                    depth.pop();
+                    expect_key = false;
+                    after_colon = false;
+                }
+                ':' => {
+                    after_colon = true;
+                    expect_key = false;
+                }
+                ',' => {
+                    expect_key = !depth.is_empty();
+                    after_colon = false;
+                }
+                '[' | ']' => {
+                    after_colon = false;
+                }
+                _ => {}
+            }
+        }
+        i += 1;
+    }
+}
 
 fn is_valid_package_name(name: &str) -> bool {
     let Some((vendor, pkg)) = name.split_once('/') else {
