@@ -11,6 +11,7 @@ pub mod composer_list;
 pub mod composer_pin;
 pub mod composer_uninstall;
 pub mod composer_update;
+pub mod composer_validate;
 pub mod composer_upgrade;
 pub mod ext_add_remove;
 pub mod ext_list;

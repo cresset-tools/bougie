@@ -231,7 +231,7 @@ Each of the 15 fixture suites works as follows:
 | `composer remove` | `N` | Not yet implemented | → `bougie remove` |
 | `composer show` / `composer info` | `N` | Not yet implemented | → `bougie outdated` partially |
 | `composer outdated` | `N` | Not yet implemented | TODO item |
-| `composer validate` | `N` | Not yet implemented | |
+| `composer validate` | `S` | Name, license (SPDX), constraints, autoload, lock freshness, publish checks | `--strict`, `--no-check-lock`, `--no-check-publish`, `--no-check-all` |
 | `composer search` | `–` | Out of scope | Use Packagist web |
 | `composer create-project` | `–` | Out of scope | → `bougie init --starter` |
 | `composer global` | `–` | Out of scope | → `bougie tool` |

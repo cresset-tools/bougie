@@ -504,6 +504,30 @@ pub enum ComposerCommand {
     /// `composer.lock`. Drop-in for `composer dump-autoload`; output
     /// is byte-equivalent to Composer 2.8.12 with the same flags. Aliased
     /// to `dump-autoload` for users coming from Composer muscle-memory.
+    /// Validate composer.json structure and contents.
+    Validate {
+        /// Run in this directory instead of CWD.
+        #[arg(short = 'd', long = "working-dir", value_name = "DIR")]
+        working_dir: Option<std::path::PathBuf>,
+        /// Return non-zero exit code for warnings too.
+        #[arg(long)]
+        strict: bool,
+        /// Skip lock file freshness check.
+        #[arg(long = "no-check-lock")]
+        no_check_lock: bool,
+        /// Skip publish-only checks (name casing, required fields).
+        #[arg(long = "no-check-publish")]
+        no_check_publish: bool,
+        /// Skip unbound/exact version constraint warnings.
+        #[arg(long = "no-check-all")]
+        no_check_all: bool,
+        /// Also validate installed dependencies' composer.json files.
+        #[arg(long = "with-dependencies")]
+        with_dependencies: bool,
+        /// Force lock file checking even when `config.lock` is false.
+        #[arg(long = "check-lock")]
+        check_lock: bool,
+    },
     #[command(alias = "dump-autoload")]
     DumpAutoloader {
         /// Optimize the classmap (`--optimize` / `-o`).
