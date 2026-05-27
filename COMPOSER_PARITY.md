@@ -42,7 +42,7 @@ level each behavior is held, and how each claim is tested.
 | Per-package stability override (`"foo/bar": "^1.0@dev"`) | `S` | Layer 2: per-package flag tests | |
 | `prefer-stable` — stable over pre-release when both match | `S` | Layer 2: two-pass selection tests | |
 | `prefer-lowest` | `N` | Exposed in lockfile model but not acted on | Phase C |
-| Platform requirements (`php`, `ext-*`, `lib-*`) — filtering | `D` | Skipped from solver entirely; Composer solves them | Phase C will encode as proper solver packages |
+| Platform requirements (`php`, `ext-*`, `lib-*`) — filtering | `D` | Skipped from solver; checked at install time against resolved PHP + extensions | Solver doesn't use platform info; install preflight enforces |
 | `composer-plugin-api` / `composer-runtime-api` | `D` | Filtered out; never constrains resolution | bougie has no plugin API to version |
 | Resolution order determinism | `S` | Layer 4: same inputs → same lockfile package set | pubgrub may pick differently when multiple valid solutions exist; assert equivalence only on the package set, not internal solver trace |
 
