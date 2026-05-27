@@ -94,6 +94,7 @@ fn downloads_single_zip_and_extracts_with_strip_prefix() {
         vendor_dest: &vendor_dest,
         auth_header: None,
             auth_header_name: None,
+            project_root: tmp.path(),
     }];
 
     fetch_and_extract_dists(&client, &paths, &dists, &bar).unwrap();
@@ -144,6 +145,7 @@ fn cache_hit_short_circuits_network() {
         vendor_dest: &vendor_dest,
         auth_header: None,
             auth_header_name: None,
+            project_root: tmp.path(),
     }];
 
     let outcomes = fetch_and_extract_dists(&client, &paths, &dists, &bar).unwrap();
@@ -187,6 +189,7 @@ fn hash_mismatch_aborts_install_cleanly() {
         vendor_dest: &vendor_dest,
         auth_header: None,
             auth_header_name: None,
+            project_root: tmp.path(),
     }];
 
     let err = fetch_and_extract_dists(&client, &paths, &dists, &bar)
@@ -255,6 +258,7 @@ fn parallel_four_dists_share_one_bar() {
             vendor_dest: &dests[i],
             auth_header: None,
             auth_header_name: None,
+            project_root: tmp.path(),
         })
         .collect();
 
@@ -307,6 +311,7 @@ fn extract_strips_top_level_directory_via_auto_detect() {
         vendor_dest: &vendor_dest,
         auth_header: None,
             auth_header_name: None,
+            project_root: tmp.path(),
     }];
     let outcomes = fetch_and_extract_dists(&client, &paths, &dists, &bar).unwrap();
     assert_eq!(outcomes, vec![DistOutcome::Downloaded]);
@@ -374,6 +379,7 @@ fn dist_request_auth_header_is_sent_on_get() {
         vendor_dest: &vendor_dest,
         auth_header: Some(auth),
         auth_header_name: None,
+            project_root: tmp.path(),
     }];
 
     fetch_and_extract_dists(&client, &paths, &dists, &bar)
@@ -423,6 +429,7 @@ fn dist_request_without_auth_fails_when_server_requires_it() {
         vendor_dest: &vendor_dest,
         auth_header: None,
             auth_header_name: None,
+            project_root: tmp.path(),
     }];
 
     let err = fetch_and_extract_dists(&client, &paths, &dists, &bar)
@@ -466,6 +473,108 @@ fn rewrite_handles_org_scoped_repos() {
         rewrite_github_dist_url(url),
         "https://codeload.github.com/symfony/console/legacy.zip/3156577f46a38aa1b9323aad223de7a9cd426782",
     );
+}
+
+#[test]
+fn local_artifact_dist_is_copied_and_extracted() {
+    let tmp = TempDir::new().unwrap();
+    let paths = paths_in(tmp.path());
+    let vendor_dest = tmp.path().join("vendor").join("vsourz").join("imagegallery");
+
+    let body = build_fixture_zip("acme-foo-abc1234");
+    let hash = sha1_hex(&body);
+
+    // Project layout: `<root>/artifacts/vsourz-imagegallery-1.0.1-p1.zip`,
+    // with the URL stored relative — exactly how Composer's
+    // `type: artifact` repository serializes into composer.lock.
+    let artifacts_dir = tmp.path().join("artifacts");
+    std::fs::create_dir_all(&artifacts_dir).unwrap();
+    let zip_path = artifacts_dir.join("vsourz-imagegallery-1.0.1-p1.zip");
+    std::fs::write(&zip_path, &body).unwrap();
+
+    let url = "artifacts/vsourz-imagegallery-1.0.1-p1.zip";
+    let client = reqwest::blocking::Client::new();
+    let bar = DownloadBar::hidden();
+    let dists = [DistRequest {
+        package_name: "vsourz/imagegallery",
+        url,
+        sha1: &hash,
+        reference: "",
+        archive: ArchiveKind::Zip,
+        strip_prefix: Some("acme-foo-abc1234"),
+        vendor_dest: &vendor_dest,
+        auth_header: None,
+        auth_header_name: None,
+        project_root: tmp.path(),
+    }];
+
+    fetch_and_extract_dists(&client, &paths, &dists, &bar).unwrap();
+
+    assert!(vendor_dest.join("composer.json").is_file());
+    assert!(vendor_dest.join("src/Foo.php").is_file());
+    let cached = paths.cache_composer_dist().join(format!("{hash}.zip"));
+    assert!(cached.is_file(), "expected cached copy at {}", cached.display());
+}
+
+#[test]
+fn local_artifact_dist_missing_file_errors_clearly() {
+    let tmp = TempDir::new().unwrap();
+    let paths = paths_in(tmp.path());
+    let vendor_dest = tmp.path().join("vendor").join("acme").join("missing");
+
+    let client = reqwest::blocking::Client::new();
+    let bar = DownloadBar::hidden();
+    let dists = [DistRequest {
+        package_name: "acme/missing",
+        url: "artifacts/does-not-exist.zip",
+        sha1: "0000000000000000000000000000000000000000",
+        reference: "",
+        archive: ArchiveKind::Zip,
+        strip_prefix: Some("x"),
+        vendor_dest: &vendor_dest,
+        auth_header: None,
+        auth_header_name: None,
+        project_root: tmp.path(),
+    }];
+
+    let err = fetch_and_extract_dists(&client, &paths, &dists, &bar)
+        .expect_err("missing artifact must surface as an error");
+    let msg = format!("{err:#}");
+    assert!(msg.contains("type: artifact"), "{msg}");
+    assert!(msg.contains("does-not-exist.zip"), "{msg}");
+}
+
+#[test]
+fn local_artifact_dist_sha1_mismatch_errors() {
+    let tmp = TempDir::new().unwrap();
+    let paths = paths_in(tmp.path());
+    let vendor_dest = tmp.path().join("vendor").join("acme").join("foo");
+
+    let body = build_fixture_zip("acme-foo-abc1234");
+    let artifacts_dir = tmp.path().join("artifacts");
+    std::fs::create_dir_all(&artifacts_dir).unwrap();
+    let zip_path = artifacts_dir.join("acme-foo.zip");
+    std::fs::write(&zip_path, &body).unwrap();
+
+    let client = reqwest::blocking::Client::new();
+    let bar = DownloadBar::hidden();
+    let dists = [DistRequest {
+        package_name: "acme/foo",
+        url: "artifacts/acme-foo.zip",
+        sha1: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+        reference: "",
+        archive: ArchiveKind::Zip,
+        strip_prefix: Some("acme-foo-abc1234"),
+        vendor_dest: &vendor_dest,
+        auth_header: None,
+        auth_header_name: None,
+        project_root: tmp.path(),
+    }];
+
+    let err = fetch_and_extract_dists(&client, &paths, &dists, &bar)
+        .expect_err("sha1 mismatch must surface");
+    let msg = format!("{err:#}");
+    assert!(msg.contains("sha1 mismatch"), "{msg}");
 }
 
 /// Minimal recursive walk: returns every path under `root` relative

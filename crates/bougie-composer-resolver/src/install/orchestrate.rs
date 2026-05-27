@@ -171,6 +171,7 @@ pub fn install_from_lock(
                 vendor_dest: dest,
                 auth_header: auth_entry.as_ref().map(|(v, _)| v.as_str()),
                 auth_header_name: auth_entry.as_ref().map(|(_, n)| *n),
+                project_root,
             }
         })
         .collect();

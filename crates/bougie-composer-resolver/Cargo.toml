@@ -36,6 +36,10 @@ rustc-hash = "2"
 # conflict analysis; interning collapses those clones to refcount
 # bumps.
 arcstr = "1"
+# Local-artifact dist verification: hash the on-disk zip against the
+# shasum the lockfile carries. Already used by `bougie-fetch` for HTTP
+# dists; we hash the local copy here for symmetry.
+sha1 = "0.10"
 
 [dependencies.indicatif]
 version = "0.18"
