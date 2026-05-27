@@ -2,19 +2,22 @@
 //! install`.
 //!
 //! Reads `composer.json` + `composer.lock`, verifies content-hash,
-//! runs preflight (rejecting source-only and non-zip dists which bougie
-//! cannot install at all; surfacing plugins / post-install scripts as
-//! warnings since bougie installs the package zips but never runs their
-//! PHP), builds [`DistRequest`]s, calls [`fetch_and_extract_dists`] to
-//! populate `vendor/`, then hands off to `bougie_autoloader::dump_autoload`
-//! to emit `vendor/autoload.php` + `vendor/composer/installed.{json,php}`.
+//! diffs against the existing `vendor/composer/installed.json` to
+//! determine which packages are already up-to-date, runs preflight
+//! (rejecting source-only and non-zip dists which bougie cannot install
+//! at all; surfacing plugins / post-install scripts as warnings since
+//! bougie installs the package zips but never runs their PHP), builds
+//! [`DistRequest`]s only for changed/new packages, removes stale
+//! packages, calls [`fetch_and_extract_dists`] to populate `vendor/`,
+//! then hands off to `bougie_autoloader::dump_autoload` to emit
+//! `vendor/autoload.php` + `vendor/composer/installed.{json,php}`.
 //!
 //! Preflight failures are aggregated into a single error so the user
 //! sees every blocker in one pass rather than fix-one-hit-next.
 //! Preflight warnings are returned alongside on success and surfaced
 //! to the user via [`InstallSummary::warnings`].
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use bougie_autoloader::{dump_autoload, DumpRequest};
@@ -46,10 +49,18 @@ pub struct InstallSummary {
     pub project_root: PathBuf,
     pub packages_installed: u32,
     pub packages_already_present: u32,
+    /// Packages whose dist reference matched `installed.json` and whose
+    /// vendor directory already existed — skipped entirely (no download,
+    /// no extraction).
+    pub packages_up_to_date: u32,
     /// Composer-plugin packages we skipped over (their zip was not
     /// extracted because bougie won't run plugin install-time PHP and
     /// the extracted tree would be inert).
     pub packages_skipped_plugin: u32,
+    /// Packages that were in the previous `installed.json` but are no
+    /// longer in the lock file (or excluded by `--no-dev`) and had
+    /// their vendor directory removed.
+    pub packages_removed: u32,
     pub bins_installed: u32,
     pub no_dev: bool,
     /// Soft preflight findings — one entry per Composer plugin and one
@@ -129,11 +140,17 @@ pub fn install_from_lock(
         candidates.iter().filter(|p| p.is_composer_plugin()).count(),
     )
     .unwrap_or(u32::MAX);
-    let install_set: Vec<&LockPackage> = candidates
+    let installable: Vec<&LockPackage> = candidates
         .iter()
         .copied()
         .filter(|p| !p.is_path_dist() && !p.is_composer_plugin() && !p.is_metapackage())
         .collect();
+
+    // Diff against the existing installed state to skip packages whose
+    // dist reference hasn't changed and whose vendor dir is still present.
+    let installed_state = read_installed_state(project_root);
+    let (install_set, packages_up_to_date, packages_removed) =
+        diff_install_set(&installable, &installed_state, project_root);
 
     // Each DistRequest borrows from the LockPackage; build the
     // ancillary owned data (vendor dest paths, archive enums) in a
@@ -246,11 +263,98 @@ pub fn install_from_lock(
         project_root: project_root.to_path_buf(),
         packages_installed,
         packages_already_present,
+        packages_up_to_date,
         packages_skipped_plugin,
+        packages_removed,
         bins_installed: bin_summary.bins_installed,
         no_dev: opts.no_dev,
         warnings,
     })
+}
+
+/// Snapshot of `vendor/composer/installed.json` — the packages and
+/// dist references that were installed on the previous run.
+pub(crate) struct InstalledState {
+    /// Package name → dist reference from the previous install.
+    pub(crate) packages: HashMap<String, String>,
+}
+
+/// Read `vendor/composer/installed.json` and extract the package name →
+/// dist reference mapping. Returns `None` if the file doesn't exist or
+/// can't be parsed (first install, corrupted state, etc.).
+fn read_installed_state(project_root: &Path) -> Option<InstalledState> {
+    let path = project_root.join("vendor/composer/installed.json");
+    let bytes = std::fs::read(&path).ok()?;
+    let value: Value = serde_json::from_slice(&bytes).ok()?;
+    let obj = value.as_object()?;
+
+    let packages_arr = obj.get("packages")?.as_array()?;
+    let mut packages = HashMap::with_capacity(packages_arr.len());
+    for pkg in packages_arr {
+        let name = pkg.get("name").and_then(|v| v.as_str()).unwrap_or("");
+        if name.is_empty() {
+            continue;
+        }
+        let reference = pkg
+            .get("dist")
+            .and_then(|d| d.get("reference"))
+            .and_then(|r| r.as_str())
+            .unwrap_or("");
+        packages.insert(name.to_string(), reference.to_string());
+    }
+
+    Some(InstalledState { packages })
+}
+
+/// Diff the lock file's installable set against the existing
+/// `installed.json` state. Returns:
+/// - the subset of packages that actually need downloading/extracting,
+/// - the count of packages that are already up-to-date,
+/// - the count of stale packages whose vendor dirs were removed.
+pub(crate) fn diff_install_set<'a>(
+    installable: &[&'a LockPackage],
+    installed_state: &Option<InstalledState>,
+    project_root: &Path,
+) -> (Vec<&'a LockPackage>, u32, u32) {
+    let Some(state) = installed_state else {
+        return (installable.to_vec(), 0, 0);
+    };
+
+    let mut need_install: Vec<&'a LockPackage> = Vec::new();
+    let mut up_to_date: u32 = 0;
+    let wanted_names: HashSet<&str> = installable.iter().map(|p| p.name.as_str()).collect();
+
+    for p in installable {
+        let lock_ref = p
+            .dist
+            .as_ref()
+            .and_then(|d| d.reference.as_deref())
+            .unwrap_or("");
+        let vendor_dir = project_root.join("vendor").join(&p.name);
+
+        if let Some(installed_ref) = state.packages.get(&p.name) {
+            if installed_ref == lock_ref && vendor_dir.is_dir() {
+                up_to_date = up_to_date.saturating_add(1);
+                continue;
+            }
+        }
+        need_install.push(p);
+    }
+
+    // Remove stale packages: present in the old installed state but
+    // absent from the current lock's installable set.
+    let mut removed: u32 = 0;
+    for old_name in state.packages.keys() {
+        if !wanted_names.contains(old_name.as_str()) {
+            let vendor_dir = project_root.join("vendor").join(old_name);
+            if vendor_dir.is_dir() {
+                let _ = std::fs::remove_dir_all(&vendor_dir);
+                removed = removed.saturating_add(1);
+            }
+        }
+    }
+
+    (need_install, up_to_date, removed)
 }
 
 /// Build the per-package install progress bar. Renders on stderr when
