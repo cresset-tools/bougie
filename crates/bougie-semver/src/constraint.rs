@@ -387,7 +387,46 @@ fn parse_atom(token: &str) -> Result<Constraint, ParseError> {
 
     // Bare partial or full version: `1.2.3` → ==, `1.2` → range
     // covering all of 1.2, `1` → range covering all of 1.
-    parse_partial_or_exact(s)
+    match parse_partial_or_exact(s) {
+        Ok(c) => Ok(c),
+        Err(e) => {
+            // Composer's `parseConstraint` "Basic Comparators"
+            // fallback: if normalize fails AND the constraint ends
+            // in `-dev` AND its body is "name-safe"
+            // (`[0-9a-zA-Z-./]+`), retry as `dev-<body>`. This is
+            // what makes `master-dev` work as a synonym for
+            // `dev-master`. Only the constraint path does this —
+            // `Version::normalize` itself rejects these.
+            if let Some(body) = strip_dev_suffix(s) {
+                if is_name_safe(body) {
+                    if let Ok(v) = Version::parse(&format!("dev-{body}")) {
+                        return Ok(Constraint::Op {
+                            op: CmpOp::Eq,
+                            version: v,
+                            explicit_lower_bound: true,
+                        });
+                    }
+                }
+            }
+            Err(e)
+        }
+    }
+}
+
+fn strip_dev_suffix(s: &str) -> Option<&str> {
+    if s.len() >= 5 && s.as_bytes()[s.len() - 4..].eq_ignore_ascii_case(b"-dev") {
+        Some(&s[..s.len() - 4])
+    } else {
+        None
+    }
+}
+
+/// Composer's `{^[0-9a-zA-Z-./]+$}` gate on the `<name>-dev` recovery.
+fn is_name_safe(s: &str) -> bool {
+    !s.is_empty()
+        && s.bytes().all(|b| {
+            b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'/')
+        })
 }
 
 fn contains_wildcard(s: &str) -> bool {
@@ -669,6 +708,33 @@ mod tests {
         let c = Constraint::parse("dev-main").unwrap();
         let other = Version::parse("dev-feature-x").unwrap();
         assert!(!c.matches(&other));
+    }
+
+    #[test]
+    fn name_dash_dev_suffix_is_synonym_for_dev_dash_name() {
+        // Composer's `parseConstraint` (NOT `normalize`) recovers
+        // `master-dev` as a synonym for `dev-master` via the
+        // catch-block fallback. Char class: `[0-9a-zA-Z-./]+`.
+        let c = Constraint::parse("master-dev").unwrap();
+        let v = Version::parse("dev-master").unwrap();
+        assert!(c.matches(&v), "constraint {c:?} should match {v:?}");
+    }
+
+    #[test]
+    fn name_dash_dev_rejects_unsafe_chars() {
+        // Bodies with characters outside Composer's recovery
+        // char-class (`[0-9a-zA-Z-./]+`) must still fail.
+        assert!(Constraint::parse("foo bar-dev").is_err());
+        assert!(Constraint::parse("1.0.0<1.0.5-dev").is_err());
+    }
+
+    #[test]
+    fn name_dash_dev_does_not_swallow_numeric_dev_versions() {
+        // `1.0.0-dev` is a Dev-stability classical version handled
+        // by `parse_partial_or_exact`, not the recovery path.
+        let c = Constraint::parse("1.0.0-dev").unwrap();
+        let v = Version::parse("1.0.0-dev").unwrap();
+        assert!(c.matches(&v));
     }
 
     #[test]
