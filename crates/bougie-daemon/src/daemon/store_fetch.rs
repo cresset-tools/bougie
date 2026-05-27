@@ -265,6 +265,7 @@ fn install_into(
         strip_prefix: "install",
         archive: ArchiveKind::TarZst,
         auth_header: None,
+        auth_header_name: None,
     };
     fetch_blob(client, &spec, bar)?;
 

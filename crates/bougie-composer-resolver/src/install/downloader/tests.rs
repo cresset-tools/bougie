@@ -93,6 +93,7 @@ fn downloads_single_zip_and_extracts_with_strip_prefix() {
         strip_prefix: Some("acme-foo-abc1234"),
         vendor_dest: &vendor_dest,
         auth_header: None,
+            auth_header_name: None,
     }];
 
     fetch_and_extract_dists(&client, &paths, &dists, &bar).unwrap();
@@ -142,6 +143,7 @@ fn cache_hit_short_circuits_network() {
         strip_prefix: Some("acme-foo-deadbeef"),
         vendor_dest: &vendor_dest,
         auth_header: None,
+            auth_header_name: None,
     }];
 
     let outcomes = fetch_and_extract_dists(&client, &paths, &dists, &bar).unwrap();
@@ -184,6 +186,7 @@ fn hash_mismatch_aborts_install_cleanly() {
         strip_prefix: Some("acme-foo-aaaa"),
         vendor_dest: &vendor_dest,
         auth_header: None,
+            auth_header_name: None,
     }];
 
     let err = fetch_and_extract_dists(&client, &paths, &dists, &bar)
@@ -251,6 +254,7 @@ fn parallel_four_dists_share_one_bar() {
             strip_prefix: Some(&pkgs[i].0),
             vendor_dest: &dests[i],
             auth_header: None,
+            auth_header_name: None,
         })
         .collect();
 
@@ -302,6 +306,7 @@ fn extract_strips_top_level_directory_via_auto_detect() {
         strip_prefix: None,
         vendor_dest: &vendor_dest,
         auth_header: None,
+            auth_header_name: None,
     }];
     let outcomes = fetch_and_extract_dists(&client, &paths, &dists, &bar).unwrap();
     assert_eq!(outcomes, vec![DistOutcome::Downloaded]);
@@ -368,6 +373,7 @@ fn dist_request_auth_header_is_sent_on_get() {
         strip_prefix: Some("acme-foo-abc"),
         vendor_dest: &vendor_dest,
         auth_header: Some(auth),
+        auth_header_name: None,
     }];
 
     fetch_and_extract_dists(&client, &paths, &dists, &bar)
@@ -416,6 +422,7 @@ fn dist_request_without_auth_fails_when_server_requires_it() {
         strip_prefix: Some("acme-foo-abc"),
         vendor_dest: &vendor_dest,
         auth_header: None,
+            auth_header_name: None,
     }];
 
     let err = fetch_and_extract_dists(&client, &paths, &dists, &bar)
