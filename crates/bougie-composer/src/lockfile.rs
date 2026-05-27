@@ -809,6 +809,15 @@ impl LockPackage {
     pub fn is_composer_plugin(&self) -> bool {
         matches!(self.package_type.as_deref(), Some("composer-plugin" | "composer-installer"))
     }
+
+    /// Is this a metapackage? Metapackages have no code and no `dist`
+    /// block — they exist purely to group a set of `require` entries
+    /// under one name. The install flow skips them (nothing to fetch
+    /// or extract) and the autoloader emits `install_path => NULL`
+    /// for them in `InstalledVersions.php` (mirroring Composer).
+    pub fn is_metapackage(&self) -> bool {
+        self.package_type.as_deref() == Some("metapackage")
+    }
 }
 
 #[cfg(test)]
