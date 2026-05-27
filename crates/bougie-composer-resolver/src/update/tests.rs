@@ -2140,6 +2140,75 @@ fn parse_composer_auth_env_rejects_non_object_top_level() {
 }
 
 #[test]
+fn parse_composer_auth_env_parses_github_oauth_and_gitlab_token() {
+    let raw = r#"{
+        "github-oauth": {
+            "github.com": "ghp_xxxxxxxxxxxx"
+        },
+        "gitlab-token": {
+            "gitlab.com": "glpat-yyyyyyyy"
+        },
+        "gitlab-oauth": {
+            "gitlab.example.com": "oauth-zzzzzzzz"
+        }
+    }"#;
+    let out = crate::update::parse_composer_auth_env(raw).unwrap();
+    assert_eq!(out.len(), 3);
+    match out.get("github.com").unwrap() {
+        crate::metadata::AuthCredentials::GitHubToken { token } => {
+            assert_eq!(token, "ghp_xxxxxxxxxxxx");
+        }
+        other => panic!("expected GitHubToken, got {other:?}"),
+    }
+    match out.get("gitlab.com").unwrap() {
+        crate::metadata::AuthCredentials::GitLabToken { token } => {
+            assert_eq!(token, "glpat-yyyyyyyy");
+        }
+        other => panic!("expected GitLabToken, got {other:?}"),
+    }
+    match out.get("gitlab.example.com").unwrap() {
+        crate::metadata::AuthCredentials::Bearer { token } => {
+            assert_eq!(token, "oauth-zzzzzzzz");
+        }
+        other => panic!("expected Bearer (from gitlab-oauth), got {other:?}"),
+    }
+}
+
+#[test]
+fn github_oauth_header_uses_token_prefix() {
+    let creds = crate::metadata::AuthCredentials::GitHubToken {
+        token: "ghp_test".to_string(),
+    };
+    assert_eq!(creds.header_value(), "token ghp_test");
+    assert_eq!(creds.header_name(), "authorization");
+}
+
+#[test]
+fn gitlab_token_uses_private_token_header() {
+    let creds = crate::metadata::AuthCredentials::GitLabToken {
+        token: "glpat-test".to_string(),
+    };
+    assert_eq!(creds.header_value(), "glpat-test");
+    assert_eq!(creds.header_name(), "private-token");
+}
+
+#[test]
+fn gitlab_token_object_format_extracts_token() {
+    let raw = r#"{
+        "gitlab-token": {
+            "gitlab.com": {"username": "gitlab-ci-token", "token": "ci-job-token-xxx"}
+        }
+    }"#;
+    let out = crate::update::parse_composer_auth_env(raw).unwrap();
+    match out.get("gitlab.com").unwrap() {
+        crate::metadata::AuthCredentials::GitLabToken { token } => {
+            assert_eq!(token, "ci-job-token-xxx");
+        }
+        other => panic!("expected GitLabToken, got {other:?}"),
+    }
+}
+
+#[test]
 fn global_auth_json_candidates_honors_composer_home_first() {
     let env = |k: &str| match k {
         "COMPOSER_HOME" => Some("/opt/composer".into()),

@@ -179,6 +179,7 @@ impl BlobRef {
             strip_prefix: &self.strip_prefix,
             archive: self.archive,
             auth_header: None,
+            auth_header_name: None,
         }
     }
 }

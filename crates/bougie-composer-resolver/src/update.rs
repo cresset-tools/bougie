@@ -1756,6 +1756,47 @@ fn parse_auth_object(
             out.insert(host.clone(), AuthCredentials::Bearer { token: token.to_owned() });
         }
     }
+    if let Some(github) = obj.get("github-oauth").and_then(Value::as_object) {
+        for (host, val) in github {
+            let token = val.as_str().ok_or_else(|| {
+                BuildError::Internal(format!(
+                    "{source}: github-oauth.{host} must be a string token",
+                ))
+            })?;
+            out.insert(host.clone(), AuthCredentials::GitHubToken { token: token.to_owned() });
+        }
+    }
+    if let Some(gitlab) = obj.get("gitlab-oauth").and_then(Value::as_object) {
+        for (host, val) in gitlab {
+            let token = val.as_str().ok_or_else(|| {
+                BuildError::Internal(format!(
+                    "{source}: gitlab-oauth.{host} must be a string token",
+                ))
+            })?;
+            out.insert(host.clone(), AuthCredentials::Bearer { token: token.to_owned() });
+        }
+    }
+    if let Some(gitlab) = obj.get("gitlab-token").and_then(Value::as_object) {
+        for (host, val) in gitlab {
+            let token = if let Some(s) = val.as_str() {
+                s.to_owned()
+            } else if let Some(obj) = val.as_object() {
+                obj.get("token")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        BuildError::Internal(format!(
+                            "{source}: gitlab-token.{host}.token is missing or not a string",
+                        ))
+                    })?
+                    .to_owned()
+            } else {
+                return Err(BuildError::Internal(format!(
+                    "{source}: gitlab-token.{host} must be a string or object with `token`",
+                )));
+            };
+            out.insert(host.clone(), AuthCredentials::GitLabToken { token });
+        }
+    }
     if let Some(http_basic) = obj.get("http-basic").and_then(Value::as_object) {
         for (host, val) in http_basic {
             let entry = val.as_object().ok_or_else(|| {
@@ -1779,9 +1820,6 @@ fn parse_auth_object(
                         "{source}: http-basic.{host}.password is missing or not a string",
                     ))
                 })?;
-            // http-basic wins over bearer for the same host
-            // (mirrors Composer's precedence — http-basic is the
-            // older / more explicit auth shape).
             out.insert(
                 host.clone(),
                 AuthCredentials::Basic {

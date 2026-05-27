@@ -79,6 +79,7 @@ pub struct DistRequest<'a> {
     /// sending the same per-host creds to dist URLs as it sends to
     /// the corresponding metadata URLs.
     pub auth_header: Option<&'a str>,
+    pub auth_header_name: Option<&'a str>,
 }
 
 /// Per-dist outcome reported back to the caller so the install
@@ -167,6 +168,7 @@ fn download_to_cache(
         strip_prefix: "",
         archive: dist.archive,
         auth_header: dist.auth_header,
+        auth_header_name: dist.auth_header_name,
     };
     bougie_fetch::fetch_file(client, &spec, bar).wrap_err_with(|| {
         format!("downloading dist for {}", dist.package_name)

@@ -173,8 +173,9 @@ Each of the 15 fixture suites works as follows:
 | `config.http-basic` in `composer.json` | `S` | Integration test: embedded auth, assert header | |
 | `config.bearer` in `composer.json` | `S` | Integration test: embedded bearer, assert header | |
 | Precedence: `COMPOSER_AUTH` > project `auth.json` > `composer.json` config > global `auth.json` | `S` | Integration test: multiple sources, assert highest wins | Recently fixed in last commit |
-| GitHub OAuth token (`github-oauth`) | `N` | Not yet implemented | Maps to bearer; straightforward |
-| GitLab token (`gitlab-token`) | `N` | Not yet implemented | Maps to bearer or `Private-Token` header |
+| GitHub OAuth token (`github-oauth`) | `S` | Parsed from auth.json / COMPOSER_AUTH; sends `Authorization: token <tok>` | Matches Composer's `x-oauth-basic` sentinel behavior |
+| GitLab token (`gitlab-token`) | `S` | Parsed from auth.json / COMPOSER_AUTH; sends `PRIVATE-TOKEN: <tok>` | String and `{username, token}` object formats |
+| GitLab OAuth (`gitlab-oauth`) | `S` | Parsed from auth.json / COMPOSER_AUTH; sends `Authorization: Bearer <tok>` | |
 | Bitbucket OAuth (`bitbucket-oauth`) | `N` | Not yet implemented | |
 | Interactive auth prompts | `–` | bougie never prompts for credentials at resolve time | Use `bougie auth add` or auth.json |
 | Credential redaction in error output | `S` | Unit test: assert `<redacted>` in debug strings | |
