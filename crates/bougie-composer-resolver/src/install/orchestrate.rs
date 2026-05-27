@@ -118,6 +118,8 @@ pub fn install_from_lock(
     //     We don't extract their zip because bougie won't run the
     //     plugin's install-time hook and the extracted tree would be
     //     inert (autoload entries pointing at code nothing loads).
+    //   - metapackages: no `dist` and no code by definition; they
+    //     exist purely as require-graph nodes.
     let candidates: Vec<&LockPackage> = if opts.no_dev {
         lock.packages.iter().collect()
     } else {
@@ -130,7 +132,7 @@ pub fn install_from_lock(
     let install_set: Vec<&LockPackage> = candidates
         .iter()
         .copied()
-        .filter(|p| !p.is_path_dist() && !p.is_composer_plugin())
+        .filter(|p| !p.is_path_dist() && !p.is_composer_plugin() && !p.is_metapackage())
         .collect();
 
     // Each DistRequest borrows from the LockPackage; build the
@@ -364,6 +366,11 @@ fn preflight(composer_json_bytes: &[u8], lock: &Lock, no_dev: bool) -> Result<Ve
         // during install (see `install_from_lock`) but a project
         // that has *only* path dists works fine; no rejection here.
         if p.is_path_dist() {
+            continue;
+        }
+        if p.is_metapackage() {
+            // Metapackages legitimately have no `dist` block — they
+            // are pure require-graph aggregators. Nothing to install.
             continue;
         }
         if p.is_composer_plugin() {

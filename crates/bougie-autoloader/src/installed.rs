@@ -257,7 +257,10 @@ struct PkgEntry {
     version: String,
     reference: Option<String>,
     r#type: String,
-    install_path: String,
+    /// `None` for metapackages — Composer writes `install_path => NULL`
+    /// for them in `InstalledVersions.php` because they have no
+    /// installation tree on disk.
+    install_path: Option<String>,
     dev_requirement: bool,
 }
 
@@ -307,7 +310,7 @@ fn pkg_entry_from_lock(
         .and_then(|v| v.as_str())
         .unwrap_or("library")
         .to_string();
-    let install_path = format!("../{name}");
+    let install_path = if ty == "metapackage" { None } else { Some(format!("../{name}")) };
     let dev_requirement = dev_names.contains(&name);
     Ok(PkgEntry {
         name,
@@ -383,7 +386,7 @@ fn format_installed_php(root: &RootEntry, packages: &[PkgEntry], dev_mode: bool)
         version: root.version.clone(),
         reference: root.reference.clone(),
         r#type: root.r#type.clone(),
-        install_path: root.install_path.clone(),
+        install_path: Some(root.install_path.clone()),
         dev_requirement: false,
     });
     all.sort_by(|a, b| a.name.cmp(&b.name));
@@ -399,12 +402,11 @@ fn format_installed_php(root: &RootEntry, packages: &[PkgEntry], dev_mode: bool)
             &php_maybe_null(pkg.reference.as_deref()),
         );
         write_kv(&mut out, 12, "type", &php_str(&pkg.r#type));
-        write_kv(
-            &mut out,
-            12,
-            "install_path",
-            &format!("__DIR__ . {}", php_str(&format!("/{}", pkg.install_path))),
-        );
+        let install_path_value = match &pkg.install_path {
+            Some(p) => format!("__DIR__ . {}", php_str(&format!("/{p}"))),
+            None => "NULL".to_string(),
+        };
+        write_kv(&mut out, 12, "install_path", &install_path_value);
         write_kv(&mut out, 12, "aliases", "array()");
         write_kv(
             &mut out,
