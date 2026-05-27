@@ -40,12 +40,13 @@ jobs:
           token: ${{ steps.app-token.outputs.token }}
         env:
           GIT_LFS_SKIP_SMUDGE: 1
+      - name: Disable Git LFS filter globally
+        run: git lfs uninstall
       - uses: MarcoIeni/release-plz-action@v0.5
         with:
           command: release-pr
         env:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
-          GIT_LFS_SKIP_SMUDGE: 1
 
   # On every push to main: if Cargo.toml's version is ahead of the
   # latest tag (i.e. a release PR has just landed, or someone bumped
@@ -74,9 +75,10 @@ jobs:
           token: ${{ steps.app-token.outputs.token }}
         env:
           GIT_LFS_SKIP_SMUDGE: 1
+      - name: Disable Git LFS filter globally
+        run: git lfs uninstall
       - uses: MarcoIeni/release-plz-action@v0.5
         with:
           command: release
         env:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
-          GIT_LFS_SKIP_SMUDGE: 1
