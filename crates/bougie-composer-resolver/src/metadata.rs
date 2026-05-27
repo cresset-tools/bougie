@@ -84,12 +84,15 @@ pub enum AuthCredentials {
     Basic { username: String, password: String },
     /// Bearer token — Composer's `bearer` shape.
     Bearer { token: String },
+    /// GitHub OAuth — sends `Authorization: token <tok>`.
+    /// Composer only sends this to `api.github.com` URLs; for
+    /// other `github.com` URLs the token is omitted.
+    GitHubToken { token: String },
+    /// GitLab private/CI token — sends `PRIVATE-TOKEN: <tok>`.
+    GitLabToken { token: String },
 }
 
 impl std::fmt::Debug for AuthCredentials {
-    /// Redacted Debug. Crucial for not leaking creds into eyre
-    /// chains or telemetry. The structural distinction (Basic vs
-    /// Bearer) is fine to print; the actual secret material isn't.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Basic { username, .. } => {
@@ -101,14 +104,18 @@ impl std::fmt::Debug for AuthCredentials {
             Self::Bearer { .. } => f.debug_struct("Bearer")
                 .field("token", &"<redacted>")
                 .finish(),
+            Self::GitHubToken { .. } => f.debug_struct("GitHubToken")
+                .field("token", &"<redacted>")
+                .finish(),
+            Self::GitLabToken { .. } => f.debug_struct("GitLabToken")
+                .field("token", &"<redacted>")
+                .finish(),
         }
     }
 }
 
 impl AuthCredentials {
     /// Render the credentials as an `Authorization` header value.
-    /// For Basic, this is `Basic <base64(user:pass)>`; for Bearer,
-    /// `Bearer <token>`.
     pub fn header_value(&self) -> String {
         use base64::Engine;
         match self {
@@ -118,6 +125,16 @@ impl AuthCredentials {
                 format!("Basic {encoded}")
             }
             Self::Bearer { token } => format!("Bearer {token}"),
+            Self::GitHubToken { token } => format!("token {token}"),
+            Self::GitLabToken { token } => token.clone(),
+        }
+    }
+
+    /// The HTTP header name for this credential type.
+    pub fn header_name(&self) -> &'static str {
+        match self {
+            Self::Basic { .. } | Self::Bearer { .. } | Self::GitHubToken { .. } => "authorization",
+            Self::GitLabToken { .. } => "private-token",
         }
     }
 }
@@ -275,7 +292,7 @@ pub fn probe_protocol(
     let url = format!("{}/packages.json", repo.url);
     let mut req = client.get(&url);
     if let Some(auth) = &repo.auth {
-        req = req.header(reqwest::header::AUTHORIZATION, auth.header_value());
+        req = req.header(auth.header_name(), auth.header_value());
     }
     let start = std::time::Instant::now();
     let resp = req.send().map_err(|e| BougieError::Network {
@@ -393,7 +410,7 @@ pub fn fetch_package_metadata(
     );
     let mut req = client.get(&url);
     if let Some(auth) = &repo.auth {
-        req = req.header(reqwest::header::AUTHORIZATION, auth.header_value());
+        req = req.header(auth.header_name(), auth.header_value());
     }
     if let Ok(etag) = fs::read_to_string(&etag_path) {
         let etag = etag.trim();
@@ -487,7 +504,7 @@ pub fn fetch_package_metadata_optional(
     );
     let mut req = client.get(&url);
     if let Some(auth) = &repo.auth {
-        req = req.header(reqwest::header::AUTHORIZATION, auth.header_value());
+        req = req.header(auth.header_name(), auth.header_value());
     }
     if let Ok(etag) = fs::read_to_string(&etag_path) {
         let etag = etag.trim();
@@ -710,7 +727,7 @@ fn fetch_v1_include_cached(
     let url = format!("{}/{}", repo.url, url_path.trim_start_matches('/'));
     let mut req = client.get(&url);
     if let Some(auth) = &repo.auth {
-        req = req.header(reqwest::header::AUTHORIZATION, auth.header_value());
+        req = req.header(auth.header_name(), auth.header_value());
     }
     let resp = req.send().map_err(|e| BougieError::Network {
         operation: format!("GET {url}"),
@@ -764,7 +781,7 @@ pub fn fetch_package_metadata_v1_optional(
         let url = format!("{}/{}", repo.url, url_path.trim_start_matches('/'));
         let mut req = client.get(&url);
         if let Some(auth) = &repo.auth {
-            req = req.header(reqwest::header::AUTHORIZATION, auth.header_value());
+            req = req.header(auth.header_name(), auth.header_value());
         }
         let resp = req.send().map_err(|e| BougieError::Network {
             operation: format!("GET {url}"),
@@ -893,7 +910,7 @@ pub async fn fetch_package_metadata_optional_async(
     );
     let mut req = client.get(&url);
     if let Some(auth) = &repo.auth {
-        req = req.header(reqwest::header::AUTHORIZATION, auth.header_value());
+        req = req.header(auth.header_name(), auth.header_value());
     }
     if let Ok(etag) = fs::read_to_string(&etag_path) {
         let etag = etag.trim();
@@ -1021,7 +1038,7 @@ async fn fetch_v1_include_cached_async(
     let url = format!("{}/{}", repo.url, url_path.trim_start_matches('/'));
     let mut req = client.get(&url);
     if let Some(auth) = &repo.auth {
-        req = req.header(reqwest::header::AUTHORIZATION, auth.header_value());
+        req = req.header(auth.header_name(), auth.header_value());
     }
     let resp = req.send().await.map_err(|e| BougieError::Network {
         operation: format!("GET {url}"),
@@ -1066,7 +1083,7 @@ pub async fn fetch_package_metadata_v1_optional_async(
         let url = format!("{}/{}", repo.url, url_path.trim_start_matches('/'));
         let mut req = client.get(&url);
         if let Some(auth) = &repo.auth {
-            req = req.header(reqwest::header::AUTHORIZATION, auth.header_value());
+            req = req.header(auth.header_name(), auth.header_value());
         }
         let resp = req.send().await.map_err(|e| BougieError::Network {
             operation: format!("GET {url}"),

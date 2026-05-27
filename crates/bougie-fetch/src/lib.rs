@@ -247,6 +247,10 @@ pub struct BlobSpec<'a> {
     /// and opaque so this crate stays uncoupled from the higher-level
     /// `AuthCredentials` shape that lives in `bougie-composer-resolver`.
     pub auth_header: Option<&'a str>,
+    /// HTTP header name for the auth credential. Defaults to
+    /// `Authorization` when `None`; set to `PRIVATE-TOKEN` for
+    /// GitLab private-token auth.
+    pub auth_header_name: Option<&'a str>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -335,7 +339,8 @@ fn fetch_to_partial(
 
     let mut req = client.get(spec.url);
     if let Some(value) = spec.auth_header {
-        req = req.header(reqwest::header::AUTHORIZATION, value);
+        let name = spec.auth_header_name.unwrap_or("authorization");
+        req = req.header(name, value);
     }
     let mut resp = req.send().map_err(|e| BougieError::Network {
         operation: format!("fetching blob {}", spec.url),

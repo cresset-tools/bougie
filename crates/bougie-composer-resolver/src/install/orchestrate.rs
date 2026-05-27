@@ -144,25 +144,20 @@ pub fn install_from_lock(
     // matches the auth map). String storage lives in a sibling vec so
     // `DistRequest` can carry a borrowed `&str` — no per-request
     // clones, no lifetime gymnastics inside `par_iter`.
-    let auth_headers: Vec<Option<String>> = install_set
+    let auth_entries: Vec<Option<(String, &'static str)>> = install_set
         .iter()
         .map(|p| {
             let dist = p.dist.as_ref().unwrap();
             host_from_url(&dist.url)
                 .and_then(|host| auth.get(host))
-                .map(super::super::metadata::AuthCredentials::header_value)
+                .map(|creds| (creds.header_value(), creds.header_name()))
         })
         .collect();
     let dists: Vec<DistRequest<'_>> = install_set
         .iter()
         .zip(vendor_dirs.iter())
-        .zip(auth_headers.iter())
-        .map(|((p, dest), auth_header)| {
-            // unwrap: preflight guarantees every survivor has `dist`
-            // with kind=="zip". `shasum` may be empty/absent (normal
-            // for GitHub zipballs) — see DistRequest::sha1 for the
-            // skip-verify contract. `reference` is the dist's git ref
-            // and is populated for every VCS-driver dist.
+        .zip(auth_entries.iter())
+        .map(|((p, dest), auth_entry)| {
             let dist = p.dist.as_ref().unwrap();
             DistRequest {
                 package_name: &p.name,
@@ -172,7 +167,8 @@ pub fn install_from_lock(
                 archive: ArchiveKind::Zip,
                 strip_prefix: None,
                 vendor_dest: dest,
-                auth_header: auth_header.as_deref(),
+                auth_header: auth_entry.as_ref().map(|(v, _)| v.as_str()),
+                auth_header_name: auth_entry.as_ref().map(|(_, n)| *n),
             }
         })
         .collect();
