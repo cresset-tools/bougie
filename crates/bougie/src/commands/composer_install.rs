@@ -30,7 +30,9 @@ pub struct InstallResult {
     pub project_root: PathBuf,
     pub packages_installed: u32,
     pub packages_already_present: u32,
+    pub packages_up_to_date: u32,
     pub packages_skipped_plugin: u32,
+    pub packages_removed: u32,
     pub bins_installed: u32,
     pub no_dev: bool,
     pub warnings: Vec<String>,
@@ -43,7 +45,9 @@ impl From<InstallSummary> for InstallResult {
             project_root: s.project_root,
             packages_installed: s.packages_installed,
             packages_already_present: s.packages_already_present,
+            packages_up_to_date: s.packages_up_to_date,
             packages_skipped_plugin: s.packages_skipped_plugin,
+            packages_removed: s.packages_removed,
             bins_installed: s.bins_installed,
             no_dev: s.no_dev,
             warnings: s.warnings,
@@ -59,10 +63,40 @@ impl Render for InstallResult {
         for warning in &self.warnings {
             eprintln!("warning: {warning}");
         }
-        let total = self.packages_installed + self.packages_already_present;
+        let total = self.packages_installed
+            + self.packages_already_present
+            + self.packages_up_to_date;
         let mode = if self.no_dev { " (no-dev)" } else { "" };
+
+        // When everything is up-to-date, emit a short "nothing to install" line.
+        if self.packages_installed == 0
+            && self.packages_already_present == 0
+            && self.packages_up_to_date > 0
+        {
+            let removed = if self.packages_removed > 0 {
+                format!(", {} removed", self.packages_removed)
+            } else {
+                String::new()
+            };
+            return writeln!(
+                w,
+                "{total} packages up to date{removed}{mode} → {}",
+                self.project_root.display(),
+            );
+        }
+
+        let up_to_date = if self.packages_up_to_date > 0 {
+            format!(", {} up to date", self.packages_up_to_date)
+        } else {
+            String::new()
+        };
         let skipped = if self.packages_skipped_plugin > 0 {
             format!(", {} plugin(s) skipped", self.packages_skipped_plugin)
+        } else {
+            String::new()
+        };
+        let removed = if self.packages_removed > 0 {
+            format!(", {} removed", self.packages_removed)
         } else {
             String::new()
         };
@@ -73,7 +107,7 @@ impl Render for InstallResult {
         };
         writeln!(
             w,
-            "installed {total} packages ({} fresh, {} cached{skipped}{bins}){mode} → {}",
+            "installed {total} packages ({} fresh, {} cached{up_to_date}{skipped}{removed}{bins}){mode} → {}",
             self.packages_installed,
             self.packages_already_present,
             self.project_root.display(),

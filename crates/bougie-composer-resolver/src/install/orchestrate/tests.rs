@@ -533,3 +533,221 @@ fn install_accepts_empty_shasum_via_github_zipball_style_dist() {
         "package must be extracted into vendor/ via reference-keyed cache",
     );
 }
+
+#[test]
+fn second_install_skips_up_to_date_packages() {
+    use std::io::Write as _;
+    use wiremock::matchers::{method, path as wm_path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn rt() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+    }
+
+    fn build_zip(top: &str) -> Vec<u8> {
+        let mut buf: Vec<u8> = Vec::new();
+        let cursor = std::io::Cursor::new(&mut buf);
+        let mut zw = zip::ZipWriter::new(cursor);
+        let opts = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        zw.start_file(format!("{top}/composer.json"), opts).unwrap();
+        zw.write_all(br#"{"name":"acme/bar"}"#).unwrap();
+        zw.finish().unwrap();
+        buf
+    }
+
+    let tmp = TempDir::new().unwrap();
+    let paths = paths_in(tmp.path());
+    let proj = tmp.path().join("p");
+    std::fs::create_dir_all(&proj).unwrap();
+
+    let reference = "aabbccddaabbccddaabbccddaabbccddaabbccdd";
+    let zip_body = build_zip(&format!("acme-bar-{}", &reference[..7]));
+
+    let rt = rt();
+    let (uri, _server) = rt.block_on(async {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(wm_path(format!("/repos/acme/bar/zipball/{reference}")))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(zip_body))
+            .mount(&server)
+            .await;
+        (server.uri(), server)
+    });
+
+    let composer_json = r#"{
+        "name": "acme/consumer",
+        "require": {"acme/bar": "2.0.0"}
+    }"#;
+    let content_hash = hash_for(composer_json);
+    let lock = format!(
+        r#"{{
+            "content-hash": "{content_hash}",
+            "packages": [
+                {{
+                    "name": "acme/bar",
+                    "version": "2.0.0",
+                    "type": "library",
+                    "dist": {{
+                        "type": "zip",
+                        "url": "{uri}/repos/acme/bar/zipball/{reference}",
+                        "reference": "{reference}",
+                        "shasum": ""
+                    }}
+                }}
+            ],
+            "packages-dev": []
+        }}"#
+    );
+    write_project(&proj, composer_json, &lock);
+
+    // First install — downloads and extracts.
+    let s1 = install_from_lock(&paths, &proj, InstallOptions::default())
+        .expect("first install must succeed");
+    assert_eq!(s1.packages_installed, 1);
+    assert_eq!(s1.packages_up_to_date, 0);
+    assert!(proj.join("vendor/acme/bar/composer.json").is_file());
+    assert!(proj.join("vendor/composer/installed.json").is_file());
+
+    // Second install — same lock, same vendor. Should be fully
+    // up-to-date with no downloads or extractions.
+    let s2 = install_from_lock(&paths, &proj, InstallOptions::default())
+        .expect("second install must succeed");
+    assert_eq!(s2.packages_installed, 0, "no fresh downloads");
+    assert_eq!(s2.packages_already_present, 0, "no cache-only extractions");
+    assert_eq!(s2.packages_up_to_date, 1, "package is up to date");
+    assert!(
+        proj.join("vendor/acme/bar/composer.json").is_file(),
+        "vendor dir must still be intact",
+    );
+}
+
+#[test]
+fn diff_removes_stale_vendor_dirs() {
+    use super::super::orchestrate::{diff_install_set, InstalledState};
+    use bougie_composer::lockfile::LockPackage;
+
+    let tmp = TempDir::new().unwrap();
+    let proj = tmp.path().join("p");
+    std::fs::create_dir_all(&proj).unwrap();
+
+    // Simulate a previous install that had acme/foo + acme/stale.
+    let stale_dir = proj.join("vendor/acme/stale");
+    std::fs::create_dir_all(&stale_dir).unwrap();
+
+    let mut old_packages = HashMap::new();
+    old_packages.insert("acme/foo".into(), "ref1".into());
+    old_packages.insert("acme/stale".into(), "ref2".into());
+    let state = Some(InstalledState {
+        packages: old_packages,
+    });
+
+    // Current lock only has acme/foo.
+    let foo_lock: LockPackage = serde_json::from_value(serde_json::json!({
+        "name": "acme/foo",
+        "version": "1.0.0",
+        "dist": {
+            "type": "zip",
+            "url": "https://example/foo.zip",
+            "reference": "ref1",
+            "shasum": "0000000000000000000000000000000000000000"
+        }
+    }))
+    .unwrap();
+
+    // acme/foo's vendor dir exists → up-to-date.
+    let foo_vendor = proj.join("vendor/acme/foo");
+    std::fs::create_dir_all(&foo_vendor).unwrap();
+
+    let installable = vec![&foo_lock];
+    let (need_install, up_to_date, removed) =
+        diff_install_set(&installable, &state, &proj);
+
+    assert!(need_install.is_empty(), "acme/foo is up-to-date");
+    assert_eq!(up_to_date, 1);
+    assert_eq!(removed, 1, "acme/stale must be removed");
+    assert!(!stale_dir.exists(), "stale vendor dir must be deleted");
+}
+
+#[test]
+fn missing_vendor_dir_forces_reinstall() {
+    use super::super::orchestrate::{diff_install_set, InstalledState};
+    use bougie_composer::lockfile::LockPackage;
+
+    let tmp = TempDir::new().unwrap();
+    let proj = tmp.path().join("p");
+    std::fs::create_dir_all(&proj).unwrap();
+
+    let mut old_packages = HashMap::new();
+    old_packages.insert("acme/foo".into(), "ref1".into());
+    let state = Some(InstalledState {
+        packages: old_packages,
+    });
+
+    let foo_lock: LockPackage = serde_json::from_value(serde_json::json!({
+        "name": "acme/foo",
+        "version": "1.0.0",
+        "dist": {
+            "type": "zip",
+            "url": "https://example/foo.zip",
+            "reference": "ref1",
+            "shasum": "0000000000000000000000000000000000000000"
+        }
+    }))
+    .unwrap();
+
+    // Do NOT create the vendor dir — simulates manual deletion.
+    let installable = vec![&foo_lock];
+    let (need_install, up_to_date, removed) =
+        diff_install_set(&installable, &state, &proj);
+
+    assert_eq!(need_install.len(), 1, "must re-install when vendor dir is missing");
+    assert_eq!(need_install[0].name, "acme/foo");
+    assert_eq!(up_to_date, 0);
+    assert_eq!(removed, 0);
+}
+
+#[test]
+fn changed_reference_forces_reinstall() {
+    use super::super::orchestrate::{diff_install_set, InstalledState};
+    use bougie_composer::lockfile::LockPackage;
+
+    let tmp = TempDir::new().unwrap();
+    let proj = tmp.path().join("p");
+    std::fs::create_dir_all(&proj).unwrap();
+
+    // Previous install had ref1.
+    let mut old_packages = HashMap::new();
+    old_packages.insert("acme/foo".into(), "old_ref".into());
+    let state = Some(InstalledState {
+        packages: old_packages,
+    });
+
+    // Lock now has a different reference (version bumped).
+    let foo_lock: LockPackage = serde_json::from_value(serde_json::json!({
+        "name": "acme/foo",
+        "version": "2.0.0",
+        "dist": {
+            "type": "zip",
+            "url": "https://example/foo.zip",
+            "reference": "new_ref",
+            "shasum": "0000000000000000000000000000000000000000"
+        }
+    }))
+    .unwrap();
+
+    // Vendor dir exists from the old version.
+    std::fs::create_dir_all(proj.join("vendor/acme/foo")).unwrap();
+
+    let installable = vec![&foo_lock];
+    let (need_install, up_to_date, removed) =
+        diff_install_set(&installable, &state, &proj);
+
+    assert_eq!(need_install.len(), 1, "must re-install when reference changed");
+    assert_eq!(need_install[0].name, "acme/foo");
+    assert_eq!(up_to_date, 0);
+    assert_eq!(removed, 0);
+}
