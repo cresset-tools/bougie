@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1](https://github.com/cresset-tools/bougie/compare/bougie-v0.6.0...bougie-v0.6.1) - 2026-05-28
+
+### Added
+
+- *(composer-install)* skip up-to-date packages by diffing against installed.json ([#194](https://github.com/cresset-tools/bougie/pull/194))
+- *(cli)* implement bougie composer validate ([#189](https://github.com/cresset-tools/bougie/pull/189))
+- *(composer-install)* platform requirement checks + --ignore-platform-reqs ([#187](https://github.com/cresset-tools/bougie/pull/187))
+- *(composer-install)* generate vendor/bin proxy scripts ([#186](https://github.com/cresset-tools/bougie/pull/186))
+
+### Fixed
+
+- *(composer-resolver)* resolve all cross-check divergences ([#184](https://github.com/cresset-tools/bougie/pull/184))
+
+### Other
+
+- *(composer-resolver)* add Layer 4 cross-check harness + parity matrix ([#183](https://github.com/cresset-tools/bougie/pull/183))
+
 ## [0.6.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.5.1...bougie-v0.6.0) - 2026-05-26
 
 ### Added
