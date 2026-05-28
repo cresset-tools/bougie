@@ -3,6 +3,7 @@
 //! modules don't each re-derive the (`paths` × `PhpChoice` × index)
 //! plumbing.
 
+use bougie_errors::BougieError;
 use bougie_installer::baseline::{BASELINE_EXTENSIONS, BUILTIN_EXTENSIONS};
 use bougie_installer::conf_d::write_ext_fragment_into;
 use bougie_installer::install::{DEFAULT_INDEX_URL, install_extension, install_php};
@@ -42,9 +43,20 @@ pub fn php_installer() -> Box<PhpInstaller> {
 
 /// Build the extension classifier. Cheap baseline check first (no
 /// I/O), then a per-PHP-minor index lookup for non-baseline names.
-/// Backend errors that look like "section not found" turn into
-/// `Ok(false)` (so the classifier's call site can suggest the slash
-/// form); other errors propagate.
+///
+/// Distinguishes "name not in index" from "name in index but no
+/// compatible artifact" by inspecting the structured error's detail
+/// string: only the former (the bougie-index backend's "no
+/// `extension/X` section under target" path, or the windows backend's
+/// "no compile-time `WINDOWS_PECL_VERSIONS` entry") truly means
+/// not-an-extension. The latter — `intl` is published but not for
+/// the tool's PHP — should classify as `Extension` so the user gets
+/// the precise "no compatible artifact" error from the install step,
+/// not a misleading "use vendor/name" hint.
+///
+/// Network / signature / unknown-target errors come back as different
+/// `BougieError` variants and propagate, so a flaky connection can't
+/// silently reclassify a real extension as not-an-extension.
 pub fn extension_classifier() -> Box<ExtensionClassifier> {
     Box::new(|name: &str, php: &PhpChoice| -> Result<bool> {
         if BASELINE_EXTENSIONS.contains(&name) || BUILTIN_EXTENSIONS.contains(&name) {
@@ -59,12 +71,35 @@ pub fn extension_classifier() -> Box<ExtensionClassifier> {
         match backend.resolve_extension(name, php_minor, flavor, None, ResolveOptions::default())
         {
             Ok(_) => Ok(true),
-            Err(e) if looks_like_not_found(&e) => Ok(false),
-            Err(e) => Err(e).wrap_err_with(|| {
-                format!("checking whether `{name}` is a known PHP extension")
-            }),
+            Err(e) => match e.downcast_ref::<BougieError>() {
+                Some(BougieError::Resolution { kind, detail }) if kind == "extension"
+                    && is_name_unknown_detail(detail) =>
+                {
+                    Ok(false)
+                }
+                _ => Err(e).wrap_err_with(|| {
+                    format!("checking whether `{name}` is a known PHP extension")
+                }),
+            },
         }
     })
+}
+
+/// True when a `Resolution { kind: "extension", detail }` is the
+/// backend saying "this name isn't in my index" as opposed to "name
+/// is in my index but the requested artifact doesn't exist."
+///
+/// Detail wording matches the two emit sites:
+/// - bougie-index backend, `bougie_index_backend.rs`:
+///   "the index at HOST has no `extension/X` section under target T"
+/// - windows.php.net backend, `windows_php_net.rs`:
+///   "no compile-time `WINDOWS_PECL_VERSIONS` entry for ext-X"
+///
+/// The resolver's "no candidate satisfies LABEL" (artifact-selection
+/// failure for a known section) is intentionally NOT matched here.
+fn is_name_unknown_detail(detail: &str) -> bool {
+    detail.contains(" section under target ")
+        || detail.contains("`WINDOWS_PECL_VERSIONS` entry")
 }
 
 /// Build the extension installer. Calls `install_extension` for the
@@ -113,18 +148,5 @@ fn parse_flavor(s: &str) -> Option<Flavor> {
         "zts-debug" => Flavor::ZtsDebug,
         _ => return None,
     })
-}
-
-/// Conservative heuristic for "the index doesn't know about this
-/// extension." Backend errors that contain typical not-found phrases
-/// classify as `Ok(false)` upstream; everything else propagates so
-/// transient network or auth issues don't silently misclassify.
-fn looks_like_not_found(e: &eyre::Report) -> bool {
-    let msg = format!("{e:#}");
-    let lower = msg.to_lowercase();
-    lower.contains("no extension")
-        || lower.contains("not found")
-        || lower.contains("missing section")
-        || lower.contains("404")
 }
 
