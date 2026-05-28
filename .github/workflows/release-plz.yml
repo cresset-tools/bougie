@@ -35,7 +35,7 @@ jobs:
           app-id: ${{ secrets.BOT_APP_ID }}
           private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
       - name: Install Git LFS system-wide
-        run: git lfs install --system --skip-smudge
+        run: sudo git lfs install --system --skip-smudge
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
@@ -68,7 +68,7 @@ jobs:
           app-id: ${{ secrets.BOT_APP_ID }}
           private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
       - name: Install Git LFS system-wide
-        run: git lfs install --system --skip-smudge
+        run: sudo git lfs install --system --skip-smudge
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
