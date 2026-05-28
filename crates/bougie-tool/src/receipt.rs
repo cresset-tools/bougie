@@ -20,15 +20,31 @@ pub struct ToolReceipt {
     pub php_version: String,
     pub php_flavor: String,
     pub composer_version: String,
+    /// Composer packages added via `--with` / `inject`. Vendor/name
+    /// form; constraint suffix preserved (e.g.
+    /// `phpstan/phpstan-strict-rules@^1.5`).
     #[serde(default)]
     pub with: Vec<String>,
 
     /// Denormalised hot-path field. `tool-exec` reads this and execs
     /// directly — no env lookup, no install-tree walk. Refreshed by
-    /// `bougie php upgrade` (Phase 2 wiring).
+    /// `bougie php upgrade`.
     pub php_resolved_path: PathBuf,
 
     pub entrypoints: Vec<ToolEntrypoint>,
+
+    /// PHP extensions added via `--with` / `inject`. Forwards-compat
+    /// with Phase 1 receipts (default = empty).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extensions: Vec<ToolExtension>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolExtension {
+    pub name: String,
+    /// Absolute path to the `$TOOL_DIR/conf.d/20-<name>.ini` fragment
+    /// that loads the extension. Removed on uninject / uninstall.
+    pub ini_path: PathBuf,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -146,6 +162,7 @@ mod tests {
                 install_path: PathBuf::from("/home/u/.local/bin/phpstan"),
                 from: "phpstan/phpstan".into(),
             }],
+            extensions: vec![],
         }
     }
 

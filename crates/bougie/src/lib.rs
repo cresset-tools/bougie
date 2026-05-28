@@ -319,8 +319,8 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
         ),
         #[cfg(not(unix))]
         Command::Make { .. } => unsupported_on_windows("bougie make"),
-        Command::Tool(ToolCommand::Install { package, php, force }) => {
-            commands::tool_install::run(format, &package, php.as_deref(), force)
+        Command::Tool(ToolCommand::Install { package, php, with, force }) => {
+            commands::tool_install::run(format, &package, php.as_deref(), &with, force)
         }
         Command::Tool(ToolCommand::Uninstall { package }) => {
             commands::tool_uninstall::run(format, &package)

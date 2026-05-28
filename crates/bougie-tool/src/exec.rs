@@ -190,6 +190,7 @@ mod tests {
                 install_path: tool_dir.join("bin").join("phpstan"),
                 from: "phpstan/phpstan".into(),
             }],
+            extensions: vec![],
         };
         crate::receipt::write(&tool_dir.join("receipt.toml"), &r).unwrap();
         r

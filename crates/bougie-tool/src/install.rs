@@ -21,15 +21,17 @@
 //!    on the latter is a hard error unless `force` is true.
 //! 7. Write the receipt.
 
-use crate::receipt::{ToolEntrypoint, ToolReceipt};
+use crate::classify::{Classified, ExtensionClassifier, classify};
+use crate::receipt::{ToolEntrypoint, ToolExtension, ToolReceipt};
 use crate::request::ToolRequest;
+use crate::resolve::PhpChoice;
 use crate::{resolve, wrapper};
 use bougie_composer_resolver::{InstallOptions, install_from_lock};
 use bougie_fs::lock::ExclusiveGuard;
 use bougie_paths::Paths;
 use eyre::{Result, WrapErr, bail};
-use std::path::{Path, PathBuf};
 use std::fmt::Write as _;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// Composer-the-tool version recorded in the receipt. Not used at
@@ -55,6 +57,7 @@ pub struct InstallOutcome {
     pub php_version: String,
     pub tool_dir: PathBuf,
     pub installed_bins: Vec<PathBuf>,
+    pub installed_extensions: Vec<String>,
 }
 
 /// Inject a `resolve_and_write_lock`-shaped callback so the bougie
@@ -63,24 +66,52 @@ pub struct InstallOutcome {
 /// having to depend on `bougie` itself.
 pub type LockResolver = dyn Fn(&Paths, &Path) -> Result<()> + Send + Sync;
 
+/// Ensure a PHP extension is installed in the shared store for a
+/// specific `(version, flavor)`, fronting
+/// `bougie_installer::install::install_extension`. Doesn't touch
+/// `$TOOL_DIR/conf.d/` — that's bougie-tool's job.
+pub type ExtInstaller = dyn Fn(&Paths, &str, &PhpChoice) -> Result<()> + Send + Sync;
+
+/// Bundle of paths + callbacks the install / inject / upgrade flows
+/// all need. Saves passing seven near-identical arguments per call.
+#[allow(missing_debug_implementations, reason = "fields are non-Debug trait objects")]
+pub struct InstallContext<'a> {
+    pub paths: &'a Paths,
+    pub resolve_lock: &'a LockResolver,
+    pub php_installer: &'a resolve::PhpInstaller,
+    pub classifier: &'a ExtensionClassifier,
+    pub ext_installer: &'a ExtInstaller,
+}
+
 pub fn install(
-    paths: &Paths,
+    ctx: &InstallContext<'_>,
     request: &ToolRequest,
     php_spec: Option<&str>,
+    with: &[String],
     force: bool,
-    resolve_lock: &LockResolver,
-    php_installer: &resolve::PhpInstaller,
 ) -> Result<InstallOutcome> {
+    let paths = ctx.paths;
     ensure_stable_bougie_symlink(paths)
         .wrap_err("setting up stable bougie symlink")?;
 
-    let php = resolve::pick_php(paths, php_spec, php_installer)?;
+    let php = resolve::pick_php(paths, php_spec, ctx.php_installer)?;
     let constraint = request
         .constraint
         .clone()
         .unwrap_or_else(|| DEFAULT_CONSTRAINT.to_string());
     let package = request.package();
     let tool_dir = paths.tool_dir(&package);
+
+    // Classify every --with up front so a bad name fails before we
+    // touch the tool dir.
+    let mut composer_extras: Vec<String> = Vec::new();
+    let mut extension_extras: Vec<String> = Vec::new();
+    for name in with {
+        match classify(name, ctx.classifier)? {
+            Classified::ComposerPackage(p) => composer_extras.push(p),
+            Classified::Extension(e) => extension_extras.push(e),
+        }
+    }
 
     std::fs::create_dir_all(&tool_dir)
         .wrap_err_with(|| format!("creating {}", tool_dir.display()))?;
@@ -93,21 +124,84 @@ pub fn install(
             )
         })?;
 
-    write_composer_json(&tool_dir, &package, &constraint)?;
-    resolve_lock(paths, &tool_dir).wrap_err("resolving composer.lock for tool")?;
+    write_composer_json(&tool_dir, &package, &constraint, &composer_extras)?;
+    (ctx.resolve_lock)(paths, &tool_dir).wrap_err("resolving composer.lock for tool")?;
     install_from_lock(paths, &tool_dir, InstallOptions { no_dev: true })
         .wrap_err("installing tool dependencies")?;
 
-    let bin_entries = read_bin_entries(&tool_dir, &package)?;
+    let conf_d = tool_dir.join("conf.d");
+    std::fs::create_dir_all(&conf_d)
+        .wrap_err_with(|| format!("creating {}", conf_d.display()))?;
+
+    let (entrypoints, installed_bins) = emit_bins(paths, &tool_dir, &package, force)?;
+
+    // Install + enable extension extras now that the tool dir exists.
+    // Errors are propagated — a failed extension install rolls back at
+    // the call site if needed; the tool dir + bins stay (the user has
+    // a partially-injected tool, which they can recover from with
+    // `bougie tool uninstall` + retry).
+    let mut tool_extensions: Vec<ToolExtension> = Vec::with_capacity(extension_extras.len());
+    for ext in &extension_extras {
+        (ctx.ext_installer)(paths, ext, &php)
+            .wrap_err_with(|| format!("installing extension `{ext}` for tool"))?;
+        let ini_path = write_ext_fragment(&conf_d, ext)?;
+        tool_extensions.push(ToolExtension {
+            name: ext.clone(),
+            ini_path,
+        });
+    }
+
+    let receipt = ToolReceipt {
+        package: package.clone(),
+        constraint,
+        php_version: php.version.clone(),
+        php_flavor: php.flavor.clone(),
+        composer_version: RECORDED_COMPOSER_VERSION.into(),
+        with: composer_extras,
+        php_resolved_path: php.bin.clone(),
+        entrypoints,
+        extensions: tool_extensions,
+    };
+    crate::receipt::write(&tool_dir.join("receipt.toml"), &receipt)?;
+
+    Ok(InstallOutcome {
+        package,
+        php_version: php.version,
+        tool_dir,
+        installed_bins,
+        installed_extensions: extension_extras,
+    })
+}
+
+/// Write a `20-<name>.ini` fragment under `$TOOL_DIR/conf.d/`. The
+/// `20-` prefix matches the project-side `bougie ext add` convention:
+/// the install's own bundled extensions live in `00-…`, project /
+/// tool overrides in `20-…`.
+fn write_ext_fragment(conf_d: &Path, ext: &str) -> Result<PathBuf> {
+    let path = conf_d.join(format!("20-{ext}.ini"));
+    let body = format!("extension={ext}\n");
+    std::fs::write(&path, body)
+        .wrap_err_with(|| format!("writing conf.d fragment {}", path.display()))?;
+    Ok(path)
+}
+
+/// Read bin entries for `package` from the just-installed vendor
+/// tree, validate names + pre-flight bin-dir collisions, then emit
+/// every wrapper + symlink. Returns the receipt's `entrypoints`
+/// alongside the absolute bin paths for the install summary.
+fn emit_bins(
+    paths: &Paths,
+    tool_dir: &Path,
+    package: &str,
+    force: bool,
+) -> Result<(Vec<ToolEntrypoint>, Vec<PathBuf>)> {
+    let bin_entries = read_bin_entries(tool_dir, package)?;
     if bin_entries.is_empty() {
         bail!(
             "package `{package}` declares no `bin` entries — there is nothing to install on PATH"
         );
     }
 
-    // Resolve each bin entry to (basename, vendor-relative path) up
-    // front. Empty basenames are a `composer.json` data error in the
-    // installed package and would otherwise surface late.
     let mut bins: Vec<(String, String)> = Vec::with_capacity(bin_entries.len());
     for entry in &bin_entries {
         let name = bin_filename(entry);
@@ -117,10 +211,6 @@ pub fn install(
         bins.push((name, entry.clone()));
     }
 
-    // Pre-flight all bin-dir paths so a half-installed tool can't be
-    // left behind when the second of three bins collides and the
-    // first symlink has already been written. With `force` set we
-    // skip the check — overwrites are allowed by construction.
     let tool_bin_dir = paths.tool_bin_dir();
     if !force {
         for (name, _) in &bins {
@@ -133,10 +223,6 @@ pub fn install(
             }
         }
     }
-
-    let conf_d = tool_dir.join("conf.d");
-    std::fs::create_dir_all(&conf_d)
-        .wrap_err_with(|| format!("creating {}", conf_d.display()))?;
 
     let stable_bougie = paths.bin().join("bougie");
     let mut entrypoints: Vec<ToolEntrypoint> = Vec::with_capacity(bins.len());
@@ -152,38 +238,51 @@ pub fn install(
         entrypoints.push(ToolEntrypoint {
             name: name.clone(),
             install_path: install_path.clone(),
-            from: package.clone(),
+            from: package.to_string(),
         });
         installed_bins.push(install_path);
     }
-
-    let receipt = ToolReceipt {
-        package: package.clone(),
-        constraint,
-        php_version: php.version.clone(),
-        php_flavor: php.flavor.clone(),
-        composer_version: RECORDED_COMPOSER_VERSION.into(),
-        with: Vec::new(),
-        php_resolved_path: php.bin.clone(),
-        entrypoints,
-    };
-    crate::receipt::write(&tool_dir.join("receipt.toml"), &receipt)?;
-
-    Ok(InstallOutcome {
-        package,
-        php_version: php.version,
-        tool_dir,
-        installed_bins,
-    })
+    Ok((entrypoints, installed_bins))
 }
 
-fn write_composer_json(tool_dir: &Path, package: &str, constraint: &str) -> Result<()> {
-    // Minimal composer.json — just the tool's own dep. `allow-plugins:
-    // false` is correct for Phase 1: no plugins until `inject` lands.
+fn write_composer_json(
+    tool_dir: &Path,
+    package: &str,
+    constraint: &str,
+    extras: &[String],
+) -> Result<()> {
+    // `extras` may carry an `@<constraint>` suffix (the user-typed
+    // `vendor/name@^1.5`). Split each into (name, constraint or "*").
+    // Composer-the-binary doesn't accept `@` in require keys.
+    let mut requires: Vec<(String, String)> = vec![(package.to_string(), constraint.to_string())];
+    for raw in extras {
+        let (name, ver) = match raw.split_once('@') {
+            Some((n, v)) if !v.is_empty() => (n.to_string(), v.to_string()),
+            _ => (raw.clone(), DEFAULT_CONSTRAINT.to_string()),
+        };
+        requires.push((name, ver));
+    }
+
+    let mut require_block = String::new();
+    for (i, (n, v)) in requires.iter().enumerate() {
+        if i > 0 {
+            require_block.push(',');
+            require_block.push('\n');
+        }
+        require_block.push_str("    ");
+        require_block.push_str(&json_string(n));
+        require_block.push_str(": ");
+        require_block.push_str(&json_string(v));
+    }
+
+    // `allow-plugins: false` for every Phase 2 tool. The native
+    // resolver doesn't execute plugins, so leaving them disabled
+    // matches what actually happens at install time; a future
+    // phar-execution path will widen this with a narrow per-plugin
+    // map populated from the resolved lockfile.
     let body = format!(
-        "{{\n  \"require\": {{\n    {pkg}: {ver}\n  }},\n  \"config\": {{\n    \"allow-plugins\": false\n  }}\n}}\n",
-        pkg = json_string(package),
-        ver = json_string(constraint),
+        "{{\n  \"require\": {{\n{require_block}\n  }},\n  \
+         \"config\": {{\n    \"allow-plugins\": false\n  }}\n}}\n",
     );
     let path = tool_dir.join("composer.json");
     std::fs::write(&path, body)
@@ -362,10 +461,38 @@ mod tests {
     #[test]
     fn write_composer_json_renders_expected_shape() {
         let td = tempfile::TempDir::new().unwrap();
-        write_composer_json(td.path(), "phpstan/phpstan", "^1.10").unwrap();
+        write_composer_json(td.path(), "phpstan/phpstan", "^1.10", &[]).unwrap();
         let text = std::fs::read_to_string(td.path().join("composer.json")).unwrap();
         assert!(text.contains(r#""phpstan/phpstan": "^1.10""#), "{text}");
         assert!(text.contains(r#""allow-plugins": false"#), "{text}");
+    }
+
+    #[test]
+    fn write_composer_json_includes_extras_with_split_constraints() {
+        let td = tempfile::TempDir::new().unwrap();
+        write_composer_json(
+            td.path(),
+            "phpstan/phpstan",
+            "^1.10",
+            &[
+                "phpstan/phpstan-strict-rules@^1.5".to_string(),
+                "slevomat/coding-standard".to_string(),
+            ],
+        )
+        .unwrap();
+        let text = std::fs::read_to_string(td.path().join("composer.json")).unwrap();
+        assert!(text.contains(r#""phpstan/phpstan-strict-rules": "^1.5""#), "{text}");
+        // bare extras default to `*`
+        assert!(text.contains(r#""slevomat/coding-standard": "*""#), "{text}");
+    }
+
+    #[test]
+    fn write_ext_fragment_writes_load_directive() {
+        let td = tempfile::TempDir::new().unwrap();
+        let path = write_ext_fragment(td.path(), "intl").unwrap();
+        let body = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(body, "extension=intl\n");
+        assert!(path.ends_with("20-intl.ini"));
     }
 
     #[test]

@@ -11,6 +11,7 @@
 //! covers Unix-only persistent install / uninstall / list / dir plus
 //! the `tool-exec` runtime shim.
 
+pub mod classify;
 pub mod exec;
 pub mod install;
 pub mod list;

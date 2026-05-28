@@ -13,6 +13,8 @@ use bougie_installer::install::install_php;
 use bougie_output::output::{Render, emit};
 use bougie_paths::Paths;
 use bougie_resolver::ResolveOptions;
+use bougie_tool::classify::ExtensionClassifier;
+use bougie_tool::install::ExtInstaller;
 use bougie_tool::resolve::{PhpChoice, PhpInstaller};
 use bougie_tool::{install, request};
 use bougie_version::request::parse_request as parse_php_request;
@@ -29,6 +31,8 @@ pub struct ToolInstallResult {
     pub php_version: String,
     pub tool_dir: PathBuf,
     pub installed_bins: Vec<PathBuf>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub installed_extensions: Vec<String>,
 }
 
 impl Render for ToolInstallResult {
@@ -39,9 +43,14 @@ impl Render for ToolInstallResult {
             .map(|p| p.display().to_string())
             .collect::<Vec<_>>()
             .join(", ");
+        let exts = if self.installed_extensions.is_empty() {
+            String::new()
+        } else {
+            format!(" (+ exts: {})", self.installed_extensions.join(", "))
+        };
         writeln!(
             w,
-            "installed {} (php {}) → {bins}",
+            "installed {} (php {}){exts} → {bins}",
             self.package, self.php_version
         )
     }
@@ -51,6 +60,7 @@ pub fn run(
     format: OutputFormat,
     package: &str,
     php_spec: Option<&str>,
+    with: &[String],
     force: bool,
 ) -> Result<ExitCode> {
     let paths = Paths::from_env()?;
@@ -72,14 +82,25 @@ pub fn run(
             flavor,
         })
     };
-    let outcome = install::install(
-        &paths,
-        &req,
-        php_spec,
-        force,
+    // Phase 2 PR4 ships composer-package `--with` only. The classifier
+    // refuses bare names so the user sees the recovery hint
+    // (`bougie ext add` then `bougie tool inject` once that wiring
+    // lands) rather than the call hitting an unwired ext-installer.
+    let classifier: &ExtensionClassifier = &|_name| Ok(false);
+    let ext_installer: &ExtInstaller = &|_paths, name, _php| {
+        Err(eyre::eyre!(
+            "PHP extension `--with {name}` is not wired yet; \
+             use `vendor/name` for composer packages instead"
+        ))
+    };
+    let ctx = install::InstallContext {
+        paths: &paths,
         resolve_lock,
         php_installer,
-    )?;
+        classifier,
+        ext_installer,
+    };
+    let outcome = install::install(&ctx, &req, php_spec, with, force)?;
     emit(
         format,
         &ToolInstallResult {
@@ -88,6 +109,7 @@ pub fn run(
             php_version: outcome.php_version,
             tool_dir: outcome.tool_dir,
             installed_bins: outcome.installed_bins,
+            installed_extensions: outcome.installed_extensions,
         },
     )?;
     Ok(ExitCode::SUCCESS)

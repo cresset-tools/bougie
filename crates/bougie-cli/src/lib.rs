@@ -608,6 +608,11 @@ pub enum ToolCommand {
         /// automatically. Defaults to the highest installed NTS PHP.
         #[arg(long, value_name = "VER")]
         php: Option<String>,
+        /// Additional Composer package (`vendor/name[@<constraint>]`)
+        /// or PHP extension (`intl`, `redis`) to install alongside the
+        /// tool. May be passed multiple times.
+        #[arg(long, value_name = "PKG_OR_EXT")]
+        with: Vec<String>,
         /// Overwrite an existing executable at the bin-dir path.
         #[arg(long)]
         force: bool,
