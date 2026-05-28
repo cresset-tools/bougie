@@ -214,6 +214,53 @@ fn tool_uninstall_errors_for_unknown_tool() {
 }
 
 #[test]
+fn bgx_help_matches_tool_run_help() {
+    // `bgx --help` should produce the same surface as
+    // `bougie tool run --help`. The match is exact because bgx just
+    // prepends ["tool", "run"] before re-parsing argv through the
+    // same clap definition.
+    let env = TestEnv::new();
+    let bougie_out = env
+        .bougie()
+        .args(["tool", "run", "--help"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let bgx_out = env
+        .bgx()
+        .args(["--help"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let bougie_str = String::from_utf8_lossy(&bougie_out);
+    let bgx_str = String::from_utf8_lossy(&bgx_out);
+    // clap renders the program name differently in the Usage line
+    // (`bougie tool run` vs `bgx tool run`); compare the rest line-
+    // by-line for everything past `Usage`.
+    let skip_usage = |s: &str| {
+        s.lines()
+            .filter(|l| !l.contains("Usage:"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    assert_eq!(skip_usage(&bougie_str), skip_usage(&bgx_str));
+}
+
+#[test]
+fn bgx_rejects_bare_package_name() {
+    let env = TestEnv::new();
+    env.bgx()
+        .args(["phpstan"])
+        .assert()
+        .failure()
+        .stderr(contains("missing the vendor"));
+}
+
+#[test]
 fn tool_run_help_lists_args_and_with() {
     let env = TestEnv::new();
     env.bougie()

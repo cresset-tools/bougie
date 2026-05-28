@@ -39,4 +39,14 @@ impl TestEnv {
             .env_remove("RUST_LOG");
         cmd
     }
+
+    /// Build a `bgx` command with isolated env (short alias for
+    /// `bougie tool run`).
+    pub fn bgx(&self) -> Command {
+        let mut cmd = Command::cargo_bin("bgx").expect("bgx binary");
+        cmd.env("BOUGIE_HOME", self.home.path())
+            .env("BOUGIE_CACHE", self.cache.path())
+            .env_remove("RUST_LOG");
+        cmd
+    }
 }
