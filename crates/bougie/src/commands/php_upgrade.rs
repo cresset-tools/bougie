@@ -1,15 +1,17 @@
 use bougie_cli::OutputFormat;
-use bougie_installer::install::install_php;
-use bougie_output::output::{emit, Render};
-use bougie_paths::Paths;
-use bougie_semver::Constraint;
-use bougie_version::request::{Flavor, Request, VersionLike};
-use bougie_resolver::ResolveOptions;
 use bougie_fs::store::list_installed;
+use bougie_installer::install::install_php;
+use bougie_output::output::{Render, emit};
+use bougie_paths::Paths;
+use bougie_resolver::ResolveOptions;
+use bougie_semver::Constraint;
+use bougie_tool::receipt::{PhpUpgrade, refresh_php_pin};
+use bougie_version::request::{Flavor, Request, VersionLike};
 use bougie_version::version::PartialVersion;
-use eyre::{eyre, Result};
+use eyre::{Result, eyre};
 use serde::Serialize;
 use std::io::{self, Write};
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::str::FromStr;
 
@@ -17,6 +19,12 @@ use std::str::FromStr;
 pub struct UpgradeResult {
     pub schema_version: u32,
     pub upgraded: Vec<UpgradeRow>,
+    /// Tool receipts whose `php_resolved_path` + `php_version` were
+    /// rewritten to point at the upgraded interpreter. Empty when no
+    /// PHP actually moved or no tools were installed against the
+    /// moved version.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub updated_tool_receipts: Vec<PathBuf>,
 }
 
 #[derive(Debug, Serialize)]
@@ -35,6 +43,13 @@ impl Render for UpgradeResult {
         for row in &self.upgraded {
             writeln!(w, "  {} ({}) → {}", row.from, row.flavor, row.to)?;
         }
+        if !self.updated_tool_receipts.is_empty() {
+            writeln!(
+                w,
+                "refreshed {} tool receipt(s)",
+                self.updated_tool_receipts.len()
+            )?;
+        }
         Ok(())
     }
 }
@@ -43,6 +58,7 @@ pub fn run(format: OutputFormat, minor_filter: Option<&str>) -> Result<ExitCode>
     let paths = Paths::from_env()?;
     let installed = list_installed(&paths)?;
     let mut upgraded = Vec::new();
+    let mut tool_upgrades: Vec<PhpUpgrade> = Vec::new();
 
     for (version_str, flavor_str) in installed {
         let Ok(v) = bougie_version::version::Version::from_str(&version_str) else {
@@ -69,10 +85,22 @@ pub fn run(format: OutputFormat, minor_filter: Option<&str>) -> Result<ExitCode>
                 to: installed_now.version.to_string(),
                 flavor: flavor.to_string(),
             });
+            tool_upgrades.push(PhpUpgrade {
+                from_version: v.to_string(),
+                to_version: installed_now.version.to_string(),
+                flavor: flavor.to_string(),
+                new_bin: installed_now.install_path.join("bin").join("php"),
+            });
         }
     }
 
-    let result = UpgradeResult { schema_version: 1, upgraded };
+    let updated_tool_receipts = refresh_php_pin(&paths, &tool_upgrades)?;
+
+    let result = UpgradeResult {
+        schema_version: 1,
+        upgraded,
+        updated_tool_receipts,
+    };
     emit(format, &result)?;
     Ok(ExitCode::SUCCESS)
 }

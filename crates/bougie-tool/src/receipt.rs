@@ -62,6 +62,72 @@ pub fn write(path: &Path, receipt: &ToolReceipt) -> Result<()> {
         .wrap_err_with(|| format!("writing tool receipt {}", path.display()))
 }
 
+/// A single (old, new) PHP upgrade tuple. `bougie php upgrade` accumulates
+/// one per interpreter that actually moved to a higher patch.
+#[derive(Debug, Clone)]
+pub struct PhpUpgrade {
+    /// Resolved triplet *before* the upgrade — what receipts that
+    /// pinned this PHP currently record in `php_version`.
+    pub from_version: String,
+    /// Resolved triplet *after* the upgrade.
+    pub to_version: String,
+    pub flavor: String,
+    /// Absolute path to the new `php` binary; lands in receipts'
+    /// `php_resolved_path`.
+    pub new_bin: PathBuf,
+}
+
+/// Walk `paths.tools()/*/receipt.toml`. For any receipt whose
+/// `(php_version, php_flavor)` matches one of `upgrades`, rewrite
+/// `php_version` to the new triplet and `php_resolved_path` to the
+/// new binary, then save.
+///
+/// Returns the receipt paths that were updated. Receipts that fail
+/// to parse are surfaced as a stderr warning and skipped — one bad
+/// receipt shouldn't block a global `bougie php upgrade`.
+pub fn refresh_php_pin(
+    paths: &bougie_paths::Paths,
+    upgrades: &[PhpUpgrade],
+) -> Result<Vec<PathBuf>> {
+    let mut refreshed = Vec::new();
+    if upgrades.is_empty() {
+        return Ok(refreshed);
+    }
+    let root = paths.tools();
+    let entries = match std::fs::read_dir(&root) {
+        Ok(e) => e,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(refreshed),
+        Err(e) => return Err(eyre::eyre!("reading {}: {e}", root.display())),
+    };
+    for entry in entries.flatten() {
+        let receipt_path = entry.path().join("receipt.toml");
+        if !receipt_path.is_file() {
+            continue;
+        }
+        let mut receipt = match read(&receipt_path) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!(
+                    "warning: skipping tool receipt {}: {e}",
+                    receipt_path.display()
+                );
+                continue;
+            }
+        };
+        let Some(upgrade) = upgrades.iter().find(|u| {
+            u.from_version == receipt.php_version && u.flavor == receipt.php_flavor
+        }) else {
+            continue;
+        };
+        receipt.php_version = upgrade.to_version.clone();
+        receipt.php_resolved_path = upgrade.new_bin.clone();
+        write(&receipt_path, &receipt)?;
+        refreshed.push(receipt_path);
+    }
+    refreshed.sort();
+    Ok(refreshed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -120,5 +186,89 @@ entrypoints = []
         std::fs::write(&path, "this = is = not = toml").unwrap();
         let err = read(&path).unwrap_err().to_string();
         assert!(err.contains("receipt.toml"), "{err}");
+    }
+
+    fn paths_for(td: &Path) -> bougie_paths::Paths {
+        bougie_paths::Paths::new(td.to_path_buf(), td.join("cache"))
+    }
+
+    fn write_sample_receipt(paths: &bougie_paths::Paths, pkg: &str, php_version: &str) -> PathBuf {
+        let dir = paths.tools().join(pkg.replace('/', "-"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut r = sample();
+        r.package = pkg.into();
+        r.php_version = php_version.into();
+        let receipt_path = dir.join("receipt.toml");
+        write(&receipt_path, &r).unwrap();
+        receipt_path
+    }
+
+    #[test]
+    fn refresh_php_pin_updates_matching_receipts() {
+        let td = tempfile::TempDir::new().unwrap();
+        let paths = paths_for(td.path());
+        let p1 = write_sample_receipt(&paths, "phpstan/phpstan", "8.3.12");
+        let p2 = write_sample_receipt(&paths, "vimeo/psalm", "8.3.12");
+        let p3 = write_sample_receipt(&paths, "rector/rector", "8.2.20");
+
+        let new_bin = PathBuf::from("/installs/8.3.13-nts/bin/php");
+        let upgrades = vec![PhpUpgrade {
+            from_version: "8.3.12".into(),
+            to_version: "8.3.13".into(),
+            flavor: "nts".into(),
+            new_bin: new_bin.clone(),
+        }];
+        let refreshed = refresh_php_pin(&paths, &upgrades).unwrap();
+        assert_eq!(refreshed.len(), 2, "{refreshed:?}");
+        assert!(refreshed.contains(&p1));
+        assert!(refreshed.contains(&p2));
+
+        let r1 = read(&p1).unwrap();
+        assert_eq!(r1.php_version, "8.3.13");
+        assert_eq!(r1.php_resolved_path, new_bin);
+        let r3 = read(&p3).unwrap();
+        assert_eq!(r3.php_version, "8.2.20", "non-matching receipt left alone");
+    }
+
+    #[test]
+    fn refresh_php_pin_ignores_flavor_mismatch() {
+        let td = tempfile::TempDir::new().unwrap();
+        let paths = paths_for(td.path());
+        let p1 = write_sample_receipt(&paths, "phpstan/phpstan", "8.3.12");
+        // Receipt's php_flavor is "nts" (from sample()). Upgrade is
+        // for zts — should not touch the receipt.
+        let upgrades = vec![PhpUpgrade {
+            from_version: "8.3.12".into(),
+            to_version: "8.3.13".into(),
+            flavor: "zts".into(),
+            new_bin: PathBuf::from("/installs/8.3.13-zts/bin/php"),
+        }];
+        let refreshed = refresh_php_pin(&paths, &upgrades).unwrap();
+        assert!(refreshed.is_empty());
+        let r1 = read(&p1).unwrap();
+        assert_eq!(r1.php_version, "8.3.12");
+    }
+
+    #[test]
+    fn refresh_php_pin_empty_upgrades_is_noop() {
+        let td = tempfile::TempDir::new().unwrap();
+        let paths = paths_for(td.path());
+        write_sample_receipt(&paths, "phpstan/phpstan", "8.3.12");
+        let refreshed = refresh_php_pin(&paths, &[]).unwrap();
+        assert!(refreshed.is_empty());
+    }
+
+    #[test]
+    fn refresh_php_pin_handles_missing_tools_dir() {
+        let td = tempfile::TempDir::new().unwrap();
+        let paths = paths_for(td.path());
+        let upgrades = vec![PhpUpgrade {
+            from_version: "8.3.12".into(),
+            to_version: "8.3.13".into(),
+            flavor: "nts".into(),
+            new_bin: PathBuf::from("/x"),
+        }];
+        let refreshed = refresh_php_pin(&paths, &upgrades).unwrap();
+        assert!(refreshed.is_empty());
     }
 }
