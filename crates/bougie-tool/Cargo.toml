@@ -1,0 +1,36 @@
+[package]
+name = "bougie-tool"
+version.workspace = true
+edition = "2024"
+description = "Globally-installed, isolated PHP CLI tool manager (uv-style)."
+license = "EUPL-1.2"
+repository = "https://github.com/cresset-tools/bougie"
+rust-version = "1.95"
+authors.workspace = true
+
+[dependencies]
+bougie-composer-resolver = { workspace = true }
+bougie-errors = { workspace = true }
+bougie-fs = { workspace = true }
+bougie-paths = { workspace = true }
+bougie-semver = { workspace = true }
+
+[dependencies.eyre]
+version = "0.6"
+
+[dependencies.serde]
+version = "1.0"
+features = ["derive"]
+
+[dependencies.serde_json]
+version = "1.0"
+
+[dependencies.toml_edit]
+version = "0.25"
+features = ["serde"]
+
+[dev-dependencies.tempfile]
+version = "3.10"
+
+[lints]
+workspace = true

@@ -415,6 +415,7 @@ dependencies = [
  "bougie-resolver",
  "bougie-semver",
  "bougie-server",
+ "bougie-tool",
  "bougie-version",
  "clap",
  "color-eyre",
@@ -754,6 +755,22 @@ dependencies = [
  "tokio",
  "toml_edit",
  "tracing",
+]
+
+[[package]]
+name = "bougie-tool"
+version = "0.6.0"
+dependencies = [
+ "bougie-composer-resolver",
+ "bougie-errors",
+ "bougie-fs",
+ "bougie-paths",
+ "bougie-semver",
+ "eyre",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "toml_edit",
 ]
 
 [[package]]

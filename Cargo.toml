@@ -27,6 +27,7 @@ members = [
     "crates/bougie-resolver",
     "crates/bougie-semver",
     "crates/bougie-server",
+    "crates/bougie-tool",
     "crates/bougie-version",
     "crates/macos-sandbox-sys",
     "crates/sandbox-run",
@@ -68,6 +69,7 @@ bougie-recipe = { path = "crates/bougie-recipe", version = "0.6.1" }
 bougie-resolver = { path = "crates/bougie-resolver", version = "0.6.1" }
 bougie-semver = { path = "crates/bougie-semver", version = "0.1.0" }
 bougie-server = { path = "crates/bougie-server", version = "0.6.1" }
+bougie-tool = { path = "crates/bougie-tool", version = "0.6.1" }
 bougie-version = { path = "crates/bougie-version", version = "0.6.1" }
 sandbox-run = { path = "crates/sandbox-run", version = "0.1.0" }
 macos-sandbox-sys = { path = "crates/macos-sandbox-sys", version = "0.1.0" }

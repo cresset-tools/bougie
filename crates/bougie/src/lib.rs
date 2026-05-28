@@ -13,7 +13,9 @@ pub use bougie_errors::{exit_code_for, BougieError};
 pub use bougie_paths::Paths;
 pub use bougie_platform::target::Triple;
 
-use bougie_cli::{CacheCommand, ComposerCommand, ExtCommand, PhpCommand, SelfCommand, ServerCommand};
+use bougie_cli::{
+    CacheCommand, ComposerCommand, ExtCommand, PhpCommand, SelfCommand, ServerCommand, ToolCommand,
+};
 #[cfg(unix)]
 use bougie_cli::{
     ServerHostsCommand, ServerTlsCommand, ServicesCommand, ServicesDaemonCommand,
@@ -317,5 +319,16 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
         ),
         #[cfg(not(unix))]
         Command::Make { .. } => unsupported_on_windows("bougie make"),
+        Command::Tool(ToolCommand::Install { package, force }) => {
+            commands::tool_install::run(format, &package, force)
+        }
+        Command::Tool(ToolCommand::Uninstall { package }) => {
+            commands::tool_uninstall::run(format, &package)
+        }
+        Command::Tool(ToolCommand::List) => commands::tool_list::run(format),
+        Command::Tool(ToolCommand::Dir { package }) => {
+            commands::tool_dir::run(format, package)
+        }
+        Command::ToolExec { wrapper, args } => commands::tool_exec::run(&wrapper, args),
     }
 }

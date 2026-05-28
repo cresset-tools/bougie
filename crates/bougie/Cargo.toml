@@ -60,6 +60,7 @@ bougie-paths = { workspace = true }
 bougie-platform = { workspace = true }
 bougie-resolver = { workspace = true }
 bougie-server = { workspace = true }
+bougie-tool = { workspace = true }
 bougie-version = { workspace = true }
 bougie-semver = { workspace = true }
 spdx = "0.10"

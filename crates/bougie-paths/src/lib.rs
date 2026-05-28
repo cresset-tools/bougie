@@ -148,6 +148,48 @@ impl Paths {
         self.local.join("bin")
     }
 
+    /// `$BOUGIE_LOCAL/tools/` — per-tool install trees for
+    /// `bougie tool`. Local because, like `installs/` and `composer/`,
+    /// a tool dir is fully re-creatable from `bougie tool install`.
+    pub fn tools(&self) -> PathBuf {
+        self.local.join("tools")
+    }
+
+    /// `$BOUGIE_LOCAL/tools/<vendor>-<name>/` — single tool's root.
+    /// Composer identifiers are slash-separated; the slash is replaced
+    /// with `-` for the on-disk dir so the path is one segment deep.
+    pub fn tool_dir(&self, package: &str) -> PathBuf {
+        self.tools().join(package.replace('/', "-"))
+    }
+
+    /// User-facing bin directory where tool launcher symlinks land.
+    /// Resolves `BOUGIE_TOOL_BIN_DIR`, then `XDG_BIN_HOME`, then
+    /// `~/.local/bin`. On Windows the default is
+    /// `%LOCALAPPDATA%/bougie/bin` (computed from `local`) — Phase 1
+    /// only emits the symlink on Unix, but the path resolves on both
+    /// platforms so callers can render help text consistently.
+    pub fn tool_bin_dir(&self) -> PathBuf {
+        if let Some(v) = std::env::var_os("BOUGIE_TOOL_BIN_DIR") {
+            return PathBuf::from(v);
+        }
+        #[cfg(unix)]
+        {
+            if let Some(v) = std::env::var_os("XDG_BIN_HOME") {
+                return PathBuf::from(v);
+            }
+            if let Some(home) = std::env::var_os("HOME") {
+                return PathBuf::from(home).join(".local").join("bin");
+            }
+            // Last-resort fallback; callers typically surface a clearer
+            // error before reaching this branch.
+            self.local.join("bin")
+        }
+        #[cfg(windows)]
+        {
+            self.local.join("bin")
+        }
+    }
+
     /// `$BOUGIE_LOCAL/composer/` — managed Composer installs, one
     /// directory per version. Local because composer phars are
     /// re-downloadable from getcomposer.org on demand.
@@ -393,6 +435,20 @@ mod tests {
         assert_eq!(p.state(), Path::new("/h/state"));
         assert_eq!(p.bin(), Path::new("/h/bin"));
         assert_eq!(p.cache_blobs(), Path::new("/c/blobs"));
+    }
+
+    #[test]
+    fn tool_paths_compose_under_local() {
+        let p = Paths::with_local(
+            PathBuf::from("/h"),
+            PathBuf::from("/l"),
+            PathBuf::from("/c"),
+        );
+        assert_eq!(p.tools(), Path::new("/l/tools"));
+        assert_eq!(
+            p.tool_dir("phpstan/phpstan"),
+            Path::new("/l/tools/phpstan-phpstan")
+        );
     }
 
     #[test]

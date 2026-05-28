@@ -106,6 +106,23 @@ pub enum Command {
     #[command(subcommand)]
     Composer(ComposerCommand),
 
+    /// Manage globally-installed, isolated PHP CLI tools. See
+    /// `TOOL_PLAN.md` for the design.
+    #[command(subcommand)]
+    Tool(ToolCommand),
+
+    /// Runtime shim invoked by tool wrappers (`#!.../bougie tool-exec`).
+    /// Not for direct CLI use; hidden from `--help`.
+    #[command(hide = true, name = "tool-exec")]
+    ToolExec {
+        /// Path to the tool wrapper script the kernel handed us as
+        /// argv[1] via the shebang.
+        wrapper: std::path::PathBuf,
+        /// User-supplied arguments to the tool, passed through to PHP.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<std::ffi::OsString>,
+    },
+
     /// Manage bougie's cache.
     #[command(subcommand)]
     Cache(CacheCommand),
@@ -576,6 +593,32 @@ pub enum CacheCommand {
     Dir,
     /// Show the cache size.
     Size,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ToolCommand {
+    /// Install a tool. Pass `<vendor>/<name>` optionally followed by
+    /// `@<constraint>` (e.g. `phpstan/phpstan@^1.10`).
+    Install {
+        /// Composer package identifier, optionally with `@<constraint>`.
+        package: String,
+        /// Overwrite an existing executable at the bin-dir path.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Remove an installed tool by its `<vendor>/<name>` identifier.
+    Uninstall {
+        /// Composer package identifier.
+        package: String,
+    },
+    /// List installed tools.
+    List,
+    /// Print a tool's install directory, or the tools root if no
+    /// package is given.
+    Dir {
+        /// Composer package identifier; omit to print the tools root.
+        package: Option<String>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
