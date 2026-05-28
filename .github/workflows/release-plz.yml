@@ -34,17 +34,12 @@ jobs:
         with:
           app-id: ${{ secrets.BOT_APP_ID }}
           private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+      - name: Install Git LFS system-wide
+        run: git lfs install --system --skip-smudge
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
           token: ${{ steps.app-token.outputs.token }}
-        env:
-          GIT_LFS_SKIP_SMUDGE: 1
-      - name: Neutralize Git LFS filter
-        run: |
-          git lfs uninstall
-          git config --global filter.lfs.smudge "git-lfs smudge --skip -- %f"
-          git config --global filter.lfs.process "git-lfs filter-process --skip"
       - uses: MarcoIeni/release-plz-action@v0.5
         with:
           command: release-pr
@@ -72,17 +67,12 @@ jobs:
         with:
           app-id: ${{ secrets.BOT_APP_ID }}
           private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+      - name: Install Git LFS system-wide
+        run: git lfs install --system --skip-smudge
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
           token: ${{ steps.app-token.outputs.token }}
-        env:
-          GIT_LFS_SKIP_SMUDGE: 1
-      - name: Neutralize Git LFS filter
-        run: |
-          git lfs uninstall
-          git config --global filter.lfs.smudge "git-lfs smudge --skip -- %f"
-          git config --global filter.lfs.process "git-lfs filter-process --skip"
       - uses: MarcoIeni/release-plz-action@v0.5
         with:
           command: release
