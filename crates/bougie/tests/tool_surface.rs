@@ -261,6 +261,83 @@ fn bgx_rejects_bare_package_name() {
 }
 
 #[test]
+fn cache_prune_dry_run_lists_old_tool_run_slots() {
+    use std::time::{Duration, SystemTime};
+    let env = TestEnv::new();
+    // Hand-build a stale cache slot.
+    let slot = env
+        .cache_path()
+        .join("tool-run")
+        .join("deadbeefdeadbeef");
+    std::fs::create_dir_all(&slot).unwrap();
+    let receipt = slot.join("receipt.toml");
+    std::fs::write(&receipt, "package = \"v/p\"\n").unwrap();
+    // Force mtime 30 days into the past (well past the 14-day TTL).
+    let stale = SystemTime::now() - Duration::from_secs(30 * 24 * 60 * 60);
+    let times = std::fs::FileTimes::new().set_modified(stale);
+    let f = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&receipt)
+        .unwrap();
+    f.set_times(times).unwrap();
+    drop(f);
+
+    env.bougie()
+        .args(["cache", "prune", "--dry-run"])
+        .assert()
+        .success()
+        .stdout(contains("would remove 1 slot"))
+        .stdout(contains("deadbeefdeadbeef"));
+    // Slot should still exist after dry-run.
+    assert!(slot.exists(), "dry-run must not delete");
+}
+
+#[test]
+fn cache_prune_actually_removes_stale_slots() {
+    use std::time::{Duration, SystemTime};
+    let env = TestEnv::new();
+    let slot = env
+        .cache_path()
+        .join("tool-run")
+        .join("01234567abcdef");
+    std::fs::create_dir_all(&slot).unwrap();
+    let receipt = slot.join("receipt.toml");
+    std::fs::write(&receipt, "package = \"v/p\"\n").unwrap();
+    let stale = SystemTime::now() - Duration::from_secs(30 * 24 * 60 * 60);
+    let f = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&receipt)
+        .unwrap();
+    f.set_times(std::fs::FileTimes::new().set_modified(stale))
+        .unwrap();
+    drop(f);
+
+    env.bougie()
+        .args(["cache", "prune"])
+        .assert()
+        .success()
+        .stdout(contains("removed 1 slot"));
+    assert!(!slot.exists(), "stale slot should have been removed");
+}
+
+#[test]
+fn cache_prune_keeps_fresh_tool_run_slots() {
+    let env = TestEnv::new();
+    let slot = env
+        .cache_path()
+        .join("tool-run")
+        .join("fresh1234567890");
+    std::fs::create_dir_all(&slot).unwrap();
+    std::fs::write(slot.join("receipt.toml"), "package = \"v/p\"\n").unwrap();
+    env.bougie()
+        .args(["cache", "prune"])
+        .assert()
+        .success()
+        .stdout(contains("nothing to prune"));
+    assert!(slot.exists());
+}
+
+#[test]
 fn tool_run_help_lists_args_and_with() {
     let env = TestEnv::new();
     env.bougie()
