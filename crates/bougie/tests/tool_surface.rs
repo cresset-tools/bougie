@@ -279,17 +279,11 @@ fn tool_uninject_errors_when_extra_absent() {
         .stderr(contains("not currently injected"));
 }
 
-#[test]
-fn tool_inject_rejects_bare_name_with_classifier_hint() {
-    let env = TestEnv::new();
-    let fake_php = std::env::current_exe().unwrap();
-    make_tool_dir(env.home_path(), "phpstan/phpstan", &fake_php);
-    env.bougie()
-        .args(["tool", "inject", "phpstan/phpstan", "--with", "intl"])
-        .assert()
-        .failure()
-        .stderr(contains("isn't a known PHP extension"));
-}
+// Note: classifier behavior (baseline → Extension, slash → Composer,
+// bare-non-baseline-with-no-network → hint with `vendor/name` fallback)
+// is covered by `bougie_tool::classify` unit tests with stubbed
+// callbacks. An integration-level test would either need a fixture
+// index or risk depending on network state.
 
 #[test]
 fn tool_exec_rejects_wrapper_outside_tools_dir() {

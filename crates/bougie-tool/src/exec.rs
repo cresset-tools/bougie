@@ -23,6 +23,11 @@ use eyre::{Result, WrapErr, bail};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
+#[cfg(windows)]
+const SCAN_DIR_SEP: &str = ";";
+#[cfg(not(windows))]
+const SCAN_DIR_SEP: &str = ":";
+
 /// Everything `execve` needs, computed from the wrapper path + the
 /// receipt next to it.
 #[derive(Debug, Clone)]
@@ -110,11 +115,27 @@ pub fn prepare(
     argv.push(canon_wrapper.into_os_string());
     argv.extend(user_args);
 
+    // PHP_INI_SCAN_DIR must include BOTH the install's bundled
+    // conf.d (where baseline extensions like `phar`, `mbstring`,
+    // `pdo` live) AND the tool's own conf.d (where `--with intl`
+    // landed). Setting `PHP_INI_SCAN_DIR` overrides PHP's
+    // compiled-in default, so without including the install's path
+    // here, baseline extensions disappear and tools like phpstan
+    // hit `Class "Phar" not found`.
+    let install_conf_d = receipt
+        .php_resolved_path
+        .parent()
+        .and_then(Path::parent)
+        .map(|root| root.join("etc").join("php").join("conf.d"));
+    let mut scan = OsString::new();
+    if let Some(install_cd) = &install_conf_d {
+        scan.push(install_cd);
+        scan.push(SCAN_DIR_SEP);
+    }
+    scan.push(tool_dir.join("conf.d"));
+
     let env = vec![
-        (
-            "PHP_INI_SCAN_DIR".to_string(),
-            tool_dir.join("conf.d").into_os_string(),
-        ),
+        ("PHP_INI_SCAN_DIR".to_string(), scan),
         ("BOUGIE_TOOL".to_string(), receipt.package.clone().into()),
     ];
 
@@ -130,16 +151,26 @@ pub fn prepare(
 /// Replace the current process with the pinned PHP. Returns `Err` only
 /// when `execve` itself fails (e.g. the binary disappeared between
 /// receipt-read and exec). On Unix this never returns `Ok`.
+///
+/// Layout of the resulting argv from PHP's perspective:
+///
+/// - argv[0] = "php" — PHP CLI parses its own options out of argv
+///   before the first non-option, so we leave the program name alone
+///   so the wrapper script lands at argv[1] as the *script*. (An
+///   earlier version of this function set argv[0] to the wrapper
+///   path; PHP then saw `--version` at argv[1] and printed PHP's
+///   version banner instead of running the tool.)
+/// - argv[1] = wrapper path (the script PHP will run)
+/// - argv[2..] = user-supplied tool arguments
+///
+/// The wrapper itself rewrites `$argv[0]` back to the tool's bin
+/// name so usage strings read "Usage: phpstan …" rather than
+/// "Usage: php …".
 #[cfg(unix)]
 pub fn execve_replace(prep: &ToolExecPrep) -> Result<std::convert::Infallible> {
     use std::os::unix::process::CommandExt;
     let mut cmd = std::process::Command::new(&prep.php_path);
-    // Skip the implicit argv[0] = program; set ours explicitly so PHP
-    // sees the wrapper script as argv[1] worth of "I am being run."
-    cmd.arg0(&prep.argv[0]);
-    if prep.argv.len() > 1 {
-        cmd.args(&prep.argv[1..]);
-    }
+    cmd.args(&prep.argv);
     for (k, v) in &prep.env {
         cmd.env(k, v);
     }
@@ -259,15 +290,23 @@ mod tests {
             PathBuf::from(&prep.argv[0])
         );
 
-        // PHP_INI_SCAN_DIR points at $TOOL_DIR/conf.d.
+        // PHP_INI_SCAN_DIR layers the install's bundled conf.d (so
+        // baseline extensions like phar/mbstring stay loaded) plus
+        // the tool's own conf.d (where `--with intl` lands).
         let scan = prep
             .env
             .iter()
             .find_map(|(k, v)| (k == "PHP_INI_SCAN_DIR").then_some(v.clone()))
             .unwrap();
-        assert_eq!(
-            PathBuf::from(scan),
-            std::fs::canonicalize(tool_dir.join("conf.d")).unwrap()
+        let scan_str = scan.to_string_lossy();
+        let tool_cd = tool_dir.join("conf.d");
+        assert!(
+            scan_str.contains(&*tool_cd.to_string_lossy()),
+            "tool conf.d should be in scan dir; got {scan_str}"
+        );
+        assert!(
+            scan_str.contains(':') || cfg!(windows),
+            "expected layered scan dir (install + tool), got {scan_str}"
         );
         let tool_env = prep
             .env

@@ -14,6 +14,7 @@
 //!   first or rewriting as `vendor/NAME`. Better than silently doing
 //!   something they didn't ask for.
 
+use crate::resolve::PhpChoice;
 use eyre::{Result, bail};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -28,25 +29,32 @@ pub enum Classified {
 }
 
 /// Returns `true` if the supplied bare name is a PHP extension that
-/// bougie knows how to install for the tool's pinned PHP. Errors
-/// indicate a hard failure (e.g. network unreachable while checking
-/// the index) — they propagate.
-pub type ExtensionClassifier = dyn Fn(&str) -> Result<bool> + Send + Sync;
+/// bougie knows how to install for the tool's pinned PHP. Receives
+/// the tool's `PhpChoice` so the bougie binary's classifier can hit
+/// the right index section (extensions are partitioned per PHP minor +
+/// flavor). Errors indicate a hard failure (e.g. network unreachable)
+/// and propagate.
+pub type ExtensionClassifier =
+    dyn Fn(&str, &PhpChoice) -> Result<bool> + Send + Sync;
 
-pub fn classify(name: &str, is_known_ext: &ExtensionClassifier) -> Result<Classified> {
+pub fn classify(
+    name: &str,
+    php: &PhpChoice,
+    is_known_ext: &ExtensionClassifier,
+) -> Result<Classified> {
     if name.is_empty() {
         bail!("--with value is empty");
     }
     if name.contains('/') {
         return Ok(Classified::ComposerPackage(name.to_string()));
     }
-    if is_known_ext(name)? {
+    if is_known_ext(name, php)? {
         return Ok(Classified::Extension(name.to_string()));
     }
     bail!(
         "--with `{name}` looks like a single name with no `/` but isn't a known PHP extension. \
          If you meant a composer package, use the `<vendor>/<name>` form. \
-         If you meant an extension that bougie's index doesn't know about, \
+         If you meant an extension bougie's index doesn't know about, \
          install it project-wide first with `bougie ext add {name}`."
     );
 }
@@ -55,18 +63,28 @@ pub fn classify(name: &str, is_known_ext: &ExtensionClassifier) -> Result<Classi
 mod tests {
     use super::*;
 
+    fn dummy_php() -> PhpChoice {
+        PhpChoice {
+            version: "8.3.12".into(),
+            flavor: "nts".into(),
+            bin: std::path::PathBuf::from("/x/php"),
+        }
+    }
+
     #[test]
     fn slash_form_is_composer_without_callback() {
         let cb: Box<ExtensionClassifier> =
-            Box::new(|_: &str| -> Result<bool> { panic!("classifier should not be called for vendor/name") });
-        let c = classify("phpstan/phpstan", cb.as_ref()).unwrap();
+            Box::new(|_: &str, _: &PhpChoice| -> Result<bool> {
+                panic!("classifier should not be called for vendor/name")
+            });
+        let c = classify("phpstan/phpstan", &dummy_php(), cb.as_ref()).unwrap();
         assert_eq!(c, Classified::ComposerPackage("phpstan/phpstan".into()));
     }
 
     #[test]
     fn slash_form_keeps_at_constraint_attached() {
-        let cb: Box<ExtensionClassifier> = Box::new(|_: &str| Ok(false));
-        let c = classify("phpstan/phpstan@^1.10", cb.as_ref()).unwrap();
+        let cb: Box<ExtensionClassifier> = Box::new(|_: &str, _: &PhpChoice| Ok(false));
+        let c = classify("phpstan/phpstan@^1.10", &dummy_php(), cb.as_ref()).unwrap();
         assert_eq!(
             c,
             Classified::ComposerPackage("phpstan/phpstan@^1.10".into())
@@ -75,31 +93,36 @@ mod tests {
 
     #[test]
     fn bare_name_classified_as_extension_via_callback() {
-        let cb: Box<ExtensionClassifier> = Box::new(|name: &str| Ok(name == "intl"));
-        let c = classify("intl", cb.as_ref()).unwrap();
+        let cb: Box<ExtensionClassifier> =
+            Box::new(|name: &str, _: &PhpChoice| Ok(name == "intl"));
+        let c = classify("intl", &dummy_php(), cb.as_ref()).unwrap();
         assert_eq!(c, Classified::Extension("intl".into()));
     }
 
     #[test]
     fn bare_name_unknown_to_callback_errors_with_hint() {
-        let cb: Box<ExtensionClassifier> = Box::new(|_: &str| Ok(false));
-        let err = classify("phpstan", cb.as_ref()).unwrap_err().to_string();
+        let cb: Box<ExtensionClassifier> = Box::new(|_: &str, _: &PhpChoice| Ok(false));
+        let err = classify("phpstan", &dummy_php(), cb.as_ref())
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("isn't a known PHP extension"), "{err}");
         assert!(err.contains("vendor"), "{err}");
     }
 
     #[test]
     fn empty_name_errors() {
-        let cb: Box<ExtensionClassifier> = Box::new(|_: &str| Ok(false));
-        assert!(classify("", cb.as_ref()).is_err());
+        let cb: Box<ExtensionClassifier> = Box::new(|_: &str, _: &PhpChoice| Ok(false));
+        assert!(classify("", &dummy_php(), cb.as_ref()).is_err());
     }
 
     #[test]
     fn classifier_error_propagates() {
-        let cb: Box<ExtensionClassifier> = Box::new(|_: &str| {
+        let cb: Box<ExtensionClassifier> = Box::new(|_: &str, _: &PhpChoice| {
             Err(eyre::eyre!("network unreachable"))
         });
-        let err = classify("intl", cb.as_ref()).unwrap_err().to_string();
+        let err = classify("intl", &dummy_php(), cb.as_ref())
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("network unreachable"), "{err}");
     }
 }

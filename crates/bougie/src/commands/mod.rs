@@ -27,6 +27,7 @@ pub mod php_upgrade;
 pub mod run;
 pub mod self_update;
 pub mod self_version;
+pub mod tool_callbacks;
 pub mod tool_dir;
 pub mod tool_exec;
 pub mod tool_inject;

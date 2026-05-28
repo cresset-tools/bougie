@@ -67,10 +67,16 @@ pub struct InstallOutcome {
 pub type LockResolver = dyn Fn(&Paths, &Path) -> Result<()> + Send + Sync;
 
 /// Ensure a PHP extension is installed in the shared store for a
-/// specific `(version, flavor)`, fronting
-/// `bougie_installer::install::install_extension`. Doesn't touch
-/// `$TOOL_DIR/conf.d/` — that's bougie-tool's job.
-pub type ExtInstaller = dyn Fn(&Paths, &str, &PhpChoice) -> Result<()> + Send + Sync;
+/// specific `(version, flavor)`, AND emit the matching conf.d fragment
+/// under the supplied tool conf.d dir. Returns the fragment's absolute
+/// path so it can be recorded in `receipt.extensions`.
+///
+/// Fronts `bougie_installer::install::install_extension` +
+/// `bougie_installer::conf_d::write_ext_fragment_into` — keeping both
+/// calls inside the callback lets `bougie-tool` stay free of the
+/// installer crate.
+pub type ExtInstaller =
+    dyn Fn(&Paths, &str, &PhpChoice, &Path) -> Result<PathBuf> + Send + Sync;
 
 /// Bundle of paths + callbacks the install / inject / upgrade flows
 /// all need. Saves passing seven near-identical arguments per call.
@@ -107,7 +113,7 @@ pub fn install(
     let mut composer_extras: Vec<String> = Vec::new();
     let mut extension_extras: Vec<String> = Vec::new();
     for name in with {
-        match classify(name, ctx.classifier)? {
+        match classify(name, &php, ctx.classifier)? {
             Classified::ComposerPackage(p) => composer_extras.push(p),
             Classified::Extension(e) => extension_extras.push(e),
         }
@@ -142,9 +148,8 @@ pub fn install(
     // `bougie tool uninstall` + retry).
     let mut tool_extensions: Vec<ToolExtension> = Vec::with_capacity(extension_extras.len());
     for ext in &extension_extras {
-        (ctx.ext_installer)(paths, ext, &php)
+        let ini_path = (ctx.ext_installer)(paths, ext, &php, &conf_d)
             .wrap_err_with(|| format!("installing extension `{ext}` for tool"))?;
-        let ini_path = write_ext_fragment(&conf_d, ext)?;
         tool_extensions.push(ToolExtension {
             name: ext.clone(),
             ini_path,
@@ -171,18 +176,6 @@ pub fn install(
         installed_bins,
         installed_extensions: extension_extras,
     })
-}
-
-/// Write a `20-<name>.ini` fragment under `$TOOL_DIR/conf.d/`. The
-/// `20-` prefix matches the project-side `bougie ext add` convention:
-/// the install's own bundled extensions live in `00-…`, project /
-/// tool overrides in `20-…`.
-fn write_ext_fragment(conf_d: &Path, ext: &str) -> Result<PathBuf> {
-    let path = conf_d.join(format!("20-{ext}.ini"));
-    let body = format!("extension={ext}\n");
-    std::fs::write(&path, body)
-        .wrap_err_with(|| format!("writing conf.d fragment {}", path.display()))?;
-    Ok(path)
 }
 
 /// Read bin entries for `package` from the just-installed vendor
@@ -498,15 +491,6 @@ mod tests {
         assert!(text.contains(r#""phpstan/phpstan-strict-rules": "^1.5""#), "{text}");
         // bare extras default to `*`
         assert!(text.contains(r#""slevomat/coding-standard": "*""#), "{text}");
-    }
-
-    #[test]
-    fn write_ext_fragment_writes_load_directive() {
-        let td = tempfile::TempDir::new().unwrap();
-        let path = write_ext_fragment(td.path(), "intl").unwrap();
-        let body = std::fs::read_to_string(&path).unwrap();
-        assert_eq!(body, "extension=intl\n");
-        assert!(path.ends_with("20-intl.ini"));
     }
 
     #[test]

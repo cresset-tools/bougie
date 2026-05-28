@@ -119,11 +119,17 @@ fn reinstall_one(
     };
     let php_spec = snapshot.php_version.clone();
 
+    // Replay both kinds of extras: composer packages live in
+    // `receipt.with`, extensions in `receipt.extensions[]`. The
+    // install pipeline re-classifies them via the supplied callback.
+    let mut extras = snapshot.with.clone();
+    extras.extend(snapshot.extensions.iter().map(|e| e.name.clone()));
+
     let outcome = install(
         ctx,
         &request,
         Some(&php_spec),
-        &snapshot.with,
+        &extras,
         true, // force — we just wiped, but the parent dir of the bin
               // symlinks may have user-placed files we own re-emitting.
     )?;

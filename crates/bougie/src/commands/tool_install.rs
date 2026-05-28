@@ -2,23 +2,16 @@
 //!
 //! Bridges `bougie-tool::install::install` (which is composer-agnostic
 //! by design) to the bougie binary's existing composer-resolve helper
-//! at `composer_update::resolve_and_write_lock`. Keeping the bougie
-//! crate's resolver glue out of `bougie-tool` avoids a circular crate
-//! dep — `bougie-composer-resolver` already lives below us in the
-//! workspace graph for the install step; only the *lock generation*
-//! glue lives up here.
+//! at `composer_update::resolve_and_write_lock`. Other callback wiring
+//! (PHP install, extension classify, extension install + conf.d) lives
+//! in `super::tool_callbacks` so the four `tool_*` dispatchers share
+//! the same code.
 
 use bougie_cli::OutputFormat;
-use bougie_installer::install::install_php;
 use bougie_output::output::{Render, emit};
 use bougie_paths::Paths;
-use bougie_resolver::ResolveOptions;
-use bougie_tool::classify::ExtensionClassifier;
-use bougie_tool::install::ExtInstaller;
-use bougie_tool::resolve::{PhpChoice, PhpInstaller};
 use bougie_tool::{install, request};
-use bougie_version::request::parse_request as parse_php_request;
-use eyre::{Result, WrapErr};
+use eyre::Result;
 use serde::Serialize;
 use std::io::{self, Write};
 use std::path::PathBuf;
@@ -69,36 +62,15 @@ pub fn run(
         super::composer_update::resolve_and_write_lock(paths, project_root)
             .map(|_| ())
     };
-    let php_installer: &PhpInstaller = &|paths, spec| {
-        let request = parse_php_request(spec)
-            .wrap_err_with(|| format!("parsing --php value `{spec}`"))?;
-        let installed = install_php(paths, &request, None, ResolveOptions::default())
-            .wrap_err_with(|| format!("installing PHP for --php {spec}"))?;
-        let version = installed.version.to_string();
-        let flavor = installed.flavor.as_str().to_string();
-        Ok(PhpChoice {
-            bin: installed.install_path.join("bin").join("php"),
-            version,
-            flavor,
-        })
-    };
-    // Phase 2 PR4 ships composer-package `--with` only. The classifier
-    // refuses bare names so the user sees the recovery hint
-    // (`bougie ext add` then `bougie tool inject` once that wiring
-    // lands) rather than the call hitting an unwired ext-installer.
-    let classifier: &ExtensionClassifier = &|_name| Ok(false);
-    let ext_installer: &ExtInstaller = &|_paths, name, _php| {
-        Err(eyre::eyre!(
-            "PHP extension `--with {name}` is not wired yet; \
-             use `vendor/name` for composer packages instead"
-        ))
-    };
+    let php_installer = super::tool_callbacks::php_installer();
+    let classifier = super::tool_callbacks::extension_classifier();
+    let ext_installer = super::tool_callbacks::extension_installer();
     let ctx = install::InstallContext {
         paths: &paths,
         resolve_lock,
-        php_installer,
-        classifier,
-        ext_installer,
+        php_installer: php_installer.as_ref(),
+        classifier: classifier.as_ref(),
+        ext_installer: ext_installer.as_ref(),
     };
     let outcome = install::install(&ctx, &req, php_spec, with, force)?;
     emit(

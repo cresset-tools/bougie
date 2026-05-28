@@ -59,11 +59,12 @@ pub fn inject(
         })?;
 
     let mut receipt = receipt::read(&tool_dir.join("receipt.toml"))?;
+    let php = php_from(&receipt);
 
     let mut added_composer: Vec<String> = Vec::new();
     let mut added_extensions: Vec<String> = Vec::new();
     for name in extras {
-        match classify(name, ctx.classifier)? {
+        match classify(name, &php, ctx.classifier)? {
             Classified::ComposerPackage(p) => {
                 let key = composer_name(&p);
                 if receipt.with.iter().any(|w| composer_name(w) == key) {
@@ -94,21 +95,21 @@ pub fn inject(
             .wrap_err("installing tool dependencies")?;
     }
 
-    // Extensions go through the bougie binary's installer + conf.d
-    // wiring — once that lands, the receipt's `extensions` field
-    // grows the new entries. Bougie's PR5 build supplies a stub that
-    // bails before reaching here for any bare-name extra.
-    let php_choice = crate::resolve::PhpChoice {
-        version: receipt.php_version.clone(),
-        flavor: receipt.php_flavor.clone(),
-        bin: receipt.php_resolved_path.clone(),
-    };
+    // Extension installation: front the bougie binary's callback,
+    // which installs the .so into the shared store and writes the
+    // matching conf.d fragment under `$TOOL_DIR/conf.d/`. The
+    // returned ini path lands in the receipt for uninject /
+    // uninstall.
+    let conf_d = tool_dir.join("conf.d");
+    std::fs::create_dir_all(&conf_d)
+        .wrap_err_with(|| format!("creating {}", conf_d.display()))?;
     for ext in &added_extensions {
-        (ctx.ext_installer)(ctx.paths, ext, &php_choice)
+        let ini_path = (ctx.ext_installer)(ctx.paths, ext, &php, &conf_d)
             .wrap_err_with(|| format!("installing extension `{ext}`"))?;
-        // Until extension-side conf.d wiring lands the stub above
-        // returns Err, so we never get here. The line below is the
-        // hook the follow-up will populate.
+        receipt.extensions.push(crate::receipt::ToolExtension {
+            name: ext.clone(),
+            ini_path,
+        });
     }
 
     receipt::write(&tool_dir.join("receipt.toml"), &receipt)?;
@@ -137,11 +138,13 @@ pub fn uninject(
         })?;
 
     let mut receipt = receipt::read(&tool_dir.join("receipt.toml"))?;
+    let php = php_from(&receipt);
 
     let mut removed_composer: Vec<String> = Vec::new();
+    let mut removed_extension_inis: Vec<std::path::PathBuf> = Vec::new();
     let mut removed_extensions: Vec<String> = Vec::new();
     for name in extras {
-        match classify(name, ctx.classifier)? {
+        match classify(name, &php, ctx.classifier)? {
             Classified::ComposerPackage(p) => {
                 let key = composer_name(&p);
                 let Some(idx) = receipt.with.iter().position(|w| composer_name(w) == key) else {
@@ -153,12 +156,25 @@ pub fn uninject(
                 let Some(idx) = receipt.extensions.iter().position(|x| x.name == e) else {
                     bail!("extension `{e}` is not currently injected into `{package}`");
                 };
-                removed_extensions.push(receipt.extensions.remove(idx).name);
+                let entry = receipt.extensions.remove(idx);
+                removed_extension_inis.push(entry.ini_path);
+                removed_extensions.push(entry.name);
             }
         }
     }
     if removed_composer.is_empty() && removed_extensions.is_empty() {
         bail!("no extras to uninject");
+    }
+
+    // Delete conf.d fragments first — the `.so` itself stays in the
+    // shared store (content-addressed; other tools or projects may
+    // still need it).
+    for ini in &removed_extension_inis {
+        match std::fs::remove_file(ini) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => bail!("removing {}: {e}", ini.display()),
+        }
     }
 
     if !removed_composer.is_empty() {
@@ -198,6 +214,17 @@ fn regenerate_and_install(
 /// doesn't.
 fn composer_name(s: &str) -> &str {
     s.split_once('@').map_or(s, |(n, _)| n)
+}
+
+/// Reconstruct a [`PhpChoice`](crate::resolve::PhpChoice) from a
+/// receipt. Used so inject / uninject can pass the right PHP context
+/// to the classifier without re-running PHP selection.
+fn php_from(receipt: &ToolReceipt) -> crate::resolve::PhpChoice {
+    crate::resolve::PhpChoice {
+        version: receipt.php_version.clone(),
+        flavor: receipt.php_flavor.clone(),
+        bin: receipt.php_resolved_path.clone(),
+    }
 }
 
 #[cfg(test)]
