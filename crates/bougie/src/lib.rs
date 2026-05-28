@@ -325,6 +325,12 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
         Command::Tool(ToolCommand::Uninstall { package }) => {
             commands::tool_uninstall::run(format, &package)
         }
+        Command::Tool(ToolCommand::Inject { package, with }) => {
+            commands::tool_inject::run(format, &package, &with)
+        }
+        Command::Tool(ToolCommand::Uninject { package, with }) => {
+            commands::tool_uninject::run(format, &package, &with)
+        }
         Command::Tool(ToolCommand::List) => commands::tool_list::run(format),
         Command::Tool(ToolCommand::Dir { package }) => {
             commands::tool_dir::run(format, package)

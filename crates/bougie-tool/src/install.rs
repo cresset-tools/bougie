@@ -245,6 +245,20 @@ fn emit_bins(
     Ok((entrypoints, installed_bins))
 }
 
+/// Regenerate `composer.json` from a receipt's current state. Used by
+/// `inject` / `uninject` after they mutate `receipt.with`.
+pub fn write_composer_json_for_receipt(
+    tool_dir: &Path,
+    receipt: &ToolReceipt,
+) -> Result<()> {
+    write_composer_json(
+        tool_dir,
+        &receipt.package,
+        &receipt.constraint,
+        &receipt.with,
+    )
+}
+
 fn write_composer_json(
     tool_dir: &Path,
     package: &str,

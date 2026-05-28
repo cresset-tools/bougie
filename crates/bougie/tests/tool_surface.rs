@@ -214,6 +214,46 @@ fn tool_uninstall_errors_for_unknown_tool() {
 }
 
 #[test]
+fn tool_inject_errors_for_unknown_tool() {
+    let env = TestEnv::new();
+    env.bougie()
+        .args(["tool", "inject", "phpstan/phpstan", "--with", "vendor/extra"])
+        .assert()
+        .failure()
+        .stderr(contains("not installed"));
+}
+
+#[test]
+fn tool_uninject_errors_when_extra_absent() {
+    let env = TestEnv::new();
+    let fake_php = std::env::current_exe().unwrap();
+    make_tool_dir(env.home_path(), "phpstan/phpstan", &fake_php);
+    env.bougie()
+        .args([
+            "tool",
+            "uninject",
+            "phpstan/phpstan",
+            "--with",
+            "phpstan/phpstan-strict-rules",
+        ])
+        .assert()
+        .failure()
+        .stderr(contains("not currently injected"));
+}
+
+#[test]
+fn tool_inject_rejects_bare_name_with_classifier_hint() {
+    let env = TestEnv::new();
+    let fake_php = std::env::current_exe().unwrap();
+    make_tool_dir(env.home_path(), "phpstan/phpstan", &fake_php);
+    env.bougie()
+        .args(["tool", "inject", "phpstan/phpstan", "--with", "intl"])
+        .assert()
+        .failure()
+        .stderr(contains("isn't a known PHP extension"));
+}
+
+#[test]
 fn tool_exec_rejects_wrapper_outside_tools_dir() {
     let env = TestEnv::new();
     // Ensure the tools dir exists (canonicalize would otherwise fail

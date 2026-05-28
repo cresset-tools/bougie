@@ -622,6 +622,25 @@ pub enum ToolCommand {
         /// Composer package identifier.
         package: String,
     },
+    /// Add an extra composer package or PHP extension to an
+    /// installed tool. Re-resolves the tool's lock and updates the
+    /// vendor tree in place.
+    Inject {
+        /// Composer package identifier of the tool.
+        package: String,
+        /// Extra to add (`vendor/name[@<constraint>]` for composer
+        /// packages, bare name for PHP extensions). Repeatable.
+        #[arg(long, value_name = "PKG_OR_EXT", required = true)]
+        with: Vec<String>,
+    },
+    /// Remove an extra previously added via `--with` / `inject`.
+    Uninject {
+        /// Composer package identifier of the tool.
+        package: String,
+        /// Extra to remove. Repeatable.
+        #[arg(long, value_name = "PKG_OR_EXT", required = true)]
+        with: Vec<String>,
+    },
     /// List installed tools.
     List,
     /// Print a tool's install directory, or the tools root if no

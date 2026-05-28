@@ -29,8 +29,10 @@ pub mod self_update;
 pub mod self_version;
 pub mod tool_dir;
 pub mod tool_exec;
+pub mod tool_inject;
 pub mod tool_install;
 pub mod tool_list;
+pub mod tool_uninject;
 pub mod tool_uninstall;
 #[cfg(unix)]
 pub mod make;

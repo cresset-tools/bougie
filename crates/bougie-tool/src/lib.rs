@@ -13,6 +13,7 @@
 
 pub mod classify;
 pub mod exec;
+pub mod inject;
 pub mod install;
 pub mod list;
 pub mod receipt;
