@@ -766,6 +766,7 @@ dependencies = [
  "bougie-fs",
  "bougie-paths",
  "bougie-semver",
+ "bougie-version",
  "eyre",
  "serde",
  "serde_json",

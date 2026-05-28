@@ -602,6 +602,12 @@ pub enum ToolCommand {
     Install {
         /// Composer package identifier, optionally with `@<constraint>`.
         package: String,
+        /// Pin the tool to a specific PHP. Accepts a version (`8.3`,
+        /// `8.3.12`) or a constraint (`~8.3`, `>=8.2,<8.4`). When the
+        /// requested PHP isn't installed, bougie installs it
+        /// automatically. Defaults to the highest installed NTS PHP.
+        #[arg(long, value_name = "VER")]
+        php: Option<String>,
         /// Overwrite an existing executable at the bin-dir path.
         #[arg(long)]
         force: bool,

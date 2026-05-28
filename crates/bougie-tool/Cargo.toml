@@ -14,6 +14,7 @@ bougie-errors = { workspace = true }
 bougie-fs = { workspace = true }
 bougie-paths = { workspace = true }
 bougie-semver = { workspace = true }
+bougie-version = { workspace = true }
 
 [dependencies.eyre]
 version = "0.6"

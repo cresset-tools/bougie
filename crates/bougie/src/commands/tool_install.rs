@@ -9,10 +9,14 @@
 //! glue lives up here.
 
 use bougie_cli::OutputFormat;
+use bougie_installer::install::install_php;
 use bougie_output::output::{Render, emit};
 use bougie_paths::Paths;
+use bougie_resolver::ResolveOptions;
+use bougie_tool::resolve::{PhpChoice, PhpInstaller};
 use bougie_tool::{install, request};
-use eyre::Result;
+use bougie_version::request::parse_request as parse_php_request;
+use eyre::{Result, WrapErr};
 use serde::Serialize;
 use std::io::{self, Write};
 use std::path::PathBuf;
@@ -43,14 +47,39 @@ impl Render for ToolInstallResult {
     }
 }
 
-pub fn run(format: OutputFormat, package: &str, force: bool) -> Result<ExitCode> {
+pub fn run(
+    format: OutputFormat,
+    package: &str,
+    php_spec: Option<&str>,
+    force: bool,
+) -> Result<ExitCode> {
     let paths = Paths::from_env()?;
     let req = request::parse(package)?;
     let resolve_lock: &install::LockResolver = &|paths, project_root| {
         super::composer_update::resolve_and_write_lock(paths, project_root)
             .map(|_| ())
     };
-    let outcome = install::install(&paths, &req, force, resolve_lock)?;
+    let php_installer: &PhpInstaller = &|paths, spec| {
+        let request = parse_php_request(spec)
+            .wrap_err_with(|| format!("parsing --php value `{spec}`"))?;
+        let installed = install_php(paths, &request, None, ResolveOptions::default())
+            .wrap_err_with(|| format!("installing PHP for --php {spec}"))?;
+        let version = installed.version.to_string();
+        let flavor = installed.flavor.as_str().to_string();
+        Ok(PhpChoice {
+            bin: installed.install_path.join("bin").join("php"),
+            version,
+            flavor,
+        })
+    };
+    let outcome = install::install(
+        &paths,
+        &req,
+        php_spec,
+        force,
+        resolve_lock,
+        php_installer,
+    )?;
     emit(
         format,
         &ToolInstallResult {

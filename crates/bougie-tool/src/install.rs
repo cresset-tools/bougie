@@ -66,13 +66,15 @@ pub type LockResolver = dyn Fn(&Paths, &Path) -> Result<()> + Send + Sync;
 pub fn install(
     paths: &Paths,
     request: &ToolRequest,
+    php_spec: Option<&str>,
     force: bool,
     resolve_lock: &LockResolver,
+    php_installer: &resolve::PhpInstaller,
 ) -> Result<InstallOutcome> {
     ensure_stable_bougie_symlink(paths)
         .wrap_err("setting up stable bougie symlink")?;
 
-    let php = resolve::pick_php(paths)?;
+    let php = resolve::pick_php(paths, php_spec, php_installer)?;
     let constraint = request
         .constraint
         .clone()
