@@ -260,6 +260,20 @@ impl Paths {
         self.cache.join("composer-metadata")
     }
 
+    /// Root of the ephemeral `bougie tool run` cache. Each subdir is
+    /// a content-addressed install slot keyed by
+    /// `(package, constraint, php_version, php_flavor, sorted_with)`
+    /// — see `bougie_tool::run::cache_key`. `bougie cache prune`
+    /// walks this dir by mtime and drops entries past the TTL.
+    pub fn cache_tool_run(&self) -> PathBuf {
+        self.cache.join("tool-run")
+    }
+
+    /// Specific tool-run cache slot: `cache_tool_run/<hash>/`.
+    pub fn cache_tool_run_dir(&self, key: &str) -> PathBuf {
+        self.cache_tool_run().join(key)
+    }
+
     // ---------- `bougied` daemon + service supervisor paths ----------
     //
     // See SERVICES.md and CLI.md §2.1 in the php-build-standalone repo
@@ -422,6 +436,11 @@ mod tests {
         assert_eq!(p.cache_blobs(), Path::new("/c/blobs"));
         assert_eq!(p.cache_composer_dist(), Path::new("/c/composer-dist"));
         assert_eq!(p.cache_composer_metadata(), Path::new("/c/composer-metadata"));
+        assert_eq!(p.cache_tool_run(), Path::new("/c/tool-run"));
+        assert_eq!(
+            p.cache_tool_run_dir("abc123"),
+            Path::new("/c/tool-run/abc123")
+        );
     }
 
     /// Two-arg `new(home, cache)` shorthand keeps the legacy single-root

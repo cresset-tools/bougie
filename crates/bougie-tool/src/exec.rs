@@ -54,18 +54,19 @@ pub fn prepare(
     wrapper: &Path,
     user_args: Vec<OsString>,
 ) -> Result<ToolExecPrep> {
-    // Reject wrapper paths outside `$BOUGIE_LOCAL/tools/`. Without this
-    // a misconfigured shebang on a user-controlled file could turn
-    // `bougie tool-exec` into a "run this file under our pinned PHP"
-    // primitive, which isn't its job.
-    let tools_root = paths.tools();
+    // Reject wrapper paths outside `$BOUGIE_LOCAL/tools/` or
+    // `$BOUGIE_CACHE/tool-run/`. Without this a misconfigured shebang
+    // on a user-controlled file could turn `bougie tool-exec` into a
+    // "run this file under our pinned PHP" primitive, which isn't
+    // its job. The cache root is allowed too because Phase 3's
+    // `bougie tool run` materialises ephemeral tool dirs there.
     let canon_wrapper = canon(wrapper)?;
-    let canon_tools = canon(&tools_root)?;
-    if !canon_wrapper.starts_with(&canon_tools) {
+    if !is_allowed_wrapper_parent(paths, &canon_wrapper) {
         bail!(
-            "bougie tool-exec refuses to run {}: not under {}",
+            "bougie tool-exec refuses to run {}: not under {} or {}",
             wrapper.display(),
-            tools_root.display()
+            paths.tools().display(),
+            paths.cache_tool_run().display(),
         );
     }
 
@@ -193,6 +194,17 @@ pub fn execve_replace(_prep: &ToolExecPrep) -> Result<std::convert::Infallible> 
 fn canon(p: &Path) -> Result<PathBuf> {
     std::fs::canonicalize(p)
         .wrap_err_with(|| format!("resolving {}", p.display()))
+}
+
+/// True when `canon_wrapper` lives under one of the two roots
+/// `tool-exec` accepts: persistent tools or the ephemeral run cache.
+/// Missing roots (neither has ever been created) are treated as
+/// "not under" — the wrapper can't be inside a dir that doesn't
+/// exist.
+fn is_allowed_wrapper_parent(paths: &Paths, canon_wrapper: &Path) -> bool {
+    [paths.tools(), paths.cache_tool_run()]
+        .into_iter()
+        .any(|root| canon(&root).is_ok_and(|c| canon_wrapper.starts_with(c)))
 }
 
 #[cfg(test)]

@@ -44,7 +44,7 @@ const RECORDED_COMPOSER_VERSION: &str = "2.8.12";
 /// itself treats `*` as "any version", which combined with bougie's
 /// resolver preferring stable releases gives "latest stable matching
 /// the tool's PHP" — the intuitive default for tool install.
-const DEFAULT_CONSTRAINT: &str = "*";
+pub const DEFAULT_CONSTRAINT: &str = "*";
 
 /// Matches the per-tool composer lock timeout in
 /// `bougie-composer/src/mod.rs` — the same "are we waiting on another
@@ -89,12 +89,35 @@ pub struct InstallContext<'a> {
     pub ext_installer: &'a ExtInstaller,
 }
 
+/// Where the install lands and whether its bin entries are exposed
+/// on PATH.
+#[derive(Debug, Clone)]
+pub enum InstallTarget {
+    /// Default: `paths.tool_dir(package)`. Wrappers also get symlinked
+    /// from `paths.tool_bin_dir()`.
+    Persistent,
+    /// Ephemeral cache slot at `dir`. No PATH symlinks — the slot is
+    /// invoked by `bougie tool run` via `exec::prepare` directly.
+    Ephemeral { dir: PathBuf },
+}
+
 pub fn install(
     ctx: &InstallContext<'_>,
     request: &ToolRequest,
     php_spec: Option<&str>,
     with: &[String],
     force: bool,
+) -> Result<InstallOutcome> {
+    install_into(ctx, request, php_spec, with, force, &InstallTarget::Persistent)
+}
+
+pub fn install_into(
+    ctx: &InstallContext<'_>,
+    request: &ToolRequest,
+    php_spec: Option<&str>,
+    with: &[String],
+    force: bool,
+    target: &InstallTarget,
 ) -> Result<InstallOutcome> {
     let paths = ctx.paths;
     ensure_stable_bougie_symlink(paths)
@@ -106,7 +129,11 @@ pub fn install(
         .clone()
         .unwrap_or_else(|| DEFAULT_CONSTRAINT.to_string());
     let package = request.package();
-    let tool_dir = paths.tool_dir(&package);
+    let tool_dir = match target {
+        InstallTarget::Persistent => paths.tool_dir(&package),
+        InstallTarget::Ephemeral { dir } => dir.clone(),
+    };
+    let expose_on_path = matches!(target, InstallTarget::Persistent);
 
     // Classify every --with up front so a bad name fails before we
     // touch the tool dir.
@@ -139,7 +166,8 @@ pub fn install(
     std::fs::create_dir_all(&conf_d)
         .wrap_err_with(|| format!("creating {}", conf_d.display()))?;
 
-    let (entrypoints, installed_bins) = emit_bins(paths, &tool_dir, &package, force)?;
+    let (entrypoints, installed_bins) =
+        emit_bins(paths, &tool_dir, &package, force, expose_on_path)?;
 
     // Install + enable extension extras now that the tool dir exists.
     // Errors are propagated — a failed extension install rolls back at
@@ -187,6 +215,7 @@ pub fn emit_bins(
     tool_dir: &Path,
     package: &str,
     force: bool,
+    expose_on_path: bool,
 ) -> Result<(Vec<ToolEntrypoint>, Vec<PathBuf>)> {
     let bin_entries = read_bin_entries(tool_dir, package)?;
     if bin_entries.is_empty() {
@@ -205,7 +234,7 @@ pub fn emit_bins(
     }
 
     let tool_bin_dir = paths.tool_bin_dir();
-    if !force {
+    if expose_on_path && !force {
         for (name, _) in &bins {
             let path = tool_bin_dir.join(name);
             if std::fs::symlink_metadata(&path).is_ok() {
@@ -225,8 +254,17 @@ pub fn emit_bins(
         let wrapper_text = wrapper::render_unix(&stable_bougie, name, vendor_relative);
         wrapper::write_executable(&wrapper_path, &wrapper_text)?;
 
-        let install_path = tool_bin_dir.join(name);
-        place_symlink(&wrapper_path, &install_path, force)?;
+        // For ephemeral runs the wrapper is invoked directly by
+        // `exec::prepare`; we don't symlink it onto PATH. The
+        // receipt's `install_path` then points at the wrapper itself,
+        // which is the canonical "where to find this bin" answer.
+        let install_path = if expose_on_path {
+            let p = tool_bin_dir.join(name);
+            place_symlink(&wrapper_path, &p, force)?;
+            p
+        } else {
+            wrapper_path.clone()
+        };
 
         entrypoints.push(ToolEntrypoint {
             name: name.clone(),

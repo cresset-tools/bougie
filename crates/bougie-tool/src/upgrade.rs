@@ -74,7 +74,7 @@ pub fn upgrade_one(
     // symlinked (with `force = true` so a name carried across
     // versions is overwritten in place).
     let (entrypoints, installed_bins) =
-        install_mod::emit_bins(ctx.paths, &tool_dir, &receipt.package, true)?;
+        install_mod::emit_bins(ctx.paths, &tool_dir, &receipt.package, true, true)?;
     prune_dropped_entrypoints(&receipt.entrypoints, &entrypoints)?;
     receipt.entrypoints = entrypoints;
     receipt::write(&tool_dir.join("receipt.toml"), &receipt)?;

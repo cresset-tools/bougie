@@ -649,6 +649,24 @@ pub enum ToolCommand {
         /// Composer package identifier; omit to print the tools root.
         package: Option<String>,
     },
+    /// Run an installed-or-cached tool one-off. Reuses an existing
+    /// persistent install if `(package, constraint, php, with)` match
+    /// exactly; otherwise materialises into the ephemeral cache.
+    Run {
+        /// Composer package identifier, optionally with `@<constraint>`.
+        package: String,
+        /// Pin the tool to a specific PHP for this run.
+        #[arg(long, value_name = "VER")]
+        php: Option<String>,
+        /// Extra composer package or PHP extension, same shape as
+        /// `tool install --with`. Repeatable.
+        #[arg(long, value_name = "PKG_OR_EXT")]
+        with: Vec<String>,
+        /// Arguments forwarded to the tool. Use `--` to separate
+        /// when forwarding flags that bougie would otherwise parse.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<std::ffi::OsString>,
+    },
     /// Re-resolve a tool's lock and bring its vendor tree up to date.
     /// Pass `--all` to walk every installed tool, or `--reinstall` to
     /// wipe and rebuild from scratch (recovery for broken state).

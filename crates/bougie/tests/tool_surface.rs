@@ -214,6 +214,28 @@ fn tool_uninstall_errors_for_unknown_tool() {
 }
 
 #[test]
+fn tool_run_help_lists_args_and_with() {
+    let env = TestEnv::new();
+    env.bougie()
+        .args(["tool", "run", "--help"])
+        .assert()
+        .success()
+        .stdout(contains("Run an installed-or-cached tool"))
+        .stdout(contains("--with"))
+        .stdout(contains("--php"));
+}
+
+#[test]
+fn tool_run_rejects_bare_package_name() {
+    let env = TestEnv::new();
+    env.bougie()
+        .args(["tool", "run", "phpstan"])
+        .assert()
+        .failure()
+        .stderr(contains("missing the vendor"));
+}
+
+#[test]
 fn tool_upgrade_errors_for_unknown_tool() {
     let env = TestEnv::new();
     env.bougie()

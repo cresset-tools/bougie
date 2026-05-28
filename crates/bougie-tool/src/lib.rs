@@ -15,6 +15,7 @@ pub mod classify;
 pub mod exec;
 pub mod inject;
 pub mod install;
+pub mod run;
 pub mod upgrade;
 pub mod list;
 pub mod receipt;
