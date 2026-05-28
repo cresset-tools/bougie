@@ -102,32 +102,58 @@ pub fn install(
             "package `{package}` declares no `bin` entries — there is nothing to install on PATH"
         );
     }
-    if bin_entries.len() > 1 {
-        bail!(
-            "package `{package}` exposes {n} entry points; multi-bin support lands in Phase 2",
-            n = bin_entries.len()
-        );
+
+    // Resolve each bin entry to (basename, vendor-relative path) up
+    // front. Empty basenames are a `composer.json` data error in the
+    // installed package and would otherwise surface late.
+    let mut bins: Vec<(String, String)> = Vec::with_capacity(bin_entries.len());
+    for entry in &bin_entries {
+        let name = bin_filename(entry);
+        if name.is_empty() {
+            bail!("could not derive a bin name from `{entry}`");
+        }
+        bins.push((name, entry.clone()));
     }
-    let bin_entry = &bin_entries[0];
-    let bin_name = bin_filename(bin_entry);
-    if bin_name.is_empty() {
-        bail!("could not derive a bin name from `{bin_entry}`");
+
+    // Pre-flight all bin-dir paths so a half-installed tool can't be
+    // left behind when the second of three bins collides and the
+    // first symlink has already been written. With `force` set we
+    // skip the check — overwrites are allowed by construction.
+    let tool_bin_dir = paths.tool_bin_dir();
+    if !force {
+        for (name, _) in &bins {
+            let path = tool_bin_dir.join(name);
+            if std::fs::symlink_metadata(&path).is_ok() {
+                bail!(
+                    "executable already exists at {} (use --force to overwrite)",
+                    path.display()
+                );
+            }
+        }
     }
 
     let conf_d = tool_dir.join("conf.d");
     std::fs::create_dir_all(&conf_d)
         .wrap_err_with(|| format!("creating {}", conf_d.display()))?;
 
-    let wrapper_path = tool_dir.join("bin").join(&bin_name);
-    let wrapper_text = wrapper::render_unix(
-        &paths.bin().join("bougie"),
-        &bin_name,
-        bin_entry,
-    );
-    wrapper::write_executable(&wrapper_path, &wrapper_text)?;
+    let stable_bougie = paths.bin().join("bougie");
+    let mut entrypoints: Vec<ToolEntrypoint> = Vec::with_capacity(bins.len());
+    let mut installed_bins: Vec<PathBuf> = Vec::with_capacity(bins.len());
+    for (name, vendor_relative) in &bins {
+        let wrapper_path = tool_dir.join("bin").join(name);
+        let wrapper_text = wrapper::render_unix(&stable_bougie, name, vendor_relative);
+        wrapper::write_executable(&wrapper_path, &wrapper_text)?;
 
-    let install_path = paths.tool_bin_dir().join(&bin_name);
-    place_symlink(&wrapper_path, &install_path, force)?;
+        let install_path = tool_bin_dir.join(name);
+        place_symlink(&wrapper_path, &install_path, force)?;
+
+        entrypoints.push(ToolEntrypoint {
+            name: name.clone(),
+            install_path: install_path.clone(),
+            from: package.clone(),
+        });
+        installed_bins.push(install_path);
+    }
 
     let receipt = ToolReceipt {
         package: package.clone(),
@@ -137,11 +163,7 @@ pub fn install(
         composer_version: RECORDED_COMPOSER_VERSION.into(),
         with: Vec::new(),
         php_resolved_path: php.bin.clone(),
-        entrypoints: vec![ToolEntrypoint {
-            name: bin_name,
-            install_path: install_path.clone(),
-            from: package.clone(),
-        }],
+        entrypoints,
     };
     crate::receipt::write(&tool_dir.join("receipt.toml"), &receipt)?;
 
@@ -149,7 +171,7 @@ pub fn install(
         package,
         php_version: php.version,
         tool_dir,
-        installed_bins: vec![install_path],
+        installed_bins,
     })
 }
 

@@ -18,13 +18,35 @@ use predicates::str::contains;
 use std::path::{Path, PathBuf};
 
 fn make_tool_dir(home: &Path, package: &str, php_bin: &Path) -> PathBuf {
+    let bin_name = package.rsplit_once('/').unwrap().1;
+    make_tool_dir_with_bins(home, package, php_bin, &[bin_name])
+}
+
+/// Multi-bin variant: writes one wrapper + one entrypoint per name in
+/// `bin_names`. Symlinks land in `<home>/.local/bin/<name>` (which the
+/// test then overrides via `BOUGIE_TOOL_BIN_DIR` if relevant).
+fn make_tool_dir_with_bins(
+    home: &Path,
+    package: &str,
+    php_bin: &Path,
+    bin_names: &[&str],
+) -> PathBuf {
     let tool_dir = home.join("tools").join(package.replace('/', "-"));
     std::fs::create_dir_all(tool_dir.join("bin")).unwrap();
     std::fs::create_dir_all(tool_dir.join("conf.d")).unwrap();
 
-    let bin_name = package.rsplit_once('/').unwrap().1;
-    let wrapper = tool_dir.join("bin").join(bin_name);
-    std::fs::write(&wrapper, "<?php\n").unwrap();
+    let mut entry_blocks = String::new();
+    for name in bin_names {
+        let wrapper = tool_dir.join("bin").join(name);
+        std::fs::write(&wrapper, "<?php\n").unwrap();
+        entry_blocks.push_str(&format!(
+            "\n[[entrypoints]]\n\
+             name = \"{name}\"\n\
+             install_path = \"{install}\"\n\
+             from = \"{package}\"\n",
+            install = wrapper.display(),
+        ));
+    }
 
     let receipt = format!(
         "package = \"{package}\"\n\
@@ -34,13 +56,8 @@ fn make_tool_dir(home: &Path, package: &str, php_bin: &Path) -> PathBuf {
          composer_version = \"2.8.12\"\n\
          with = []\n\
          php_resolved_path = \"{php}\"\n\
-         \n\
-         [[entrypoints]]\n\
-         name = \"{bin_name}\"\n\
-         install_path = \"{install}\"\n\
-         from = \"{package}\"\n",
+         {entry_blocks}",
         php = php_bin.display(),
-        install = tool_dir.join("bin").join(bin_name).display(),
     );
     std::fs::write(tool_dir.join("receipt.toml"), receipt).unwrap();
     tool_dir
@@ -143,6 +160,47 @@ fn tool_uninstall_removes_dir_and_symlinked_bin() {
         .stdout(contains("uninstalled phpstan/phpstan"));
 
     assert!(!tool_dir.exists(), "tool dir should be gone");
+}
+
+#[test]
+fn tool_list_shows_multi_bin_tool() {
+    let env = TestEnv::new();
+    let fake_php = std::env::current_exe().unwrap();
+    make_tool_dir_with_bins(
+        env.home_path(),
+        "vimeo/psalm",
+        &fake_php,
+        &["psalm", "psalter"],
+    );
+    env.bougie()
+        .args(["tool", "list"])
+        .assert()
+        .success()
+        .stdout(contains("vimeo/psalm"))
+        .stdout(contains("psalm, psalter"));
+}
+
+#[test]
+fn tool_uninstall_removes_all_bins_for_multi_bin_tool() {
+    let env = TestEnv::new();
+    let fake_php = std::env::current_exe().unwrap();
+    let tool_dir = make_tool_dir_with_bins(
+        env.home_path(),
+        "vimeo/psalm",
+        &fake_php,
+        &["psalm", "psalter"],
+    );
+    let bin_a = tool_dir.join("bin").join("psalm");
+    let bin_b = tool_dir.join("bin").join("psalter");
+    assert!(bin_a.exists());
+    assert!(bin_b.exists());
+
+    env.bougie()
+        .args(["tool", "uninstall", "vimeo/psalm"])
+        .assert()
+        .success();
+
+    assert!(!tool_dir.exists(), "multi-bin tool dir should be gone");
 }
 
 #[test]
