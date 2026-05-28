@@ -649,6 +649,22 @@ pub enum ToolCommand {
         /// Composer package identifier; omit to print the tools root.
         package: Option<String>,
     },
+    /// Re-resolve a tool's lock and bring its vendor tree up to date.
+    /// Pass `--all` to walk every installed tool, or `--reinstall` to
+    /// wipe and rebuild from scratch (recovery for broken state).
+    Upgrade {
+        /// Composer package identifier. Required unless `--all`.
+        #[arg(required_unless_present = "all", conflicts_with = "all")]
+        package: Option<String>,
+        /// Upgrade every installed tool.
+        #[arg(long)]
+        all: bool,
+        /// Wipe the tool dir + every entrypoint symlink and reinstall
+        /// from scratch using the receipt's pinned `(package,
+        /// constraint, php_version, with, extensions)` tuple.
+        #[arg(long)]
+        reinstall: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]

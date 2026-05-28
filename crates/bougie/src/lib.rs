@@ -331,6 +331,9 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
         Command::Tool(ToolCommand::Uninject { package, with }) => {
             commands::tool_uninject::run(format, &package, &with)
         }
+        Command::Tool(ToolCommand::Upgrade { package, all, reinstall }) => {
+            commands::tool_upgrade::run(format, package.as_deref(), all, reinstall)
+        }
         Command::Tool(ToolCommand::List) => commands::tool_list::run(format),
         Command::Tool(ToolCommand::Dir { package }) => {
             commands::tool_dir::run(format, package)

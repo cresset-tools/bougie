@@ -34,6 +34,7 @@ pub mod tool_install;
 pub mod tool_list;
 pub mod tool_uninject;
 pub mod tool_uninstall;
+pub mod tool_upgrade;
 #[cfg(unix)]
 pub mod make;
 #[cfg(unix)]

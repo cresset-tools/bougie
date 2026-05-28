@@ -189,7 +189,7 @@ fn write_ext_fragment(conf_d: &Path, ext: &str) -> Result<PathBuf> {
 /// tree, validate names + pre-flight bin-dir collisions, then emit
 /// every wrapper + symlink. Returns the receipt's `entrypoints`
 /// alongside the absolute bin paths for the install summary.
-fn emit_bins(
+pub fn emit_bins(
     paths: &Paths,
     tool_dir: &Path,
     package: &str,

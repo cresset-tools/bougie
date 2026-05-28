@@ -214,6 +214,44 @@ fn tool_uninstall_errors_for_unknown_tool() {
 }
 
 #[test]
+fn tool_upgrade_errors_for_unknown_tool() {
+    let env = TestEnv::new();
+    env.bougie()
+        .args(["tool", "upgrade", "phpstan/phpstan"])
+        .assert()
+        .failure()
+        .stderr(contains("not installed"));
+}
+
+#[test]
+fn tool_upgrade_all_with_no_tools_is_noop() {
+    let env = TestEnv::new();
+    env.bougie()
+        .args(["tool", "upgrade", "--all"])
+        .assert()
+        .success()
+        .stdout(contains("no tools to upgrade"));
+}
+
+#[test]
+fn tool_upgrade_requires_package_or_all() {
+    let env = TestEnv::new();
+    env.bougie()
+        .args(["tool", "upgrade"])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn tool_upgrade_rejects_package_and_all_together() {
+    let env = TestEnv::new();
+    env.bougie()
+        .args(["tool", "upgrade", "phpstan/phpstan", "--all"])
+        .assert()
+        .failure();
+}
+
+#[test]
 fn tool_inject_errors_for_unknown_tool() {
     let env = TestEnv::new();
     env.bougie()
