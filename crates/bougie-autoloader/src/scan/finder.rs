@@ -81,13 +81,19 @@ pub(crate) fn find_classes(input: &[u8]) -> Vec<String> {
         if caps.name("ns").is_some() {
             if let Some(nsname) = caps.name("nsname") {
                 // Strip interior whitespace — `namespace  Foo \ Bar;` is
-                // legal but the canonical form has no whitespace.
-                let mut s: String = String::with_capacity(nsname.as_bytes().len() + 1);
+                // legal but the canonical form has no whitespace. Decode
+                // the remaining bytes as UTF-8 (same as the class-name
+                // path below) — `b as char` would reinterpret a multibyte
+                // UTF-8 namespace as Latin-1 and re-encode it as mojibake,
+                // diverging byte-for-byte from Composer.
+                let mut ns_bytes: Vec<u8> = Vec::with_capacity(nsname.as_bytes().len() + 1);
                 for &b in nsname.as_bytes() {
                     if !matches!(b, b' ' | b'\t' | b'\r' | b'\n') {
-                        s.push(b as char);
+                        ns_bytes.push(b);
                     }
                 }
+                let mut s = String::from_utf8(ns_bytes)
+                    .unwrap_or_else(|e| String::from_utf8_lossy(&e.into_bytes()).into_owned());
                 s.push('\\');
                 current_ns = s;
             } else {
