@@ -104,6 +104,10 @@ impl super::Backend for BougieIndexBackend {
             &selected.artifact.manifest.path,
             &selected.artifact.manifest.sha256,
         )?;
+        // sha256 only proves the bytes match the section row; structural
+        // safety (absolute blob/closure URLs, hex shape, `link_into`
+        // traversal) is enforced separately.
+        manifest.validate()?;
 
         Ok(PhpRecipe {
             version: selected.version,
@@ -172,6 +176,7 @@ impl super::Backend for BougieIndexBackend {
             &selected.artifact.manifest.path,
             &selected.artifact.manifest.sha256,
         )?;
+        manifest.validate()?;
         let ext_ref = manifest.extension.as_ref().ok_or_else(|| {
             eyre!(
                 "manifest for {} is missing the `extension` field — \
