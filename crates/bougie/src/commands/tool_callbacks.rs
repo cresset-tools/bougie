@@ -4,15 +4,17 @@
 //! plumbing.
 
 use bougie_errors::BougieError;
-use bougie_installer::baseline::{BASELINE_EXTENSIONS, BUILTIN_EXTENSIONS};
+use bougie_installer::baseline::{BASELINE_EXTENSIONS, BUILTIN_EXTENSIONS, BaselineFilter};
 use bougie_installer::conf_d::write_ext_fragment_into;
-use bougie_installer::install::{DEFAULT_INDEX_URL, install_extension, install_php};
+use bougie_installer::install::{
+    DEFAULT_INDEX_URL, install_baseline_into, install_extension, install_php,
+};
 use bougie_paths::Paths;
 use bougie_platform::target::Triple;
 use bougie_resolver::ResolveOptions;
 use bougie_tool::classify::ExtensionClassifier;
 use bougie_tool::install::ExtInstaller;
-use bougie_tool::resolve::{PhpChoice, PhpInstaller, RequiredPhpFetcher};
+use bougie_tool::resolve::{BaselineEnsurer, PhpChoice, PhpInstaller, RequiredPhpFetcher};
 use bougie_version::request::Flavor;
 use bougie_version::request::parse_request as parse_php_request;
 use bougie_version::version::PartialVersion;
@@ -59,6 +61,43 @@ pub fn required_php_fetcher() -> Box<RequiredPhpFetcher> {
             Ok(None)
         },
     )
+}
+
+/// Build the `BaselineEnsurer` callback. Calls
+/// `install_baseline_into` so the chosen PHP has `phar`, `mbstring`,
+/// `tokenizer`, `dom`, etc. loadable before the tool's composer
+/// install + first run. Idempotent: the installer's per-extension
+/// skip-if-installed check makes repeat calls cheap.
+///
+/// Per-extension failures land in `BaselineReport.failed`; surfaced
+/// as warnings rather than hard errors so a single yanked baseline
+/// extension doesn't block tool installs.
+pub fn baseline_ensurer() -> Box<BaselineEnsurer> {
+    Box::new(|paths: &Paths, php: &PhpChoice| -> Result<()> {
+        let (php_minor, flavor) = parse_php_choice(php)?;
+        let install_root = php
+            .bin
+            .parent()
+            .and_then(std::path::Path::parent)
+            .ok_or_else(|| {
+                eyre::eyre!(
+                    "php_resolved_path is too shallow to derive an install root: {}",
+                    php.bin.display()
+                )
+            })?;
+        let report = install_baseline_into(
+            paths,
+            install_root,
+            php_minor,
+            flavor,
+            &BaselineFilter::All,
+            ResolveOptions::default(),
+        );
+        for (name, err) in &report.failed {
+            eprintln!("warning: baseline extension `{name}` failed: {err}");
+        }
+        Ok(())
+    })
 }
 
 /// Build the `PhpInstaller` callback. Auto-installs the requested PHP

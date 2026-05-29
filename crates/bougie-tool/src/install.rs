@@ -93,6 +93,12 @@ pub struct InstallContext<'a> {
     /// phpstan's own `require.php` constraint actually wants, rather
     /// than blindly grabbing the highest installed NTS.
     pub php_requirement: &'a resolve::RequiredPhpFetcher,
+    /// Ensures the chosen PHP has its baseline extensions installed
+    /// before the tool's composer install runs. Required because
+    /// modern PHP builds in bougie's index ship without baseline —
+    /// without this step, every tool that touches `Phar` /
+    /// `mbstring` / `tokenizer` would crash at first use.
+    pub php_baseline: &'a resolve::BaselineEnsurer,
 }
 
 /// Where the install lands and whether its bin entries are exposed
@@ -141,6 +147,7 @@ pub fn install_into(
         php_spec,
         ctx.php_installer,
         ctx.php_requirement,
+        ctx.php_baseline,
     )?;
     let tool_dir = match target {
         InstallTarget::Persistent => paths.tool_dir(&package),
@@ -305,28 +312,33 @@ pub fn pick_php_for_install(
     php_spec: Option<&str>,
     installer: &resolve::PhpInstaller,
     requirement: &resolve::RequiredPhpFetcher,
+    baseline: &resolve::BaselineEnsurer,
 ) -> Result<resolve::PhpChoice> {
-    if let Some(spec) = php_spec {
-        return resolve::pick_php(paths, Some(spec), installer);
-    }
-    match requirement(paths, package, constraint) {
-        Ok(Some(php_constraint)) => {
-            resolve::pick_php_for_constraint(paths, &php_constraint, installer)
+    let php = if let Some(spec) = php_spec {
+        resolve::pick_php(paths, Some(spec), installer)?
+    } else {
+        match requirement(paths, package, constraint) {
+            Ok(Some(php_constraint)) => {
+                resolve::pick_php_for_constraint(paths, &php_constraint, installer)?
+            }
+            Ok(None) => resolve::pick_php(paths, None, installer)?,
+            Err(e) => {
+                // Network blip / cache miss / etc. Don't block the
+                // install — fall back to the legacy default. A
+                // warning surfaces so the user can opt into `--php`
+                // for a deterministic answer.
+                eprintln!(
+                    "warning: couldn't look up `{package}`'s require.php ({e:#}); \
+                     picking highest installed NTS PHP. \
+                     Pass `--php <ver>` to bypass this lookup.",
+                );
+                resolve::pick_php(paths, None, installer)?
+            }
         }
-        Ok(None) => resolve::pick_php(paths, None, installer),
-        Err(e) => {
-            // Network blip / cache miss / etc. Don't block the
-            // install — fall back to the legacy default. A warning
-            // surfaces so the user can opt into `--php` for a
-            // deterministic answer.
-            eprintln!(
-                "warning: couldn't look up `{package}`'s require.php ({e:#}); \
-                 picking highest installed NTS PHP. \
-                 Pass `--php <ver>` to bypass this lookup.",
-            );
-            resolve::pick_php(paths, None, installer)
-        }
-    }
+    };
+    baseline(paths, &php)
+        .wrap_err_with(|| format!("ensuring baseline extensions for PHP {}", php.version))?;
+    Ok(php)
 }
 
 /// Regenerate `composer.json` from a receipt's current state. Used by

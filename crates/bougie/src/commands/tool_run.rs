@@ -30,6 +30,7 @@ pub fn run(
     let classifier = super::tool_callbacks::extension_classifier();
     let ext_installer = super::tool_callbacks::extension_installer();
     let php_requirement = super::tool_callbacks::required_php_fetcher();
+    let php_baseline = super::tool_callbacks::baseline_ensurer();
     let ctx = InstallContext {
         paths: &paths,
         resolve_lock,
@@ -37,6 +38,7 @@ pub fn run(
         classifier: classifier.as_ref(),
         ext_installer: ext_installer.as_ref(),
         php_requirement: php_requirement.as_ref(),
+        php_baseline: php_baseline.as_ref(),
     };
     // `run::run` returns `Infallible` on Unix because it execve's
     // into PHP. The `Result` carries only the prep-time / execve

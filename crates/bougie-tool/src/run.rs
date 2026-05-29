@@ -98,6 +98,7 @@ pub fn prepare(
         php_spec,
         ctx.php_installer,
         ctx.php_requirement,
+        ctx.php_baseline,
     )?;
 
     if let Some(dir) = find_persistent_match(ctx.paths, &package, &constraint, &php, with)? {

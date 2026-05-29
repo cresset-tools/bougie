@@ -54,6 +54,19 @@ pub type PhpInstaller = dyn Fn(&Paths, &str) -> Result<PhpChoice> + Send + Sync;
 pub type RequiredPhpFetcher =
     dyn Fn(&Paths, &str, &str) -> Result<Option<String>> + Send + Sync;
 
+/// Callback that ensures the chosen PHP install has its baseline
+/// extensions (phar, mbstring, tokenizer, dom, …) installed and
+/// loadable. Newer PHP builds in bougie's index ship a *bare*
+/// tarball — no conf.d entries, only builtins available. Without
+/// this step a tool that calls `Phar::…` or `mb_…` crashes at
+/// runtime. Idempotent: a no-op when the baseline is already
+/// installed.
+///
+/// Hosted by the bougie binary so this crate stays free of
+/// `bougie-installer::install::install_baseline_into`.
+pub type BaselineEnsurer =
+    dyn Fn(&Paths, &PhpChoice) -> Result<()> + Send + Sync;
+
 /// Pick a PHP that satisfies `php_constraint` (a composer-style
 /// constraint string, typically a package's `require.php`). Prefers
 /// the highest installed NTS PHP that matches; falls through to
