@@ -68,7 +68,7 @@ bougie-config = { workspace = true }
 bougie-errors = { workspace = true }
 bougie-fetch = { workspace = true }
 bougie-fs = { workspace = true }
-bougie-index = { path = "../bougie-index", version = "0.6.1", default-features = false }
+bougie-index = { path = "../bougie-index", version = "0.6.2", default-features = false }
 bougie-installer = { workspace = true }
 bougie-output = { workspace = true }
 bougie-paths = { workspace = true }
@@ -170,7 +170,7 @@ sigstore = { version = "0.13", default-features = false, features = ["cosign", "
 zstd = { version = "0.13", default-features = false }
 tar = "0.4"
 rustix = { version = "1.0", default-features = false, features = ["std", "fs", "process"] }
-bougie-index = { path = "../bougie-index", version = "0.6.1" }
+bougie-index = { path = "../bougie-index", version = "0.6.2" }
 bougie-composer = { workspace = true }
 
 [lints]

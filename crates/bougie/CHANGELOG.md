@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.2](https://github.com/cresset-tools/bougie/compare/bougie-v0.6.1...bougie-v0.6.2) - 2026-05-29
+
+### Added
+
+- *(release)* ship dist binary pipeline + bougie.tools mirror ([#206](https://github.com/cresset-tools/bougie/pull/206))
+- *(tool)* ship `bougie tool` (Phases 1–3) + incremental composer install ([#204](https://github.com/cresset-tools/bougie/pull/204))
+
 ## [0.6.1](https://github.com/cresset-tools/bougie/compare/bougie-v0.6.0...bougie-v0.6.1) - 2026-05-28
 
 ### Added
