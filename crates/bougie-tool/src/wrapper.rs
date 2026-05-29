@@ -16,7 +16,9 @@
 //!   wrapper. The whole tool dir is then relocatable — moving
 //!   `$BOUGIE_LOCAL` doesn't invalidate wrappers.
 
-use eyre::{Result, WrapErr};
+use eyre::Result;
+#[cfg(unix)]
+use eyre::WrapErr;
 use std::path::Path;
 
 /// Generate the textual contents of a Unix tool wrapper.
