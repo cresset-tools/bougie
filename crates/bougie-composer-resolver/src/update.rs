@@ -1364,15 +1364,60 @@ async fn run_prefetch_fanout(
                     .get(name.as_str())
                     .copied()
                     .unwrap_or(minimum_stability);
-                load_real_candidates_isolated(
-                    &client,
-                    &paths,
-                    &repos,
-                    &v1_tables,
-                    name.as_str(),
-                    floor,
-                )
-                .await
+                // Per-attempt timeout + bounded retry. A metadata GET is
+                // a small JSON response that normally lands in well under
+                // a second; the shared client's 5-minute ceiling is sized
+                // for dist *downloads*, not metadata. Occasionally one
+                // connection stalls between connect and first byte
+                // (reproduced against the Mage-OS mirror under fan-out),
+                // and without this a single stalled request blocks the
+                // whole closure — `join_next` waits on it — for up to that
+                // full 5 minutes. Abandon a slow attempt fast and retry on
+                // a fresh connection instead. 404s come back as `Ok(None)`
+                // from `fetch_one_isolated`, so a missing package is never
+                // an `Err` here and never burns retries.
+                const ATTEMPT_TIMEOUT: std::time::Duration =
+                    std::time::Duration::from_secs(20);
+                const MAX_ATTEMPTS: usize = 4;
+                let mut last_err: Option<ProviderError> = None;
+                for attempt in 0..MAX_ATTEMPTS {
+                    match tokio::time::timeout(
+                        ATTEMPT_TIMEOUT,
+                        load_real_candidates_isolated(
+                            &client,
+                            &paths,
+                            &repos,
+                            &v1_tables,
+                            name.as_str(),
+                            floor,
+                        ),
+                    )
+                    .await
+                    {
+                        Ok(Ok(outcome)) => return Ok(outcome),
+                        Ok(Err(e)) => last_err = Some(e),
+                        Err(_elapsed) => {
+                            last_err = Some(ProviderError(format!(
+                                "metadata fetch for `{}` timed out after {}s (attempt {}/{MAX_ATTEMPTS})",
+                                name.as_str(),
+                                ATTEMPT_TIMEOUT.as_secs(),
+                                attempt + 1,
+                            )));
+                        }
+                    }
+                    if attempt + 1 < MAX_ATTEMPTS {
+                        // Linear backoff: 150ms, 300ms, 450ms. Short —
+                        // the goal is to dodge a single bad connection,
+                        // not to ride out an outage.
+                        tokio::time::sleep(std::time::Duration::from_millis(
+                            150 * (attempt as u64 + 1),
+                        ))
+                        .await;
+                    }
+                }
+                Err(last_err.unwrap_or_else(|| {
+                    ProviderError(format!("metadata fetch for `{}` failed", name.as_str()))
+                }))
             });
         };
 
