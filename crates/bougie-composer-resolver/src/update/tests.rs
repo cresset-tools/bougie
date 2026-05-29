@@ -2467,3 +2467,16 @@ fn analyze_resolution_problems_detects_transitive_conflict() {
     assert!(report.contains("acme/bar"), "report:\n{report}");
     assert!(report.contains("conflicts"), "report:\n{report}");
 }
+
+#[test]
+fn repo_host_extracts_origin_for_per_host_throttle() {
+    // Same host across different paths/ports → same limiter key.
+    assert_eq!(super::repo_host("https://repo.mage-os.org"), "repo.mage-os.org");
+    assert_eq!(
+        super::repo_host("https://repo.mage-os.org/p2/foo/bar.json"),
+        "repo.mage-os.org"
+    );
+    assert_eq!(super::repo_host("https://repo.packagist.org"), "repo.packagist.org");
+    // Unparseable URL falls back to the raw string (still a stable key).
+    assert_eq!(super::repo_host("not a url"), "not a url");
+}
