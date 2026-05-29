@@ -20,7 +20,10 @@ fn main() -> ExitCode {
         Ok(p) => p,
         Err(e) => {
             eprintln!("error: {e}");
-            return ExitCode::from(1);
+            // Exit 2 distinguishes "the shim couldn't even find
+            // bougie" from "bougie ran and reported exit 1". Matches
+            // uv's uvx convention.
+            return ExitCode::from(2);
         }
     };
 
@@ -52,8 +55,15 @@ fn locate_bougie() -> Result<PathBuf, String> {
         && let Some(dir) = exe.parent()
     {
         let candidate = dir.join(bougie_name);
-        if candidate.is_file() {
-            return Ok(candidate);
+        // `try_exists` distinguishes "definitely not there"
+        // (Ok(false), fall through) from "couldn't check"
+        // (Err, optimistically try anyway — exec will surface a
+        // useful error if it really isn't there). uvx uses the
+        // same trick.
+        match candidate.try_exists() {
+            Ok(true) => return Ok(candidate),
+            Ok(false) => {}
+            Err(_) => return Ok(candidate),
         }
     }
 
@@ -66,8 +76,10 @@ fn locate_bougie() -> Result<PathBuf, String> {
     };
     for dir in std::env::split_paths(&path) {
         let candidate = dir.join(bougie_name);
-        if candidate.is_file() {
-            return Ok(candidate);
+        match candidate.try_exists() {
+            Ok(true) => return Ok(candidate),
+            Ok(false) => {}
+            Err(_) => return Ok(candidate),
         }
     }
     Err(format!(
