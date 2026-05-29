@@ -94,6 +94,12 @@ impl Paths {
         xdg_local: &Path,
         xdg_cache: &Path,
     ) -> Self {
+        // An env var that is *set but empty* (`BOUGIE_HOME=`) is not a
+        // valid override — `PathBuf::from("")` would make all derived
+        // paths relative to the cwd. Treat empty as unset.
+        let env_home = env_home.filter(|s| !s.is_empty());
+        let env_local = env_local.filter(|s| !s.is_empty());
+        let env_cache = env_cache.filter(|s| !s.is_empty());
         let home = env_home
             .as_ref()
             .map_or_else(|| xdg_data.join("bougie"), PathBuf::from);
