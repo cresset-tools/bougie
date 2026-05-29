@@ -2588,6 +2588,18 @@ impl ResolveProvider {
             .replace
             .iter()
             .filter(|(k, v)| {
+                // A self-replace (`replace: { self: <other-version> }`)
+                // is Composer's idiom for "this version also stands in
+                // for that older version of myself" — common on Magento
+                // metapackages that were renamed/reorganized (e.g.
+                // `mage-os/page-builder 3.0.0 replace: { mage-os/page-builder: 1.7.6 }`).
+                // It must NOT become a require: emitting `self ==1.7.6`
+                // forces the package to depend on a different version of
+                // itself, which is trivially unsatisfiable. Composer
+                // ignores self-replacement for resolution.
+                if k.as_str() == name.as_str() {
+                    return false;
+                }
                 // Only emit the coexistence constraint if the
                 // replaced package is actually in the dependency
                 // graph. The pre-fetch BFS populates the cache for
@@ -3160,6 +3172,13 @@ fn collect_active_replaces(
             continue;
         };
         for replaced_name in entry.replace.keys() {
+            // Skip self-replace (`replace: { self: <other-version> }`):
+            // the package stands in for an older version of itself, so
+            // it must NOT be filtered out of its own solution. See the
+            // matching guard in the replace-as-require emission.
+            if replaced_name.as_str() == name.as_str() {
+                continue;
+            }
             if solution_names.contains(replaced_name.as_str()) {
                 replaced.insert(replaced_name.clone());
             }
