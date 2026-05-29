@@ -108,6 +108,12 @@ pub struct ManagedService {
     pub pid: Option<u32>,
     /// Process group id of the service the babysit owns.
     pub service_pgid: Option<i32>,
+    /// `/proc/<pgid>/stat` start-time of the group leader, captured when
+    /// `service_pgid` was learned. Used as a PID-reuse guard before
+    /// group-wide signals: if the kernel recycled the pgid onto an
+    /// unrelated process group, the start-time won't match. Linux-only
+    /// (None elsewhere — best-effort).
+    pub service_pgid_starttime: Option<u64>,
     /// Parent end of the bougied↔babysit socketpair. Holding this
     /// open keeps the babysit alive; dropping it tells the babysit
     /// (via socket EOF) to clean up the group.
@@ -135,6 +141,7 @@ impl ManagedService {
             child: None,
             pid: None,
             service_pgid: None,
+            service_pgid_starttime: None,
             control_sock: None,
             started_at: None,
             failure_count: 0,
@@ -329,10 +336,17 @@ impl Supervisor {
         unsafe {
             let policy = policy.clone();
             cmd.pre_exec(move || {
-                // dup2 also clears CLOEXEC on the destination, so
-                // fd 3 survives exec.
                 let rc = libc_dup2(child_sock_fd, BABYSIT_CONTROL_FD);
                 if rc < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                // dup2 clears CLOEXEC on the destination only when
+                // oldfd != newfd. If child_sock_fd already *is* fd 3,
+                // dup2 is a no-op and the CLOEXEC flag Rust set on the
+                // socketpair end survives — closing fd 3 at exec and
+                // EOF-ing the babysit's control read. Clear it
+                // unconditionally so fd 3 always survives.
+                if libc_clear_cloexec(BABYSIT_CONTROL_FD) < 0 {
                     return Err(std::io::Error::last_os_error());
                 }
                 if let Some(policy) = policy.as_ref() {
@@ -410,6 +424,9 @@ impl Supervisor {
             svc.pid = pid;
             svc.child = Some(child);
             svc.service_pgid = Some(service_pgid);
+            // The service is its own pgrp leader (setpgid(0,0)), so the
+            // leader pid == pgid; record its start-time for reuse checks.
+            svc.service_pgid_starttime = proc_starttime(service_pgid);
             svc.control_sock = Some(control_sock);
         }
 
@@ -483,6 +500,7 @@ impl Supervisor {
             svc.state = ServiceState::Stopped;
             svc.pid = None;
             svc.service_pgid = None;
+            svc.service_pgid_starttime = None;
             svc.started_at = None;
         }
         Ok(true)
@@ -511,7 +529,7 @@ impl Supervisor {
                     // stored pgid and reap before transitioning state
                     // so the scheduled respawn doesn't double-spawn.
                     if let Some(pgid) = svc.service_pgid {
-                        reap_orphan_group(svc.name, pgid);
+                        reap_orphan_group(svc.name, pgid, svc.service_pgid_starttime);
                     }
                     let prev_run = svc.started_at.map(|t| now - t);
                     // Reset rule: a Running window of at least
@@ -529,6 +547,7 @@ impl Supervisor {
                     svc.child = None;
                     svc.pid = None;
                     svc.service_pgid = None;
+                    svc.service_pgid_starttime = None;
                     svc.control_sock = None;
                     svc.started_at = None;
                     // Schedule a respawn unless we've hit the
@@ -904,6 +923,45 @@ fn libc_dup2(src: i32, dst: i32) -> i32 {
     unsafe { dup2(src, dst) }
 }
 
+/// Clear all file-descriptor flags (i.e. `FD_CLOEXEC`) on `fd` via
+/// `fcntl(F_SETFD, 0)`. Async-signal-safe, used from `pre_exec` to
+/// guarantee the babysit control fd survives exec even when `dup2` was
+/// a same-fd no-op. Same rationale as [`libc_dup2`] for the bare
+/// `extern "C"` instead of a `libc` dependency. `F_SETFD` is `2` on
+/// both Linux and macOS.
+#[allow(unsafe_code)]
+fn libc_clear_cloexec(fd: i32) -> i32 {
+    const F_SETFD: i32 = 2;
+    unsafe extern "C" {
+        fn fcntl(fd: i32, cmd: i32, ...) -> i32;
+    }
+    unsafe { fcntl(fd, F_SETFD, 0) }
+}
+
+/// Read a process's start-time (jiffies since boot) from
+/// `/proc/<pid>/stat` field 22. Returns `None` if the process is gone
+/// or the field can't be parsed. The `comm` field (field 2) can contain
+/// spaces and parens, so we parse the tail after the last `)`. Linux
+/// only — a no-op `None` elsewhere, which makes the reuse guard
+/// best-effort on non-Linux Unix.
+#[cfg(target_os = "linux")]
+fn proc_starttime(pid: i32) -> Option<u64> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let rparen = stat.rfind(')')?;
+    // After `comm`, fields resume at field 3 (state); starttime is
+    // field 22, i.e. index 19 in the whitespace-split tail.
+    stat[rparen + 1..]
+        .split_whitespace()
+        .nth(19)?
+        .parse::<u64>()
+        .ok()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn proc_starttime(_pid: i32) -> Option<u64> {
+    None
+}
+
 /// Best-effort cleanup of a service's process group when the
 /// babysit shim has already exited. Called from `check_all` after the
 /// supervisor notices an unexpected babysit exit.
@@ -914,10 +972,28 @@ fn libc_dup2(src: i32, dst: i32) -> i32 {
 /// necessity — services that don't shut down on SIGTERM within ~250ms
 /// will be killed outright. That's acceptable because the babysit's
 /// grace window already gave them their chance under normal flow.
-fn reap_orphan_group(service: &str, pgid: i32) {
+fn reap_orphan_group(service: &str, pgid: i32, leader_starttime: Option<u64>) {
     let Some(pgrp) = rustix::process::Pid::from_raw(pgid) else {
         return;
     };
+    // PID-reuse guard: if we recorded the leader's start-time and the
+    // pid `pgid` now exists with a *different* start-time, the kernel
+    // recycled it onto an unrelated process group — signalling it would
+    // kill an innocent group. Skip. (If the leader is simply gone, the
+    // probe returns None and we fall through to the existence check,
+    // preserving the legitimate orphan-reaping path.)
+    if let Some(recorded) = leader_starttime {
+        if let Some(current) = proc_starttime(pgid) {
+            if current != recorded {
+                tracing::warn!(
+                    service,
+                    pgid,
+                    "stored pgid was recycled by an unrelated process; not reaping"
+                );
+                return;
+            }
+        }
+    }
     // `kill(pgid, 0)` — existence check. `Errno::SRCH` means no
     // members left, which is the normal path (babysit cleaned up
     // before exiting).
