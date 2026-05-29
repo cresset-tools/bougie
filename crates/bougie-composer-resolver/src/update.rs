@@ -1307,6 +1307,35 @@ fn prefetch_concurrency_limit() -> usize {
         .unwrap_or(50)
 }
 
+/// Maximum concurrent metadata requests to a *single host*. Override
+/// with `BOUGIE_CONCURRENT_FETCHES_PER_HOST`. Default 12 matches
+/// Composer's own `COMPOSER_MAX_PARALLEL_HTTP` and sits in the same
+/// regime as a browser's per-origin connection cap (6 for HTTP/1.1,
+/// one multiplexed HTTP/2 connection). The global
+/// [`prefetch_concurrency_limit`] still bounds total in-flight work;
+/// this stops a graph that lives mostly on one mirror (the Magento /
+/// Mage-OS case — hundreds of `mage-os/*` packages on one origin) from
+/// pointing all ~50 slots at that origin at once, which CDN edges
+/// (Cloudflare, Fastly) rate-limit / tarpit as an abusive burst.
+fn prefetch_per_host_limit() -> usize {
+    std::env::var("BOUGIE_CONCURRENT_FETCHES_PER_HOST")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(12)
+}
+
+/// Host key for per-host throttling. Parses the repo URL and returns
+/// its host (`repo.mage-os.org`); falls back to the raw URL so two
+/// repos on the same host still share a limiter and an unparseable URL
+/// still gets *a* (degenerate) key rather than being unlimited.
+fn repo_host(url: &str) -> String {
+    reqwest::Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(str::to_owned))
+        .unwrap_or_else(|| url.to_owned())
+}
+
 /// Result of fetching one package's metadata during the prefetch
 /// fan-out. `contributions` is the pre-parsed virtual-provider
 /// payload (computed from the *pre-filter* version list inside the
@@ -1320,11 +1349,15 @@ struct PrefetchOutcome {
 }
 
 /// Drive a Semaphore-bounded BFS over the require closure, fetching
-/// each visited package's metadata via `spawn_blocking` so they run
-/// concurrently. As each completes, its (filtered) versions' require
-/// keys become new BFS nodes. Returns one [`PrefetchOutcome`] per
-/// visited name; the caller registers virtuals and populates the
-/// resolver's cache from these in deterministic order.
+/// each visited package's metadata concurrently. As each completes, its
+/// (filtered) versions' require keys become new BFS nodes. Returns one
+/// [`PrefetchOutcome`] per visited name; the caller registers virtuals
+/// and populates the resolver's cache from these in deterministic order.
+///
+/// Two limiters apply: a global one (`concurrency`, total in-flight
+/// tasks) and a per-host one ([`prefetch_per_host_limit`], concurrent
+/// requests to any single origin). The per-host cap keeps a one-mirror
+/// graph from bursting all global slots at a single CDN edge.
 async fn run_prefetch_fanout(
     client: reqwest::Client,
     paths: Paths,
@@ -1338,6 +1371,20 @@ async fn run_prefetch_fanout(
 ) -> Result<Vec<PrefetchOutcome>, ProviderError> {
     use std::collections::HashSet;
     let sem = Arc::new(tokio::sync::Semaphore::new(concurrency));
+    // Per-host limiter: one Semaphore per distinct repo host, so no
+    // single origin sees more than `prefetch_per_host_limit()`
+    // concurrent requests even when the global pool would allow more.
+    // Built from the (fixed) repo list up front; hosts are stable for
+    // the run.
+    let per_host = prefetch_per_host_limit();
+    let host_sems: Arc<HashMap<String, Arc<tokio::sync::Semaphore>>> = {
+        let mut m: HashMap<String, Arc<tokio::sync::Semaphore>> = HashMap::new();
+        for repo in &repos {
+            m.entry(repo_host(&repo.url))
+                .or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(per_host)));
+        }
+        Arc::new(m)
+    };
     // BFS `visited` set keyed by `PackageName` — cheap-clone Arc<str>,
     // so the once-per-name insert + the spawn-task clone are refcount
     // bumps rather than allocations.
@@ -1355,6 +1402,7 @@ async fn run_prefetch_fanout(
             let v1_tables = Arc::clone(&v1_tables);
             let stability_flags = Arc::clone(&stability_flags);
             let sem = Arc::clone(&sem);
+            let host_sems = Arc::clone(&host_sems);
             tasks.spawn(async move {
                 let _permit = sem
                     .acquire_owned()
@@ -1390,6 +1438,7 @@ async fn run_prefetch_fanout(
                             &v1_tables,
                             name.as_str(),
                             floor,
+                            &host_sems,
                         ),
                     )
                     .await
@@ -1473,9 +1522,23 @@ async fn load_real_candidates_isolated(
     v1_tables: &FxHashMap<String, FxHashMap<String, String>>,
     name: &str,
     floor: Stability,
+    host_sems: &HashMap<String, Arc<tokio::sync::Semaphore>>,
 ) -> Result<PrefetchOutcome, ProviderError> {
     let mut versions: Vec<LockPackage> = Vec::new();
     for repo in repos {
+        // Hold the host's permit across this repo's stable+dev fetches,
+        // so concurrent requests to one origin stay under the per-host
+        // cap. Dropped at the end of the iteration. A host missing from
+        // the map (shouldn't happen — built from this same list) is
+        // simply not throttled.
+        let _host_permit = match host_sems.get(&repo_host(&repo.url)) {
+            Some(s) => Some(
+                s.acquire()
+                    .await
+                    .map_err(|e| ProviderError(format!("host semaphore closed: {e}")))?,
+            ),
+            None => None,
+        };
         let stable_md =
             fetch_one_isolated(client, paths, repo, v1_tables, name, Variant::Stable)
                 .await
