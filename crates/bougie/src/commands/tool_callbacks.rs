@@ -12,7 +12,7 @@ use bougie_platform::target::Triple;
 use bougie_resolver::ResolveOptions;
 use bougie_tool::classify::ExtensionClassifier;
 use bougie_tool::install::ExtInstaller;
-use bougie_tool::resolve::{PhpChoice, PhpInstaller};
+use bougie_tool::resolve::{PhpChoice, PhpInstaller, RequiredPhpFetcher};
 use bougie_version::request::Flavor;
 use bougie_version::request::parse_request as parse_php_request;
 use bougie_version::version::PartialVersion;
@@ -23,6 +23,43 @@ use std::path::PathBuf;
 /// `composer_update::resolve_and_write_lock`. Constructed at the
 /// call site because that helper lives in `super::composer_update`.
 pub use bougie_tool::install::LockResolver;
+
+/// Build the `RequiredPhpFetcher` callback. Hits Packagist v2
+/// metadata for `package`, picks the highest stable version matching
+/// the user's `@<constraint>` (or `*` if unspecified), and returns
+/// that version's `require.php` verbatim. `None` when the package
+/// doesn't pin PHP; `Err` on network / parse failure (the install
+/// flow surfaces those as a warning and falls back to the legacy
+/// default).
+pub fn required_php_fetcher() -> Box<RequiredPhpFetcher> {
+    Box::new(
+        |paths: &Paths, package: &str, user_constraint: &str| -> Result<Option<String>> {
+            use bougie_composer_resolver::metadata::{
+                Repo, Variant, fetch_package_metadata,
+            };
+            let client = reqwest::blocking::Client::new();
+            let repo = Repo::packagist();
+            let metadata = fetch_package_metadata(&client, paths, &repo, package, Variant::Stable)
+                .wrap_err_with(|| format!("fetching Packagist metadata for `{package}`"))?;
+            let Some(versions) = metadata.packages.get(package) else {
+                return Ok(None);
+            };
+            let parsed_constraint = bougie_semver::Constraint::parse(user_constraint)
+                .map_err(|e| eyre::eyre!("parsing user constraint `{user_constraint}`: {e}"))?;
+            // Versions are newest-first; pick the first one that
+            // matches the user's @<constraint>.
+            for v in versions {
+                let Ok(ver) = bougie_semver::Version::parse(&v.version) else {
+                    continue;
+                };
+                if parsed_constraint.matches(&ver) {
+                    return Ok(v.require.get("php").cloned());
+                }
+            }
+            Ok(None)
+        },
+    )
+}
 
 /// Build the `PhpInstaller` callback. Auto-installs the requested PHP
 /// via `bougie_installer::install::install_php` when the resolved

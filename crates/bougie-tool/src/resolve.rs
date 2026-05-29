@@ -41,6 +41,60 @@ pub struct PhpChoice {
 /// crate boundary.
 pub type PhpInstaller = dyn Fn(&Paths, &str) -> Result<PhpChoice> + Send + Sync;
 
+/// Callback that fetches a tool package's `require.php` constraint
+/// from Packagist (cached). Returns `None` when the package doesn't
+/// pin PHP. Hosted by the bougie binary so this crate stays free of
+/// reqwest + the resolver's metadata machinery.
+///
+/// Arguments: `paths`, `package` (`vendor/name`), `user_constraint`
+/// (the `@<constraint>` segment of the install request, or `*` when
+/// unspecified). The fetcher picks the highest stable version
+/// matching `user_constraint` and returns its `require.php` verbatim
+/// (a composer-style constraint like `^7.2 || ^8.0`).
+pub type RequiredPhpFetcher =
+    dyn Fn(&Paths, &str, &str) -> Result<Option<String>> + Send + Sync;
+
+/// Pick a PHP that satisfies `php_constraint` (a composer-style
+/// constraint string, typically a package's `require.php`). Prefers
+/// the highest installed NTS PHP that matches; falls through to
+/// `installer` if none does, passing the same constraint verbatim so
+/// `bougie php install` resolves the latest stable satisfying it.
+pub fn pick_php_for_constraint(
+    paths: &Paths,
+    php_constraint: &str,
+    installer: &PhpInstaller,
+) -> Result<PhpChoice> {
+    let parsed = bougie_semver::Constraint::parse(php_constraint)
+        .map_err(|e| eyre::eyre!("parsing tool's require.php `{php_constraint}`: {e}"))?;
+    let on_disk = store::list_installed(paths)
+        .map_err(|e| eyre::eyre!("listing installed PHPs: {e}"))?;
+    let mut candidates: Vec<(Version, String)> = on_disk
+        .into_iter()
+        .filter(|(_, flavor)| flavor == "nts")
+        .filter_map(|(v, f)| v.parse::<Version>().ok().map(|p| (p, f)))
+        .filter(|(v, _)| {
+            bougie_semver::Version::parse(&v.to_string())
+                .is_ok_and(|lifted| parsed.matches(&lifted))
+        })
+        .collect();
+    if let Some((version, flavor)) = candidates.drain(..).max_by(|a, b| a.0.cmp(&b.0)) {
+        let version_str = version.to_string();
+        let bin = paths
+            .installs()
+            .join(format!("{version_str}-{flavor}"))
+            .join("bin")
+            .join("php");
+        return Ok(PhpChoice {
+            version: version_str,
+            flavor,
+            bin,
+        });
+    }
+    installer(paths, php_constraint).wrap_err_with(|| {
+        format!("auto-installing PHP for tool require.php `{php_constraint}`")
+    })
+}
+
 /// Pick a PHP for a new tool install. `spec` is the user's
 /// `--php <ver>` argument or `None` for the default.
 pub fn pick_php(
@@ -226,5 +280,43 @@ mod tests {
         let inst = fail_installer();
         let choice = pick_php(&p, Some("8.3.12"), inst.as_ref()).unwrap();
         assert_eq!(choice.version, "8.3.12");
+    }
+
+    #[test]
+    fn for_constraint_picks_highest_installed_matching() {
+        let td = tempfile::TempDir::new().unwrap();
+        let p = paths(td.path());
+        install_fake(&p, "7.4.33", "nts");
+        install_fake(&p, "8.0.30", "nts");
+        install_fake(&p, "8.3.12", "nts");
+        install_fake(&p, "8.4.0", "nts");
+        let inst = fail_installer();
+        // "^7.2 || ^8.0" — accepts everything we installed; should
+        // pick 8.4.0.
+        let choice = pick_php_for_constraint(&p, "^7.2 || ^8.0", inst.as_ref()).unwrap();
+        assert_eq!(choice.version, "8.4.0");
+    }
+
+    #[test]
+    fn for_constraint_picks_older_when_upper_bound_excludes_newer() {
+        let td = tempfile::TempDir::new().unwrap();
+        let p = paths(td.path());
+        install_fake(&p, "8.0.30", "nts");
+        install_fake(&p, "8.4.0", "nts");
+        let inst = fail_installer();
+        let choice = pick_php_for_constraint(&p, "^8.0,<8.1", inst.as_ref()).unwrap();
+        assert_eq!(choice.version, "8.0.30");
+    }
+
+    #[test]
+    fn for_constraint_falls_back_to_installer_when_none_match() {
+        let td = tempfile::TempDir::new().unwrap();
+        let p = paths(td.path());
+        install_fake(&p, "8.4.0", "nts");
+        let inst = dummy_installer("7.4.33", "nts");
+        // ^7.2 — 8.4 doesn't match; installer should be called with
+        // the constraint verbatim.
+        let choice = pick_php_for_constraint(&p, "^7.2", inst.as_ref()).unwrap();
+        assert_eq!(choice.version, "7.4.33");
     }
 }

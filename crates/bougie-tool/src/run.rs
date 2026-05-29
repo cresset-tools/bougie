@@ -24,7 +24,7 @@ use crate::install::{InstallContext, InstallTarget, install_into};
 use crate::list::{ListedTool, ToolStatus, list};
 use crate::receipt::{ToolEntrypoint, ToolReceipt};
 use crate::request::ToolRequest;
-use crate::resolve::{self, PhpChoice};
+use crate::resolve::PhpChoice;
 use crate::exec;
 use bougie_paths::Paths;
 use eyre::{Result, bail};
@@ -83,12 +83,22 @@ pub fn prepare(
     php_spec: Option<&str>,
     with: &[String],
 ) -> Result<RunPlan> {
-    let php = resolve::pick_php(ctx.paths, php_spec, ctx.php_installer)?;
     let constraint = request
         .constraint
         .clone()
         .unwrap_or_else(|| crate::install::DEFAULT_CONSTRAINT.to_string());
     let package = request.package();
+    // Drive PHP off the tool's `require.php` so the cache key reflects
+    // what the tool actually needs (and matches what `tool install`
+    // would write into a persistent receipt).
+    let php = crate::install::pick_php_for_install(
+        ctx.paths,
+        &package,
+        &constraint,
+        php_spec,
+        ctx.php_installer,
+        ctx.php_requirement,
+    )?;
 
     if let Some(dir) = find_persistent_match(ctx.paths, &package, &constraint, &php, with)? {
         return Ok(RunPlan {

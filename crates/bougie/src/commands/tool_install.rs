@@ -65,12 +65,14 @@ pub fn run(
     let php_installer = super::tool_callbacks::php_installer();
     let classifier = super::tool_callbacks::extension_classifier();
     let ext_installer = super::tool_callbacks::extension_installer();
+    let php_requirement = super::tool_callbacks::required_php_fetcher();
     let ctx = install::InstallContext {
         paths: &paths,
         resolve_lock,
         php_installer: php_installer.as_ref(),
         classifier: classifier.as_ref(),
         ext_installer: ext_installer.as_ref(),
+        php_requirement: php_requirement.as_ref(),
     };
     let outcome = install::install(&ctx, &req, php_spec, with, force)?;
     emit(

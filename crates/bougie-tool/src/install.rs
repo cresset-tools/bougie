@@ -87,6 +87,12 @@ pub struct InstallContext<'a> {
     pub php_installer: &'a resolve::PhpInstaller,
     pub classifier: &'a ExtensionClassifier,
     pub ext_installer: &'a ExtInstaller,
+    /// Fetcher for the tool's `require.php`. When no `--php` is
+    /// passed, install/run consult this to drive PHP selection — so
+    /// `bougie tool install phpstan/phpstan` picks whatever PHP
+    /// phpstan's own `require.php` constraint actually wants, rather
+    /// than blindly grabbing the highest installed NTS.
+    pub php_requirement: &'a resolve::RequiredPhpFetcher,
 }
 
 /// Where the install lands and whether its bin entries are exposed
@@ -123,12 +129,19 @@ pub fn install_into(
     ensure_stable_bougie_symlink(paths)
         .wrap_err("setting up stable bougie symlink")?;
 
-    let php = resolve::pick_php(paths, php_spec, ctx.php_installer)?;
     let constraint = request
         .constraint
         .clone()
         .unwrap_or_else(|| DEFAULT_CONSTRAINT.to_string());
     let package = request.package();
+    let php = pick_php_for_install(
+        paths,
+        &package,
+        &constraint,
+        php_spec,
+        ctx.php_installer,
+        ctx.php_requirement,
+    )?;
     let tool_dir = match target {
         InstallTarget::Persistent => paths.tool_dir(&package),
         InstallTarget::Ephemeral { dir } => dir.clone(),
@@ -274,6 +287,46 @@ pub fn emit_bins(
         installed_bins.push(install_path);
     }
     Ok((entrypoints, installed_bins))
+}
+
+/// PHP selection for install / run.
+///
+/// - If `php_spec` is `Some(_)`, the user pinned PHP via `--php`;
+///   honour it and call `pick_php` with the spec.
+/// - Otherwise look up the tool's `require.php` via the supplied
+///   fetcher; on a hit, drive selection by that constraint.
+/// - When the tool doesn't pin PHP, or the fetcher can't reach
+///   Packagist, fall through to "highest installed NTS" — same
+///   behaviour as Phase 1.
+pub fn pick_php_for_install(
+    paths: &Paths,
+    package: &str,
+    constraint: &str,
+    php_spec: Option<&str>,
+    installer: &resolve::PhpInstaller,
+    requirement: &resolve::RequiredPhpFetcher,
+) -> Result<resolve::PhpChoice> {
+    if let Some(spec) = php_spec {
+        return resolve::pick_php(paths, Some(spec), installer);
+    }
+    match requirement(paths, package, constraint) {
+        Ok(Some(php_constraint)) => {
+            resolve::pick_php_for_constraint(paths, &php_constraint, installer)
+        }
+        Ok(None) => resolve::pick_php(paths, None, installer),
+        Err(e) => {
+            // Network blip / cache miss / etc. Don't block the
+            // install — fall back to the legacy default. A warning
+            // surfaces so the user can opt into `--php` for a
+            // deterministic answer.
+            eprintln!(
+                "warning: couldn't look up `{package}`'s require.php ({e:#}); \
+                 picking highest installed NTS PHP. \
+                 Pass `--php <ver>` to bypass this lookup.",
+            );
+            resolve::pick_php(paths, None, installer)
+        }
+    }
 }
 
 /// Regenerate `composer.json` from a receipt's current state. Used by
