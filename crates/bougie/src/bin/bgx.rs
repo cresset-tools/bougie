@@ -1,67 +1,98 @@
 //! `bgx <vendor/name>[@<constraint>] [--php <ver>] [--with <pkg>...] -- args...`
 //!
-//! Short alias binary for `bougie tool run`. Rebuilds argv as
-//! `["bougie", "tool", "run", <user args...>]`, parses with clap, and
-//! hands off to the same `bougie::run` dispatcher as the main binary.
-//! Shipped as a separate `[[bin]]` rather than an argv0 symlink so
-//! Windows works without symlink permissions and so
-//! `bougie self update`-style binary relocations don't break the
-//! shim (see `TOOL_PLAN.md` §`bgx`).
+//! Thin exec-shim for `bougie tool run`. Finds the colocated
+//! `bougie` binary (same directory as this `bgx`, else PATH lookup)
+//! and execve's it with `["tool", "run", ...orig_args]`.
+//!
+//! Deliberately keeps zero dependencies on the `bougie` library
+//! crate. Linking `bougie::{Cli, run}` here would pull in the whole
+//! workspace (composer resolver, index, daemon, server, …) and
+//! bloat the binary to ~16 MB. As an exec-shim, `bgx` stays under
+//! a megabyte stripped and the actual work runs inside `bougie`
+//! itself.
 
-use bougie::{Cli, exit_code_for};
-use clap::Parser;
 use std::ffi::OsString;
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
-    let user_argv: Vec<OsString> = std::env::args_os().skip(1).collect();
-    let mut argv: Vec<OsString> = Vec::with_capacity(user_argv.len() + 3);
-    argv.push(OsString::from("bougie"));
-    argv.push(OsString::from("tool"));
-    argv.push(OsString::from("run"));
-    argv.extend(user_argv);
-
-    let cli = match Cli::try_parse_from(argv) {
-        Ok(cli) => cli,
+    let bougie = match locate_bougie() {
+        Ok(p) => p,
         Err(e) => {
-            // clap renders its own errors to stderr (or stdout for
-            // `--help`) and gives us the right exit code.
-            e.exit();
+            eprintln!("error: {e}");
+            return ExitCode::from(1);
         }
     };
-    match bougie::run(cli) {
-        Ok(code) => code,
-        Err(err) => {
-            report_error(&err);
-            ExitCode::from(exit_code_for(&err))
-        }
-    }
+
+    let mut args: Vec<OsString> = Vec::new();
+    args.push(OsString::from("tool"));
+    args.push(OsString::from("run"));
+    args.extend(std::env::args_os().skip(1));
+
+    exec(&bougie, &args)
 }
 
-/// Mirror of `bougie::main::report_error` — same uv-style format so
-/// `bgx` and `bougie` look the same on failure. Kept inline rather
-/// than re-exported to keep `bougie::main`'s helpers private.
-fn report_error(err: &eyre::Report) {
-    let mut chain = err.chain();
-    let Some(head) = chain.next() else {
-        return;
+/// Resolve the `bougie` binary `bgx` should hand off to.
+///
+/// Priority:
+///   1. `BGX_BOUGIE` env override — escape hatch for test harnesses
+///      and for users running mismatched binaries side-by-side.
+///   2. `<bgx's dir>/bougie[.exe]` — the normal install layout:
+///      both binaries land in the same directory.
+///   3. `PATH` lookup via `which`-style traversal — last resort so
+///      `bgx` keeps working if someone installs only it.
+fn locate_bougie() -> Result<PathBuf, String> {
+    if let Some(env) = std::env::var_os("BGX_BOUGIE") {
+        return Ok(PathBuf::from(env));
+    }
+
+    let bougie_name: &str = if cfg!(windows) { "bougie.exe" } else { "bougie" };
+
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent()
+    {
+        let candidate = dir.join(bougie_name);
+        if candidate.is_file() {
+            return Ok(candidate);
+        }
+    }
+
+    let Some(path) = std::env::var_os("PATH") else {
+        return Err(
+            "could not find `bougie` next to `bgx` and PATH is unset; \
+             install bougie or set BGX_BOUGIE to its path"
+                .into(),
+        );
     };
-    let head = head.to_string();
-    let mut lines = head.lines();
-    if let Some(first) = lines.next() {
-        eprintln!("error: {first}");
-    }
-    for rest in lines {
-        eprintln!("       {rest}");
-    }
-    for cause in chain {
-        let s = cause.to_string();
-        let mut cl = s.lines();
-        if let Some(first) = cl.next() {
-            eprintln!("  caused by: {first}");
-        }
-        for rest in cl {
-            eprintln!("             {rest}");
+    for dir in std::env::split_paths(&path) {
+        let candidate = dir.join(bougie_name);
+        if candidate.is_file() {
+            return Ok(candidate);
         }
     }
+    Err(format!(
+        "could not find `{bougie_name}` next to `bgx` or on PATH; \
+         set BGX_BOUGIE to its path"
+    ))
+}
+
+#[cfg(unix)]
+fn exec(bougie: &std::path::Path, args: &[OsString]) -> ExitCode {
+    use std::os::unix::process::CommandExt;
+    let err = std::process::Command::new(bougie).args(args).exec();
+    eprintln!("error: exec {}: {err}", bougie.display());
+    ExitCode::from(1)
+}
+
+#[cfg(not(unix))]
+fn exec(bougie: &std::path::Path, args: &[OsString]) -> ExitCode {
+    let status = match std::process::Command::new(bougie).args(args).status() {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error: spawn {}: {e}", bougie.display());
+            return ExitCode::from(1);
+        }
+    };
+    let code = status.code().unwrap_or(1);
+    ExitCode::from(u8::try_from(code).unwrap_or(1))
 }
