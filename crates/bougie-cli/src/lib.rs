@@ -1,5 +1,5 @@
 use clap::builder::styling::{AnsiColor, Effects, Styles};
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 
 const HELP_STYLES: Styles = Styles::styled()
     .header(AnsiColor::Magenta.on_default().effects(Effects::BOLD))
@@ -652,21 +652,32 @@ pub enum ToolCommand {
     /// Run an installed-or-cached tool one-off. Reuses an existing
     /// persistent install if `(package, constraint, php, with)` match
     /// exactly; otherwise materialises into the ephemeral cache.
-    Run {
-        /// Composer package identifier, optionally with `@<constraint>`.
-        package: String,
-        /// Pin the tool to a specific PHP for this run.
-        #[arg(long, value_name = "VER")]
-        php: Option<String>,
-        /// Extra composer package or PHP extension, same shape as
-        /// `tool install --with`. Repeatable.
-        #[arg(long, value_name = "PKG_OR_EXT")]
-        with: Vec<String>,
-        /// Arguments forwarded to the tool. Use `--` to separate
-        /// when forwarding flags that bougie would otherwise parse.
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-        args: Vec<std::ffi::OsString>,
-    },
+    ///
+    /// `bgx` is provided as a convenient alias for `bougie tool run`;
+    /// their behavior is identical.
+    #[command(
+        after_help = "Use `bgx` as a shortcut for `bougie tool run`.\n\n\
+                      Use `bougie help tool run` for more details.",
+        after_long_help = ""
+    )]
+    Run(ToolRunArgs),
+    // Hidden alias for `bougie tool run` for the `bgx` command. The
+    // variant is reached only via the `bgx` binary exec'ing into it;
+    // it doesn't surface under `bougie tool --help`. Carrying it as
+    // a separate variant (with `display_name`, `override_usage`)
+    // lets clap render `bgx --help` and clap-level error messages
+    // with `bgx` as the program name rather than leaking
+    // `bougie tool run`.
+    #[command(
+        hide = true,
+        override_usage = "bgx [OPTIONS] <PACKAGE> [ARGS]...",
+        about = "Run a tool from a Composer package.",
+        long_about = None,
+        after_help = "Use `bougie help tool run` for more details.",
+        after_long_help = "",
+        display_name = "bgx"
+    )]
+    Bgx(BgxArgs),
     /// Re-resolve a tool's lock and bring its vendor tree up to date.
     /// Pass `--all` to walk every installed tool, or `--reinstall` to
     /// wipe and rebuild from scratch (recovery for broken state).
@@ -695,4 +706,30 @@ pub enum SelfCommand {
         #[arg(long)]
         short: bool,
     },
+}
+
+#[derive(Args, Debug)]
+pub struct ToolRunArgs {
+    /// Composer package identifier, optionally with `@<constraint>`.
+    pub package: String,
+    /// Pin the tool to a specific PHP for this run.
+    #[arg(long, value_name = "VER")]
+    pub php: Option<String>,
+    /// Extra composer package or PHP extension, same shape as
+    /// `tool install --with`. Repeatable.
+    #[arg(long, value_name = "PKG_OR_EXT")]
+    pub with: Vec<String>,
+    /// Arguments forwarded to the tool. Use `--` to separate when
+    /// forwarding flags that bougie would otherwise parse.
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    pub args: Vec<std::ffi::OsString>,
+}
+
+/// Args for the hidden `bgx` alias. Wraps [`ToolRunArgs`] verbatim so
+/// the two variants share their entire surface; the wrapper exists
+/// only so clap renders help / errors with `bgx` as the program name.
+#[derive(Args, Debug)]
+pub struct BgxArgs {
+    #[command(flatten)]
+    pub tool_run: ToolRunArgs,
 }

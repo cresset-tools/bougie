@@ -214,20 +214,15 @@ fn tool_uninstall_errors_for_unknown_tool() {
 }
 
 #[test]
-fn bgx_help_matches_tool_run_help() {
-    // `bgx --help` should produce the same surface as
-    // `bougie tool run --help`. The match is exact because bgx just
-    // prepends ["tool", "run"] before re-parsing argv through the
-    // same clap definition.
+fn bgx_help_renders_as_bgx_not_bougie_tool_run() {
+    // bgx exec's into the hidden `bougie tool bgx` subcommand
+    // specifically so its `--help` and clap errors render with
+    // `bgx` as the program name (matching uv's uvx convention).
+    // We don't expect the bodies of `bgx --help` and
+    // `bougie tool run --help` to match: the former renders
+    // standalone, the latter renders the bgx-alias description as
+    // part of `bougie tool`'s subcommand list.
     let env = TestEnv::new();
-    let bougie_out = env
-        .bougie()
-        .args(["tool", "run", "--help"])
-        .assert()
-        .success()
-        .get_output()
-        .stdout
-        .clone();
     let bgx_out = env
         .bgx()
         .args(["--help"])
@@ -236,18 +231,15 @@ fn bgx_help_matches_tool_run_help() {
         .get_output()
         .stdout
         .clone();
-    let bougie_str = String::from_utf8_lossy(&bougie_out);
     let bgx_str = String::from_utf8_lossy(&bgx_out);
-    // clap renders the program name differently in the Usage line
-    // (`bougie tool run` vs `bgx tool run`); compare the rest line-
-    // by-line for everything past `Usage`.
-    let skip_usage = |s: &str| {
-        s.lines()
-            .filter(|l| !l.contains("Usage:"))
-            .collect::<Vec<_>>()
-            .join("\n")
-    };
-    assert_eq!(skip_usage(&bougie_str), skip_usage(&bgx_str));
+    assert!(
+        bgx_str.contains("Usage: bgx "),
+        "bgx --help should render Usage as `bgx ...`, got:\n{bgx_str}",
+    );
+    // Structural equivalence with tool run: same flags accepted.
+    assert!(bgx_str.contains("--php"), "{bgx_str}");
+    assert!(bgx_str.contains("--with"), "{bgx_str}");
+    assert!(bgx_str.contains("<PACKAGE>"), "{bgx_str}");
 }
 
 #[test]

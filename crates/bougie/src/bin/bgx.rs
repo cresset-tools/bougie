@@ -115,7 +115,12 @@ fn run() -> std::io::Result<ExitStatus> {
     };
     let bgx_suffix = get_bgx_suffix(&current_exe);
     let bougie = get_bougie_path(bin, bgx_suffix)?;
-    let args = ["tool", "run"]
+    // Dispatch into the hidden `bgx` subcommand on the bougie side
+    // rather than `tool run`. Both do exactly the same work, but
+    // the hidden variant renders `--help` and clap errors with
+    // `bgx` as the program name. Mirrors uv's `uv tool uvx`
+    // alongside `uv tool run`.
+    let args = ["tool", "bgx"]
         .iter()
         .map(OsString::from)
         // Skip the `bgx` name
