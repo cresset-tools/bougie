@@ -4,6 +4,7 @@ use crate::{
 };
 use landlock::{
     AccessFs, AccessNet, PathBeneath, PathFd, Ruleset, RulesetAttr, RulesetCreatedAttr,
+    RulesetStatus,
 };
 
 /// Apply the sandbox policy using Linux-specific mechanisms.
@@ -153,6 +154,19 @@ fn apply_landlock(policy: &SandboxPolicy) -> Result<(), SandboxError> {
     // which means all TCP bind/connect is denied.
     // If private_network is false, we don't handle network access at all (allows all by default).
 
-    ruleset.restrict_self()?;
+    // Fail closed if Landlock applied nothing. `BestEffort` (the
+    // default) silently downgrades to a no-op on kernels < 5.13 or when
+    // Landlock is disabled, returning Ok — which would let the service
+    // run completely unconfined while the daemon believes it's
+    // sandboxed. `PartiallyEnforced` (older ABI) is accepted as
+    // best-effort; only `NotEnforced` (zero confinement) is rejected.
+    let status = ruleset.restrict_self()?;
+    if status.ruleset == RulesetStatus::NotEnforced {
+        return Err(SandboxError::NotEnforced(
+            "Landlock is unavailable (requires Linux 5.13+ with Landlock enabled in the \
+             kernel); refusing to launch the service without filesystem confinement"
+                .to_string(),
+        ));
+    }
     Ok(())
 }
