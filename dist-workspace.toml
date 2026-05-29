@@ -1,0 +1,95 @@
+# dist configuration — produces per-target binary archives plus
+# shell/powershell installers, hooked into the existing release-plz tag
+# flow. See RELEASE.md for the bigger picture (release-plz drives tags,
+# dist builds binaries, publish-mirror.yml fans them out to R2).
+#
+# Edit this file when adding targets / installers / mirror config, then
+# regenerate the workflow with:
+#     dist generate
+# which rewrites .github/workflows/release.yml.
+
+[workspace]
+members = ["cargo:."]
+
+[dist]
+# Pin the dist version that CI runs — bumps come through PRs so the
+# generated release.yml is updated in lockstep.
+cargo-dist-version = "0.32.0"
+
+# Workspace has 25 crates; only `bougie` ships binaries. The default
+# `dist = false` opts every package out; the bougie crate opts itself
+# back in via `[package.metadata.dist] dist = true`.
+dist = false
+
+# CI provider
+ci = "github"
+
+# Generate both shell and powershell installers (uv-style:
+# `curl ... | sh` on Unix, `irm ... | iex` on Windows).
+installers = ["shell", "powershell"]
+
+# Archive formats per platform.
+windows-archive = ".zip"
+unix-archive = ".tar.gz"
+
+# Target triples we ship prebuilt binaries for. Linux gets both gnu
+# and musl so users on older distros and on Alpine both get a working
+# binary; macOS covers Intel + Apple Silicon; Windows is x64-only
+# until there's demand for arm64.
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "x86_64-unknown-linux-musl",
+    "aarch64-unknown-linux-gnu",
+    "aarch64-unknown-linux-musl",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+]
+
+# Skip auto-including README/LICENSE/CHANGELOG in every archive — keeps
+# the tarballs to just the binaries the installer needs to drop on
+# PATH. (CHANGELOG.md still ends up in the GitHub release notes.)
+auto-includes = false
+
+# dist creates the GitHub release itself; release-plz only tags
+# (see release-plz.toml — the bougie package has
+# `git_release_enable = false`).
+create-release = true
+
+# Don't run dist on PRs — CI already covers building.
+pr-run-mode = "skip"
+
+# release-plz tags as `bougie-v<version>` rather than the bare
+# `v<version>` dist defaults to. Without this dist's release.yml
+# wouldn't trigger on the tag release-plz pushes.
+tag-namespace = "bougie"
+
+# Where the shell installer drops the binaries. First match wins;
+# matches uv's layout so installs land on PATH without extra config.
+install-path = ["$XDG_BIN_HOME/", "$XDG_DATA_HOME/../bin", "~/.local/bin"]
+
+# Download URL precedence: the installer tries the bougie origin
+# mirror first (low latency, no GitHub anonymous rate limits in CI),
+# falls back to the GitHub release if the mirror is offline / empty
+# / hasn't received the new tag yet. The origin is a Hetzner box
+# (cresset-tools/infra hosts/origin) — see RELEASE.md.
+hosting = ["github"]
+# Versioned artifacts live at
+# `<host>/github/bougie/releases/download/<tag>/<file>` — the same
+# layout publish-mirror.yml rsyncs to.
+simple-download-url = "https://releases.bougie.tools/github/bougie/releases/download/{tag}"
+
+# Run the custom publish-mirror job after the release is announced.
+# The file lives at .github/workflows/publish-mirror.yml.
+post-announce-jobs = ["./publish-mirror"]
+
+# publish-mirror only needs to read the artifacts the build jobs
+# uploaded; no write permissions on the repo.
+github-custom-job-permissions = { "publish-mirror" = { contents = "read" } }
+
+# Both binaries ship in every archive — `bgx` is the uvx-equivalent
+# short alias for `bougie tool run`. The test-only `fake-redis` bin
+# is gated behind the `test-fixtures` feature and not built in
+# release mode.
+[dist.binaries]
+"*" = ["bougie", "bgx"]

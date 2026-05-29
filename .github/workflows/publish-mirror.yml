@@ -1,0 +1,151 @@
+name: publish-mirror
+
+# Called by bougie-release.yml as a post-announce job. Copies the
+# binary archives + installers that dist just uploaded to the GitHub
+# Release into the bougie origin server's `/srv/releases/` tree, which
+# nginx fronts at https://releases.bougie.tools/ (see
+# cresset-tools/infra hosts/origin/nginx.nix for the vhost + cache
+# policy).
+#
+# The origin server is a Hetzner CAX11 ARM box that already serves
+# index.bougie.tools + blobs.bougie.tools for the PHP distribution
+# layer (DISTRIBUTION.md). Both publish-mirror.yml and the
+# php-build-standalone publish pipeline ship via SSH to the same
+# `deploy` user — its authorized_keys are pinned in the NixOS config.
+#
+# Layout written on the origin:
+#
+#   /srv/releases/github/bougie/releases/download/<tag>/<file>
+#       (immutable, 1y cache — versioned URL, bytes never change)
+#
+#   /srv/releases/installers/bougie/latest/bougie-installer.{sh,ps1}
+#       (5min cache — the `curl ... | sh` entry point)
+#
+# Versioned artifacts mirror GitHub's URL layout so dist's generated
+# installer can swap hosts without rewriting paths.
+#
+# Stays inert until two secrets are configured on the `release`
+# environment: PUBLISH_SSH_KEY (the private key whose pub-half is in
+# `deploy`'s authorized_keys on origin) and PUBLISH_KNOWN_HOSTS (the
+# host's SSH pubkey for strict host-key checking).
+
+on:
+  workflow_call:
+    inputs:
+      plan:
+        required: true
+        type: string
+
+permissions: {}
+
+env:
+  # Where on origin the artifacts land. The two paths below mirror
+  # the nginx vhost layout — change them together with nginx.nix.
+  RELEASES_HOST: origin.bougie.tools
+  RELEASES_USER: deploy
+  VERSIONED_BASE: /srv/releases/github/bougie/releases/download
+  INSTALLERS_BASE: /srv/releases/installers/bougie/latest
+
+jobs:
+  publish-mirror:
+    runs-on: ubuntu-latest
+    # The `release` environment scopes PUBLISH_SSH_KEY +
+    # PUBLISH_KNOWN_HOSTS so only this workflow can read them. Create
+    # the environment under Settings → Environments → release before
+    # adding the secrets.
+    environment:
+      name: release
+    env:
+      VERSION: ${{ fromJson(inputs.plan).announcement_tag }}
+      IS_PRERELEASE: ${{ fromJson(inputs.plan).announcement_is_prerelease }}
+    steps:
+      - name: "Download GitHub Artifacts"
+        uses: actions/download-artifact@v8
+        with:
+          pattern: artifacts-*
+          path: artifacts
+          merge-multiple: true
+
+      - name: "Set up SSH"
+        # SSH agent + pinned known_hosts. Strict host-key checking is
+        # on by default in OpenSSH; we just need to tell it which key
+        # to trust.
+        env:
+          PUBLISH_SSH_KEY: ${{ secrets.PUBLISH_SSH_KEY }}
+          PUBLISH_KNOWN_HOSTS: ${{ secrets.PUBLISH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          mkdir -m 700 -p ~/.ssh
+          echo "$PUBLISH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+          eval "$(ssh-agent -s)"
+          ssh-add - <<< "$PUBLISH_SSH_KEY"
+          # Persist the agent socket + PID so subsequent steps inherit
+          # it via $GITHUB_ENV.
+          {
+            echo "SSH_AUTH_SOCK=$SSH_AUTH_SOCK"
+            echo "SSH_AGENT_PID=$SSH_AGENT_PID"
+          } >> "$GITHUB_ENV"
+
+      - name: "Stage tarballs, zips, installers, checksums"
+        # Build a deterministic staging tree that mirrors what we
+        # want on origin, then rsync the whole thing in one shot.
+        # Keeps the include-pattern logic in shell rather than in
+        # rsync's harder-to-read filter rules.
+        run: |
+          set -euo pipefail
+          mkdir -p staging
+          shopt -s nullglob
+          for f in \
+            artifacts/*.tar.gz \
+            artifacts/*.tar.gz.sha256 \
+            artifacts/*.zip \
+            artifacts/*.zip.sha256 \
+            artifacts/sha256.sum \
+            artifacts/*.sh \
+            artifacts/*.ps1 \
+          ; do
+            cp "$f" staging/
+          done
+          echo "Staged $(ls staging | wc -l) files:"
+          ls staging
+
+      - name: "Create destination directory on origin"
+        # `mkdir -p` is idempotent — re-running a release (e.g. after
+        # fixing a flake in the mirror step) won't fail. Quoted to
+        # protect against pathological tag values.
+        run: |
+          ssh -o BatchMode=yes \
+            "${RELEASES_USER}@${RELEASES_HOST}" \
+            "mkdir -p '${VERSIONED_BASE}/${VERSION}'"
+
+      - name: "Upload versioned artifacts"
+        # --partial keeps half-transferred files around so a retry
+        # can resume; --delay-updates writes everything to a hidden
+        # sibling tree first and moves them into place at the end,
+        # so a partial upload never serves a half-file via nginx.
+        run: |
+          rsync -av \
+            --partial \
+            --delay-updates \
+            -e "ssh -o BatchMode=yes" \
+            staging/ \
+            "${RELEASES_USER}@${RELEASES_HOST}:${VERSIONED_BASE}/${VERSION}/"
+
+      - name: "Promote installers to latest"
+        # Skip the rolling pointer for prereleases — `curl ... | sh`
+        # should land on a stable release. The shell `[ ]` test
+        # below maps GH Actions' boolean "true"/"false" strings to
+        # exit codes.
+        if: ${{ !fromJson(inputs.plan).announcement_is_prerelease }}
+        run: |
+          set -euo pipefail
+          for installer in bougie-installer.sh bougie-installer.ps1; do
+            if [ ! -f "staging/${installer}" ]; then
+              echo "Missing ${installer} in staging — dist didn't emit it?" >&2
+              exit 1
+            fi
+            scp -o BatchMode=yes \
+              "staging/${installer}" \
+              "${RELEASES_USER}@${RELEASES_HOST}:${INSTALLERS_BASE}/${installer}"
+          done
