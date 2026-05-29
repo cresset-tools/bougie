@@ -21,6 +21,16 @@ cargo-dist-version = "0.32.0"
 # back in via `[package.metadata.dist] dist = true`.
 dist = false
 
+# Build each dist=true package with its own `cargo build -p <pkg>`
+# rather than one workspace-wide `cargo build --workspace`. Required
+# on Windows: `sandbox-run` has a top-level compile_error! on
+# non-Unix targets and is only pulled in by bougie via a
+# `[target.'cfg(unix)'.dependencies]` gate. A workspace build would
+# compile it regardless and fail; a `-p bougie` build on Windows
+# skips it entirely. Matches what `ci.yml` already does for the
+# Windows leg of the test matrix.
+precise-builds = true
+
 # CI provider
 ci = "github"
 
