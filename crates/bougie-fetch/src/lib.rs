@@ -492,6 +492,18 @@ fn extract_tar_zst(tar_zst: &Path, into: &Path, strip_prefix: &str) -> Result<()
             // The prefix directory entry itself; skip — `into` exists.
             continue;
         };
+        // Traversal guard. Unlike `extract_zip` (which gets a
+        // `..`/absolute-rejecting path from `enclosed_name`), tar entry
+        // paths come straight off the header, and `entry.unpack` does
+        // *not* sanitize (it's `unpack_in`/`Archive::unpack` that do).
+        // A malicious archive entry named `../../etc/foo` or an absolute
+        // path would otherwise escape `into`.
+        if !is_safe_archive_path(&rewritten) {
+            return Err(eyre::eyre!(
+                "archive entry {} escapes the extraction root",
+                path.display()
+            ));
+        }
         let dest = into.join(&rewritten);
         if let Some(parent) = dest.parent() {
             fs::create_dir_all(parent)
@@ -512,6 +524,12 @@ fn extract_tar_zst(tar_zst: &Path, into: &Path, strip_prefix: &str) -> Result<()
                 .into_owned();
             let link_dest_rel = rewrite_archive_path(&link_name, strip_prefix)
                 .ok_or_else(|| eyre::eyre!("hardlink target {} resolves to the strip prefix root", link_name.display()))?;
+            if !is_safe_archive_path(&link_dest_rel) {
+                return Err(eyre::eyre!(
+                    "hardlink target {} escapes the extraction root",
+                    link_name.display()
+                ));
+            }
             let link_dest = into.join(&link_dest_rel);
             // Idempotency under `--overwrite`-style retries: a
             // previous half-finished extract may have left the link
@@ -658,6 +676,17 @@ fn rewrite_archive_path(path: &Path, strip_prefix: &str) -> Option<PathBuf> {
     } else {
         Some(rewritten)
     }
+}
+
+/// Whether `path` is safe to join onto an extraction root: it must be
+/// relative and contain only normal components (no `..`, no root/prefix).
+/// This is the tar-side equivalent of the `zip` crate's `enclosed_name`.
+fn is_safe_archive_path(path: &Path) -> bool {
+    use std::path::Component;
+    path.components().all(|c| match c {
+        Component::Normal(_) | Component::CurDir => true,
+        Component::ParentDir | Component::RootDir | Component::Prefix(_) => false,
+    })
 }
 
 /// Stream `from` into `into` and verify its sha256. Used by callers
