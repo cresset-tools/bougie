@@ -551,14 +551,32 @@ impl Ord for Version {
 fn cmp_segments(a: &[String], b: &[String]) -> Ordering {
     let len = a.len().max(b.len());
     for i in 0..len {
-        let va: u64 = a.get(i).and_then(|s| s.parse().ok()).unwrap_or(0);
-        let vb: u64 = b.get(i).and_then(|s| s.parse().ok()).unwrap_or(0);
+        let va = segment_value(a.get(i));
+        let vb = segment_value(b.get(i));
         match va.cmp(&vb) {
             Ordering::Equal => {}
             non_eq => return non_eq,
         }
     }
     Ordering::Equal
+}
+
+/// Numeric value of a version segment for comparison. Missing segments
+/// are 0. A segment that is all digits but overflows `u64` saturates to
+/// `u64::MAX` so an absurdly long number still sorts *above* normal
+/// versions rather than collapsing to 0 (which would make e.g.
+/// `1.<huge>.0` compare equal to `1.0.0`).
+fn segment_value(s: Option<&String>) -> u64 {
+    match s {
+        None => 0,
+        Some(s) => s.parse::<u64>().unwrap_or_else(|_| {
+            if !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()) {
+                u64::MAX
+            } else {
+                0
+            }
+        }),
+    }
 }
 
 fn suffix_cmp(a: &Suffix, b: &Suffix) -> Ordering {
