@@ -212,6 +212,13 @@ git_release_enable = false
 changelog_update = false
 
 [[package]]
+name = "bougie-tool"
+release = true
+git_tag_enable = false
+git_release_enable = false
+changelog_update = false
+
+[[package]]
 name = "bougie-version"
 release = true
 git_tag_enable = false

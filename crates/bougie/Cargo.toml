@@ -13,6 +13,14 @@ authors.workspace = true
 name = "bougie"
 path = "src/main.rs"
 
+# Short alias binary, uvx-equivalent: `bgx <vendor/name> -- args...` is
+# `bougie tool run <vendor/name> -- args...`. Real binary rather than an
+# argv0 symlink so the same shape works on every platform and survives
+# `bougie self update`-style binary relocations.
+[[bin]]
+name = "bgx"
+path = "src/bin/bgx.rs"
+
 # Phase 3 integration-test fixture. Stands in for a real redis-server
 # in the supervisor tests: parses `--unixsocket <path>` and binds the
 # socket, satisfying the daemon's health probe. Gated behind the
@@ -60,6 +68,7 @@ bougie-paths = { workspace = true }
 bougie-platform = { workspace = true }
 bougie-resolver = { workspace = true }
 bougie-server = { workspace = true }
+bougie-tool = { workspace = true }
 bougie-version = { workspace = true }
 bougie-semver = { workspace = true }
 spdx = "0.10"

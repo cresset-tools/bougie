@@ -127,6 +127,21 @@ pub fn write_ext_fragment(
     )
 }
 
+/// Variant of [`write_ext_fragment`] that targets an arbitrary
+/// conf.d directory rather than a project's `.bougie/conf.d/`. Used
+/// by `bougie tool` to drop fragments into a tool's private
+/// `$TOOL_DIR/conf.d/`, where `PHP_INI_SCAN_DIR` then picks them up
+/// at exec time.
+pub fn write_ext_fragment_into(
+    dir: &Path,
+    name: &str,
+    so_path: &Path,
+    load: LoadDirective,
+    path_extras: &[PathBuf],
+) -> Result<PathBuf> {
+    write_fragment_into(dir.to_path_buf(), name, so_path, load, path_extras)
+}
+
 /// Write — atomically — the `<NN>-<name>.ini` fragment for the
 /// server-private debug overlay (`.bougie/conf.d-debug/`). Used by
 /// `commands::server::pool::ensure_debug_extension` when the server

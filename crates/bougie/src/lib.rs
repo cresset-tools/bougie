@@ -13,7 +13,9 @@ pub use bougie_errors::{exit_code_for, BougieError};
 pub use bougie_paths::Paths;
 pub use bougie_platform::target::Triple;
 
-use bougie_cli::{CacheCommand, ComposerCommand, ExtCommand, PhpCommand, SelfCommand, ServerCommand};
+use bougie_cli::{
+    CacheCommand, ComposerCommand, ExtCommand, PhpCommand, SelfCommand, ServerCommand, ToolCommand,
+};
 #[cfg(unix)]
 use bougie_cli::{
     ServerHostsCommand, ServerTlsCommand, ServicesCommand, ServicesDaemonCommand,
@@ -317,5 +319,39 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
         ),
         #[cfg(not(unix))]
         Command::Make { .. } => unsupported_on_windows("bougie make"),
+        Command::Tool(ToolCommand::Install { package, php, with, force }) => {
+            commands::tool_install::run(format, &package, php.as_deref(), &with, force)
+        }
+        Command::Tool(ToolCommand::Uninstall { package }) => {
+            commands::tool_uninstall::run(format, &package)
+        }
+        Command::Tool(ToolCommand::Inject { package, with }) => {
+            commands::tool_inject::run(format, &package, &with)
+        }
+        Command::Tool(ToolCommand::Uninject { package, with }) => {
+            commands::tool_uninject::run(format, &package, &with)
+        }
+        Command::Tool(ToolCommand::Upgrade { package, all, reinstall }) => {
+            commands::tool_upgrade::run(format, package.as_deref(), all, reinstall)
+        }
+        Command::Tool(ToolCommand::Run(args)) => commands::tool_run::run(
+            format,
+            &args.package,
+            args.php.as_deref(),
+            &args.with,
+            args.args,
+        ),
+        Command::Tool(ToolCommand::Bgx(args)) => commands::tool_run::run(
+            format,
+            &args.tool_run.package,
+            args.tool_run.php.as_deref(),
+            &args.tool_run.with,
+            args.tool_run.args,
+        ),
+        Command::Tool(ToolCommand::List) => commands::tool_list::run(format),
+        Command::Tool(ToolCommand::Dir { package }) => {
+            commands::tool_dir::run(format, package)
+        }
+        Command::ToolExec { wrapper, args } => commands::tool_exec::run(&wrapper, args),
     }
 }

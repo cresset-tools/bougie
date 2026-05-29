@@ -27,6 +27,16 @@ pub mod php_upgrade;
 pub mod run;
 pub mod self_update;
 pub mod self_version;
+pub mod tool_callbacks;
+pub mod tool_dir;
+pub mod tool_exec;
+pub mod tool_inject;
+pub mod tool_install;
+pub mod tool_list;
+pub mod tool_run;
+pub mod tool_uninject;
+pub mod tool_uninstall;
+pub mod tool_upgrade;
 #[cfg(unix)]
 pub mod make;
 #[cfg(unix)]
