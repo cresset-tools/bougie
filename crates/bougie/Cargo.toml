@@ -31,6 +31,13 @@ name = "fake-redis"
 path = "tests/fixtures/fake_redis.rs"
 required-features = ["test-fixtures"]
 
+# Opt this crate back into dist (workspace default in dist-workspace.toml
+# is `dist = false` because the other 24 crates are libraries that
+# shouldn't ship binaries). Only `bougie` produces the user-facing
+# `bougie` + `bgx` bins, so it's the only package dist needs to build.
+[package.metadata.dist]
+dist = true
+
 [features]
 default = ["dev-trust-root"]
 # Enables the `fake-redis` test-fixture bin. Off by default so

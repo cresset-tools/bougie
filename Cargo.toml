@@ -104,5 +104,12 @@ inherits = "release"
 debug = "line-tables-only"
 strip = "none"
 
+# dist invokes `cargo build --profile dist`. Inheriting `release` gives
+# us the same lto = "fat" / codegen-units = 1 / strip = "symbols"
+# settings the regular release binary uses — what we ship from CI is
+# what `cargo build --release` produces locally.
+[profile.dist]
+inherits = "release"
+
 [profile.dev]
 # Default; mostly here so developers don't get surprised by a tuned profile.

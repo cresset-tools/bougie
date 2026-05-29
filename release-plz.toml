@@ -18,8 +18,12 @@ allow_dirty = true
 # internally also invokes cargo package; without this knob it stops on
 # the first verify error.
 publish_no_verify = true
-# Create a tag + GitHub release when a release lands.
-git_release_enable = true
+# Create the tag when a release lands. The GitHub release itself is
+# created by dist's release.yml in response to the tag push — that's
+# the workflow that has the built binaries to attach. release-plz
+# making an empty release here would race with dist and leave an
+# artifact-less release if dist's matrix build fails.
+git_release_enable = false
 # Match the project's commit-message conventions: a single CHANGELOG.md
 # at the repo root, conventional-ish prefixes (`ci:`, `ext list:`, …).
 changelog_update = true
