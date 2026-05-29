@@ -1,110 +1,142 @@
 //! `bgx <vendor/name>[@<constraint>] [--php <ver>] [--with <pkg>...] -- args...`
 //!
-//! Thin exec-shim for `bougie tool run`. Finds the colocated
-//! `bougie` binary (same directory as this `bgx`, else PATH lookup)
-//! and execve's it with `["tool", "run", ...orig_args]`.
+//! Thin exec-shim for `bougie tool run`. Ported almost verbatim from
+//! `crates/uv/src/bin/uvx.rs` upstream — same structure, same
+//! `try_exists` semantics, same versioned-suffix lookup
+//! (`bgx@1.2.3` finds `bougie@1.2.3`). Differences vs uvx:
 //!
-//! Deliberately keeps zero dependencies on the `bougie` library
-//! crate. Linking `bougie::{Cli, run}` here would pull in the whole
-//! workspace (composer resolver, index, daemon, server, …) and
-//! bloat the binary to ~16 MB. As an exec-shim, `bgx` stays under
-//! a megabyte stripped and the actual work runs inside `bougie`
-//! itself.
+//! - We invoke `bougie tool run <args>` rather than `uv tool uvx
+//!   <args>` because there's no dedicated `tool bgx` subcommand on
+//!   the bougie side — `tool run` is the right dispatch path.
+//! - Windows uses `std::process::Command::status` rather than the
+//!   custom `uv_windows::spawn_child` (which handles Ctrl-C
+//!   propagation specially). Revisit when Phase 4 lands.
+//!
+//! Deliberately no dependency on the `bougie` library crate.
+//! Linking `bougie::{Cli, run}` would pull the whole workspace and
+//! bloat the binary to ~16 MB; this exec-shim stays under 350 KB
+//! stripped.
 
+use std::convert::Infallible;
 use std::ffi::OsString;
-use std::path::PathBuf;
-use std::process::ExitCode;
+use std::path::{Path, PathBuf};
+use std::process::{Command, ExitCode, ExitStatus};
+
+/// Spawns a command exec-style. On Unix, replaces this process with
+/// the child via `execve` so signals + exit code pass through
+/// transparently. On Windows there's no execve; spawn + wait +
+/// propagate.
+fn exec_spawn(cmd: &mut Command) -> std::io::Result<Infallible> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        let err = cmd.exec();
+        Err(err)
+    }
+    #[cfg(not(unix))]
+    {
+        // No execve on Windows. Spawn + wait + exit with the
+        // child's code directly — same shape as uv's
+        // `uv_windows::spawn_child`, which also never returns
+        // `Ok` (the return type is `Result<Infallible>`). Custom
+        // Ctrl-C / job-object handling lands in Phase 4.
+        let status = cmd.status()?;
+        let code = i32::from(u8::try_from(status.code().unwrap_or(1)).unwrap_or(1));
+        std::process::exit(code);
+    }
+}
+
+/// Assuming the binary is called something like `bgx@1.2.3(.exe)`,
+/// compute the `@1.2.3(.exe)` part so we can preferentially find
+/// `bougie@1.2.3(.exe)`, for folks who like managing multiple
+/// installs in this way.
+fn get_bgx_suffix(current_exe: &Path) -> Option<&str> {
+    let os_file_name = current_exe.file_name()?;
+    let file_name_str = os_file_name.to_str()?;
+    file_name_str.strip_prefix("bgx")
+}
+
+/// Gets the path to `bougie`, given info about `bgx`.
+fn get_bougie_path(
+    current_exe_parent: &Path,
+    bgx_suffix: Option<&str>,
+) -> std::io::Result<PathBuf> {
+    // First try to find a matching suffixed `bougie`, e.g.
+    // `bougie@1.2.3(.exe)`.
+    let bougie_with_suffix =
+        bgx_suffix.map(|suffix| current_exe_parent.join(format!("bougie{suffix}")));
+    if let Some(bougie_with_suffix) = &bougie_with_suffix {
+        match bougie_with_suffix.try_exists() {
+            Ok(true) => return Ok(bougie_with_suffix.to_owned()),
+            Ok(false) => { /* definitely not there, proceed to fallback */ }
+            Err(err) => {
+                // We don't know if `bougie@1.2.3` exists, something
+                // errored when checking. We *could* blindly use
+                // `bougie@1.2.3` here, but in this narrow corner
+                // case it's probably better to default to plain
+                // `bougie` so we don't mess up users who weren't
+                // using suffixes.
+                eprintln!(
+                    "warning: failed to determine if `{}` exists, trying `bougie` instead: {err}",
+                    bougie_with_suffix.display()
+                );
+            }
+        }
+    }
+
+    // Then just look for good ol' `bougie`.
+    let bougie = current_exe_parent.join(format!("bougie{}", std::env::consts::EXE_SUFFIX));
+    // If we are sure the `bougie` binary does not exist, display a
+    // clearer error message. If we're not certain
+    // (`try_exists() == Err`), keep going and hope it works.
+    if matches!(bougie.try_exists(), Ok(false)) {
+        let message = if let Some(bougie_with_suffix) = bougie_with_suffix {
+            format!(
+                "Could not find the `bougie` binary at either of:\n  {}\n  {}",
+                bougie_with_suffix.display(),
+                bougie.display(),
+            )
+        } else {
+            format!("Could not find the `bougie` binary at: {}", bougie.display())
+        };
+        Err(std::io::Error::new(std::io::ErrorKind::NotFound, message))
+    } else {
+        Ok(bougie)
+    }
+}
+
+fn run() -> std::io::Result<ExitStatus> {
+    let current_exe = std::env::current_exe()?;
+    let Some(bin) = current_exe.parent() else {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "Could not determine the location of the `bgx` binary",
+        ));
+    };
+    let bgx_suffix = get_bgx_suffix(&current_exe);
+    let bougie = get_bougie_path(bin, bgx_suffix)?;
+    let args = ["tool", "run"]
+        .iter()
+        .map(OsString::from)
+        // Skip the `bgx` name
+        .chain(std::env::args_os().skip(1))
+        .collect::<Vec<_>>();
+
+    let mut cmd = Command::new(bougie);
+    cmd.args(&args);
+    match exec_spawn(&mut cmd)? {}
+}
 
 fn main() -> ExitCode {
-    let bougie = match locate_bougie() {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("error: {e}");
-            // Exit 2 distinguishes "the shim couldn't even find
-            // bougie" from "bougie ran and reported exit 1". Matches
-            // uv's uvx convention.
-            return ExitCode::from(2);
-        }
-    };
-
-    let mut args: Vec<OsString> = Vec::new();
-    args.push(OsString::from("tool"));
-    args.push(OsString::from("run"));
-    args.extend(std::env::args_os().skip(1));
-
-    exec(&bougie, &args)
-}
-
-/// Resolve the `bougie` binary `bgx` should hand off to.
-///
-/// Priority:
-///   1. `BGX_BOUGIE` env override — escape hatch for test harnesses
-///      and for users running mismatched binaries side-by-side.
-///   2. `<bgx's dir>/bougie[.exe]` — the normal install layout:
-///      both binaries land in the same directory.
-///   3. `PATH` lookup via `which`-style traversal — last resort so
-///      `bgx` keeps working if someone installs only it.
-fn locate_bougie() -> Result<PathBuf, String> {
-    if let Some(env) = std::env::var_os("BGX_BOUGIE") {
-        return Ok(PathBuf::from(env));
-    }
-
-    let bougie_name: &str = if cfg!(windows) { "bougie.exe" } else { "bougie" };
-
-    if let Ok(exe) = std::env::current_exe()
-        && let Some(dir) = exe.parent()
-    {
-        let candidate = dir.join(bougie_name);
-        // `try_exists` distinguishes "definitely not there"
-        // (Ok(false), fall through) from "couldn't check"
-        // (Err, optimistically try anyway — exec will surface a
-        // useful error if it really isn't there). uvx uses the
-        // same trick.
-        match candidate.try_exists() {
-            Ok(true) => return Ok(candidate),
-            Ok(false) => {}
-            Err(_) => return Ok(candidate),
+    let result = run();
+    match result {
+        // Fail with 2 if the status cannot be cast to an exit code.
+        Ok(status) => u8::try_from(status.code().unwrap_or(2))
+            .unwrap_or(2)
+            .into(),
+        Err(err) => {
+            eprintln!("error: {err}");
+            ExitCode::from(2)
         }
     }
-
-    let Some(path) = std::env::var_os("PATH") else {
-        return Err(
-            "could not find `bougie` next to `bgx` and PATH is unset; \
-             install bougie or set BGX_BOUGIE to its path"
-                .into(),
-        );
-    };
-    for dir in std::env::split_paths(&path) {
-        let candidate = dir.join(bougie_name);
-        match candidate.try_exists() {
-            Ok(true) => return Ok(candidate),
-            Ok(false) => {}
-            Err(_) => return Ok(candidate),
-        }
-    }
-    Err(format!(
-        "could not find `{bougie_name}` next to `bgx` or on PATH; \
-         set BGX_BOUGIE to its path"
-    ))
-}
-
-#[cfg(unix)]
-fn exec(bougie: &std::path::Path, args: &[OsString]) -> ExitCode {
-    use std::os::unix::process::CommandExt;
-    let err = std::process::Command::new(bougie).args(args).exec();
-    eprintln!("error: exec {}: {err}", bougie.display());
-    ExitCode::from(1)
-}
-
-#[cfg(not(unix))]
-fn exec(bougie: &std::path::Path, args: &[OsString]) -> ExitCode {
-    let status = match std::process::Command::new(bougie).args(args).status() {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("error: spawn {}: {e}", bougie.display());
-            return ExitCode::from(1);
-        }
-    };
-    let code = status.code().unwrap_or(1);
-    ExitCode::from(u8::try_from(code).unwrap_or(1))
 }
