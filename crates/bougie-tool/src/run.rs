@@ -90,15 +90,16 @@ pub fn prepare(
     let package = request.package();
     // Drive PHP off the tool's `require.php` so the cache key reflects
     // what the tool actually needs (and matches what `tool install`
-    // would write into a persistent receipt).
-    let php = crate::install::pick_php_for_install(
+    // would write into a persistent receipt). Resolve only — the
+    // baseline ensure runs inside `install_into` when we materialise, so
+    // a cache hit doesn't pay for (or fail on) it.
+    let php = crate::install::resolve_php_choice(
         ctx.paths,
         &package,
         &constraint,
         php_spec,
         ctx.php_installer,
         ctx.php_requirement,
-        ctx.php_baseline,
     )?;
 
     if let Some(dir) = find_persistent_match(ctx.paths, &package, &constraint, &php, with)? {
