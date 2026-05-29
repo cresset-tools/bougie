@@ -183,8 +183,14 @@ fn read_indirect_string(
 /// its addend.
 fn read_pointer_at_vaddr(buf: &[u8], sections: &[Section], ptr_vaddr: u64) -> Result<u64> {
     let ptr_off = vaddr_to_file_off(sections, ptr_vaddr, 8)?;
+    let end = ptr_off
+        .checked_add(8)
+        .ok_or_else(|| eyre!("pointer file offset {ptr_off} overflows"))?;
+    let bytes = buf
+        .get(ptr_off..end)
+        .ok_or_else(|| eyre!("pointer at file offset {ptr_off} out of range (buf={})", buf.len()))?;
     let mut p = [0u8; 8];
-    p.copy_from_slice(&buf[ptr_off..ptr_off + 8]);
+    p.copy_from_slice(bytes);
     let direct = u64::from_le_bytes(p);
     if direct != 0 {
         return Ok(direct);
@@ -245,7 +251,12 @@ fn vaddr_to_file_off(sections: &[Section], vaddr: u64, len: u64) -> Result<usize
         let end = s.sh_addr.saturating_add(s.sh_size);
         if vaddr >= s.sh_addr && vaddr.saturating_add(len) <= end {
             let delta = vaddr - s.sh_addr;
-            return Ok((s.sh_offset + delta) as usize);
+            let off = s
+                .sh_offset
+                .checked_add(delta)
+                .ok_or_else(|| eyre!("file offset overflow mapping vaddr {vaddr:#x}"))?;
+            return usize::try_from(off)
+                .map_err(|_| eyre!("file offset {off} too large for this platform"));
         }
     }
     Err(eyre!(
