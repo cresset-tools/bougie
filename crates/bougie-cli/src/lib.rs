@@ -2,7 +2,7 @@ use clap::builder::styling::{AnsiColor, Effects, Styles};
 use clap::{Parser, Subcommand};
 
 const HELP_STYLES: Styles = Styles::styled()
-    .header(AnsiColor::Magenta.on_default().effects(Effects::BOLD))
+    .header(AnsiColor::Blue.on_default().effects(Effects::BOLD))
     .usage(AnsiColor::Magenta.on_default().effects(Effects::BOLD))
     .literal(AnsiColor::BrightMagenta.on_default().effects(Effects::BOLD))
     .placeholder(AnsiColor::BrightMagenta.on_default())
