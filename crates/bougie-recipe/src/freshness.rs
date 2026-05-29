@@ -3,7 +3,7 @@
 use super::dag::split_deps;
 use super::parser::{Recipe, TaskDef};
 use eyre::{Result, WrapErr};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::time::SystemTime;
 
@@ -34,6 +34,10 @@ pub struct WalkState {
     pub task_mtime: HashMap<String, Option<SystemTime>>,
     /// Tasks whose `check` exited 0 — propagate-clean per §3.
     pub check_clean: HashMap<String, bool>,
+    /// Tasks whose freshness verdict was Run. A phony (no-`creates`) dep
+    /// always runs but records no mtime, so dirtiness can only reach its
+    /// dependents through this set (make's phony-prerequisite rule).
+    pub dirty: HashSet<String>,
 }
 
 /// Decide whether a task's recipe should run.
@@ -82,6 +86,15 @@ pub fn evaluate(
         // `check`-gated deps don't propagate dirtiness (§3).
         if state.check_clean.get(dep_name).copied().unwrap_or(false) {
             continue;
+        }
+        // A dep that ran is dirty → this task must run too. This is the
+        // only signal that catches a phony dep (no `creates`, so no
+        // mtime to compare); it also covers a `creates` dep that was
+        // regenerated this walk regardless of clock granularity.
+        if state.dirty.contains(dep_name) {
+            return Ok(Verdict::Run(format!(
+                "dependency `{dep_name}` ran → running"
+            )));
         }
         if let Some(Some(dep_mtime)) = state.task_mtime.get(dep_name)
             && *dep_mtime > our_mtime {
