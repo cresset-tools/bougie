@@ -52,13 +52,10 @@ pub fn uninstall(paths: &Paths, package: &str) -> Result<UninstallOutcome> {
                     })?;
                     removed_bins.push(entry.install_path.clone());
                 }
-                // Symlink now points elsewhere (reclaimed by another tool)
-                // — leave it alone.
-                Ok(_) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                // Not a symlink (e.g. replaced by a regular file we don't
-                // own): don't clobber it.
-                Err(_) => {}
+                // Anything else — symlink reclaimed by another tool,
+                // missing, or not a symlink (a regular file we don't own)
+                // — is left untouched.
+                _ => {}
             }
         }
     }

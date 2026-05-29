@@ -982,17 +982,16 @@ fn reap_orphan_group(service: &str, pgid: i32, leader_starttime: Option<u64>) {
     // kill an innocent group. Skip. (If the leader is simply gone, the
     // probe returns None and we fall through to the existence check,
     // preserving the legitimate orphan-reaping path.)
-    if let Some(recorded) = leader_starttime {
-        if let Some(current) = proc_starttime(pgid) {
-            if current != recorded {
-                tracing::warn!(
-                    service,
-                    pgid,
-                    "stored pgid was recycled by an unrelated process; not reaping"
-                );
-                return;
-            }
-        }
+    if let Some(recorded) = leader_starttime
+        && let Some(current) = proc_starttime(pgid)
+        && current != recorded
+    {
+        tracing::warn!(
+            service,
+            pgid,
+            "stored pgid was recycled by an unrelated process; not reaping"
+        );
+        return;
     }
     // `kill(pgid, 0)` — existence check. `Errno::SRCH` means no
     // members left, which is the normal path (babysit cleaned up

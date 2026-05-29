@@ -166,9 +166,8 @@ fn prune_dropped_entrypoints(
                     format!("removing dropped entrypoint {}", old_ep.install_path.display())
                 })?;
             }
-            Ok(_) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(_) => {}
+            // Reclaimed by another tool, missing, or not a symlink — skip.
+            _ => {}
         }
     }
     Ok(())
