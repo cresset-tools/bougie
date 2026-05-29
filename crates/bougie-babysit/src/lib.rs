@@ -171,7 +171,16 @@ async fn serve(cfg: Config) -> Result<ExitCode> {
     tokio::select! {
         // Service exited on its own.
         status = child.wait() => {
-            let code = status.ok().and_then(|s| s.code()).unwrap_or(-1);
+            // `code()` is None for a signal-killed child; report the
+            // signal as 128+signo (shell convention) rather than
+            // collapsing every crash to -1 (which then clamps to 0 and
+            // is indistinguishable from a clean exit).
+            let code = status.ok().map_or(-1, |s| {
+                use std::os::unix::process::ExitStatusExt;
+                s.code()
+                    .or_else(|| s.signal().map(|sig| 128 + sig))
+                    .unwrap_or(-1)
+            });
             let _ = control
                 .write_all(format!("exited={code}\n").as_bytes())
                 .await;
