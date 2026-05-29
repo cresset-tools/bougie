@@ -517,10 +517,6 @@ pub enum ComposerCommand {
     Dir,
     /// Refresh the stable + preview Composer channels to the latest.
     Upgrade,
-    /// Regenerate `vendor/composer/autoload_*.php` against the current
-    /// `composer.lock`. Drop-in for `composer dump-autoload`; output
-    /// is byte-equivalent to Composer 2.8.12 with the same flags. Aliased
-    /// to `dump-autoload` for users coming from Composer muscle-memory.
     /// Validate composer.json structure and contents.
     Validate {
         /// Run in this directory instead of CWD.
@@ -545,6 +541,10 @@ pub enum ComposerCommand {
         #[arg(long = "check-lock")]
         check_lock: bool,
     },
+    /// Regenerate `vendor/composer/autoload_*.php` against the current
+    /// `composer.lock`. Drop-in for `composer dump-autoload`; output
+    /// is byte-equivalent to Composer 2.8.12 with the same flags. Aliased
+    /// to `dump-autoload` for users coming from Composer muscle-memory.
     #[command(alias = "dump-autoload")]
     DumpAutoloader {
         /// Optimize the classmap (`--optimize` / `-o`).
