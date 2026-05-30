@@ -7,6 +7,15 @@ use landlock::{
     RulesetStatus,
 };
 
+// libc's setrlimit takes the resource argument as
+// `__rlimit_resource_t` (a u32 alias) on glibc but as `c_int` on
+// musl — the typedef is glibc-only in the `libc` crate. Alias the
+// per-target type once so the call site doesn't have to know which.
+#[cfg(target_env = "gnu")]
+type RlimitResource = libc::__rlimit_resource_t;
+#[cfg(not(target_env = "gnu"))]
+type RlimitResource = libc::c_int;
+
 /// Apply the sandbox policy using Linux-specific mechanisms.
 pub fn apply_sandbox(policy: &SandboxPolicy) -> Result<(), SandboxError> {
     let config = &policy.config;
@@ -34,7 +43,7 @@ fn apply_no_new_privs() -> Result<(), SandboxError> {
 }
 
 fn apply_resource_limits(config: &crate::sandbox::Sandbox) -> Result<(), SandboxError> {
-    let limits: [(Option<u64>, libc::__rlimit_resource_t); 8] = [
+    let limits: [(Option<u64>, RlimitResource); 8] = [
         (config.limit_nofile, libc::RLIMIT_NOFILE),
         (config.limit_nproc, libc::RLIMIT_NPROC),
         (config.limit_core, libc::RLIMIT_CORE),

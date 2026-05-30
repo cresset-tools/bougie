@@ -391,7 +391,7 @@ dependencies = [
 
 [[package]]
 name = "bougie"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "assert_cmd",
  "base64 0.22.1",
@@ -460,7 +460,7 @@ dependencies = [
 
 [[package]]
 name = "bougie-babysit"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "eyre",
  "rustix",
@@ -469,7 +469,7 @@ dependencies = [
 
 [[package]]
 name = "bougie-backend"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "bougie-errors",
  "bougie-fetch",
@@ -488,14 +488,14 @@ dependencies = [
 
 [[package]]
 name = "bougie-cli"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "clap",
 ]
 
 [[package]]
 name = "bougie-composer"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "bougie-errors",
  "bougie-fetch",
@@ -543,7 +543,7 @@ dependencies = [
 
 [[package]]
 name = "bougie-config"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "eyre",
  "serde",
@@ -553,7 +553,7 @@ dependencies = [
 
 [[package]]
 name = "bougie-daemon"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "bougie-backend",
  "bougie-config",
@@ -581,7 +581,7 @@ dependencies = [
 
 [[package]]
 name = "bougie-errors"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "eyre",
  "thiserror 2.0.18",
@@ -589,7 +589,7 @@ dependencies = [
 
 [[package]]
 name = "bougie-fetch"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "bougie-errors",
  "bougie-output",
@@ -607,7 +607,7 @@ dependencies = [
 
 [[package]]
 name = "bougie-fs"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "bougie-errors",
  "bougie-paths",
@@ -620,7 +620,7 @@ dependencies = [
 
 [[package]]
 name = "bougie-index"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "base64 0.22.1",
  "bougie-errors",
@@ -635,7 +635,7 @@ dependencies = [
 
 [[package]]
 name = "bougie-installer"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "bougie-backend",
  "bougie-errors",
@@ -657,7 +657,7 @@ dependencies = [
 
 [[package]]
 name = "bougie-output"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "anstream",
  "anstyle",
@@ -669,7 +669,7 @@ dependencies = [
 
 [[package]]
 name = "bougie-paths"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "etcetera",
  "eyre",
@@ -677,14 +677,14 @@ dependencies = [
 
 [[package]]
 name = "bougie-php-json"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "bougie-platform"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "bougie-errors",
  "eyre",
@@ -692,7 +692,7 @@ dependencies = [
 
 [[package]]
 name = "bougie-recipe"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "eyre",
  "rustix",
@@ -705,7 +705,7 @@ dependencies = [
 
 [[package]]
 name = "bougie-resolver"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "bougie-errors",
  "bougie-index",
@@ -725,7 +725,7 @@ dependencies = [
 
 [[package]]
 name = "bougie-server"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "anstream",
  "anstyle",
@@ -760,7 +760,7 @@ dependencies = [
 
 [[package]]
 name = "bougie-tool"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "bougie-composer-resolver",
  "bougie-errors",
@@ -779,7 +779,7 @@ dependencies = [
 
 [[package]]
 name = "bougie-version"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "bougie-semver",
  "eyre",

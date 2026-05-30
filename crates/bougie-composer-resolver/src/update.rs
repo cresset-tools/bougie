@@ -1307,6 +1307,35 @@ fn prefetch_concurrency_limit() -> usize {
         .unwrap_or(50)
 }
 
+/// Maximum concurrent metadata requests to a *single host*. Override
+/// with `BOUGIE_CONCURRENT_FETCHES_PER_HOST`. Default 12 matches
+/// Composer's own `COMPOSER_MAX_PARALLEL_HTTP` and sits in the same
+/// regime as a browser's per-origin connection cap (6 for HTTP/1.1,
+/// one multiplexed HTTP/2 connection). The global
+/// [`prefetch_concurrency_limit`] still bounds total in-flight work;
+/// this stops a graph that lives mostly on one mirror (the Magento /
+/// Mage-OS case — hundreds of `mage-os/*` packages on one origin) from
+/// pointing all ~50 slots at that origin at once, which CDN edges
+/// (Cloudflare, Fastly) rate-limit / tarpit as an abusive burst.
+fn prefetch_per_host_limit() -> usize {
+    std::env::var("BOUGIE_CONCURRENT_FETCHES_PER_HOST")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(12)
+}
+
+/// Host key for per-host throttling. Parses the repo URL and returns
+/// its host (`repo.mage-os.org`); falls back to the raw URL so two
+/// repos on the same host still share a limiter and an unparseable URL
+/// still gets *a* (degenerate) key rather than being unlimited.
+fn repo_host(url: &str) -> String {
+    reqwest::Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(str::to_owned))
+        .unwrap_or_else(|| url.to_owned())
+}
+
 /// Result of fetching one package's metadata during the prefetch
 /// fan-out. `contributions` is the pre-parsed virtual-provider
 /// payload (computed from the *pre-filter* version list inside the
@@ -1320,11 +1349,15 @@ struct PrefetchOutcome {
 }
 
 /// Drive a Semaphore-bounded BFS over the require closure, fetching
-/// each visited package's metadata via `spawn_blocking` so they run
-/// concurrently. As each completes, its (filtered) versions' require
-/// keys become new BFS nodes. Returns one [`PrefetchOutcome`] per
-/// visited name; the caller registers virtuals and populates the
-/// resolver's cache from these in deterministic order.
+/// each visited package's metadata concurrently. As each completes, its
+/// (filtered) versions' require keys become new BFS nodes. Returns one
+/// [`PrefetchOutcome`] per visited name; the caller registers virtuals
+/// and populates the resolver's cache from these in deterministic order.
+///
+/// Two limiters apply: a global one (`concurrency`, total in-flight
+/// tasks) and a per-host one ([`prefetch_per_host_limit`], concurrent
+/// requests to any single origin). The per-host cap keeps a one-mirror
+/// graph from bursting all global slots at a single CDN edge.
 async fn run_prefetch_fanout(
     client: reqwest::Client,
     paths: Paths,
@@ -1338,6 +1371,20 @@ async fn run_prefetch_fanout(
 ) -> Result<Vec<PrefetchOutcome>, ProviderError> {
     use std::collections::HashSet;
     let sem = Arc::new(tokio::sync::Semaphore::new(concurrency));
+    // Per-host limiter: one Semaphore per distinct repo host, so no
+    // single origin sees more than `prefetch_per_host_limit()`
+    // concurrent requests even when the global pool would allow more.
+    // Built from the (fixed) repo list up front; hosts are stable for
+    // the run.
+    let per_host = prefetch_per_host_limit();
+    let host_sems: Arc<HashMap<String, Arc<tokio::sync::Semaphore>>> = {
+        let mut m: HashMap<String, Arc<tokio::sync::Semaphore>> = HashMap::new();
+        for repo in &repos {
+            m.entry(repo_host(&repo.url))
+                .or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(per_host)));
+        }
+        Arc::new(m)
+    };
     // BFS `visited` set keyed by `PackageName` — cheap-clone Arc<str>,
     // so the once-per-name insert + the spawn-task clone are refcount
     // bumps rather than allocations.
@@ -1355,6 +1402,7 @@ async fn run_prefetch_fanout(
             let v1_tables = Arc::clone(&v1_tables);
             let stability_flags = Arc::clone(&stability_flags);
             let sem = Arc::clone(&sem);
+            let host_sems = Arc::clone(&host_sems);
             tasks.spawn(async move {
                 let _permit = sem
                     .acquire_owned()
@@ -1364,15 +1412,61 @@ async fn run_prefetch_fanout(
                     .get(name.as_str())
                     .copied()
                     .unwrap_or(minimum_stability);
-                load_real_candidates_isolated(
-                    &client,
-                    &paths,
-                    &repos,
-                    &v1_tables,
-                    name.as_str(),
-                    floor,
-                )
-                .await
+                // Per-attempt timeout + bounded retry. A metadata GET is
+                // a small JSON response that normally lands in well under
+                // a second; the shared client's 5-minute ceiling is sized
+                // for dist *downloads*, not metadata. Occasionally one
+                // connection stalls between connect and first byte
+                // (reproduced against the Mage-OS mirror under fan-out),
+                // and without this a single stalled request blocks the
+                // whole closure — `join_next` waits on it — for up to that
+                // full 5 minutes. Abandon a slow attempt fast and retry on
+                // a fresh connection instead. 404s come back as `Ok(None)`
+                // from `fetch_one_isolated`, so a missing package is never
+                // an `Err` here and never burns retries.
+                const ATTEMPT_TIMEOUT: std::time::Duration =
+                    std::time::Duration::from_secs(20);
+                const MAX_ATTEMPTS: usize = 4;
+                let mut last_err: Option<ProviderError> = None;
+                for attempt in 0..MAX_ATTEMPTS {
+                    match tokio::time::timeout(
+                        ATTEMPT_TIMEOUT,
+                        load_real_candidates_isolated(
+                            &client,
+                            &paths,
+                            &repos,
+                            &v1_tables,
+                            name.as_str(),
+                            floor,
+                            &host_sems,
+                        ),
+                    )
+                    .await
+                    {
+                        Ok(Ok(outcome)) => return Ok(outcome),
+                        Ok(Err(e)) => last_err = Some(e),
+                        Err(_elapsed) => {
+                            last_err = Some(ProviderError(format!(
+                                "metadata fetch for `{}` timed out after {}s (attempt {}/{MAX_ATTEMPTS})",
+                                name.as_str(),
+                                ATTEMPT_TIMEOUT.as_secs(),
+                                attempt + 1,
+                            )));
+                        }
+                    }
+                    if attempt + 1 < MAX_ATTEMPTS {
+                        // Linear backoff: 150ms, 300ms, 450ms. Short —
+                        // the goal is to dodge a single bad connection,
+                        // not to ride out an outage.
+                        tokio::time::sleep(std::time::Duration::from_millis(
+                            150 * (attempt as u64 + 1),
+                        ))
+                        .await;
+                    }
+                }
+                Err(last_err.unwrap_or_else(|| {
+                    ProviderError(format!("metadata fetch for `{}` failed", name.as_str()))
+                }))
             });
         };
 
@@ -1428,9 +1522,23 @@ async fn load_real_candidates_isolated(
     v1_tables: &FxHashMap<String, FxHashMap<String, String>>,
     name: &str,
     floor: Stability,
+    host_sems: &HashMap<String, Arc<tokio::sync::Semaphore>>,
 ) -> Result<PrefetchOutcome, ProviderError> {
     let mut versions: Vec<LockPackage> = Vec::new();
     for repo in repos {
+        // Hold the host's permit across this repo's stable+dev fetches,
+        // so concurrent requests to one origin stay under the per-host
+        // cap. Dropped at the end of the iteration. A host missing from
+        // the map (shouldn't happen — built from this same list) is
+        // simply not throttled.
+        let _host_permit = match host_sems.get(&repo_host(&repo.url)) {
+            Some(s) => Some(
+                s.acquire()
+                    .await
+                    .map_err(|e| ProviderError(format!("host semaphore closed: {e}")))?,
+            ),
+            None => None,
+        };
         let stable_md =
             fetch_one_isolated(client, paths, repo, v1_tables, name, Variant::Stable)
                 .await
@@ -2600,6 +2708,18 @@ impl ResolveProvider {
             .replace
             .iter()
             .filter(|(k, v)| {
+                // A self-replace (`replace: { self: <other-version> }`)
+                // is Composer's idiom for "this version also stands in
+                // for that older version of myself" — common on Magento
+                // metapackages that were renamed/reorganized (e.g.
+                // `mage-os/page-builder 3.0.0 replace: { mage-os/page-builder: 1.7.6 }`).
+                // It must NOT become a require: emitting `self ==1.7.6`
+                // forces the package to depend on a different version of
+                // itself, which is trivially unsatisfiable. Composer
+                // ignores self-replacement for resolution.
+                if k.as_str() == name.as_str() {
+                    return false;
+                }
                 // Only emit the coexistence constraint if the
                 // replaced package is actually in the dependency
                 // graph. The pre-fetch BFS populates the cache for
@@ -3192,6 +3312,13 @@ fn collect_active_replaces(
             continue;
         };
         for replaced_name in entry.replace.keys() {
+            // Skip self-replace (`replace: { self: <other-version> }`):
+            // the package stands in for an older version of itself, so
+            // it must NOT be filtered out of its own solution. See the
+            // matching guard in the replace-as-require emission.
+            if replaced_name.as_str() == name.as_str() {
+                continue;
+            }
             if solution_names.contains(replaced_name.as_str()) {
                 replaced.insert(replaced_name.clone());
             }
