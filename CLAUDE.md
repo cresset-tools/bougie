@@ -25,7 +25,10 @@ contract for index format, server behavior, and service tarballs).
 - `.github/workflows/ci.yml` — Linux/macOS/Windows matrix. Windows builds
   only `-p bougie` (sandbox-run is Unix-only and `compile_error!`s elsewhere).
 - `.github/workflows/release-please.yml` — Opens release PRs from
-  conventional commits and refreshes `Cargo.lock` on the PR branch.
+  conventional commits, refreshes `Cargo.lock` on the PR branch, and
+  on PR merge pushes the `bougie-v<version>` tag. release-please
+  itself runs with `skip-github-release: true` so dist
+  (`bougie-release.yml`) owns the GitHub Release.
 - `.cargo/config.toml` — Defines `cargo t` / `cargo test-all` aliases
   (both run `test --features test-fixtures`).
 - `scripts/` — Fixture generators (Composer 2.8.12 phar driven). Run under

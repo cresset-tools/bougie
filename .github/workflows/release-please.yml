@@ -1,12 +1,11 @@
 name: release-please
 
 # Conventional-commit-driven release automation. On every push to main,
-# release-please scans commits since the last `bougie-v*` tag, opens or
-# updates a release PR that bumps every `version = "x.y.z"` line
-# annotated with `# x-release-please-version`, and regenerates
-# `CHANGELOG.md`. Merging that PR is the signal to ship: release-please
-# tags `bougie-v<version>`, and `bougie-release.yml` (cargo-dist) picks
-# up the tag push and builds the binary matrix.
+# release-please scans commits since the last `bougie-v*` tag and
+# opens or updates a release PR that bumps `workspace.package.version`
+# and prepends to `CHANGELOG.md`. Merging the PR pushes the
+# `bougie-v<version>` tag, and `bougie-release.yml` (cargo-dist) picks
+# up the tag push and builds the binary matrix + GitHub release.
 #
 # Unlike release-plz, release-please decides "what changed" purely from
 # conventional-commit messages, not from per-crate file diffs. That
@@ -14,6 +13,12 @@ name: release-please
 # `crates/bougie-composer-resolver/`) still drive a top-level release —
 # which is why every workspace member is pinned in lockstep on
 # `workspace.package.version`.
+#
+# `skip-github-release: true` tells release-please not to publish the
+# GitHub Release itself; dist owns that step (it's the workflow with
+# the built binaries to attach). release-please's release-publish step
+# also pushes the tag, so we re-implement the tag push here from the
+# merge commit.
 
 on:
   push:
@@ -51,6 +56,12 @@ jobs:
           token: ${{ steps.app-token.outputs.token }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+          # Don't create the GitHub Release — dist owns that on the
+          # `bougie-v*` tag push (see "Push release tag" below).
+          # Otherwise dist's `gh release create` collides with
+          # release-please's release and fails the bougie-release.yml
+          # run after every release-PR merge.
+          skip-github-release: true
 
       # release-please rewrites `workspace.package.version` but doesn't
       # understand Cargo.lock. Refresh the lockfile on the PR branch so
@@ -78,3 +89,32 @@ jobs:
             git commit -m "chore(release): refresh Cargo.lock"
             git push
           fi
+
+      # With `skip-github-release: true`, release-please doesn't push
+      # the tag either. Push it ourselves when a release PR just merged
+      # — detected by "no PR was opened/updated this run, AND the
+      # manifest version is ahead of the latest matching tag." dist's
+      # tag-push trigger takes over from there.
+      - name: Checkout main for tag detection
+        if: ${{ ! steps.release.outputs.pr }}
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Push release tag
+        if: ${{ ! steps.release.outputs.pr }}
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          VERSION=$(jq -r '"."' .release-please-manifest.json)
+          TAG="bougie-v$VERSION"
+          if git rev-parse --verify "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists; nothing to do."
+            exit 0
+          fi
+          echo "Pushing $TAG @ ${{ github.sha }}"
+          git config user.email "${{ vars.BOT_EMAIL || 'noreply@cresset.tools' }}"
+          git config user.name "${{ vars.BOT_NAME || 'cresset-bot' }}"
+          git tag -a "$TAG" -m "Release $TAG" "${{ github.sha }}"
+          git push origin "$TAG"
