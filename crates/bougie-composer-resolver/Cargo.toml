@@ -1,6 +1,6 @@
 [package]
 name = "bougie-composer-resolver"
-version = "0.1.0"
+version.workspace = true
 edition = "2024"
 description = "Native Composer dependency resolver + installer for bougie. Reads composer.lock, downloads dists in parallel, extracts to vendor/."
 license = "EUPL-1.2"

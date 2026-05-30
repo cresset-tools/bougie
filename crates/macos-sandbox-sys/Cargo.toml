@@ -1,6 +1,6 @@
 [package]
 name = "macos-sandbox-sys"
-version = "0.1.0"
+version.workspace = true
 description = "FFI bindings for Apple's Sandbox framework (sandbox_init_with_parameters)"
 edition.workspace = true
 license.workspace = true
