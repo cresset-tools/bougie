@@ -1,7 +1,7 @@
 //! Shared helpers for the offline `bougie services {add,remove}`
 //! mutations on `composer.json` / `bougie.toml`.
 
-use bougie_composer::lockfile::{read_json_file, write_json_file};
+use bougie_composer::lockfile::{content_hash, read_json_file, write_json_file};
 use eyre::{eyre, Result, WrapErr};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -77,6 +77,7 @@ fn add_to_composer_json(path: &Path, name: &str, version: &str) -> Result<bool> 
     };
     map.insert(name.to_string(), new_value);
     write_json_file(path, &v)?;
+    resync_lock_content_hash(path)?;
     Ok(was_new)
 }
 
@@ -103,7 +104,60 @@ fn remove_from_composer_json(path: &Path, name: &str) -> Result<bool> {
         map.remove(name);
     }
     write_json_file(path, &v)?;
+    resync_lock_content_hash(path)?;
     Ok(true)
+}
+
+/// After mutating `composer.json`, re-stamp `composer.lock`'s
+/// `content-hash` so the lock stays in sync. `extra.bougie.services`
+/// lives inside the block Composer hashes into the lock, so adding or
+/// removing a service otherwise desyncs the lock and the next
+/// `composer install` / `bougie sync` refuses with a content-hash
+/// mismatch — even though the *dependency graph* hasn't changed at all
+/// (services aren't Composer packages). We recompute the hash from the
+/// new `composer.json` and surgically swap just the `content-hash`
+/// value, leaving the rest of the lock byte-for-byte unchanged.
+///
+/// No-op when there's no `composer.lock` yet, when the lock has no
+/// `content-hash`, or when the on-disk format doesn't match what we
+/// expect (bail rather than risk corrupting the lock).
+fn resync_lock_content_hash(composer_json_path: &Path) -> Result<()> {
+    let lock_path = composer_json_path.with_file_name("composer.lock");
+    if !lock_path.is_file() {
+        return Ok(());
+    }
+    let composer_bytes = std::fs::read(composer_json_path)
+        .wrap_err_with(|| format!("reading {}", composer_json_path.display()))?;
+    let new_hash = content_hash(&composer_bytes)
+        .wrap_err("recomputing composer.json content-hash")?;
+    let lock_text = std::fs::read_to_string(&lock_path)
+        .wrap_err_with(|| format!("reading {}", lock_path.display()))?;
+    let old_hash = serde_json::from_str::<Value>(&lock_text)
+        .ok()
+        .and_then(|v| {
+            v.get("content-hash")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        });
+    let Some(old_hash) = old_hash else {
+        return Ok(());
+    };
+    if old_hash == new_hash {
+        return Ok(());
+    }
+    // Surgical swap of just the value — preserves the lock's exact
+    // formatting (key order, indentation) which a parse/re-serialize
+    // round-trip could perturb. `content-hash` is an md5 of
+    // composer.json; the 32-hex value won't collide with the sha1/sha256
+    // dist hashes elsewhere in the lock.
+    let needle = format!("\"content-hash\": \"{old_hash}\"");
+    let replacement = format!("\"content-hash\": \"{new_hash}\"");
+    if !lock_text.contains(&needle) {
+        return Ok(());
+    }
+    let updated = lock_text.replacen(&needle, &replacement, 1);
+    atomic_write(&lock_path, updated.as_bytes())?;
+    Ok(())
 }
 
 fn read_or_init_composer_json(path: &Path) -> Result<Value> {
@@ -217,4 +271,52 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
     tf.persist(path)
         .map_err(|e| eyre!("renaming temp to {}: {e}", path.display()))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    /// Adding a service to composer.json re-stamps composer.lock's
+    /// content-hash so the two stay in sync (otherwise the next
+    /// `bougie sync` / `composer install` fails the content-hash guard).
+    #[test]
+    fn services_add_restamps_lock_content_hash() {
+        let td = TempDir::new().unwrap();
+        let cj = td.path().join("composer.json");
+        std::fs::write(&cj, r#"{"name":"test/proj","require":{"php":">=8.1"}}"#).unwrap();
+        let lock = td.path().join("composer.lock");
+        std::fs::write(
+            &lock,
+            "{\n    \"_readme\": [\"x\"],\n    \"content-hash\": \"staaaaaaaaaaaaaaaaaaaaaaaaaaaale0\",\n    \"packages\": []\n}\n",
+        )
+        .unwrap();
+
+        let target = ConfigTarget::Composer(cj.clone());
+        assert!(add_service(&target, "redis", "*").unwrap());
+
+        let want = content_hash(&std::fs::read(&cj).unwrap()).unwrap();
+        let lock_v: Value =
+            serde_json::from_str(&std::fs::read_to_string(&lock).unwrap()).unwrap();
+        let got = lock_v.get("content-hash").and_then(Value::as_str).unwrap();
+        assert_eq!(got, want, "lock content-hash should match composer.json");
+        assert_ne!(got, "staaaaaaaaaaaaaaaaaaaaaaaaaaaale0");
+        // the rest of the lock is preserved
+        assert!(lock_v.get("_readme").is_some());
+        assert!(lock_v.get("packages").is_some());
+    }
+
+    /// `extra.bougie.services` in `bougie.toml` is outside Composer's
+    /// content-hash, and a project may have no lock at all — neither
+    /// should error or fabricate a lock.
+    #[test]
+    fn services_add_without_lock_is_a_noop_on_the_lock() {
+        let td = TempDir::new().unwrap();
+        let cj = td.path().join("composer.json");
+        std::fs::write(&cj, r#"{"name":"test/proj"}"#).unwrap();
+        let target = ConfigTarget::Composer(cj);
+        assert!(add_service(&target, "mariadb", "*").unwrap());
+        assert!(!td.path().join("composer.lock").exists());
+    }
 }
