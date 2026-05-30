@@ -37,27 +37,52 @@ pub fn infer(project_root: &Path) -> Option<(Constraint, String)> {
     None
 }
 
-/// Map a magento project to Adobe's officially recommended PHP range.
+/// Map a Magento or Mage-OS project to the officially recommended PHP
+/// range.
 ///
-/// We read the constraint on `magento/product-community-edition` (or
-/// `magento/magento2-base`), pull out its first written version, and
-/// look up the matrix row. Magento constraints are always pinned tight
-/// (`^2.4.7`, `~2.4.6`, `2.4.5-p1`), so the first version mention is
-/// the deciding lower bound for the matrix.
+/// We read the constraint on one of the four known root package names
+/// (both vendors × both aliases), pull out its first written version,
+/// and look up the matrix row. Magento constraints are always pinned
+/// tight (`^2.4.7`, `~2.4.6`, `2.4.5-p1`), so the first version
+/// mention is the deciding lower bound for the matrix.
 fn magento_default(composer_json: &str) -> Option<(Constraint, String)> {
     let v: Value = serde_json::from_str(composer_json).ok()?;
     let require = v.get("require").and_then(Value::as_object)?;
-    let (pkg, raw) = ["magento/product-community-edition", "magento/magento2-base"]
-        .iter()
-        .find_map(|k| require.get(*k).and_then(Value::as_str).map(|s| (*k, s)))?;
-    let (major, minor, patch) = extract_first_version(raw)?;
-    let php = magento_php_for(major, minor, patch)?;
-    let c = Constraint::parse(php).ok()?;
-    let pv = match patch {
-        Some(p) => format!("{major}.{minor}.{p}"),
-        None => format!("{major}.{minor}"),
-    };
-    Some((c, format!("{pkg} {pv}")))
+
+    // Try upstream Magento names first.
+    if let Some((pkg, raw)) =
+        ["magento/product-community-edition", "magento/magento2-base"]
+            .iter()
+            .find_map(|k| require.get(*k).and_then(Value::as_str).map(|s| (*k, s)))
+    {
+        let (major, minor, patch) = extract_first_version(raw)?;
+        let php = magento_php_for(major, minor, patch)?;
+        let c = Constraint::parse(php).ok()?;
+        let pv = match patch {
+            Some(p) => format!("{major}.{minor}.{p}"),
+            None => format!("{major}.{minor}"),
+        };
+        return Some((c, format!("{pkg} {pv}")));
+    }
+
+    // Fall through to Mage-OS fork names.
+    if let Some((pkg, raw)) =
+        ["mage-os/product-community-edition", "mage-os/magento2-base"]
+            .iter()
+            .find_map(|k| require.get(*k).and_then(Value::as_str).map(|s| (*k, s)))
+    {
+        let (major, minor, _patch) = extract_first_version(raw)?;
+        let php = mageos_php_for(major, minor)?;
+        let c = Constraint::parse(php).ok()?;
+        let pv = match extract_first_version(raw) {
+            Some((maj, min, Some(p))) => format!("{maj}.{min}.{p}"),
+            Some((maj, min, None)) => format!("{maj}.{min}"),
+            None => format!("{major}.{minor}"),
+        };
+        return Some((c, format!("{pkg} {pv}")));
+    }
+
+    None
 }
 
 /// PHP range Adobe officially supports for a given Magento version, per
@@ -76,6 +101,20 @@ fn magento_php_for(major: u64, minor: u64, patch: Option<u64>) -> Option<&'stati
         6 => Some("~8.1.0 || ~8.2.0 || ~8.3.0"),
         7 => Some("~8.2.0 || ~8.3.0"),
         _ => Some("~8.3.0 || ~8.4.0"),
+    }
+}
+
+/// PHP range Mage-OS recommends for a given fork version.
+///
+/// Mage-OS uses its own 1.x / 2.x / 3.x versioning (independent of
+/// Magento's 2.4.x train). When the major is unknown/future we pick
+/// the widest recent row so the resolver has room to maneuver.
+fn mageos_php_for(major: u64, minor: u64) -> Option<&'static str> {
+    let _ = minor; // minor not used yet; kept for future sub-rows
+    match major {
+        1 => Some("~8.1.0 || ~8.2.0 || ~8.3.0"),
+        2 => Some("~8.2.0 || ~8.3.0 || ~8.4.0"),
+        _ => Some("~8.3.0 || ~8.4.0 || ~8.5.0"),
     }
 }
 
@@ -216,12 +255,20 @@ pub fn infer_extensions(project_root: &Path) -> (BTreeSet<String>, Vec<String>) 
     (names, sources)
 }
 
-/// Magento's required extension set, gated on the same magento-package
-/// detection used by [`magento_default`].
+/// Magento / Mage-OS required extension set, gated on the same
+/// package-name detection used by [`magento_default`]. Both vendors
+/// require the same extension set (Mage-OS is a fork with the same
+/// system requirements).
 fn magento_extensions(composer_json: &str) -> Option<(&'static [&'static str], String)> {
     let v: Value = serde_json::from_str(composer_json).ok()?;
     let require = v.get("require").and_then(Value::as_object)?;
-    let (pkg, raw) = ["magento/product-community-edition", "magento/magento2-base"]
+    let all_names = [
+        "magento/product-community-edition",
+        "magento/magento2-base",
+        "mage-os/product-community-edition",
+        "mage-os/magento2-base",
+    ];
+    let (pkg, raw) = all_names
         .iter()
         .find_map(|k| require.get(*k).and_then(Value::as_str).map(|s| (*k, s)))?;
     let label = match extract_first_version(raw) {
@@ -392,5 +439,65 @@ mod tests {
         let (names, sources) = infer_extensions(dir.path());
         assert!(names.is_empty());
         assert!(sources.is_empty());
+    }
+
+    // ── Mage-OS tests ────────────────────────────────────────────────
+
+    #[test]
+    fn mageos_1x_picks_81_to_83() {
+        let composer =
+            r#"{"require":{"mage-os/product-community-edition":"1.0.0"}}"#;
+        let (c, src) = magento_default(composer).unwrap();
+        assert!(src.contains("mage-os/product-community-edition"));
+        assert!(c.matches(&parses("8.1.10")));
+        assert!(c.matches(&parses("8.2.10")));
+        assert!(c.matches(&parses("8.3.5")));
+        assert!(!c.matches(&parses("8.0.30")));
+        assert!(!c.matches(&parses("8.4.0")));
+    }
+
+    #[test]
+    fn mageos_2x_picks_82_to_84() {
+        let composer =
+            r#"{"require":{"mage-os/product-community-edition":"2.0.0"}}"#;
+        let (c, src) = magento_default(composer).unwrap();
+        assert!(src.contains("2.0"));
+        assert!(c.matches(&parses("8.2.10")));
+        assert!(c.matches(&parses("8.3.5")));
+        assert!(c.matches(&parses("8.4.1")));
+        assert!(!c.matches(&parses("8.1.30")));
+        assert!(!c.matches(&parses("8.5.0")));
+    }
+
+    #[test]
+    fn mageos_3x_picks_83_to_85() {
+        let composer =
+            r#"{"require":{"mage-os/product-community-edition":"3.0.0"}}"#;
+        let (c, src) = magento_default(composer).unwrap();
+        assert!(src.contains("3.0"));
+        assert!(c.matches(&parses("8.3.5")));
+        assert!(c.matches(&parses("8.4.1")));
+        assert!(c.matches(&parses("8.5.0")));
+        assert!(!c.matches(&parses("8.2.30")));
+    }
+
+    #[test]
+    fn mageos_base_alias_works() {
+        let composer =
+            r#"{"require":{"mage-os/magento2-base":"~1.0.0"}}"#;
+        let (c, src) = magento_default(composer).unwrap();
+        assert!(src.contains("mage-os/magento2-base"));
+        assert!(c.matches(&parses("8.1.20")));
+    }
+
+    #[test]
+    fn mageos_extensions_returns_recommended_set() {
+        let composer =
+            r#"{"require":{"mage-os/product-community-edition":"3.0.0"}}"#;
+        let (exts, src) = magento_extensions(composer).unwrap();
+        assert!(src.contains("3.0"));
+        assert!(exts.contains(&"pdo_mysql"));
+        assert!(exts.contains(&"intl"));
+        assert!(exts.contains(&"opcache"));
     }
 }
