@@ -1,6 +1,7 @@
 use bougie_installer::baseline::{self, BaselineFilter};
 use bougie_cli::OutputFormat;
 use bougie_composer::{self, default_request as default_composer_request, parse_request as parse_composer_request, Installed as InstalledComposer};
+use bougie_composer_resolver::{install_from_lock, InstallOptions, InstallSummary};
 use bougie_installer::conf_d;
 use bougie_config::{load_project, ExtensionPin, ProjectConfig};
 use bougie_errors::BougieError;
@@ -40,6 +41,17 @@ pub struct SyncResult {
     /// by the core/baseline sets. Built-in (statically-linked) entries
     /// like `ext-pcre` are filtered out before this list is populated.
     pub installed_extensions: Vec<String>,
+    /// Vendor packages freshly downloaded during this sync. `None` when
+    /// the project has no `composer.lock` packages (empty project).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vendor_packages_installed: Option<u32>,
+    /// Vendor packages that were already present in `vendor/` and
+    /// matched the lock (incremental no-op). `None` same as above.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vendor_packages_up_to_date: Option<u32>,
+    /// Vendor packages removed (were present but no longer in lock).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vendor_packages_removed: Option<u32>,
 }
 
 impl Render for SyncResult {
@@ -64,24 +76,159 @@ impl Render for SyncResult {
                 self.installed_extensions.join(", ")
             )?;
         }
+        match (self.vendor_packages_installed, self.vendor_packages_up_to_date) {
+            (Some(installed), Some(up_to_date)) if installed == 0 && up_to_date > 0 => {
+                let removed = self.vendor_packages_removed.unwrap_or(0);
+                let removed_s = if removed > 0 {
+                    format!(", {removed} removed")
+                } else {
+                    String::new()
+                };
+                writeln!(w, "vendor: {up_to_date} packages up to date{removed_s}")?;
+            }
+            (Some(installed), Some(up_to_date)) => {
+                let already = up_to_date;
+                let removed = self.vendor_packages_removed.unwrap_or(0);
+                let removed_s = if removed > 0 {
+                    format!(", {removed} removed")
+                } else {
+                    String::new()
+                };
+                writeln!(
+                    w,
+                    "vendor: installed {installed} packages ({already} cached{removed_s})",
+                )?;
+            }
+            _ => {}
+        }
         writeln!(w, "shims at {}", self.shims_dir.display())
     }
 }
 
-pub fn run(format: OutputFormat, dry_run: bool) -> Result<ExitCode> {
+/// Ensure `composer.lock` exists before PHP inference runs. If the
+/// lock is absent and `composer.json` has non-platform requires,
+/// resolve and write the lock now. The lock must exist before
+/// `resolve_php_inputs` so that `infer_php::infer()` can read it.
+///
+/// - `offline = true` + no lock → hard error.
+/// - `offline = true` + lock exists → no-op (the lock is already
+///   there, inference + install will use it).
+/// - `dry_run = true` → report intent to stderr but skip the write.
+fn ensure_lock(
+    paths: &Paths,
+    project_root: &std::path::Path,
+    offline: bool,
+    dry_run: bool,
+) -> Result<()> {
+    let lock_path = project_root.join("composer.lock");
+    if lock_path.is_file() {
+        return Ok(());
+    }
+    // No lock yet — check whether composer.json has any external
+    // (non-platform) requires worth resolving.
+    if !composer_json_has_external_requires(project_root) {
+        return Ok(());
+    }
+    if offline {
+        return Err(eyre!(
+            "composer.lock not found and --offline is set; run `bougie sync` \
+             online once to create it, or commit a composer.lock"
+        ));
+    }
+    if dry_run {
+        eprintln!(
+            "would resolve composer.json and write composer.lock \
+             (no lock file present)"
+        );
+        return Ok(());
+    }
+    eprintln!(
+        "composer.lock not found; resolving composer.json \
+         and writing a fresh composer.lock…"
+    );
+    super::composer_update::resolve_and_write_lock(paths, project_root)?;
+    Ok(())
+}
+
+/// Returns `true` when `composer.json` has at least one non-platform
+/// require (i.e. a `vendor/package` dependency). Platform keys (`php`,
+/// `ext-*`, `lib-*`, `composer-*`) don't trigger a resolve because the
+/// resolver only handles real packages.
+fn composer_json_has_external_requires(project_root: &std::path::Path) -> bool {
+    let Ok(text) = std::fs::read_to_string(project_root.join("composer.json")) else {
+        return false;
+    };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return false;
+    };
+    let Some(require) = v.get("require").and_then(serde_json::Value::as_object) else {
+        return false;
+    };
+    require.keys().any(|k| k.contains('/'))
+}
+
+/// Materialize `vendor/` from `composer.lock`. Returns `None` when
+/// there is no lock file (project with no packages at all).
+fn install_vendor(paths: &Paths, project_root: &std::path::Path) -> Result<Option<InstallSummary>> {
+    let lock_path = project_root.join("composer.lock");
+    if !lock_path.is_file() {
+        return Ok(None);
+    }
+    let summary = install_from_lock(paths, project_root, InstallOptions { no_dev: false })?;
+    Ok(Some(summary))
+}
+
+/// Count the total number of packages in `composer.lock` (packages +
+/// packages-dev). Returns 0 when the lock is absent or unparseable.
+fn count_lock_packages(project_root: &std::path::Path) -> usize {
+    let Ok(text) = std::fs::read_to_string(project_root.join("composer.lock")) else {
+        return 0;
+    };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return 0;
+    };
+    let count_arr = |key: &str| -> usize {
+        v.get(key)
+            .and_then(serde_json::Value::as_array)
+            .map_or(0, Vec::len)
+    };
+    count_arr("packages") + count_arr("packages-dev")
+}
+
+pub fn run(format: OutputFormat, offline: bool, dry_run: bool) -> Result<ExitCode> {
     let paths = Paths::from_env()?;
     let project_root = std::env::current_dir()?;
+
+    // Step 1 — ensure a composer.lock exists before PHP inference so
+    // `infer()` / `infer_extensions()` can read it. This must happen
+    // before `resolve_php_inputs` (which calls `infer()`).
+    ensure_lock(&paths, &project_root, offline, dry_run)?;
 
     let project = load_project(&project_root)?;
     let (spec, flavor) = resolve_php_inputs(&project_root, &project)?;
 
     if dry_run {
+        let lock_count = count_lock_packages(&project_root);
         eprintln!("Resolving…");
         eprintln!("would install php matching the resolved spec; flavor={flavor}");
+        if lock_count > 0 {
+            eprintln!("would materialize {lock_count} packages into vendor/");
+        }
         return Ok(ExitCode::SUCCESS);
     }
 
-    let result = ensure_synced(&paths, &project_root, &project, spec, flavor)?;
+    // Step 2 — toolchain (PHP + extensions + composer + shims).
+    let mut result = ensure_synced(&paths, &project_root, &project, spec, flavor)?;
+
+    // Step 3 — materialize vendor/ from the lock.
+    let vendor_summary = install_vendor(&paths, &project_root)?;
+    if let Some(s) = vendor_summary {
+        result.vendor_packages_installed =
+            Some(s.packages_installed + s.packages_already_present);
+        result.vendor_packages_up_to_date = Some(s.packages_up_to_date);
+        result.vendor_packages_removed = Some(s.packages_removed);
+    }
+
     emit(format, &result)?;
     Ok(ExitCode::SUCCESS)
 }
@@ -100,6 +247,10 @@ pub fn run_with_default_fallback(format: OutputFormat, dry_run: bool) -> Result<
     let paths = Paths::from_env()?;
     let project_root = std::env::current_dir()?;
 
+    // Ensure lock before PHP inference (same as `run`). Never errors
+    // offline here: `bougie run` is forgiving by design.
+    ensure_lock(&paths, &project_root, false, dry_run)?;
+
     let project = load_project(&project_root)?;
     let (spec, flavor) = match resolve_php_inputs(&project_root, &project) {
         Ok(inputs) => inputs,
@@ -113,7 +264,18 @@ pub fn run_with_default_fallback(format: OutputFormat, dry_run: bool) -> Result<
         return Ok(ExitCode::SUCCESS);
     }
 
-    let result = ensure_synced(&paths, &project_root, &project, spec, flavor)?;
+    // Toolchain sync.
+    let mut result = ensure_synced(&paths, &project_root, &project, spec, flavor)?;
+
+    // Vendor install.
+    let vendor_summary = install_vendor(&paths, &project_root)?;
+    if let Some(s) = vendor_summary {
+        result.vendor_packages_installed =
+            Some(s.packages_installed + s.packages_already_present);
+        result.vendor_packages_up_to_date = Some(s.packages_up_to_date);
+        result.vendor_packages_removed = Some(s.packages_removed);
+    }
+
     emit(format, &result)?;
     Ok(ExitCode::SUCCESS)
 }
@@ -257,7 +419,7 @@ pub fn ensure_synced(
     global.save(paths)?;
 
     Ok(SyncResult {
-        schema_version: 1,
+        schema_version: 2,
         php_version: installed.version.to_string(),
         php_flavor: installed.flavor.to_string(),
         install_path: installed.install_path,
@@ -266,6 +428,13 @@ pub fn ensure_synced(
         composer_version: composer_installed.version,
         composer_path: composer_installed.phar_path,
         installed_extensions,
+        // Vendor stats are filled in by the `run` / `run_with_default_fallback`
+        // callers after they call `install_vendor`. `ensure_synced` is reused
+        // by `ext add` which does NOT touch vendor/, so we leave these None
+        // here and let the two entry-point functions set them.
+        vendor_packages_installed: None,
+        vendor_packages_up_to_date: None,
+        vendor_packages_removed: None,
     })
 }
 
@@ -334,6 +503,12 @@ fn install_required_extensions(
     let bar = DownloadBar::new("downloading");
     for name in &effective {
         if baseline::is_builtin(name) {
+            continue;
+        }
+        // Baseline extensions that are static in this PHP minor (e.g.
+        // opcache on 8.5+) have no downloadable artifact and are
+        // already active — no conf.d fragment needed.
+        if baseline::skip_for_php_minor(name, php_minor) {
             continue;
         }
         if is_ext_enabled_in_project(&project_conf_d, name) {

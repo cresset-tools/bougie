@@ -47,7 +47,7 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
 
     match cli.command {
         Command::Init { toml } => commands::init::run(format, toml),
-        Command::Sync { offline: _, dry_run } => commands::sync::run(format, dry_run),
+        Command::Sync { offline, dry_run } => commands::sync::run(format, offline, dry_run),
         #[cfg(unix)]
         Command::Up { names } => commands::services::up::run(format, names),
         #[cfg(not(unix))]
