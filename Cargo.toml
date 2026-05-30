@@ -19,6 +19,7 @@ members = [
     "crates/bougie-fs",
     "crates/bougie-index",
     "crates/bougie-installer",
+    "crates/bougie-installers",
     "crates/bougie-output",
     "crates/bougie-paths",
     "crates/bougie-php-json",
@@ -68,6 +69,7 @@ bougie-fs = { path = "crates/bougie-fs" }
 # workspace entry with defaults on.
 bougie-index = { path = "crates/bougie-index" }
 bougie-installer = { path = "crates/bougie-installer" }
+bougie-installers = { path = "crates/bougie-installers" }
 bougie-output = { path = "crates/bougie-output" }
 bougie-paths = { path = "crates/bougie-paths" }
 bougie-php-json = { path = "crates/bougie-php-json" }

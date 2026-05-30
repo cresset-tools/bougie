@@ -1,0 +1,20 @@
+{
+    "name": "test/installer-paths-frameworks",
+    "require": {
+        "acme/wp-plugin": "*",
+        "acme/views": "*",
+        "acme/my-plugin": "*",
+        "acme/payments": "*",
+        "composer/installers": "^2.0"
+    },
+    "repositories": [
+        {"type": "path", "url": "packages/wp", "options": {"symlink": false}},
+        {"type": "path", "url": "packages/drupal", "options": {"symlink": false}},
+        {"type": "path", "url": "packages/shop", "options": {"symlink": false}},
+        {"type": "path", "url": "packages/presta", "options": {"symlink": false}}    ],
+    "config": {
+        "allow-plugins": {"composer/installers": true},
+        "platform-check": false
+    },
+    "minimum-stability": "stable"
+}

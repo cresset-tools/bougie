@@ -448,6 +448,7 @@ dependencies = [
 name = "bougie-autoloader"
 version = "0.7.0"
 dependencies = [
+ "bougie-installers",
  "bougie-php-json",
  "criterion",
  "md-5",
@@ -521,6 +522,7 @@ dependencies = [
  "bougie-composer",
  "bougie-errors",
  "bougie-fetch",
+ "bougie-installers",
  "bougie-output",
  "bougie-paths",
  "bougie-semver",
@@ -654,6 +656,15 @@ dependencies = [
  "sha2 0.11.0",
  "tempfile",
  "tracing",
+]
+
+[[package]]
+name = "bougie-installers"
+version = "0.7.0"
+dependencies = [
+ "eyre",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]

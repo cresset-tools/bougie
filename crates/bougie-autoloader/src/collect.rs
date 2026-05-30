@@ -6,12 +6,41 @@
 //! come last (matching Composer's own pass order in
 //! `AutoloadGenerator`).
 
+use bougie_installers::InstallerPaths;
 use md5::{Digest, Md5};
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
 
-use crate::lock::{LockFile, RootManifest};
+use crate::lock::{LockFile, Package, RootManifest};
 use crate::scan::{ExcludePatterns, NamespaceFilter};
+
+/// Project-root-relative install path for a package, honoring
+/// `composer/installers` (`type` + root `extra.installer-paths`).
+/// Resolves to `vendor/<name>` for the common case, so output is
+/// unchanged for any non-relocated package.
+fn pkg_install_path(pkg: &Package, installer_paths: &InstallerPaths) -> String {
+    bougie_installers::install_path(&pkg.name, pkg.package_type.as_deref(), installer_paths)
+}
+
+/// Build the `$vendorDir`/`$baseDir`-anchored PHP path literal for a
+/// path `sub` (an already-normalized, slash-separated relative dir or
+/// file, possibly empty) under a package's project-relative
+/// `install_path`. Packages under `vendor/` anchor on `$vendorDir`
+/// (which the emitted autoload files define as `dirname(__DIR__)` =
+/// `vendor/`); a package relocated outside `vendor/` anchors on
+/// `$baseDir` (the project root) — matching Composer's
+/// `findShortestPathCode` choice.
+fn path_code(install_path: &str, sub: &str) -> String {
+    let full = if sub.is_empty() {
+        install_path.to_string()
+    } else {
+        format!("{install_path}/{sub}")
+    };
+    match full.strip_prefix("vendor/") {
+        Some(rest) => format!("$vendorDir . '/{rest}'"),
+        None => format!("$baseDir . '/{full}'"),
+    }
+}
 
 /// One PSR-4 or PSR-0 prefix and its install-path-prefixed dirs.
 #[derive(Debug, Clone)]
@@ -20,21 +49,33 @@ pub(crate) struct Entry {
     pub paths: Vec<String>,
 }
 
-pub(crate) fn psr4(root: &RootManifest, lock: &LockFile, no_dev: bool) -> Vec<Entry> {
+pub(crate) fn psr4(
+    root: &RootManifest,
+    lock: &LockFile,
+    no_dev: bool,
+    installer_paths: &InstallerPaths,
+) -> Vec<Entry> {
     aggregate_psr(
         root,
         lock,
         no_dev,
+        installer_paths,
         |pkg| &pkg.autoload.psr4,
         |r| &r.autoload.psr4,
     )
 }
 
-pub(crate) fn psr0(root: &RootManifest, lock: &LockFile, no_dev: bool) -> Vec<Entry> {
+pub(crate) fn psr0(
+    root: &RootManifest,
+    lock: &LockFile,
+    no_dev: bool,
+    installer_paths: &InstallerPaths,
+) -> Vec<Entry> {
     aggregate_psr(
         root,
         lock,
         no_dev,
+        installer_paths,
         |pkg| &pkg.autoload.psr0,
         |r| &r.autoload.psr0,
     )
@@ -51,6 +92,7 @@ fn aggregate_psr<'a, F, G>(
     root: &'a RootManifest,
     lock: &'a LockFile,
     no_dev: bool,
+    installer_paths: &InstallerPaths,
     psr_pkg: F,
     psr_root: G,
 ) -> Vec<Entry>
@@ -83,13 +125,13 @@ where
         }
     }
     for pkg in lock.reverse_sorted_packages(no_dev) {
-        let install_path = format!("vendor/{}", pkg.name);
+        let install_path = pkg_install_path(pkg, installer_paths);
         for (prefix, dirs) in psr_pkg(pkg) {
             for d in dirs {
                 push(
                     &mut out,
                     prefix,
-                    format!("$vendorDir . '/{}'", join_rel(&install_path, d)),
+                    path_code(&install_path, normalize_emit_dir(d)),
                 );
             }
         }
@@ -120,14 +162,19 @@ pub(crate) struct FileEntry {
 /// (deps-first) order, then root. This matters when one package's
 /// `files` autoload references symbols defined in another's at
 /// include time; the dependency's file must `require` first.
-pub(crate) fn files(root: &RootManifest, lock: &LockFile, no_dev: bool) -> Vec<FileEntry> {
+pub(crate) fn files(
+    root: &RootManifest,
+    lock: &LockFile,
+    no_dev: bool,
+    installer_paths: &InstallerPaths,
+) -> Vec<FileEntry> {
     let mut out = vec![];
     for pkg in lock.sorted_packages(no_dev) {
-        let install_path = format!("vendor/{}", pkg.name);
+        let install_path = pkg_install_path(pkg, installer_paths);
         for f in &pkg.autoload.files {
             out.push(FileEntry {
                 identifier: file_identifier(&pkg.name, f),
-                path_expr: format!("$vendorDir . '/{}'", join_rel(&install_path, f)),
+                path_expr: path_code(&install_path, normalize_emit_dir(f)),
             });
         }
     }
@@ -153,7 +200,10 @@ pub(crate) struct ClassmapEntry {
 /// the task list across many incremental edits).
 #[derive(Debug, Clone)]
 pub(crate) enum Origin {
-    Package(String),
+    /// A package's scan. Carries the package's project-relative install
+    /// path (e.g. `vendor/acme/foo`, or a relocated `app/design/...`) so
+    /// the emitted classmap literal anchors on the right base.
+    Package { install_path: String },
     Root,
 }
 
@@ -201,6 +251,7 @@ pub(crate) fn build_classmap_tasks(
     no_dev: bool,
     optimize: bool,
     project_root: &Path,
+    installer_paths: &InstallerPaths,
 ) -> TaskSet {
     // Aggregate exclude-from-classmap patterns across packages + root.
     // Compilation needs each pattern's source install path so that
@@ -220,7 +271,7 @@ pub(crate) fn build_classmap_tasks(
         if pkg.autoload.exclude_from_classmap.is_empty() {
             continue;
         }
-        let install_abs = canonical(project_root.join(format!("vendor/{}", pkg.name)));
+        let install_abs = canonical(project_root.join(pkg_install_path(pkg, installer_paths)));
         for raw in &pkg.autoload.exclude_from_classmap {
             exclude_patterns.push((install_abs.clone(), raw.clone()));
         }
@@ -266,10 +317,11 @@ pub(crate) fn build_classmap_tasks(
         if pkg.autoload.classmap.is_empty() {
             continue;
         }
-        let install_abs = canonical(project_root.join(format!("vendor/{}", pkg.name)));
+        let install_path = pkg_install_path(pkg, installer_paths);
+        let install_abs = canonical(project_root.join(&install_path));
         for dir in &pkg.autoload.classmap {
             tasks.push(Task {
-                origin: Origin::Package(pkg.name.clone()),
+                origin: Origin::Package { install_path: install_path.clone() },
                 scan_root: canonical(install_abs.join(strip_leading_slash(dir))),
                 install_abs: install_abs.clone(),
                 filter: NamespaceFilter::None,
@@ -339,7 +391,8 @@ pub(crate) fn build_classmap_tasks(
             }
         }
         for pkg in lock.reverse_sorted_packages(no_dev) {
-            let install_abs = canonical(project_root.join(format!("vendor/{}", pkg.name)));
+            let install_path = pkg_install_path(pkg, installer_paths);
+            let install_abs = canonical(project_root.join(&install_path));
             for (ns, dirs) in &pkg.autoload.psr4 {
                 for dir in dirs {
                     let scan_root = canonical(install_abs.join(strip_leading_slash(dir)));
@@ -347,7 +400,7 @@ pub(crate) fn build_classmap_tasks(
                     psr_tasks.push((
                         ns.clone(),
                         Task {
-                            origin: Origin::Package(pkg.name.clone()),
+                            origin: Origin::Package { install_path: install_path.clone() },
                             scan_root: scan_root.clone(),
                             install_abs: install_abs.clone(),
                             filter: NamespaceFilter::Psr4 {
@@ -366,7 +419,7 @@ pub(crate) fn build_classmap_tasks(
                     psr_tasks.push((
                         ns.clone(),
                         Task {
-                            origin: Origin::Package(pkg.name.clone()),
+                            origin: Origin::Package { install_path: install_path.clone() },
                             scan_root: scan_root.clone(),
                             install_abs: install_abs.clone(),
                             filter: NamespaceFilter::Psr0 {
@@ -401,7 +454,7 @@ pub(crate) fn build_classmap_tasks(
 pub(crate) fn task_path_expr(task: &Task, rel: &Path) -> String {
     let rel_str = rel.to_string_lossy().replace('\\', "/");
     match &task.origin {
-        Origin::Package(name) => format!("$vendorDir . '/{name}/{rel_str}'"),
+        Origin::Package { install_path } => path_code(install_path, &rel_str),
         Origin::Root => format!("$baseDir . '/{rel_str}'"),
     }
 }
@@ -430,20 +483,6 @@ fn file_identifier(package_name: &str, path: &str) -> String {
         let _ = write!(out, "{b:02x}");
     }
     out
-}
-
-/// Composer normalizes `psr-4`/`psr-0` paths by stripping leading `./`
-/// and trailing `/`. `join_rel` builds the literal that appears in PHP
-/// source: `<install_path>/<dir>` minus the trailing slash (Composer
-/// omits it). Empty `dir` collapses to just the install path.
-fn join_rel(install_path: &str, dir: &str) -> String {
-    let trimmed = normalize_emit_dir(dir);
-    let pkg_part = install_path.strip_prefix("vendor/").unwrap_or(install_path);
-    if trimmed.is_empty() {
-        pkg_part.to_string()
-    } else {
-        format!("{pkg_part}/{trimmed}")
-    }
 }
 
 pub(crate) fn strip_leading_slash(s: &str) -> &str {
