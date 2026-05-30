@@ -456,10 +456,9 @@ pub enum ComposerCommand {
         ignore_platform_req: Vec<String>,
     },
     /// Resolve the project's dependency graph from scratch (read
-    /// `composer.json`, ignore any existing `composer.lock`) and
-    /// produce a fresh solution. Currently only the read-only
-    /// `--dry-run` mode is implemented; writing `composer.lock` is
-    /// a follow-up.
+    /// `composer.json`, ignore any existing `composer.lock`) and write
+    /// a fresh `composer.lock`. Pass `--dry-run` to preview the
+    /// solution without writing the lock or touching `vendor/`.
     Update {
         /// Run the update in this directory instead of CWD.
         /// Mirrors Composer's `--working-dir` / `-d`.
@@ -469,9 +468,8 @@ pub enum ComposerCommand {
         #[arg(long = "no-dev")]
         no_dev: bool,
         /// Resolve and print the solution without writing
-        /// `composer.lock` or touching `vendor/`. Currently the only
-        /// supported mode — without this flag the command refuses
-        /// to run.
+        /// `composer.lock` or touching `vendor/`. Without this flag,
+        /// `update` writes a fresh `composer.lock`.
         #[arg(long = "dry-run")]
         dry_run: bool,
         /// Ignore all platform requirements (php, ext-*, lib-*).
