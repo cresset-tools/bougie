@@ -107,7 +107,7 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
-          VERSION=$(jq -r '"."' .release-please-manifest.json)
+          VERSION=$(jq -r '."."' .release-please-manifest.json)
           TAG="bougie-v$VERSION"
           if git rev-parse --verify "refs/tags/$TAG" >/dev/null 2>&1; then
             echo "Tag $TAG already exists; nothing to do."
