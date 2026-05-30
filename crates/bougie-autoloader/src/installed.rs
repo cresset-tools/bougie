@@ -61,6 +61,7 @@ pub(crate) fn emit_installed_json(
     let lock_obj = lock
         .as_object()
         .ok_or_else(|| DumpError::Lock("expected top-level object".into()))?;
+    let installer_paths = installer_paths_from_root(project_root);
 
     let empty: Vec<Value> = Vec::new();
     let prod = lock_obj
@@ -90,7 +91,7 @@ pub(crate) fn emit_installed_json(
         .iter()
         .chain(dev.iter())
         .filter_map(|p| p.as_object())
-        .map(package_to_installed_entry)
+        .map(|p| package_to_installed_entry(p, &installer_paths))
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| DumpError::Lock(e.to_string()))?;
     packages.sort_by(|a, b| {
@@ -122,8 +123,32 @@ pub(crate) fn emit_installed_json(
 /// notification-url, include-path, php-ext, archive, scripts, license,
 /// authors, description, homepage, keywords, repositories, support,
 /// funding, transport-options, install-path.
+/// Build the `composer/installers` override table from the root
+/// `composer.json`'s `extra.installer-paths`. A missing/unreadable
+/// manifest yields an empty (no-override) table, so install paths fall
+/// back to `vendor/<name>`.
+fn installer_paths_from_root(project_root: &Path) -> bougie_installers::InstallerPaths {
+    read_manifest_value(project_root)
+        .map(|m| bougie_installers::InstallerPaths::parse(&m))
+        .unwrap_or_default()
+}
+
+/// Compute a package's `install-path` (relative to `vendor/composer`)
+/// honoring `composer/installers`. Resolves to `../<name>` for the
+/// common `vendor/<name>` case.
+fn package_install_path(
+    pkg: &Map<String, Value>,
+    name: &str,
+    installer_paths: &bougie_installers::InstallerPaths,
+) -> String {
+    let ty = pkg.get("type").and_then(|v| v.as_str());
+    let rel = bougie_installers::install_path(name, ty, installer_paths);
+    bougie_installers::install_path_relative_to_repo(&rel)
+}
+
 fn package_to_installed_entry(
     pkg: &Map<String, Value>,
+    installer_paths: &bougie_installers::InstallerPaths,
 ) -> Result<Map<String, Value>, crate::version::NormalizeError> {
     let mut out = Map::new();
     let copy = |out: &mut Map<String, Value>, k: &str| {
@@ -191,11 +216,14 @@ fn package_to_installed_entry(
 
     copy(&mut out, "transport-options");
 
-    // install-path: from vendor/composer/ to vendor/<name>/ is
-    // `../<name>`. `findShortestPath(repoDir, packagePath, true)`
-    // produces this without a trailing slash for any non-empty
-    // sub-path.
-    out.insert("install-path".into(), Value::String(format!("../{name}")));
+    // install-path: `findShortestPath(repoDir, packagePath, true)` from
+    // vendor/composer/ to the install dir, without a trailing slash. For
+    // a normal `vendor/<name>` package this is `../<name>`; a package
+    // relocated by composer/installers points at its real location.
+    out.insert(
+        "install-path".into(),
+        Value::String(package_install_path(pkg, name, installer_paths)),
+    );
 
     Ok(out)
 }
@@ -230,12 +258,13 @@ pub(crate) fn emit_installed_php(
         .iter()
         .filter_map(|p| p.get("name").and_then(|v| v.as_str()).map(String::from))
         .collect();
+    let installer_paths = bougie_installers::InstallerPaths::parse(&manifest);
 
     let mut packages: Vec<PkgEntry> = prod
         .iter()
         .chain(dev.iter())
         .filter_map(|p| p.as_object())
-        .map(|p| pkg_entry_from_lock(p, &dev_names))
+        .map(|p| pkg_entry_from_lock(p, &dev_names, &installer_paths))
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| DumpError::Lock(e.to_string()))?;
     packages.sort_by(|a, b| a.name.cmp(&b.name));
@@ -276,6 +305,7 @@ struct RootEntry {
 fn pkg_entry_from_lock(
     pkg: &Map<String, Value>,
     dev_names: &HashSet<String>,
+    installer_paths: &bougie_installers::InstallerPaths,
 ) -> Result<PkgEntry, crate::version::NormalizeError> {
     let name = pkg
         .get("name")
@@ -310,7 +340,11 @@ fn pkg_entry_from_lock(
         .and_then(|v| v.as_str())
         .unwrap_or("library")
         .to_string();
-    let install_path = if ty == "metapackage" { None } else { Some(format!("../{name}")) };
+    let install_path = if ty == "metapackage" {
+        None
+    } else {
+        Some(package_install_path(pkg, &name, installer_paths))
+    };
     let dev_requirement = dev_names.contains(&name);
     Ok(PkgEntry {
         name,

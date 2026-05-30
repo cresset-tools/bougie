@@ -62,10 +62,14 @@ pub struct InstallSummary {
     /// their vendor directory removed.
     pub packages_removed: u32,
     pub bins_installed: u32,
+    /// Files copied into the project root by the native
+    /// `magento/magento-composer-installer` deploy (`extra.map`). Zero
+    /// for non-Magento projects.
+    pub files_deployed: u64,
     pub no_dev: bool,
     /// Soft preflight findings — one entry per Composer plugin and one
-    /// entry for a non-empty `scripts` section. The CLI prints these
-    /// as `warning: …` lines to stderr.
+    /// entry for a non-empty `scripts` section, plus any Magento deploy
+    /// warnings. The CLI prints these as `warning: …` lines to stderr.
     pub warnings: Vec<String>,
 }
 
@@ -140,6 +144,32 @@ pub fn install_from_lock(
         candidates.iter().filter(|p| p.is_composer_plugin()).count(),
     )
     .unwrap_or(u32::MAX);
+
+    // Drift guard for native Laravel discovery. bougie substitutes its own
+    // package:discover + clearCompiled for Laravel's `post-autoload-dump`
+    // script instead of running it. A custom step *after* the defaults is
+    // fine (the defaults still run first). But a step *before* or *between*
+    // them — or a renamed/removed discovery command — could change what the
+    // defaults see, so bougie can't safely reproduce them: fail fast rather
+    // than leave the app half-configured. Only applies when laravel/framework
+    // is installed (the package that drives discovery).
+    if candidates.iter().any(|p| p.name == "laravel/framework") {
+        let scripts = composer_json_value.get("scripts").cloned().unwrap_or(Value::Null);
+        let blocking = bougie_installers::blocking_post_autoload_dump(&scripts);
+        if !blocking.is_empty() {
+            return Err(eyre!(
+                "Laravel post-autoload-dump runs steps before/among the default Laravel steps \
+                 that bougie does not reproduce:\n  {}\n\nbougie reproduces \
+                 `artisan package:discover` and `ComposerScripts::postAutoloadDump` natively, \
+                 but only when they run first — a step ahead of or between them may change what \
+                 they see. Steps appended *after* the defaults are fine. Reorder so custom steps \
+                 come last, or run the script yourself (`composer run-script post-autoload-dump`). \
+                 If Laravel changed its default post-autoload-dump, bougie's native discovery is \
+                 out of date — please report it.",
+                blocking.join("\n  "),
+            ));
+        }
+    }
     let installable: Vec<&LockPackage> = candidates
         .iter()
         .copied()
@@ -155,9 +185,43 @@ pub fn install_from_lock(
     // Each DistRequest borrows from the LockPackage; build the
     // ancillary owned data (vendor dest paths, archive enums) in a
     // sibling vec so the borrows in `DistRequest` line up.
+    //
+    // Native `composer/installers`: a package's on-disk location can be
+    // remapped by its `type` and the root `extra.installer-paths`. For
+    // the common case (and every Magento 2 module) this resolves to
+    // `vendor/<name>`. The same computation runs in `bougie-autoloader`
+    // so the generated autoload + `installed.json` install-path point at
+    // the relocated tree.
+    let installer_paths = bougie_installers::InstallerPaths::parse(&composer_json_value);
     let vendor_dirs: Vec<PathBuf> = install_set
         .iter()
-        .map(|p| project_root.join("vendor").join(&p.name))
+        .map(|p| {
+            let rel = bougie_installers::install_path(
+                &p.name,
+                p.package_type.as_deref(),
+                &installer_paths,
+            );
+            // Surface composer/installers types bougie doesn't relocate:
+            // the package lands in vendor/ and a framework expecting it
+            // elsewhere won't find it. Only warn when it actually fell
+            // back to vendor/<name> (a matching installer-paths override
+            // would have relocated it, in which case there's no gap).
+            if rel == format!("vendor/{}", p.name)
+                && let Some(framework) =
+                    bougie_installers::unsupported_framework(p.package_type.as_deref())
+            {
+                warnings.push(format!(
+                    "{}: package type '{}' is a composer/installers '{}' type that bougie \
+                     does not relocate — installing to vendor/{} (the framework may expect it \
+                     elsewhere; add an extra.installer-paths entry to override)",
+                    p.name,
+                    p.package_type.as_deref().unwrap_or(""),
+                    framework,
+                    p.name,
+                ));
+            }
+            project_root.join(rel)
+        })
         .collect();
     // Pre-render each dist's `Authorization` header (when its host
     // matches the auth map). String storage lives in a sibling vec so
@@ -231,6 +295,17 @@ pub fn install_from_lock(
     )?;
     pkg_bar.finish_and_clear();
 
+    // Native `magento/magento-composer-installer`: for every
+    // freshly-extracted Magento 2 component, copy its `extra.map` files
+    // into the project root and apply `extra.chmod`. Driving this off
+    // `install_set` (only changed/new packages) matches Composer, which
+    // runs the deploy on package install/update — not on every `install`
+    // when nothing changed. A deploy failure is surfaced as a warning
+    // rather than aborting the whole sync (a single third-party package's
+    // unsupported map shouldn't block a Magento project).
+    let deploy_summary = deploy_components(&install_set, &vendor_dirs, project_root);
+    warnings.extend(deploy_summary.warnings);
+
     dump_autoload(&DumpRequest {
         project_root,
         optimize: false,
@@ -241,6 +316,18 @@ pub fn install_from_lock(
         autoloader_suffix: None,
     })
     .map_err(|e| eyre!("autoload dump failed: {e}"))?;
+
+    // Native Laravel package discovery — the effect of Laravel's
+    // `post-autoload-dump` script (`artisan package:discover` +
+    // `ComposerScripts::postAutoloadDump`), which bougie won't run.
+    // Gated on `laravel/framework` being installed (the package whose
+    // script would otherwise drive discovery). Runs after the autoload
+    // dump because it reads the freshly-written `installed.json`.
+    if candidates.iter().any(|p| p.name == "laravel/framework")
+        && let Err(e) = run_laravel_discovery(project_root, &composer_json_value)
+    {
+        warnings.push(format!("laravel package discovery failed: {e}"));
+    }
 
     let bin_summary = super::bin_proxy::install_bin_proxies(project_root, &candidates);
     warnings.extend(bin_summary.warnings);
@@ -267,9 +354,109 @@ pub fn install_from_lock(
         packages_skipped_plugin,
         packages_removed,
         bins_installed: bin_summary.bins_installed,
+        files_deployed: deploy_summary.files_deployed,
         no_dev: opts.no_dev,
         warnings,
     })
+}
+
+/// Outcome of the native Magento deploy pass.
+struct DeploySummary {
+    files_deployed: u64,
+    warnings: Vec<String>,
+}
+
+/// Run the native `magento/magento-composer-installer` deploy over the
+/// freshly-extracted packages. `install_set[i]` was extracted to
+/// `vendor_dirs[i]`, so the two slices are zipped. For each Magento 2
+/// component we copy its `extra.map` into `project_root` and apply
+/// `extra.chmod`; if any `magento2-component` was deployed we emit
+/// `app/etc/vendor_path.php` (which the plugin generates rather than
+/// maps). Deploy failures become warnings — a malformed map in one
+/// package shouldn't abort the whole install.
+fn deploy_components(
+    install_set: &[&LockPackage],
+    vendor_dirs: &[PathBuf],
+    project_root: &Path,
+) -> DeploySummary {
+    let mut files_deployed = 0u64;
+    let mut warnings = Vec::new();
+    let mut deployed_component = false;
+
+    for (pkg, vendor_dir) in install_set.iter().zip(vendor_dirs.iter()) {
+        let Some(plan) = bougie_installers::plan_deploy(pkg.package_type.as_deref(), &pkg.extra)
+        else {
+            continue;
+        };
+        if plan.map.is_empty() && plan.chmod.is_empty() {
+            continue;
+        }
+        match bougie_installers::apply_deploy(&plan, vendor_dir, project_root) {
+            Ok(stats) => {
+                files_deployed += stats.files_copied;
+                deployed_component |= plan.is_component;
+            }
+            Err(e) => {
+                warnings.push(format!("deploy of {} failed: {e}", pkg.name));
+            }
+        }
+    }
+
+    // `app/etc/vendor_path.php` is generated by the installer (it is not
+    // one of magento2-base's mapped files); Magento's bootstrap reads it
+    // to locate `vendor/`. Emit it once whenever a component laid down
+    // the root skeleton.
+    if deployed_component
+        && let Err(e) = write_vendor_path_php(project_root)
+    {
+        warnings.push(format!("writing app/etc/vendor_path.php failed: {e}"));
+    }
+
+    DeploySummary { files_deployed, warnings }
+}
+
+/// Reproduce Laravel's package discovery: rebuild
+/// `bootstrap/cache/packages.php` from `installed.json` + the root
+/// `extra.laravel`, then clear the stale compiled caches Laravel's
+/// `clearCompiled()` removes. Mirrors what `artisan package:discover`
+/// (run via `post-autoload-dump`) would do.
+fn run_laravel_discovery(project_root: &Path, composer_json_value: &Value) -> Result<()> {
+    let installed_path = project_root.join("vendor/composer/installed.json");
+    let bytes = std::fs::read(&installed_path)
+        .wrap_err_with(|| format!("reading {}", installed_path.display()))?;
+    let installed: Value =
+        serde_json::from_slice(&bytes).wrap_err("parsing installed.json")?;
+    let root_extra = composer_json_value.get("extra").cloned().unwrap_or(Value::Null);
+
+    let manifest = bougie_installers::build_package_manifest(&installed, &root_extra);
+    let php = bougie_installers::render_packages_php(&manifest);
+
+    let cache_path = project_root.join(bougie_installers::PACKAGES_CACHE);
+    if let Some(parent) = cache_path.parent() {
+        std::fs::create_dir_all(parent)
+            .wrap_err_with(|| format!("creating {}", parent.display()))?;
+    }
+    std::fs::write(&cache_path, php)
+        .wrap_err_with(|| format!("writing {}", cache_path.display()))?;
+
+    // clearCompiled(): drop the config/services caches so they can't
+    // reference a package set that just changed.
+    for rel in bougie_installers::STALE_CACHES {
+        let path = project_root.join(rel);
+        if path.exists() {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+    Ok(())
+}
+
+/// Write `app/etc/vendor_path.php` (creating `app/etc/` if needed).
+fn write_vendor_path_php(project_root: &Path) -> Result<()> {
+    let dir = project_root.join("app/etc");
+    std::fs::create_dir_all(&dir).wrap_err_with(|| format!("creating {}", dir.display()))?;
+    std::fs::write(dir.join("vendor_path.php"), bougie_installers::VENDOR_PATH_PHP)
+        .wrap_err("writing vendor_path.php")?;
+    Ok(())
 }
 
 /// Snapshot of `vendor/composer/installed.json` — the packages and

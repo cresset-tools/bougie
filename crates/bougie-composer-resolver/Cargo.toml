@@ -13,6 +13,7 @@ bougie-autoloader = { workspace = true }
 bougie-composer = { workspace = true }
 bougie-errors = { workspace = true }
 bougie-fetch = { workspace = true }
+bougie-installers = { workspace = true }
 bougie-output = { workspace = true }
 bougie-paths = { workspace = true }
 bougie-semver = { workspace = true }

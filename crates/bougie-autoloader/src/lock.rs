@@ -25,6 +25,12 @@ pub(crate) struct LockFile {
 #[derive(Debug, Deserialize)]
 pub(crate) struct Package {
     pub name: String,
+    /// Package `type`, drives `composer/installers` path remapping
+    /// (`bougie-installers::install_path`). Most packages are
+    /// `"library"` (or omit it); only the handful of relocatable types
+    /// move out of `vendor/<name>`.
+    #[serde(default, rename = "type")]
+    pub package_type: Option<String>,
     #[serde(default)]
     pub autoload: AutoloadBlock,
     /// Other packages this one requires. Composer's `PackageSorter`
@@ -73,6 +79,12 @@ pub(crate) struct RootManifest {
     /// extracted; everything else is dropped.
     #[serde(default)]
     pub config: RootConfig,
+    /// `extra` block, kept as raw JSON so the `composer/installers`
+    /// `installer-paths` overrides can be parsed
+    /// (`bougie-installers::InstallerPaths::from_extra`). Everything
+    /// else under `extra` is ignored.
+    #[serde(default)]
+    pub extra: serde_json::Value,
 }
 
 #[derive(Debug, Default, Deserialize)]

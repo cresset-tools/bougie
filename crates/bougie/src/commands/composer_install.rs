@@ -34,6 +34,9 @@ pub struct InstallResult {
     pub packages_skipped_plugin: u32,
     pub packages_removed: u32,
     pub bins_installed: u32,
+    /// Files copied into the project root by the native Magento deploy
+    /// (`extra.map`). Zero for non-Magento projects.
+    pub files_deployed: u64,
     pub no_dev: bool,
     pub warnings: Vec<String>,
 }
@@ -49,6 +52,7 @@ impl From<InstallSummary> for InstallResult {
             packages_skipped_plugin: s.packages_skipped_plugin,
             packages_removed: s.packages_removed,
             bins_installed: s.bins_installed,
+            files_deployed: s.files_deployed,
             no_dev: s.no_dev,
             warnings: s.warnings,
         }
@@ -105,9 +109,14 @@ impl Render for InstallResult {
         } else {
             String::new()
         };
+        let deployed = if self.files_deployed > 0 {
+            format!(", {} file(s) deployed", self.files_deployed)
+        } else {
+            String::new()
+        };
         writeln!(
             w,
-            "installed {total} packages ({} fresh, {} cached{up_to_date}{skipped}{removed}{bins}){mode} → {}",
+            "installed {total} packages ({} fresh, {} cached{up_to_date}{skipped}{removed}{bins}{deployed}){mode} → {}",
             self.packages_installed,
             self.packages_already_present,
             self.project_root.display(),

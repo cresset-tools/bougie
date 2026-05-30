@@ -135,9 +135,14 @@ impl Autoloader {
             None
         };
 
-        let psr4 = crate::collect::psr4(&manifest, &lock, req.no_dev);
-        let psr0 = crate::collect::psr0(&manifest, &lock, req.no_dev);
-        let files = crate::collect::files(&manifest, &lock, req.no_dev);
+        // `composer/installers` install-path overrides from the root
+        // `extra.installer-paths`. Empty (the common case) → every
+        // package resolves to `vendor/<name>` and output is unchanged.
+        let installer_paths = bougie_installers::InstallerPaths::from_extra(&manifest.extra);
+
+        let psr4 = crate::collect::psr4(&manifest, &lock, req.no_dev, &installer_paths);
+        let psr0 = crate::collect::psr0(&manifest, &lock, req.no_dev, &installer_paths);
+        let files = crate::collect::files(&manifest, &lock, req.no_dev, &installer_paths);
 
         // `--classmap-authoritative` implies `--optimize` (Composer's
         // dump() does `if (classmapAuthoritative) $scanPsrPackages =
@@ -150,6 +155,7 @@ impl Autoloader {
             req.no_dev,
             optimize,
             req.project_root,
+            &installer_paths,
         );
         let exclude_default = set.exclude_default;
         let exclude_with_vendor = set.exclude_with_vendor;
@@ -578,12 +584,18 @@ pub fn user_code_roots(req: &DumpRequest<'_>) -> Result<Vec<PathBuf>, DumpError>
     // typically symlink `vendor/<name>` to the source directory.
     // We canonicalize so the watcher arms the real source, not the
     // symlink (notify doesn't follow symlinks on read events).
+    let installer_paths = bougie_installers::InstallerPaths::from_extra(&manifest.extra);
     for pkg in lock.iter_packages(req.no_dev) {
         let is_path = pkg.dist.as_ref().is_some_and(|d| d.kind == "path");
         if !is_path {
             continue;
         }
-        let install_abs = canonical(project_root.join(format!("vendor/{}", pkg.name)));
+        let rel = bougie_installers::install_path(
+            &pkg.name,
+            pkg.package_type.as_deref(),
+            &installer_paths,
+        );
+        let install_abs = canonical(project_root.join(rel));
         let mut pushed = false;
         for (_, dirs) in &pkg.autoload.psr4 {
             for d in dirs {
