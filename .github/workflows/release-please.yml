@@ -3,10 +3,10 @@ name: release-please
 # Conventional-commit-driven release automation. On every push to main,
 # release-please scans commits since the last `bougie-v*` tag and
 # opens or updates a release PR that bumps `workspace.package.version`
-# and prepends to `CHANGELOG.md`. Merging the PR pushes the
-# `bougie-v<version>` tag and creates a *draft* GitHub Release; the tag
-# push triggers `bougie-release.yml` (cargo-dist), which builds the
-# binary matrix, uploads the artifacts to that draft, and un-drafts it.
+# and prepends to `CHANGELOG.md`. Merging the PR creates a *draft*
+# GitHub Release; this workflow then pushes the `bougie-v<version>` tag,
+# which triggers `bougie-release.yml` (cargo-dist) to build the binary
+# matrix, upload the artifacts to that draft, and un-draft it.
 #
 # Unlike release-plz, release-please decides "what changed" purely from
 # conventional-commit messages, not from per-crate file diffs. That
@@ -16,12 +16,22 @@ name: release-please
 # `workspace.package.version`.
 #
 # release-please owns the GitHub Release (created as a draft — see
-# `"draft": true` in release-please-config.json) and the tag push; dist
-# runs with `create-release = false` and only attaches binaries + un-
-# drafts. Splitting it this way means release-please's normal publish
-# job runs in full, so it relabels merged release PRs from
-# `autorelease: pending` to `autorelease: tagged` — without that the
-# next run aborts with "untagged, merged release PRs outstanding".
+# `"draft": true` in release-please-config.json); dist runs with
+# `create-release = false` and only attaches binaries + un-drafts.
+# Letting release-please's normal publish job run in full also means it
+# relabels merged release PRs from `autorelease: pending` to
+# `autorelease: tagged` — without that the next run aborts with
+# "untagged, merged release PRs outstanding".
+#
+# But a *draft* GitHub Release does NOT create its git tag (GitHub only
+# creates the tag ref when a draft is published), so release-please
+# never pushes `bougie-v<version>`. We push it ourselves in the "Push
+# release tag" step below when a release was just created. That tag push
+# is what triggers `bougie-release.yml` (dist) — which then attaches the
+# binaries to the draft and un-drafts it. Without it the release stays a
+# binary-less draft forever AND the next release-please run can't anchor
+# its baseline (no tag), so it rescans all history and proposes a bogus
+# major bump.
 
 on:
   push:
@@ -86,3 +96,25 @@ jobs:
             git commit -m "chore(release): refresh Cargo.lock"
             git push
           fi
+
+      # release-please created the draft Release but (because it's a
+      # draft) not its git tag — push it ourselves so dist triggers and
+      # un-drafts. `release_created` is set only on the run that publishes
+      # a release (i.e. just after a release PR merged); `tag_name` is the
+      # `bougie-v<version>` release-please assigned. `github.sha` is the
+      # release commit (the merged release PR), matching the draft target.
+      - name: Push release tag
+        if: ${{ steps.release.outputs.release_created }}
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          TAG="${{ steps.release.outputs.tag_name }}"
+          if git rev-parse --verify "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists; nothing to do."
+            exit 0
+          fi
+          echo "Pushing $TAG @ ${{ github.sha }}"
+          git config user.email "${{ vars.BOT_EMAIL || 'noreply@cresset.tools' }}"
+          git config user.name "${{ vars.BOT_NAME || 'cresset-bot' }}"
+          git tag -a "$TAG" -m "Release $TAG" "${{ github.sha }}"
+          git push origin "$TAG"
