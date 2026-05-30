@@ -30,8 +30,15 @@ deps = ["composer.lock", "composer.json"]
 run = "bougie composer install"
 
 [task.install]
-creates = "app/etc/env.php"
 deps = ["vendor", "services"]
+# `setup:install` is one-shot: once `app/etc/env.php` exists, Magento is
+# installed and re-running it does nothing useful (and risks clobbering).
+# Gate on env.php *existence* via `check`, not a `creates` mtime — the
+# mtime form re-ran the install whenever `vendor/` ended up newer (or the
+# phony `services` dep ran). The deps still run first (services come up,
+# vendor is ensured); only the install step itself is skipped when already
+# installed.
+check = "test -f app/etc/env.php"
 # Redis is wired in two steps. bougie's redis is socket-only, but
 # Mage-OS 3.0.0's `--cache-backend=redis` shorthand routes through an
 # optimized Symfony/Predis adapter (framework/.../SymfonyAdapterProvider)
