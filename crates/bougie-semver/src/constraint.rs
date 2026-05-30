@@ -434,24 +434,38 @@ fn contains_wildcard(s: &str) -> bool {
 }
 
 fn parse_caret(rest: &str) -> Result<Constraint, ParseError> {
-    // `^X.Y.Z[-stab]` → `>=X.Y.Z[-stab], <X+1.0.0` when X≥1
-    //                 → `>=0.Y.Z, <0.Y+1.0`            when X=0 and Y>0
-    //                 → `>=0.0.Z, <0.0.Z+1`            when X=0 and Y=0
+    // The upper bound bumps the first element that is either non-zero
+    // OR the last one the user actually wrote — Composer's
+    // `parseCaretConstraint` position rule (VersionParser):
+    //
+    //   `^1.2.3` / `^1` / `^1.2` → `<2.0.0`   (major ≥ 1 → bump major)
+    //   `^0`                     → `<1.0.0`   (minor unwritten → bump major)
+    //   `^0.3` / `^0.3.0`        → `<0.4.0`   (minor non-zero → bump minor)
+    //   `^0.0`                   → `<0.1.0`   (patch unwritten → bump minor)
+    //   `^0.0.3`                 → `<0.0.4`   (patch non-zero → bump patch)
+    //
+    // The subtlety is the all-zeros prefix: which element is "fluid"
+    // depends on how many were specified, not just on their values.
+    // Treating bare `^0` as `^0.0.0` (the previous behavior) yielded
+    // `<0.0.1`, which excludes every real 0.x release — exactly what
+    // broke `openai-php/client: "^0"` in the Mage-OS graph.
     let segs = split_partial_numeric(rest)?;
     if segs.is_empty() {
         return Err(ParseError::Invalid(rest.to_owned()));
     }
     let major: u32 = segs[0].parse().unwrap_or(0);
     let minor: u32 = segs.get(1).and_then(|s| s.parse().ok()).unwrap_or(0);
+    let minor_specified = segs.len() >= 2;
+    let patch_specified = segs.len() >= 3;
     let lower = Version::parse(rest)
         .or_else(|_| Version::parse(&pad_partial(rest)))
         .map_err(|e| ParseError::Invalid(format!("^{rest}: {e}")))?;
-    let upper_str = if major > 0 {
+    let upper_str = if major > 0 || !minor_specified {
         format!("{}.0.0.0", major + 1)
-    } else if minor > 0 {
+    } else if minor > 0 || !patch_specified {
         format!("0.{}.0.0", minor + 1)
     } else {
-        // `^0.0.1` → `>=0.0.1, <0.0.2` (only the patch is fluid).
+        // `^0.0.Z` → `>=0.0.Z, <0.0.Z+1` (only the patch is fluid).
         let patch: u32 = segs.get(2).and_then(|s| s.parse().ok()).unwrap_or(0);
         format!("0.0.{}.0", patch + 1)
     };
@@ -649,6 +663,40 @@ fn pad_segments_with(mut segs: Vec<String>, pad: &str, target: usize) -> Vec<Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Caret on all-zero / partial-zero versions follows Composer's
+    /// position rule: the bumped element depends on what was written,
+    /// not just on the values. Regression for `openai-php/client: "^0"`
+    /// in the Mage-OS graph, which the old `^0 == ^0.0.0` shortcut
+    /// turned into `<0.0.1` — excluding every published 0.x release.
+    #[test]
+    fn caret_zero_partial_versions_match_composer() {
+        // `^0` admits the whole 0.x line, up to (not incl.) 1.0.0.
+        let c = Constraint::parse("^0").unwrap();
+        assert!(c.matches(&Version::parse("0.0.1").unwrap()));
+        assert!(c.matches(&Version::parse("0.19.2").unwrap()));
+        assert!(!c.matches(&Version::parse("1.0.0").unwrap()));
+
+        // `^0.0` → `<0.1.0` (patch unwritten → bump minor).
+        let c = Constraint::parse("^0.0").unwrap();
+        assert!(c.matches(&Version::parse("0.0.9").unwrap()));
+        assert!(!c.matches(&Version::parse("0.1.0").unwrap()));
+
+        // `^0.3` → `<0.4.0` (minor non-zero → bump minor).
+        let c = Constraint::parse("^0.3").unwrap();
+        assert!(c.matches(&Version::parse("0.3.7").unwrap()));
+        assert!(!c.matches(&Version::parse("0.4.0").unwrap()));
+
+        // `^0.0.3` → `<0.0.4` (patch non-zero → bump patch).
+        let c = Constraint::parse("^0.0.3").unwrap();
+        assert!(c.matches(&Version::parse("0.0.3").unwrap()));
+        assert!(!c.matches(&Version::parse("0.0.4").unwrap()));
+
+        // `^1` is unchanged: `<2.0.0`.
+        let c = Constraint::parse("^1").unwrap();
+        assert!(c.matches(&Version::parse("1.9.9").unwrap()));
+        assert!(!c.matches(&Version::parse("2.0.0").unwrap()));
+    }
 
     /// Composer accepts `Nx-dev` / `N.x-dev` / `N.M.x-dev` as
     /// constraint strings meaning "exactly the named dev branch."
