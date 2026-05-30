@@ -117,16 +117,37 @@ pub fn call_streaming(paths: &Paths, method: &str, args: Value) -> Result<()> {
     issue_streaming(stream, &request)
 }
 
+/// Retries on a refusing socket before concluding the daemon is dead.
+/// A live daemon whose accept backlog is momentarily full, or that is
+/// mid-restart (bound but not yet `accept()`ing), also returns
+/// `ConnectionRefused` — retrying avoids unlinking its socket and
+/// spawning a duplicate.
+const REFUSED_RETRIES: u32 = 5;
+
 fn connect_with_autospawn(sock: &Path) -> Result<UnixStream> {
     match UnixStream::connect(sock) {
         Ok(s) => Ok(s),
-        Err(e)
-            if e.kind() == ErrorKind::ConnectionRefused
-                || e.kind() == ErrorKind::NotFound =>
-        {
-            // Stale socket from a daemon that exited abnormally
-            // doesn't auto-clean — remove it before respawn.
+        Err(e) if e.kind() == ErrorKind::ConnectionRefused => {
+            // Don't immediately treat a refusing socket as stale — a
+            // live-but-busy daemon refuses transiently. Retry a few
+            // times before unlinking and respawning.
+            for _ in 0..REFUSED_RETRIES {
+                std::thread::sleep(SPAWN_POLL);
+                if let Ok(s) = UnixStream::connect(sock) {
+                    return Ok(s);
+                }
+            }
+            // Still refusing after retries → stale socket from a daemon
+            // that exited abnormally without auto-cleaning. Remove it
+            // before respawn.
             let _ = std::fs::remove_file(sock);
+            spawn_daemon()?;
+            wait_for_socket(sock, SPAWN_TIMEOUT)?;
+            UnixStream::connect(sock)
+                .wrap_err_with(|| format!("connecting to bougied at {}", sock.display()))
+        }
+        Err(e) if e.kind() == ErrorKind::NotFound => {
+            // No socket file at all → the daemon isn't running. Spawn it.
             spawn_daemon()?;
             wait_for_socket(sock, SPAWN_TIMEOUT)?;
             UnixStream::connect(sock)

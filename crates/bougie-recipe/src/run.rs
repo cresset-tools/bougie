@@ -115,6 +115,12 @@ pub fn run_task(
             let m = read_mtime_of_creates(creates, &opts.project_root)?;
             state.task_mtime.insert(name.clone(), m);
         }
+        // Propagate dirtiness: a task that ran (or would, in dry-run)
+        // forces dependents to run, including phony deps that record no
+        // mtime. Keyed off the verdict so dry-run/explain stay accurate.
+        if verdict.should_run() {
+            state.dirty.insert(name.clone());
+        }
         let _ = ran;
     }
 

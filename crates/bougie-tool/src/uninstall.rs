@@ -40,18 +40,22 @@ pub fn uninstall(paths: &Paths, package: &str) -> Result<UninstallOutcome> {
     if receipt_path.exists() {
         let receipt = receipt::read(&receipt_path)?;
         for entry in &receipt.entrypoints {
-            match std::fs::symlink_metadata(&entry.install_path) {
-                Ok(_) => {
+            // Only remove the PATH symlink if it still points into *this*
+            // tool's dir. A later `bougie tool install --force` of a
+            // different tool sharing a bin name re-points the symlink; the
+            // receipt still records the path, but the file is no longer
+            // ours, so deleting it would silently break the other tool.
+            match std::fs::read_link(&entry.install_path) {
+                Ok(target) if target.starts_with(&tool_dir) => {
                     std::fs::remove_file(&entry.install_path).wrap_err_with(|| {
                         format!("removing {}", entry.install_path.display())
                     })?;
                     removed_bins.push(entry.install_path.clone());
                 }
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => bail!(
-                    "checking {}: {e}",
-                    entry.install_path.display()
-                ),
+                // Anything else — symlink reclaimed by another tool,
+                // missing, or not a symlink (a regular file we don't own)
+                // — is left untouched.
+                _ => {}
             }
         }
     }

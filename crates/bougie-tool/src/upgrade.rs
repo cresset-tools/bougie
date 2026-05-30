@@ -75,7 +75,7 @@ pub fn upgrade_one(
     // versions is overwritten in place).
     let (entrypoints, installed_bins) =
         install_mod::emit_bins(ctx.paths, &tool_dir, &receipt.package, true, true)?;
-    prune_dropped_entrypoints(&receipt.entrypoints, &entrypoints)?;
+    prune_dropped_entrypoints(&tool_dir, &receipt.entrypoints, &entrypoints)?;
     receipt.entrypoints = entrypoints;
     receipt::write(&tool_dir.join("receipt.toml"), &receipt)?;
     drop(guard);
@@ -149,6 +149,7 @@ fn reinstall_one(
 /// entrypoints' own symlinks were already (re-)written by
 /// `emit_bins` with `force = true`.
 fn prune_dropped_entrypoints(
+    tool_dir: &Path,
     old: &[ToolEntrypoint],
     new: &[ToolEntrypoint],
 ) -> Result<()> {
@@ -156,12 +157,17 @@ fn prune_dropped_entrypoints(
         if new.iter().any(|n| n.name == old_ep.name) {
             continue;
         }
-        match std::fs::symlink_metadata(&old_ep.install_path) {
-            Ok(_) => std::fs::remove_file(&old_ep.install_path).wrap_err_with(|| {
-                format!("removing dropped entrypoint {}", old_ep.install_path.display())
-            })?,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => bail!("checking {}: {e}", old_ep.install_path.display()),
+        // Only remove the symlink if it still points into this tool's
+        // dir — another tool installed with `--force` may have reclaimed
+        // the bin name, and deleting it would break that tool.
+        match std::fs::read_link(&old_ep.install_path) {
+            Ok(target) if target.starts_with(tool_dir) => {
+                std::fs::remove_file(&old_ep.install_path).wrap_err_with(|| {
+                    format!("removing dropped entrypoint {}", old_ep.install_path.display())
+                })?;
+            }
+            // Reclaimed by another tool, missing, or not a symlink — skip.
+            _ => {}
         }
     }
     Ok(())

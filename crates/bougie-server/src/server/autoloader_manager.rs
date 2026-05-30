@@ -367,18 +367,25 @@ async fn run_bootstrap(slot: Arc<Mutex<ProjectState>>, project: PathBuf) {
         _ => return,
     };
 
-    for path in &buffer.changed {
-        if let Err(e) = loader.apply_changed_path(path) {
+    // Applying all `changed` then all `deleted` would lose the
+    // interleaved arrival order: a delete-then-recreate buffered during
+    // warming (e.g. an editor's atomic save) would drop a class that
+    // actually exists on disk. Instead, take the union of buffered paths
+    // and decide each one's fate from its *current* on-disk state — the
+    // final state is what the fresh classmap should reflect, regardless
+    // of the order the events arrived in.
+    let mut paths: Vec<&PathBuf> = buffer.changed.iter().chain(buffer.deleted.iter()).collect();
+    paths.sort();
+    paths.dedup();
+    for path in paths {
+        let result = if path.exists() {
+            loader.apply_changed_path(path)
+        } else {
+            loader.apply_deleted_path(path)
+        };
+        if let Err(e) = result {
             eprintln!(
-                "bougie server: drain-changed failed for {}: {e:#}",
-                path.display()
-            );
-        }
-    }
-    for path in &buffer.deleted {
-        if let Err(e) = loader.apply_deleted_path(path) {
-            eprintln!(
-                "bougie server: drain-deleted failed for {}: {e:#}",
+                "bougie server: drain failed for {}: {e:#}",
                 path.display()
             );
         }

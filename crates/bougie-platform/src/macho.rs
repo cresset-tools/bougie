@@ -116,8 +116,14 @@ fn read_indirect_string(
         .checked_add(field_offset)
         .ok_or_else(|| eyre!("overflow computing field vmaddr"))?;
     let ptr_off = vmaddr_to_file_off(segments, ptr_vmaddr, 8)?;
+    let end = ptr_off
+        .checked_add(8)
+        .ok_or_else(|| eyre!("pointer file offset {ptr_off} overflows"))?;
+    let bytes = buf
+        .get(ptr_off..end)
+        .ok_or_else(|| eyre!("pointer at file offset {ptr_off} out of range (buf={})", buf.len()))?;
     let mut p = [0u8; 8];
-    p.copy_from_slice(&buf[ptr_off..ptr_off + 8]);
+    p.copy_from_slice(bytes);
     let name_vmaddr = u64::from_le_bytes(p);
     if name_vmaddr == 0 {
         return Err(eyre!(
@@ -142,14 +148,19 @@ fn vmaddr_to_file_off(segments: &[Segment], vmaddr: u64, len: u64) -> Result<usi
             // Cap at filesize: a segment can have vmsize > filesize
             // for the zero-fill tail (think .bss). We refuse to read
             // past the on-disk extent.
-            if delta + len > seg.filesize {
+            if delta.saturating_add(len) > seg.filesize {
                 return Err(eyre!(
                     "vmaddr {vmaddr:#x} falls into segment `{}` but past its \
                      on-disk extent (delta {delta}, filesize {})",
                     seg.name, seg.filesize
                 ));
             }
-            return Ok((seg.fileoff + delta) as usize);
+            let off = seg
+                .fileoff
+                .checked_add(delta)
+                .ok_or_else(|| eyre!("file offset overflow mapping vmaddr {vmaddr:#x}"))?;
+            return usize::try_from(off)
+                .map_err(|_| eyre!("file offset {off} too large for this platform"));
         }
     }
     Err(eyre!(

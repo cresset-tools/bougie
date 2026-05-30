@@ -139,19 +139,30 @@ fn emit_files(out: &mut String, entries: &[FileEntry]) {
     out.push_str("    );\n");
 }
 
+/// Bucket key for the first-letter grouping. Composer keys on
+/// `$prefix[0]` — the first **byte** of the prefix, not the first
+/// Unicode scalar. For ASCII prefixes (every realistic PHP namespace)
+/// the byte and the char coincide; modelling it as a byte makes the
+/// grouping byte-accurate so a multibyte lead doesn't get its own
+/// spurious bucket.
+fn first_byte_bucket(prefix: &str) -> char {
+    char::from(
+        *prefix
+            .as_bytes()
+            .first()
+            .expect("PSR prefix is never empty"),
+    )
+}
+
 /// `$prefixLengthsPsr4` bucket-by-first-letter map. Per Composer's
-/// `getStaticFile`, the outer key is `$prefix[0]` (first char of the
+/// `getStaticFile`, the outer key is `$prefix[0]` (first byte of the
 /// PSR-4 prefix), and within a bucket entries appear in the same
 /// krsort order as the surrounding `$psr4` list.
 fn emit_prefix_lengths_psr4(out: &mut String, psr4: &[&Entry]) {
     out.push_str("    public static $prefixLengthsPsr4 = array (\n");
     let mut current_letter: Option<char> = None;
     for e in psr4 {
-        let letter = e
-            .prefix
-            .chars()
-            .next()
-            .expect("PSR-4 prefix is never empty");
+        let letter = first_byte_bucket(&e.prefix);
         if current_letter != Some(letter) {
             if current_letter.is_some() {
                 out.push_str("        ),\n");
@@ -192,11 +203,7 @@ fn emit_prefixes_psr0(out: &mut String, psr0: &[&Entry]) {
     out.push_str("    public static $prefixesPsr0 = array (\n");
     let mut current_letter: Option<char> = None;
     for e in psr0 {
-        let letter = e
-            .prefix
-            .chars()
-            .next()
-            .expect("PSR-0 prefix is never empty");
+        let letter = first_byte_bucket(&e.prefix);
         if current_letter != Some(letter) {
             if current_letter.is_some() {
                 out.push_str("        ),\n");

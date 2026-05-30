@@ -29,7 +29,7 @@ const PATH_SEP: &str = ";";
 /// child (if not already set) and lazily installs xdebug into
 /// `conf.d-debug/` when no xdebug fragment exists in either dir.
 pub fn run(
-    _with: &[String],
+    with: &[String],
     argv: &[String],
     format: OutputFormat,
     no_sync: bool,
@@ -37,6 +37,19 @@ pub fn run(
 ) -> Result<ExitCode> {
     if argv.is_empty() {
         return Err(eyre!("nothing to run"));
+    }
+    // The ad-hoc extension overlay (`--with EXT=VER`) is not implemented
+    // yet. It used to be silently ignored, which made the command lie:
+    // the script ran without the requested extension while the CLI
+    // reported success. Fail loudly until the overlay lands rather than
+    // pretend it worked. For a persistent extension, use
+    // `bougie ext add <name>` then `bougie run`.
+    if !with.is_empty() {
+        return Err(eyre!(
+            "`bougie run --with` (ad-hoc per-invocation extensions) is not implemented yet; \
+             add the extension to the project with `bougie ext add {}` and re-run",
+            with.join(" "),
+        ));
     }
     let cwd = std::env::current_dir()?;
     let project_root = resolve_project_root(&cwd);

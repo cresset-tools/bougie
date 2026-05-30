@@ -351,9 +351,13 @@ fn detect_available_extensions(project_root: &Path) -> BTreeSet<String> {
         for entry in entries.flatten() {
             let name = entry.file_name();
             let name = name.to_string_lossy();
-            // Fragment names are like "20-redis.ini" or "35-pdo_mysql.ini"
+            // Fragment names are like "20-redis.ini" or "35-pdo_mysql.ini",
+            // and may carry multiple numeric prefixes ("00-20-gd.ini").
+            // PHP extension names never contain '-', so the name is
+            // whatever follows the *last* '-' — split from the right so
+            // multi-segment prefixes don't leak into the name.
             if let Some(ext_name) = name.strip_suffix(".ini") {
-                if let Some((_prefix, ext)) = ext_name.split_once('-') {
+                if let Some((_prefix, ext)) = ext_name.rsplit_once('-') {
                     exts.insert(ext.to_string());
                 }
             }

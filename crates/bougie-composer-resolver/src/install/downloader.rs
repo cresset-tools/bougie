@@ -339,7 +339,17 @@ fn cache_path_for(cache_root: &Path, dist: &DistRequest<'_>) -> PathBuf {
         ArchiveKind::Zip => "zip",
         ArchiveKind::TarZst => "tar.zst",
     };
-    let key = if dist.sha1.is_empty() { dist.reference } else { dist.sha1 };
+    let key = if dist.sha1.is_empty() {
+        // The git reference can contain `/` (branch names) or even `..`,
+        // which would land in an uncreated subdir (ENOENT) or escape the
+        // cache root. Hash it into a flat, traversal-safe token. A sha1
+        // shasum is already a safe hex string, so leave that path as-is.
+        use sha1::Digest as _;
+        let digest = sha1::Sha1::digest(dist.reference.as_bytes());
+        format!("ref-{digest:x}")
+    } else {
+        dist.sha1.to_string()
+    };
     cache_root.join(format!("{key}.{ext}"))
 }
 

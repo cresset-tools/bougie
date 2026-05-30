@@ -21,7 +21,6 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use std::time::Instant;
-use tokio::io::AsyncReadExt;
 
 use super::autoloader_manager::AutoloaderManager;
 use super::config::{HostBlock, ServerConfig};
@@ -366,19 +365,23 @@ async fn collect_body(
 ) -> Result<(Vec<u8>, (axum::http::Method, HeaderMap)), Response> {
     let method = req.method().clone();
     let headers = req.headers().clone();
-    let body = req.into_body();
+    // Enforce the cap *while* streaming rather than after buffering the
+    // whole body: extracting `Request<Body>` directly bypasses axum's
+    // default body limit, so a chunked request with no Content-Length
+    // could otherwise exhaust memory before the size check ran.
+    let body = http_body_util::Limited::new(req.into_body(), MAX_REQUEST_BODY);
     let collected = match body.collect().await {
         Ok(c) => c.to_bytes(),
-        Err(_) => return Err(internal_error()),
+        Err(err) => {
+            if err.downcast_ref::<http_body_util::LengthLimitError>().is_some() {
+                return Err(plain_response(
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    format!("bougie: request body exceeds the {MAX_REQUEST_BODY}-byte limit\n"),
+                ));
+            }
+            return Err(internal_error());
+        }
     };
-    if collected.len() > MAX_REQUEST_BODY {
-        return Err(plain_response(
-            StatusCode::PAYLOAD_TOO_LARGE,
-            format!(
-                "bougie: request body exceeds the {MAX_REQUEST_BODY}-byte limit\n"
-            ),
-        ));
-    }
     Ok((collected.to_vec(), (method, headers)))
 }
 
@@ -391,6 +394,14 @@ fn http_header_params(h: &HeaderMap) -> Vec<(String, String)> {
         // Content-Type / Content-Length are passed under their own
         // CGI names above; don't double-emit.
         if n.eq_ignore_ascii_case("content-type") || n.eq_ignore_ascii_case("content-length") {
+            continue;
+        }
+        // Drop headers containing underscores. Both `-` and `_` map to
+        // `_` in the `HTTP_*` param name, so `X-Foo-Bar` and `X-Foo_Bar`
+        // would collide and let a client spoof a header the app trusts.
+        // nginx defends against this the same way (`underscores_in_headers
+        // off` is the default).
+        if n.contains('_') {
             continue;
         }
         let Ok(v) = value.to_str() else { continue };
@@ -501,26 +512,25 @@ fn parse_status_code(value: &[u8]) -> Option<StatusCode> {
 }
 
 async fn serve_static(file: &std::path::Path) -> Response {
-    let Ok(mut fh) = tokio::fs::File::open(file).await else {
+    let Ok(fh) = tokio::fs::File::open(file).await else {
         return not_found();
     };
     let Ok(meta) = fh.metadata().await else {
         return not_found();
     };
     let len = meta.len();
-    let cap = usize::try_from(len.min(8 * 1024 * 1024)).unwrap_or(0);
-    let mut buf = Vec::with_capacity(cap);
-    if fh.read_to_end(&mut buf).await.is_err() {
-        return internal_error();
-    }
+    // Stream the file in fixed-size chunks rather than buffering the
+    // whole thing into a Vec — a large file (or a slow device) would
+    // otherwise pin its entire size in memory.
+    let body = Body::from_stream(tokio_util::io::ReaderStream::new(fh));
 
     let mime = static_files::mime_for(file);
     let mut resp = Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, mime)
         .header(header::CACHE_CONTROL, "no-cache")
-        .header(header::CONTENT_LENGTH, buf.len())
-        .body(Body::from(buf))
+        .header(header::CONTENT_LENGTH, len)
+        .body(body)
         .expect("static response is well-formed");
     if let Ok(v) = HeaderValue::from_str(mime) {
         resp.headers_mut().insert("x-bougie-static-mime", v);

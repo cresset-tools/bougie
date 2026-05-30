@@ -2648,8 +2648,20 @@ impl ResolveProvider {
                     by_name.entry(pname.clone()).or_default().push(pver.clone());
                 }
                 let mut out: Vec<(PubGrubPackage, ComposerRange)> = Vec::new();
-                if by_name.len() == 1 {
-                    let (pname, versions) = by_name.iter().next().expect("non-empty");
+                // Pick the provider to pin. With a single distinct
+                // provider that's the obvious choice. When several
+                // distinct providers compete (the "multiple PSR
+                // implementations" case), fall back to the *first
+                // registration* — emitting nothing here would leave the
+                // virtual with zero concrete providers and then drop it
+                // from the lock entirely.
+                let chosen = if by_name.len() == 1 {
+                    by_name.keys().next().cloned()
+                } else {
+                    providers.first().map(|(pname, _)| pname.clone())
+                };
+                if let Some(pname) = chosen {
+                    let versions = by_name.get(&pname).expect("chosen provider is in by_name");
                     let range = versions
                         .iter()
                         .map(|v| {
@@ -2660,7 +2672,7 @@ impl ResolveProvider {
                             })
                         })
                         .fold(ComposerRange::empty(), |acc, r| acc.union(&r));
-                    out.push((PubGrubPackage::Package(pname.clone()), range));
+                    out.push((PubGrubPackage::Package(pname), range));
                 }
                 return Ok(out);
             }
@@ -2885,6 +2897,26 @@ pub fn dry_run_update(
         ok = result.is_ok(),
         "pubgrub_resolve",
     );
+    // Retry exhaustion guard: the loop above can exit after 10 attempts
+    // with a solution that *still* violates a conflict (e.g. the
+    // conflict-declaring package has only one version, so excluding it
+    // makes no progress). Returning that solution would write a lock
+    // that violates a declared conflict — error instead.
+    if let Ok(ref solution) = result {
+        let pairs: Vec<_> = solution.iter().collect();
+        let remaining = provider.check_conflict_violations(&pairs);
+        if !remaining.is_empty() {
+            let detail = remaining
+                .iter()
+                .map(|(name, ver)| format!("{name}@{ver}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(eyre!(
+                "could not satisfy declared package conflicts after 10 resolution \
+                 attempts; still violated by: {detail}"
+            ));
+        }
+    }
     let summary = match result {
         Ok(solution) => {
             let virtual_selections = provider.virtual_selections.borrow();
