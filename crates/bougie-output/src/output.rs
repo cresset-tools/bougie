@@ -23,6 +23,21 @@ pub fn progress_visible() -> bool {
     *PROGRESS_VISIBLE.get().unwrap_or(&false)
 }
 
+/// Process-wide flag: did the user pass `--verbose`? Set once at
+/// `bougie::run` entry. Gates diagnostic stderr lines that are useful
+/// once but noise on every idempotent re-run — e.g. "inferred php
+/// constraint from ..." / "adding inferred extensions from ...". Off by
+/// default so a steady-state `bougie run` / `make` is quiet.
+static VERBOSE: OnceLock<bool> = OnceLock::new();
+
+pub fn set_verbose(verbose: bool) {
+    let _ = VERBOSE.set(verbose);
+}
+
+pub fn verbose() -> bool {
+    *VERBOSE.get().unwrap_or(&false)
+}
+
 /// Implemented by every command's Result struct.
 ///
 /// JSON serialization comes from `serde::Serialize` directly; the text

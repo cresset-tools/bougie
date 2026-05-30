@@ -482,7 +482,11 @@ fn install_required_extensions(
                 .is_none_or(|p| !p.is_disabled())
         })
         .collect();
-    if !inferred.is_empty() {
+    // Diagnostic only — the actual install outcome is reported by
+    // `SyncResult.installed_extensions`. This line restates the *inferred*
+    // set on every sync (even when all are already enabled), so gate it
+    // behind `--verbose` to keep steady-state `run`/`make` quiet.
+    if !inferred.is_empty() && bougie_output::output::verbose() {
         eprintln!(
             "adding inferred extensions from {}: {}",
             sources.join(" + "),
@@ -619,7 +623,11 @@ fn resolve_php_inputs(
     // the pipeline behaves identically to a user-written `require.php`.
     if public.is_none() && override_spec.is_none() {
         if let Some((inferred, source)) = super::infer_php::infer(project_root) {
-            eprintln!("inferred php constraint from {source}");
+            // Diagnostic only; fires on every sync that infers PHP. Quiet
+            // by default, shown with `--verbose`.
+            if bougie_output::output::verbose() {
+                eprintln!("inferred php constraint from {source}");
+            }
             public = Some(inferred);
         }
     }
