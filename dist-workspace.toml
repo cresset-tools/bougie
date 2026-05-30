@@ -1,7 +1,8 @@
 # dist configuration — produces per-target binary archives plus
-# shell/powershell installers, hooked into the existing release-plz tag
-# flow. See RELEASE.md for the bigger picture (release-plz drives tags,
-# dist builds binaries, publish-mirror.yml fans them out to R2).
+# shell/powershell installers, hooked into the release-please tag flow.
+# See RELEASE.md for the bigger picture (release-please drives tags +
+# creates the draft GitHub Release, dist builds binaries and uploads
+# them to that draft, publish-mirror.yml fans them out to R2).
 #
 # Edit this file when adding targets / installers / mirror config, then
 # regenerate the workflow with:
@@ -61,17 +62,20 @@ targets = [
 # PATH. (CHANGELOG.md still ends up in the GitHub release notes.)
 auto-includes = false
 
-# dist creates the GitHub release itself; release-plz only tags
-# (see release-plz.toml — the bougie package has
-# `git_release_enable = false`).
-create-release = true
+# release-please creates the GitHub Release as a draft (it has the
+# changelog body); dist only attaches the built binaries and un-drafts
+# it. `create-release = false` makes dist expect that pre-existing draft
+# at the tag rather than creating its own — which would collide with
+# release-please's. See release-please.yml + `"draft": true` in
+# release-please-config.json.
+create-release = false
 
 # Don't run dist on PRs — CI already covers building.
 pr-run-mode = "skip"
 
-# release-plz tags as `bougie-v<version>` rather than the bare
+# release-please tags as `bougie-v<version>` rather than the bare
 # `v<version>` dist defaults to. Without this dist's release.yml
-# wouldn't trigger on the tag release-plz pushes.
+# wouldn't trigger on the tag release-please pushes.
 tag-namespace = "bougie"
 
 # Where the shell installer drops the binaries. First match wins;
