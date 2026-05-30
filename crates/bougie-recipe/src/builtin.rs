@@ -16,8 +16,9 @@ pub const BUILTINS: &[(&str, &str)] = &[
 /// because `generic` is the universal fallback.
 ///
 /// Detection rules per RECIPES.md §4:
-/// - `magento/product-community-edition` or `magento/magento2-base`
-///   → `magento`
+/// - `magento/` or `mage-os/` `product-community-edition` /
+///   `magento2-base` → `magento` (Mage-OS is a drop-in Magento fork and
+///   uses the same recipe / app layout)
 /// - `laravel/framework` → `laravel`
 /// - otherwise → `generic`
 pub fn detect_from_text(composer_json: Option<&str>) -> &'static str {
@@ -34,6 +35,8 @@ pub fn detect_from_text(composer_json: Option<&str>) -> &'static str {
     let name = v.get("name").and_then(|n| n.as_str()).unwrap_or("");
     if has("magento/product-community-edition")
         || has("magento/magento2-base")
+        || has("mage-os/product-community-edition")
+        || has("mage-os/magento2-base")
         || name == "magento/magento2ce"
         || name == "magento/magento2"
         || name == "magento/magento2-base"
@@ -84,6 +87,17 @@ mod tests {
     fn magento_detection() {
         let j = r#"{"require":{"magento/product-community-edition":"2.4.7"}}"#;
         assert_eq!(detect_from_text(Some(j)), "magento");
+    }
+
+    #[test]
+    fn mageos_detection() {
+        // Mage-OS is a drop-in Magento fork (mage-os/* vendor) and must
+        // map to the same recipe — otherwise `bougie start` falls back
+        // to `generic` and never brings up services / runs setup:install.
+        let j = r#"{"require":{"mage-os/product-community-edition":"3.0.0"}}"#;
+        assert_eq!(detect_from_text(Some(j)), "magento");
+        let b = r#"{"require":{"mage-os/magento2-base":"3.0.0"}}"#;
+        assert_eq!(detect_from_text(Some(b)), "magento");
     }
 
     #[test]

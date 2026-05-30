@@ -30,8 +30,24 @@ deps = ["composer.lock", "composer.json"]
 run = "bougie composer install"
 
 [task.install]
-creates = "app/etc/env.php"
 deps = ["vendor", "services"]
+# `setup:install` is one-shot: once `app/etc/env.php` exists, Magento is
+# installed and re-running it does nothing useful (and risks clobbering).
+# Gate on env.php *existence* via `check`, not a `creates` mtime — the
+# mtime form re-ran the install whenever `vendor/` ended up newer (or the
+# phony `services` dep ran). The deps still run first (services come up,
+# vendor is ensured); only the install step itself is skipped when already
+# installed.
+check = "test -f app/etc/env.php"
+# Redis is wired in two steps. bougie's redis is socket-only, but
+# Mage-OS 3.0.0's `--cache-backend=redis` shorthand routes through an
+# optimized Symfony/Predis adapter (framework/.../SymfonyAdapterProvider)
+# that hardcodes `scheme => tcp`, so a socket server mis-parses as
+# `tcp:///path` and "Enabling caches" fails. The CLI won't accept a custom
+# backend class either. So: install with the default file cache, then
+# rewrite env.php's cache to the classic Credis backend
+# (Magento\Framework\Cache\Backend\Redis), which speaks the unix socket.
+# rabbitmq below is TCP, so the amqp wiring stays inline.
 run = """
 bougie run -- php -d memory_limit=4G bin/magento setup:install \
   --base-url="http://${BOUGIE_SERVICE_SERVER_HOSTNAME}:${BOUGIE_SERVICE_SERVER_PORT}/" \
@@ -47,22 +63,20 @@ bougie run -- php -d memory_limit=4G bin/magento setup:install \
   --amqp-user="$BOUGIE_SERVICE_RABBITMQ_USER" \
   --amqp-password="$BOUGIE_SERVICE_RABBITMQ_PASSWORD" \
   --amqp-virtualhost="$BOUGIE_SERVICE_RABBITMQ_VHOST" \
-  --cache-backend=redis \
-  --cache-backend-redis-server="$BOUGIE_SERVICE_REDIS_SOCKET" \
-  --cache-backend-redis-port=0 \
-  --cache-backend-redis-db="$BOUGIE_SERVICE_REDIS_DB" \
-  --page-cache=redis \
-  --page-cache-redis-server="$BOUGIE_SERVICE_REDIS_SOCKET" \
-  --page-cache-redis-port=0 \
-  --page-cache-redis-db="$BOUGIE_SERVICE_REDIS_DB" \
-  --session-save=redis \
-  --session-save-redis-host="$BOUGIE_SERVICE_REDIS_SOCKET" \
-  --session-save-redis-port=0 \
-  --session-save-redis-db="$BOUGIE_SERVICE_REDIS_DB" \
   --admin-firstname=Admin --admin-lastname=Admin \
   --admin-email=admin@example.com --admin-user=admin \
   --admin-password=admin123 --language=en_US --currency=USD \
   --timezone=UTC --use-rewrites=1
+echo | bougie run -- php <<'PHP'
+<?php
+$f = 'app/etc/env.php';
+$c = require $f;
+$o = ['server' => getenv('BOUGIE_SERVICE_REDIS_SOCKET'), 'port' => '0', 'database' => getenv('BOUGIE_SERVICE_REDIS_DB')];
+foreach (['default', 'page_cache'] as $k) {
+    $c['cache']['frontend'][$k] = ['id_prefix' => 'bgc_', 'backend' => 'Magento\\Framework\\Cache\\Backend\\Redis', 'backend_options' => $o];
+}
+file_put_contents($f, '<?php' . PHP_EOL . 'return ' . var_export($c, true) . ';' . PHP_EOL);
+PHP
 bougie run -- bin/magento deploy:mode:set developer
 """
 

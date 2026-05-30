@@ -44,6 +44,7 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
         && matches!(format, OutputFormat::Text)
         && std::io::stderr().is_terminal();
     bougie_output::output::set_progress_visible(progress_visible);
+    bougie_output::output::set_verbose(cli.verbose);
 
     match cli.command {
         Command::Init { toml } => commands::init::run(format, toml),
