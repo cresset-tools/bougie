@@ -113,7 +113,10 @@ version = "0.6"
 [dependencies.reqwest]
 version = "0.13"
 default-features = false
-features = ["blocking", "rustls", "stream"]
+# `json` deserializes the GitHub Releases API response in
+# `commands/self_update.rs`. The other features were already pulled
+# in by upstream callers.
+features = ["blocking", "rustls", "stream", "json"]
 
 [dependencies.serde]
 version = "1.0"
@@ -154,6 +157,20 @@ version = "8.0"
 default-features = false
 features = ["deflate"]
 
+# `bougie self update` decompresses the tar.gz dist publishes on Unix
+# (Windows uses the existing `zip` dep above). `tar` + `sha2` were
+# previously dev-only — they're now linked into the release binary so
+# the updater can verify and extract the archive in-process. Both add
+# only a handful of KB to the final binary.
+[dependencies.flate2]
+version = "1"
+
+[dependencies.tar]
+version = "0.4"
+
+[dependencies.sha2]
+version = "0.11"
+
 [dev-dependencies]
 assert_cmd = "2.0"        # spawn the bougie binary in integration tests
 predicates = "3.1"        # human-readable assertions on its output
@@ -167,11 +184,12 @@ zip = { version = "8.0", default-features = false, features = ["deflate"] }
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "rustls"] }
 # Crates only used by integration tests in tests/; kept out of the
 # regular [dependencies] block so a bin-only build doesn't link them.
+# (`sha2` and `tar` used to be here too; they moved to [dependencies]
+# when `bougie self update` started using them for archive
+# verification + extraction.)
 sha1 = "0.10"
-sha2 = "0.11"
 sigstore = { version = "0.13", default-features = false, features = ["cosign", "verify", "rustls-tls", "sigstore-trust-root"] }
 zstd = { version = "0.13", default-features = false }
-tar = "0.4"
 rustix = { version = "1.0", default-features = false, features = ["std", "fs", "process"] }
 bougie-index = { workspace = true }
 bougie-composer = { workspace = true }
