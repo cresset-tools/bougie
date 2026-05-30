@@ -67,7 +67,7 @@ bougie run -- php -d memory_limit=4G bin/magento setup:install \
   --admin-email=admin@example.com --admin-user=admin \
   --admin-password=admin123 --language=en_US --currency=USD \
   --timezone=UTC --use-rewrites=1
-cat > .bougie-redis-cache.php <<'PHP'
+echo | bougie run -- php <<'PHP'
 <?php
 $f = 'app/etc/env.php';
 $c = require $f;
@@ -77,7 +77,6 @@ foreach (['default', 'page_cache'] as $k) {
 }
 file_put_contents($f, '<?php' . PHP_EOL . 'return ' . var_export($c, true) . ';' . PHP_EOL);
 PHP
-bougie run -- php .bougie-redis-cache.php && rm -f .bougie-redis-cache.php
 bougie run -- bin/magento deploy:mode:set developer
 """
 
