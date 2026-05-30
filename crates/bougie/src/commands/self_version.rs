@@ -28,7 +28,7 @@ pub struct TrustInfo {
 
 impl Render for VersionResult {
     fn render_text(&self, w: &mut dyn Write) -> io::Result<()> {
-        writeln!(w, "bougie {}", self.bougie.version)?;
+        writeln!(w, "bougie {}", bougie_cli::LONG_VERSION)?;
         writeln!(
             w,
             "trust ({}): {}",
