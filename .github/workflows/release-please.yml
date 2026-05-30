@@ -52,10 +52,14 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
-      # release-please rewrites Cargo.toml version pins but doesn't
+      # release-please rewrites `workspace.package.version` but doesn't
       # understand Cargo.lock. Refresh the lockfile on the PR branch so
-      # CI builds aren't broken by a stale lockfile. Path-dep entries
-      # update offline; no crates.io fetch needed.
+      # CI builds aren't broken by stale [[package]] entries.
+      # `--workspace` scopes the update to workspace members only —
+      # external crates aren't bumped. Don't pass `--offline`: a fresh
+      # runner has no cargo registry cache, and cargo needs to fetch
+      # the index to verify the dep graph even though no external dep
+      # versions actually move.
       - name: Checkout release PR
         if: ${{ steps.release.outputs.pr }}
         uses: actions/checkout@v5
@@ -66,7 +70,7 @@ jobs:
       - name: Refresh Cargo.lock
         if: ${{ steps.release.outputs.pr }}
         run: |
-          cargo update --workspace --offline
+          cargo update --workspace
           if ! git diff --quiet Cargo.lock; then
             git config user.email "${{ vars.BOT_EMAIL || 'noreply@cresset.tools' }}"
             git config user.name "${{ vars.BOT_NAME || 'cresset-bot' }}"
