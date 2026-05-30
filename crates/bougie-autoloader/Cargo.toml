@@ -1,6 +1,6 @@
 [package]
 name = "bougie-autoloader"
-version = "0.1.0"
+version.workspace = true
 edition = "2024"
 description = "Generate Composer-compatible vendor/composer/autoload_*.php from a resolved dependency tree."
 license = "EUPL-1.2"

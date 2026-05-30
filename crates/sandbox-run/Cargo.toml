@@ -1,6 +1,6 @@
 [package]
 name = "sandbox-run"
-version = "0.1.0"
+version.workspace = true
 description = "Cross-platform process sandboxing (Linux Landlock, macOS SBPL) via pre_exec"
 edition.workspace = true
 license.workspace = true
@@ -10,7 +10,7 @@ authors.workspace = true
 libc = "0.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
-macos-sandbox-sys = { path = "../macos-sandbox-sys", version = "0.1.0" }
+macos-sandbox-sys = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 landlock = "0.4"

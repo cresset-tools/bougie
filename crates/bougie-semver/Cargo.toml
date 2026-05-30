@@ -1,6 +1,6 @@
 [package]
 name = "bougie-semver"
-version = "0.1.0"
+version.workspace = true
 edition = "2024"
 description = "Composer-flavored semver (Version, Constraint, Stability) shared between bougie's PHP/ext picker and the future Composer dep resolver."
 license = "EUPL-1.2"
