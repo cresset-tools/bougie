@@ -1,6 +1,13 @@
 use clap::builder::styling::{AnsiColor, Effects, Styles};
 use clap::{Args, Parser, Subcommand};
 
+/// Full version string, uv-style: `0.6.4 (63c5f57d3 2026-05-08 <target>)`.
+///
+/// Built by `build.rs`; degrades to the bare crate version when git metadata is
+/// unavailable. clap prefixes the binary name, so `--version` prints
+/// `bougie 0.6.4 (...)`.
+pub const LONG_VERSION: &str = env!("BOUGIE_LONG_VERSION");
+
 const HELP_STYLES: Styles = Styles::styled()
     .header(AnsiColor::Blue.on_default().effects(Effects::BOLD))
     .usage(AnsiColor::Magenta.on_default().effects(Effects::BOLD))
@@ -11,7 +18,7 @@ const HELP_STYLES: Styles = Styles::styled()
     .invalid(AnsiColor::Yellow.on_default().effects(Effects::BOLD));
 
 #[derive(Parser, Debug)]
-#[command(name = "bougie", version, about, long_about = None, styles = HELP_STYLES)]
+#[command(name = "bougie", version = LONG_VERSION, about, long_about = None, styles = HELP_STYLES)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Command,
