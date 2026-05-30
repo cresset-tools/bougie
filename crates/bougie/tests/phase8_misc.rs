@@ -123,11 +123,18 @@ fn php_pin_writes_to_composer_extra_when_no_toml() {
 }
 
 #[test]
-fn self_update_is_stubbed() {
+fn self_update_honors_no_self_update_env() {
+    // `BOUGIE_NO_SELF_UPDATE=1` is the escape hatch for environments
+    // where an external installer owns the binary (package manager,
+    // nix store, …). The updater must refuse cleanly without touching
+    // the network. Asserting the env-var path keeps this test
+    // deterministic — the real download flow is covered by the unit
+    // tests in `commands::self_update::tests`.
     let env = TestEnv::new();
     env.bougie()
+        .env("BOUGIE_NO_SELF_UPDATE", "1")
         .args(["self", "update"])
         .assert()
         .failure()
-        .stderr(contains("not yet available"));
+        .stderr(contains("BOUGIE_NO_SELF_UPDATE"));
 }
