@@ -6,16 +6,21 @@
 //!
 //! - `composer.json` — the project's root manifest
 //! - `packagist-index.json.zst` — frozen Packagist v2 metadata for the
-//!   full transitive closure
+//!   full transitive closure. **Not committed** — fetched on demand (see
+//!   below); the corpus tests skip gracefully when it is absent.
 //! - `expected.json` — `{"packages": {"name": "ver"}, "packages_dev":
 //!   {"name": "ver"}}` extracted from Composer's lockfile
 //!
-//! Generate fixtures with `scripts/capture-cross-check-fixture.py`.
-//! Run corpus tests:
+//! The `.zst` blobs are multi-MB and live as a GitHub release asset
+//! rather than in the repo. Fetch them once, then run the corpus suite:
 //!
 //! ```text
+//! scripts/fetch-cross-check-fixtures.sh
 //! cargo test -p bougie --test composer_cross_check --features cross-check-fixtures
 //! ```
+//!
+//! To (re)capture a fixture from live Packagist, use
+//! `scripts/capture-cross-check-fixture.py`.
 
 mod common;
 use common::TestEnv;
@@ -386,6 +391,16 @@ mod corpus {
             eprintln!(
                 "skipping {slug}: fixture not captured yet \
                  (run scripts/capture-cross-check-fixture.py)"
+            );
+            return;
+        }
+        // The metadata blob is fetched on demand, not committed. Skip
+        // rather than panic when it is absent so the suite is a no-op
+        // until `scripts/fetch-cross-check-fixtures.sh` has been run.
+        if !fixture_dir.join("packagist-index.json.zst").exists() {
+            eprintln!(
+                "skipping {slug}: metadata blob not present \
+                 (run scripts/fetch-cross-check-fixtures.sh)"
             );
             return;
         }

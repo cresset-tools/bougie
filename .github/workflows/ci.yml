@@ -45,9 +45,13 @@ jobs:
             build_cmd: cargo build -p bougie
             test_cmd: cargo test -p bougie --lib --test windows_smoke
     steps:
+      # No `lfs: true`: the only LFS-tracked blobs were the cross-check
+      # corpus fixtures, which this workflow never reads (the corpus
+      # tests are gated behind the `cross-check-fixtures` feature, which
+      # is not enabled here). To run that suite, fetch the blobs first
+      # with `scripts/fetch-cross-check-fixtures.sh` and add a job that
+      # passes `--features cross-check-fixtures`.
       - uses: actions/checkout@v5
-        with:
-          lfs: true
 
       # macos-latest runners no longer ship a usable cargo on PATH, so
       # install the toolchain explicitly. rust-toolchain.toml pins the

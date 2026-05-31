@@ -1,0 +1,6 @@
+# The frozen Packagist metadata blobs are no longer committed (they were
+# previously tracked via Git LFS, ~56 MB total). They are fetched on
+# demand from a GitHub release by `scripts/fetch-cross-check-fixtures.sh`
+# and verified against `fixtures.sha256`. Keep them out of the index so a
+# fetch never re-stages them.
+*/packagist-index.json.zst
