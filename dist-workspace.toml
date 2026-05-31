@@ -74,6 +74,15 @@ auto-includes = false
 # release-please.yml.
 create-release = false
 
+# dist runs `generate --check` on startup and hard-errors if
+# bougie-release.yml differs from what it would generate. We deliberately
+# hand-edit that file's trigger to `on: release: published` (see the note by
+# `create-release` and the header of bougie-release.yml), so tell dist we own
+# the CI file and to skip the check. Without this dist aborts every release
+# run with "bougie-release.yml has out of date contents and needs to be
+# regenerated".
+allow-dirty = ["ci"]
+
 # Don't run dist on PRs — CI already covers building.
 pr-run-mode = "skip"
 
