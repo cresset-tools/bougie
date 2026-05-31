@@ -1,7 +1,7 @@
 use bougie_cli::OutputFormat;
 use bougie_config::write_bougie_toml_skeleton;
 use bougie_output::output::{emit, Render};
-use eyre::{Result, WrapErr};
+use eyre::{Result, WrapErr, eyre};
 use serde::Serialize;
 use std::fs;
 use std::io::{self, Write};
@@ -32,16 +32,40 @@ impl Render for InitResult {
     }
 }
 
-pub fn run(format: OutputFormat, with_toml: bool) -> Result<ExitCode> {
+pub fn run(
+    format: OutputFormat,
+    with_toml: bool,
+    starter: Option<String>,
+    start: bool,
+) -> Result<ExitCode> {
     let cwd = std::env::current_dir().wrap_err("getting current directory")?;
     let mut created = Vec::new();
     let mut already = Vec::new();
 
+    // composer.json comes from the starter manifest when `--starter` is
+    // given, else the empty default. `--starter` is for scaffolding a new
+    // project, so refuse to clobber an existing composer.json.
     let composer = cwd.join("composer.json");
+    let mut notes: Vec<String> = Vec::new();
     if composer.exists() {
+        if starter.is_some() {
+            return Err(eyre!(
+                "composer.json already exists — `--starter` scaffolds a new project; \
+                 run it in an empty directory"
+            ));
+        }
         already.push(PathBuf::from("composer.json"));
     } else {
-        fs::write(&composer, default_composer_json()).wrap_err("writing composer.json")?;
+        let contents = match starter {
+            Some(s) => {
+                let manifest = super::starter::fetch(&s)?;
+                let rendered = super::starter::render_composer_json(&manifest);
+                notes = manifest.notes;
+                rendered
+            }
+            None => default_composer_json(),
+        };
+        fs::write(&composer, contents).wrap_err("writing composer.json")?;
         created.push(PathBuf::from("composer.json"));
     }
 
@@ -78,7 +102,39 @@ pub fn run(format: OutputFormat, with_toml: bool) -> Result<ExitCode> {
         already_present: already,
     };
     emit(format, &result)?;
+
+    // Starter notes (auth hints etc.) → stderr so `--format json-v1`
+    // stdout stays a single clean document.
+    for note in &notes {
+        eprintln!("note: {note}");
+    }
+
+    if start {
+        return start_project(format);
+    }
     Ok(ExitCode::SUCCESS)
+}
+
+/// `--start`: bring the freshly-scaffolded project up, exactly like
+/// `bougie start` — `bougie make start` syncs the toolchain + vendor and
+/// then walks the project recipe (services → setup → server). Unix-only,
+/// since the recipe/services stack is.
+#[cfg(unix)]
+fn start_project(format: OutputFormat) -> Result<ExitCode> {
+    crate::commands::make::run(
+        format,
+        crate::commands::make::MakeOptions {
+            task: Some("start".to_string()),
+            ..Default::default()
+        },
+    )
+}
+
+#[cfg(not(unix))]
+fn start_project(_format: OutputFormat) -> Result<ExitCode> {
+    Err(eyre!(
+        "`bougie init --start` brings up the services stack, which is Unix-only"
+    ))
 }
 
 fn default_composer_json() -> String {
