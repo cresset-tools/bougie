@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.1](https://github.com/cresset-tools/bougie/compare/bougie-v0.8.0...bougie-v0.8.1) (2026-05-31)
+
+
+### Bug Fixes
+
+* **release:** move release-tag push into its own isolated job ([#253](https://github.com/cresset-tools/bougie/issues/253)) ([1570fc1](https://github.com/cresset-tools/bougie/commit/1570fc1e8d041cf82f305ee2818ff177371b08c1))
+
 ## [0.8.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.7.0...bougie-v0.8.0) (2026-05-30)
 
 
