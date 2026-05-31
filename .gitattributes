@@ -4,8 +4,3 @@
 # manifests as spurious "LF will be replaced by CRLF" warnings and as
 # noisy diffs when CRLF leaks into the index.
 * text=auto eol=lf
-
-# Compressed Packagist snapshots used by resolver benchmarks and
-# cross-check tests. These are multi-MB binary blobs that change
-# only when fixtures are recaptured.
-crates/bougie/tests/fixtures/cross-check/**/*.zst filter=lfs diff=lfs merge=lfs -text

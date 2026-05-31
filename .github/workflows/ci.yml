@@ -45,9 +45,12 @@ jobs:
             build_cmd: cargo build -p bougie
             test_cmd: cargo test -p bougie --lib --test windows_smoke
     steps:
+      # No `lfs: true`: the only LFS-tracked blobs were the cross-check
+      # corpus fixtures, which this matrix never reads (the corpus tests
+      # are gated behind the `cross-check-fixtures` feature, enabled only
+      # in the dedicated `cross-check` job below, which fetches the blobs
+      # on demand).
       - uses: actions/checkout@v5
-        with:
-          lfs: true
 
       # macos-latest runners no longer ship a usable cargo on PATH, so
       # install the toolchain explicitly. rust-toolchain.toml pins the
@@ -71,3 +74,36 @@ jobs:
 
       - name: cargo test
         run: ${{ matrix.test_cmd }}
+
+  # The cross-check corpus suite validates that bougie's resolver produces
+  # the same package set as Composer 2.8.12 against frozen Packagist
+  # metadata. It is gated behind the `cross-check-fixtures` feature and
+  # needs the multi-MB metadata blobs, which are fetched on demand (no
+  # longer committed via LFS). Kept in its own Linux-only job so the
+  # download doesn't slow the build matrix.
+  cross-check:
+    name: composer cross-check corpus
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache-bin: false
+
+      - uses: Swatinem/rust-cache@v2
+
+      # Cache the fetched blobs keyed on the checksum manifest so a green
+      # run reuses them instead of re-downloading the ~56 MB tarball. The
+      # fetch script is idempotent: on a cache hit it verifies and skips.
+      - name: Cache cross-check fixtures
+        uses: actions/cache@v4
+        with:
+          path: crates/bougie/tests/fixtures/cross-check/**/packagist-index.json.zst
+          key: cross-check-fixtures-${{ hashFiles('crates/bougie/tests/fixtures/cross-check/fixtures.sha256') }}
+
+      - name: Fetch cross-check fixtures
+        run: scripts/fetch-cross-check-fixtures.sh
+
+      - name: Run cross-check corpus
+        run: cargo test -p bougie --test composer_cross_check --features cross-check-fixtures
