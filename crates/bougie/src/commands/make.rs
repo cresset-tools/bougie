@@ -9,7 +9,7 @@ use bougie_recipe::{
     builtin::{detect_from_text, load_builtin, BUILTINS},
     dag::Dag,
     merge_with_builtin, parse,
-    run::current_bougie_dir,
+    run::pinned_bougie_dir,
     run_task, Recipe, RunOptions, TaskOutcome, TaskStatus,
 };
 use eyre::{eyre, Result, WrapErr};
@@ -165,11 +165,15 @@ pub fn run(format: OutputFormat, opts: MakeOptions) -> Result<ExitCode> {
     let dag = Dag::build(&recipe, &task_name)
         .map_err(|e| eyre!("recipe error: {e}"))?;
 
+    // Pin recipe `bougie …` invocations to *this* executable so a recipe
+    // never shells out to a different-versioned bougie (which would
+    // restart the daemon it's driving and tear its services down).
+    let bougie_dir = pinned_bougie_dir(&project_root);
     let run_opts = RunOptions {
         project_root,
         dry_run: opts.dry_run,
         explain: opts.explain,
-        bougie_dir: current_bougie_dir(),
+        bougie_dir,
     };
 
     let mut steps: Vec<StepResult> = Vec::new();

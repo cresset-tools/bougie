@@ -141,6 +141,17 @@ async fn serve(paths: Paths) -> Result<ExitCode> {
         });
     }
 
+    // Restore the services that were `up` before this daemon (re)started
+    // so a restart — version upgrade, crash, or manual bounce — never
+    // orphans them. Off the accept loop and best-effort: the daemon
+    // serves immediately and services come back as they spin up.
+    {
+        let state = Arc::clone(&state);
+        tokio::spawn(async move {
+            restore_services(&state).await;
+        });
+    }
+
     accept_loop(listener, Arc::clone(&state), shutdown_rx).await;
 
     // Drain: stop every running service in reverse start-order so
@@ -149,6 +160,75 @@ async fn serve(paths: Paths) -> Result<ExitCode> {
     drain(&state).await;
 
     Ok(ExitCode::SUCCESS)
+}
+
+/// Re-spawn the services that were `up` before this daemon (re)started.
+///
+/// bougied holds its running-set in memory, so a restart — the CLI
+/// shutting the old daemon down to autospawn a new one on a version
+/// upgrade, a crash, or a manual bounce — would otherwise leave the
+/// previously running services orphaned (their babysit children are
+/// killed by [`drain`]) with nothing bringing them back. That strands
+/// whatever depended on them (e.g. a half-installed Magento mid-recipe).
+///
+/// The tenant ledger is the persisted record of `up` intent: `bougie up`
+/// appends a tenant; `bougie down` removes it and stops the service once
+/// the last tenant is gone. So a user-facing service with ≥1 tenant is
+/// one the user brought up and never took down — re-spawn it. The work
+/// mirrors `dispatch_up`'s idempotent process bring-up (ensure tarball →
+/// `pre_start` → `supervisor.start`), minus tenant provisioning (the
+/// tenants already exist on disk). Best-effort: failures are logged,
+/// never fatal.
+async fn restore_services(state: &Arc<DaemonState>) {
+    use crate::daemon::{catalog, provisioners, store_fetch, supervisor};
+
+    let wanted = wanted_services(&state.paths).await;
+    if wanted.is_empty() {
+        return;
+    }
+    let order = match supervisor::compute_start_order(&wanted) {
+        Ok(o) => o,
+        Err(e) => {
+            tracing::warn!(error = %e, "restore: cannot order services; skipping");
+            return;
+        }
+    };
+    tracing::info!(?wanted, "restore: re-spawning services after daemon (re)start");
+    for name in order {
+        let Some(entry) = catalog::find(name) else { continue };
+        if let Err(e) = store_fetch::ensure_tarball(&state.paths, entry, None).await {
+            tracing::warn!(service = name, error = format!("{e:#}"), "restore: tarball fetch");
+            continue;
+        }
+        if let Err(e) = provisioners::pre_start(entry, &state.paths).await {
+            tracing::warn!(service = name, error = %e, "restore: pre_start");
+            continue;
+        }
+        match state.supervisor.lock().await.start(name).await {
+            Ok(true) => tracing::info!(service = name, "restore: re-spawned"),
+            Ok(false) => {}
+            Err(e) => tracing::warn!(service = name, error = %e, "restore: start"),
+        }
+    }
+}
+
+/// User-facing catalog services that still have ≥1 provisioned tenant —
+/// the set the user has `up` and not `down`. See [`restore_services`].
+async fn wanted_services(paths: &Paths) -> Vec<&'static str> {
+    use crate::daemon::{catalog, tenants};
+
+    let mut wanted = Vec::new();
+    for entry in catalog::CATALOG {
+        if !entry.user_facing {
+            continue;
+        }
+        let tenants_path = paths.service_tenants(entry.name);
+        let n = tenants::load_all(&tenants_path).await.map_or(0, |v| v.len());
+        if n > 0 {
+            wanted.push(entry.name);
+        }
+    }
+    wanted
 }
 
 async fn drain(state: &Arc<DaemonState>) {
@@ -220,5 +300,41 @@ async fn shutdown_signal() {
     tokio::select! {
         _ = sigint.recv() => tracing::info!("bougied: SIGINT received"),
         _ = sigterm.recv() => tracing::info!("bougied: SIGTERM received"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::daemon::catalog;
+    use crate::daemon::tenants::{self, Tenant};
+
+    #[tokio::test]
+    async fn wanted_services_tracks_tenanted_user_facing_services() {
+        let home = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let paths = Paths::new(
+            home.path().to_path_buf(),
+            cache.path().to_path_buf(),
+        );
+
+        // Fresh state: nothing provisioned → nothing to restore.
+        assert!(wanted_services(&paths).await.is_empty());
+
+        // Provision a tenant for the first user-facing service (as
+        // `bougie up` would). It should now be in the restore set.
+        let svc = catalog::CATALOG
+            .iter()
+            .find(|e| e.user_facing)
+            .expect("a user-facing service in the catalog")
+            .name;
+        let tenants_path = paths.service_tenants(svc);
+        std::fs::create_dir_all(tenants_path.parent().unwrap()).unwrap();
+        tenants::append(&tenants_path, &Tenant::new("acme", "/tmp/acme"))
+            .await
+            .unwrap();
+
+        let wanted = wanted_services(&paths).await;
+        assert!(wanted.contains(&svc), "expected {svc} in {wanted:?}");
     }
 }
