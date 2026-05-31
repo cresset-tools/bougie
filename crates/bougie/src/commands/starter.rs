@@ -53,28 +53,45 @@ pub(crate) struct StarterManifest {
     pub(crate) recipe: Option<String>,
 }
 
-/// Resolve a built-in alias to a URL. A bare alias (`mageos`) is sugar
-/// for the canonical maker URL; anything else is returned verbatim and
-/// validated as a URL by [`fetch`].
-fn resolve(starter: &str) -> &str {
-    match starter {
-        "mageos" | "mage-os" => "https://mageos-maker.cresset.tools/starter.json",
-        other => other,
+/// Resolve a `--starter` value to the manifest URL to fetch.
+///
+/// - A built-in alias (`mageos`/`mage-os`) → the canonical maker manifest
+///   URL.
+/// - A URL pointing directly at a manifest (ending in `.json`) → used
+///   verbatim.
+/// - Any other http(s) URL is treated as a **starter base** and bougie
+///   appends `/starter.json`. This is the protocol convention — a starter
+///   server serves its manifest at `<base>/starter.json` — and it means
+///   the URL you can copy from a browser works as-is: the maker's site
+///   root (`…/`) and its per-config share link (`…/c/{id}`, an HTML page)
+///   both resolve to the matching `…/starter.json` endpoint.
+fn manifest_url(starter: &str) -> Result<String> {
+    if matches!(starter, "mageos" | "mage-os") {
+        return Ok("https://mageos-maker.cresset.tools/starter.json".to_string());
+    }
+    if !(starter.starts_with("https://") || starter.starts_with("http://")) {
+        return Err(eyre!(
+            "starter `{starter}` is neither a known alias (e.g. `mageos`) nor an http(s) URL"
+        ));
+    }
+    let base = starter.trim_end_matches('/');
+    let is_manifest = std::path::Path::new(base)
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("json"));
+    if is_manifest {
+        Ok(base.to_string())
+    } else {
+        Ok(format!("{base}/starter.json"))
     }
 }
 
 /// Fetch + validate a starter manifest from a URL or built-in alias.
 pub(crate) fn fetch(starter: &str) -> Result<StarterManifest> {
-    let url = resolve(starter);
-    if !(url.starts_with("https://") || url.starts_with("http://")) {
-        return Err(eyre!(
-            "starter `{starter}` is neither a known alias (e.g. `mageos`) nor an http(s) URL"
-        ));
-    }
+    let url = manifest_url(starter)?;
 
     let client = bougie_fetch::default_client()?;
     let resp = client
-        .get(url)
+        .get(url.as_str())
         .send()
         .wrap_err_with(|| format!("fetching starter from {url}"))?;
     if !resp.status().is_success() {
@@ -137,9 +154,50 @@ mod tests {
     }
 
     #[test]
-    fn alias_resolves_else_verbatim() {
-        assert!(resolve("mageos").starts_with("https://"));
-        assert_eq!(resolve("https://example/x.json"), "https://example/x.json");
-        assert_eq!(resolve("./local"), "./local"); // rejected later by fetch()
+    fn manifest_url_alias() {
+        assert_eq!(
+            manifest_url("mageos").unwrap(),
+            "https://mageos-maker.cresset.tools/starter.json"
+        );
+        assert_eq!(
+            manifest_url("mage-os").unwrap(),
+            "https://mageos-maker.cresset.tools/starter.json"
+        );
+    }
+
+    #[test]
+    fn manifest_url_direct_json_is_verbatim() {
+        assert_eq!(
+            manifest_url("https://example/x.json").unwrap(),
+            "https://example/x.json"
+        );
+        // A trailing slash is trimmed but a `.json` target is still used as-is.
+        assert_eq!(
+            manifest_url("https://example/starter.json/").unwrap(),
+            "https://example/starter.json"
+        );
+    }
+
+    #[test]
+    fn manifest_url_base_gets_starter_json_appended() {
+        // The maker's per-config share link (an HTML page) → its manifest.
+        assert_eq!(
+            manifest_url("https://mageos-maker.cresset.tools/c/abc-123").unwrap(),
+            "https://mageos-maker.cresset.tools/c/abc-123/starter.json"
+        );
+        // Site root, with or without a trailing slash.
+        assert_eq!(
+            manifest_url("https://mageos-maker.cresset.tools/").unwrap(),
+            "https://mageos-maker.cresset.tools/starter.json"
+        );
+        assert_eq!(
+            manifest_url("https://example.com").unwrap(),
+            "https://example.com/starter.json"
+        );
+    }
+
+    #[test]
+    fn manifest_url_rejects_non_url() {
+        assert!(manifest_url("./local").is_err());
     }
 }
