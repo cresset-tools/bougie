@@ -5,9 +5,18 @@ mod common;
 use common::TestEnv;
 use predicates::str::contains;
 use tempfile::TempDir;
+use wiremock::matchers::{method, path as wm_path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 fn project_dir() -> TempDir {
     TempDir::new().expect("project tempdir")
+}
+
+fn rt() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
 }
 
 #[test]
@@ -113,4 +122,76 @@ fn init_is_idempotent() {
         .stdout(contains("kept"));
     let second = std::fs::read_to_string(proj.path().join("composer.json")).unwrap();
     assert_eq!(first, second);
+}
+
+#[test]
+fn init_starter_writes_manifest_composer_json() {
+    let env = TestEnv::new();
+    let proj = project_dir();
+    let manifest = r#"{
+        "schema": 1,
+        "name": "Mage-OS test starter",
+        "composer-json": {
+            "name": "acme/from-starter",
+            "require": {"php": "^8.4", "mage-os/product-community-edition": "^3.0"}
+        },
+        "services": ["mariadb", "redis"],
+        "recipe": "magento",
+        "notes": ["Hyvä themes need a license token"]
+    }"#;
+
+    let rt = rt();
+    let (uri, _server) = rt.block_on(async {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(wm_path("/starter.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(manifest))
+            .mount(&server)
+            .await;
+        (server.uri(), server)
+    });
+
+    env.bougie()
+        .current_dir(proj.path())
+        .args(["init", "--starter"])
+        .arg(format!("{uri}/starter.json"))
+        .assert()
+        .success()
+        .stdout(contains("composer.json"))
+        .stderr(contains("note: Hyvä themes need a license token"));
+
+    // composer.json came from the starter, not the empty default.
+    let cj = std::fs::read_to_string(proj.path().join("composer.json")).unwrap();
+    assert!(cj.contains("acme/from-starter"), "{cj}");
+    assert!(cj.contains("mage-os/product-community-edition"), "{cj}");
+    // Normal scaffolding still happened.
+    assert!(proj.path().join(".bougie/conf.d").is_dir());
+}
+
+#[test]
+fn init_starter_refuses_existing_composer() {
+    let env = TestEnv::new();
+    let proj = project_dir();
+    std::fs::write(proj.path().join("composer.json"), "{}").unwrap();
+
+    // The existing-project guard fires before any fetch, so the bogus
+    // URL is never contacted.
+    env.bougie()
+        .current_dir(proj.path())
+        .args(["init", "--starter", "https://example.invalid/x.json"])
+        .assert()
+        .failure()
+        .stderr(contains("already exists"));
+}
+
+#[test]
+fn init_starter_rejects_non_url_alias() {
+    let env = TestEnv::new();
+    let proj = project_dir();
+    env.bougie()
+        .current_dir(proj.path())
+        .args(["init", "--starter", "./not-a-url"])
+        .assert()
+        .failure()
+        .stderr(contains("alias"));
 }

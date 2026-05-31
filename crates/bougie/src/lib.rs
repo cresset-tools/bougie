@@ -47,7 +47,9 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
     bougie_output::output::set_verbose(cli.verbose);
 
     match cli.command {
-        Command::Init { toml } => commands::init::run(format, toml),
+        Command::Init { toml, starter, start } => {
+            commands::init::run(format, toml, starter, start)
+        }
         Command::Sync { offline, dry_run } => commands::sync::run(format, offline, dry_run),
         #[cfg(unix)]
         Command::Up { names } => commands::services::up::run(format, names),

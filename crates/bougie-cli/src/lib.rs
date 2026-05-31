@@ -50,6 +50,16 @@ pub enum Command {
         /// Place bougie configuration in a bougie.toml file.
         #[arg(long)]
         toml: bool,
+        /// Scaffold from a starter pack: a built-in alias (e.g. `mageos`)
+        /// or an https URL serving a starter manifest. Writes the
+        /// starter's composer.json instead of the empty default.
+        #[arg(long, value_name = "URL_OR_ALIAS")]
+        starter: Option<String>,
+        /// After scaffolding, bring the project up — equivalent to
+        /// `bougie start` (sync the toolchain + vendor, then run the
+        /// project recipe). Unix-only.
+        #[arg(long)]
+        start: bool,
     },
 
     /// Manage PHP extensions.
