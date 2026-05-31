@@ -1,13 +1,17 @@
 # dist configuration — produces per-target binary archives plus
-# shell/powershell installers, hooked into the release-please tag flow.
-# See RELEASE.md for the bigger picture (release-please drives tags +
-# creates the draft GitHub Release, dist builds binaries and uploads
-# them to that draft, publish-mirror.yml fans them out to R2).
+# shell/powershell installers. release-please owns the whole release: it
+# publishes the `bougie-v<version>` GitHub Release (creating the tag), and
+# the `release: published` event triggers dist to build the binaries and
+# upload them onto that release; publish-mirror.yml then fans them out to R2.
+# See RELEASE.md for the bigger picture.
 #
 # Edit this file when adding targets / installers / mirror config, then
 # regenerate the workflow with:
 #     dist generate
-# which rewrites .github/workflows/release.yml.
+# which rewrites .github/workflows/bougie-release.yml. NOTE: `dist generate`
+# emits an `on: push: tags` trigger; we hand-edit it to `on: release:
+# published` (release-please creates tags via the API, which doesn't reliably
+# fire `push`). Re-apply that trigger edit after any regenerate.
 
 [workspace]
 members = ["cargo:."]
@@ -62,12 +66,12 @@ targets = [
 # PATH. (CHANGELOG.md still ends up in the GitHub release notes.)
 auto-includes = false
 
-# release-please creates the GitHub Release as a draft (it has the
-# changelog body); dist only attaches the built binaries and un-drafts
-# it. `create-release = false` makes dist expect that pre-existing draft
-# at the tag rather than creating its own — which would collide with
-# release-please's. See release-please.yml + `"draft": true` in
-# release-please-config.json.
+# release-please publishes the GitHub Release (with the changelog body) and
+# creates the tag; dist only attaches the built binaries. `create-release =
+# false` makes dist upload onto that pre-existing release rather than create
+# its own — which would collide with release-please's. The release is already
+# published, so dist's un-draft step is a harmless no-op. See
+# release-please.yml.
 create-release = false
 
 # Don't run dist on PRs — CI already covers building.

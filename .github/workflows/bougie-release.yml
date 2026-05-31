@@ -38,10 +38,17 @@ permissions:
 #
 # If there's a prerelease-style suffix to the version, then the release(s)
 # will be marked as a prerelease.
+# HAND-EDITED TRIGGER — do not let `dist generate` revert this.
+# release-please owns the release: it publishes the `bougie-v<version>`
+# GitHub Release (creating the tag) and we build/upload onto it here. We
+# trigger on `release: published` rather than dist's default `push: tags`
+# because release-please creates the tag via the API, which does not reliably
+# fire `push`. On a `release` event `github.ref_name` is still the tag, so the
+# `plan`/build/host jobs below (which read `github.ref_name`) work unchanged.
+# Pairs with `create-release = false` in dist-workspace.toml.
 on:
-  push:
-    tags:
-      - 'bougie**[0-9]+.[0-9]+.[0-9]+*'
+  release:
+    types: [published]
 
 jobs:
   # Run 'dist plan' (or host) to determine what tasks we need to do

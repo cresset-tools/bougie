@@ -6,7 +6,6 @@
   "bump-minor-pre-major": false,
   "bump-patch-for-minor-pre-major": false,
   "changelog-path": "CHANGELOG.md",
-  "draft": true,
   "packages": {
     ".": {
       "package-name": "bougie",
