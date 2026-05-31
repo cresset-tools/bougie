@@ -1,56 +1,41 @@
 name: release-please
 
 # Conventional-commit-driven release automation. On every push to main,
-# release-please scans commits since the last `bougie-v*` tag and
-# opens or updates a release PR that bumps `workspace.package.version`
-# and prepends to `CHANGELOG.md`. Merging the PR creates a *draft*
-# GitHub Release; this workflow then pushes the `bougie-v<version>` tag,
-# which triggers `bougie-release.yml` (cargo-dist) to build the binary
-# matrix, upload the artifacts to that draft, and un-draft it.
+# release-please scans commits since the last `bougie-v*` tag and opens or
+# updates a release PR that bumps `workspace.package.version` and prepends to
+# `CHANGELOG.md`. Merging that PR makes release-please publish the
+# `bougie-v<version>` GitHub Release (which creates the git tag), and the
+# `release: published` event triggers `bougie-release.yml` (cargo-dist) to
+# build the binary matrix and upload the artifacts onto that release.
 #
 # Unlike release-plz, release-please decides "what changed" purely from
-# conventional-commit messages, not from per-crate file diffs. That
-# means leaf-only changes (e.g. a `fix(composer): ...` that only edits
-# `crates/bougie-composer-resolver/`) still drive a top-level release —
-# which is why every workspace member is pinned in lockstep on
+# conventional-commit messages, not from per-crate file diffs. That means
+# leaf-only changes (e.g. a `fix(composer): ...` that only edits
+# `crates/bougie-composer-resolver/`) still drive a top-level release — which
+# is why every workspace member is pinned in lockstep on
 # `workspace.package.version`.
 #
-# release-please owns the GitHub Release (created as a draft — see
-# `"draft": true` in release-please-config.json); dist runs with
-# `create-release = false` and only attaches binaries + un-drafts.
-# Letting release-please's normal publish job run in full also means it
-# relabels merged release PRs from `autorelease: pending` to
-# `autorelease: tagged` — without that the next run aborts with
-# "untagged, merged release PRs outstanding".
+# Division of labour: release-please owns the WHOLE release — it creates the
+# tag and publishes the GitHub Release itself (a real, non-draft release).
+# dist owns nothing but the binaries: it runs with `create-release = false`
+# and only uploads artifacts onto the release release-please already
+# published (see dist-workspace.toml).
 #
-# But a *draft* GitHub Release does NOT create its git tag (GitHub only
-# creates the tag ref when a draft is published), so release-please
-# never pushes `bougie-v<version>`. The separate `push-tag` job below
-# pushes it whenever a release was just created. That tag push is what
-# triggers `bougie-release.yml` (dist) — which then attaches the binaries
-# to the draft and un-drafts it. Without it the release stays a
-# binary-less draft forever AND the next release-please run can't anchor
-# its baseline (no tag), so it rescans all history and proposes a bogus
-# major bump.
+# Why release-please publishes a non-draft release (and dist no longer pushes
+# the tag): a release PR merge and the next candidate-PR computation happen in
+# a single release-please action step. If the just-released version isn't
+# tagged by the time that step runs, release-please can't anchor its baseline,
+# rescans all history, and proposes a spurious major bump (the 1.0.0 PRs we
+# kept seeing). Publishing a non-draft release creates the tag *within* that
+# same step — before the candidate PR is computed — so the baseline is always
+# correct. A draft release would NOT create the tag (GitHub only creates it on
+# publish), which is what forced the old push-tag job and PR-suppression
+# hacks; publishing for real removes the need for both.
 #
-# The tag push lives in its own job, NOT alongside the Cargo.lock refresh
-# above: on a release-merge run release-please both publishes the release
-# AND opens the next candidate PR, so the `Checkout release PR` step does
-# a shallow checkout of that PR branch — which does not contain the
-# release commit, making an in-job `git tag <release-sha>` fail with
-# "fatal: bad object type". A separate job gets its own clean checkout of
-# the release commit.
-#
-# That same "publish + open next candidate PR in one action step" is also
-# why we suppress the candidate PR on a release-merge run. The candidate
-# would be built BEFORE push-tag creates the just-released tag, so
-# release-please can't anchor its baseline, rescans all history, and
-# proposes a spurious major bump (the recurring 1.0.0 PRs). We detect a
-# release-merge commit up front — the manifest names a version with no tag
-# yet — and pass `skip-github-pull-request` so release-please only
-# publishes + relabels this run. Once push-tag creates the tag, the next
-# push to main builds a correctly-anchored candidate. This PREVENTS the
-# bogus PR rather than opening then closing it.
+# Trade-off: for the few minutes between release-please publishing and dist
+# finishing the build, the GitHub Release is public with notes but no
+# binaries. Acceptable here (releases are infrequent; installs fall back to
+# the mirror once artifacts land).
 
 on:
   push:
@@ -69,46 +54,19 @@ concurrency:
 jobs:
   release-please:
     runs-on: ubuntu-latest
-    outputs:
-      release_created: ${{ steps.release.outputs.release_created }}
-      tag_name: ${{ steps.release.outputs.tag_name }}
     steps:
-      # GitHub-App token (not `GITHUB_TOKEN`) so the release PR is
-      # authored by an actor that *can* trigger downstream workflows —
-      # PRs opened with `GITHUB_TOKEN` are silenced by GitHub's
-      # anti-recursion rule and `ci.yml` would never run on them.
+      # GitHub-App token (not `GITHUB_TOKEN`) so the release PR is authored by
+      # an actor that *can* trigger downstream workflows — PRs opened with
+      # `GITHUB_TOKEN` are silenced by GitHub's anti-recursion rule and
+      # `ci.yml` would never run on them. The same applies to the release
+      # publish: a `release: published` event from `GITHUB_TOKEN` wouldn't
+      # trigger `bougie-release.yml`; minted via the app, it does.
       - name: Mint app token
         id: app-token
         uses: actions/create-github-app-token@v1
         with:
           app-id: ${{ secrets.BOT_APP_ID }}
           private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
-
-      # Needed by the detect step below: the manifest (to read the current
-      # version) and a remote to query tags against.
-      - name: Checkout
-        uses: actions/checkout@v5
-        with:
-          token: ${{ steps.app-token.outputs.token }}
-
-      # A release-merge commit is the one where the manifest names a version
-      # whose tag doesn't exist yet (push-tag creates it after this job). On
-      # such a run we must NOT let release-please open the next candidate PR,
-      # because it would be computed before the tag exists → lost baseline →
-      # bogus major bump. On a normal commit the tag already exists, so we
-      # build the candidate PR as usual.
-      - name: Detect release-merge commit
-        id: detect
-        run: |
-          VERSION=$(jq -r '."."' .release-please-manifest.json)
-          TAG="bougie-v$VERSION"
-          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
-            echo "skip_pr=false" >> "$GITHUB_OUTPUT"
-            echo "$TAG exists → normal run; build the candidate PR."
-          else
-            echo "skip_pr=true" >> "$GITHUB_OUTPUT"
-            echo "$TAG missing → release PR just merged; suppress the candidate PR this run."
-          fi
 
       - name: release-please
         id: release
@@ -117,18 +75,14 @@ jobs:
           token: ${{ steps.app-token.outputs.token }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
-          # Suppress the candidate PR on release-merge runs (see Detect above);
-          # it would be baseline-less and propose a bogus major bump.
-          skip-github-pull-request: ${{ steps.detect.outputs.skip_pr }}
 
       # release-please rewrites `workspace.package.version` but doesn't
-      # understand Cargo.lock. Refresh the lockfile on the PR branch so
-      # CI builds aren't broken by stale [[package]] entries.
-      # `--workspace` scopes the update to workspace members only —
-      # external crates aren't bumped. Don't pass `--offline`: a fresh
-      # runner has no cargo registry cache, and cargo needs to fetch
-      # the index to verify the dep graph even though no external dep
-      # versions actually move.
+      # understand Cargo.lock. Refresh the lockfile on the PR branch so CI
+      # builds aren't broken by stale [[package]] entries. `--workspace`
+      # scopes the update to workspace members only — external crates aren't
+      # bumped. Don't pass `--offline`: a fresh runner has no cargo registry
+      # cache, and cargo needs to fetch the index to verify the dep graph even
+      # though no external dep versions actually move.
       - name: Checkout release PR
         if: ${{ steps.release.outputs.pr }}
         uses: actions/checkout@v5
@@ -147,45 +101,3 @@ jobs:
             git commit -m "chore(release): refresh Cargo.lock"
             git push
           fi
-
-  # release-please created the draft Release but (because it's a draft)
-  # not its git tag — push it here so dist triggers and un-drafts. Runs
-  # only when release-please published a release this run (`release_created`,
-  # just after a release PR merged); `tag_name` is the `bougie-v<version>`
-  # it assigned. Its own job + checkout so the shallow PR-branch checkout
-  # in `release-please` can't strand the release commit (see header).
-  push-tag:
-    needs: release-please
-    if: ${{ needs.release-please.outputs.release_created == 'true' }}
-    runs-on: ubuntu-latest
-    steps:
-      # App token (not `GITHUB_TOKEN`) so the tag push triggers the
-      # downstream `bougie-release.yml` (dist) run — refs pushed with
-      # `GITHUB_TOKEN` are suppressed by GitHub's anti-recursion rule.
-      - name: Mint app token
-        id: app-token
-        uses: actions/create-github-app-token@v1
-        with:
-          app-id: ${{ secrets.BOT_APP_ID }}
-          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
-
-      # Default checkout lands on github.sha — the release commit on main
-      # that this push event carried — and persists the app token so the
-      # tag push below authenticates as the app.
-      - name: Checkout release commit
-        uses: actions/checkout@v5
-        with:
-          token: ${{ steps.app-token.outputs.token }}
-
-      - name: Push release tag
-        run: |
-          TAG="${{ needs.release-please.outputs.tag_name }}"
-          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
-            echo "Tag $TAG already exists on origin; nothing to do."
-            exit 0
-          fi
-          echo "Pushing $TAG @ ${{ github.sha }}"
-          git config user.email "${{ vars.BOT_EMAIL || 'noreply@cresset.tools' }}"
-          git config user.name "${{ vars.BOT_NAME || 'cresset-bot' }}"
-          git tag -a "$TAG" -m "Release $TAG" "${{ github.sha }}"
-          git push origin "$TAG"
