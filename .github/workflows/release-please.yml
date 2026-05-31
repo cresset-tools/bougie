@@ -40,6 +40,17 @@ name: release-please
 # release commit, making an in-job `git tag <release-sha>` fail with
 # "fatal: bad object type". A separate job gets its own clean checkout of
 # the release commit.
+#
+# That same "publish + open next candidate PR in one action step" is also
+# why we suppress the candidate PR on a release-merge run. The candidate
+# would be built BEFORE push-tag creates the just-released tag, so
+# release-please can't anchor its baseline, rescans all history, and
+# proposes a spurious major bump (the recurring 1.0.0 PRs). We detect a
+# release-merge commit up front — the manifest names a version with no tag
+# yet — and pass `skip-github-pull-request` so release-please only
+# publishes + relabels this run. Once push-tag creates the tag, the next
+# push to main builds a correctly-anchored candidate. This PREVENTS the
+# bogus PR rather than opening then closing it.
 
 on:
   push:
@@ -73,6 +84,32 @@ jobs:
           app-id: ${{ secrets.BOT_APP_ID }}
           private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
 
+      # Needed by the detect step below: the manifest (to read the current
+      # version) and a remote to query tags against.
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+
+      # A release-merge commit is the one where the manifest names a version
+      # whose tag doesn't exist yet (push-tag creates it after this job). On
+      # such a run we must NOT let release-please open the next candidate PR,
+      # because it would be computed before the tag exists → lost baseline →
+      # bogus major bump. On a normal commit the tag already exists, so we
+      # build the candidate PR as usual.
+      - name: Detect release-merge commit
+        id: detect
+        run: |
+          VERSION=$(jq -r '."."' .release-please-manifest.json)
+          TAG="bougie-v$VERSION"
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "skip_pr=false" >> "$GITHUB_OUTPUT"
+            echo "$TAG exists → normal run; build the candidate PR."
+          else
+            echo "skip_pr=true" >> "$GITHUB_OUTPUT"
+            echo "$TAG missing → release PR just merged; suppress the candidate PR this run."
+          fi
+
       - name: release-please
         id: release
         uses: googleapis/release-please-action@v4
@@ -80,6 +117,9 @@ jobs:
           token: ${{ steps.app-token.outputs.token }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+          # Suppress the candidate PR on release-merge runs (see Detect above);
+          # it would be baseline-less and propose a bogus major bump.
+          skip-github-pull-request: ${{ steps.detect.outputs.skip_pr }}
 
       # release-please rewrites `workspace.package.version` but doesn't
       # understand Cargo.lock. Refresh the lockfile on the PR branch so
