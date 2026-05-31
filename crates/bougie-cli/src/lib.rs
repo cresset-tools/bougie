@@ -1,5 +1,6 @@
 use clap::builder::styling::{AnsiColor, Effects, Styles};
 use clap::{Args, Parser, Subcommand};
+use std::ffi::OsString;
 
 /// Full version string, uv-style: `0.6.4 (63c5f57d3 2026-05-08 <target>)`.
 ///
@@ -119,7 +120,9 @@ pub enum Command {
     #[command(subcommand)]
     Php(PhpCommand),
 
-    /// Manage Composer installs.
+    /// Run Composer. `install`, `update`, `validate`, and
+    /// `dump-autoload(er)` are reimplemented natively; every other
+    /// subcommand is forwarded to the project's pinned Composer phar.
     #[command(subcommand)]
     Composer(ComposerCommand),
 
@@ -441,9 +444,7 @@ pub enum ComposerCommand {
     /// Install a project's `vendor/` from `composer.lock`. Reads
     /// `composer.json` + `composer.lock` in the working directory,
     /// content-hash-verifies the lock, parallel-downloads dists into
-    /// `vendor/`, and emits `vendor/autoload.php`. Replaces today's
-    /// binary-management `install <version>` — use `bougie composer
-    /// fetch <version>` for that.
+    /// `vendor/`, and emits `vendor/autoload.php`.
     Install {
         /// Run the install in this directory instead of CWD.
         /// Mirrors Composer's `--working-dir` / `-d`.
@@ -498,40 +499,6 @@ pub enum ComposerCommand {
         #[arg(long = "ignore-platform-req", value_name = "REQ")]
         ignore_platform_req: Vec<String>,
     },
-    /// Download and install a Composer phar version into
-    /// `$BOUGIE_LOCAL/composer/<version>/`. The verb formerly known
-    /// as `install <version>`.
-    Fetch {
-        /// The Composer version to install (exact, partial, or channel).
-        request: Option<String>,
-    },
-    /// Remove a Composer version.
-    Uninstall {
-        /// The Composer version to uninstall.
-        request: String,
-    },
-    /// List installed and available Composer versions.
-    List,
-    /// Print the path of a Composer phar.
-    Find {
-        /// The Composer version to locate.
-        request: Option<String>,
-    },
-    /// Pin the project's Composer version.
-    Pin {
-        /// The Composer version to pin (exact, partial, or channel).
-        request: String,
-        /// Write the pin to `bougie.toml` (creating it if needed).
-        #[arg(long, conflicts_with = "composer")]
-        toml: bool,
-        /// Write the pin to `composer.json`'s `extra.bougie`.
-        #[arg(long, conflicts_with = "toml")]
-        composer: bool,
-    },
-    /// Show the Composer install directory.
-    Dir,
-    /// Refresh the stable + preview Composer channels to the latest.
-    Upgrade,
     /// Validate composer.json structure and contents.
     Validate {
         /// Run in this directory instead of CWD.
@@ -589,6 +556,14 @@ pub enum ComposerCommand {
         #[arg(short = 'd', long = "working-dir", value_name = "DIR")]
         working_dir: Option<std::path::PathBuf>,
     },
+    /// Any other composer subcommand (`require`, `remove`, `show`, `why`,
+    /// `outdated`, `audit`, `create-project`, …) is forwarded verbatim to
+    /// the project's pinned Composer phar and run with the project's PHP,
+    /// conf.d, and `vendor/bin` on `PATH`. Only `install`, `update`,
+    /// `validate`, and `dump-autoload(er)` are reimplemented natively;
+    /// everything else is the real Composer.
+    #[command(external_subcommand)]
+    External(Vec<OsString>),
 }
 
 #[derive(Subcommand, Debug)]

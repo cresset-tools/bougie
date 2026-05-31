@@ -150,57 +150,87 @@ pub fn exec(role: Role) -> Result<ExitCode> {
             cmd.arg0(&bin);
             run_and_propagate(cmd, role.name())
         }
-        Role::Composer => {
-            let composer_version =
-                read_project_resolved_composer(&project_root).wrap_err_with(|| {
-                    format!(
-                        "composer: project at {} is not synced — run `bougie sync` first",
-                        project_root.display()
-                    )
-                })?;
-            let phar = paths.composer_phar(&composer_version);
-            if !phar.exists() {
-                return Err(eyre!(
-                    "composer: phar at {} is missing — re-run `bougie sync`",
-                    phar.display()
-                ));
-            }
-            let php_bin = install.join("bin").join(exe_name("php"));
-            if !php_bin.exists() {
-                return Err(eyre!(
-                    "composer: php at {} is missing — re-run `bougie sync`",
-                    php_bin.display()
-                ));
-            }
-            let mut composer_args: Vec<std::ffi::OsString> = Vec::with_capacity(args.len() + 1);
-            composer_args.push(phar.into_os_string());
-            composer_args.extend(args);
-            // Prepend `.bougie/bin` to PATH so Composer's ZipDownloader
-            // discovers our bundled `unzip` shim via Symfony's
-            // ExecutableFinder. Without this, Composer either picks up
-            // a system `unzip` (host-dependent) or falls back to PHP's
-            // slower `ZipArchive`.
-            let bin_dir = project_root.join(".bougie").join("bin");
-            let prev_path = std::env::var_os("PATH").unwrap_or_default();
-            let new_path = prepend_path(&bin_dir, &prev_path);
-            // PHP_BINARY env var pins the interpreter for child `@php`
-            // scripts: without it, Symfony's PhpExecutableFinder falls
-            // through to a PATH search and finds the bougie shim.
-            let mut cmd = std::process::Command::new(&php_bin);
-            cmd.args(&composer_args)
-                .env("PATH", new_path)
-                .env("PHP_INI_SCAN_DIR", &scan_dir)
-                .env("PHP_BINARY", &php_bin);
-            #[cfg(unix)]
-            cmd.arg0("composer");
-            run_and_propagate(cmd, "composer")
-        }
+        Role::Composer => run_project_composer(&project_root, args),
         Role::Unzip => unreachable!("unzip role handled above"),
         #[cfg(unix)]
         Role::Bougied => unreachable!("bougied role handled above"),
         #[cfg(unix)]
         Role::Babysit => unreachable!("babysit role handled above"),
     }
+}
+
+/// Resolve the project root from the current working directory (honoring
+/// `$BOUGIE_PROJECT_ROOT`, else walking up for a `.bougie/` marker). Used
+/// by the `bougie composer <subcommand>` passthrough, which dispatches
+/// through the normal `bougie` binary rather than an argv[0] shim.
+pub fn locate_project_root_from_cwd() -> Result<PathBuf> {
+    locate_project_root(OsStr::new("composer"))
+}
+
+/// Run the project's pinned Composer phar, forwarding `args` (the
+/// composer subcommand plus its arguments) verbatim. Executes with the
+/// project's pinned PHP, project `conf.d` (`PHP_INI_SCAN_DIR`), and
+/// `.bougie/bin` prepended to `PATH`.
+///
+/// Shared by the `composer` argv[0] shim (`Role::Composer`) and the
+/// `bougie composer <subcommand>` passthrough so both run the real
+/// Composer identically. Only `install`/`update`/`validate`/`dump-autoload`
+/// are reimplemented natively; everything else routes here.
+pub fn run_project_composer(project_root: &Path, args: Vec<std::ffi::OsString>) -> Result<ExitCode> {
+    let (version, flavor) = read_project_resolved(project_root).wrap_err_with(|| {
+        format!(
+            "composer: project at {} is not synced — run `bougie sync` first",
+            project_root.display()
+        )
+    })?;
+    let paths = Paths::from_env()?;
+    let install = paths.installs().join(format!("{version}-{flavor}"));
+    // Honor an active xdebug session signalled by the parent's
+    // XDEBUG_SESSION env var (see `commands::run::run`).
+    let debug_overlay = bougie_installer::conf_d::xdebug_session_env_active();
+    let scan_dir = bougie_installer::conf_d::php_ini_scan_dir(project_root, debug_overlay);
+
+    let composer_version = read_project_resolved_composer(project_root).wrap_err_with(|| {
+        format!(
+            "composer: project at {} is not synced — run `bougie sync` first",
+            project_root.display()
+        )
+    })?;
+    let phar = paths.composer_phar(&composer_version);
+    if !phar.exists() {
+        return Err(eyre!(
+            "composer: phar at {} is missing — re-run `bougie sync`",
+            phar.display()
+        ));
+    }
+    let php_bin = install.join("bin").join(exe_name("php"));
+    if !php_bin.exists() {
+        return Err(eyre!(
+            "composer: php at {} is missing — re-run `bougie sync`",
+            php_bin.display()
+        ));
+    }
+    let mut composer_args: Vec<std::ffi::OsString> = Vec::with_capacity(args.len() + 1);
+    composer_args.push(phar.into_os_string());
+    composer_args.extend(args);
+    // Prepend `.bougie/bin` to PATH so Composer's ZipDownloader
+    // discovers our bundled `unzip` shim via Symfony's
+    // ExecutableFinder. Without this, Composer either picks up a system
+    // `unzip` (host-dependent) or falls back to PHP's slower `ZipArchive`.
+    let bin_dir = project_root.join(".bougie").join("bin");
+    let prev_path = std::env::var_os("PATH").unwrap_or_default();
+    let new_path = prepend_path(&bin_dir, &prev_path);
+    // PHP_BINARY env var pins the interpreter for child `@php` scripts:
+    // without it, Symfony's PhpExecutableFinder falls through to a PATH
+    // search and finds the bougie shim.
+    let mut cmd = std::process::Command::new(&php_bin);
+    cmd.args(&composer_args)
+        .env("PATH", new_path)
+        .env("PHP_INI_SCAN_DIR", &scan_dir)
+        .env("PHP_BINARY", &php_bin);
+    #[cfg(unix)]
+    cmd.arg0("composer");
+    run_and_propagate(cmd, "composer")
 }
 
 /// On Unix, append the target executable name verbatim (`php`).
