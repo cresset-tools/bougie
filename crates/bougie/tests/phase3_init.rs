@@ -169,6 +169,37 @@ fn init_starter_writes_manifest_composer_json() {
 }
 
 #[test]
+fn init_starter_appends_starter_json_to_a_base_url() {
+    // A `--starter` value that doesn't end in `.json` is treated as a
+    // starter *base* (e.g. the maker's `…/c/{id}` share link, which is an
+    // HTML page): bougie fetches `<base>/starter.json`.
+    let env = TestEnv::new();
+    let proj = project_dir();
+    let manifest = r#"{"schema":1,"composer-json":{"name":"acme/from-base","require":{"php":"^8.4"}}}"#;
+
+    let rt = rt();
+    let (uri, _server) = rt.block_on(async {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(wm_path("/c/abc-123/starter.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(manifest))
+            .mount(&server)
+            .await;
+        (server.uri(), server)
+    });
+
+    env.bougie()
+        .current_dir(proj.path())
+        .args(["init", "--starter"])
+        .arg(format!("{uri}/c/abc-123"))
+        .assert()
+        .success();
+
+    let cj = std::fs::read_to_string(proj.path().join("composer.json")).unwrap();
+    assert!(cj.contains("acme/from-base"), "{cj}");
+}
+
+#[test]
 fn init_starter_refuses_existing_composer() {
     let env = TestEnv::new();
     let proj = project_dir();
