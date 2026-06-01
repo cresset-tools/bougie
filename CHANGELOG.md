@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.1](https://github.com/cresset-tools/bougie/compare/bougie-v0.10.0...bougie-v0.10.1) (2026-06-01)
+
+
+### Bug Fixes
+
+* **daemon,recipe:** restore services on daemon restart; pin recipe bougie to current exe ([#267](https://github.com/cresset-tools/bougie/issues/267)) ([0988460](https://github.com/cresset-tools/bougie/commit/098846081dcb76b8c59b90b963e14a41df3b6d69))
+* **daemon:** plan the whole tool tree up front so the download bar total is accurate ([#271](https://github.com/cresset-tools/bougie/issues/271)) ([819c1bc](https://github.com/cresset-tools/bougie/commit/819c1bcca456fed1b01d03d992b6e7f5004ad9e4))
+* **fetch:** add stall timeout, retries with backoff, and extraction progress ([#270](https://github.com/cresset-tools/bougie/issues/270)) ([8245965](https://github.com/cresset-tools/bougie/commit/824596539b43551d0d3659a2d503af75b623c442))
+* **resolver:** honor root composer.json wildcard `replace` ([#269](https://github.com/cresset-tools/bougie/issues/269)) ([e14720d](https://github.com/cresset-tools/bougie/commit/e14720d6fa17113b1849d600209d5652c8f900f3))
+
 ## [0.10.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.9.0...bougie-v0.10.0) (2026-05-31)
 
 
