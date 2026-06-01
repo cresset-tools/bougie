@@ -3,9 +3,11 @@
 //! content-hash, parallel-downloads dists into `vendor/`, and emits
 //! `vendor/autoload.php` + `vendor/composer/installed.{json,php}`.
 //!
-//! The binary-management surface this verb used to expose
-//! (`bougie composer install <version>`) lives at
-//! `bougie composer fetch <version>` now — see `composer_fetch.rs`.
+//! Composer phar version management (the verbs `bougie composer` used to
+//! expose: `fetch`, `list`, `pin`, …) was removed; the version is pinned
+//! via `bougie.toml [composer] version` and fetched lazily during
+//! `bougie sync`. Any non-native composer subcommand is forwarded to the
+//! real Composer phar via `shim::run_project_composer`.
 
 use std::collections::BTreeSet;
 use std::io::{self, Write};

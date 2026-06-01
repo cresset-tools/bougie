@@ -94,13 +94,16 @@ fn tool_dir_rejects_bare_package_name() {
 }
 
 #[test]
-fn tool_list_empty_when_no_tools_installed() {
+fn tool_list_shows_builtin_composer_when_no_tools_installed() {
+    // Composer is a default, always-present built-in tool, so even with
+    // nothing user-installed `tool list` leads with it (it is never the
+    // "no tools installed" case).
     let env = TestEnv::new();
     env.bougie()
         .args(["tool", "list"])
         .assert()
         .success()
-        .stdout(contains("no tools installed"));
+        .stdout(contains("composer/composer (built-in"));
 }
 
 #[test]

@@ -186,28 +186,6 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
                 with_dependencies,
             },
         ),
-        Command::Composer(ComposerCommand::Fetch { request }) => {
-            commands::composer_fetch::run(format, request.as_deref())
-        }
-        Command::Composer(ComposerCommand::Uninstall { request }) => {
-            commands::composer_uninstall::run(format, &request)
-        }
-        Command::Composer(ComposerCommand::List) => commands::composer_list::run(format),
-        Command::Composer(ComposerCommand::Find { request }) => {
-            commands::composer_find::run(format, request.as_deref())
-        }
-        Command::Composer(ComposerCommand::Pin { request, toml, composer }) => {
-            let target = if toml {
-                commands::composer_pin::PinTarget::Toml
-            } else if composer {
-                commands::composer_pin::PinTarget::Composer
-            } else {
-                commands::composer_pin::PinTarget::Auto
-            };
-            commands::composer_pin::run(format, &request, target)
-        }
-        Command::Composer(ComposerCommand::Dir) => commands::composer_dir::run(format),
-        Command::Composer(ComposerCommand::Upgrade) => commands::composer_upgrade::run(format),
         Command::Composer(ComposerCommand::DumpAutoloader {
             optimize,
             classmap_authoritative,
@@ -226,6 +204,7 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
             apcu_prefix,
             autoloader_suffix,
         ),
+        Command::Composer(ComposerCommand::External(args)) => shim::run_composer(args),
         Command::SelfCmd(SelfCommand::Update { force }) => commands::self_update::run(force),
         Command::SelfCmd(SelfCommand::Version { short }) => {
             commands::self_version::run(format, short)
