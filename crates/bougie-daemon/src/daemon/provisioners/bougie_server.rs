@@ -158,10 +158,18 @@ async fn ensure_host_block(paths: &Paths, hostname: &str, project: &Path, root: 
     // Per `bougie server add` behaviour, `add_host_with_rewrites`
     // returns `Ok(None)` when the hostname is already present —
     // idempotent by design.
-    bougie_server::server::config::add_host_with_rewrites(
+    let added = bougie_server::server::config::add_host_with_rewrites(
         &cfg, hostname, project, Some(root), &rewrites,
     )
     .wrap_err_with(|| format!("adding host {hostname} to {}", cfg.display()))?;
+    // Existing host: refresh its rewrites in case it was provisioned by
+    // an older bougie that wrote the all-swallowing `/static/` →
+    // `static.php` rule (which shadows already-deployed assets). No-op
+    // when they already match the current shape.
+    if added.is_none() {
+        bougie_server::server::config::sync_host_rewrites(&cfg, hostname, &rewrites)
+            .wrap_err_with(|| format!("refreshing rewrites for host {hostname}"))?;
+    }
     Ok(())
 }
 
@@ -180,20 +188,37 @@ fn framework_rewrites(
     let docroot = project.join(root);
     let mut out = Vec::new();
     if docroot.join("static.php").is_file() {
-        // Magento dev-mode asset materialiser: `/static/version<n>/<path>`
-        // (or unversioned `/static/<path>`) → `static.php?resource=<path>`.
+        // Strip Magento's cache-buster version segment so the request
+        // maps to the versionless path on disk:
+        // `/static/version<n>/<path>` → `/static/<path>`. Unconditional
+        // (a pure path rewrite, runs ahead of `try_files`) so an
+        // already-materialised asset is found on disk and served
+        // directly.
         out.push(RewriteRule {
-            pattern: r"^/static/(?:version[^/]+/)?(.*)$".into(),
+            pattern: r"^/static/version[^/]+/(.*)$".into(),
+            target: "/static/$1".into(),
+            only_if_missing: false,
+        });
+        // Dev-mode on-demand asset materialiser: only when the file
+        // isn't on disk does `/static/<path>` fall through to
+        // `static.php?resource=<path>`. nginx does the same with
+        // `if (!-f $request_filename)`; running it unconditionally would
+        // shadow generated-to-disk files like `requirejs-config.js`
+        // (which `static.php` can't resolve as a source) → spurious 404s.
+        out.push(RewriteRule {
+            pattern: r"^/static/(.*)$".into(),
             target: "/static.php?resource=$1".into(),
+            only_if_missing: true,
         });
     }
     if docroot.join("get.php").is_file() {
         // Magento media protected-route fallback: `/media/<path>` that
         // isn't on disk → `get.php?resource=<path>`. The disk-hit case
-        // is handled by `try_files` ahead of `get.php`.
+        // is handled by `try_files` ahead of this fallback.
         out.push(RewriteRule {
             pattern: r"^/media/(.*)$".into(),
             target: "/get.php?resource=$1".into(),
+            only_if_missing: true,
         });
     }
     out

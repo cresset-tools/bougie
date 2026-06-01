@@ -112,6 +112,17 @@ pub struct HostAlias {
 pub struct RewriteRule {
     pub pattern: String,
     pub target: String,
+    /// When true, the rule fires only if the request path didn't
+    /// already resolve to a real file on disk — nginx's
+    /// `if (!-f $request_filename)` semantics. Used for Magento's
+    /// `/static/` → `static.php` and `/media/` → `get.php`
+    /// front-controller fallbacks, which must not shadow assets that
+    /// dev mode (or `setup:static-content:deploy`) already
+    /// materialised. Default `false`: the rule is applied
+    /// unconditionally ahead of `try_files`, which is what a pure
+    /// path rewrite (e.g. stripping `/static/version<n>/`) wants.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub only_if_missing: bool,
 }
 
 fn default_root() -> String {
@@ -302,14 +313,7 @@ pub fn add_host_with_rewrites(
         table["root"] = toml_edit::value(r);
     }
     if !rewrites.is_empty() {
-        let mut rewrite_arr = toml_edit::ArrayOfTables::new();
-        for rule in rewrites {
-            let mut rt = toml_edit::Table::new();
-            rt["pattern"] = toml_edit::value(rule.pattern.as_str());
-            rt["target"] = toml_edit::value(rule.target.as_str());
-            rewrite_arr.push(rt);
-        }
-        table.insert("rewrite", toml_edit::Item::ArrayOfTables(rewrite_arr));
+        table.insert("rewrite", toml_edit::Item::ArrayOfTables(rewrite_array(rewrites)));
     }
 
     let host = doc
@@ -321,6 +325,73 @@ pub fn add_host_with_rewrites(
 
     write_atomically(path, &doc.to_string())?;
     Ok(Some(project))
+}
+
+/// Render a slice of [`RewriteRule`] into a `toml_edit` array of tables.
+/// Shared by [`add_host_with_rewrites`] and [`sync_host_rewrites`].
+fn rewrite_array(rewrites: &[RewriteRule]) -> toml_edit::ArrayOfTables {
+    let mut arr = toml_edit::ArrayOfTables::new();
+    for rule in rewrites {
+        let mut rt = toml_edit::Table::new();
+        rt["pattern"] = toml_edit::value(rule.pattern.as_str());
+        rt["target"] = toml_edit::value(rule.target.as_str());
+        if rule.only_if_missing {
+            rt["only_if_missing"] = toml_edit::value(true);
+        }
+        arr.push(rt);
+    }
+    arr
+}
+
+/// Replace the `[[host.rewrite]]` blocks of an existing host so they
+/// match `rewrites`, leaving the rest of the `[[host]]` entry (and the
+/// rest of the file) untouched. Returns `Ok(true)` when a change was
+/// written, `Ok(false)` when the host's rewrites already matched (no
+/// write, so no needless `reload-config` churn), and `Ok(false)` when no
+/// host with `hostname` exists.
+///
+/// This is the migration lane: a host provisioned by an older bougie
+/// carries a single all-swallowing `/static/` → `static.php` rule;
+/// re-provisioning under a fixed bougie refreshes it to the version-strip
+/// + `only_if_missing` shape so already-deployed assets serve from disk.
+pub fn sync_host_rewrites(path: &Path, hostname: &str, rewrites: &[RewriteRule]) -> Result<bool> {
+    if !path.exists() {
+        return Ok(false);
+    }
+    // Cheap typed pre-check: if the parsed rewrites already match, skip
+    // the rewrite-and-reload entirely.
+    let current = load(path)?;
+    let already_matches = current
+        .hosts
+        .iter()
+        .find(|h| h.hostname == hostname || h.aliases.iter().any(|a| a.hostname == hostname))
+        .is_some_and(|h| h.rewrites.as_slice() == rewrites);
+    if already_matches {
+        return Ok(false);
+    }
+
+    let body = std::fs::read_to_string(path)
+        .wrap_err_with(|| format!("reading {}", path.display()))?;
+    let mut doc: toml_edit::DocumentMut = body
+        .parse()
+        .wrap_err_with(|| format!("parsing {}", path.display()))?;
+    let Some(idx) = find_host_index(&doc, hostname) else {
+        return Ok(false);
+    };
+    let host = doc
+        .get_mut("host")
+        .and_then(toml_edit::Item::as_array_of_tables_mut)
+        .ok_or_else(|| eyre::eyre!("`host` table disappeared during rewrite sync"))?;
+    let table = host
+        .get_mut(idx)
+        .ok_or_else(|| eyre::eyre!("host index {idx} out of range during rewrite sync"))?;
+    if rewrites.is_empty() {
+        table.remove("rewrite");
+    } else {
+        table.insert("rewrite", toml_edit::Item::ArrayOfTables(rewrite_array(rewrites)));
+    }
+    write_atomically(path, &doc.to_string())?;
+    Ok(true)
 }
 
 /// Remove the `[[host]]` block with matching `hostname` (top-level or
@@ -573,6 +644,120 @@ project  = "/tmp/x"
         assert_eq!(parse_short_duration("45").unwrap(), Duration::from_secs(45));
         assert!(parse_short_duration("").is_err());
         assert!(parse_short_duration("3x").is_err());
+    }
+
+    #[test]
+    fn rewrite_only_if_missing_round_trips() {
+        // The flag defaults to false, parses when present, and only
+        // serializes back out when true (skip_serializing_if).
+        let cfg = parse_str(
+            r#"
+[[host]]
+hostname = "x.bougie.run"
+project  = "/tmp/x"
+
+[[host.rewrite]]
+pattern = "^/static/version[^/]+/(.*)$"
+target  = "/static/$1"
+
+[[host.rewrite]]
+pattern = "^/static/(.*)$"
+target  = "/static.php?resource=$1"
+only_if_missing = true
+"#,
+        )
+        .unwrap();
+        let rw = &cfg.hosts[0].rewrites;
+        assert_eq!(rw.len(), 2);
+        assert!(!rw[0].only_if_missing, "version-strip rule defaults to unconditional");
+        assert!(rw[1].only_if_missing, "static.php fallback is only-if-missing");
+
+        let dumped = toml_edit::ser::to_string(&cfg).unwrap();
+        assert!(dumped.contains("only_if_missing = true"));
+        // The default-false rule must not emit the key.
+        assert_eq!(dumped.matches("only_if_missing").count(), 1);
+    }
+
+    #[test]
+    fn add_host_with_rewrites_writes_only_if_missing_flag() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("server.toml");
+        let rewrites = vec![
+            RewriteRule {
+                pattern: r"^/static/version[^/]+/(.*)$".into(),
+                target: "/static/$1".into(),
+                only_if_missing: false,
+            },
+            RewriteRule {
+                pattern: r"^/static/(.*)$".into(),
+                target: "/static.php?resource=$1".into(),
+                only_if_missing: true,
+            },
+        ];
+        add_host_with_rewrites(&path, "x.bougie.run", Path::new("/tmp/x"), Some("pub"), &rewrites)
+            .unwrap();
+        let cfg = load(&path).unwrap();
+        let rw = &cfg.hosts[0].rewrites;
+        assert_eq!(rw.len(), 2);
+        assert!(!rw[0].only_if_missing);
+        assert!(rw[1].only_if_missing);
+    }
+
+    #[test]
+    fn sync_host_rewrites_upgrades_stale_shape() {
+        // An old-bougie host: single all-swallowing rule, no
+        // only_if_missing flag.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("server.toml");
+        std::fs::write(
+            &path,
+            r#"
+[[host]]
+hostname = "x.bougie.run"
+project = "/tmp/x"
+root = "pub"
+
+[[host.rewrite]]
+pattern = "^/static/(?:version[^/]+/)?(.*)$"
+target = "/static.php?resource=$1"
+"#,
+        )
+        .unwrap();
+
+        let fixed = vec![
+            RewriteRule {
+                pattern: r"^/static/version[^/]+/(.*)$".into(),
+                target: "/static/$1".into(),
+                only_if_missing: false,
+            },
+            RewriteRule {
+                pattern: r"^/static/(.*)$".into(),
+                target: "/static.php?resource=$1".into(),
+                only_if_missing: true,
+            },
+        ];
+        // First sync rewrites the block and reports a change.
+        assert!(sync_host_rewrites(&path, "x.bougie.run", &fixed).unwrap());
+        let cfg = load(&path).unwrap();
+        assert_eq!(cfg.hosts[0].rewrites, fixed);
+        // Other fields survive.
+        assert_eq!(cfg.hosts[0].root, "pub");
+
+        // Second sync is a no-op (already matches) → no change reported.
+        assert!(!sync_host_rewrites(&path, "x.bougie.run", &fixed).unwrap());
+    }
+
+    #[test]
+    fn sync_host_rewrites_missing_host_is_noop() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("server.toml");
+        add_host(&path, "a.bougie.run", Path::new("/tmp/a"), None).unwrap();
+        let rules = vec![RewriteRule {
+            pattern: "^/x/(.*)$".into(),
+            target: "/y.php?r=$1".into(),
+            only_if_missing: true,
+        }];
+        assert!(!sync_host_rewrites(&path, "ghost.bougie.run", &rules).unwrap());
     }
 
     #[test]
