@@ -184,6 +184,12 @@ pub enum DownloadEvent {
     /// callers that forward to a slow consumer (IPC, network) should
     /// coalesce.
     Inc { bytes: u64 },
+    /// The artifact named `name` finished downloading and is now being
+    /// extracted (the silent tar.zst/zip decompress). Carries the name
+    /// so a remote mirror can show `extracting <name>`; emitted by
+    /// [`DownloadBar::mark_extracting`]. The *next* [`Self::Current`]
+    /// marks the return to the download phase for the following artifact.
+    Extracting { name: String },
     /// Aggregate fetch is done.
     Finish,
 }
@@ -985,6 +991,13 @@ impl DownloadBar {
     pub fn mark_extracting(&self) {
         self.activate();
         self.pb.set_prefix("extracting");
+        if let Some(sink) = &self.sink {
+            // Forward the phase so a remote mirror (the daemon's IPC
+            // bar) can flip its own prefix to `extracting`. The artifact
+            // name is whatever the preceding `set_current` put in the
+            // message — the thing we just finished downloading.
+            sink.on_event(DownloadEvent::Extracting { name: self.pb.message() });
+        }
     }
 
     /// Replace the bar's running state with an absolute snapshot
@@ -994,11 +1007,17 @@ impl DownloadBar {
     /// so we set them directly rather than reconstructing deltas from
     /// the previous snapshot.
     ///
+    /// `extracting` mirrors the remote bar's phase: `true` shows the
+    /// `extracting` prefix, `false` restores the download prefix (the
+    /// `label` passed to [`Self::new`]). This is the wire-mirror
+    /// counterpart of [`Self::mark_extracting`] / [`Self::set_current`],
+    /// which flip the prefix locally.
+    ///
     /// Does not fire the sink. Sinks observe local (incremental)
     /// activity; absolute updates come from somewhere else by
     /// definition, so re-emitting them would either duplicate
     /// downstream state or create a feedback loop.
-    pub fn set_progress(&self, pos: u64, total: u64, label: &str) {
+    pub fn set_progress(&self, pos: u64, total: u64, label: &str, extracting: bool) {
         if total > 0 || pos > 0 || !label.is_empty() {
             self.activate();
         }
@@ -1012,6 +1031,12 @@ impl DownloadBar {
         // same label.
         if !label.is_empty() {
             self.pb.set_message(label.to_string());
+        }
+        // Likewise only touch the prefix when the phase actually flips,
+        // so a steady stream of same-phase frames doesn't force redraws.
+        let want_prefix = if extracting { "extracting" } else { self.download_label.as_str() };
+        if self.pb.prefix() != want_prefix {
+            self.pb.set_prefix(want_prefix.to_owned());
         }
     }
 
