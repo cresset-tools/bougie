@@ -226,7 +226,7 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
             apcu_prefix,
             autoloader_suffix,
         ),
-        Command::SelfCmd(SelfCommand::Update) => commands::self_update::run(),
+        Command::SelfCmd(SelfCommand::Update { force }) => commands::self_update::run(force),
         Command::SelfCmd(SelfCommand::Version { short }) => {
             commands::self_version::run(format, short)
         }

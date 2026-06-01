@@ -12,6 +12,16 @@
 //! Archives are SHA-256-verified against the `.sha256` sidecar dist
 //! publishes alongside each archive.
 //!
+//! Self-update only manages a binary that bougie's own installer placed.
+//! The installer (cargo-dist `curl … | sh` / `irm … | iex`) drops a JSON
+//! receipt next to its config — `<config>/bougie/bougie-receipt.json` —
+//! recording the `install_prefix` it wrote the binary into. Before
+//! touching anything we confirm the running binary lives at that prefix;
+//! a copy from a package manager (apt/brew), `cargo install`, or nix
+//! lives elsewhere and should be updated through that tool, so we refuse
+//! (overridable with `--force`). This is the same receipt cargo-dist's
+//! own updater keys off.
+//!
 //! The on-disk swap is atomic on Unix (`rename(2)` over the existing
 //! `bougie` within the same directory). Windows can't unlink a running
 //! executable, so we rename the current binary to `<name>.old.exe` in
@@ -23,7 +33,7 @@ use std::env;
 use std::fs;
 use std::fmt::Write as _;
 use std::io::{self, Read};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
@@ -45,7 +55,7 @@ const NO_SELF_UPDATE_ENV: &str = "BOUGIE_NO_SELF_UPDATE";
 #[allow(clippy::duration_suboptimal_units)]
 const HTTP_TIMEOUT: Duration = Duration::from_secs(60);
 
-pub fn run() -> Result<ExitCode> {
+pub fn run(force: bool) -> Result<ExitCode> {
     if env::var_os(NO_SELF_UPDATE_ENV).is_some() {
         return Err(BougieError::SelfUpdate {
             detail: format!(
@@ -58,6 +68,32 @@ pub fn run() -> Result<ExitCode> {
     }
 
     let current = env!("CARGO_PKG_VERSION");
+
+    let current_exe = env::current_exe().wrap_err("locating the current bougie binary")?;
+
+    // Only manage a binary bougie's own installer placed. A copy from a
+    // package manager / cargo / nix lives outside the install receipt's
+    // prefix; updating it in place would fight whatever owns it.
+    match install_provenance(&current_exe) {
+        Provenance::Managed => {}
+        Provenance::External(reason) if force => {
+            println!("warning: {reason}");
+            println!("proceeding anyway because --force was given");
+        }
+        Provenance::External(reason) => {
+            return Err(BougieError::SelfUpdate {
+                detail: format!(
+                    "{reason}. `bougie self update` only updates a binary installed by \
+                     bougie's own installer (the cargo-dist `curl … | sh` / `irm … | iex` \
+                     script). Update this copy through whatever installed it (apt, brew, \
+                     nix, `cargo install`, …), or re-run with `--force` if you're sure it \
+                     came from bougie's installer."
+                ),
+            }
+            .into());
+        }
+    }
+
     let target = detect_target()?;
     let archive = archive_filename(&target);
 
@@ -72,7 +108,6 @@ pub fn run() -> Result<ExitCode> {
     }
     println!("latest:  {latest}");
 
-    let current_exe = env::current_exe().wrap_err("locating the current bougie binary")?;
     let bin_dir = current_exe
         .parent()
         .ok_or_else(|| eyre!("current bougie path has no parent dir: {}", current_exe.display()))?
@@ -129,6 +164,110 @@ pub fn run() -> Result<ExitCode> {
 
     println!("updated bougie {current} -> {latest}");
     Ok(ExitCode::SUCCESS)
+}
+
+/// Where the running binary came from, as far as the install receipt
+/// can tell.
+enum Provenance {
+    /// Lives at the prefix bougie's installer recorded — ours to update.
+    Managed,
+    /// No matching receipt, or the binary runs from somewhere the
+    /// receipt doesn't own. The string explains why, for the user.
+    External(String),
+}
+
+/// Subset of cargo-dist's install receipt we care about. The installer
+/// writes the full struct; we only read where it dropped the binary.
+#[derive(Deserialize)]
+struct InstallReceipt {
+    install_prefix: String,
+}
+
+/// Decide whether `current_exe` is the binary bougie's installer
+/// manages. The installer writes `<config>/bougie/bougie-receipt.json`
+/// with the `install_prefix` it used; we treat the running binary as
+/// managed when it sits at that prefix (cargo-dist's `flat` layout drops
+/// binaries directly in the prefix; `unspecified`/cargo-home layouts use
+/// `<prefix>/bin`, so accept both).
+fn install_provenance(current_exe: &Path) -> Provenance {
+    let Some(receipt_path) = receipt_path() else {
+        return Provenance::External(
+            "couldn't resolve a home/config directory to look for bougie's install receipt".into(),
+        );
+    };
+
+    let Ok(body) = fs::read_to_string(&receipt_path) else {
+        return Provenance::External(format!(
+            "no bougie install receipt at {} — this binary doesn't look like it came from \
+             bougie's installer",
+            receipt_path.display()
+        ));
+    };
+
+    let receipt: InstallReceipt = match serde_json::from_str(&body) {
+        Ok(r) => r,
+        Err(e) => {
+            return Provenance::External(format!(
+                "bougie install receipt at {} is unreadable ({e})",
+                receipt_path.display()
+            ));
+        }
+    };
+
+    if prefix_owns_exe(&receipt.install_prefix, current_exe) {
+        Provenance::Managed
+    } else {
+        Provenance::External(format!(
+            "this binary runs from {} but bougie's installer manages {} (per {}) — looks like it \
+             was installed by a package manager, cargo, or nix",
+            current_exe
+                .parent()
+                .unwrap_or(current_exe)
+                .display(),
+            receipt.install_prefix,
+            receipt_path.display(),
+        ))
+    }
+}
+
+/// Does `install_prefix` from the receipt own `current_exe`? True when
+/// the binary sits directly in the prefix (cargo-dist `flat` layout) or
+/// in `<prefix>/bin` (cargo-home-style layouts). Both sides are
+/// canonicalized so symlinked or `..`-laden paths still compare equal.
+fn prefix_owns_exe(install_prefix: &str, current_exe: &Path) -> bool {
+    let prefix = canonical_lossy(Path::new(install_prefix));
+    let Some(exe_dir) = current_exe.parent().map(canonical_lossy) else {
+        return false;
+    };
+    exe_dir == prefix || (exe_dir.ends_with("bin") && exe_dir.parent() == Some(prefix.as_path()))
+}
+
+/// Path to cargo-dist's install receipt for bougie. Mirrors the
+/// installer scripts: the Unix `sh` installer writes under
+/// `${XDG_CONFIG_HOME:-$HOME/.config}` (macOS included — it's a POSIX
+/// script, not Apple `dirs` semantics); the PowerShell installer writes
+/// under `%LOCALAPPDATA%`.
+fn receipt_path() -> Option<PathBuf> {
+    let config_dir = {
+        #[cfg(unix)]
+        {
+            env::var_os("XDG_CONFIG_HOME")
+                .map(PathBuf::from)
+                .filter(|p| p.is_absolute())
+                .or_else(|| env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?
+        }
+        #[cfg(windows)]
+        {
+            PathBuf::from(env::var_os("LOCALAPPDATA")?)
+        }
+    };
+    Some(config_dir.join("bougie").join("bougie-receipt.json"))
+}
+
+/// Canonicalize for comparison, falling back to the path as-given when
+/// it can't be resolved (e.g. the recorded prefix no longer exists).
+fn canonical_lossy(p: &Path) -> PathBuf {
+    fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
 }
 
 #[derive(Deserialize)]
@@ -472,6 +611,40 @@ mod tests {
         .unwrap();
         let hex = parse_sidecar(&path, "target.tar.gz").unwrap();
         assert_eq!(hex, "cafef00d");
+    }
+
+    #[test]
+    fn prefix_owns_exe_matches_flat_layout() {
+        let dir = tempfile::tempdir().unwrap();
+        let prefix = dir.path();
+        let exe = prefix.join(binary_name("bougie"));
+        fs::write(&exe, b"").unwrap();
+        assert!(prefix_owns_exe(&prefix.to_string_lossy(), &exe));
+    }
+
+    #[test]
+    fn prefix_owns_exe_matches_bin_subdir_layout() {
+        let dir = tempfile::tempdir().unwrap();
+        let prefix = dir.path();
+        let bin = prefix.join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        let exe = bin.join(binary_name("bougie"));
+        fs::write(&exe, b"").unwrap();
+        assert!(prefix_owns_exe(&prefix.to_string_lossy(), &exe));
+    }
+
+    #[test]
+    fn prefix_owns_exe_rejects_foreign_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let prefix = dir.path().join("managed");
+        let elsewhere = dir.path().join("usr-bin");
+        fs::create_dir_all(&prefix).unwrap();
+        fs::create_dir_all(&elsewhere).unwrap();
+        let exe = elsewhere.join(binary_name("bougie"));
+        fs::write(&exe, b"").unwrap();
+        // A package-manager copy in a sibling dir is not owned by the
+        // installer's prefix.
+        assert!(!prefix_owns_exe(&prefix.to_string_lossy(), &exe));
     }
 
     #[test]

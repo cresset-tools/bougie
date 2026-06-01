@@ -714,7 +714,16 @@ pub enum ToolCommand {
 #[derive(Subcommand, Debug)]
 pub enum SelfCommand {
     /// Update bougie.
-    Update,
+    Update {
+        /// Update even when bougie can't confirm it installed this
+        /// binary. By default `self update` only touches a binary that
+        /// bougie's own installer placed (per the install receipt);
+        /// copies from a package manager, cargo, or nix are left for
+        /// that tool to update. Pass `--force` only if you know this
+        /// copy came from bougie's installer.
+        #[arg(long)]
+        force: bool,
+    },
     /// Show bougie's version.
     Version {
         /// Only show the version.
