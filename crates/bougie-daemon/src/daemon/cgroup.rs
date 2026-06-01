@@ -222,6 +222,11 @@ fn self_cgroup_base() -> Option<PathBuf> {
 /// Extract the cgroup-v2 path from `/proc/<pid>/cgroup` content. The v2
 /// entry is the line beginning `0::`. Returns `None` on a v1-only host
 /// (no `0::` line).
+//
+// Compiled on every target (the unit tests exercise it everywhere — it's
+// pure string parsing), but only *called* by the Linux-only
+// `self_cgroup_base`, so allow it to be dead elsewhere.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn parse_self_cgroup(content: &str) -> Option<&str> {
     content.lines().find_map(|line| line.strip_prefix("0::"))
 }
@@ -237,6 +242,10 @@ fn parse_self_cgroup(content: &str) -> Option<&str> {
 ///    on kernels ≥ 5.14 and `cgroup.freeze` since 5.2. `base` is a
 ///    non-root (delegated) cgroup, so its interface files report the
 ///    kernel's capability.
+//
+// Compiled everywhere (unit-tested with synthetic dirs on all targets),
+// but only *called* from `detect`'s Linux branch.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn probe_at(base: &Path, is_cgroup2: bool) -> SupervisionBackend {
     if !is_cgroup2 || !can_create_child(base) {
         return SupervisionBackend::ProcessGroup;
@@ -252,12 +261,17 @@ fn probe_at(base: &Path, is_cgroup2: bool) -> SupervisionBackend {
 
 /// Probe-counter so concurrent probes (e.g. parallel tests sharing this
 /// PID) never collide on the probe cgroup name.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 static PROBE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Can we create a child cgroup under `base`? Creates a uniquely-named
 /// probe directory and immediately removes it. A failure means the
 /// subtree isn't delegated to us (or isn't writable), so cgroups aren't
 /// usable rootless here.
+//
+// Compiled everywhere (used by `probe_at`'s tests), called only via
+// `probe_at` from `detect`'s Linux branch.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn can_create_child(base: &Path) -> bool {
     let seq = PROBE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let probe = base.join(format!("bougie.probe.{}.{seq}", std::process::id()));
