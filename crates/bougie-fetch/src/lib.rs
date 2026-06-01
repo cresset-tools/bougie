@@ -37,6 +37,16 @@ pub const USER_AGENT: &str = concat!(
     " (+https://github.com/cresset-tools/bougie)",
 );
 
+/// Maximum time a download may go without receiving any bytes before
+/// it's treated as a stalled connection and aborted (then retried by
+/// [`fetch_with_retry`]). Applied as the blocking client's per-read
+/// `timeout` and the async client's `read_timeout` — see those two
+/// constructors for the per-client mechanics. 30s is comfortably above
+/// any real inter-chunk gap on a live transfer while still surfacing a
+/// wedged peer fast instead of after the multi-minute dead air that
+/// reads as a hang.
+const STALL_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// Build a `reqwest::blocking::Client` with the bougie [`USER_AGENT`]
 /// set. Every outbound external request should go through this so the
 /// UA, timeout policy, and connection settings stay consistent across
@@ -47,10 +57,22 @@ pub const USER_AGENT: &str = concat!(
 /// - `connect_timeout = 10s`. Bounds the TCP+TLS handshake — a slow
 ///   or hung peer (network blip, captive portal) fails fast instead
 ///   of blocking the resolver forever.
-/// - `timeout = 300s`. Total per-request budget. Matches Composer's
-///   own default (`Composer\Util\HttpDownloader`). Generous enough
-///   for a 100MB dist on a slow link, tight enough that a runaway
-///   read doesn't hang the install indefinitely.
+/// - `timeout = `[`STALL_TIMEOUT`]` (30s)`. For the **blocking**
+///   client this is a *per-operation* timeout, not a total budget:
+///   reqwest wraps every `Response::read()` in a fresh deadline
+///   (`blocking::wait::timeout`, deadline = `now + timeout` recomputed
+///   per call), so it is effectively an idle/read-gap guard. A CDN
+///   edge that accepts the socket and then wedges mid-transfer (TCP
+///   `ESTABLISHED`, 0 B/s) trips this in 30s and bubbles up as a
+///   retryable error instead of parking the byte-copy loop's blocking
+///   `read()` indefinitely — the common flaky-mirror failure mode and
+///   the silent-hang we're guarding against. A *progressing* download
+///   is unaffected no matter how large: each chunk only has to arrive
+///   within 30s of the previous one. There is deliberately no separate
+///   total cap on this client because reqwest's blocking API doesn't
+///   expose one — and a steadily-progressing transfer shouldn't be
+///   killed on a wall clock anyway. [`fetch_with_retry`] supplies the
+///   resilience on top.
 ///
 /// Both are per-request, not per-keepalive — connection reuse across
 /// requests is unaffected.
@@ -58,7 +80,7 @@ pub fn default_client() -> Result<reqwest::blocking::Client> {
     reqwest::blocking::Client::builder()
         .user_agent(USER_AGENT)
         .connect_timeout(Duration::from_secs(10))
-        .timeout(Duration::from_mins(5))
+        .timeout(STALL_TIMEOUT)
         .build()
         .map_err(|e| {
             BougieError::Network {
@@ -69,16 +91,29 @@ pub fn default_client() -> Result<reqwest::blocking::Client> {
         })
 }
 
-/// Async sibling of [`default_client`] — same `User-Agent`, same
-/// timeout policy, but the non-blocking `reqwest::Client`. Used by
-/// the composer-resolver's parallel pre-fetch fan-out so concurrent
-/// fetches share a single async client (one connection pool, no
-/// `spawn_blocking` thread per in-flight request) instead of N
-/// blocking clients each driving their own internal runtime.
+/// Async sibling of [`default_client`] — same `User-Agent`, but the
+/// non-blocking `reqwest::Client`, which exposes the read and total
+/// timeouts as *separate* knobs (unlike the blocking client, where
+/// `timeout` is the per-read guard). Used by the composer-resolver's
+/// parallel pre-fetch fan-out so concurrent fetches share a single
+/// async client (one connection pool, no `spawn_blocking` thread per
+/// in-flight request) instead of N blocking clients each driving their
+/// own internal runtime.
+///
+/// **Timeouts:**
+/// - `connect_timeout = 10s` — as [`default_client`].
+/// - `read_timeout = `[`STALL_TIMEOUT`]` (30s)`. Idle-gap guard: max
+///   time allowed between body chunks. The async analogue of the
+///   blocking client's per-read `timeout` — same 30s stall budget.
+/// - `timeout = 300s`. Total per-request budget. Matches Composer's
+///   own default (`Composer\Util\HttpDownloader`); the async client
+///   *does* have this distinct knob, so a metadata request gets both
+///   a tight idle guard and a generous overall ceiling.
 pub fn default_async_client() -> Result<reqwest::Client> {
     reqwest::Client::builder()
         .user_agent(USER_AGENT)
         .connect_timeout(Duration::from_secs(10))
+        .read_timeout(STALL_TIMEOUT)
         .timeout(Duration::from_mins(5))
         .build()
         .map_err(|e| {
@@ -188,6 +223,11 @@ pub trait DownloadSink: Send + Sync + std::fmt::Debug {
 pub struct DownloadBar {
     pb: ProgressBar,
     sink: Option<Arc<dyn DownloadSink>>,
+    /// The prefix shown during downloading (the `label` passed to
+    /// [`Self::new`], e.g. `"downloading"`). Stashed so [`Self::set_current`]
+    /// can restore it after [`Self::mark_extracting`] temporarily swaps
+    /// the prefix to `"extracting"` for the decompress phase.
+    download_label: String,
     /// Lazy-activation state for visible bars: hidden until the first
     /// `add_planned(>0)` / `set_current` / `inc` / `set_progress` call,
     /// then swapped to stderr + steady-tick. Avoids drawing an empty
@@ -203,7 +243,44 @@ struct PendingActivation {
     activated: AtomicBool,
 }
 
-const RETRY_BUDGET: u32 = 1;
+/// How many times a failed blob fetch is retried before giving up.
+/// A transient network fault (the 30s `read_timeout` tripping on a
+/// wedged CDN edge, a dropped keep-alive, a 5xx from one mirror node)
+/// almost always clears on a fresh connection — and because reqwest
+/// pools connections, the retry typically lands on a *different* edge
+/// than the one that stalled. Three attempts (one initial + three
+/// retries = four total tries) covers the realistic flaky-mirror tail
+/// without masking a genuinely-down endpoint for too long: the
+/// backoff schedule below caps total added wait under ~4s.
+const RETRY_BUDGET: u32 = 3;
+
+/// Base unit for the exponential backoff between fetch retries.
+/// Attempt `n` (1-indexed) sleeps `BACKOFF_BASE * 2^(n-1)` plus up to
+/// one extra base of jitter — so ~0.25–0.5s, ~0.5–0.75s, ~1–1.25s.
+/// The jitter de-synchronizes a fan-out of parallel fetches that all
+/// hit the same flaky mirror in the same instant, so their retries
+/// don't thunder back in lockstep.
+const BACKOFF_BASE: Duration = Duration::from_millis(250);
+
+/// Sleep for attempt `attempt` (1-indexed) of the retry loop, using
+/// exponential backoff with additive jitter. Pure `std` — the jitter
+/// is derived from the wall clock's sub-millisecond bits rather than
+/// pulling in a `rand` dependency; it only needs to be "different
+/// across threads," not cryptographically uniform.
+fn backoff_sleep(attempt: u32) {
+    // 2^(attempt-1), saturating so a future bump to RETRY_BUDGET can't
+    // overflow the shift; capped at 8x so the wait stays bounded.
+    let factor = 1u32.checked_shl(attempt.saturating_sub(1)).unwrap_or(u32::MAX).min(8);
+    let base = BACKOFF_BASE.saturating_mul(factor);
+    let clock_nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| u64::from(d.subsec_nanos()));
+    // Jitter in [0, BACKOFF_BASE). `BACKOFF_BASE` is sub-second, so its
+    // whole magnitude lives in `subsec_nanos()` — a `u32`, no cast/truncation.
+    let window = u64::from(BACKOFF_BASE.subsec_nanos()).max(1);
+    let jitter = Duration::from_nanos(clock_nanos % window);
+    std::thread::sleep(base + jitter);
+}
 
 /// Archive format `fetch_blob` should decode. Selected per-call
 /// because the index advertises tar.zst for bougie-published artifacts
@@ -309,9 +386,31 @@ fn fetch_with_retry(
             Err(e) if attempts < RETRY_BUDGET => {
                 attempts += 1;
                 tracing::warn!(error = %e, attempt = attempts, "blob fetch failed; retrying");
+                // Surface the retry above the (possibly shared, possibly
+                // stalled-looking) progress bar so a silent retry doesn't
+                // read as a hang. Named from the URL — the bar's own
+                // `{msg}` label is shared across a parallel fan-out and
+                // would race, but the URL is local to this fetch.
+                bar.note_retry(url_label(spec.url), attempts, RETRY_BUDGET);
+                backoff_sleep(attempts);
             }
             Err(e) => return Err(e),
         }
+    }
+}
+
+/// A short, human-facing label for a blob URL — its last path segment
+/// with any query string stripped. Falls back to the whole URL when
+/// there's no `/`. Used only for the retry notice; accuracy matters
+/// more than prettiness, and the final segment (the `.tar.zst` / `.so`
+/// / dist-zip filename) is the most recognizable race-free handle we
+/// have inside the fetch.
+fn url_label(url: &str) -> &str {
+    let no_query = url.split(['?', '#']).next().unwrap_or(url);
+    let trimmed = no_query.trim_end_matches('/');
+    match trimmed.rsplit('/').next() {
+        Some(seg) if !seg.is_empty() => seg,
+        _ => url,
     }
 }
 
@@ -430,6 +529,12 @@ fn try_once_blob(
     bar: &DownloadBar,
 ) -> Result<()> {
     let tmp = fetch_to_partial(client, spec, bar)?;
+
+    // Bytes are all in; the rest of this function is the silent,
+    // CPU-bound decompress + atomic rename. Surface it on the bar so a
+    // large tarball (a full PHP runtime, intl's ICU closure) doesn't
+    // look like a stalled download while it extracts.
+    bar.mark_extracting();
 
     let incoming = sibling_with_suffix(spec.dest, ".incoming");
     let _ = fs::remove_dir_all(&incoming);
@@ -755,6 +860,7 @@ impl DownloadBar {
         Self {
             pb,
             sink: None,
+            download_label: label.to_owned(),
             pending: Some(PendingActivation { activated: AtomicBool::new(false) }),
         }
     }
@@ -784,7 +890,7 @@ impl DownloadBar {
     pub fn hidden() -> Self {
         let pb = ProgressBar::new(0);
         pb.set_draw_target(ProgressDrawTarget::hidden());
-        Self { pb, sink: None, pending: None }
+        Self { pb, sink: None, download_label: "downloading".to_owned(), pending: None }
     }
 
     /// Hidden draw target + sink. Use when the local process has no UI
@@ -799,7 +905,7 @@ impl DownloadBar {
     pub fn hidden_with_sink(sink: Arc<dyn DownloadSink>) -> Self {
         let pb = ProgressBar::new(0);
         pb.set_draw_target(ProgressDrawTarget::hidden());
-        Self { pb, sink: Some(sink), pending: None }
+        Self { pb, sink: Some(sink), download_label: "downloading".to_owned(), pending: None }
     }
 
     /// Grow the planned total. Safe to call repeatedly as each manifest
@@ -836,10 +942,49 @@ impl DownloadBar {
     pub fn set_current(&self, name: impl Into<String>) {
         let name = name.into();
         self.activate();
+        // Restore the download prefix in case the previous artifact left
+        // it on "extracting" (see `mark_extracting`); a fresh artifact is
+        // always entering its download phase here.
+        self.pb.set_prefix(self.download_label.clone());
         self.pb.set_message(name.clone());
         if let Some(sink) = &self.sink {
             sink.on_event(DownloadEvent::Current { name });
         }
+    }
+
+    /// Print a one-line retry notice *above* the bar without disturbing
+    /// its running state. Called from [`fetch_with_retry`] when a fetch
+    /// fails and is about to be retried, so a silent retry (and the
+    /// backoff sleep that follows) reads as deliberate progress rather
+    /// than a hang. On a hidden draw target (non-TTY / `--quiet`) the
+    /// line is discarded — the `tracing::warn!` at the call site is the
+    /// machine-readable record in that mode.
+    pub fn note_retry(&self, what: &str, attempt: u32, max: u32) {
+        // `println` redraws the bar after the line, so this composes
+        // cleanly with an active steady tick on a stalled-looking bar.
+        self.pb
+            .println(format!("  retrying {what} (attempt {attempt}/{max})…"));
+    }
+
+    /// Swap the bar's prefix from `"downloading"` to `"extracting"` for
+    /// the artifact currently in flight, keeping its name in the message.
+    /// Called by [`fetch_blob`] (via [`try_once_blob`]) the moment the
+    /// download bytes are all in and the silent, CPU-bound tar.zst/zip
+    /// decompress begins — otherwise the bar freezes at `N/N bytes` with
+    /// the `downloading` prefix while extraction runs, which reads as a
+    /// hang (the exact symptom this is fixing). The byte counters stop
+    /// advancing during extraction (there's nothing to count against the
+    /// download total), but the steady tick keeps the bar animated and
+    /// the `extracting <name>` line makes the phase legible.
+    ///
+    /// The next [`Self::set_current`] restores the `"downloading"`
+    /// prefix for the following artifact, so the two phases alternate
+    /// cleanly across a sequential install loop. Idempotent — setting
+    /// the prefix to `"extracting"` more than once (e.g. a retried
+    /// fetch) is a no-op.
+    pub fn mark_extracting(&self) {
+        self.activate();
+        self.pb.set_prefix("extracting");
     }
 
     /// Replace the bar's running state with an absolute snapshot
@@ -943,7 +1088,42 @@ mod tests {
         bar.add_planned(1024);
         bar.set_current("php-8.3.12");
         bar.inc(512);
+        bar.mark_extracting();
+        bar.set_current("ext-intl"); // restores the prefix after extraction
+        bar.note_retry("php-8.3.12.tar.zst", 1, RETRY_BUDGET);
         bar.finish();
+    }
+
+    #[test]
+    fn url_label_takes_last_path_segment() {
+        assert_eq!(
+            url_label("https://cdn.example/blobs/php-8.3.12.tar.zst"),
+            "php-8.3.12.tar.zst",
+        );
+        // Query + fragment are stripped before the segment is taken.
+        assert_eq!(
+            url_label("https://cdn.example/x/dist.zip?token=abc#frag"),
+            "dist.zip",
+        );
+        // Trailing slash doesn't yield an empty label.
+        assert_eq!(url_label("https://cdn.example/pkg/"), "pkg");
+        // No path component → whole URL is the fallback.
+        assert_eq!(url_label("not-a-url"), "not-a-url");
+    }
+
+    #[test]
+    fn backoff_factor_grows_then_caps() {
+        // Mirror the doubling+cap used inside `backoff_sleep` so the
+        // schedule is asserted without actually sleeping. Attempt 1→1x,
+        // 2→2x, 3→4x, 4→8x, and capped at 8x thereafter.
+        let factor = |attempt: u32| {
+            1u32.checked_shl(attempt.saturating_sub(1)).unwrap_or(u32::MAX).min(8)
+        };
+        assert_eq!(factor(1), 1);
+        assert_eq!(factor(2), 2);
+        assert_eq!(factor(3), 4);
+        assert_eq!(factor(4), 8);
+        assert_eq!(factor(99), 8, "huge attempt counts saturate, never overflow the shift");
     }
 
     #[test]
