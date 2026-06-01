@@ -65,7 +65,7 @@ pub enum BougieError {
     Resolution { kind: String, detail: String },
 
     #[error(
-        "unknown host target {triple}\n  \
+        "unsupported host target: {triple}\n  \
          hint:     {hint}"
     )]
     UnknownTarget { triple: String, hint: String },

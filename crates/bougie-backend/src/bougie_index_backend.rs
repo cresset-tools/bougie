@@ -66,14 +66,7 @@ impl super::Backend for BougieIndexBackend {
         let fetched = fetch_root(&self.client, &self.host, &self.cache_root, build_verifier)?;
         let target_entry = fetched.root.targets.get(&self.target).ok_or_else(|| {
             let available: Vec<String> = fetched.root.targets.keys().cloned().collect();
-            BougieError::UnknownTarget {
-                triple: self.target.clone(),
-                hint: format!(
-                    "the index at {} advertises: {}",
-                    self.host,
-                    available.join(", ")
-                ),
-            }
+            target_not_served(&self.host, &self.target, &available)
         })?;
         let section_ref =
             target_entry
@@ -136,14 +129,7 @@ impl super::Backend for BougieIndexBackend {
         let fetched = fetch_root(&self.client, &self.host, &self.cache_root, build_verifier)?;
         let target_entry = fetched.root.targets.get(&self.target).ok_or_else(|| {
             let available: Vec<String> = fetched.root.targets.keys().cloned().collect();
-            BougieError::UnknownTarget {
-                triple: self.target.clone(),
-                hint: format!(
-                    "the index at {} advertises: {}",
-                    self.host,
-                    available.join(", ")
-                ),
-            }
+            target_not_served(&self.host, &self.target, &available)
         })?;
         let section_ref = target_entry
             .sections
@@ -208,5 +194,77 @@ impl super::Backend for BougieIndexBackend {
             needs_store_on_path: false,
             frozen_warning: selected.frozen_warning,
         })
+    }
+}
+
+/// Build the error for a host target the index doesn't serve.
+///
+/// `available` is the list of targets the index root actually
+/// advertises — passed in by the caller and never hardcoded, so the
+/// message always reflects what this index currently provides. A
+/// musl triple (e.g. Alpine Linux) gets an extra pointer, since "my
+/// distro is Linux, why no build?" is the common surprise there.
+fn target_not_served(host: &str, target: &str, available: &[String]) -> BougieError {
+    let mut hint = String::new();
+    if target.contains("musl") {
+        hint.push_str(
+            "this is a musl-libc platform (e.g. Alpine Linux), which bougie has no build for — ",
+        );
+    }
+    hint.push_str(&format!(
+        "targets this index ({host}) provides: {}",
+        available.join(", "),
+    ));
+    BougieError::UnknownTarget { triple: target.to_owned(), hint }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn hint_of(err: &BougieError) -> String {
+        match err {
+            BougieError::UnknownTarget { hint, .. } => hint.clone(),
+            other => panic!("expected UnknownTarget, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn musl_target_gets_an_alpine_pointer_and_the_dynamic_list() {
+        let available = vec![
+            "aarch64-apple-darwin".to_owned(),
+            "x86_64-unknown-linux-gnu".to_owned(),
+        ];
+        let err = target_not_served(
+            "https://index.bougie.tools",
+            "x86_64-unknown-linux-musl",
+            &available,
+        );
+        let hint = hint_of(&err);
+        assert!(hint.contains("musl"), "{hint}");
+        assert!(hint.contains("Alpine"), "{hint}");
+        // The available list is whatever the index advertised, not a
+        // hardcoded set.
+        assert!(hint.contains("x86_64-unknown-linux-gnu"), "{hint}");
+        assert!(hint.contains("aarch64-apple-darwin"), "{hint}");
+        match err {
+            BougieError::UnknownTarget { triple, .. } => {
+                assert_eq!(triple, "x86_64-unknown-linux-musl");
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn non_musl_target_lists_targets_without_the_alpine_pointer() {
+        let available = vec!["x86_64-unknown-linux-gnu".to_owned()];
+        let hint = hint_of(&target_not_served(
+            "https://index.example",
+            "powerpc64-unknown-linux-gnu",
+            &available,
+        ));
+        assert!(!hint.contains("Alpine"), "{hint}");
+        assert!(hint.contains("x86_64-unknown-linux-gnu"), "{hint}");
+        assert!(hint.contains("https://index.example"), "{hint}");
     }
 }
