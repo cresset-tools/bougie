@@ -412,6 +412,11 @@ pub fn ensure_synced(
     )?;
 
     let shims_dir = write_shims(project_root)?;
+    // Make Composer a default tool: seed a global `composer` on the
+    // user's PATH (tool bin dir) so `composer …` works from any shell,
+    // routed through bougie's project-aware shim. Best-effort and
+    // collision-safe — see `seed_global_composer_shim`.
+    seed_global_composer_shim(paths);
 
     let mut global = GlobalState::load(paths)?;
     global.host_target = Some(Triple::detect()?.to_string());
@@ -803,6 +808,56 @@ fn baseline_opt_outs(project: &ProjectConfig) -> BTreeSet<String> {
             _ => None,
         })
         .collect()
+}
+
+/// Seed (or refresh) a global `composer` entry in the tool bin dir
+/// (`~/.local/bin` by default) so a bare `composer` resolves to bougie
+/// from any shell — i.e. Composer behaves as a default-installed tool,
+/// routed through the project-aware shim (`shim::run_composer`).
+///
+/// Best-effort: a failure here must never fail `bougie sync`.
+/// Collision-safe: only ever refreshes a symlink bougie itself placed
+/// (one whose target is a `bougie` binary); a user's own `composer`
+/// (a real phar, or a symlink they made) is left untouched.
+#[cfg(unix)]
+fn seed_global_composer_shim(paths: &Paths) {
+    if let Err(e) = try_seed_global_composer_shim(paths) {
+        eprintln!("warning: could not seed global `composer` shim: {e}");
+    }
+}
+
+#[cfg(not(unix))]
+fn seed_global_composer_shim(_paths: &Paths) {}
+
+#[cfg(unix)]
+fn try_seed_global_composer_shim(paths: &Paths) -> Result<()> {
+    let bin_dir = paths.tool_bin_dir();
+    let link = bin_dir.join("composer");
+    if let Ok(meta) = link.symlink_metadata() {
+        let owned = meta.file_type().is_symlink()
+            && std::fs::read_link(&link)
+                .ok()
+                .and_then(|target| {
+                    target
+                        .file_stem()
+                        .map(|stem| stem.eq_ignore_ascii_case("bougie"))
+                })
+                .unwrap_or(false);
+        if !owned {
+            eprintln!(
+                "warning: not seeding a global `composer` — {} already exists \
+                 and was not created by bougie",
+                link.display()
+            );
+            return Ok(());
+        }
+        std::fs::remove_file(&link)?;
+    }
+    std::fs::create_dir_all(&bin_dir)?;
+    let bougie_bin =
+        std::env::current_exe().map_err(|e| eyre!("locating current executable: {e}"))?;
+    std::os::unix::fs::symlink(&bougie_bin, &link)?;
+    Ok(())
 }
 
 fn write_shims(project_root: &std::path::Path) -> Result<PathBuf> {

@@ -204,10 +204,7 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
             apcu_prefix,
             autoloader_suffix,
         ),
-        Command::Composer(ComposerCommand::External(args)) => {
-            let project_root = shim::locate_project_root_from_cwd()?;
-            shim::run_project_composer(&project_root, args)
-        }
+        Command::Composer(ComposerCommand::External(args)) => shim::run_composer(args),
         Command::SelfCmd(SelfCommand::Update { force }) => commands::self_update::run(force),
         Command::SelfCmd(SelfCommand::Version { short }) => {
             commands::self_version::run(format, short)

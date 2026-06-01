@@ -70,6 +70,26 @@ impl From<&ListedTool> for ToolEntry {
     }
 }
 
+/// Synthetic `bougie tool list` entry for the built-in, project-aware
+/// Composer. Composer isn't a normal tool (no receipt, no isolated
+/// vendor tree) — it's reimplemented natively for `install`/`update`/
+/// `dump-autoload`/`validate` and forwarded to the real phar for
+/// everything else, always with the project's PHP. Surfacing it here
+/// makes "composer is installed by default" visible.
+fn composer_builtin_entry(paths: &Paths) -> ToolEntry {
+    ToolEntry {
+        dir_name: "composer-composer".to_string(),
+        tool_dir: paths.tool_bin_dir().join("composer"),
+        package: Some("composer/composer".to_string()),
+        constraint: Some("stable".to_string()),
+        php_version: None,
+        php_flavor: None,
+        bins: vec!["composer".to_string()],
+        status: "built-in",
+        reason: None,
+    }
+}
+
 impl Render for ToolListResult {
     fn render_text(&self, w: &mut dyn Write) -> io::Result<()> {
         if self.tools.is_empty() {
@@ -77,6 +97,12 @@ impl Render for ToolListResult {
         }
         for t in &self.tools {
             match t.status {
+                "built-in" => writeln!(
+                    w,
+                    "{pkg} (built-in, project-aware; bins: {bins})",
+                    pkg = t.package.as_deref().unwrap_or("?"),
+                    bins = t.bins.join(", "),
+                )?,
                 "healthy" => writeln!(
                     w,
                     "{pkg} {ver} (php {php}, bins: {bins})",
@@ -111,9 +137,12 @@ impl Render for ToolListResult {
 pub fn run(format: OutputFormat) -> Result<ExitCode> {
     let paths = Paths::from_env()?;
     let listed = list(&paths)?;
+    // Composer leads the list as the always-present built-in tool.
+    let mut tools = vec![composer_builtin_entry(&paths)];
+    tools.extend(listed.iter().map(ToolEntry::from));
     let result = ToolListResult {
         schema_version: 1,
-        tools: listed.iter().map(ToolEntry::from).collect(),
+        tools,
     };
     emit(format, &result)?;
     Ok(ExitCode::SUCCESS)

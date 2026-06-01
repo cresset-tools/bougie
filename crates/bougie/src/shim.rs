@@ -109,6 +109,14 @@ pub fn exec(role: Role) -> Result<ExitCode> {
         return bougie_babysit::run(args);
     }
 
+    // Composer is resolved from the working directory (not the argv[0]
+    // shim layout) and supports a no-project global fallback, so it
+    // can't go through the shared "must be synced" resolution below.
+    // Handle it up front, like the project-agnostic roles above.
+    if role == Role::Composer {
+        return run_composer(args);
+    }
+
     let project_root = locate_project_root(&argv0)?;
 
     let (version, flavor) = read_project_resolved(&project_root).wrap_err_with(|| {
@@ -150,7 +158,7 @@ pub fn exec(role: Role) -> Result<ExitCode> {
             cmd.arg0(&bin);
             run_and_propagate(cmd, role.name())
         }
-        Role::Composer => run_project_composer(&project_root, args),
+        Role::Composer => unreachable!("composer role handled above"),
         Role::Unzip => unreachable!("unzip role handled above"),
         #[cfg(unix)]
         Role::Bougied => unreachable!("bougied role handled above"),
@@ -165,6 +173,60 @@ pub fn exec(role: Role) -> Result<ExitCode> {
 /// through the normal `bougie` binary rather than an argv[0] shim.
 pub fn locate_project_root_from_cwd() -> Result<PathBuf> {
     locate_project_root(OsStr::new("composer"))
+}
+
+/// Unified Composer entry point. Forwards `args` (a composer subcommand
+/// plus its arguments) to the real Composer phar:
+///
+/// - **Inside a project** (a `.bougie/` marker is found from the working
+///   directory, or `$BOUGIE_PROJECT_ROOT` is set): run the project's
+///   pinned phar with the project's pinned PHP and conf.d
+///   (`run_project_composer`). If the project exists but isn't synced,
+///   that path errors with a "run `bougie sync` first" hint.
+/// - **Outside any project**: fall back to a default global Composer
+///   (latest stable, fetched lazily) run with the highest installed NTS
+///   PHP (installing one if none is present). This makes project-free
+///   commands — `composer create-project`, `composer global …`,
+///   `composer diagnose` — work from anywhere.
+///
+/// Shared by the `composer` argv[0] shim (`Role::Composer`, including the
+/// global `composer` entry seeded into the tool bin dir) and the
+/// `bougie composer <subcommand>` passthrough.
+pub fn run_composer(args: Vec<std::ffi::OsString>) -> Result<ExitCode> {
+    match locate_project_root_from_cwd() {
+        Ok(project_root) => run_project_composer(&project_root, args),
+        // No `.bougie/` marker anywhere up the tree → no project context.
+        Err(_) => run_global_composer(args),
+    }
+}
+
+/// Run the default global Composer outside any project: latest-stable
+/// phar (fetched on demand) executed by the highest installed NTS PHP,
+/// auto-installing a PHP only if none exists. No project conf.d and no
+/// `.bougie/bin` on PATH — there is no project to scope to.
+fn run_global_composer(args: Vec<std::ffi::OsString>) -> Result<ExitCode> {
+    let paths = Paths::from_env()?;
+    let installed = bougie_composer::install_composer(&paths, &bougie_composer::default_request())
+        .wrap_err("installing the default global Composer")?;
+    let phar = paths.composer_phar(&installed.version);
+
+    let php_installer = crate::commands::tool_callbacks::php_installer();
+    let choice = match bougie_tool::resolve::pick_php(&paths, None, php_installer.as_ref()) {
+        Ok(choice) => choice,
+        // Nothing installed yet — install the latest stable NTS PHP so a
+        // bare `composer` works on a fresh machine.
+        Err(_) => php_installer(&paths, ">=8.0")
+            .wrap_err("installing a PHP to run the global Composer")?,
+    };
+
+    let mut composer_args: Vec<std::ffi::OsString> = Vec::with_capacity(args.len() + 1);
+    composer_args.push(phar.into_os_string());
+    composer_args.extend(args);
+    let mut cmd = std::process::Command::new(&choice.bin);
+    cmd.args(&composer_args).env("PHP_BINARY", &choice.bin);
+    #[cfg(unix)]
+    cmd.arg0("composer");
+    run_and_propagate(cmd, "composer")
 }
 
 /// Run the project's pinned Composer phar, forwarding `args` (the
