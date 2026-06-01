@@ -3,7 +3,7 @@
   "release-type": "simple",
   "include-component-in-tag": true,
   "separator": "-",
-  "bump-minor-pre-major": false,
+  "bump-minor-pre-major": true,
   "bump-patch-for-minor-pre-major": false,
   "changelog-path": "CHANGELOG.md",
   "packages": {
