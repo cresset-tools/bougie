@@ -2480,3 +2480,83 @@ fn repo_host_extracts_origin_for_per_host_throttle() {
     // Unparseable URL falls back to the raw string (still a stable key).
     assert_eq!(super::repo_host("not a url"), "not a url");
 }
+
+#[test]
+fn read_root_replaces_collects_only_wildcards() {
+    let composer_json = json!({
+        "require": {"acme/foo": "^1.0"},
+        "replace": {
+            "acme/disabled": "*",      // honored
+            "acme/other": "*",         // honored
+            "acme/pinned": "1.2.3",    // version replace — not honored (yet)
+            "ext-intl": "*",           // platform — ignored
+        },
+    });
+    let names = super::read_root_replaces(&composer_json);
+    assert!(names.contains(&PackageName::from("acme/disabled")));
+    assert!(names.contains(&PackageName::from("acme/other")));
+    assert!(!names.contains(&PackageName::from("acme/pinned")));
+    assert!(!names.contains(&PackageName::from("ext-intl")));
+    assert_eq!(names.len(), 2);
+}
+
+#[test]
+fn root_wildcard_replace_excludes_package_and_its_exclusive_deps() {
+    // `acme/meta` (a metapackage-style root require) pulls in `acme/mod`
+    // and `acme/keep`. `acme/mod` has its own exclusive dep `acme/only`.
+    // The root `replace`s `acme/mod` with `*`, so neither `acme/mod` nor
+    // `acme/only` may be installed — mirrors Mage-OS disabling a module.
+    let tmp = TempDir::new().unwrap();
+    let paths = paths_in(tmp.path());
+
+    let meta_body = p2_body(
+        "acme/meta",
+        &[("1.0.0", json!({"acme/mod": "^2.0", "acme/keep": "^1.0"}))],
+    );
+    let mod_body = p2_body("acme/mod", &[("2.5.0", json!({"acme/only": "^1.0"}))]);
+    let keep_body = p2_body("acme/keep", &[("1.0.0", json!({}))]);
+    let only_body = p2_body("acme/only", &[("1.0.0", json!({}))]);
+
+    let rt = rt();
+    let (uri, _server) = rt.block_on(async {
+        let server = MockServer::start().await;
+        mount_p2(&server, "acme/meta", meta_body).await;
+        // `acme/mod` and `acme/only` ARE mounted: if the fix regressed,
+        // they would resolve and show up — so the absence assertions
+        // below are meaningful, not just "metadata missing".
+        mount_p2(&server, "acme/mod", mod_body).await;
+        mount_p2(&server, "acme/keep", keep_body).await;
+        mount_p2(&server, "acme/only", only_body).await;
+        (server.uri(), server)
+    });
+
+    let composer_json = json!({
+        "require": {"acme/meta": "^1.0"},
+        "replace": {"acme/mod": "*"},
+    });
+    let client = crate::metadata::build_client().unwrap();
+    let provider =
+        ResolveProvider::build(client, paths, crate::metadata::Repo::from_url(uri), &composer_json, true).unwrap();
+    let root = provider.root_version();
+
+    let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
+
+    // Kept dependency resolves normally.
+    assert!(
+        solution.get(&PubGrubPackage::Package("acme/keep".into())).is_some(),
+        "acme/keep should resolve",
+    );
+    // The root-replaced package is gone…
+    assert!(
+        solution.get(&PubGrubPackage::Package("acme/mod".into())).is_none(),
+        "acme/mod is replaced by the root and must not be in the solution",
+    );
+    // …and so is its exclusive transitive dep (proves the edge was
+    // dropped, not just the package filtered post-solve).
+    assert!(
+        solution.get(&PubGrubPackage::Package("acme/only".into())).is_none(),
+        "acme/only is only needed by the replaced acme/mod and must not resolve",
+    );
+    // Neither was even fetched: only acme/meta + acme/keep.
+    assert_eq!(provider.cache_size(), 2, "only acme/meta + acme/keep fetched");
+}

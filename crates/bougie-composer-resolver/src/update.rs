@@ -122,6 +122,16 @@ pub struct ResolveProvider {
     /// non-404 hit.
     repos: Vec<Repo>,
     root_deps: Vec<(PackageName, ComposerRange)>,
+    /// Packages the root `composer.json` `replace`s with a wildcard
+    /// (`"*"`). Composer treats these as "the root provides every
+    /// version of this package": any requirement on them is satisfied by
+    /// the root and the real package is never installed (the idiom for
+    /// disabling a package — Mage-OS uses it to drop ~140 modules). We
+    /// honor it by dropping dependency edges to these names during
+    /// solving, so neither they nor their exclusive transitive deps enter
+    /// the solution. Version-/range-constrained root replaces would need
+    /// version-aware provision and aren't handled here.
+    root_replaces: FxHashSet<PackageName>,
     root_version: Version,
     /// Composer's top-level `minimum-stability` (`stable` by default).
     /// Sets the floor for candidate stability; any version whose
@@ -410,6 +420,7 @@ impl ResolveProvider {
         let prefer_stable = read_prefer_stable(composer_json)?;
         let (root_deps, stability_flags, raw_root_constraints) =
             read_root_requires(composer_json, no_dev)?;
+        let root_replaces = read_root_replaces(composer_json);
         let repos = read_repositories(composer_json, default_packagist, &auth)?;
         // Any synthetic value works for the root version — pubgrub
         // never compares it against another candidate. Match the
@@ -421,6 +432,7 @@ impl ResolveProvider {
             paths,
             repos,
             root_deps,
+            root_replaces,
             root_version,
             minimum_stability,
             prefer_stable,
@@ -1741,6 +1753,27 @@ impl SolveProgress {
 /// flags extracted from any `@<stability>` suffix on the constraint
 /// string. Composer accepts these only at the root level, so this
 /// is the only place they're parsed.
+/// Collect the names the root `composer.json` `replace`s with a wildcard
+/// (`"*"`). See [`ResolveProvider::root_replaces`]. Only the `"*"` form is
+/// honored — it's Composer's "the root provides all versions of this
+/// package" idiom (used to disable packages); version/range root replaces
+/// would need version-aware provision and are left to resolve normally.
+fn read_root_replaces(composer_json: &Value) -> FxHashSet<PackageName> {
+    let mut out = FxHashSet::default();
+    let Some(obj) = composer_json.get("replace").and_then(Value::as_object) else {
+        return out;
+    };
+    for (name, val) in obj {
+        if is_platform(name) {
+            continue;
+        }
+        if val.as_str().map(str::trim) == Some("*") {
+            out.insert(PackageName::from(name.as_str()));
+        }
+    }
+    out
+}
+
 fn read_root_requires(
     composer_json: &Value,
     no_dev: bool,
@@ -2512,6 +2545,10 @@ impl DependencyProvider for ResolveProvider {
             let constraints: DependencyConstraints<Self::P, Self::VS> = self
                 .root_deps
                 .iter()
+                // A package the root both requires and wildcard-`replace`s
+                // is provided by the root — drop the edge (see
+                // `root_replaces`).
+                .filter(|(n, _)| !self.root_replaces.contains(n))
                 .cloned()
                 .map(|(n, r)| (PubGrubPackage::Package(n), r))
                 .collect();
@@ -2771,6 +2808,10 @@ impl ResolveProvider {
         }
         Ok(staging
             .into_iter()
+            // Drop edges to packages the root wildcard-`replace`s: the
+            // root provides them, so they (and their exclusive transitive
+            // deps) must never enter the solution. See `root_replaces`.
+            .filter(|(n, _)| !self.root_replaces.contains(n))
             .map(|(n, r)| (PubGrubPackage::Package(n), r))
             .collect())
     }
@@ -3322,6 +3363,15 @@ fn collect_active_replaces(
             if solution_names.contains(replaced_name.as_str()) {
                 replaced.insert(replaced_name.clone());
             }
+        }
+    }
+    // Belt-and-suspenders: root wildcard-`replace`s are normally kept out
+    // of the solution by edge-dropping during solving, but if any slipped
+    // through (e.g. a path that bypassed `get_dependencies`), drop them
+    // from the output too so the lock/install never lists them.
+    for name in &provider.root_replaces {
+        if solution_names.contains(name.as_str()) {
+            replaced.insert(name.to_string());
         }
     }
     replaced
