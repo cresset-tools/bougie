@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.10.1...bougie-v0.11.0) (2026-06-01)
+
+
+### Features
+
+* **daemon:** forward the extracting phase to the CLI's mirrored download bar ([#272](https://github.com/cresset-tools/bougie/issues/272)) ([ecbb147](https://github.com/cresset-tools/bougie/commit/ecbb147c076dc6435da6e1f573a356d947f9756e))
+
 ## [0.10.1](https://github.com/cresset-tools/bougie/compare/bougie-v0.10.0...bougie-v0.10.1) (2026-06-01)
 
 
