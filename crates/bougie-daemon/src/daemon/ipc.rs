@@ -177,11 +177,18 @@ pub struct DownloadFrame<'a> {
     pub pos: u64,
     pub total: u64,
     pub label: &'a str,
+    /// `true` once the artifact in `label` has finished downloading and
+    /// is being extracted. Lets the CLI's mirrored bar flip its prefix
+    /// to `extracting` the same way an in-process bar does, instead of
+    /// freezing at `N/N bytes` through the silent decompress. Defaults
+    /// to `false` on the CLI side, so an older daemon that omits it
+    /// degrades to the previous (download-only) labelling.
+    pub extracting: bool,
 }
 
 impl<'a> DownloadFrame<'a> {
-    pub fn new(pos: u64, total: u64, label: &'a str) -> Self {
-        Self { schema_version: SCHEMA_VERSION, typ: "download", pos, total, label }
+    pub fn new(pos: u64, total: u64, label: &'a str, extracting: bool) -> Self {
+        Self { schema_version: SCHEMA_VERSION, typ: "download", pos, total, label, extracting }
     }
 }
 
@@ -508,8 +515,9 @@ async fn write_download(
     pos: u64,
     total: u64,
     label: &str,
+    extracting: bool,
 ) -> bool {
-    let frame = DownloadFrame::new(pos, total, label);
+    let frame = DownloadFrame::new(pos, total, label, extracting);
     let bytes = match serde_json::to_vec(&frame) {
         Ok(b) => b,
         Err(_) => return false,
@@ -584,6 +592,10 @@ async fn dispatch_up_streaming(
     let mut pos: u64 = 0;
     let mut total: u64 = 0;
     let mut label = String::new();
+    // Mirrors the bar's prefix phase: an `Extracting` event flips it on,
+    // the next `Current` (a fresh artifact entering its download) flips
+    // it off — exactly how `DownloadBar`'s prefix alternates locally.
+    let mut extracting = false;
     let mut dirty = false;
     let mut connected = true;
 
@@ -599,13 +611,21 @@ async fn dispatch_up_streaming(
                     dirty = true;
                 }
                 Some(DownloadEvent::Current { name }) => {
-                    if name != label {
+                    // A fresh artifact entering its download phase ends
+                    // any extraction the prior one was in.
+                    if name != label || extracting {
                         label = name;
+                        extracting = false;
                         dirty = true;
                     }
                 }
                 Some(DownloadEvent::Inc { bytes }) => {
                     pos = pos.saturating_add(bytes);
+                    dirty = true;
+                }
+                Some(DownloadEvent::Extracting { name }) => {
+                    label = name;
+                    extracting = true;
                     dirty = true;
                 }
                 Some(DownloadEvent::Finish) => {
@@ -621,7 +641,7 @@ async fn dispatch_up_streaming(
                 }
             },
             _ = ticker.tick(), if dirty && connected => {
-                if !write_download(write_half, pos, total, &label).await {
+                if !write_download(write_half, pos, total, &label, extracting).await {
                     connected = false;
                 }
                 dirty = false;
@@ -635,13 +655,16 @@ async fn dispatch_up_streaming(
     while let Ok(ev) = rx.try_recv() {
         match ev {
             DownloadEvent::Plan { bytes } => { total = total.saturating_add(bytes); dirty = true; }
-            DownloadEvent::Current { name } => { if name != label { label = name; dirty = true; } }
+            DownloadEvent::Current { name } => {
+                if name != label || extracting { label = name; extracting = false; dirty = true; }
+            }
             DownloadEvent::Inc { bytes } => { pos = pos.saturating_add(bytes); dirty = true; }
+            DownloadEvent::Extracting { name } => { label = name; extracting = true; dirty = true; }
             DownloadEvent::Finish => {}
         }
     }
     if dirty && connected {
-        let _ = write_download(write_half, pos, total, &label).await;
+        let _ = write_download(write_half, pos, total, &label, extracting).await;
     }
     write_terminal(write_half, &result).await;
 }
@@ -1086,5 +1109,19 @@ mod tests {
         assert!(s.contains(r#""type":"progress""#));
         assert!(s.contains(r#""stream":"stderr""#));
         assert!(s.contains("downloading redis"));
+    }
+
+    #[test]
+    fn download_frame_carries_extracting_phase() {
+        // The extracting flag rides on every download frame so the CLI's
+        // mirrored bar can flip its prefix; assert both phases serialize.
+        let dl = DownloadFrame::new(40, 100, "opensearch-2.19.5", false);
+        let s = serde_json::to_string(&dl).unwrap();
+        assert!(s.contains(r#""type":"download""#));
+        assert!(s.contains(r#""extracting":false"#));
+
+        let ex = DownloadFrame::new(100, 100, "jdk-21.0.11_10", true);
+        let s = serde_json::to_string(&ex).unwrap();
+        assert!(s.contains(r#""extracting":true"#));
     }
 }

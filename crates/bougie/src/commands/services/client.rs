@@ -73,6 +73,12 @@ enum ResponseFrame {
         total: u64,
         #[serde(default)]
         label: String,
+        /// `true` while the current artifact is being extracted (vs
+        /// downloaded). `#[serde(default)]` so frames from an older
+        /// daemon that predates the field still deserialize (as `false`,
+        /// i.e. download-only labelling — the prior behaviour).
+        #[serde(default)]
+        extracting: bool,
     },
     Result {
         ok: bool,
@@ -418,10 +424,10 @@ fn issue<R: DeserializeOwned>(stream: UnixStream, request: &Value) -> Result<R> 
                     }
                 }
             }
-            ResponseFrame::Download { pos, total, label } => {
+            ResponseFrame::Download { pos, total, label, extracting } => {
                 let bar = download_bar
                     .get_or_insert_with(|| bougie_fetch::DownloadBar::new("service"));
-                bar.set_progress(pos, total, &label);
+                bar.set_progress(pos, total, &label, extracting);
             }
             ResponseFrame::Result { ok: true, result, .. } => {
                 if let Some(bar) = download_bar.take() {
@@ -441,6 +447,36 @@ fn issue<R: DeserializeOwned>(stream: UnixStream, request: &Value) -> Result<R> 
                 });
                 return Err(eyre!("bougied: {} ({})", e.message, e.code));
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ResponseFrame;
+
+    #[test]
+    fn download_frame_defaults_extracting_false_for_old_daemon() {
+        // A daemon predating the `extracting` field omits it; the CLI
+        // must still parse the frame and treat it as the download phase.
+        let line = r#"{"type":"download","pos":10,"total":100,"label":"opensearch"}"#;
+        match serde_json::from_str::<ResponseFrame>(line).unwrap() {
+            ResponseFrame::Download { pos, total, label, extracting } => {
+                assert_eq!((pos, total), (10, 100));
+                assert_eq!(label, "opensearch");
+                assert!(!extracting, "missing field must default to false");
+            }
+            other => panic!("expected Download, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn download_frame_parses_extracting_true() {
+        let line =
+            r#"{"type":"download","pos":100,"total":100,"label":"jdk","extracting":true}"#;
+        match serde_json::from_str::<ResponseFrame>(line).unwrap() {
+            ResponseFrame::Download { extracting, .. } => assert!(extracting),
+            other => panic!("expected Download, got {other:?}"),
         }
     }
 }
