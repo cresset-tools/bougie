@@ -199,6 +199,25 @@ fn fetch_blocking(
     let mut visited = HashSet::new();
     visited.insert((manifest.name.clone(), manifest.version.clone()));
 
+    // Plan the bar's total across the *whole* tree (this manifest plus
+    // every transitive `requires_tools[]` tool and its closure) before
+    // streaming a byte, so the denominator is stable and correct from the
+    // start — see `plan_install_bytes`. Uses its own visited set, seeded
+    // like the install walk's, so the two walks dedup diamonds identically.
+    let mut plan_visited = HashSet::new();
+    plan_visited.insert((manifest.name.clone(), manifest.version.clone()));
+    plan_install_bytes(
+        &client,
+        paths,
+        &manifest,
+        bar,
+        &fetched,
+        &host,
+        &cache_root,
+        &target,
+        &mut plan_visited,
+    )?;
+
     let mut report: Vec<ResolvedTool> = Vec::new();
     install_into(
         &client,
@@ -251,8 +270,11 @@ fn install_into(
     let closure: Vec<bougie_backend::ClosureRef> =
         manifest.closure.iter().map(bougie_backend::ClosureRef::from).collect();
 
-    bar.add_planned(manifest.blob.size);
-    plan_closure_bytes(paths, &closure, bar);
+    // The bar's planned total is grown once, up front, by
+    // `plan_install_bytes` in `fetch_blocking` — covering this blob, its
+    // closure, and every transitive `requires_tools[]` tool — so we don't
+    // grow it here (that lazy, per-manifest planning is exactly what made
+    // the bar overshoot for multi-download services like opensearch).
     bar.set_current(manifest.tag.clone());
 
     let spec = BlobSpec {
@@ -338,6 +360,47 @@ fn install_required_tool(
         ));
     }
 
+    let inner_manifest =
+        resolve_required_manifest(client, rt, fetched, host, cache_root, target)?;
+
+    install_into(
+        client,
+        paths,
+        &inner_manifest,
+        &install_root,
+        bar,
+        fetched,
+        host,
+        cache_root,
+        target,
+        visited,
+        report,
+    )?;
+    report.push(ResolvedTool {
+        kind: ResolvedKind::Tool,
+        name: rt.name.clone(),
+        version: rt.version.clone(),
+        fetched: true,
+        install_path: install_path_rel,
+    });
+    Ok(install_root)
+}
+
+/// Resolve a `requires_tools[]` entry to its validated [`Manifest`]:
+/// fetch the inner tool's `tool/<name>` section, locate the row for
+/// `rt.tag`, then fetch + sha-verify + validate the manifest it points
+/// at. Shared by [`install_required_tool`] (which then installs it) and
+/// [`plan_install_bytes`] (which only reads its blob/closure sizes), so
+/// the two passes resolve the *same* manifest the same way — the
+/// `fetch_manifest` disk cache means the second resolution is free.
+fn resolve_required_manifest(
+    client: &reqwest::blocking::Client,
+    rt: &RequiresTool,
+    fetched: &FetchedRoot,
+    host: &str,
+    cache_root: &Path,
+    target: &str,
+) -> Result<Manifest> {
     let section = fetch_tool_section(client, fetched, host, cache_root, target, &rt.name)?;
     let row = section
         .artifacts
@@ -366,38 +429,71 @@ fn install_required_tool(
             )
         })?;
 
-    let inner_manifest = fetch_manifest(
+    let manifest = fetch_manifest(
         client,
         host,
         cache_root,
         &row.manifest.path,
         &row.manifest.sha256,
     )?;
-    inner_manifest
+    manifest
         .validate()
-        .wrap_err_with(|| format!("validating manifest for {}", inner_manifest.tag))?;
+        .wrap_err_with(|| format!("validating manifest for {}", manifest.tag))?;
+    Ok(manifest)
+}
 
-    install_into(
-        client,
-        paths,
-        &inner_manifest,
-        &install_root,
-        bar,
-        fetched,
-        host,
-        cache_root,
-        target,
-        visited,
-        report,
-    )?;
-    report.push(ResolvedTool {
-        kind: ResolvedKind::Tool,
-        name: rt.name.clone(),
-        version: rt.version.clone(),
-        fetched: true,
-        install_path: install_path_rel,
-    });
-    Ok(install_root)
+/// Pre-walk the whole install tree (the entry manifest plus every
+/// transitive `requires_tools[]` dependency) and grow `bar`'s planned
+/// total by the download size of every blob and missing closure entry
+/// — **before** [`install_into`] streams the first byte.
+///
+/// Without this pass the bar's denominator was filled lazily, one
+/// manifest at a time, as the recursive install reached each tool: a
+/// service like opensearch (which pulls a separate bundled JDK via
+/// `requires_tools[]`) would download the JDK against a total that only
+/// counted opensearch, so the bar overshot (`122 MiB / 99 MiB`). Summing
+/// every size up front makes the total stable and correct from the
+/// first byte.
+///
+/// Mirrors the install walk's structure exactly — same `requires_tools`
+/// recursion, same `store/<name>-<version>` already-installed skip, same
+/// cycle/diamond dedup via `visited` — so the planned set matches the
+/// fetched set. Already-installed tools contribute nothing (they won't
+/// download); a `requires_tools` cycle is silently skipped here and left
+/// for the install walk to reject with a precise error.
+#[allow(clippy::too_many_arguments)]
+fn plan_install_bytes(
+    client: &reqwest::blocking::Client,
+    paths: &Paths,
+    manifest: &Manifest,
+    bar: &DownloadBar,
+    fetched: &FetchedRoot,
+    host: &str,
+    cache_root: &Path,
+    target: &str,
+    visited: &mut HashSet<(String, String)>,
+) -> Result<()> {
+    let closure: Vec<bougie_backend::ClosureRef> =
+        manifest.closure.iter().map(bougie_backend::ClosureRef::from).collect();
+    bar.add_planned(manifest.blob.size);
+    plan_closure_bytes(paths, &closure, bar);
+
+    for rt in &manifest.requires_tools {
+        let install_root = paths.store().join(format!("{}-{}", rt.name, rt.version));
+        if install_root.is_dir() {
+            // Already installed — the install walk early-returns here too
+            // and downloads nothing, so it mustn't be planned.
+            continue;
+        }
+        if !visited.insert((rt.name.clone(), rt.version.clone())) {
+            // Diamond (counted on first encounter) or cycle (the install
+            // walk surfaces the precise error) — either way, don't recount.
+            continue;
+        }
+        let inner = resolve_required_manifest(client, rt, fetched, host, cache_root, target)?;
+        plan_install_bytes(client, paths, &inner, bar, fetched, host, cache_root, target, visited)?;
+    }
+    Ok(())
 }
 
 /// Resolve the `tool/<name>` section under `target` from the cached
@@ -655,6 +751,97 @@ mod tests {
         assert_eq!(report[0].version, "21.0.11+10");
         assert!(!report[0].fetched);
         assert_eq!(report[0].install_path, "jdk-21.0.11+10");
+    }
+
+    // ---------- plan_install_bytes ----------
+
+    /// Build a sized tool manifest with an explicit closure + requires
+    /// list, for exercising the up-front planning walk.
+    #[cfg(not(target_os = "windows"))]
+    fn sized_tool_manifest(
+        name: &str,
+        blob_size: u64,
+        closure: serde_json::Value,
+        requires_tools: serde_json::Value,
+    ) -> Manifest {
+        serde_json::from_value(serde_json::json!({
+            "schema": 1, "kind": "tool", "name": name,
+            "tag": format!("{name}-1.0.0-x86_64-unknown-linux-gnu-default"),
+            "version": "1.0.0",
+            "target": "x86_64-unknown-linux-gnu",
+            "flavor": "default",
+            "libc": {"family":"gnu","min":"2.17"},
+            "blob": {"url":"https://example.invalid/o","sha256":"aa","size": blob_size},
+            "closure": closure,
+            "requires_tools": requires_tools,
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    #[cfg(not(target_os = "windows"))]
+    fn plan_counts_blob_plus_missing_closure() {
+        // No requires_tools ⇒ no HTTP. Planned total must be the main
+        // blob plus every closure entry whose store dir is absent.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let paths = Paths::new(tmp.path().into(), tmp.path().join("cache"));
+        let closure = serde_json::json!([{
+            "name":"libfoo","version":"1.2.3","hash":"deadbeef",
+            "sha256":"bb","url":"https://example.invalid/c","size": 2048
+        }]);
+        let manifest = sized_tool_manifest("opensearch", 1000, closure, serde_json::json!([]));
+
+        let bar = DownloadBar::hidden();
+        let mut visited = HashSet::new();
+        plan_install_bytes(
+            &reqwest::blocking::Client::new(),
+            &paths,
+            &manifest,
+            &bar,
+            &empty_fetched_root(),
+            "https://example.invalid",
+            &tmp.path().join("cache"),
+            "x86_64-unknown-linux-gnu",
+            &mut visited,
+        )
+        .expect("planning a closure-only manifest needs no network");
+        assert_eq!(bar.planned(), 1000 + 2048);
+    }
+
+    #[test]
+    #[cfg(not(target_os = "windows"))]
+    fn plan_skips_already_installed_required_tool() {
+        // The required JDK is already on disk, so the walk must take the
+        // `is_dir()` skip and never resolve its section — proven by an
+        // `empty_fetched_root` whose target map would error on any lookup.
+        // Only the outer blob is planned; the JDK contributes nothing.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let paths = Paths::new(tmp.path().into(), tmp.path().join("cache"));
+        std::fs::create_dir_all(paths.store().join("jdk-21.0.11+10/bin")).unwrap();
+
+        let requires = serde_json::json!([{
+            "name":"jdk","version":"21.0.11+10",
+            "tag":"jdk-21.0.11_10-x86_64-unknown-linux-gnu-default",
+            "manifest_url":"https://example.invalid/jdk.json","link_into":"jdk"
+        }]);
+        let manifest =
+            sized_tool_manifest("opensearch", 5000, serde_json::json!([]), requires);
+
+        let bar = DownloadBar::hidden();
+        let mut visited = HashSet::new();
+        plan_install_bytes(
+            &reqwest::blocking::Client::new(),
+            &paths,
+            &manifest,
+            &bar,
+            &empty_fetched_root(),
+            "https://example.invalid",
+            &tmp.path().join("cache"),
+            "x86_64-unknown-linux-gnu",
+            &mut visited,
+        )
+        .expect("an already-installed required tool must be skipped without HTTP");
+        assert_eq!(bar.planned(), 5000, "only the outer blob should be planned");
     }
 
     // ---------- audit_catalog_drift (Phase 3) ----------
