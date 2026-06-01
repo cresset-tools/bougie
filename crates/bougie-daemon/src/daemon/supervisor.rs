@@ -204,9 +204,29 @@ impl Supervisor {
     }
 
     /// The detected supervision backend (process-group fallback or a
-    /// delegated cgroup-v2 subtree). Consumed by later phases.
+    /// delegated cgroup-v2 subtree).
     pub fn backend(&self) -> &super::cgroup::SupervisionBackend {
         &self.backend
+    }
+
+    /// Kill + remove leftover service leaf cgroups from a previous
+    /// bougied that died without cleaning up. Called once at startup —
+    /// the flock singleton guarantees no other live instance, so any
+    /// leaves present are orphans safe to reap. No-op under the
+    /// process-group backend. Runs on the blocking pool.
+    pub async fn reap_stale_leaves(&self) {
+        let Some(base) = self.backend.base().map(std::path::Path::to_path_buf) else {
+            return;
+        };
+        let kill_supported = self.backend.kill_supported();
+        let reaped = tokio::task::spawn_blocking(move || {
+            super::cgroup::reap_stale_leaves(&base, kill_supported)
+        })
+        .await
+        .unwrap_or_default();
+        if !reaped.is_empty() {
+            tracing::warn!(?reaped, "reaped leftover service cgroups from a dead bougied");
+        }
     }
 
     /// Snapshot every service for the `status` IPC method.
@@ -330,6 +350,34 @@ impl Supervisor {
             babysit_argv.push(a.into());
         }
 
+        // If a cgroup backend is active, create this service's leaf
+        // cgroup and open its `cgroup.procs`. The babysit's pre_exec
+        // writes "0" to it, moving the babysit — and the service it
+        // execs, plus every descendant — into the leaf, so teardown can
+        // `cgroup.kill` the whole subtree (catching daemonized escapees
+        // like `epmd` that `killpg` can't reach). Best-effort: any
+        // failure logs and falls back to process-group-only for this
+        // service. `cgroup_fd_owned` is held open until after spawn so
+        // the fd stays valid across the fork.
+        let cgroup_fd_owned: Option<std::os::fd::OwnedFd> = match self.backend.base() {
+            Some(base) => match super::cgroup::open_leaf_procs(base, entry.name) {
+                Ok((_leaf, fd)) => Some(fd),
+                Err(e) => {
+                    tracing::warn!(
+                        service = entry.name,
+                        error = %e,
+                        "cgroup leaf setup failed; process-group only for this service"
+                    );
+                    None
+                }
+            },
+            None => None,
+        };
+        let cgroup_join_fd: Option<i32> = cgroup_fd_owned.as_ref().map(|f| {
+            use std::os::fd::AsRawFd;
+            f.as_raw_fd()
+        });
+
         let mut cmd = tokio::process::Command::new(&bougie_bin);
         cmd.args(&babysit_argv)
             .arg0("bougie-babysit")
@@ -367,6 +415,15 @@ impl Supervisor {
                 if libc_clear_cloexec(BABYSIT_CONTROL_FD) < 0 {
                     return Err(std::io::Error::last_os_error());
                 }
+                // Join the service's leaf cgroup BEFORE the sandbox
+                // locks down filesystem access (Landlock would block the
+                // `/sys/fs/cgroup` write). Writing "0" moves the calling
+                // process; descendants inherit the cgroup.
+                if let Some(fd) = cgroup_join_fd {
+                    let borrowed = rustix::fd::BorrowedFd::borrow_raw(fd);
+                    rustix::io::write(borrowed, b"0")
+                        .map_err(|e| std::io::Error::from_raw_os_error(e.raw_os_error()))?;
+                }
                 if let Some(policy) = policy.as_ref() {
                     sandbox_run::apply_sandbox(policy)
                         .map_err(|e| std::io::Error::other(format!("sandbox: {e}")))?;
@@ -385,6 +442,9 @@ impl Supervisor {
         // means the child holds the only ref. (Doesn't affect the
         // already-dup2'd fd 3 in the child.)
         drop(child_sock);
+        // The child has forked; the parent's cgroup.procs fd has served
+        // its purpose (the pre_exec wrote through it). Close it.
+        drop(cgroup_fd_owned);
         let pid = child.id();
 
         // Read the babysit's first line: `pgid=<n>\n`. Treat any
@@ -514,6 +574,18 @@ impl Supervisor {
         // the now-dead babysit.
         drop(control_sock);
 
+        // cgroup backstop: the babysit's graceful killpg above handles
+        // the well-behaved process group, but daemonized escapees (e.g.
+        // `epmd`) leave it. `cgroup.kill` sweeps the whole leaf, then we
+        // remove it. Off the async runtime — the rmdir retry blocks.
+        if let Some(leaf) = self.backend.leaf(entry.name) {
+            let kill_supported = self.backend.kill_supported();
+            let _ = tokio::task::spawn_blocking(move || {
+                super::cgroup::kill_and_remove(&leaf, kill_supported);
+            })
+            .await;
+        }
+
         if let Some(svc) = self.services.get_mut(entry.name) {
             svc.state = ServiceState::Stopped;
             svc.pid = None;
@@ -535,6 +607,11 @@ impl Supervisor {
         // Pass 1: reap exited children, transition Failed, schedule
         // the next restart deadline with exponential backoff.
         let now = Instant::now();
+        // Detach the cgroup base from `self` so the loop below can
+        // mutably borrow `self.services` while we still build leaf paths.
+        let cgroup_base = self.backend.base().map(std::path::Path::to_path_buf);
+        let cgroup_kill = self.backend.kill_supported();
+        let mut leaves_to_reap: Vec<std::path::PathBuf> = Vec::new();
         for svc in self.services.values_mut() {
             let Some(child) = svc.child.as_mut() else {
                 continue;
@@ -548,6 +625,12 @@ impl Supervisor {
                     // so the scheduled respawn doesn't double-spawn.
                     if let Some(pgid) = svc.service_pgid {
                         reap_orphan_group(svc.name, pgid, svc.service_pgid_starttime);
+                    }
+                    // cgroup backstop for the crash path: sweep the leaf
+                    // (escapees the killpg reap above can't reach) once
+                    // we're done with the `self.services` borrow.
+                    if let Some(base) = &cgroup_base {
+                        leaves_to_reap.push(super::cgroup::leaf_under(base, svc.name));
                     }
                     let prev_run = svc.started_at.map(|t| now - t);
                     // Reset rule: a Running window of at least
@@ -589,6 +672,16 @@ impl Supervisor {
                     tracing::warn!(service = svc.name, error = %e, "try_wait failed");
                 }
             }
+        }
+
+        // cgroup teardown for any leaves whose service crashed this tick.
+        // Off the loop (the `self.services` borrow is released) and off
+        // the async runtime (the rmdir retry blocks).
+        for leaf in leaves_to_reap {
+            let _ = tokio::task::spawn_blocking(move || {
+                super::cgroup::kill_and_remove(&leaf, cgroup_kill);
+            })
+            .await;
         }
 
         // Pass 2: collect names of services that are Failed with a

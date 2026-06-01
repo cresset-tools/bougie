@@ -1,7 +1,16 @@
 # Service supervision: cgroup-v2 backend + fallback
 
-Status: design. No implementation yet beyond the existing process-group +
-`PR_SET_PDEATHSIG` floor (shipped in `bougie-babysit`).
+Status: phases 1–3 implemented in `bougie-daemon`; phase 4 (rabbitmq/epmd
+validation) remains. The process-group + `PR_SET_PDEATHSIG` floor is
+shipped in `bougie-babysit`.
+
+**Design refinement during implementation:** the leaf join does *not* need
+a `--cgroup` flag on the babysit. bougied opens the leaf's `cgroup.procs`
+and the **supervisor's** `pre_exec` (which already does the socketpair
+dup2 + sandbox) writes `"0"` to it — before the sandbox lockdown — moving
+the babysit into the leaf so the service it execs (and all descendants)
+inherit it. No babysit changes, race-free (membership set before the
+service's first instruction).
 
 ## Problem
 
@@ -191,18 +200,24 @@ manual path hits a delegation wall.
 
 ## Implementation phases
 
-1. **Probe + backend type.** `bougie-daemon`: capability probe →
-   `SupervisionBackend`, plumbed into the supervisor. No behaviour change
-   yet (still `ProcessGroup`). Unit-test the probe against synthetic
-   cgroup trees.
-2. **Leaf lifecycle.** Create/destroy leaf cgroups around service spawn;
-   `--cgroup` flag on babysit + `pre_exec` join. Service still also gets
-   pgroup/pdeathsig.
-3. **cgroup teardown + reap.** Wire `cgroup.kill` (+ freeze fallback) into
-   `cleanup_group` and the supervisor reaper; add startup reap.
-4. **rabbitmq/epmd validation.** Confirm `bougie down rabbitmq` leaves no
-   `epmd`. (Once cgroups catch it, the separate epmd-taming idea becomes
-   optional.)
+1. **[done] Probe + backend type.** `bougie-daemon/src/daemon/cgroup.rs`:
+   capability probe → `SupervisionBackend`, recorded + logged by the
+   supervisor. Probe core (`probe_at`) unit-tested against synthetic
+   trees.
+2. **[done] Leaf lifecycle + join.** Supervisor creates the per-service
+   leaf and joins the babysit (→ service) via the existing `pre_exec`
+   (see design refinement above). Service still also gets pgroup +
+   pdeathsig. Best-effort: a cgroup setup failure logs and falls back to
+   process-group-only for that service.
+3. **[done] cgroup teardown + reap.** `cgroup.kill` (+ freeze fallback)
+   wired into `stop()` and the `check_all` crash-reap as a backstop after
+   the babysit's graceful killpg; leftover leaves reaped at daemon
+   startup (before `restore_services`). Real-kernel test proves
+   `cgroup.kill` reaps a `setsid` escapee that killpg would miss (gated
+   on a delegated cgroup-v2 host; skips loudly otherwise).
+4. **[todo] rabbitmq/epmd validation.** Confirm `bougie down rabbitmq`
+   leaves no `epmd`. (Once cgroups catch it, the separate epmd-taming
+   idea becomes optional.)
 
 ## Testing
 

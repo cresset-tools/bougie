@@ -109,6 +109,12 @@ async fn serve(paths: Paths) -> Result<ExitCode> {
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let state = Arc::new(DaemonState::new(paths, shutdown_tx.clone()));
 
+    // Reap leftover service cgroups from a previous bougied that died
+    // without cleaning up (the flock singleton guarantees we're the only
+    // live instance now). Done before `restore_services` so re-spawns
+    // start from a clean slate. No-op under the process-group backend.
+    state.supervisor.lock().await.reap_stale_leaves().await;
+
     // SIGTERM / SIGINT flip the shutdown flag. The accept loop
     // observes the flag and exits.
     {
