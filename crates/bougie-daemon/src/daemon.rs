@@ -12,6 +12,7 @@
 //! supervision lands in Phase 3.
 
 pub mod catalog;
+pub mod cgroup;
 pub mod ipc;
 pub mod logs;
 pub mod provisioners;

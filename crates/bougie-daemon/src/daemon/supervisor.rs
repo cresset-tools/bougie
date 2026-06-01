@@ -180,6 +180,12 @@ fn is_zero_u32(n: &u32) -> bool {
 pub struct Supervisor {
     services: HashMap<&'static str, ManagedService>,
     paths: Paths,
+    /// How this host can kill a service's whole subtree. Detected once
+    /// at construction. Phase 1: recorded + logged, not yet consumed —
+    /// teardown still uses the babysit's process-group path. Later
+    /// phases route through this to use per-service cgroups when
+    /// available. See `SUPERVISION_PLAN.md`.
+    backend: super::cgroup::SupervisionBackend,
 }
 
 impl Supervisor {
@@ -188,7 +194,19 @@ impl Supervisor {
         for entry in catalog::CATALOG {
             services.insert(entry.name, ManagedService::new(entry.name));
         }
-        Self { services, paths }
+        let backend = super::cgroup::detect();
+        tracing::info!(
+            backend = backend.label(),
+            base = backend.base().map(|p| p.display().to_string()),
+            "bougied: supervision backend"
+        );
+        Self { services, paths, backend }
+    }
+
+    /// The detected supervision backend (process-group fallback or a
+    /// delegated cgroup-v2 subtree). Consumed by later phases.
+    pub fn backend(&self) -> &super::cgroup::SupervisionBackend {
+        &self.backend
     }
 
     /// Snapshot every service for the `status` IPC method.
