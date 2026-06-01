@@ -136,12 +136,45 @@ async fn serve(cfg: Config) -> Result<ExitCode> {
         .kill_on_drop(false);
 
     // SAFETY: pre_exec runs after fork, before exec, in the child
-    // address space. `setpgid(0, 0)` is async-signal-safe.
+    // address space. Every call below is async-signal-safe: `setpgid`,
+    // `prctl(PR_SET_PDEATHSIG)`, and `getppid`.
     #[allow(unsafe_code)]
     unsafe {
         cmd.pre_exec(|| {
+            // Own process group, so the babysit's `cleanup_group` can
+            // `killpg` the whole service subtree.
             rustix::process::setpgid(None, None)
-                .map_err(|e| std::io::Error::from_raw_os_error(e.raw_os_error()))
+                .map_err(|e| std::io::Error::from_raw_os_error(e.raw_os_error()))?;
+            // Parent-death signal: covers the one hole `cleanup_group`
+            // can't. The normal stop paths (SIGTERM / control-socket EOF
+            // / service self-exit) all run `cleanup_group`. But if the
+            // babysit is itself SIGKILLed — OOM killer, `kill -9` — no
+            // handler runs and the service would be reparented to init
+            // and orphaned. `PR_SET_PDEATHSIG` makes the kernel SIGKILL
+            // this service when its parent (the babysit) dies, so it
+            // can't outlive its supervisor. Survives the upcoming execve
+            // (we don't exec a set-uid binary). Linux-only; macOS has no
+            // equivalent, so the service there relies on the cleanup
+            // paths above (a SIGKILLed babysit can still orphan on mac).
+            #[cfg(target_os = "linux")]
+            {
+                rustix::process::set_parent_process_death_signal(Some(
+                    rustix::process::Signal::KILL,
+                ))
+                .map_err(|e| std::io::Error::from_raw_os_error(e.raw_os_error()))?;
+                // PR_SET_PDEATHSIG races a parent that has *already*
+                // died: if the babysit exited between our fork and the
+                // prctl above, the signal never arrives. Detect that
+                // window — reparenting to init means the babysit is
+                // already gone — and refuse to exec rather than spawn an
+                // instant orphan.
+                if rustix::process::getppid().is_none_or(|p| p.is_init()) {
+                    return Err(std::io::Error::other(
+                        "babysit exited before the service could exec",
+                    ));
+                }
+            }
+            Ok(())
         });
     }
 

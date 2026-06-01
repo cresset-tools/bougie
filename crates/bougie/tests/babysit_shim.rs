@@ -224,6 +224,38 @@ fn babysit_kills_group_on_sigterm() {
     assert!(status.success(), "babysit should exit 0 after SIGTERM cleanup, got {status:?}");
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn babysit_sigkill_takes_service_down_via_pdeathsig() {
+    let td = TempDir::new().unwrap();
+    let shim = babysit_shim(&td);
+    // Keep `sock` (the bougied end) alive for the whole test so the
+    // socket-EOF cleanup path can't fire — that way the ONLY thing that
+    // can kill the service is PR_SET_PDEATHSIG.
+    let (mut child, mut sock) =
+        spawn_babysit(&shim, 2, "/bin/sh", &["-c", "exec /bin/sleep 60"]);
+    let pgid = read_pgid_line(&mut sock);
+    assert!(pgrp_alive(pgid), "service group should be alive after spawn");
+
+    // SIGKILL the babysit: none of its cleanup handlers can run (SIGKILL
+    // is uncatchable, and we hold `sock` open so there's no EOF to act
+    // on even if it could). The service must still die — that's the
+    // kernel delivering the parent-death SIGKILL.
+    let bpid = i32::try_from(child.id()).expect("test pid fits in i32");
+    assert_eq!(kill_pid(bpid, 9), 0, "kill(babysit, SIGKILL) failed");
+
+    let died = wait_until(|| !pgrp_alive(pgid), Duration::from_secs(30));
+    assert!(
+        died,
+        "service group {pgid} survived a babysit SIGKILL — PR_SET_PDEATHSIG didn't fire"
+    );
+
+    // `sock` must outlive the assertion above so the test isn't secretly
+    // exercising the socket-EOF path instead of pdeathsig.
+    drop(sock);
+    let _ = child.wait();
+}
+
 #[test]
 fn babysit_service_runs_in_its_own_pgid() {
     let td = TempDir::new().unwrap();
