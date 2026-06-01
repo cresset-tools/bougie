@@ -208,11 +208,11 @@ fn target_not_served(host: &str, target: &str, available: &[String]) -> BougieEr
     let mut hint = String::new();
     if target.contains("musl") {
         hint.push_str(
-            "this is a musl-libc platform (e.g. Alpine Linux), which bougie has no build for — ",
+            "this is a musl-libc platform (e.g. Alpine Linux), which bougie has no build for. ",
         );
     }
     hint.push_str(&format!(
-        "targets this index ({host}) provides: {}",
+        "Targets this index ({host}) provides: {}",
         available.join(", "),
     ));
     BougieError::UnknownTarget { triple: target.to_owned(), hint }
@@ -243,6 +243,7 @@ mod tests {
         let hint = hint_of(&err);
         assert!(hint.contains("musl"), "{hint}");
         assert!(hint.contains("Alpine"), "{hint}");
+        assert!(!hint.contains('—'), "no em dash in the hint: {hint}");
         // The available list is whatever the index advertised, not a
         // hardcoded set.
         assert!(hint.contains("x86_64-unknown-linux-gnu"), "{hint}");
