@@ -1178,7 +1178,7 @@ fn detect_duplicate_keys(bytes: &[u8], warnings: &mut Vec<String>) {
     }
 }
 
-fn is_valid_package_name(name: &str) -> bool {
+pub(crate) fn is_valid_package_name(name: &str) -> bool {
     let Some((vendor, pkg)) = name.split_once('/') else {
         return false;
     };

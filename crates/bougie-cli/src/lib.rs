@@ -51,6 +51,10 @@ pub enum Command {
         /// Place bougie configuration in a bougie.toml file.
         #[arg(long)]
         toml: bool,
+        /// Set the package name (`vendor/package`) of the generated
+        /// composer.json. Overrides the name from a `--starter` manifest.
+        #[arg(long, value_name = "VENDOR/PACKAGE")]
+        name: Option<String>,
         /// Scaffold from a starter pack: a built-in alias (e.g. `mageos`)
         /// or an https URL serving a starter manifest. Writes the
         /// starter's composer.json instead of the empty default.

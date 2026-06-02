@@ -35,12 +35,22 @@ impl Render for InitResult {
 pub fn run(
     format: OutputFormat,
     with_toml: bool,
+    name: Option<String>,
     starter: Option<String>,
     start: bool,
 ) -> Result<ExitCode> {
     let cwd = std::env::current_dir().wrap_err("getting current directory")?;
     let mut created = Vec::new();
     let mut already = Vec::new();
+
+    if let Some(name) = &name
+        && !super::composer_validate::is_valid_package_name(name)
+    {
+        return Err(eyre!(
+            "invalid package name `{name}` — expected `vendor/package` \
+             (lowercase letters, digits, and `-._`)"
+        ));
+    }
 
     // composer.json comes from the starter manifest when `--starter` is
     // given, else the empty default. `--starter` is for scaffolding a new
@@ -58,12 +68,15 @@ pub fn run(
     } else {
         let contents = match starter {
             Some(s) => {
-                let manifest = super::starter::fetch(&s)?;
+                let mut manifest = super::starter::fetch(&s)?;
+                if let Some(name) = name {
+                    set_name(&mut manifest.composer_json, &name)?;
+                }
                 let rendered = super::starter::render_composer_json(&manifest);
                 notes = manifest.notes;
                 rendered
             }
-            None => default_composer_json(),
+            None => default_composer_json(name.as_deref()),
         };
         fs::write(&composer, contents).wrap_err("writing composer.json")?;
         created.push(PathBuf::from("composer.json"));
@@ -137,13 +150,26 @@ fn start_project(_format: OutputFormat) -> Result<ExitCode> {
     ))
 }
 
-fn default_composer_json() -> String {
-    let value = serde_json::json!({
+fn default_composer_json(name: Option<&str>) -> String {
+    let mut value = serde_json::json!({
         "require": {
             "php": format!("^{LATEST_PHP_MINOR}")
         }
     });
+    if let Some(name) = name {
+        set_name(&mut value, name).expect("default composer.json is an object");
+    }
     let mut s = serde_json::to_string_pretty(&value).expect("infallible serialize");
     s.push('\n');
     s
+}
+
+/// Set the `name` field on a composer.json `Value`, inserting or
+/// overwriting it. Errors if the document isn't a JSON object.
+fn set_name(composer_json: &mut serde_json::Value, name: &str) -> Result<()> {
+    let obj = composer_json
+        .as_object_mut()
+        .ok_or_else(|| eyre!("starter composer-json is not a JSON object"))?;
+    obj.insert("name".to_string(), serde_json::Value::String(name.to_string()));
+    Ok(())
 }

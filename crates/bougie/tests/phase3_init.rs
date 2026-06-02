@@ -41,6 +41,37 @@ fn init_creates_composer_and_bougie_skeleton() {
 }
 
 #[test]
+fn init_name_sets_composer_name() {
+    let env = TestEnv::new();
+    let proj = project_dir();
+    env.bougie()
+        .current_dir(proj.path())
+        .args(["init", "--name", "acme/widget"])
+        .assert()
+        .success();
+
+    let composer: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(proj.path().join("composer.json")).unwrap())
+            .unwrap();
+    assert_eq!(composer["name"], "acme/widget");
+    assert!(composer["require"]["php"].is_string());
+}
+
+#[test]
+fn init_rejects_invalid_name() {
+    let env = TestEnv::new();
+    let proj = project_dir();
+    env.bougie()
+        .current_dir(proj.path())
+        .args(["init", "--name", "NotAValidName"])
+        .assert()
+        .failure()
+        .stderr(contains("invalid package name"));
+
+    assert!(!proj.path().join("composer.json").exists());
+}
+
+#[test]
 fn init_does_not_overwrite_existing_composer() {
     let env = TestEnv::new();
     let proj = project_dir();
