@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.11.0...bougie-v0.12.0) (2026-06-02)
+
+
+### ⚠ BREAKING CHANGES
+
+* **composer:** `bougie composer {fetch,uninstall,list,find,pin,dir,upgrade}` are removed. Pin the composer version via bougie.toml instead.
+
+### Features
+
+* **composer:** trim surface to native ops; make Composer a default project-aware tool ([#277](https://github.com/cresset-tools/bougie/issues/277)) ([970c751](https://github.com/cresset-tools/bougie/commit/970c7512956d94ffd51aacd988df10e2ae5406e6))
+* **daemon:** cgroup-v2 supervision backend — reap daemonized escapees (e.g. epmd) ([#283](https://github.com/cresset-tools/bougie/issues/283)) ([535e198](https://github.com/cresset-tools/bougie/commit/535e198a7e708a39a1db207963e3ae3c313fc226))
+* **init:** add --name flag and a new &lt;directory&gt; command ([#284](https://github.com/cresset-tools/bougie/issues/284)) ([e184eb9](https://github.com/cresset-tools/bougie/commit/e184eb9360ee0a580226ae53beaf1d36b6a21861))
+* **self-update:** only update a binary bougie's installer placed ([#279](https://github.com/cresset-tools/bougie/issues/279)) ([f929f26](https://github.com/cresset-tools/bougie/commit/f929f2676d2fcd6cabf13e45ef57baa0bb490cbe))
+
+
+### Bug Fixes
+
+* **babysit:** SIGKILL the service via PR_SET_PDEATHSIG if the babysit dies abnormally ([#282](https://github.com/cresset-tools/bougie/issues/282)) ([df48680](https://github.com/cresset-tools/bougie/commit/df486804303a1ae8e852ae56aa76852e020ead75))
+* **backend:** clearer error for an unsupported host target (musl/Alpine) ([#274](https://github.com/cresset-tools/bougie/issues/274)) ([9c789cb](https://github.com/cresset-tools/bougie/commit/9c789cb66ce42bb513dd91a26356100f87e3db46))
+* **release:** bump-minor-pre-major so pre-1.0 breaking changes stay pre-major ([#280](https://github.com/cresset-tools/bougie/issues/280)) ([fa36828](https://github.com/cresset-tools/bougie/commit/fa36828b127a1d6c7be418841cd152a25797cd6a))
+* **server:** serve on-disk static assets before the front-controller rewrite ([#281](https://github.com/cresset-tools/bougie/issues/281)) ([43e4cd5](https://github.com/cresset-tools/bougie/commit/43e4cd585977003d3250a4008b5410e30572db8a))
+
 ## [0.11.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.10.1...bougie-v0.11.0) (2026-06-01)
 
 
