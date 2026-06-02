@@ -169,7 +169,18 @@ impl AutoloaderManager {
             ProjectState::Live(loader) => {
                 let mut any = false;
                 for p in &paths {
-                    match loader.apply_changed_path(p) {
+                    // A `.php`/`.inc` save under a watched root takes the
+                    // fast single-file patch. A directory-level event (no
+                    // PHP extension) — e.g. Magento's `generated/` being
+                    // recreated by `setup:di:compile` — reconciles the
+                    // whole affected subtree so files created before the
+                    // watch re-armed are still picked up.
+                    let result = if has_php_ext(p) {
+                        loader.apply_changed_path(p)
+                    } else {
+                        loader.rescan_root(p)
+                    };
+                    match result {
                         Ok(true) => any = true,
                         Ok(false) => {}
                         Err(e) => eprintln!(
@@ -178,6 +189,7 @@ impl AutoloaderManager {
                         ),
                     }
                 }
+                any |= self.resync_arming(project, loader);
                 if any
                     && let Err(e) = loader.emit() {
                         eprintln!(
@@ -208,6 +220,10 @@ impl AutoloaderManager {
             ProjectState::Live(loader) => {
                 let mut any = false;
                 for p in &paths {
+                    // `apply_deleted_path` drops every entry at or under
+                    // `p`, so a wholesale `generated/` removal (an
+                    // ancestor of the `generated/code` scan root) prunes
+                    // the volatile classmap entries in one shot.
                     match loader.apply_deleted_path(p) {
                         Ok(true) => any = true,
                         Ok(false) => {}
@@ -217,6 +233,7 @@ impl AutoloaderManager {
                         ),
                     }
                 }
+                any |= self.resync_arming(project, loader);
                 if any
                     && let Err(e) = loader.emit() {
                         eprintln!(
@@ -226,6 +243,27 @@ impl AutoloaderManager {
                     }
             }
         }
+    }
+
+    /// Re-evaluate which user-code roots are armed (a `generated/code`
+    /// that just appeared, or one whose tree was wiped) and reconcile
+    /// any whose state flipped. Returns whether the merged classmap
+    /// changed. Cheap and idempotent — run on every Live user-code
+    /// batch so the optimized classmap tracks volatile directories
+    /// winking in and out.
+    fn resync_arming(&self, project: &Path, loader: &mut Autoloader) -> bool {
+        let mut any = false;
+        for root in self.registry.resync_user_code_arming(project) {
+            match loader.rescan_root(&root) {
+                Ok(true) => any = true,
+                Ok(false) => {}
+                Err(e) => eprintln!(
+                    "bougie server: autoloader reconcile failed for {}: {e:#}",
+                    root.display()
+                ),
+            }
+        }
+        any
     }
 
     /// `composer.lock` changed → re-bootstrap. The fresh
@@ -304,6 +342,14 @@ impl std::fmt::Debug for AutoloaderManager {
 /// them — `classmap_authoritative` short-circuits both. Dev autoload
 /// included (this is a dev server), no `APCu` autoload (it's a runtime
 /// nicety, not relevant to the in-memory model).
+/// Whether a path is a PHP source file (drives the fast single-file
+/// patch vs. the directory-reconcile decision in the Live handler).
+fn has_php_ext(p: &Path) -> bool {
+    p.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("php") || e.eq_ignore_ascii_case("inc"))
+}
+
 fn bootstrap_request(project: &Path) -> DumpRequest<'_> {
     DumpRequest {
         project_root: project,
@@ -546,6 +592,79 @@ mod tests {
         assert!(
             map.contains("'App\\\\Bar'"),
             "expected App\\Bar in classmap after patch — got:\n{map}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Write a project whose only autoload is a `classmap` over the
+    /// volatile `generated/code/` directory (the Magento shape), seeded
+    /// with one class file.
+    fn write_volatile_project(dir: &Path, class: &str) {
+        std::fs::create_dir_all(dir.join("generated/code/Acme")).unwrap();
+        std::fs::write(
+            dir.join("composer.json"),
+            br#"{"name":"test/it","autoload":{"classmap":["generated/code/"]}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("composer.lock"),
+            br#"{"content-hash":"abc","packages":[],"packages-dev":[]}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join(format!("generated/code/Acme/{class}.php")),
+            format!("<?php\n\nnamespace Acme;\n\nclass {class} {{}}\n"),
+        )
+        .unwrap();
+    }
+
+    /// The end-to-end volatile-root cycle the fix targets: a Magento
+    /// `generated/` tree wiped wholesale prunes its classmap entries,
+    /// and a recreated tree is scanned back in — driven through the
+    /// manager's Live handlers exactly as the watcher would route the
+    /// directory events.
+    #[tokio::test]
+    async fn reconciles_wiped_and_recreated_generated_tree() {
+        let dir = temp();
+        write_volatile_project(&dir, "Proxy");
+        let registry = Arc::new(WatchRegistry::new());
+        let manager = Arc::new(AutoloaderManager::new(std::slice::from_ref(&dir), registry));
+
+        manager.ensure_bootstrap(&dir).await;
+        wait_for_state(&manager, &dir, "live", Duration::from_secs(5)).await;
+
+        let map_path = dir.join("vendor/composer/autoload_classmap.php");
+        let read_map = || std::fs::read_to_string(&map_path).unwrap_or_default();
+        assert!(read_map().contains("Acme\\\\Proxy"), "bootstrap missed Proxy");
+
+        // Magento clears the whole generated/ tree (rm -rf). The watcher
+        // surfaces the removal as a delete of the `generated/` directory
+        // (an ancestor of the `generated/code` scan root).
+        std::fs::remove_dir_all(dir.join("generated")).unwrap();
+        manager
+            .handle_user_code_deleted(&dir, vec![dir.join("generated")])
+            .await;
+        assert!(
+            !read_map().contains("Acme\\\\Proxy"),
+            "Proxy should be pruned after generated/ wiped:\n{}",
+            read_map()
+        );
+
+        // di:compile recreates the tree and a fresh class. The watcher
+        // surfaces the `generated/` (re)create as a directory change.
+        std::fs::create_dir_all(dir.join("generated/code/Acme")).unwrap();
+        std::fs::write(
+            dir.join("generated/code/Acme/Factory.php"),
+            b"<?php\n\nnamespace Acme;\n\nclass Factory {}\n",
+        )
+        .unwrap();
+        manager
+            .handle_user_code(&dir, vec![dir.join("generated")])
+            .await;
+        assert!(
+            read_map().contains("Acme\\\\Factory"),
+            "Factory should be scanned back in after recreate:\n{}",
+            read_map()
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

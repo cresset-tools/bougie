@@ -244,6 +244,106 @@ fn user_code_roots_includes_root_and_path_repo_dirs() {
     );
 }
 
+/// Write a self-contained project whose only autoload directive is a
+/// `classmap` over `generated/code/` — the Magento shape: a volatile
+/// build-output directory the framework clears and regenerates
+/// out-of-band. Returns the temp dir.
+fn write_volatile_project(class: &str) -> TempDir {
+    let td = TempDir::new().unwrap();
+    let root = td.path();
+    std::fs::write(
+        root.join("composer.json"),
+        br#"{"name":"test/it","autoload":{"classmap":["generated/code/"]}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("composer.lock"),
+        br#"{"content-hash":"abc","packages":[],"packages-dev":[]}"#,
+    )
+    .unwrap();
+    let dir = root.join("generated/code/Acme");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join(format!("{class}.php")),
+        format!("<?php\n\nnamespace Acme;\n\nclass {class} {{}}\n"),
+    )
+    .unwrap();
+    td
+}
+
+/// `rescan_root` reconciles a whole volatile subtree against disk:
+/// wiping `generated/` prunes its classes, and recreating files under
+/// it scans them back in — even though no per-file event was applied.
+#[test]
+fn rescan_root_reconciles_generated_directory() {
+    let project = write_volatile_project("Proxy");
+    let root = project.path();
+    let mut loader = Autoloader::bootstrap(&req(root, true)).unwrap();
+    loader.emit().unwrap();
+
+    let read_map = || {
+        std::fs::read_to_string(root.join("vendor/composer/autoload_classmap.php"))
+            .unwrap_or_default()
+    };
+    assert!(read_map().contains("Acme\\\\Proxy"), "bootstrap missed Proxy");
+
+    // Magento clears the whole `generated/` tree (a bulk rm -rf).
+    std::fs::remove_dir_all(root.join("generated")).unwrap();
+    let changed = loader.rescan_root(&root.join("generated")).unwrap();
+    assert!(changed, "reconcile after wiping generated/ should change merged");
+    loader.emit().unwrap();
+    assert!(
+        !read_map().contains("Acme\\\\Proxy"),
+        "Proxy should be pruned after generated/ wiped:\n{}",
+        read_map()
+    );
+
+    // di:compile regenerates a fresh class under a recreated tree.
+    let dir = root.join("generated/code/Acme");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("Factory.php"),
+        b"<?php\n\nnamespace Acme;\n\nclass Factory {}\n",
+    )
+    .unwrap();
+    let changed = loader.rescan_root(&root.join("generated")).unwrap();
+    assert!(changed, "reconcile after recreate should change merged");
+    loader.emit().unwrap();
+    assert!(
+        read_map().contains("Acme\\\\Factory"),
+        "Factory should be scanned back in after recreate:\n{}",
+        read_map()
+    );
+}
+
+/// Emit-time backstop: even if a `generated/code` class is deleted
+/// out-of-band *without* any reconcile (a dropped/coalesced event), the
+/// emitted classmap must not carry a dangling `include` target —
+/// Composer's `ClassLoader` would `include` the missing file and warn.
+#[test]
+fn emit_drops_dangling_generated_entry() {
+    let project = write_volatile_project("Proxy");
+    let root = project.path();
+    let loader = Autoloader::bootstrap(&req(root, true)).unwrap();
+    loader.emit().unwrap();
+
+    let map_path = root.join("vendor/composer/autoload_classmap.php");
+    assert!(
+        std::fs::read_to_string(&map_path).unwrap().contains("Acme\\\\Proxy"),
+        "bootstrap missed Proxy"
+    );
+
+    // Delete the backing file but do NOT call any apply_/rescan_ method —
+    // simulate a watcher event that never arrived. The in-memory `merged`
+    // still references it; emit must existence-check volatile entries.
+    std::fs::remove_file(root.join("generated/code/Acme/Proxy.php")).unwrap();
+    loader.emit().unwrap();
+    assert!(
+        !std::fs::read_to_string(&map_path).unwrap().contains("Acme\\\\Proxy"),
+        "emit must drop the dangling generated/ entry"
+    );
+}
+
 // ---------------------------------------------------------------- helpers
 
 fn fixture(name: &str) -> PathBuf {

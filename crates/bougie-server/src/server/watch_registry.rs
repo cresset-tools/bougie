@@ -20,14 +20,26 @@ use notify::{RecursiveMode, Watcher as _};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex as StdMutex, RwLock};
 
-/// A user-code scan root the manager has armed. Newtype around
+/// A user-code scan root the manager tracks. Newtype around
 /// `PathBuf` so the `classify` lookup table can distinguish it from
 /// the project-root entry (which would otherwise be a longer-prefix
 /// match for paths under the project that aren't autoload-relevant).
+///
+/// `armed` records whether an OS-level recursive watch is currently
+/// attached. A root that doesn't exist yet (e.g. Magento's
+/// `generated/code` before the first compile, or after a `cache:clean`
+/// wipes the whole `generated/` tree) is still *recorded* — so
+/// `classify` can match ancestor/descendant events against it — but
+/// left unarmed until the directory appears. [`resync_user_code_arming`]
+/// flips the bit and attaches/detaches the watch as the directory winks
+/// in and out.
+///
+/// [`resync_user_code_arming`]: WatchRegistry::resync_user_code_arming
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UserCodeRoot {
     pub project: PathBuf,
     pub root: PathBuf,
+    pub armed: bool,
 }
 
 /// Every prefix the dispatch loop's `classify` consults to label
@@ -47,8 +59,12 @@ impl PathMap {
     pub fn push_version_input(&mut self, project: PathBuf) {
         self.version_input.push(project);
     }
-    pub fn push_user_code_root(&mut self, project: PathBuf, root: PathBuf) {
-        self.user_code.push(UserCodeRoot { project, root });
+    pub fn push_user_code_root(&mut self, project: PathBuf, root: PathBuf, armed: bool) {
+        self.user_code.push(UserCodeRoot {
+            project,
+            root,
+            armed,
+        });
     }
     pub fn contains_user_code_root(&self, root: &Path) -> bool {
         self.user_code.iter().any(|u| u.root == root)
@@ -126,35 +142,78 @@ impl WatchRegistry {
         roots: &[PathBuf],
     ) -> notify::Result<()> {
         let mut watcher_guard = self.watcher.lock().expect("notify watcher poisoned");
-        let Some(watcher) = watcher_guard.as_mut() else {
-            // Tests construct a registry without a real watcher.
-            // Without a notifier, just record the roots in the path
-            // map so classify() reports correctly — the test harness
-            // drives FS events synthetically anyway.
-            let mut map = self.path_map.write().expect("path map poisoned");
-            for root in roots {
-                if !map.contains_user_code_root(root) {
-                    map.push_user_code_root(project.to_path_buf(), root.clone());
-                }
-            }
-            return Ok(());
-        };
         let mut map = self.path_map.write().expect("path map poisoned");
         for root in roots {
             if map.contains_user_code_root(root) {
                 continue;
             }
-            if !root.is_dir() {
-                // Autoload directive may point at a path that doesn't
-                // exist yet. The bootstrap scan will pick up an empty
-                // result; future saves create the dir, and the parent
-                // project-root watch surfaces the create event.
-                continue;
-            }
-            watcher.watch(root, RecursiveMode::Recursive)?;
-            map.push_user_code_root(project.to_path_buf(), root.clone());
+            // Record every root, even one that doesn't exist yet, so
+            // `classify` can match ancestor/descendant events against it
+            // (e.g. Magento's `generated/code` before the first compile).
+            // Only attach an OS watch when the directory exists; absent
+            // roots stay unarmed and get armed later by
+            // `resync_user_code_arming` once they appear. Tests construct
+            // a registry without a real watcher (`watcher_guard` is None)
+            // and drive FS events synthetically — record but leave unarmed.
+            let armed = match watcher_guard.as_mut() {
+                Some(watcher) if root.is_dir() => {
+                    watcher.watch(root, RecursiveMode::Recursive)?;
+                    true
+                }
+                _ => false,
+            };
+            map.push_user_code_root(project.to_path_buf(), root.clone(), armed);
         }
         Ok(())
+    }
+
+    /// Re-evaluate every recorded user-code root for `project` against
+    /// the current on-disk state, attaching a recursive watch to roots
+    /// that have just appeared and detaching the watch from roots whose
+    /// directory has vanished. Returns the roots whose armed state
+    /// flipped — the caller (the autoloader manager) reconciles each via
+    /// [`Autoloader::rescan_root`] so a freshly-created `generated/code`
+    /// is scanned in (and a wiped one pruned) regardless of which leaf
+    /// events the watcher delivered.
+    ///
+    /// Cheap (a handful of `is_dir` probes per project) and idempotent,
+    /// so the manager can call it on every user-code batch.
+    ///
+    /// [`Autoloader::rescan_root`]: bougie_autoloader::Autoloader::rescan_root
+    ///
+    /// # Panics
+    ///
+    /// Panics if the watcher mutex or the path-map `RwLock` is poisoned.
+    pub fn resync_user_code_arming(&self, project: &Path) -> Vec<PathBuf> {
+        let mut watcher_guard = self.watcher.lock().expect("notify watcher poisoned");
+        let mut map = self.path_map.write().expect("path map poisoned");
+        let mut flipped: Vec<PathBuf> = Vec::new();
+        for u in map.user_code.iter_mut().filter(|u| u.project == project) {
+            let exists = u.root.is_dir();
+            if exists && !u.armed {
+                if let Some(watcher) = watcher_guard.as_mut()
+                    && let Err(e) = watcher.watch(&u.root, RecursiveMode::Recursive)
+                {
+                    eprintln!(
+                        "bougie server: failed to (re)arm watch on {}: {e}",
+                        u.root.display()
+                    );
+                    continue;
+                }
+                u.armed = true;
+                flipped.push(u.root.clone());
+            } else if !exists && u.armed {
+                // The tree was removed out-of-band. The OS watch may
+                // already be gone (inotify drops it on delete); unwatch
+                // is best-effort so a recreate re-arms cleanly.
+                if let Some(watcher) = watcher_guard.as_mut() {
+                    let _ = watcher.unwatch(&u.root);
+                }
+                u.armed = false;
+                flipped.push(u.root.clone());
+            }
+        }
+        flipped
     }
 
     /// Snapshot view for the dispatch loop's `classify`. Returns a
