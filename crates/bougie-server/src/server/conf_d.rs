@@ -126,6 +126,12 @@ impl PoolConf<'_> {
              pm.process_idle_timeout = 60s\n\
              catch_workers_output = yes\n\
              clear_env = no\n\
+             ; Web requests default to 1G — php.ini's 128M default OOMs\n\
+             ; Magento pages. `php_value` (not `php_admin_value`) so a\n\
+             ; project's own .user.ini / ini_set keeps the final say\n\
+             ; (e.g. Magento's pub/.user.ini). CLI php is set separately\n\
+             ; (memory_limit=-1) in the argv[0] shim.\n\
+             php_value[memory_limit] = 1G\n\
              env[PHP_INI_SCAN_DIR] = {scan_dir}\n",
             socket = self.listen_socket.display(),
             scan_dir = self.php_ini_scan_dir.display(),
@@ -298,6 +304,10 @@ mod tests {
         assert!(rendered.contains("env[PHP_INI_SCAN_DIR] = /run/x/normal.confd"));
         assert!(rendered.contains("daemonize = no"));
         assert!(rendered.contains("clear_env = no"));
+        // Web requests get a workable default memory limit (128M OOMs
+        // Magento), overridable by the app — `php_value`, not
+        // `php_admin_value`.
+        assert!(rendered.contains("php_value[memory_limit] = 1G"));
     }
 
     #[cfg(unix)]
