@@ -141,7 +141,10 @@ fn up_bootstraps_mariadb_and_provisions_a_tenant() {
     let expected = fs::canonicalize(proj.path()).unwrap();
     assert_eq!(v["project"], expected.to_str().unwrap());
     let pw = v["secrets"]["password"].as_str().expect("password recorded");
-    assert_eq!(pw.len(), 32, "password should be 32-char hex");
+    // Derived (deterministic) password: 48 hex chars, stable across
+    // re-provisioning so a captured app/etc/env.php keeps working.
+    assert_eq!(pw.len(), 48, "password should be 48-char hex (derived)");
+    assert!(pw.bytes().all(|c| c.is_ascii_hexdigit()), "password must be hex");
 
     // The provisioned user can actually log in and see its database.
     // `--no-defaults` for the same reason the daemon's client uses it:
