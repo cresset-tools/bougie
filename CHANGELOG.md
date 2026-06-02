@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.13.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.12.0...bougie-v0.13.0) (2026-06-02)
+
+
+### Features
+
+* **babysit:** co-locate a service's helper daemon via --sidecar (epmd, macOS-correct) ([#285](https://github.com/cresset-tools/bougie/issues/285)) ([30486ad](https://github.com/cresset-tools/bougie/commit/30486ad063e0bdc6e80109a3fe0b5a8f271ca7b0))
+
+
+### Bug Fixes
+
+* **daemon:** anchor bougied cwd so provisioner probes survive a deleted launch dir ([#289](https://github.com/cresset-tools/bougie/issues/289)) ([a30a83c](https://github.com/cresset-tools/bougie/commit/a30a83c318cf6a0e6dc2ef560f50897abea699c5))
+* **daemon:** derive mariadb passwords so they survive down/purge/re-provision ([#287](https://github.com/cresset-tools/bougie/issues/287)) ([4eee91f](https://github.com/cresset-tools/bougie/commit/4eee91fec043795eb58121f479ee9991c50b002d))
+* **daemon:** derive rabbitmq passwords too (stable across re-provision) ([#290](https://github.com/cresset-tools/bougie/issues/290)) ([98d1025](https://github.com/cresset-tools/bougie/commit/98d10250c82994b8d9a7d61caf86b9aa359f12a8))
+* **server:** keep generated/ classmap entries fresh instead of dangling ([#288](https://github.com/cresset-tools/bougie/issues/288)) ([dcbc3be](https://github.com/cresset-tools/bougie/commit/dcbc3be5cd9aa69316a07eb4b81ad3958365a188))
+
 ## [0.12.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.11.0...bougie-v0.12.0) (2026-06-02)
 
 
