@@ -9,7 +9,7 @@
 
 use std::io::Read;
 use std::os::fd::AsRawFd;
-use std::os::unix::fs::symlink;
+use std::os::unix::fs::{symlink, PermissionsExt};
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
@@ -65,6 +65,51 @@ fn spawn_babysit(shim: &PathBuf, grace_secs: u64, exec: &str, exec_args: &[&str]
     let child = cmd.spawn().expect("spawn babysit");
     // Parent doesn't need the child end any more — close it so the
     // peer side stays held only by the child.
+    drop(child_end);
+    (child, parent)
+}
+
+/// Like [`spawn_babysit`] but with a `--sidecar` (started in the same
+/// group, ahead of the main service). No `--sidecar-ready-port` so the
+/// main service starts immediately (the helper has nothing to wait on).
+fn spawn_babysit_sidecar(
+    shim: &PathBuf,
+    grace_secs: u64,
+    sidecar: &str,
+    exec: &str,
+    exec_args: &[&str],
+) -> (std::process::Child, UnixStream) {
+    let (parent, child_end) = UnixStream::pair().expect("socketpair");
+    let child_raw = child_end.as_raw_fd();
+
+    let mut cmd = Command::new(shim);
+    cmd.arg("--service-name")
+        .arg("test")
+        .arg("--grace-secs")
+        .arg(grace_secs.to_string())
+        .arg("--control-fd")
+        .arg("3")
+        .arg("--sidecar")
+        .arg(sidecar)
+        .arg("--")
+        .arg(exec)
+        .args(exec_args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit());
+
+    // SAFETY: pre_exec runs after fork, before exec; dup2 is async-signal-safe.
+    unsafe {
+        cmd.pre_exec(move || {
+            let rc = libc_dup2(child_raw, 3);
+            if rc < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+
+    let child = cmd.spawn().expect("spawn babysit");
     drop(child_end);
     (child, parent)
 }
@@ -254,6 +299,42 @@ fn babysit_sigkill_takes_service_down_via_pdeathsig() {
     // exercising the socket-EOF path instead of pdeathsig.
     drop(sock);
     let _ = child.wait();
+}
+
+#[test]
+fn babysit_sidecar_runs_in_group_and_is_reaped() {
+    // The macOS-correct path: a co-located helper (rabbitmq's epmd) must
+    // run in the service's process group so plain `killpg` reaps it —
+    // no cgroup, no pdeathsig. Here the sidecar is a tiny no-arg script
+    // that execs sleep (babysit passes the sidecar no argv, like epmd).
+    let td = TempDir::new().unwrap();
+    let shim = babysit_shim(&td);
+    let sidecar = td.path().join("sidecar");
+    std::fs::write(&sidecar, "#!/bin/sh\nexec /bin/sleep 600\n").unwrap();
+    std::fs::set_permissions(&sidecar, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let (mut child, mut sock) = spawn_babysit_sidecar(
+        &shim,
+        2,
+        sidecar.to_str().unwrap(),
+        "/bin/sh",
+        &["-c", "exec /bin/sleep 600"],
+    );
+    let pgid = read_pgid_line(&mut sock);
+    // The sidecar created the group, so pgid == the sidecar's pid: that
+    // process is alive and the group has members (sidecar + main).
+    assert_eq!(kill0(pgid), 0, "sidecar (group leader {pgid}) should be alive");
+    assert!(pgrp_alive(pgid), "group should be alive after spawn");
+
+    // bougied "dies": babysit `killpg`s the whole group — the sidecar
+    // included — with no cgroup/pdeathsig in play (the macOS scenario).
+    drop(sock);
+    let died = wait_until(|| !pgrp_alive(pgid), Duration::from_secs(30));
+    assert!(died, "group {pgid} (incl. sidecar) still alive after teardown");
+    assert_ne!(kill0(pgid), 0, "sidecar pid {pgid} should have been reaped");
+
+    let status = child.wait().expect("waiting on babysit");
+    assert!(status.success(), "babysit should exit 0 after cleanup, got {status:?}");
 }
 
 #[test]

@@ -344,6 +344,15 @@ impl Supervisor {
         babysit_argv.push(BABYSIT_GRACE_SECS.to_string().into());
         babysit_argv.push("--control-fd".into());
         babysit_argv.push(BABYSIT_CONTROL_FD.to_string().into());
+        // Co-located helper daemon (today: rabbitmq's `epmd`), started
+        // in-group ahead of the service so teardown's `killpg`/cgroup
+        // reaps it on every platform — no daemonized escapee.
+        if let Some((sidecar, ready_port)) = sidecar_for(entry, &self.paths) {
+            babysit_argv.push("--sidecar".into());
+            babysit_argv.push(sidecar.into_os_string());
+            babysit_argv.push("--sidecar-ready-port".into());
+            babysit_argv.push(ready_port.to_string().into());
+        }
         babysit_argv.push("--".into());
         babysit_argv.push(binary.clone().into_os_string());
         for a in &args {
@@ -762,6 +771,25 @@ fn render_exec_cwd(entry: &CatalogEntry, paths: &Paths) -> Option<std::path::Pat
 /// Per-service env injected into the child before spawn. Returns an
 /// empty map when the service runs with no extras. Pinned to a small
 /// list of keys so the table is auditable at a glance.
+/// For services that need a co-located helper daemon, resolve
+/// `(sidecar_exec, ready_port)`. The babysit starts it in the service's
+/// process group, ahead of the service. Today only rabbitmq: Erlang's
+/// `epmd` must run in-group (not daemonized) so the `killpg`/cgroup
+/// teardown reaps it on macOS too, where there's no cgroup backstop.
+/// epmd ships in the `erlang` runtime-dep at a stable `bin/epmd`
+/// symlink and listens on 4369. Returns `None` (no sidecar) if the
+/// erlang dep or epmd can't be resolved — the service still starts,
+/// just with rabbitmq's own daemonized epmd (cgroup-reaped on Linux).
+fn sidecar_for(entry: &CatalogEntry, paths: &Paths) -> Option<(std::path::PathBuf, u16)> {
+    if entry.name != "rabbitmq" {
+        return None;
+    }
+    let erlang = catalog::find("erlang")?;
+    let basedir = store_layout::basedir(paths, erlang).ok()?;
+    let epmd = basedir.join("bin/epmd");
+    epmd.is_file().then_some((epmd, 4369))
+}
+
 fn render_exec_env(entry: &CatalogEntry, paths: &Paths) -> Vec<(String, String)> {
     match entry.name {
         "rabbitmq" => {
