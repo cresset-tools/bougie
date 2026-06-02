@@ -296,28 +296,46 @@ async fn sleep_until_opt(when: Option<tokio::time::Instant>) {
 fn classify(map: &PathMap, path: &Path, deleted: bool) -> Vec<PendingEvent> {
     let mut out: Vec<PendingEvent> = Vec::new();
 
-    // User-code roots first. Longest-prefix match across user-code
-    // entries; nested user-code roots shouldn't happen in practice
-    // (each scan_root is distinct), but pick the longest to be safe.
-    let mut uc_candidates: Vec<&super::watch_registry::UserCodeRoot> = map
+    // User-code roots. Two kinds of match:
+    //
+    //  - **Descendant**: the event path is a file or sub-dir *inside* a
+    //    scan root — an ordinary save or delete. Longest-prefix wins
+    //    (nested roots shouldn't happen, but be safe). For deletes we
+    //    don't filter on extension: a recursive directory delete on
+    //    macOS often surfaces as a single Remove for the directory (no
+    //    per-file follow-ups), so the .php files inside it would never
+    //    be dropped — pass the dir through and let `apply_deleted_path`
+    //    drop every entry under it.
+    //
+    //  - **Ancestor**: the event path is a directory at or above a scan
+    //    root (e.g. Magento's `generated/` for the `generated/code`
+    //    root being created or wiped wholesale — `generated/` itself is
+    //    a direct child of the project root, so the project-root watch
+    //    surfaces it). Always relevant, no extension filter: the
+    //    manager re-arms the watch + reconciles the subtree. This is
+    //    what lets the optimized classmap recover from `generated/`
+    //    appearing and disappearing out-of-band.
+    let mut desc: Vec<&super::watch_registry::UserCodeRoot> = map
         .user_code
         .iter()
         .filter(|u| path.starts_with(&u.root))
         .collect();
-    uc_candidates.sort_by_key(|u| std::cmp::Reverse(u.root.as_os_str().len()));
-    // For deletes we don't filter on extension — a recursive directory
-    // delete on macOS often surfaces as a single Remove event for the
-    // directory (no per-file follow-ups), so the .php files inside it
-    // would never be dropped from the in-memory classmap. Pass the dir
-    // path through and let `apply_deleted_path` drop every entry under it.
-    if let Some(best) = uc_candidates.first()
-        && (deleted || has_php_or_inc_extension(path)) {
+    desc.sort_by_key(|u| std::cmp::Reverse(u.root.as_os_str().len()));
+    if let Some(best) = desc.first() {
+        if deleted || has_php_or_inc_extension(path) {
             out.push(PendingEvent::UserCodeChange {
                 project: best.project.clone(),
                 path: path.to_path_buf(),
                 deleted,
             });
         }
+    } else if let Some(owner) = map.user_code.iter().find(|u| u.root.starts_with(path)) {
+        out.push(PendingEvent::UserCodeChange {
+            project: owner.project.clone(),
+            path: path.to_path_buf(),
+            deleted,
+        });
+    }
 
     // conf.d
     let mut confd_candidates: Vec<&(PathBuf, PathBuf)> = map
@@ -511,7 +529,7 @@ mod tests {
         let project = PathBuf::from("/p/myapp");
         let mut map = map_for(&project);
         let user_root = project.join("src");
-        map.push_user_code_root(project.clone(), user_root.clone());
+        map.push_user_code_root(project.clone(), user_root.clone(), true);
         let evs = classify(&map, &user_root.join("Foo.php"), false);
         assert!(evs.iter().any(|e| matches!(
             e,
@@ -524,7 +542,7 @@ mod tests {
         let project = PathBuf::from("/p/myapp");
         let mut map = map_for(&project);
         let user_root = project.join("src");
-        map.push_user_code_root(project.clone(), user_root.clone());
+        map.push_user_code_root(project.clone(), user_root.clone(), true);
         let evs = classify(&map, &user_root.join("README.md"), false);
         assert!(!evs.iter().any(|e| matches!(e, PendingEvent::UserCodeChange { .. })));
     }
@@ -539,7 +557,7 @@ mod tests {
         let project = PathBuf::from("/p/myapp");
         let mut map = map_for(&project);
         let user_root = project.join("src");
-        map.push_user_code_root(project.clone(), user_root.clone());
+        map.push_user_code_root(project.clone(), user_root.clone(), true);
         let dir = user_root.join("subdir");
         let evs_del = classify(&map, &dir, true);
         assert!(evs_del.iter().any(|e| matches!(
@@ -552,11 +570,48 @@ mod tests {
     }
 
     #[test]
+    fn classify_routes_ancestor_of_user_code_root() {
+        // Magento's `generated/` is a direct child of the project root
+        // (surfaced by the project-root watch) and the *parent* of the
+        // `generated/code` scan root. Creating or wiping it must route a
+        // UserCodeChange — with no extension filter, since a directory
+        // create has no `.php` ext — so the manager re-arms + reconciles.
+        let project = PathBuf::from("/p/myapp");
+        let mut map = map_for(&project);
+        let scan_root = project.join("generated/code");
+        // Recorded but not yet armed (the dir doesn't exist at arm time).
+        map.push_user_code_root(project.clone(), scan_root.clone(), false);
+
+        let generated = project.join("generated");
+        for deleted in [false, true] {
+            let evs = classify(&map, &generated, deleted);
+            assert!(
+                evs.iter().any(|e| matches!(
+                    e,
+                    PendingEvent::UserCodeChange { project: p, path: q, deleted: d }
+                        if p == &project && q == &generated && *d == deleted
+                )),
+                "ancestor event (deleted={deleted}) should route a UserCodeChange: {evs:?}"
+            );
+        }
+
+        // A sibling directory that is neither under nor an ancestor of
+        // any scan root stays unrouted.
+        let sibling = project.join("var");
+        assert!(
+            !classify(&map, &sibling, false)
+                .iter()
+                .any(|e| matches!(e, PendingEvent::UserCodeChange { .. })),
+            "unrelated sibling dir must not route a user-code event"
+        );
+    }
+
+    #[test]
     fn classify_user_code_with_deleted_flag() {
         let project = PathBuf::from("/p/myapp");
         let mut map = map_for(&project);
         let user_root = project.join("src");
-        map.push_user_code_root(project.clone(), user_root.clone());
+        map.push_user_code_root(project.clone(), user_root.clone(), true);
         let evs = classify(&map, &user_root.join("Foo.php"), true);
         assert!(evs.iter().any(|e| matches!(
             e,

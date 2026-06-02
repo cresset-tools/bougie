@@ -26,7 +26,7 @@
 //!   request via [`Autoloader::header_matches`] to decide whether a
 //!   live patch is enough or a full re-bootstrap is required.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use rayon::prelude::*;
@@ -424,6 +424,53 @@ impl Autoloader {
         Ok(true)
     }
 
+    /// Reconcile every scan task intersecting `path` against the
+    /// current on-disk tree: re-walk the task's `scan_root`, replace its
+    /// `per_file` wholesale, and re-merge. Picks up newly-created files
+    /// and drops deleted ones in a single pass.
+    ///
+    /// This is the recovery primitive for *volatile* directories a
+    /// framework mutates out-of-band — Magento wipes and regenerates
+    /// `generated/` (and `generated/code`) on every `cache:clean` /
+    /// `setup:di:compile`, often as a bulk `rm -rf` + `mkdir -p` whose
+    /// individual file events the watcher can miss or coalesce. A
+    /// directory-level event (the parent created or removed) routes here
+    /// so the subtree is brought back into sync regardless of which leaf
+    /// events were delivered. `path` may be the scan root, a sub-dir, or
+    /// an ancestor (e.g. `generated/` for the `generated/code` root); any
+    /// task whose `scan_root` overlaps `path` is reconciled. Returns
+    /// `Ok(true)` iff `merged` changed.
+    pub fn rescan_root(&mut self, path: &Path) -> Result<bool, DumpError> {
+        let canon = canonicalize_deleted(path);
+        let mut any_state_change = false;
+        for state in &mut self.tasks {
+            let sr = &state.task.scan_root;
+            if !canon.starts_with(sr) && !sr.starts_with(&canon) {
+                continue;
+            }
+            let exclude = if state.task.needs_vendor_exclude {
+                &self.exclude_with_vendor
+            } else {
+                &self.exclude_default
+            };
+            let fresh =
+                scan::scan_per_file(sr, &state.task.install_abs, &state.task.filter, exclude);
+            if fresh.per_file != state.per_file {
+                state.per_file = fresh.per_file;
+                any_state_change = true;
+            }
+        }
+        if !any_state_change {
+            return Ok(false);
+        }
+        let new_merged = merge_classmap(&self.tasks);
+        if new_merged == self.merged {
+            return Ok(false);
+        }
+        self.merged = new_merged;
+        Ok(true)
+    }
+
     /// Inputs match the request that produced this autoloader.
     /// `false` means the manager should re-bootstrap.
     pub fn header_matches(&self, req: &DumpRequest<'_>) -> bool {
@@ -455,13 +502,51 @@ impl Autoloader {
     }
 
     fn classmap_entries(&self) -> Vec<ClassmapEntry> {
+        let suppressed = self.suppressed_volatile_classes();
         self.merged
             .iter()
+            .filter(|(class, _)| !suppressed.contains(class.as_str()))
             .map(|(class, path_expr)| ClassmapEntry {
                 class: class.clone(),
                 path_expr: path_expr.clone(),
             })
             .collect()
+    }
+
+    /// Classes contributed by a *volatile* scan root (see
+    /// [`is_volatile_scan_root`]) whose backing file is currently
+    /// missing on disk. Frameworks like Magento clear and regenerate
+    /// `generated/code` out-of-band; if a class the autoloader once
+    /// scanned has since been deleted, emitting its classmap entry
+    /// would make Composer's `ClassLoader` `include` a non-existent
+    /// file (it has no `file_exists` guard) — a fatal-looking warning
+    /// that *also* prevents the framework's own generator autoloader
+    /// from regenerating the class. Suppressing the entry lets that
+    /// fallback fire. Only volatile roots are stat-checked, so the
+    /// common (all-present) case stays a no-op and output is identical
+    /// to Composer's.
+    fn suppressed_volatile_classes(&self) -> BTreeSet<&str> {
+        let mut suppressed: BTreeSet<&str> = BTreeSet::new();
+        for state in &self.tasks {
+            if !is_volatile_scan_root(&state.task.scan_root) {
+                continue;
+            }
+            for (rel, classes) in &state.per_file {
+                if state.task.install_abs.join(rel).exists() {
+                    continue;
+                }
+                let path_expr = task_path_expr(&state.task, rel);
+                for class in classes {
+                    // First-seen-wins: only suppress if `merged` still
+                    // resolves this class to the now-missing file (a
+                    // non-volatile task may legitimately provide it).
+                    if self.merged.get(class) == Some(&path_expr) {
+                        suppressed.insert(class.as_str());
+                    }
+                }
+            }
+        }
+        suppressed
     }
 }
 
@@ -490,6 +575,21 @@ fn has_php_ext(p: &Path) -> bool {
     p.extension()
         .and_then(|e| e.to_str())
         .is_some_and(|e| e.eq_ignore_ascii_case("php") || e.eq_ignore_ascii_case("inc"))
+}
+
+/// A scan root is *volatile* when it lives under a framework build-output
+/// directory cleared and regenerated out-of-band. Magento's
+/// `generated/code` (registered via the root `psr-0` `""` prefix, so it
+/// lands in the optimized classmap) is the motivating case: it's wiped on
+/// every `cache:clean` / `setup:di:compile`. Entries from such roots are
+/// existence-checked at [`Autoloader::emit`] time so a class the framework
+/// has since deleted is never written as a dangling `include` target. The
+/// check is a path-component scan for `generated`, matching `generated/`
+/// and `generated/code/...`.
+fn is_volatile_scan_root(scan_root: &Path) -> bool {
+    scan_root.components().any(|c| {
+        matches!(c, std::path::Component::Normal(n) if n.eq_ignore_ascii_case("generated"))
+    })
 }
 
 /// Hash of the root manifest's autoload block — covers psr-4, psr-0,
