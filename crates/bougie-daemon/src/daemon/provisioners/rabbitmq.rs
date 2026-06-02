@@ -219,6 +219,15 @@ fn build_ctl_env(cmd: &mut Command, paths: &Paths) {
     cmd.env_clear()
         .env("HOME", paths.service_data("rabbitmq").join("home"))
         .env("PATH", "/usr/bin:/bin")
+        // Belt-and-suspenders against a dangling cwd: bougied anchors
+        // its own cwd to the state root, but pin these out-of-band ctl
+        // probes to the rabbitmq data dir regardless. rabbitmqctl is an
+        // Erlang/BEAM program that `getcwd()`s at boot and aborts with
+        // `invalid_current_directory` if the inherited cwd has been
+        // unlinked — exactly the failure mode that anchoring the server
+        // via `render_exec_cwd` already guards against. The data dir is
+        // created in `pre_start`, owned by us, and stable.
+        .current_dir(paths.service_data("rabbitmq"))
         .envs(rabbitmq_env(paths));
 }
 

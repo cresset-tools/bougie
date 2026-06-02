@@ -62,6 +62,11 @@ pub async fn pre_start(paths: &Paths) -> Result<()> {
     let user = current_user();
     let mut cmd = Command::new(&install_db);
     cmd
+        // Anchor cwd to the data dir (created just above). Belt-and-
+        // suspenders against inheriting a since-deleted cwd from the
+        // daemon — see the rabbitmq build_ctl_env note for the failure
+        // mode this guards against.
+        .current_dir(&datadir)
         // CI runners (and some dev hosts) ship a system /etc/my.cnf
         // intended for the OS-vendored MySQL/mariadb. It can set
         // `user=mysql`, inject `mysqlx-*` options our bundled mariadbd
@@ -215,7 +220,13 @@ async fn run_sql(mariadb_bin: &Path, socket: &Path, sql: &str) -> Result<()> {
     // them onto the matching `<user>@localhost` grant created at
     // bootstrap time.
     let os_user = current_user();
+    // Anchor cwd to the socket's directory (the service run dir, always
+    // present while mariadbd is up) so the client never inherits a
+    // since-deleted cwd from the daemon — see the rabbitmq
+    // build_ctl_env note for the failure mode this guards against.
+    let cwd = socket.parent().unwrap_or_else(|| Path::new("/"));
     let out = Command::new(mariadb_bin)
+        .current_dir(cwd)
         // Same `/etc/my.cnf` poison risk as the install-db / mariadbd
         // invocations: skip every option file and use only the args
         // we hand the client explicitly.
