@@ -102,7 +102,10 @@ build + audit. Both EUPL-1.2.
 
 Top-level subcommands (from `bougie-cli`):
 
-- `init [--toml]` — Create a new project.
+- `init [--toml] [--name VENDOR/PACKAGE]` — Create a new project in the
+  current directory.
+- `new DIRECTORY [--toml] [--name VENDOR/PACKAGE]` — Create DIRECTORY under
+  the cwd and scaffold a new project inside it.
 - `ext {add,remove,list}` — Manage PHP extensions.
 - `sync [--offline] [--dry-run]` — Install everything the project requires.
 - `up [names...]` / `down [names...] [--purge]` — Start / stop declared

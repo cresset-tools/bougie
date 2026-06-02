@@ -50,6 +50,9 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
         Command::Init { toml, name, starter, start } => {
             commands::init::run(format, toml, name, starter, start)
         }
+        Command::New { directory, toml, name, starter, start } => {
+            commands::init::run_new(format, &directory, toml, name, starter, start)
+        }
         Command::Sync { offline, dry_run } => commands::sync::run(format, offline, dry_run),
         #[cfg(unix)]
         Command::Up { names } => commands::services::up::run(format, names),

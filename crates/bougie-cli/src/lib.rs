@@ -67,6 +67,29 @@ pub enum Command {
         start: bool,
     },
 
+    /// Create a new project in a new directory.
+    New {
+        /// Directory to create under the current directory and scaffold
+        /// the project into.
+        #[arg(value_name = "DIRECTORY")]
+        directory: String,
+        /// Place bougie configuration in a bougie.toml file.
+        #[arg(long)]
+        toml: bool,
+        /// Set the package name (`vendor/package`) of the generated
+        /// composer.json. Overrides the name from a `--starter` manifest.
+        #[arg(long, value_name = "VENDOR/PACKAGE")]
+        name: Option<String>,
+        /// Scaffold from a starter pack: a built-in alias (e.g. `mageos`)
+        /// or an https URL serving a starter manifest.
+        #[arg(long, value_name = "URL_OR_ALIAS")]
+        starter: Option<String>,
+        /// After scaffolding, bring the project up — equivalent to
+        /// `bougie start`. Unix-only.
+        #[arg(long)]
+        start: bool,
+    },
+
     /// Manage PHP extensions.
     #[command(subcommand)]
     Ext(ExtCommand),

@@ -5,7 +5,7 @@ use eyre::{Result, WrapErr, eyre};
 use serde::Serialize;
 use std::fs;
 use std::io::{self, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 /// Phase 4 will refresh the cached index to learn the actual latest
@@ -40,6 +40,65 @@ pub fn run(
     start: bool,
 ) -> Result<ExitCode> {
     let cwd = std::env::current_dir().wrap_err("getting current directory")?;
+    scaffold(&cwd, None, format, with_toml, name, starter, start)
+}
+
+/// `bougie new <directory>`: create `<directory>` under the cwd and
+/// scaffold a fresh project inside it. Refuses to scaffold into a
+/// directory that already exists and is non-empty.
+pub fn run_new(
+    format: OutputFormat,
+    directory: &str,
+    with_toml: bool,
+    name: Option<String>,
+    starter: Option<String>,
+    start: bool,
+) -> Result<ExitCode> {
+    let cwd = std::env::current_dir().wrap_err("getting current directory")?;
+    let root = cwd.join(directory);
+    if root.exists() {
+        let non_empty = root
+            .read_dir()
+            .wrap_err_with(|| format!("reading {}", root.display()))?
+            .next()
+            .is_some();
+        if non_empty {
+            return Err(eyre!("`{directory}` already exists and is not empty"));
+        }
+    } else {
+        fs::create_dir_all(&root)
+            .wrap_err_with(|| format!("creating {}", root.display()))?;
+    }
+    scaffold(
+        &root,
+        Some(Path::new(directory)),
+        format,
+        with_toml,
+        name,
+        starter,
+        start,
+    )
+}
+
+/// Scaffold a project at `root`. `prefix`, when set (the `new` case),
+/// is prepended to every reported path so output reads relative to the
+/// directory the user invoked from rather than the new project root.
+#[allow(clippy::too_many_arguments)]
+fn scaffold(
+    root: &Path,
+    prefix: Option<&Path>,
+    format: OutputFormat,
+    with_toml: bool,
+    name: Option<String>,
+    starter: Option<String>,
+    start: bool,
+) -> Result<ExitCode> {
+    let rel = |p: PathBuf| -> PathBuf {
+        match prefix {
+            Some(pre) => pre.join(p),
+            None => p,
+        }
+    };
     let mut created = Vec::new();
     let mut already = Vec::new();
 
@@ -55,7 +114,7 @@ pub fn run(
     // composer.json comes from the starter manifest when `--starter` is
     // given, else the empty default. `--starter` is for scaffolding a new
     // project, so refuse to clobber an existing composer.json.
-    let composer = cwd.join("composer.json");
+    let composer = root.join("composer.json");
     let mut notes: Vec<String> = Vec::new();
     if composer.exists() {
         if starter.is_some() {
@@ -64,7 +123,7 @@ pub fn run(
                  run it in an empty directory"
             ));
         }
-        already.push(PathBuf::from("composer.json"));
+        already.push(rel(PathBuf::from("composer.json")));
     } else {
         let contents = match starter {
             Some(s) => {
@@ -79,33 +138,33 @@ pub fn run(
             None => default_composer_json(name.as_deref()),
         };
         fs::write(&composer, contents).wrap_err("writing composer.json")?;
-        created.push(PathBuf::from("composer.json"));
+        created.push(rel(PathBuf::from("composer.json")));
     }
 
-    let bougie_dir = cwd.join(".bougie");
+    let bougie_dir = root.join(".bougie");
     for sub in ["conf.d", "bin", "state"] {
         let p = bougie_dir.join(sub);
         if !p.exists() {
             fs::create_dir_all(&p)
                 .wrap_err_with(|| format!("creating {}", p.display()))?;
-            created.push(PathBuf::from(".bougie").join(sub));
+            created.push(rel(PathBuf::from(".bougie").join(sub)));
         }
     }
 
     let gitignore = bougie_dir.join(".gitignore");
     if !gitignore.exists() {
         fs::write(&gitignore, "bin/\nstate/\n").wrap_err("writing .bougie/.gitignore")?;
-        created.push(PathBuf::from(".bougie").join(".gitignore"));
+        created.push(rel(PathBuf::from(".bougie").join(".gitignore")));
     }
 
     if with_toml {
-        let toml_path = cwd.join("bougie.toml");
+        let toml_path = root.join("bougie.toml");
         if toml_path.exists() {
-            already.push(PathBuf::from("bougie.toml"));
+            already.push(rel(PathBuf::from("bougie.toml")));
         } else {
             fs::write(&toml_path, write_bougie_toml_skeleton())
                 .wrap_err("writing bougie.toml")?;
-            created.push(PathBuf::from("bougie.toml"));
+            created.push(rel(PathBuf::from("bougie.toml")));
         }
     }
 
@@ -123,7 +182,7 @@ pub fn run(
     }
 
     if start {
-        return start_project(format);
+        return start_project(root, format);
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -133,7 +192,11 @@ pub fn run(
 /// then walks the project recipe (services → setup → server). Unix-only,
 /// since the recipe/services stack is.
 #[cfg(unix)]
-fn start_project(format: OutputFormat) -> Result<ExitCode> {
+fn start_project(root: &Path, format: OutputFormat) -> Result<ExitCode> {
+    // `make::run` operates on the cwd, so enter the freshly-scaffolded
+    // project root first (a no-op for `init`, where root == cwd).
+    std::env::set_current_dir(root)
+        .wrap_err_with(|| format!("entering {}", root.display()))?;
     crate::commands::make::run(
         format,
         crate::commands::make::MakeOptions {
@@ -144,9 +207,9 @@ fn start_project(format: OutputFormat) -> Result<ExitCode> {
 }
 
 #[cfg(not(unix))]
-fn start_project(_format: OutputFormat) -> Result<ExitCode> {
+fn start_project(_root: &Path, _format: OutputFormat) -> Result<ExitCode> {
     Err(eyre!(
-        "`bougie init --start` brings up the services stack, which is Unix-only"
+        "`--start` brings up the services stack, which is Unix-only"
     ))
 }
 
