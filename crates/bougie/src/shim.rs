@@ -75,6 +75,20 @@ pub fn role_from_argv0(argv0: &OsStr) -> Option<Role> {
     }
 }
 
+/// Ini overrides bougie injects ahead of the caller's args, for the
+/// **CLI** `php` role only (never `php-fpm`, which keeps the server's
+/// configured limits). Today: lift the memory limit — Magento's
+/// `bin/magento` and Composer routinely blow past php.ini's 128M default,
+/// and `memory_limit=-1` is Magento's own CLI recommendation. Prepended,
+/// so a caller's explicit `-d memory_limit=…` overrides it (PHP uses the
+/// last value given for a directive).
+fn cli_php_prelude_args(role: Role) -> &'static [&'static str] {
+    match role {
+        Role::Php => &["-d", "memory_limit=-1"],
+        _ => &[],
+    }
+}
+
 /// Read `<project>/.bougie/state/resolved`, locate the install in
 /// `$BOUGIE_HOME/installs/<resolved>/`, set `PHP_INI_SCAN_DIR`, and
 /// `execve` the real interpreter (or `composer`).
@@ -151,6 +165,10 @@ pub fn exec(role: Role) -> Result<ExitCode> {
                 ));
             }
             let mut cmd = std::process::Command::new(&bin);
+            // CLI-only ini defaults (never FPM) — prepended so a caller's
+            // explicit `-d …` still wins (PHP takes the last value for a
+            // directive).
+            cmd.args(cli_php_prelude_args(role));
             cmd.args(&args)
                 .env("PHP_INI_SCAN_DIR", &scan_dir)
                 .env("PHP_BINARY", &bin);
@@ -403,6 +421,15 @@ fn locate_project_root_inner(
 mod tests {
     use super::*;
     use std::ffi::OsString;
+
+    #[test]
+    fn cli_php_lifts_memory_limit_but_not_fpm() {
+        // CLI php gets an unlimited memory_limit prepended; FPM gets
+        // nothing (keeps the server's configured limit).
+        assert_eq!(cli_php_prelude_args(Role::Php), &["-d", "memory_limit=-1"]);
+        assert!(cli_php_prelude_args(Role::PhpFpm).is_empty());
+        assert!(cli_php_prelude_args(Role::Composer).is_empty());
+    }
 
     #[test]
     fn detects_each_role_by_basename() {
