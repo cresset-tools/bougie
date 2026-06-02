@@ -75,7 +75,11 @@ pub async fn provision(
         .await
         .wrap_err("rabbitmq node never became rabbitmqctl-ready")?;
 
-    let password = generate_password();
+    // Derived (not random) so re-provisioning yields the same password
+    // and a previously-installed env.php keeps connecting. The
+    // change_password-on-duplicate path below re-asserts it on the live
+    // broker, healing any drift from an earlier random-password install.
+    let password = crate::daemon::credentials::derive_password(paths, "rabbitmq", project)?;
 
     // `add_vhost` is idempotent in v4 (`--ignore-duplicate`); the
     // user creation isn't. Treat "already exists" as success so a
@@ -313,24 +317,6 @@ fn is_safe_identifier(s: &str) -> bool {
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
 }
 
-/// 24 bytes from `/dev/urandom`, hex-encoded → 48-char password.
-/// Matches mariadb's password generator.
-fn generate_password() -> String {
-    use std::fs::File;
-    use std::io::Read;
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut buf = [0u8; 24];
-    File::open("/dev/urandom")
-        .and_then(|mut f| f.read_exact(&mut buf))
-        .expect("/dev/urandom should be readable for password generation");
-    let mut out = String::with_capacity(48);
-    for &b in &buf {
-        out.push(HEX[(b >> 4) as usize] as char);
-        out.push(HEX[(b & 0x0f) as usize] as char);
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -349,13 +335,6 @@ mod tests {
         assert!(!is_safe_identifier("foo bar"));
         assert!(!is_safe_identifier("foo/bar"));
         assert!(!is_safe_identifier(&"x".repeat(129)));
-    }
-
-    #[test]
-    fn generated_password_is_48_hex_chars() {
-        let pw = generate_password();
-        assert_eq!(pw.len(), 48);
-        assert!(pw.chars().all(|c| c.is_ascii_hexdigit()));
     }
 
     #[test]

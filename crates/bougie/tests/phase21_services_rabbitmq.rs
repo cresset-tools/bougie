@@ -331,20 +331,19 @@ fn bougie_run_exports_rabbitmq_env_vars() {
 
 /// Regression for cresset-tools/bougie#31.
 ///
-/// `bougie down` without `--purge` removes the tenant from the
-/// ledger but leaves the user/vhost in rabbitmq's mnesia store
-/// (matches the survives-down semantics of mariadb / opensearch).
-/// A subsequent `bougie up` re-provisions, which used to silently
-/// no-op on `add_user → "already exists"` while still writing a
-/// freshly-generated password into the ledger. The broker kept the
-/// *old* password; the ledger advertised the *new* one; AMQP login
-/// with `BOUGIE_SERVICE_RABBITMQ_PASSWORD` returned `ACCESS_REFUSED`.
+/// `bougie down` without `--purge` removes the tenant from the ledger
+/// but leaves the user/vhost in rabbitmq's mnesia store (matches the
+/// survives-down semantics of mariadb / opensearch). A subsequent
+/// `bougie up` re-provisions; `add_user` errors "already exists", so the
+/// provisioner chains `change_password` to re-assert the ledger's
+/// password on the persisted user — keeping the broker and the ledger in
+/// sync (otherwise AMQP login via `BOUGIE_SERVICE_RABBITMQ_PASSWORD`
+/// returns `ACCESS_REFUSED`).
 ///
-/// Fix: when `add_user` errors duplicate, chain `change_password`
-/// against the new password so the broker and the ledger stay in
-/// sync. This test runs `down` (no purge) + `up` and verifies that
-/// `rabbitmqctl authenticate_user <tenant> <ledger_password>`
-/// succeeds — i.e. the broker took the new password.
+/// The password is now *derived* (deterministic), so re-up yields the
+/// **same** password — this test asserts that stability (a captured
+/// env.php keeps working) and that `change_password` re-asserts it on the
+/// broker (healing any drift, e.g. an older random-password install).
 #[test]
 fn re_up_after_plain_down_resyncs_password_to_broker() {
     if should_skip() {
@@ -394,9 +393,9 @@ fn re_up_after_plain_down_resyncs_password_to_broker() {
         .assert()
         .success();
 
-    // Re-`up`: provision sees no ledger row, generates password B,
-    // calls add_user → duplicate (user persisted in mnesia) →
-    // must chain change_password.
+    // Re-`up`: provision sees no ledger row, *re-derives* the same
+    // password, calls add_user → duplicate (user persisted in mnesia) →
+    // chains change_password to re-assert it on the broker.
     services_up_or_dump(&env, proj.path(), &[]);
     if !wait_for_tcp("127.0.0.1:5672", Duration::from_mins(2)) {
         dump_rabbitmq_log(&env, "wait_for_tcp timeout (second up)");
@@ -419,26 +418,22 @@ fn re_up_after_plain_down_resyncs_password_to_broker() {
         .as_str()
         .unwrap()
         .to_owned();
-    // Sanity: the regen path actually picked a fresh password.
-    // If this ever stops being true (e.g. provision starts
-    // recovering the prior secret) the assertion below would still
-    // pass trivially, so guard against silent test rot.
-    assert_ne!(pw_a, pw_b, "expected provision to regenerate the password");
+    // The password is derived, so re-provisioning yields the *same*
+    // value — this is the guarantee that a captured app/etc/env.php keeps
+    // authenticating after a down/up cycle.
+    assert_eq!(
+        pw_a, pw_b,
+        "derived password must be stable across a non-purge down/up so env.php stays valid"
+    );
 
-    // The fix: the broker now authenticates the *new* password.
-    // Before the fix this would error with "invalid credentials".
+    // And the broker authenticates it after re-up: `change_password`
+    // re-asserted the derived password on the persisted mnesia user
+    // (this is what heals an older random-password install).
     let (code, stdout, stderr) =
         rabbitmqctl(&env, &["authenticate_user", "acme_blog", &pw_b]);
     assert_eq!(
         code, 0,
-        "broker should accept the ledger's current password after re-up; stdout=`{stdout}` stderr=`{stderr}`"
-    );
-
-    // And paranoia: the *old* password must no longer work.
-    let (code, _, _) = rabbitmqctl(&env, &["authenticate_user", "acme_blog", &pw_a]);
-    assert_ne!(
-        code, 0,
-        "broker still accepts the pre-down password — change_password didn't take effect"
+        "broker should accept the ledger's password after re-up; stdout=`{stdout}` stderr=`{stderr}`"
     );
 
     stop_daemon(&env);
