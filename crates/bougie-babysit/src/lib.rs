@@ -50,6 +50,14 @@ struct Config {
 /// starting the main service anyway (best-effort).
 const SIDECAR_READY_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// When the sidecar exits, how long to keep probing the ready-port to
+/// decide whether the exit was benign (the port is still served — e.g.
+/// `epmd` found another epmd already bound and bowed out) or fatal (the
+/// helper the service depends on is genuinely gone). Short: a live port
+/// answers on the first probe; a dead one refuses immediately, so this
+/// only adds latency on the actual-failure path.
+const SIDECAR_PORT_RECHECK: Duration = Duration::from_secs(1);
+
 pub fn run(args: Vec<OsString>) -> Result<ExitCode> {
     let cfg = parse_args(args)?;
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -201,38 +209,65 @@ async fn serve(cfg: Config) -> Result<ExitCode> {
         .wrap_err("reporting pgid to bougied")?;
     control.flush().await.ok();
 
-    // Watch the main service. With a sidecar we also watch *it*: if the
-    // helper dies the unit is broken, so tear down and let bougied
-    // restart the whole thing (which also stops `epmd` from being
-    // re-spawned daemonized by rabbit's epmd monitor).
-    let outcome = tokio::select! {
-        // Main service exited on its own.
-        status = child.wait() => {
-            let code = exit_status_code(status);
-            let _ = control.write_all(format!("exited={code}\n").as_bytes()).await;
-            // Sweep the rest of the group (a sidecar, plus any
-            // descendants the leader left behind). No-op for a
-            // single-process service.
-            cleanup_group(pgid, cfg.grace_secs).await;
-            let clamped = u8::try_from(code.clamp(0, 255)).expect("clamped to 0..=255 fits in u8");
-            ExitCode::from(clamped)
-        }
-        // Sidecar died unexpectedly while the service ran → fail the unit.
-        () = wait_optional_child(sidecar_child.as_mut()) => {
-            eprintln!("[babysit:{}] sidecar exited; tearing down service", cfg.service_name);
-            cleanup_group(pgid, cfg.grace_secs).await;
-            let _ = control.write_all(b"exited=70\n").await;
-            ExitCode::from(70)
-        }
-        // Control socket closed → bougied died. Take the group down.
-        () = wait_socket_eof(&mut control) => {
-            cleanup_group(pgid, cfg.grace_secs).await;
-            ExitCode::SUCCESS
-        }
-        // Bougied asked us to stop cleanly.
-        _ = sigterm.recv() => {
-            cleanup_group(pgid, cfg.grace_secs).await;
-            ExitCode::SUCCESS
+    // Watch the main service. With a sidecar we also watch *it* — but a
+    // sidecar exit is fatal only if it takes the readiness port down
+    // with it. A bare `epmd` exits 0 the instant it finds another epmd
+    // already bound to its port (a leak from a prior run, a system
+    // Erlang, another BEAM app on the box); that's benign — the port is
+    // still served and the broker is happily using it — so tearing the
+    // unit down there (as we used to, unconditionally) kills a perfectly
+    // healthy service. Re-probe the port on a sidecar exit and only fail
+    // the unit when it's actually gone. Looped so a benign sidecar exit
+    // disarms that arm and we keep supervising the main service.
+    let outcome = loop {
+        tokio::select! {
+            // Main service exited on its own.
+            status = child.wait() => {
+                let code = exit_status_code(status);
+                let _ = control.write_all(format!("exited={code}\n").as_bytes()).await;
+                // Sweep the rest of the group (a sidecar, plus any
+                // descendants the leader left behind). No-op for a
+                // single-process service.
+                cleanup_group(pgid, cfg.grace_secs).await;
+                let clamped = u8::try_from(code.clamp(0, 255)).expect("clamped to 0..=255 fits in u8");
+                break ExitCode::from(clamped);
+            }
+            // Sidecar exited. Reap it and disarm this arm (it's gone
+            // either way), then decide whether the unit is broken.
+            () = wait_optional_child(sidecar_child.as_mut()) => {
+                sidecar_child = None;
+                let port_still_served = match cfg.sidecar_ready_port {
+                    Some(port) => wait_for_port(port, SIDECAR_PORT_RECHECK).await,
+                    // No port to verify against — can't tell benign from
+                    // fatal, so keep the old conservative stance.
+                    None => false,
+                };
+                if port_still_served {
+                    eprintln!(
+                        "[babysit:{}] sidecar exited but its ready-port is still served \
+                         (another instance owns it); leaving the service running",
+                        cfg.service_name
+                    );
+                    continue;
+                }
+                eprintln!(
+                    "[babysit:{}] sidecar exited and its port is down; tearing down service",
+                    cfg.service_name
+                );
+                cleanup_group(pgid, cfg.grace_secs).await;
+                let _ = control.write_all(b"exited=70\n").await;
+                break ExitCode::from(70);
+            }
+            // Control socket closed → bougied died. Take the group down.
+            () = wait_socket_eof(&mut control) => {
+                cleanup_group(pgid, cfg.grace_secs).await;
+                break ExitCode::SUCCESS;
+            }
+            // Bougied asked us to stop cleanly.
+            _ = sigterm.recv() => {
+                cleanup_group(pgid, cfg.grace_secs).await;
+                break ExitCode::SUCCESS;
+            }
         }
     };
 
