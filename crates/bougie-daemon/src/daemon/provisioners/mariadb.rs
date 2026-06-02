@@ -16,7 +16,6 @@ use crate::daemon::store_layout;
 use crate::daemon::tenants::{self, Tenant};
 use bougie_paths::Paths;
 use eyre::{eyre, Result, WrapErr};
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::process::Command;
@@ -97,8 +96,12 @@ pub async fn pre_start(paths: &Paths) -> Result<()> {
     Ok(())
 }
 
-/// Provision a tenant. Idempotent — repeated calls for the same
-/// project re-use the existing database, user, and password.
+/// Provision a tenant. Idempotent — repeated calls for the same project
+/// re-use the same database and user. The password is **derived** from
+/// the project (see [`credentials::derive_password`]), so it's stable
+/// across a `down`/`--purge`/re-provision cycle even after the tenant
+/// ledger or datadir is wiped — keeping a Magento `app/etc/env.php` that
+/// captured it at install time valid.
 pub async fn provision(
     paths: &Paths,
     tenants_path: &Path,
@@ -123,7 +126,11 @@ pub async fn provision(
         ));
     }
 
-    let password = generate_password();
+    // Derived (not random) so re-provisioning yields the same password
+    // and a previously-installed env.php keeps connecting. `ALTER USER`
+    // below re-asserts it on the live server, healing any drift from an
+    // earlier random-password install.
+    let password = crate::daemon::credentials::derive_password(paths, "mariadb", project)?;
     let mariadb_bin = mariadb_client_binary(paths)?;
 
     wait_for_socket(socket, PROVISION_CONNECT_TIMEOUT)
@@ -248,44 +255,6 @@ async fn wait_for_socket(path: &Path, timeout: Duration) -> Result<()> {
     }
 }
 
-/// 32-character hex password from `/dev/urandom`. 128 bits of entropy
-/// is more than enough for a local-only dev account, and hex keeps
-/// the password safe to interpolate into SQL without further escaping.
-fn generate_password() -> String {
-    let mut buf = [0u8; 16];
-    // /dev/urandom is the canonical source on every Unix bougie runs on.
-    // Falls back to a coarse SystemTime mix if it's somehow unreadable,
-    // which is non-cryptographic but vanishingly unlikely to hit.
-    if let Ok(mut f) = std::fs::File::open("/dev/urandom")
-        && f.read_exact(&mut buf).is_ok()
-    {
-        return hex_encode(&buf);
-    }
-    let now: u128 = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_nanos());
-    for (i, b) in buf.iter_mut().enumerate() {
-        let shift = (i * 8) % 128;
-        let lane = (now >> shift) & 0xff;
-        #[allow(clippy::cast_possible_truncation)]
-        let lane_u8 = lane as u8;
-        #[allow(clippy::cast_possible_truncation)]
-        let salt = (i & 0xff) as u8;
-        *b = lane_u8 ^ salt;
-    }
-    hex_encode(&buf)
-}
-
-fn hex_encode(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for &b in bytes {
-        out.push(HEX[(b >> 4) as usize] as char);
-        out.push(HEX[(b & 0x0f) as usize] as char);
-    }
-    out
-}
-
 fn current_user() -> String {
     std::env::var("USER")
         .or_else(|_| std::env::var("LOGNAME"))
@@ -305,18 +274,6 @@ fn is_safe_identifier(s: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn hex_encode_roundtrips_ascii_pattern() {
-        assert_eq!(hex_encode(&[0x00, 0x0f, 0xff, 0xab]), "000fffab");
-    }
-
-    #[test]
-    fn generate_password_is_32_hex_chars() {
-        let p = generate_password();
-        assert_eq!(p.len(), 32);
-        assert!(p.chars().all(|c| c.is_ascii_hexdigit()));
-    }
 
     #[test]
     fn safe_identifier_accepts_typical_tenants() {
