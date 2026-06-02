@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.13.0...bougie-v0.14.0) (2026-06-02)
+
+
+### Features
+
+* **server:** default web (php-fpm) memory_limit to 1G ([#294](https://github.com/cresset-tools/bougie/issues/294)) ([cf61811](https://github.com/cresset-tools/bougie/commit/cf61811981ee3c10e68f4ec98e529837c4ba37ca))
+* **shim:** default CLI php to memory_limit=-1 (FPM unchanged) ([#292](https://github.com/cresset-tools/bougie/issues/292)) ([94a04b5](https://github.com/cresset-tools/bougie/commit/94a04b55183a16e52e03c970ece95cebe822f69b))
+
+
+### Bug Fixes
+
+* **babysit:** don't tear down a healthy service when the sidecar exits benignly ([#291](https://github.com/cresset-tools/bougie/issues/291)) ([cd5bbf9](https://github.com/cresset-tools/bougie/commit/cd5bbf9d4ff80878d08f7b86043ecf2857da0d63))
+
 ## [0.13.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.12.0...bougie-v0.13.0) (2026-06-02)
 
 
