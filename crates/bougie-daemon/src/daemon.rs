@@ -13,6 +13,7 @@
 
 pub mod catalog;
 pub mod cgroup;
+pub mod credentials;
 pub mod ipc;
 pub mod logs;
 pub mod provisioners;
