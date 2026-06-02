@@ -41,6 +41,87 @@ fn init_creates_composer_and_bougie_skeleton() {
 }
 
 #[test]
+fn init_name_sets_composer_name() {
+    let env = TestEnv::new();
+    let proj = project_dir();
+    env.bougie()
+        .current_dir(proj.path())
+        .args(["init", "--name", "acme/widget"])
+        .assert()
+        .success();
+
+    let composer: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(proj.path().join("composer.json")).unwrap())
+            .unwrap();
+    assert_eq!(composer["name"], "acme/widget");
+    assert!(composer["require"]["php"].is_string());
+}
+
+#[test]
+fn init_rejects_invalid_name() {
+    let env = TestEnv::new();
+    let proj = project_dir();
+    env.bougie()
+        .current_dir(proj.path())
+        .args(["init", "--name", "NotAValidName"])
+        .assert()
+        .failure()
+        .stderr(contains("invalid package name"));
+
+    assert!(!proj.path().join("composer.json").exists());
+}
+
+#[test]
+fn new_creates_directory_and_scaffolds_inside() {
+    let env = TestEnv::new();
+    let proj = project_dir();
+    env.bougie()
+        .current_dir(proj.path())
+        .args(["new", "my-app"])
+        .assert()
+        .success()
+        .stdout(contains("my-app/composer.json"));
+
+    let root = proj.path().join("my-app");
+    assert!(root.join("composer.json").is_file());
+    assert!(root.join(".bougie/conf.d").is_dir());
+    assert!(root.join(".bougie/.gitignore").is_file());
+}
+
+#[test]
+fn new_with_name_sets_composer_name() {
+    let env = TestEnv::new();
+    let proj = project_dir();
+    env.bougie()
+        .current_dir(proj.path())
+        .args(["new", "my-app", "--name", "acme/widget"])
+        .assert()
+        .success();
+
+    let composer: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(proj.path().join("my-app/composer.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(composer["name"], "acme/widget");
+}
+
+#[test]
+fn new_refuses_non_empty_existing_directory() {
+    let env = TestEnv::new();
+    let proj = project_dir();
+    let occupied = proj.path().join("taken");
+    std::fs::create_dir(&occupied).unwrap();
+    std::fs::write(occupied.join("file.txt"), "hi").unwrap();
+
+    env.bougie()
+        .current_dir(proj.path())
+        .args(["new", "taken"])
+        .assert()
+        .failure()
+        .stderr(contains("already exists and is not empty"));
+}
+
+#[test]
 fn init_does_not_overwrite_existing_composer() {
     let env = TestEnv::new();
     let proj = project_dir();
