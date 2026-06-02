@@ -50,6 +50,29 @@ pub fn run(paths: Paths) -> Result<ExitCode> {
     std::fs::create_dir_all(paths.state())
         .wrap_err_with(|| format!("creating {}", paths.state().display()))?;
 
+    // Anchor our cwd to the state root before we do anything else.
+    //
+    // bougied is long-lived and auto-spawned by the first `bougie
+    // services …` call (see commands/services/client.rs::spawn_daemon),
+    // so it inherits — and would otherwise keep forever — the cwd of
+    // whatever directory that invocation ran from. When the operator
+    // runs bougie from a throwaway project/temp dir and then deletes it,
+    // the daemon is left holding an unlinked cwd. Every child we spawn
+    // without an explicit current_dir (the rabbitmqctl / mariadb-client
+    // provisioner probes especially) then inherits that dead cwd, and
+    // any of them that does a `getcwd()` at startup — notably Erlang's
+    // BEAM, which `rabbitmqctl` and `rabbitmq-server` both are — aborts
+    // with `invalid_current_directory` ("getcwd: cannot access parent
+    // directories: No such file or directory"). The supervisor already
+    // pins individual services via `render_exec_cwd`, but the out-of-
+    // band ctl probes don't go through it; fixing the daemon's own cwd
+    // at the source covers them all. The state root is created just
+    // above, is owned by us, and outlives any project dir, so it's the
+    // stable, writable anchor — stray crash dumps (erl_crash.dump) land
+    // somewhere sane instead of "/" or a vanished directory.
+    std::env::set_current_dir(paths.state())
+        .wrap_err_with(|| format!("anchoring daemon cwd to {}", paths.state().display()))?;
+
     // Singleton: an exclusive flock on bougied.pid blocks a second
     // daemon from starting. The fd is held for the full daemon
     // lifetime so the kernel keeps the lock; on exit (clean or
