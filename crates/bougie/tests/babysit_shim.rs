@@ -331,7 +331,16 @@ fn babysit_sidecar_runs_in_group_and_is_reaped() {
     drop(sock);
     let died = wait_until(|| !pgrp_alive(pgid), Duration::from_secs(30));
     assert!(died, "group {pgid} (incl. sidecar) still alive after teardown");
-    assert_ne!(kill0(pgid), 0, "sidecar pid {pgid} should have been reaped");
+    // `pgrp_alive` going false means the kernel dropped the leader from
+    // the *group* — but the leader pid lingers as a zombie (child of
+    // babysit) until reaped, and on macOS that reap can trail the group
+    // transition by a few ms. Poll for the pid to actually disappear
+    // rather than asserting in that window, or this races (the group is
+    // gone, but `kill(pid, 0)` still finds the zombie).
+    assert!(
+        wait_until(|| kill0(pgid) != 0, Duration::from_secs(5)),
+        "sidecar pid {pgid} should have been reaped"
+    );
 
     let status = child.wait().expect("waiting on babysit");
     assert!(status.success(), "babysit should exit 0 after cleanup, got {status:?}");
