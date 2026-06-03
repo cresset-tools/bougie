@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.16.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.15.0...bougie-v0.16.0) (2026-06-03)
+
+
+### Features
+
+* **services:** attach to combined log stream on `bougie up` ([#300](https://github.com/cresset-tools/bougie/issues/300)) ([8b90051](https://github.com/cresset-tools/bougie/commit/8b90051146a05ff099c8c84dcaa91c6229dd2723))
+
+
+### Bug Fixes
+
+* **composer:** warn instead of erroring on stale composer.lock ([#304](https://github.com/cresset-tools/bougie/issues/304)) ([0a9bfcf](https://github.com/cresset-tools/bougie/commit/0a9bfcff4a1efa72a5111001d18d8f81c43fbf87))
+* **fetch:** build the step bar with its draw target to stop a stranded frame ([#303](https://github.com/cresset-tools/bougie/issues/303)) ([bc97eb8](https://github.com/cresset-tools/bougie/commit/bc97eb8e9de5ec818e4cc13e93927fec35330ed0))
+* **recipe:** pin bougie on PATH for check scripts ([#301](https://github.com/cresset-tools/bougie/issues/301)) ([addbd4e](https://github.com/cresset-tools/bougie/commit/addbd4e75c2ad17c9a2b4a62207b3404d2bad3bd))
+
 ## [0.15.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.14.0...bougie-v0.15.0) (2026-06-03)
 
 
