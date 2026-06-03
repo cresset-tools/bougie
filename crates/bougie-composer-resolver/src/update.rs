@@ -64,7 +64,7 @@
 use std::cell::{Ref, RefCell};
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use crate::hash::{FxHashMap, FxHashSet};
 use crate::package_name::PackageName;
@@ -102,6 +102,59 @@ use crate::metadata::{
     RepoProtocol, Variant,
 };
 use crate::verify::{is_platform, to_range, ComposerRange, ProviderError, PubGrubPackage};
+
+/// Cache key: `(repo url, package name, stable/dev variant)` — the exact
+/// granularity of a single `/p2/` document fetch.
+type MetaCacheKey = (String, String, Variant);
+
+/// A cached fetch result: the parsed `/p2/` document, or `None` for a
+/// remembered 404. Distinct from "key absent" — see [`MetaCache::get`].
+type CachedMeta = Option<Arc<bougie_composer::metadata::PackageMetadata>>;
+
+/// In-memory metadata cache shared across the two solve passes of a
+/// single [`resolve_for_lockfile`]. It holds each parsed `/p2/` document
+/// (or `None` for a 404) so the prod-only second pass — which walks a
+/// subset of the full closure fetched seconds earlier — serves every
+/// lookup from memory instead of re-issuing a conditional `GET` per
+/// package. Without it the second pass revalidates the *entire* closure
+/// over the network (hundreds of 304s on a Mage-OS-sized graph) for data
+/// we just downloaded, silently, taking many seconds.
+///
+/// The first pass still fetches/revalidates normally — Composer-faithful
+/// — and populates this map; only the redundant *within-process* re-fetch
+/// is eliminated.
+///
+/// Concurrency: the only writers are the prefetch fan-out's spawned
+/// tasks, and the BFS visits each package name once per pass, so a key is
+/// never contended within a pass. A plain `Mutex<HashMap>` with brief
+/// critical sections is all this needs — no single-flight machinery. The
+/// `Arc` handle is cloned so both providers share one map.
+#[derive(Clone, Default, Debug)]
+pub struct MetaCache {
+    inner: Arc<Mutex<HashMap<MetaCacheKey, CachedMeta>>>,
+}
+
+impl MetaCache {
+    /// Outer `Option` is cache presence (`None` = key absent → fetch it);
+    /// inner [`CachedMeta`] is the cached value (itself `None` for a
+    /// remembered 404). The nesting is load-bearing — a cached 404 must
+    /// not be mistaken for a miss — so the `option_option` lint is moot.
+    #[allow(clippy::option_option)]
+    fn get(&self, key: &MetaCacheKey) -> Option<CachedMeta> {
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(key)
+            .cloned()
+    }
+
+    fn insert(&self, key: MetaCacheKey, value: CachedMeta) {
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(key, value);
+    }
+}
 
 /// pubgrub provider that resolves a fresh `composer.json` against
 /// Packagist v2 metadata.
@@ -150,6 +203,14 @@ pub struct ResolveProvider {
     /// package. Composer only honors these at the root require/
     /// require-dev level; transitive deps don't carry flags.
     stability_flags: HashMap<String, Stability>,
+    /// Process-lifetime metadata cache, shared with the sibling solve
+    /// pass via [`Self::set_meta_cache`]. Read/written by the prefetch
+    /// fan-out so the prod-only second pass of [`resolve_for_lockfile`]
+    /// reuses the full pass's fetched `/p2/` documents instead of
+    /// re-fetching them. Defaults to a private empty cache, so a
+    /// stand-alone provider (e.g. `dry_run_update`, tests) behaves
+    /// exactly as before.
+    meta_cache: MetaCache,
     /// `vendor/name` → versions list, newest-first, filtered by the
     /// effective stability gate. Populated lazily on first
     /// `choose_version` / `get_dependencies` for that package.
@@ -437,6 +498,7 @@ impl ResolveProvider {
             minimum_stability,
             prefer_stable,
             stability_flags,
+            meta_cache: MetaCache::default(),
             cache: RefCell::new(FxHashMap::default()),
             merged_cache: RefCell::new(FxHashMap::default()),
             virtual_providers: RefCell::new(FxHashMap::default()),
@@ -448,6 +510,14 @@ impl ResolveProvider {
             conflict_excludes: RefCell::new(FxHashSet::default()),
             raw_root_constraints,
         })
+    }
+
+    /// Share an external [`MetaCache`] with this provider so its prefetch
+    /// reuses (and contributes to) metadata fetched by a sibling provider.
+    /// Used by [`resolve_for_lockfile`] to make the prod-only second pass
+    /// hit memory instead of the network. Call before `pre_fetch_closure`.
+    pub fn set_meta_cache(&mut self, cache: MetaCache) {
+        self.meta_cache = cache;
     }
 
     /// Begin rendering the solve-phase progress spinner. Call after
@@ -1300,6 +1370,7 @@ impl ResolveProvider {
                 Arc::new(self.stability_flags.clone()),
                 prefetch_concurrency_limit(),
                 progress,
+                self.meta_cache.clone(),
             ))?
         };
 
@@ -1396,6 +1467,7 @@ async fn run_prefetch_fanout(
     stability_flags: Arc<HashMap<String, Stability>>,
     concurrency: usize,
     progress: ClosureProgress,
+    meta_cache: MetaCache,
 ) -> Result<Vec<PrefetchOutcome>, ProviderError> {
     use std::collections::HashSet;
     let sem = Arc::new(tokio::sync::Semaphore::new(concurrency));
@@ -1431,6 +1503,7 @@ async fn run_prefetch_fanout(
             let stability_flags = Arc::clone(&stability_flags);
             let sem = Arc::clone(&sem);
             let host_sems = Arc::clone(&host_sems);
+            let meta_cache = meta_cache.clone();
             tasks.spawn(async move {
                 let _permit = sem
                     .acquire_owned()
@@ -1467,6 +1540,7 @@ async fn run_prefetch_fanout(
                             name.as_str(),
                             floor,
                             &host_sems,
+                            &meta_cache,
                         ),
                     )
                     .await
@@ -1551,6 +1625,7 @@ async fn load_real_candidates_isolated(
     name: &str,
     floor: Stability,
     host_sems: &HashMap<String, Arc<tokio::sync::Semaphore>>,
+    meta_cache: &MetaCache,
 ) -> Result<PrefetchOutcome, ProviderError> {
     let mut versions: Vec<LockPackage> = Vec::new();
     for repo in repos {
@@ -1568,7 +1643,7 @@ async fn load_real_candidates_isolated(
             None => None,
         };
         let stable_md =
-            fetch_one_isolated(client, paths, repo, v1_tables, name, Variant::Stable)
+            fetch_one_isolated(client, paths, repo, v1_tables, name, Variant::Stable, meta_cache)
                 .await
                 .map_err(|e| {
                     ProviderError(format!(
@@ -1589,7 +1664,7 @@ async fn load_real_candidates_isolated(
         }
         if floor == Stability::Dev {
             let dev_md =
-                fetch_one_isolated(client, paths, repo, v1_tables, name, Variant::Dev)
+                fetch_one_isolated(client, paths, repo, v1_tables, name, Variant::Dev, meta_cache)
                     .await
                     .map_err(|e| {
                         ProviderError(format!(
@@ -1639,31 +1714,45 @@ async fn fetch_one_isolated(
     v1_tables: &FxHashMap<String, FxHashMap<String, String>>,
     package: &str,
     variant: Variant,
-) -> eyre::Result<Option<bougie_composer::metadata::PackageMetadata>> {
-    match &repo.protocol {
+    meta_cache: &MetaCache,
+) -> eyre::Result<CachedMeta> {
+    // In-memory hit: serves the prod-only second pass entirely from the
+    // full pass's fetches — no network round-trip, no re-parse. Keyed on
+    // the exact `/p2/` document identity `(repo, package, variant)`.
+    let key = (repo.url.clone(), package.to_owned(), variant);
+    if let Some(hit) = meta_cache.get(&key) {
+        return Ok(hit);
+    }
+
+    let fetched: Option<bougie_composer::metadata::PackageMetadata> = match &repo.protocol {
         Some(RepoProtocol::V1(discovery)) => {
             if variant == Variant::Dev {
                 // v1 stuffs branches into the single per-package
                 // document; `Variant::Stable` already returned
                 // everything. Skip the redundant request.
-                return Ok(None);
-            }
-            let table = v1_tables.get(&repo.url).ok_or_else(|| {
-                eyre::eyre!(
-                    "internal: v1 provider table not pre-loaded for {}",
-                    repo.url,
+                None
+            } else {
+                let table = v1_tables.get(&repo.url).ok_or_else(|| {
+                    eyre::eyre!(
+                        "internal: v1 provider table not pre-loaded for {}",
+                        repo.url,
+                    )
+                })?;
+                fetch_package_metadata_v1_optional_async(
+                    client, paths, repo, discovery, table, package,
                 )
-            })?;
-            fetch_package_metadata_v1_optional_async(
-                client, paths, repo, discovery, table, package,
-            )
-            .await
+                .await?
+            }
         }
         _ => {
             fetch_package_metadata_optional_async(client, paths, repo, package, variant)
-                .await
+                .await?
         }
-    }
+    };
+
+    let arc = fetched.map(Arc::new);
+    meta_cache.insert(key, arc.clone());
+    Ok(arc)
 }
 
 /// Spinner that ticks once per *completed* fetch during
@@ -3107,6 +3196,13 @@ pub fn resolve_for_lockfile(
 
     let auth = read_all_auth(&composer_json, project_root).map_err(|e| eyre!(e))?;
 
+    // One metadata cache, shared across both passes. The full pass
+    // fetches the whole closure into it; the prod-only pass walks a
+    // subset and finds every document already in memory — no network,
+    // no re-parse. (Before this, the second pass silently revalidated
+    // the entire closure over the network — see `MetaCache`.)
+    let meta_cache = MetaCache::default();
+
     let full = solve_into_lock_packages(
         paths,
         default_packagist.clone(),
@@ -3114,12 +3210,12 @@ pub fn resolve_for_lockfile(
         false,
         auth.clone(),
         ProgressMode::Visible,
+        meta_cache.clone(),
     )?;
-    // Second pass is the same closure walk against the same disk
-    // cache — every fetch is an instant cache hit. Re-running the
-    // spinner would flash a redundant "fetching metadata" line, so
-    // hide it. The user already saw the work happen during the full
-    // pass.
+    // Second pass is the same closure walk, now served entirely from
+    // `meta_cache` — instant, so its spinner stays hidden (re-rendering
+    // it would just flash). The user already saw the work during the
+    // full pass.
     let prod = solve_into_lock_packages(
         paths,
         default_packagist,
@@ -3127,6 +3223,7 @@ pub fn resolve_for_lockfile(
         true,
         auth,
         ProgressMode::Hidden,
+        meta_cache,
     )?;
 
     let t_partition = std::time::Instant::now();
@@ -3172,6 +3269,7 @@ fn solve_into_lock_packages(
     no_dev: bool,
     auth: HashMap<String, crate::metadata::AuthCredentials>,
     progress: ProgressMode,
+    meta_cache: MetaCache,
 ) -> Result<SolutionSummary> {
     let client = build_client()?;
     let mut provider = ResolveProvider::build_with_auth(
@@ -3183,6 +3281,9 @@ fn solve_into_lock_packages(
         auth,
     )
     .map_err(|e| eyre!(e))?;
+    // Share the caller's metadata cache so the two passes of
+    // `resolve_for_lockfile` don't re-fetch the same `/p2/` documents.
+    provider.set_meta_cache(meta_cache);
     // Record discovered Composer protocols on each repo (see
     // [`ResolveProvider::discover_repos`]). Done here too because
     // `solve_into_lock_packages` builds its own provider for the
