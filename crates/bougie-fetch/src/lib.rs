@@ -912,14 +912,30 @@ impl DownloadBar {
         if !bougie_output::output::progress_visible() {
             return Self::hidden();
         }
-        let pb = ProgressBar::new(total);
+        // Construct *with* the final draw target rather than
+        // `ProgressBar::new` + `set_draw_target`. `new` attaches
+        // indicatif's default (visible) stderr target, and the
+        // `set_style`/`set_prefix` calls below draw an initial frame to
+        // it; swapping in a fresh `stderr_with_hz` target afterwards
+        // leaves that frame orphaned — its draw-state doesn't know a
+        // frame was already emitted, so the next redraw never clears it.
+        // Because `{wide_msg}` pads that orphan to the full terminal
+        // width, writing it lands on the last column (pending wrap) and
+        // the following frame drops to a new line, stranding the orphan
+        // in scrollback (the "spurious newline" the baseline-extension
+        // bar showed — its first `step()` fires instantly on a cache hit,
+        // before the rate-limiter can interpose a clear). Building with
+        // the target up front means there is no orphaned default-target
+        // frame. (`Self::new` is unaffected: it swaps to a *hidden*
+        // target before drawing; the resolver bar swaps before its
+        // `set_style`, so neither draws to the default target.)
+        let pb = ProgressBar::with_draw_target(Some(total), ProgressDrawTarget::stderr_with_hz(15));
         let style = ProgressStyle::with_template(
             "  {prefix:<12} {pos}/{len} {spinner:.magenta} {wide_msg:.dim}",
         )
         .unwrap_or_else(|_| ProgressStyle::default_spinner());
         pb.set_style(style);
         pb.set_prefix(label.to_owned());
-        pb.set_draw_target(ProgressDrawTarget::stderr_with_hz(15));
         pb.enable_steady_tick(Duration::from_millis(120));
         Self { pb, sink: None, download_label: label.to_owned(), pending: None }
     }
