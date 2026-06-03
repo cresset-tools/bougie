@@ -6,8 +6,8 @@ Published to GitHub Container Registry on every release:
 |-------|------|-----|
 | `ghcr.io/cresset-tools/bougie:<version>` | `scratch` | Binary-only. Lift `/bougie` + `/bgx` into your own image. |
 | `ghcr.io/cresset-tools/bougie:latest` | `scratch` | Same, tracking the latest stable release. |
-| `ghcr.io/cresset-tools/bougie:<version>-debian-slim` | `debian:trixie-slim` | Runnable (fully functional on amd64 — see below). |
-| `ghcr.io/cresset-tools/bougie:<version>-alpine` | `alpine:3.22` | Runnable bougie; `php install` not yet supported (musl — see below). |
+| `ghcr.io/cresset-tools/bougie:<version>-debian-slim` | `debian:trixie-slim` | Runnable, glibc (fully functional on amd64 — see below). |
+| `ghcr.io/cresset-tools/bougie:<version>-alpine` | `alpine:3.22` | Runnable, **musl/Alpine** (fully functional on amd64 — see below). |
 
 Stable releases also publish rolling `<major>.<minor>` and bare-variant tags
 (`debian-slim`, `alpine`); prereleases publish only the exact `<version>` /
@@ -19,22 +19,26 @@ automatically.
 
 ## Platform support for `php install`
 
-The `bougie` binary itself runs on every published image/arch. But fetching a
-**PHP runtime** depends on what bougie's distribution index
-(`index.bougie.tools`) currently ships, which is `x86_64-unknown-linux-gnu`
-only (plus `aarch64-apple-darwin`, irrelevant to Linux containers):
+The `bougie` binary runs on every published image/arch. Fetching a **PHP
+runtime** depends on what bougie's distribution index (`index.bougie.tools`)
+ships: **`x86_64-unknown-linux-gnu` and `x86_64-unknown-linux-musl`** (plus
+`aarch64-apple-darwin`, irrelevant to Linux containers). So `php install`
+works on **both glibc and musl on amd64** — Alpine included. Only arm64 Linux
+PHP isn't in the index yet.
 
 | Image / arch | `bougie` runs | `bougie php install` |
 |--------------|:--:|:--:|
 | `debian-slim` · amd64 | ✓ | ✓ |
+| `alpine` · amd64 | ✓ | ✓ |
 | `debian-slim` · arm64 | ✓ | ✗ — no `aarch64-unknown-linux-gnu` in the index yet |
-| `alpine` · any arch | ✓ | ✗ — no musl PHP in the index yet |
+| `alpine` · arm64 | ✓ | ✗ — no `aarch64-unknown-linux-musl` in the index yet |
 
-So today the fully-functional runnable image is **`debian-slim` on amd64**.
-The arm64 and alpine images are published ahead of the index: the moment
-php-build-standalone ships `aarch64-unknown-linux-gnu` / musl PHP builds, they
+Both amd64 runnable images — **`debian-slim` and `alpine`** — are fully
+functional today (the index gained `x86_64-unknown-linux-musl` in
+php-build-standalone 0.2.5). The arm64 variants are published ahead of the
+index: once php-build-standalone ships the `aarch64-*-linux-*` builds they
 become functional with no image changes. On Apple Silicon, Docker Desktop runs
-the amd64 image under Rosetta, so `debian-slim` works there too.
+the amd64 image under Rosetta, so both variants work there too.
 
 ## Copy the binary into your own image
 
@@ -51,10 +55,14 @@ COPY --from=ghcr.io/cresset-tools/bougie:latest /bougie /bgx /usr/local/bin/
 ## Run bougie directly
 
 Use a runnable variant — the bare `scratch` image has **no CA certificates**,
-so it can't fetch PHP runtimes over TLS:
+so it can't fetch PHP runtimes over TLS. Both `debian-slim` (glibc) and
+`alpine` (musl) are fully functional on amd64:
 
 ```sh
+# Debian (glibc)
 docker run --rm -v "$PWD:/app" -w /app ghcr.io/cresset-tools/bougie:debian-slim sync
+# Alpine (musl) — installs the musl PHP runtime from the index
+docker run --rm -v "$PWD:/app" -w /app ghcr.io/cresset-tools/bougie:alpine sync
 ```
 
 ## How the images are built
@@ -67,8 +75,10 @@ cross-linker. The final `scratch` stage runs no code, so buildx never emulates
 arm64 — no QEMU, no arm runner.
 
 `docker/Dockerfile.extra` builds the runnable variants by `COPY --from`-ing the
-just-built base binaries onto a real OS base; it has no `RUN` steps, so it needs
-no emulation either.
+just-built base binaries onto a real OS base and installing CA certificates
+(its only `RUN`). That cert install runs under QEMU on the arm64 leg — cheap
+for a package install; the expensive Rust compile stays in the base image and
+never needs emulation.
 
 CI: `.github/workflows/build-docker.yml`, wired into the release as a
 post-announce job via `post-announce-jobs` in `dist-workspace.toml`. It also
