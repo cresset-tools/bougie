@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.15.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.14.0...bougie-v0.15.0) (2026-06-03)
+
+
+### Features
+
+* **daemon:** graceful shutdown + opensearch jdk runtime dep ([#297](https://github.com/cresset-tools/bougie/issues/297)) ([a21a051](https://github.com/cresset-tools/bougie/commit/a21a051384a8a63d8291ae3e951bfd27cfb03cb7))
+* **installer:** count progress for baseline extension install ([#296](https://github.com/cresset-tools/bougie/issues/296)) ([045fee6](https://github.com/cresset-tools/bougie/commit/045fee64207b98ed5bc8d441e3b892c6adfa6d42))
+* SIGQUIT activity dump + shared resolver metadata cache ([#295](https://github.com/cresset-tools/bougie/issues/295)) ([fc7c3cb](https://github.com/cresset-tools/bougie/commit/fc7c3cb211b935afc0fb57f790d839f4cd4a51ae))
+
+
+### Bug Fixes
+
+* don't orphan rabbitmq when bougied gets a foreground Ctrl-C ([#299](https://github.com/cresset-tools/bougie/issues/299)) ([385f4e5](https://github.com/cresset-tools/bougie/commit/385f4e5db63dce9afdb8c1adb9a35dd9c180d5bf))
+
 ## [0.14.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.13.0...bougie-v0.14.0) (2026-06-02)
 
 
