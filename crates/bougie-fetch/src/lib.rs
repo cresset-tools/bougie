@@ -895,6 +895,42 @@ impl DownloadBar {
         }
     }
 
+    /// Build a **step-count** progress bar rendering `{prefix} {pos}/{len}
+    /// {msg}`. Unlike the byte bar from [`Self::new`], it draws immediately
+    /// and keeps drawing even when no bytes flow — for a sequence of small
+    /// units that are frequently cache hits (e.g. the baseline PHP
+    /// extensions), where "12/24 intl" is the real signal and an aggregate
+    /// byte bar would just sit at `0 B/0 B`. Advance with [`Self::step`]
+    /// once per unit; call [`Self::finish`] at the end.
+    ///
+    /// Hidden (a no-op) unless the global progress-visible flag is set,
+    /// same as [`Self::new`]. A step bar tracks item *counts*, not bytes,
+    /// so don't also pass it to `fetch_blob` / `fetch_file` — its position
+    /// would then mix item ticks with byte increments. Use a separate
+    /// [`Self::hidden`] byte bar for the fetches underneath.
+    pub fn steps(label: &str, total: u64) -> Self {
+        if !bougie_output::output::progress_visible() {
+            return Self::hidden();
+        }
+        let pb = ProgressBar::new(total);
+        let style = ProgressStyle::with_template(
+            "  {prefix:<12} {pos}/{len} {spinner:.magenta} {wide_msg:.dim}",
+        )
+        .unwrap_or_else(|_| ProgressStyle::default_spinner());
+        pb.set_style(style);
+        pb.set_prefix(label.to_owned());
+        pb.set_draw_target(ProgressDrawTarget::stderr_with_hz(15));
+        pb.enable_steady_tick(Duration::from_millis(120));
+        Self { pb, sink: None, download_label: label.to_owned(), pending: None }
+    }
+
+    /// Label the unit now starting and advance a [`steps`](Self::steps)
+    /// bar by one. No-op on hidden bars (their draw target is hidden).
+    pub fn step(&self, name: impl Into<String>) {
+        self.pb.set_message(name.into());
+        self.pb.inc(1);
+    }
+
     /// A no-op bar. Use when a caller has no aggregate of its own but
     /// still needs to satisfy [`fetch_blob`] / [`fetch_file`].
     pub fn hidden() -> Self {
