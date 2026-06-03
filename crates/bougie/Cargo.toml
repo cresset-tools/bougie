@@ -96,6 +96,12 @@ bougie-daemon = { workspace = true }
 bougie-recipe = { workspace = true }
 sandbox-run = { workspace = true }
 
+# Drives the SIGQUIT (Ctrl-\) activity dump in `debug_dump.rs`. We use
+# the iterator API so signal delivery lands on a normal background
+# thread (not an async-signal context), keeping the dump path plain
+# safe Rust — the unsafe handler registration lives inside the crate.
+signal-hook = "0.3"
+
 # --- External deps still used directly by the bin (CLI dispatch,
 #     commands/ handlers, the unzip-shim role, etc.) ---
 

@@ -118,6 +118,7 @@ pub fn fetch_and_extract_dists(
 /// the install orchestrator to drive a per-package progress bar: the
 /// lockfile doesn't carry dist sizes, so a bytes-based bar would be
 /// misleading — we tick once per finished package instead.
+#[tracing::instrument(skip_all, fields(dists = dists.len()))]
 pub fn fetch_and_extract_dists_with_progress<D, X>(
     client: &reqwest::blocking::Client,
     paths: &Paths,
@@ -153,6 +154,7 @@ where
 /// Download one dist into the content-addressed cache. No-op when the
 /// cache already has a verified copy (filename match = sha1 match,
 /// because the rename is atomic and only happens after verification).
+#[tracing::instrument(skip_all, fields(package = dist.package_name))]
 fn download_to_cache(
     client: &reqwest::blocking::Client,
     cache_root: &Path,
@@ -288,6 +290,7 @@ fn rewrite_github_dist_url(url: &str) -> Cow<'_, str> {
 /// Extract one cached dist archive into its `vendor_dest`. The
 /// destination is wiped beforehand so the call is idempotent — a
 /// previous half-done install does not poison the new tree.
+#[tracing::instrument(skip_all, fields(package = dist.package_name))]
 fn extract_from_cache(cache_root: &Path, dist: &DistRequest<'_>) -> Result<()> {
     let cache_path = cache_path_for(cache_root, dist);
     if let Some(parent) = dist.vendor_dest.parent() {

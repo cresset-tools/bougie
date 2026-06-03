@@ -350,6 +350,7 @@ pub enum BlobOutcome {
 /// for the duration of the transfer. Pass [`DownloadBar::hidden`] when
 /// the caller has no UI of its own — the byte-copy loop stays the
 /// same shape either way.
+#[tracing::instrument(skip_all, fields(url = spec.url))]
 pub fn fetch_blob(
     client: &reqwest::blocking::Client,
     spec: &BlobSpec<'_>,
@@ -361,6 +362,7 @@ pub fn fetch_blob(
 /// Fetch a single bare file (e.g. a `.phar`) into `dest`, verifying its
 /// sha256. No tar/zst extraction; the verified bytes are placed at `dest`
 /// atomically. No-op if `dest` exists.
+#[tracing::instrument(skip_all, fields(url = spec.url))]
 pub fn fetch_file(
     client: &reqwest::blocking::Client,
     spec: &BlobSpec<'_>,
@@ -583,6 +585,7 @@ fn try_once_file(
 /// `strip_prefix = "install"`) lands at `<into>/bin/php`. Entries
 /// that don't start with `strip_prefix` pass through unchanged.
 /// Pass `""` to disable stripping (archive entries land verbatim).
+#[tracing::instrument(skip_all, fields(into = %into.display()))]
 fn extract_tar_zst(tar_zst: &Path, into: &Path, strip_prefix: &str) -> Result<()> {
     let f = File::open(tar_zst)
         .wrap_err_with(|| format!("opening {}", tar_zst.display()))?;
@@ -679,6 +682,7 @@ fn extract_tar_zst(tar_zst: &Path, into: &Path, strip_prefix: &str) -> Result<()
 /// it. The `zip` crate's own `ZipArchive::extract` would handle them
 /// on Unix, but rolling the walk by hand here keeps the strip-prefix
 /// rewrite (which `extract` doesn't support) trivial.
+#[tracing::instrument(skip_all, fields(into = %into.display()))]
 pub fn extract_zip(zip_path: &Path, into: &Path, strip_prefix: &str) -> Result<()> {
     let f = File::open(zip_path)
         .wrap_err_with(|| format!("opening {}", zip_path.display()))?;

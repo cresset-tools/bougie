@@ -159,6 +159,7 @@ impl From<std::io::Error> for DumpError {
 /// both use this. The long-running server holds an `Autoloader`
 /// directly so it can apply incremental edits without re-walking the
 /// whole project; see `INCREMENTAL_AUTOLOADER_PLAN.md`.
+#[tracing::instrument(skip_all)]
 pub fn dump_autoload(req: &DumpRequest<'_>) -> Result<DumpReport, DumpError> {
     let loader = Autoloader::bootstrap(req)?;
     loader.emit()?;

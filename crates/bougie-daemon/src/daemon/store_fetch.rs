@@ -85,6 +85,7 @@ const LOCK_TIMEOUT: Duration = Duration::from_mins(1);
 /// Runs the blocking fetch + extract on the tokio blocking pool so
 /// the daemon's main reactor isn't stalled across what can be a
 /// multi-hundred-MB download.
+#[tracing::instrument(skip_all, fields(service = entry.name))]
 pub async fn ensure_tarball(
     paths: &Paths,
     entry: &'static CatalogEntry,

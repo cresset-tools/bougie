@@ -63,6 +63,7 @@ type FileResult = (Option<(PathBuf, Vec<String>)>, Vec<ScanWarning>);
 /// file's entry when its post-edit class list is empty. The filter's
 /// per-file warnings (emitted only when *no* class in a file passed
 /// the PSR filter) are still returned so the CLI can surface them.
+#[tracing::instrument(skip_all, fields(root = %root.display()))]
 pub(crate) fn scan_per_file(
     root: &Path,
     install_abs: &Path,

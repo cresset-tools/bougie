@@ -981,6 +981,7 @@ where
     });
 }
 
+#[tracing::instrument(skip_all, fields(service = name))]
 async fn wait_for_health(
     binding: &Binding,
     name: &str,

@@ -371,7 +371,7 @@ pub fn probe_protocol(
 /// need the first; the dev variant matters when a `composer.json`
 /// pins `dev-main` (or similar) or when `minimum-stability` allows
 /// branch installs.
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
 pub enum Variant {
     Stable,
     Dev,
