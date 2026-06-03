@@ -76,6 +76,11 @@ pub fn run_task(
                             "task `{name}` needs to run but has no `run` script"
                         ));
                     };
+                    // Entered across the blocking `/bin/sh` step so a
+                    // Ctrl-\ dump shows which recipe task is running when
+                    // `bougie make`/`start` appears to hang.
+                    let _task_span =
+                        tracing::info_span!("recipe_task", task = name.as_str()).entered();
                     match execute(script, opts) {
                         Ok(status) if status.success() => {
                             if let Some(creates) = &task.creates {
@@ -128,6 +133,13 @@ pub fn run_task(
 }
 
 fn execute(script: &str, opts: &RunOptions) -> Result<ExitStatus> {
+    // NOTE: this `/bin/sh` runs in bougie's foreground process group and
+    // has no SIGQUIT handler. A Ctrl-\ activity dump (see the bougie
+    // crate's `debug_dump`) signals the whole group, so pressing it while
+    // a recipe step is running kills this shell and surfaces as a bogus
+    // `exit -1` for the step. It's a known interaction with the debug
+    // dump, documented there — don't read a step's `exit -1` as a real
+    // failure if a dump was fired mid-step.
     let mut cmd = std::process::Command::new("/bin/sh");
     cmd.arg("-e").arg("-c").arg(script);
     cmd.current_dir(&opts.project_root);

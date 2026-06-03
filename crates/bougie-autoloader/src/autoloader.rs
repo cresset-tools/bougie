@@ -115,6 +115,7 @@ impl Autoloader {
     /// scan task list, drive the parallel scan, and produce a ready-
     /// to-emit `Autoloader`. Performs no I/O beyond reading source
     /// files; emit is a separate step.
+    #[tracing::instrument(skip_all)]
     pub fn bootstrap(req: &DumpRequest<'_>) -> Result<Self, DumpError> {
         let lock = lock::read_lock(req.project_root)?;
         let manifest = lock::read_root_manifest(req.project_root)?;
@@ -246,6 +247,7 @@ impl Autoloader {
     /// Write every `vendor/composer/autoload_*.php` file plus the
     /// runtime `ClassLoader`, `InstalledVersions`, LICENSE, and
     /// `installed.{json,php}`. Atomic per file (rename-based).
+    #[tracing::instrument(skip_all)]
     pub fn emit(&self) -> Result<(), DumpError> {
         let composer_dir = self.project_root.join("vendor").join("composer");
         std::fs::create_dir_all(&composer_dir)?;

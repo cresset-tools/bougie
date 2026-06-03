@@ -1254,13 +1254,16 @@ impl ResolveProvider {
                 if self.v1_provider_tables.borrow().contains_key(&repo.url) {
                     continue;
                 }
-                let table = runtime
-                    .block_on(load_v1_provider_table_async(
+                let v1_span = tracing::info_span!("load_v1_provider_table", repo = %repo.url);
+                let table = {
+                    let _entered = v1_span.enter();
+                    runtime.block_on(load_v1_provider_table_async(
                         &async_client,
                         &self.paths,
                         repo,
                         discovery,
                     ))
+                }
                     .map_err(|e| {
                         ProviderError(format!(
                             "loading v1 provider table for {}: {e:#}",
@@ -1275,17 +1278,30 @@ impl ResolveProvider {
         let v1_tables: Arc<FxHashMap<String, FxHashMap<String, String>>> =
             Arc::new(self.v1_provider_tables.borrow().clone());
 
-        let outcomes = runtime.block_on(run_prefetch_fanout(
-            async_client,
-            self.paths.clone(),
-            self.repos.clone(),
-            v1_tables,
-            initial,
-            self.minimum_stability,
-            Arc::new(self.stability_flags.clone()),
-            prefetch_concurrency_limit(),
-            progress,
-        ))?;
+        // Entered for the whole synchronous `block_on`, so a Ctrl-\
+        // activity dump (and `BOUGIE_LOG=...=debug`) shows the fanout as
+        // the in-progress work, with the root package count, while it's
+        // waiting on the network. This is the example breadcrumb; add
+        // the same pattern at other blocking sites as needed.
+        let fanout_span = tracing::info_span!(
+            "prefetch_closure",
+            packages = initial.len(),
+            concurrency = prefetch_concurrency_limit(),
+        );
+        let outcomes = {
+            let _entered = fanout_span.enter();
+            runtime.block_on(run_prefetch_fanout(
+                async_client,
+                self.paths.clone(),
+                self.repos.clone(),
+                v1_tables,
+                initial,
+                self.minimum_stability,
+                Arc::new(self.stability_flags.clone()),
+                prefetch_concurrency_limit(),
+                progress,
+            ))?
+        };
 
         // Post-process on the main thread so virtual-provider
         // registration is single-threaded (the registry uses RefCells
@@ -2850,6 +2866,7 @@ pub struct DryRunOptions {
 /// (production callers pass [`crate::metadata::Repo::packagist`];
 /// tests pass a `Repo::from_url(mock_uri)`). composer.json's
 /// `repositories` field augments / overrides this list.
+#[tracing::instrument(skip_all, fields(project_root = %project_root.display()))]
 pub fn dry_run_update(
     paths: &Paths,
     project_root: &Path,
@@ -3070,6 +3087,7 @@ pub struct LockfileSolveOutcome {
 ///
 /// Returns the parsed composer.json bytes alongside the outcome so
 /// the caller can compute content-hash without re-reading.
+#[tracing::instrument(skip_all, fields(project_root = %project_root.display()))]
 pub fn resolve_for_lockfile(
     paths: &Paths,
     project_root: &Path,
@@ -3146,6 +3164,7 @@ pub fn resolve_for_lockfile(
 /// Inner helper: build a provider with the given `no_dev` flag, solve,
 /// pull the full `LockPackage` entries out of the cache, return them
 /// sorted by name plus the metadata fields the lockfile writer needs.
+#[tracing::instrument(skip_all, fields(no_dev))]
 fn solve_into_lock_packages(
     paths: &Paths,
     default_packagist: Repo,
@@ -3197,6 +3216,9 @@ fn solve_into_lock_packages(
         provider.begin_solve_progress();
     }
     let t_solve = std::time::Instant::now();
+    // Entered across the whole (possibly retried) pubgrub solve — the
+    // CPU-bound phase a Ctrl-\ dump should surface as "still solving".
+    let solve_guard = tracing::info_span!("pubgrub_solve", no_dev).entered();
     let mut solve_result = resolve(&provider, PubGrubPackage::Root, root.clone());
     for _retry in 0..10 {
         let Ok(ref solution) = solve_result else { break };
@@ -3219,6 +3241,7 @@ fn solve_into_lock_packages(
         provider.reset_for_re_solve();
         solve_result = resolve(&provider, PubGrubPackage::Root, root.clone());
     }
+    drop(solve_guard);
     let solve_elapsed = t_solve.elapsed();
     provider.finish_solve_progress();
     tracing::info!(

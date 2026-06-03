@@ -27,6 +27,9 @@ features = ["preserve_order"]
 [dependencies.thiserror]
 version = "2.0"
 
+[dependencies.tracing]
+version = "0.1"
+
 [dependencies.toml_edit]
 version = "0.25"
 features = ["serde"]

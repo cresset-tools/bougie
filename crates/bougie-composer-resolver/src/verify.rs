@@ -48,6 +48,7 @@ pub struct VerifyOptions {
 ///
 /// Returns `Err` only for I/O / parse-level failures (missing file,
 /// malformed JSON). Lockfile-inconsistency is `Ok(Invalid)`.
+#[tracing::instrument(skip_all, fields(project_root = %project_root.display(), no_dev = opts.no_dev))]
 pub fn verify_lock(project_root: &Path, opts: VerifyOptions) -> Result<VerifyOutcome> {
     let composer_json_path = project_root.join("composer.json");
     let composer_lock_path = project_root.join("composer.lock");

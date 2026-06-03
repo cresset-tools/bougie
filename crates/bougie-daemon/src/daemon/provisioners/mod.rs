@@ -43,6 +43,7 @@ pub async fn pre_start(entry: &CatalogEntry, paths: &Paths) -> Result<()> {
 /// Returns a `Tenant` ready to be appended to `tenants.json`. For
 /// mariadb the append is performed inside the provisioner (it has to
 /// stash a generated password); for redis the caller appends.
+#[tracing::instrument(skip_all, fields(service = entry.name, tenant = tenant_name))]
 pub async fn provision(
     entry: &CatalogEntry,
     paths: &Paths,

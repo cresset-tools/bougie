@@ -86,6 +86,7 @@ pub struct InstallSummary {
 /// you changed the preflight rules and forgot to update this
 /// consumer, you'll hit the unwrap; that's the failure mode the
 /// comment at the unwrap is guarding against.
+#[tracing::instrument(skip_all, fields(project_root = %project_root.display()))]
 pub fn install_from_lock(
     paths: &Paths,
     project_root: &Path,

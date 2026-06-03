@@ -36,6 +36,7 @@ pub struct InstalledPhp {
     pub frozen_warning: bool,
 }
 
+#[tracing::instrument(skip_all, fields(request = ?request))]
 pub fn install_php(
     paths: &Paths,
     request: &Request,
@@ -161,6 +162,7 @@ pub fn install_extension(
 /// [`preinstall_into`], `sync::install_required_extensions`) can show
 /// a single combined bar across many extensions instead of one bar
 /// per artifact.
+#[tracing::instrument(skip_all, fields(extension = name))]
 pub fn install_extension_with_bar(
     paths: &Paths,
     name: &str,
@@ -399,6 +401,7 @@ pub struct BaselineReport {
 /// This is intentionally separate from [`install_php`] and must be
 /// called *after* `install_php` returns: both functions acquire the
 /// same global lock, and nesting them would deadlock.
+#[tracing::instrument(skip_all, fields(php_minor = ?php_minor, flavor = ?flavor))]
 pub fn install_baseline_into(
     paths: &Paths,
     install_root: &Path,
@@ -621,6 +624,7 @@ pub struct PreinstallReport {
 /// per-interpreter bookkeeping. Errors are per-name and non-fatal —
 /// caller surfaces them as warnings, same pattern as
 /// [`BaselineReport`].
+#[tracing::instrument(skip_all, fields(php_minor = ?php_minor, flavor = ?flavor))]
 pub fn preinstall_into(
     paths: &Paths,
     _install_root: &Path,

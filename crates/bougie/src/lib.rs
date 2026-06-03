@@ -33,6 +33,30 @@ fn unsupported_on_windows(feature: &str) -> Result<ExitCode> {
     ))
 }
 
+/// Stable, human-readable name for the running subcommand, used as the
+/// `command` span field so a Ctrl-\ activity dump (and `BOUGIE_LOG`)
+/// shows which verb is running even before any deeper span opens.
+fn command_name(cmd: &Command) -> &'static str {
+    match cmd {
+        Command::Init { .. } => "init",
+        Command::New { .. } => "new",
+        Command::Ext(_) => "ext",
+        Command::Sync { .. } => "sync",
+        Command::Up { .. } => "up",
+        Command::Down { .. } => "down",
+        Command::Run { .. } => "run",
+        Command::Php(_) => "php",
+        Command::Composer(_) => "composer",
+        Command::Tool(_) => "tool",
+        Command::ToolExec { .. } => "tool-exec",
+        Command::Cache(_) => "cache",
+        Command::SelfCmd(_) => "self",
+        Command::Server(_) => "server",
+        Command::Services(_) => "services",
+        Command::Make { .. } => "make",
+    }
+}
+
 pub fn run(cli: Cli) -> Result<ExitCode> {
     let format = cli.format;
 
@@ -45,6 +69,11 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
         && std::io::stderr().is_terminal();
     bougie_output::output::set_progress_visible(progress_visible);
     bougie_output::output::set_verbose(cli.verbose);
+
+    // Top-level span for the whole invocation. Entered on the main
+    // thread for the entire dispatch, so a Ctrl-\ activity dump always
+    // shows which verb is running even before a deeper phase span opens.
+    let _cmd_span = tracing::info_span!("command", name = command_name(&cli.command)).entered();
 
     match cli.command {
         Command::Init { toml, name, starter, start } => {
