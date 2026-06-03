@@ -118,11 +118,37 @@ pub struct ServiceEnvArgs {
 
 #[derive(Debug, Deserialize)]
 pub struct ServiceLogsArgs {
-    pub service: String,
+    /// Single-service form (`bougie services logs <name>`). Mutually
+    /// exclusive with `services`; if both are present `services` wins.
+    #[serde(default)]
+    pub service: Option<String>,
+    /// Multi-service form (`bougie up`'s combined stream). When more
+    /// than one name is present, each emitted line is prefixed with the
+    /// service name so the streams stay distinguishable.
+    #[serde(default)]
+    pub services: Vec<String>,
     #[serde(default = "default_lines")]
     pub lines: usize,
     #[serde(default)]
     pub follow: bool,
+    /// Colorize the per-service prefix in the multi-service stream with
+    /// ANSI codes. The CLI sets this only when its own stdout is a TTY —
+    /// the daemon can't tell, and we don't want escapes in a redirected
+    /// or piped `bougie up`. No effect on the single-service form.
+    #[serde(default)]
+    pub color: bool,
+}
+
+impl ServiceLogsArgs {
+    /// Normalise the single/multi forms into one ordered list. Prefers
+    /// the explicit `services` array; otherwise the lone `service`.
+    fn service_names(&self) -> Vec<String> {
+        if self.services.is_empty() {
+            self.service.clone().into_iter().collect()
+        } else {
+            self.services.clone()
+        }
+    }
 }
 
 fn default_lines() -> usize {
@@ -434,27 +460,60 @@ async fn dispatch_logs(
     state: &Arc<DaemonState>,
     args: ServiceLogsArgs,
 ) {
-    use crate::daemon::{catalog, logs};
+    use crate::daemon::catalog;
 
-    let Some(entry) = catalog::find(&args.service) else {
-        let frame = ResultFrame::err("unknown_service", format!("`{}` not in catalog", args.service));
+    let names = args.service_names();
+    if names.is_empty() {
+        let frame = ResultFrame::err("bad_request", "no service named for logs");
         write_terminal(write_half, &frame).await;
         return;
-    };
-    let log_path = state
-        .paths
-        .service_log(entry.name)
-        .join(format!("{}.log", entry.name));
+    }
+
+    // Resolve every name up front so an unknown service fails the whole
+    // request rather than half-streaming. Keep the catalog's `'static`
+    // name (the request may differ only in case / aliasing).
+    let mut targets: Vec<(&'static str, std::path::PathBuf)> = Vec::with_capacity(names.len());
+    for name in &names {
+        let Some(entry) = catalog::find(name) else {
+            let frame =
+                ResultFrame::err("unknown_service", format!("`{name}` not in catalog"));
+            write_terminal(write_half, &frame).await;
+            return;
+        };
+        let log_path = state
+            .paths
+            .service_log(entry.name)
+            .join(format!("{}.log", entry.name));
+        targets.push((entry.name, log_path));
+    }
+
+    if targets.len() == 1 {
+        let (_, log_path) = &targets[0];
+        dispatch_logs_single(write_half, log_path, args.lines, args.follow).await;
+    } else {
+        dispatch_logs_multi(write_half, &targets, args.lines, args.follow, args.color).await;
+    }
+}
+
+/// Single-service tail/follow — the original `services logs <name>`
+/// behaviour: raw byte chunks, no per-line prefix.
+async fn dispatch_logs_single(
+    write_half: &mut tokio::net::unix::OwnedWriteHalf,
+    log_path: &std::path::Path,
+    lines: usize,
+    follow: bool,
+) {
+    use crate::daemon::logs;
 
     // 1. Tail.
-    let tail = logs::tail_lines(&log_path, args.lines).unwrap_or_default();
+    let tail = logs::tail_lines(log_path, lines).unwrap_or_default();
     let joined = tail.concat();
     if !joined.is_empty()
         && !write_progress(write_half, "stdout", &joined).await {
             return;
         }
 
-    if !args.follow {
+    if !follow {
         let frame = ResultFrame::ok(serde_json::json!({"lines_tailed": tail.len()}));
         write_terminal(write_half, &frame).await;
         return;
@@ -462,7 +521,7 @@ async fn dispatch_logs(
 
     // 2. Follow: seek to current end-of-file, poll for growth, stream
     // new bytes. Buffer reused across iterations to avoid alloc churn.
-    let mut f = match tokio::fs::OpenOptions::new().read(true).open(&log_path).await {
+    let mut f = match tokio::fs::OpenOptions::new().read(true).open(log_path).await {
         Ok(f) => f,
         Err(e) => {
             let frame = ResultFrame::err("log_open_failed", e.to_string());
@@ -486,6 +545,144 @@ async fn dispatch_logs(
                 }
             }
             Err(_) => return,
+        }
+    }
+}
+
+/// ANSI 16-color foreground codes cycled across services in the
+/// combined stream, so each service's prefix is a distinct color (à la
+/// `docker compose up`). Chosen to read on both light and dark
+/// terminals and to skip the 30/37 ends (black / white / grey) that
+/// vanish against common backgrounds. Cycles if there are more services
+/// than colors.
+const PREFIX_COLORS: &[u8] = &[36, 33, 32, 35, 34, 31, 96, 93, 92, 95, 94, 91];
+
+/// One followed log file in the multi-service stream. `file` is lazily
+/// (re)opened so a service whose log doesn't exist yet — or that rotates
+/// out from under us — is tolerated rather than fatal.
+#[derive(Debug)]
+struct MultiTailer {
+    name: &'static str,
+    path: std::path::PathBuf,
+    /// ANSI color code for this service's prefix, or `None` when color
+    /// is off (non-TTY CLI). Stable per service for the whole stream.
+    color: Option<u8>,
+    file: Option<tokio::fs::File>,
+    /// Bytes received since the last newline; held back so we only ever
+    /// prefix whole lines.
+    partial: Vec<u8>,
+}
+
+/// Multi-service combined stream. Each emitted line is prefixed with the
+/// service name (left-padded to the widest name) so `bougie up`'s merged
+/// follow stays readable, à la `docker compose up`. When `color` is set,
+/// each service's prefix gets a distinct ANSI color.
+async fn dispatch_logs_multi(
+    write_half: &mut tokio::net::unix::OwnedWriteHalf,
+    targets: &[(&'static str, std::path::PathBuf)],
+    lines: usize,
+    follow: bool,
+    color: bool,
+) {
+    use crate::daemon::logs;
+
+    let width = targets.iter().map(|(n, _)| n.len()).max().unwrap_or(0);
+    // Assign each service a stable color by its position in the list.
+    let color_for = |idx: usize| -> Option<u8> {
+        color.then(|| PREFIX_COLORS[idx % PREFIX_COLORS.len()])
+    };
+
+    // 1. Tail each service in turn, prefixing every line.
+    let mut tailed = 0usize;
+    for (idx, (name, path)) in targets.iter().enumerate() {
+        let tail = logs::tail_lines(path, lines).unwrap_or_default();
+        tailed += tail.len();
+        let mut out = String::new();
+        for line in &tail {
+            prefix_line(&mut out, name, width, color_for(idx), line);
+        }
+        if !out.is_empty() && !write_progress(write_half, "stdout", &out).await {
+            return;
+        }
+    }
+
+    if !follow {
+        let frame = ResultFrame::ok(serde_json::json!({"lines_tailed": tailed}));
+        write_terminal(write_half, &frame).await;
+        return;
+    }
+
+    // 2. Follow: open each file (seek to EOF), then round-robin poll for
+    // growth. A single task owns every file, so there's no contention on
+    // `write_half` and no locking. Sleep only when no file had new bytes.
+    let mut tailers: Vec<MultiTailer> = targets
+        .iter()
+        .enumerate()
+        .map(|(idx, (name, path))| MultiTailer {
+            name,
+            path: path.clone(),
+            color: color_for(idx),
+            file: None,
+            partial: Vec::new(),
+        })
+        .collect();
+    let mut buf = vec![0u8; 8 * 1024];
+    loop {
+        let mut any_progress = false;
+        for t in &mut tailers {
+            if t.file.is_none() {
+                // Newly-started services may not have created their log
+                // yet; retry next tick. Seek to EOF on first open so we
+                // only stream output that lands after we attach.
+                if let Ok(mut f) =
+                    tokio::fs::OpenOptions::new().read(true).open(&t.path).await
+                {
+                    let _ = f.seek(std::io::SeekFrom::End(0)).await;
+                    t.file = Some(f);
+                } else {
+                    continue;
+                }
+            }
+            let Some(f) = t.file.as_mut() else { continue };
+            match f.read(&mut buf).await {
+                Ok(0) => {}
+                Ok(n) => {
+                    any_progress = true;
+                    t.partial.extend_from_slice(&buf[..n]);
+                    let mut out = String::new();
+                    while let Some(idx) = t.partial.iter().position(|&b| b == b'\n') {
+                        let line: Vec<u8> = t.partial.drain(..=idx).collect();
+                        let text = String::from_utf8_lossy(&line);
+                        prefix_line(&mut out, t.name, width, t.color, &text);
+                    }
+                    if !out.is_empty() && !write_progress(write_half, "stdout", &out).await {
+                        return;
+                    }
+                }
+                // A rotation (rename + reopen) can yield a read error;
+                // drop the handle so we reopen the fresh `.log` next tick.
+                Err(_) => t.file = None,
+            }
+        }
+        if !any_progress {
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        }
+    }
+}
+
+/// Append `line` to `out` with a `name | ` prefix, the name left-padded
+/// to `width`. `line` already carries its own trailing newline (or is
+/// the file's final unterminated fragment). When `color` is `Some`, the
+/// `name |` prefix is wrapped in that ANSI foreground color and reset
+/// before the log text, so only the prefix is tinted.
+fn prefix_line(out: &mut String, name: &str, width: usize, color: Option<u8>, line: &str) {
+    use std::fmt::Write as _;
+    match color {
+        Some(c) => {
+            let _ = write!(out, "\x1b[{c}m{name:<width$} |\x1b[0m {line}");
+        }
+        None => {
+            let _ = write!(out, "{name:<width$} | {line}");
         }
     }
 }
@@ -1197,5 +1394,65 @@ mod tests {
         let ex = DownloadFrame::new(100, 100, "jdk-21.0.11_10", true);
         let s = serde_json::to_string(&ex).unwrap();
         assert!(s.contains(r#""extracting":true"#));
+    }
+
+    #[test]
+    fn service_logs_accepts_single_service_form() {
+        let r = parse_request(
+            r#"{"v": 1, "method": "service.logs", "args": {"service": "redis", "follow": true}}"#,
+        )
+        .unwrap();
+        let Request::ServiceLogs(args) = r else {
+            panic!("expected ServiceLogs");
+        };
+        assert_eq!(args.service_names(), vec!["redis".to_string()]);
+        assert!(args.follow);
+        // `lines` falls back to the default when omitted.
+        assert_eq!(args.lines, default_lines());
+    }
+
+    #[test]
+    fn service_logs_accepts_multi_service_form() {
+        let r = parse_request(
+            r#"{"v": 1, "method": "service.logs", "args": {"services": ["redis", "mariadb"], "lines": 10}}"#,
+        )
+        .unwrap();
+        let Request::ServiceLogs(args) = r else {
+            panic!("expected ServiceLogs");
+        };
+        assert_eq!(args.service_names(), vec!["redis".to_string(), "mariadb".to_string()]);
+        assert_eq!(args.lines, 10);
+    }
+
+    #[test]
+    fn service_logs_prefers_services_array_over_lone_service() {
+        // Defensive: if a caller sends both, the explicit array wins.
+        let args = ServiceLogsArgs {
+            service: Some("redis".into()),
+            services: vec!["mariadb".into()],
+            lines: 50,
+            follow: false,
+            color: false,
+        };
+        assert_eq!(args.service_names(), vec!["mariadb".to_string()]);
+    }
+
+    #[test]
+    fn prefix_line_pads_name_to_width() {
+        let mut out = String::new();
+        prefix_line(&mut out, "redis", 7, None, "ready to accept connections\n");
+        prefix_line(&mut out, "mariadb", 7, None, "starting\n");
+        assert_eq!(
+            out,
+            "redis   | ready to accept connections\nmariadb | starting\n"
+        );
+    }
+
+    #[test]
+    fn prefix_line_colors_only_the_prefix() {
+        let mut out = String::new();
+        prefix_line(&mut out, "redis", 7, Some(36), "ready\n");
+        // Cyan (36) opens, resets before the log text, which stays plain.
+        assert_eq!(out, "\x1b[36mredis   |\x1b[0m ready\n");
     }
 }

@@ -8,4 +8,4 @@ run = "bougie run -- composer install"
 
 [task.start]
 deps = ["vendor"]
-run = "bougie up server"
+run = "bougie up --detach server"

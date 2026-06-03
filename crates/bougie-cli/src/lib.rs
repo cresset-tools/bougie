@@ -111,6 +111,12 @@ pub enum Command {
     Up {
         /// Service names to bring up. Empty = every declared service.
         names: Vec<String>,
+        /// Start the services and return immediately instead of
+        /// attaching to their combined log stream. Attaching is the
+        /// default for an interactive (TTY) text-mode invocation;
+        /// non-interactive runs and `--format json-v1` always detach.
+        #[arg(short = 'd', long)]
+        detach: bool,
     },
 
     /// Stop the project's declared services (or every service in
@@ -259,10 +265,13 @@ pub enum ServicesCommand {
         /// Limit to a single service.
         name: Option<String>,
     },
-    /// Tail (and optionally follow) a service's log.
+    /// Tail (and optionally follow) service logs. With no name, shows
+    /// the combined ("multilog") stream of every service declared in the
+    /// project, each line prefixed with its (colorized) service name —
+    /// the same view `bougie up` attaches to.
     Logs {
-        /// Service name.
-        name: String,
+        /// Service name. Omit to tail every declared service at once.
+        name: Option<String>,
         /// Follow the log; runs until interrupted (Ctrl-C).
         #[arg(short = 'f', long)]
         follow: bool,

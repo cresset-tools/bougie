@@ -84,9 +84,9 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
         }
         Command::Sync { offline, dry_run } => commands::sync::run(format, offline, dry_run),
         #[cfg(unix)]
-        Command::Up { names } => commands::services::up::run(format, names),
+        Command::Up { names, detach } => commands::services::up::run(format, names, detach),
         #[cfg(not(unix))]
-        Command::Up { names: _ } => unsupported_on_windows("bougie up"),
+        Command::Up { names: _, detach: _ } => unsupported_on_windows("bougie up"),
         #[cfg(unix)]
         Command::Down { names, purge } => commands::services::down::run(format, names, purge),
         #[cfg(not(unix))]
