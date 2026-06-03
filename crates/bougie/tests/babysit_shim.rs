@@ -317,6 +317,75 @@ fn babysit_kills_group_on_sigterm() {
     assert!(status.success(), "babysit should exit 0 after SIGTERM cleanup, got {status:?}");
 }
 
+/// A fake "service" that forks a grandchild which OUTLIVES the leader —
+/// the rabbitmq/beam shape. The backgrounded `sleep` is forked (not
+/// exec'd) by the shell, so on Linux it does NOT inherit the leader's
+/// `PR_SET_PDEATHSIG`: when the babysit dies, pdeathsig SIGKILLs the
+/// leader (the exec'd `sleep`, a direct child) but the forked grandchild
+/// survives and reparents to init — still a member of the service's
+/// process group. Only `cleanup_group`'s group-wide `killpg` reaps it.
+/// This is exactly the escapee class the foreground Ctrl-C path leaks.
+const FORKING_SERVICE: &str = "/bin/sleep 600 & exec /bin/sleep 600";
+
+/// Control: SIGTERM to the babysit reaps the WHOLE group, including a
+/// forked grandchild that pdeathsig can't touch — because babysit's
+/// SIGTERM handler runs `cleanup_group` (`killpg`). This passes today;
+/// it's the baseline the SIGINT case below is measured against.
+#[test]
+fn babysit_reaps_forked_escapee_on_sigterm() {
+    let td = TempDir::new().unwrap();
+    let shim = babysit_shim(&td);
+    let (mut child, mut sock) = spawn_babysit(&shim, 2, "/bin/sh", &["-c", FORKING_SERVICE]);
+
+    let pgid = read_pgid_line(&mut sock);
+    assert!(pgrp_alive(pgid), "group should be alive after spawn");
+
+    let bpid = i32::try_from(child.id()).expect("test pid fits in i32");
+    assert_eq!(kill_pid(bpid, 15), 0, "kill(babysit, SIGTERM) failed");
+
+    let died = wait_until(|| !pgrp_alive(pgid), Duration::from_secs(30));
+    assert!(died, "forked escapee in group {pgid} survived SIGTERM cleanup");
+    let _ = child.wait();
+}
+
+/// Regression repro for the foreground-Ctrl-C orphan: when bougied runs
+/// in the foreground, SIGINT goes to the whole terminal foreground
+/// process group — bougied AND every babysit (the babysit does not
+/// `setsid` away from bougied's group). The babysit installs only a
+/// SIGTERM handler, so SIGINT terminates it on the default disposition
+/// *before* `cleanup_group` runs. pdeathsig then SIGKILLs the leader but
+/// the forked grandchild escapes and reparents to pid 1 — the rabbitmq
+/// symptom. This test sends SIGINT straight to the babysit pid (the
+/// terminal would deliver it group-wide; we target the pid so the test
+/// runner's own group is untouched) and asserts the group is reaped,
+/// just like the SIGTERM control above. It FAILS until babysit treats
+/// SIGINT like SIGTERM (or `setsid`s out of the foreground group).
+#[test]
+fn babysit_reaps_forked_escapee_on_sigint() {
+    let td = TempDir::new().unwrap();
+    let shim = babysit_shim(&td);
+    let (mut child, mut sock) = spawn_babysit(&shim, 2, "/bin/sh", &["-c", FORKING_SERVICE]);
+
+    let pgid = read_pgid_line(&mut sock);
+    assert!(pgrp_alive(pgid), "group should be alive after spawn");
+
+    // SIGINT — what Ctrl-C delivers to the foreground process group.
+    let bpid = i32::try_from(child.id()).expect("test pid fits in i32");
+    assert_eq!(kill_pid(bpid, 2), 0, "kill(babysit, SIGINT) failed");
+
+    let died = wait_until(|| !pgrp_alive(pgid), Duration::from_secs(30));
+    // Best-effort cleanup so a failing run doesn't leak the escapee.
+    if !died {
+        let _ = kill_pid(-pgid, 9);
+    }
+    assert!(
+        died,
+        "forked escapee in group {pgid} survived SIGINT — babysit ignored SIGINT \
+         and never ran cleanup_group; this is the foreground-Ctrl-C orphan"
+    );
+    let _ = child.wait();
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn babysit_sigkill_takes_service_down_via_pdeathsig() {

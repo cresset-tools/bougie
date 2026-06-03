@@ -160,6 +160,18 @@ async fn serve(cfg: Config) -> Result<ExitCode> {
     let mut sigterm =
         tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
             .wrap_err("installing SIGTERM handler")?;
+    // Also catch SIGINT and treat it exactly like SIGTERM. When bougied
+    // runs in the foreground, Ctrl-C delivers SIGINT to the whole
+    // terminal foreground process group — bougied *and* every babysit
+    // (the babysit shares bougied's group; it doesn't `setsid` away).
+    // Without a handler, SIGINT's default disposition takes the babysit
+    // down before `cleanup_group` runs; pdeathsig then reaps the leader
+    // but any forked descendant (e.g. rabbitmq's beam helpers) escapes
+    // and reparents to pid 1. Catching it here means the group is always
+    // torn down, whatever signal arrives.
+    let mut sigint =
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
+            .wrap_err("installing SIGINT handler")?;
 
     // Build the supervised process group. With a sidecar, it's created
     // by the sidecar (spawned first so it's listening before the main
@@ -263,8 +275,10 @@ async fn serve(cfg: Config) -> Result<ExitCode> {
                 cleanup_group(pgid, cfg.grace_secs).await;
                 break ExitCode::SUCCESS;
             }
-            // Bougied asked us to stop cleanly.
-            _ = sigterm.recv() => {
+            // Bougied asked us to stop cleanly (SIGTERM), or a foreground
+            // Ctrl-C hit our group (SIGINT reaches every babysit sharing
+            // bougied's terminal foreground group). Either tears it down.
+            () = async { tokio::select! { _ = sigterm.recv() => {}, _ = sigint.recv() => {} } } => {
                 cleanup_group(pgid, cfg.grace_secs).await;
                 break ExitCode::SUCCESS;
             }
