@@ -137,12 +137,57 @@ fn stop_removes_socket_and_next_status_respawns() {
 #[test]
 fn stop_when_daemon_not_running_is_idempotent() {
     let env = TestEnv::new();
-    // No daemon was ever started; stop should still succeed.
+    // No daemon was ever started; stop should still succeed and say so.
+    let out = env
+        .bougie()
+        .args(["services", "daemon", "stop", "--format", "json-v1"])
+        .timeout(STEP_TIMEOUT)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let v: serde_json::Value = serde_json::from_slice(&out).expect("valid JSON");
+    assert_eq!(v["ok"], true);
+    assert_eq!(
+        v["already_stopped"], true,
+        "stop with no daemon must report already_stopped; got {v}"
+    );
+}
+
+#[test]
+fn stop_blocks_until_daemon_is_fully_gone() {
+    // `daemon stop` must not return until the daemon has drained and
+    // released its socket — the whole point of the synchronous stop.
+    // We assert the socket is *already* gone the instant the command
+    // returns, with no polling grace period.
+    let env = TestEnv::new();
     env.bougie()
-        .args(["services", "daemon", "stop"])
+        .args(["services", "daemon", "status"])
         .timeout(STEP_TIMEOUT)
         .assert()
         .success();
+    let sock = env.home_path().join("state").join("bougied.sock");
+    assert!(sock.exists(), "socket should exist after status autospawn");
+
+    let out = env
+        .bougie()
+        .args(["services", "daemon", "stop", "--format", "json-v1"])
+        .timeout(STEP_TIMEOUT)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    // No `wait_for_no_socket` here on purpose: the contract is that the
+    // command already waited.
+    assert!(
+        !sock.exists(),
+        "socket must be gone the moment `stop` returns, not eventually"
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out).expect("valid JSON");
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["already_stopped"], false, "{v}");
 }
 
 #[test]

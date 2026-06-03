@@ -111,6 +111,53 @@ fn up_starts_fake_redis_and_provisions_a_tenant() {
 }
 
 #[test]
+fn daemon_stop_streams_per_service_drain_progress() {
+    // With a service running, `daemon stop` drains it as part of the
+    // shutdown and must surface that work: a `stopping redis` progress
+    // line on stderr, and the stopped set in the terminal reply.
+    let env = TestEnv::new();
+    install_fake_redis(&env);
+    let proj = project_with_composer("acme/blog");
+
+    env.bougie()
+        .args(["services", "add", "redis"])
+        .current_dir(proj.path())
+        .timeout(STEP_TIMEOUT)
+        .assert()
+        .success();
+    env.bougie()
+        .args(["up"])
+        .current_dir(proj.path())
+        .timeout(STEP_TIMEOUT)
+        .assert()
+        .success();
+
+    let assertion = env
+        .bougie()
+        .args(["services", "daemon", "stop", "--format", "json-v1"])
+        .timeout(STEP_TIMEOUT)
+        .assert()
+        .success();
+    let out = assertion.get_output();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("stopping redis"),
+        "expected per-service drain progress on stderr; got: {stderr}"
+    );
+    let v: serde_json::Value =
+        serde_json::from_slice(&out.stdout).expect("valid JSON on stdout");
+    assert_eq!(v["ok"], true);
+    let stopped = v["stopped"].as_array().expect("stopped array");
+    assert!(
+        stopped.iter().any(|s| s == "redis"),
+        "redis should be in the drained set; got {v}"
+    );
+    // The socket is gone synchronously — stop waited for full teardown.
+    let sock = env.home_path().join("state").join("bougied.sock");
+    assert!(!sock.exists(), "daemon socket should be gone after stop returns");
+}
+
+#[test]
 fn status_after_up_reports_redis_running() {
     let env = TestEnv::new();
     install_fake_redis(&env);

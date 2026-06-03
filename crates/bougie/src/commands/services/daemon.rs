@@ -83,21 +83,31 @@ fn read_pid(paths: &Paths) -> Option<u32> {
 pub struct StopResult {
     pub schema_version: u32,
     pub ok: bool,
+    /// Services the daemon drained during shutdown, in teardown order.
+    /// Empty when nothing was running (or the daemon wasn't up).
+    pub stopped: Vec<String>,
+    /// `true` when there was no daemon to stop — the socket was already
+    /// gone before we asked.
+    pub already_stopped: bool,
 }
 
 #[derive(Debug, Deserialize)]
 struct DaemonShutdownReply {
     #[serde(default)]
     ok: bool,
+    #[serde(default)]
+    stopped: Vec<String>,
 }
 
 impl Render for StopResult {
     fn render_text(&self, w: &mut dyn Write) -> io::Result<()> {
-        if self.ok {
-            writeln!(w, "bougied: shutdown signaled")
-        } else {
-            writeln!(w, "bougied: shutdown failed")
+        if self.already_stopped {
+            return writeln!(w, "bougied: not running");
         }
+        if !self.ok {
+            return writeln!(w, "bougied: shutdown failed");
+        }
+        writeln!(w, "bougied: stopped")
     }
 }
 
@@ -106,12 +116,31 @@ pub fn stop(format: OutputFormat) -> Result<ExitCode> {
     // If the socket isn't there, bougied isn't running — return OK
     // (idempotent stop is the user-friendly behavior).
     if !paths.bougied_sock().exists() {
-        let result = StopResult { schema_version: 1, ok: true };
+        let result = StopResult {
+            schema_version: 1,
+            ok: true,
+            stopped: Vec::new(),
+            already_stopped: true,
+        };
         emit(format, &result)?;
         return Ok(ExitCode::SUCCESS);
     }
+    // `daemon.shutdown` streams a `progress` frame per service as it
+    // drains; `client::call` forwards those to stderr, so the user sees
+    // live teardown progress before the terminal reply arrives here.
     let reply: DaemonShutdownReply = client::call(&paths, "daemon.shutdown", Value::Null)?;
-    let result = StopResult { schema_version: 1, ok: reply.ok };
+    // The terminal frame means the drain is done. Now wait for the
+    // process to exit and unlink its socket, so `stop` only returns once
+    // bougied is fully gone rather than merely signalled.
+    if reply.ok {
+        client::wait_for_shutdown(&paths)?;
+    }
+    let result = StopResult {
+        schema_version: 1,
+        ok: reply.ok,
+        stopped: reply.stopped,
+        already_stopped: false,
+    };
     emit(format, &result)?;
     if reply.ok {
         Ok(ExitCode::SUCCESS)
