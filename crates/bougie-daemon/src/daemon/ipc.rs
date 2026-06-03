@@ -263,6 +263,11 @@ pub async fn handle_connection(stream: UnixStream, state: Arc<DaemonState>) {
         Ok(Request::ServiceUp(args)) => {
             dispatch_up_streaming(&mut write_half, &state, args).await;
         }
+        // Streaming drain: a `progress` frame per service as it stops,
+        // then the terminal `result`, then the daemon tears itself down.
+        Ok(Request::DaemonShutdown) => {
+            dispatch_shutdown_streaming(&mut write_half, &state).await;
+        }
         Ok(req) => {
             let frame = dispatch(req, &state).await;
             write_terminal(&mut write_half, &frame).await;
@@ -342,13 +347,7 @@ async fn dispatch(req: Request, state: &Arc<DaemonState>) -> ResultFrame {
             "version": daemon_version_string(),
             "build_hash": option_env!("BOUGIE_BUILD_HASH").unwrap_or(""),
         })),
-        Request::DaemonShutdown => {
-            // Tell the main loop to drain. The accept loop wakes
-            // from the watch channel and exits; we get a clean
-            // socket-removal in the drop path of `DaemonState`.
-            let _ = state.shutdown_tx.send(true);
-            ResultFrame::ok(serde_json::json!({"ok": true}))
-        }
+        Request::DaemonShutdown => unreachable!("handled in handle_connection"),
         Request::ServiceUp(args) => dispatch_up(state, args.project, args.services, None).await,
         Request::ServiceDown(args) => {
             dispatch_down(state, args.project, args.services, args.purge).await
@@ -667,6 +666,81 @@ async fn dispatch_up_streaming(
         let _ = write_download(write_half, pos, total, &label, extracting).await;
     }
     write_terminal(write_half, &result).await;
+}
+
+/// Streaming `daemon.shutdown`: drain every running service in reverse
+/// start-order, emitting one `progress` frame per service so the CLI can
+/// report live teardown progress, then a terminal `result` carrying the
+/// stopped set. The daemon's shutdown watch channel is signalled *after*
+/// the terminal frame is flushed, so the process only tears down — and
+/// unlinks its socket — once the client has the full reply. The CLI
+/// polls for that socket removal to know the daemon is fully gone.
+///
+/// The accept-loop's own [`drain`](super::drain) still runs on the way
+/// out, but it's an idempotent no-op by then: every service we touched
+/// here is already `Stopped`.
+///
+/// A disconnected client (broken progress/terminal writes) never aborts
+/// the drain — the write results are intentionally ignored and the watch
+/// channel is signalled regardless, so the daemon always finishes
+/// shutting down once asked.
+async fn dispatch_shutdown_streaming(
+    write_half: &mut tokio::net::unix::OwnedWriteHalf,
+    state: &Arc<DaemonState>,
+) {
+    use crate::daemon::catalog;
+    use crate::daemon::supervisor::ServiceState;
+
+    // Snapshot the running set in reverse start-order. Mirrors
+    // `daemon::drain` so the progress we stream matches the teardown
+    // the daemon would do anyway.
+    let running: Vec<&'static str> = {
+        let sup = state.supervisor.lock().await;
+        sup.snapshot()
+            .into_iter()
+            .filter(|s| {
+                matches!(
+                    s.state,
+                    ServiceState::Running
+                        | ServiceState::HealthChecking
+                        | ServiceState::Starting
+                )
+            })
+            // Re-resolve to the catalog's 'static name; the snapshot
+            // owns a copy as a String.
+            .filter_map(|s| catalog::find(&s.name).map(|e| e.name))
+            .collect()
+    };
+
+    let mut stopped: Vec<String> = Vec::new();
+    for &name in running.iter().rev() {
+        let _ = write_progress(write_half, "stderr", &format!("stopping {name}\n")).await;
+        // Re-take the lock per service: stops are sequential and the
+        // grace window per service can be seconds, so holding the lock
+        // across the whole drain would needlessly block the status tick.
+        let res = state.supervisor.lock().await.stop(name).await;
+        match res {
+            Ok(true) => stopped.push(name.to_string()),
+            // Raced to Stopped/Failed between snapshot and stop — fine.
+            Ok(false) => {}
+            Err(e) => {
+                let _ = write_progress(
+                    write_half,
+                    "stderr",
+                    &format!("warning: stopping {name}: {e}\n"),
+                )
+                .await;
+            }
+        }
+    }
+
+    let frame = ResultFrame::ok(serde_json::json!({"ok": true, "stopped": stopped}));
+    write_terminal(write_half, &frame).await;
+
+    // Drain done and acked — now bring the daemon down. The accept loop
+    // wakes from the watch channel and exits; `run()` unlinks the socket
+    // + pid file on the way out, which the CLI is polling for.
+    let _ = state.shutdown_tx.send(true);
 }
 
 /// Percent-encode the AMQP-DSN-significant characters. Tenant names

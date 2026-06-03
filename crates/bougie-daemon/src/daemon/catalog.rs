@@ -151,12 +151,15 @@ pub const CATALOG: &[CatalogEntry] = &[
         tenancy: Tenancy::Opensearch,
         requires: &[],
         after: &[],
-        // The bougie-index opensearch tarball ships a Temurin JDK at
-        // `install/jdk/` already. `bin/opensearch-env` autoresolves
-        // `OPENSEARCH_HOME/jdk/bin/java`, so no PATH wiring needed.
-        // The `jdk` entry below is kept for users that want to install
-        // a standalone Temurin via `bougie services add` (advanced).
-        runtime_deps: &[],
+        // OpenSearch's tarball was unbundled upstream (php-build-standalone
+        // UNBUNDLE_PLAN phases 0–2): instead of shipping a Temurin JDK
+        // inside the tarball, its manifest now declares a `requires_tools[]`
+        // entry for `jdk`, which the client resolves from the shared store
+        // and links back to `install/jdk/` (where `bin/opensearch-env`
+        // autoresolves `OPENSEARCH_HOME/jdk/bin/java`). Mirror that here so
+        // the store-fetch drift audit stays quiet and the supervisor's
+        // availability checks see the dep — same shape as rabbitmq→erlang.
+        runtime_deps: &["jdk"],
         user_facing: true,
         summary: "OpenSearch 2.x search engine; per-tenant index template.",
         sandbox: SandboxKind::Strict,
@@ -322,13 +325,14 @@ mod tests {
     }
 
     #[test]
-    fn opensearch_has_no_external_runtime_deps() {
-        // The tarball bundles its own Temurin JDK at install/jdk/,
-        // so opensearch is self-contained. Tracked as a separate
-        // catalog entry only so users can install a standalone
-        // Temurin if they need it elsewhere.
+    fn opensearch_runtime_deps_include_jdk() {
+        // OpenSearch was unbundled upstream: its manifest declares a
+        // `requires_tools[]` entry for the Temurin JDK (linked back to
+        // install/jdk/), so the catalog must mirror it under
+        // runtime_deps — same as rabbitmq→erlang. Keeping this in sync
+        // is what silences `store_fetch::audit_catalog_drift`.
         let os = find("opensearch").unwrap();
-        assert!(os.runtime_deps.is_empty(), "{:?}", os.runtime_deps);
+        assert!(os.runtime_deps.contains(&"jdk"), "{:?}", os.runtime_deps);
     }
 
     #[test]

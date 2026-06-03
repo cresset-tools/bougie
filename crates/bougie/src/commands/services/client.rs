@@ -273,6 +273,17 @@ fn send_shutdown(sock: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Block until the daemon has fully exited after acking a shutdown.
+///
+/// `daemon.shutdown` streams its drain progress and returns a terminal
+/// frame once every service is stopped, but the process still has to
+/// exit and unlink its socket afterward. `services daemon stop` calls
+/// this so it only returns once bougied is genuinely gone, not merely
+/// signalled. Bounded by [`SHUTDOWN_TIMEOUT`].
+pub fn wait_for_shutdown(paths: &Paths) -> Result<()> {
+    wait_for_socket_gone(&paths.bougied_sock(), SHUTDOWN_TIMEOUT)
+}
+
 /// Block until the daemon's socket stops accepting connections.
 /// We poll because the daemon's drop path (which `unlink`s the
 /// file) races with our shutdown reply.
