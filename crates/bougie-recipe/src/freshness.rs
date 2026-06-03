@@ -2,6 +2,7 @@
 
 use super::dag::split_deps;
 use super::parser::{Recipe, TaskDef};
+use super::run::{build_sh, RunOptions};
 use eyre::{Result, WrapErr};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -46,10 +47,11 @@ pub fn evaluate(
     _name: &str,
     task: &TaskDef,
     state: &WalkState,
-    project_root: &Path,
+    opts: &RunOptions,
 ) -> Result<Verdict> {
+    let project_root = opts.project_root.as_path();
     if let Some(check) = &task.check {
-        let status = run_check(check, project_root)?;
+        let status = run_check(check, opts)?;
         if status {
             return Ok(Verdict::Skip("check ✓ — skipping".to_string()));
         }
@@ -185,12 +187,12 @@ fn touch(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn run_check(script: &str, project_root: &Path) -> Result<bool> {
-    let status = std::process::Command::new("/bin/sh")
-        .arg("-e")
-        .arg("-c")
-        .arg(script)
-        .current_dir(project_root)
+fn run_check(script: &str, opts: &RunOptions) -> Result<bool> {
+    // Same env as a recipe `run` step (PATH-pinned bougie +
+    // BOUGIE_SERVICE_*) so a `check` that shells out to `bougie …`
+    // resolves it and reflects real state instead of always "failing"
+    // with "bougie: not found" and re-running the task.
+    let status = build_sh(script, opts)
         .status()
         .wrap_err("running check script")?;
     Ok(status.success())

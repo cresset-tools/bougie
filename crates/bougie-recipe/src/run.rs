@@ -43,7 +43,7 @@ pub fn run_task(
 
     for name in &dag.order {
         let task = &dag.recipe.tasks[name];
-        let verdict = evaluate(dag.recipe, name, task, &state, &opts.project_root)?;
+        let verdict = evaluate(dag.recipe, name, task, &state, opts)?;
         let ran = match &verdict {
             Verdict::Skip(reason) => {
                 let outcome = TaskOutcome {
@@ -140,6 +140,20 @@ fn execute(script: &str, opts: &RunOptions) -> Result<ExitStatus> {
     // `exit -1` for the step. It's a known interaction with the debug
     // dump, documented there — don't read a step's `exit -1` as a real
     // failure if a dump was fired mid-step.
+    build_sh(script, opts)
+        .status()
+        .wrap_err("spawning /bin/sh for recipe step")
+}
+
+/// Build the `/bin/sh -e -c <script>` command shared by every recipe
+/// step (`run`) *and* every freshness gate (`check`). Both must see the
+/// same environment: bougie pinned on `PATH` (so a bare `bougie …`
+/// resolves to *this* executable, never an installed one — see
+/// [`pinned_bougie_dir`]) plus the `BOUGIE_SERVICE_*` injection. A
+/// `check` that shells out to `bougie …` (e.g. `bougie run -- bin/magento
+/// indexer:status`) would otherwise die with "bougie: not found", read as
+/// a failed check, and re-run its task on every invocation.
+pub(crate) fn build_sh(script: &str, opts: &RunOptions) -> std::process::Command {
     let mut cmd = std::process::Command::new("/bin/sh");
     cmd.arg("-e").arg("-c").arg(script);
     cmd.current_dir(&opts.project_root);
@@ -161,7 +175,7 @@ fn execute(script: &str, opts: &RunOptions) -> Result<ExitStatus> {
     for (k, v) in fetch_service_env_for_project(&opts.project_root) {
         cmd.env(k, v);
     }
-    cmd.status().wrap_err("spawning /bin/sh for recipe step")
+    cmd
 }
 
 fn fetch_service_env_for_project(project: &std::path::Path) -> Vec<(String, String)> {
@@ -254,6 +268,46 @@ run = "echo start"
         let out2 = run_task(&dag, &opts, |_| {}).unwrap();
         let touch2 = out2.iter().find(|o| o.name == "touch").unwrap();
         assert_eq!(touch2.status, TaskStatus::Skipped);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn check_script_resolves_bougie_via_pinned_path() {
+        // Regression: a `check` that shells out to `bougie …` must see the
+        // PATH-pinned bougie (like a `run` step does), not die with
+        // "bougie: not found" and force the task to re-run every time.
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        // Fake `bougie` on the pinned dir: drops a sentinel and exits 0,
+        // so a `check = "bougie"` passes only if PATH resolution worked.
+        let bindir = root.join("bin");
+        std::fs::create_dir_all(&bindir).unwrap();
+        let fake = bindir.join("bougie");
+        std::fs::write(&fake, "#!/bin/sh\ntouch \"$(dirname \"$0\")/ran\"\nexit 0\n").unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let r = parse(
+            r#"
+[task.gate]
+check = "bougie"
+run = "false"
+"#,
+        )
+        .unwrap();
+        let dag = Dag::build(&r, "gate").unwrap();
+        let opts = RunOptions {
+            project_root: root.clone(),
+            dry_run: false,
+            explain: false,
+            bougie_dir: Some(bindir.clone()),
+        };
+        let out = run_task(&dag, &opts, |_| {}).unwrap();
+        // check resolved `bougie` (sentinel written) and exited 0 → Skip.
+        // Without the PATH pin the check would 127 and the task would Run
+        // (its `run = "false"` would then fail the whole walk).
+        assert!(bindir.join("ran").exists(), "pinned bougie should have run");
+        assert_eq!(out[0].status, TaskStatus::Skipped);
     }
 
     #[test]
