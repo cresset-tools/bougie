@@ -34,7 +34,7 @@ const MINIMAL_COMPOSER_JSON: &str = r#"{
 }"#;
 
 #[test]
-fn content_hash_mismatch_errors_with_helpful_message() {
+fn content_hash_mismatch_warns_but_installs() {
     let tmp = TempDir::new().unwrap();
     let paths = paths_in(tmp.path());
     let proj = tmp.path().join("p");
@@ -46,11 +46,16 @@ fn content_hash_mismatch_errors_with_helpful_message() {
     }"#;
     write_project(&proj, MINIMAL_COMPOSER_JSON, lock);
 
-    let err = install_from_lock(&paths, &proj, InstallOptions::default())
-        .expect_err("must error on hash mismatch");
-    let msg = format!("{err:#}");
-    assert!(msg.contains("out of sync"), "{msg}");
-    assert!(msg.contains("composer update"), "{msg}");
+    // A stale lock no longer blocks install — it produces a warning and
+    // installs the locked (empty) package set, matching Composer.
+    let summary = install_from_lock(&paths, &proj, InstallOptions::default())
+        .expect("stale lock must warn, not error");
+    let warning = summary
+        .warnings
+        .iter()
+        .find(|w| w.contains("out of sync"))
+        .unwrap_or_else(|| panic!("expected a content-hash warning, got {:?}", summary.warnings));
+    assert!(warning.contains("composer update"), "{warning}");
 }
 
 #[test]

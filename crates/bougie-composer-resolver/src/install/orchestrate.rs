@@ -109,8 +109,11 @@ pub fn install_from_lock(
         ));
     };
 
-    verify_content_hash(&composer_json_bytes, &lock)?;
-    let mut warnings = preflight(&composer_json_bytes, &lock, opts.no_dev)?;
+    // A stale lock (content-hash mismatch) warns rather than blocks —
+    // same as Composer. Surface it first so it leads the warning list.
+    let mut warnings = Vec::new();
+    warnings.extend(content_hash_warning(&composer_json_bytes, &lock)?);
+    warnings.extend(preflight(&composer_json_bytes, &lock, opts.no_dev)?);
 
     // Assemble per-host auth from every source bougie understands —
     // composer.json `config`, global `$COMPOSER_HOME/auth.json`,
@@ -586,26 +589,32 @@ fn host_from_url(url: &str) -> Option<&str> {
     if host.is_empty() { None } else { Some(host) }
 }
 
-/// Verify the lock's `content-hash` field against the current
+/// Check the lock's `content-hash` field against the current
 /// `composer.json` bytes, using the same algorithm Composer itself
 /// runs (delegated to `bougie_composer::lockfile::content_hash`).
-fn verify_content_hash(composer_json_bytes: &[u8], lock: &Lock) -> Result<()> {
+///
+/// A mismatch is *not* a hard failure: Composer only warns ("The lock
+/// file is not up to date with the latest changes in composer.json")
+/// and installs the lock's package set anyway, so the user gets a
+/// reproducible (if slightly stale) environment rather than a refusal.
+/// We mirror that — return the warning string on mismatch, `None`
+/// otherwise — and the caller folds it into `InstallSummary::warnings`.
+fn content_hash_warning(composer_json_bytes: &[u8], lock: &Lock) -> Result<Option<String>> {
     let Some(expected) = &lock.content_hash else {
         // Pre-1.10 lockfiles don't carry a content-hash. Composer
         // tolerates them; we do too rather than refuse to install a
         // perfectly working historical project.
-        return Ok(());
+        return Ok(None);
     };
     let actual = lockfile::content_hash(composer_json_bytes)?;
-    if !actual.eq_ignore_ascii_case(expected) {
-        return Err(eyre!(
-            "composer.lock is out of sync with composer.json (content-hash {} → {}). \
-             Run `bougie run -- composer update` to regenerate the lock.",
-            expected,
-            actual,
-        ));
+    if actual.eq_ignore_ascii_case(expected) {
+        return Ok(None);
     }
-    Ok(())
+    Ok(Some(format!(
+        "composer.lock is out of sync with composer.json (content-hash {expected} → {actual}); \
+         installing the locked package set anyway — you may be getting outdated dependencies. \
+         Run `bougie run -- composer update` to regenerate the lock.",
+    )))
 }
 
 /// Split lockfile contents into hard blockers (returned as `Err`) and

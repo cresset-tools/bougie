@@ -223,6 +223,9 @@ pub fn run(format: OutputFormat, offline: bool, dry_run: bool) -> Result<ExitCod
     // Step 3 — materialize vendor/ from the lock.
     let vendor_summary = install_vendor(&paths, &project_root)?;
     if let Some(s) = vendor_summary {
+        for warning in &s.warnings {
+            eprintln!("warning: {warning}");
+        }
         result.vendor_packages_installed =
             Some(s.packages_installed + s.packages_already_present);
         result.vendor_packages_up_to_date = Some(s.packages_up_to_date);
@@ -270,6 +273,9 @@ pub fn run_with_default_fallback(format: OutputFormat, dry_run: bool) -> Result<
     // Vendor install.
     let vendor_summary = install_vendor(&paths, &project_root)?;
     if let Some(s) = vendor_summary {
+        for warning in &s.warnings {
+            eprintln!("warning: {warning}");
+        }
         result.vendor_packages_installed =
             Some(s.packages_installed + s.packages_already_present);
         result.vendor_packages_up_to_date = Some(s.packages_up_to_date);
