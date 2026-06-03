@@ -442,32 +442,35 @@ pub fn install_baseline_into(
                 .push(("<conf.d-cleanup>".into(), format!("{e:#}")));
         }
 
-        // One shared download bar across the whole baseline loop. The
-        // bar's planned-total grows as each extension's manifest reveals
-        // its blob+closure sizes, so the user sees a single combined
-        // bar instead of one per extension.
-        let bar = DownloadBar::new("downloading");
-        for &name in BASELINE_EXTENSIONS {
-            if !filter.includes(name) {
-                continue;
-            }
-            if skip_for_platform(name) {
-                // gettext on macOS is the canonical case — Apple's
-                // libc has no real libintl, so php-build-standalone
-                // emits no gettext.so on Darwin and the index has no
-                // entry to fetch. Silently skip; the conf.d cleanup
-                // loop above won't try to delete a fragment that was
-                // never written.
-                continue;
-            }
-            if skip_for_php_minor(name, php_minor) {
-                // opcache on PHP 8.5+ is the canonical case — upstream
-                // moved it from a shared .so to static-into-bin/php,
-                // so the index has no entry to fetch and the
-                // extension is already loaded by the interpreter
-                // itself. Silently skip.
-                continue;
-            }
+        // Pre-filter so the count bar's denominator reflects what will
+        // actually be installed. Two extensions are skipped by design:
+        //   - `skip_for_platform`: e.g. gettext on macOS — Apple's libc
+        //     has no real libintl, so there's no `gettext.so` to fetch.
+        //   - `skip_for_php_minor`: e.g. opcache on PHP 8.5+ — upstream
+        //     moved it static-into-`bin/php`, so there's no `.so` and the
+        //     interpreter already loads it.
+        // Both are silent: the conf.d cleanup above never wrote a fragment
+        // for a skipped extension, so there's nothing to undo.
+        let to_install: Vec<&str> = BASELINE_EXTENSIONS
+            .iter()
+            .copied()
+            .filter(|&name| {
+                filter.includes(name)
+                    && !skip_for_platform(name)
+                    && !skip_for_php_minor(name, php_minor)
+            })
+            .collect();
+
+        // The baseline extensions are small and usually cache hits, so the
+        // aggregate byte bar from `DownloadBar::new` renders nothing here —
+        // hence the "no progress" gap. Drive a count bar instead
+        // ("12/24 intl"), and run each extension's actual download against
+        // a *hidden* byte bar so the two don't fight over the terminal
+        // line (there's no `MultiProgress` in the tree to compose them).
+        let progress = DownloadBar::steps("installing", to_install.len() as u64);
+        let byte_bar = DownloadBar::hidden();
+        for &name in &to_install {
+            progress.step(name);
             match install_extension_with_bar(
                 paths,
                 name,
@@ -475,7 +478,7 @@ pub fn install_baseline_into(
                 php_minor,
                 flavor,
                 resolve_opts,
-                &bar,
+                &byte_bar,
             ) {
                 Ok(installed) => {
                     if let Err(e) = write_install_conf_d(&conf_d, &installed) {
@@ -489,7 +492,7 @@ pub fn install_baseline_into(
                 Err(e) => report.failed.push((name.into(), format!("{e:#}"))),
             }
         }
-        bar.finish();
+        progress.finish();
         report
     }
 }
