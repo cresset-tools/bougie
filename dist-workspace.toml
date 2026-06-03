@@ -103,13 +103,15 @@ hosting = ["github"]
 # layout publish-mirror.yml rsyncs to.
 simple-download-url = "https://releases.bougie.tools/github/bougie/releases/download/{tag}"
 
-# Run the custom publish-mirror job after the release is announced.
-# The file lives at .github/workflows/publish-mirror.yml.
-post-announce-jobs = ["./publish-mirror"]
+# Run custom jobs after the release is announced. The files live under
+# .github/workflows/. publish-mirror fans the dist artifacts out to R2;
+# build-docker cross-compiles + pushes the container images (GHCR).
+post-announce-jobs = ["./publish-mirror", "./build-docker"]
 
-# publish-mirror only needs to read the artifacts the build jobs
-# uploaded; no write permissions on the repo.
-github-custom-job-permissions = { "publish-mirror" = { contents = "read" } }
+# publish-mirror only reads the artifacts the build jobs uploaded.
+# build-docker pushes to GHCR (`packages: write`) and signs the images
+# (`id-token` + `attestations` for build-provenance attestation).
+github-custom-job-permissions = { "publish-mirror" = { contents = "read" }, "build-docker" = { contents = "read", packages = "write", "id-token" = "write", attestations = "write" } }
 
 # Both binaries ship in every archive — `bgx` is the uvx-equivalent
 # short alias for `bougie tool run`. The test-only `fake-redis` bin

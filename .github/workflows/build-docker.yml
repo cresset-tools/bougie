@@ -1,0 +1,226 @@
+name: build-docker
+
+# Builds and publishes bougie's container images.
+#
+# Two entry points:
+#
+#   * workflow_call (release): bougie-release.yml invokes this as a
+#     post-announce job once release-please has published the
+#     `bougie-v<version>` GitHub Release. Wired in via `post-announce-jobs`
+#     in dist-workspace.toml, same mechanism as publish-mirror.yml. Pushes
+#     versioned + rolling tags to GHCR.
+#
+#   * pull_request: a push-free smoke build of the base image (amd64 only)
+#     whenever the Dockerfiles or the cargo sources change, so a broken
+#     image build is caught on the PR rather than at release time.
+#
+# Images (GHCR only for now — matches the mirror-first release philosophy;
+# Docker Hub can be added later as a second login + push target):
+#
+#   ghcr.io/cresset-tools/bougie              scratch, binary-only:
+#       COPY --from=ghcr.io/cresset-tools/bougie:latest /bougie /bgx /usr/local/bin/
+#   ghcr.io/cresset-tools/bougie:<v>-debian-slim   runnable, debian:trixie-slim
+#   ghcr.io/cresset-tools/bougie:<v>-alpine        runnable, alpine:3.22
+#
+# The base image cross-compiles both arches from one amd64 runner via
+# cargo-zigbuild (see docker/Dockerfile) — no QEMU, no arm runner. The
+# variant images are RUN-free `COPY --from` overlays (docker/Dockerfile.extra),
+# so they need no emulation either.
+
+on:
+  workflow_call:
+    inputs:
+      plan:
+        description: "dist plan JSON; its presence selects the release path."
+        required: false
+        default: ""
+        type: string
+  pull_request:
+    paths:
+      - "docker/**"
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".github/workflows/build-docker.yml"
+
+permissions: {}
+
+env:
+  # github.repository is already lowercase for this repo; GHCR requires it.
+  IMAGE: ghcr.io/${{ github.repository }}
+
+jobs:
+  # PR smoke test: prove the base image still builds. amd64 only (the arm64
+  # leg is the same cross-compile path, just a different target triple) and
+  # never pushed.
+  pr-smoke:
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          platforms: linux/amd64
+          push: false
+          cache-from: type=gha,scope=bougie-base
+          cache-to: type=gha,mode=max,scope=bougie-base
+
+  # Release: build + push the multi-arch scratch base image.
+  base:
+    if: ${{ inputs.plan != '' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+      major_minor: ${{ steps.ver.outputs.major_minor }}
+      is_prerelease: ${{ steps.ver.outputs.is_prerelease }}
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Derive version from dist plan
+        id: ver
+        # announcement_tag is `bougie-v<version>`; strip the namespace to get
+        # the bare semver used for image tags. major.minor + latest are only
+        # meaningful for stable releases, so gate them on the prerelease flag.
+        run: |
+          set -euo pipefail
+          tag='${{ fromJson(inputs.plan).announcement_tag }}'
+          version="${tag#bougie-v}"
+          prerelease='${{ fromJson(inputs.plan).announcement_is_prerelease }}'
+          {
+            echo "version=${version}"
+            echo "major_minor=${version%.*}"
+            echo "is_prerelease=${prerelease}"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Tags + labels
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          flavor: latest=false
+          tags: |
+            type=raw,value=${{ steps.ver.outputs.version }}
+            type=raw,value=${{ steps.ver.outputs.major_minor }},enable=${{ steps.ver.outputs.is_prerelease == 'false' }}
+            type=raw,value=latest,enable=${{ steps.ver.outputs.is_prerelease == 'false' }}
+
+      - name: Build and push base image
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          annotations: ${{ steps.meta.outputs.annotations }}
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha,scope=bougie-base
+          cache-to: type=gha,mode=max,scope=bougie-base
+
+      - name: Attest base image provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+  # Release: overlay the just-pushed base binaries onto runnable OS bases.
+  # Pinned to the base image by digest so a variant always matches its base.
+  extra:
+    needs: base
+    if: ${{ inputs.plan != '' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - suffix: debian-slim
+            base_image: debian:trixie-slim
+            certs_install: "apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*"
+          - suffix: alpine
+            base_image: alpine:3.22
+            certs_install: "apk add --no-cache ca-certificates"
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      # The variant Dockerfile's only RUN is the cert install; the arm64 leg
+      # runs it under emulation. (The base image is QEMU-free — it cross-
+      # compiles — but these tiny package installs are cheapest emulated.)
+      - uses: docker/setup-qemu-action@v3
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Tags + labels
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          flavor: latest=false
+          tags: |
+            type=raw,value=${{ needs.base.outputs.version }}-${{ matrix.suffix }}
+            type=raw,value=${{ needs.base.outputs.major_minor }}-${{ matrix.suffix }},enable=${{ needs.base.outputs.is_prerelease == 'false' }}
+            type=raw,value=${{ matrix.suffix }},enable=${{ needs.base.outputs.is_prerelease == 'false' }}
+
+      - name: Build and push ${{ matrix.suffix }} variant
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.extra
+          platforms: linux/amd64,linux/arm64
+          push: true
+          build-args: |
+            BASE_IMAGE=${{ matrix.base_image }}
+            BOUGIE_IMAGE=${{ env.IMAGE }}@${{ needs.base.outputs.digest }}
+            CERTS_INSTALL=${{ matrix.certs_install }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          annotations: ${{ steps.meta.outputs.annotations }}
+          provenance: mode=max
+          sbom: true
+
+      - name: Attest ${{ matrix.suffix }} variant provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
