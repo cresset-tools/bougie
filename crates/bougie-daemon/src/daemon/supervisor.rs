@@ -565,9 +565,15 @@ impl Supervisor {
         if !matches!(svc.state, ServiceState::Running | ServiceState::HealthChecking | ServiceState::Starting) {
             return Ok(false);
         }
-        let (child, pid, control_sock) = {
+        let (child, pid, control_sock, service_pgid, service_pgid_starttime) = {
             svc.state = ServiceState::Stopping;
-            (svc.child.take(), svc.pid, svc.control_sock.take())
+            (
+                svc.child.take(),
+                svc.pid,
+                svc.control_sock.take(),
+                svc.service_pgid,
+                svc.service_pgid_starttime,
+            )
         };
         // `svc` goes out of scope here; re-borrow below.
 
@@ -591,6 +597,21 @@ impl Supervisor {
             let kill_supported = self.backend.kill_supported();
             let _ = tokio::task::spawn_blocking(move || {
                 super::cgroup::kill_and_remove(&leaf, kill_supported);
+            })
+            .await;
+        } else if let Some(pgid) = service_pgid {
+            // Process-group backstop: under the ProcessGroup backend
+            // there's no cgroup to sweep, so if the babysit died without
+            // running its own killpg cleanup — e.g. a foreground Ctrl-C
+            // SIGINT took it down before it could — the service's group
+            // would be left orphaned. `reap_orphan_group` SIGTERM/SIGKILLs
+            // the recorded pgid (with a PID-reuse guard). This mirrors what
+            // the ticker's `check_all` does on babysit crash, but `check_all`
+            // is torn down the moment shutdown begins, so drain wouldn't
+            // otherwise reach it. Blocking (250ms sleep) → spawn_blocking.
+            let service = entry.name;
+            let _ = tokio::task::spawn_blocking(move || {
+                reap_orphan_group(service, pgid, service_pgid_starttime);
             })
             .await;
         }
