@@ -15,7 +15,7 @@ use eyre::{eyre, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Write};
 use std::process::ExitCode;
 
 #[derive(Debug, Serialize)]
@@ -62,7 +62,7 @@ impl Render for ServicesUpResult {
     }
 }
 
-pub fn run(format: OutputFormat, names: Vec<String>) -> Result<ExitCode> {
+pub fn run(format: OutputFormat, names: Vec<String>, detach: bool) -> Result<ExitCode> {
     let project_root = locate_project_root()?;
     let project = load_project(&project_root)?;
 
@@ -127,6 +127,37 @@ pub fn run(format: OutputFormat, names: Vec<String>) -> Result<ExitCode> {
         dependencies: reply.dependencies,
     };
     emit(format, &result)?;
+
+    // Attach to the combined ("multilog") stream of the services we
+    // brought up, the way `docker compose up` follows its containers.
+    // Gated to an interactive text-mode invocation: a non-TTY run (CI,
+    // `bougie up | …`) or `--format json-v1` would never want a blocking
+    // follow, so those implicitly detach — as does an explicit
+    // `--detach`. The follow runs until Ctrl-C, which only detaches the
+    // CLI; the daemon keeps the services running. Recipe steps that
+    // shell out to `bougie up <svc>` pass `--detach` so the build never
+    // blocks here (see recipes/{magento,laravel,generic}.toml).
+    let attach = !detach
+        && matches!(format, OutputFormat::Text)
+        && std::io::stdout().is_terminal();
+    if attach {
+        let follow: Vec<String> = selected.iter().map(|(n, _)| n.clone()).collect();
+        if !follow.is_empty() {
+            eprintln!(
+                "attached to logs for {} — Ctrl-C to detach (services keep running); `bougie up -d` to skip",
+                follow.join(", ")
+            );
+            let log_args = json!({
+                "services": follow,
+                "lines": 10,
+                "follow": true,
+                // `attach` already required a TTY, so colorize the
+                // per-service prefixes; the daemon writes the ANSI codes.
+                "color": true,
+            });
+            client::call_streaming(&paths, "service.logs", log_args)?;
+        }
+    }
     Ok(ExitCode::SUCCESS)
 }
 

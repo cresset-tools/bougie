@@ -91,6 +91,64 @@ fn logs_tail_shows_lines_the_service_wrote() {
     stop_daemon(&env);
 }
 
+/// `bougie services logs` with no name tails every declared service as
+/// one combined stream, prefixing each line with the service name —
+/// the same view `bougie up` attaches to. Declare two services but only
+/// start redis (the only fixture binary); the prefix proves the
+/// no-arg multi path fired.
+#[test]
+fn logs_no_arg_tails_all_declared_services_combined() {
+    let env = TestEnv::new();
+    install_fake_redis(&env);
+    let proj = project_with_composer("acme/blog");
+    env.bougie()
+        .args(["services", "add", "redis", "mariadb"])
+        .current_dir(proj.path())
+        .timeout(STEP_TIMEOUT)
+        .assert()
+        .success();
+    // Only redis has a fixture binary; start just it. The mariadb
+    // declaration still widens the no-arg request to the multi path.
+    env.bougie()
+        .args(["up", "redis"])
+        .current_dir(proj.path())
+        .timeout(STEP_TIMEOUT)
+        .assert()
+        .success();
+
+    let log_path = env
+        .home_path()
+        .join("state/services/redis/log/redis.log");
+    let deadline = Instant::now() + STEP_TIMEOUT;
+    while !log_path.exists() || fs::metadata(&log_path).map(|m| m.len()).unwrap_or(0) == 0 {
+        assert!(
+            Instant::now() < deadline,
+            "log file at {} never received bytes",
+            log_path.display()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    let out = env
+        .bougie()
+        .args(["services", "logs"])
+        .current_dir(proj.path())
+        .timeout(STEP_TIMEOUT)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let s = String::from_utf8(out).unwrap();
+    // Two declared services → multi path → name-prefixed lines. stdout
+    // here isn't a TTY, so the prefix is plain (uncolored).
+    assert!(
+        s.contains("redis ") && s.contains("| ") && s.contains("fake-redis"),
+        "expected prefixed redis output in combined tail: {s}"
+    );
+    stop_daemon(&env);
+}
+
 #[test]
 fn logs_n_truncates_to_requested_lines() {
     let env = TestEnv::new();
@@ -223,6 +281,98 @@ fn logs_follow_streams_new_bytes_then_ends_on_disconnect() {
     assert!(
         s.contains("FOLLOW-MARKER"),
         "expected FOLLOW-MARKER in follow output: {s}"
+    );
+    stop_daemon(&env);
+}
+
+/// `bougie up`'s attached multilog uses the daemon's multi-service
+/// `service.logs` form (a `services` array), which prefixes every line
+/// with the service name and — when `color` is set — wraps the prefix in
+/// an ANSI color. There's no CLI surface for the multi form, so drive the
+/// daemon socket directly. Two names exercise the prefixing + follow
+/// loop; using `redis` twice keeps the fixture to one binary.
+#[test]
+fn multi_service_logs_prefixes_each_line_with_the_service_name() {
+    use std::io::{BufRead, BufReader, Write as _};
+    use std::os::unix::net::UnixStream;
+
+    let env = TestEnv::new();
+    install_fake_redis(&env);
+    let proj = project_with_composer("acme/blog");
+    env.bougie()
+        .args(["services", "add", "redis"])
+        .current_dir(proj.path())
+        .timeout(STEP_TIMEOUT)
+        .assert()
+        .success();
+    env.bougie()
+        .args(["up"])
+        .current_dir(proj.path())
+        .timeout(STEP_TIMEOUT)
+        .assert()
+        .success();
+
+    // The daemon is up (the `up` above auto-spawned it). Connect to its
+    // socket and request a combined follow over two service names.
+    let sock = env.home_path().join("state/bougied.sock");
+    let stream = UnixStream::connect(&sock).expect("connecting to bougied socket");
+    let req = serde_json::json!({
+        "v": 1,
+        "method": "service.logs",
+        "args": {"services": ["redis", "redis"], "lines": 0, "follow": true, "color": true},
+    });
+    {
+        let mut w = &stream;
+        w.write_all(serde_json::to_string(&req).unwrap().as_bytes()).unwrap();
+        w.write_all(b"\n").unwrap();
+        w.flush().unwrap();
+    }
+
+    // Let both tailers attach, then inject a marker into the shared log.
+    std::thread::sleep(Duration::from_millis(500));
+    let log_path = env
+        .home_path()
+        .join("state/services/redis/log/redis.log");
+    let mut f = fs::OpenOptions::new().append(true).open(&log_path).unwrap();
+    f.write_all(b"MULTI-MARKER\n").unwrap();
+    f.sync_all().unwrap();
+
+    // Read progress frames until we see the prefixed marker, bounded by
+    // a read timeout so a regression fails fast instead of hanging.
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let mut reader = BufReader::new(&stream);
+    let mut saw_prefixed = false;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut line = String::new();
+    while Instant::now() < deadline {
+        line.clear();
+        match reader.read_line(&mut line) {
+            Ok(0) => break,
+            Ok(_) => {
+                let v: serde_json::Value = match serde_json::from_str(line.trim()) {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
+                if let Some(data) = v.get("data").and_then(|d| d.as_str())
+                    // Colored prefix: ANSI open + `redis |` + reset, then
+                    // the plain log text. Assert the whole wrapped shape.
+                    && data.contains("\u{1b}[")
+                    && data.contains("redis |\u{1b}[0m MULTI-MARKER")
+                {
+                    saw_prefixed = true;
+                    break;
+                }
+            }
+            Err(_) => break,
+        }
+    }
+    drop(reader);
+    drop(stream);
+    assert!(
+        saw_prefixed,
+        "expected color-wrapped `redis |` prefix before MULTI-MARKER in the combined stream"
     );
     stop_daemon(&env);
 }

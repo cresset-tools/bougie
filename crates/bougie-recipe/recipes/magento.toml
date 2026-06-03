@@ -17,7 +17,7 @@
 # idempotent so re-running it there is a no-op.
 run = """
 bougie services add mariadb redis opensearch rabbitmq server
-bougie up mariadb redis opensearch rabbitmq server
+bougie up --detach mariadb redis opensearch rabbitmq server
 """
 
 [task.vendor]
@@ -92,4 +92,4 @@ run = "bougie run -- bin/magento indexer:reindex"
 
 [task.start]
 deps = ["reindex"]
-run = "bougie up server"
+run = "bougie up --detach server"

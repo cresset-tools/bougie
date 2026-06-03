@@ -3,7 +3,7 @@
 [task.services]
 run = """
 bougie services add mariadb redis
-bougie up mariadb redis
+bougie up --detach mariadb redis
 """
 
 [task.vendor]
@@ -26,4 +26,4 @@ run = "bougie run -- php artisan migrate --force"
 
 [task.start]
 deps = ["migrate"]
-run = "bougie up server"
+run = "bougie up --detach server"
