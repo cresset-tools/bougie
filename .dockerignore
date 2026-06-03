@@ -1,0 +1,20 @@
+# Build context for docker/Dockerfile is the repo root, but the image only
+# needs the cargo workspace sources. Keep the context lean — the build's own
+# cache mounts hold the compiled target dir, and shipping it (or .git) into
+# the context would bloat every build.
+/target
+**/target
+.git
+.gitignore
+.gitattributes
+.claude
+.github
+docker
+scripts
+*.md
+*_PLAN.md
+dist-workspace.toml
+release-please-config.json
+.release-please-manifest.json
+flake.nix
+flake.lock

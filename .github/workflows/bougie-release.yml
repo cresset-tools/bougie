@@ -309,3 +309,17 @@ jobs:
     secrets: inherit
     permissions:
       "contents": "read"
+
+  custom-build-docker:
+    needs:
+      - plan
+      - announce
+    uses: ./.github/workflows/build-docker.yml
+    with:
+      plan: ${{ needs.plan.outputs.val }}
+    secrets: inherit
+    permissions:
+      "contents": "read"
+      "packages": "write"
+      "id-token": "write"
+      "attestations": "write"
