@@ -121,13 +121,12 @@ impl SigstoreBundleVerifier {
 
 impl Verifier for SigstoreBundleVerifier {
     fn verify(&self, url: &str, payload: &[u8], signature: &[u8]) -> Result<()> {
-        // sigstore-rs 0.13 only recognizes the v0.1 / v0.2 wire mediaType
-        // strings. Rewrite v0.3's mediaType to v0.2's so the v0.2 profile
-        // verifier runs — the verificationMaterial shape is structurally
-        // compatible in the GitHub-Actions-Fulcio path. Drop this once
-        // sigstore-rs ships v0.3 support.
-        let normalized = normalize_bundle_media_type(signature);
-        let bundle: Bundle = serde_json::from_slice(&normalized).map_err(|e| {
+        // sigstore-rs ≥ 0.14 recognizes the v0.3 wire mediaType natively
+        // and routes it through the same bundle profile check as v0.2
+        // (full inclusion proof + checkpoint), so no mediaType rewrite is
+        // needed. The `bundle_v03_media_type_parses_natively` test guards
+        // that contract against future dep bumps.
+        let bundle: Bundle = serde_json::from_slice(signature).map_err(|e| {
             BougieError::IndexSignature {
                 url: url.to_owned(),
                 trust_root_fingerprint: format!("sigstore-bundle ({EXPECTED_REPOSITORY})"),
@@ -222,29 +221,6 @@ impl Verifier for DetachedEcdsa {
     }
 }
 
-/// Rewrite a Sigstore Bundle v0.3 mediaType string to the v0.2 wire
-/// form so sigstore-rs 0.13 (which recognizes only v0.1/v0.2) accepts
-/// it. Returns the unchanged input if no v0.3 mediaType is present.
-fn normalize_bundle_media_type(json: &[u8]) -> Vec<u8> {
-    let v03 = b"\"application/vnd.dev.sigstore.bundle.v0.3+json\"";
-    let v02 = b"\"application/vnd.dev.sigstore.bundle+json;version=0.2\"";
-    if let Some(idx) = find_subslice(json, v03) {
-        let mut out = Vec::with_capacity(json.len() + 8);
-        out.extend_from_slice(&json[..idx]);
-        out.extend_from_slice(v02);
-        out.extend_from_slice(&json[idx + v03.len()..]);
-        out
-    } else {
-        json.to_vec()
-    }
-}
-
-fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack
-        .windows(needle.len())
-        .position(|w| w == needle)
-}
-
 fn sha256_hex(bytes: &[u8]) -> String {
     let mut s = String::with_capacity(64);
     for b in Sha256::digest(bytes) {
@@ -333,6 +309,23 @@ mod tests {
     #[test]
     fn embedded_key_loads_as_p256() {
         let _ = DetachedEcdsa::from_pem(EMBEDDED_TRUST_ROOT).expect("embedded key parses");
+    }
+
+    /// Contract guard for the dropped `normalize_bundle_media_type` hack:
+    /// the production verifier feeds the raw sidecar straight to serde, so
+    /// the `sigstore` crate must accept the v0.3 wire mediaType. sigstore
+    /// 0.14 also routes v0.3 through the same bundle-profile check as v0.2
+    /// (full inclusion proof + checkpoint), so dropping the rewrite is
+    /// behavior-preserving. If a future bump regresses v0.3 parsing this
+    /// test fails instead of every production `bougie sync` silently
+    /// hitting "not a valid Sigstore Bundle JSON".
+    #[test]
+    fn bundle_v03_media_type_parses_natively() {
+        const V03: &str = "application/vnd.dev.sigstore.bundle.v0.3+json";
+        let json = format!(r#"{{"mediaType":"{V03}"}}"#);
+        let bundle: Bundle =
+            serde_json::from_slice(json.as_bytes()).expect("v0.3 mediaType must deserialize");
+        assert_eq!(bundle.media_type, V03);
     }
 
     #[test]
