@@ -302,7 +302,15 @@ impl Supervisor {
 
         // All immutable-self work first so we can later take a single
         // mutable borrow without conflicting with these reads.
-        let policy = sandbox::build_policy(entry, &self.paths)
+        //
+        // Resolve the babysit binary (this bougie executable, re-exec'd
+        // with an argv[0] override) up front: the sandbox must grant
+        // read+exec on it, since it usually lives under $HOME
+        // (`~/.local/...`) which `ProtectHome::Yes` otherwise denies —
+        // without the carve-in the child can't even `execve` babysit.
+        let bougie_bin = std::env::current_exe()
+            .wrap_err("locating current_exe for bougie-babysit")?;
+        let policy = sandbox::build_policy(entry, &self.paths, &bougie_bin)
             .wrap_err_with(|| format!("compiling sandbox policy for {}", entry.name))?;
         let binary = self.binary_path(entry)?;
         let args = render_exec_args(entry, &self.paths);
@@ -330,8 +338,6 @@ impl Supervisor {
         // tears its group down.
         let (parent_sock, child_sock) = std::os::unix::net::UnixStream::pair()
             .wrap_err("creating babysit socketpair")?;
-        let bougie_bin = std::env::current_exe()
-            .wrap_err("locating current_exe for bougie-babysit")?;
         let child_sock_fd = {
             use std::os::fd::AsRawFd;
             child_sock.as_raw_fd()

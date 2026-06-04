@@ -11,6 +11,8 @@
 //! .md §4 explicitly). When richer per-entry overrides are needed,
 //! extend `CatalogEntry` with a `SandboxOverrides` struct.
 
+use std::path::Path;
+
 use super::catalog::{CatalogEntry, SandboxKind};
 use bougie_paths::Paths;
 use eyre::{Result, WrapErr};
@@ -24,10 +26,18 @@ use sandbox_run::{ProtectHome, ProtectSystem, Sandbox, SandboxPolicy};
 ///
 /// Creates the per-service data/run/log/conf directories as a side
 /// effect so the `read_write_paths` references resolve at spawn time.
-pub fn build_policy(entry: &CatalogEntry, paths: &Paths) -> Result<Option<SandboxPolicy>> {
+/// `babysit_bin` is the executable bougied will spawn (this bougie
+/// binary, re-exec'd as `bougie-babysit`). It's granted read+exec so the
+/// child can run it even under `ProtectHome::Yes`, which would otherwise
+/// hide it when it lives under `$HOME`.
+pub fn build_policy(
+    entry: &CatalogEntry,
+    paths: &Paths,
+    babysit_bin: &Path,
+) -> Result<Option<SandboxPolicy>> {
     warn_once_if_landlock_unavailable();
     match entry.sandbox {
-        SandboxKind::Strict => build_strict(entry, paths).map(Some),
+        SandboxKind::Strict => build_strict(entry, paths, babysit_bin).map(Some),
         SandboxKind::LightHome => build_light_home(entry, paths),
     }
 }
@@ -53,7 +63,7 @@ fn warn_once_if_landlock_unavailable() {
 #[cfg(not(target_os = "linux"))]
 fn warn_once_if_landlock_unavailable() {}
 
-fn build_strict(entry: &CatalogEntry, paths: &Paths) -> Result<SandboxPolicy> {
+fn build_strict(entry: &CatalogEntry, paths: &Paths, babysit_bin: &Path) -> Result<SandboxPolicy> {
     let data = paths.service_data(entry.name);
     let run = paths.service_run(entry.name);
     let log = paths.service_log(entry.name);
@@ -90,11 +100,18 @@ fn build_strict(entry: &CatalogEntry, paths: &Paths) -> Result<SandboxPolicy> {
         std::path::PathBuf::from("/dev/urandom"),
     ];
 
+    // Read-only carve-ins: the store (service binaries + shared libs)
+    // and the babysit binary itself. Both commonly live under $HOME and
+    // would be hidden by ProtectHome::Yes without an explicit grant; the
+    // babysit binary in particular must be executable or the child can't
+    // exec it at all.
+    let ro_paths = [paths.store(), babysit_bin.to_path_buf()];
+
     let mut policy = Sandbox::new()
         .protect_system(ProtectSystem::Strict)
         .protect_home(ProtectHome::Yes)
         .read_write_paths(rw_paths.iter().map(std::path::PathBuf::as_path))
-        .read_only_paths([paths.store().as_path()])
+        .read_only_paths(ro_paths.iter().map(std::path::PathBuf::as_path))
         .private_network(false)
         .no_new_privileges(true)
         .limit_nofile(limit_nofile)
@@ -208,7 +225,8 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let paths = Paths::new(tmp.path().into(), tmp.path().into());
         let entry = catalog::find("redis").unwrap();
-        let _policy = build_policy(entry, &paths).expect("policy build");
+        let babysit_bin = std::env::current_exe().unwrap();
+        let _policy = build_policy(entry, &paths, &babysit_bin).expect("policy build");
         assert!(paths.service_data("redis").is_dir());
         assert!(paths.service_run("redis").is_dir());
         assert!(paths.service_log("redis").is_dir());

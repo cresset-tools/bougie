@@ -161,6 +161,57 @@ fn read_only_paths_deny_writes() {
     );
 }
 
+/// A read-only carve-in under a denied tree must stay *executable*, not
+/// just readable — this is what lets the daemon exec the `bougie-babysit`
+/// binary even though it lives under the `$HOME` that `ProtectHome::Yes`
+/// hides. Regression guard for the service-startup break this fix caused.
+#[test]
+fn read_only_carve_in_under_denied_tree_is_executable() {
+    if !landlock_available() {
+        eprintln!("skipping: Landlock not enforced on this kernel");
+        return;
+    }
+    let home = tempfile::tempdir().unwrap();
+    let bin_dir = home.path().join("bin");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    // Copy a real executable into the "hidden" tree so we exec a path
+    // that only the carve-in can reach.
+    let exe = bin_dir.join("true");
+    std::fs::copy("/bin/true", &exe).unwrap();
+
+    let run = |sandbox: sandbox_run::SandboxPolicy| {
+        Command::new(&exe)
+            .sandbox(sandbox)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    };
+
+    // Without the carve-in the denied tree hides the binary: exec fails.
+    let hidden = Sandbox::new()
+        .protect_system(ProtectSystem::No)
+        .inaccessible_paths([home.path()])
+        .no_new_privileges(true)
+        .build()
+        .unwrap();
+    assert!(
+        !run(hidden),
+        "binary under a denied tree must not be executable without a carve-in"
+    );
+
+    // With a read-only carve-in exec succeeds.
+    let carved = Sandbox::new()
+        .protect_system(ProtectSystem::No)
+        .inaccessible_paths([home.path()])
+        .read_only_paths([exe.as_path()])
+        .no_new_privileges(true)
+        .build()
+        .unwrap();
+    assert!(run(carved), "read-only carve-in must remain executable");
+}
+
 /// Headline #208 fix: `ProtectHome::Yes` under `ProtectSystem::Strict`
 /// hides `$HOME` content (e.g. `~/.ssh`) instead of silently no-opping.
 #[test]
