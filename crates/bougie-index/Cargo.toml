@@ -38,7 +38,7 @@ features = ["preserve_order"]
 version = "0.11"
 
 [dependencies.sigstore]
-version = "0.13"
+version = "0.14"
 default-features = false
 features = ["cosign", "verify", "rustls-tls", "sigstore-trust-root"]
 

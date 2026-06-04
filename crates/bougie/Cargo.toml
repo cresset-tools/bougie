@@ -194,7 +194,7 @@ reqwest = { version = "0.13", default-features = false, features = ["blocking", 
 # when `bougie self update` started using them for archive
 # verification + extraction.)
 sha1 = "0.10"
-sigstore = { version = "0.13", default-features = false, features = ["cosign", "verify", "rustls-tls", "sigstore-trust-root"] }
+sigstore = { version = "0.14", default-features = false, features = ["cosign", "verify", "rustls-tls", "sigstore-trust-root"] }
 zstd = { version = "0.13", default-features = false }
 rustix = { version = "1.0", default-features = false, features = ["std", "fs", "process"] }
 bougie-index = { workspace = true }
