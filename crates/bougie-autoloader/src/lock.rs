@@ -153,9 +153,16 @@ impl LockFile {
 fn importance<'a>(
     name: &'a str,
     usage: &std::collections::HashMap<&'a str, Vec<&'a str>>,
-    computed: &mut std::collections::HashMap<&'a str, i32>,
+    // `i64` (not `i32`) to match Composer's PHP-int arithmetic. The
+    // weight accumulates `-= 1 - importance(user)` across the whole
+    // reverse-dependency graph; on a large, densely cross-requiring
+    // project (a full Mage-OS install is ~580 packages) the magnitude
+    // exceeds `i32::MIN`, which panicked here in debug builds and
+    // wrapped silently in release. PHP ints are 64-bit, so Composer
+    // never hit this.
+    computed: &mut std::collections::HashMap<&'a str, i64>,
     computing: &mut std::collections::HashSet<&'a str>,
-) -> i32 {
+) -> i64 {
     if let Some(&v) = computed.get(name) {
         return v;
     }
@@ -187,10 +194,10 @@ fn sort_packages(packages: Vec<&Package>) -> Vec<&Package> {
 
     // Recursive weight computation, memoized; cycle-broken by a
     // "computing" guard (matches Composer's $computing array).
-    let mut computed: HashMap<&str, i32> = HashMap::new();
+    let mut computed: HashMap<&str, i64> = HashMap::new();
     let mut computing: std::collections::HashSet<&str> = std::collections::HashSet::new();
 
-    let mut weighted: Vec<(i32, &Package)> = packages
+    let mut weighted: Vec<(i64, &Package)> = packages
         .iter()
         .map(|p| {
             (
@@ -244,4 +251,54 @@ where
         out.push((k, vs));
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pkg(name: &str, requires: &[String]) -> Package {
+        let require: serde_json::Map<String, serde_json::Value> = requires
+            .iter()
+            .map(|r| (r.clone(), serde_json::Value::String("*".to_owned())))
+            .collect();
+        serde_json::from_value(serde_json::json!({
+            "name": name,
+            "require": require,
+        }))
+        .expect("valid Package json")
+    }
+
+    #[test]
+    fn package_sort_weight_does_not_overflow_on_deep_graph() {
+        // Construct a graph whose `PackageSorter` weight grows
+        // exponentially: package `p{i}` requires every higher-indexed
+        // package, so `usage[p{k}] = {p0..p{k-1}}` and
+        // `importance(p{k}) = -(2^k - 1)`. At N=36 the most-depended-on
+        // package weighs `-(2^35 - 1)` (~ -3.4e10), which overflows
+        // `i32` (panicked in debug / wrapped in release) but fits the
+        // `i64` Composer-parity type. A full Mage-OS install (~580
+        // densely cross-requiring packages) hit this for real.
+        const N: usize = 36;
+        let names: Vec<String> = (0..N).map(|i| format!("acme/p{i}")).collect();
+        let packages: Vec<Package> = (0..N)
+            .map(|i| {
+                let requires: Vec<String> = names[i + 1..].to_vec();
+                pkg(&names[i], &requires)
+            })
+            .collect();
+
+        let refs: Vec<&Package> = packages.iter().collect();
+        // Must not panic on overflow.
+        let sorted = sort_packages(refs);
+
+        assert_eq!(sorted.len(), N, "every package is returned");
+        // The foundational package (required by all others, most
+        // negative weight) sorts first.
+        assert_eq!(
+            sorted.first().map(|p| p.name.as_str()),
+            Some(format!("acme/p{}", N - 1).as_str()),
+            "most-depended-on package sorts first",
+        );
+    }
 }
