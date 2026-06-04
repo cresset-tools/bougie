@@ -67,18 +67,17 @@ docker run --rm -v "$PWD:/app" -w /app ghcr.io/cresset-tools/bougie:alpine sync
 
 ## How the images are built
 
-`docker/Dockerfile` cross-compiles both arches from a single amd64 builder via
-[`cargo-zigbuild`](https://github.com/rust-cross/cargo-zigbuild): the `build`
-stage is pinned to `$BUILDPLATFORM` (always native amd64) and targets the
-requested `$TARGETPLATFORM`'s `*-unknown-linux-musl` triple, with Zig as the
-cross-linker. The final `scratch` stage runs no code, so buildx never emulates
-arm64 — no QEMU, no arm runner.
+The images are built with [Depot](https://depot.dev) (project `ngljfb827z`, see
+`depot.json`), which provides native per-arch builders for both `linux/amd64`
+and `linux/arm64` — no QEMU, no cross-compile, no arm runner.
 
-`docker/Dockerfile.extra` builds the runnable variants by `COPY --from`-ing the
-just-built base binaries onto a real OS base and installing CA certificates
-(its only `RUN`). That cert install runs under QEMU on the arm64 leg — cheap
-for a package install; the expensive Rust compile stays in the base image and
-never needs emulation.
+`docker/Dockerfile` compiles natively on each arch: the `build` stage runs on
+`rust:<ver>-alpine`, so musl is the native libc and a plain `cargo build
+--release` yields a fully static binary. The final `scratch` stage runs no code
+— it just holds the native-arch binaries.
+
+just-built base binaries onto a real OS base; its only `RUN` is the per-base CA
+certificate install, which Depot's native arm64 builder runs without emulation.
 
 CI: `.github/workflows/build-docker.yml`, wired into the release as a
 post-announce job via `post-announce-jobs` in `dist-workspace.toml`. It also
