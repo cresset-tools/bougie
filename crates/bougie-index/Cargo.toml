@@ -40,7 +40,7 @@ version = "0.11"
 [dependencies.sigstore]
 version = "0.14"
 default-features = false
-features = ["cosign", "verify", "rustls-tls", "sigstore-trust-root"]
+features = ["verify", "rustls-tls", "sigstore-trust-root"]
 
 [dev-dependencies.base64]
 version = "0.22"
