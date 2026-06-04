@@ -137,6 +137,13 @@ pub struct ServiceLogsArgs {
     /// or piped `bougie up`. No effect on the single-service form.
     #[serde(default)]
     pub color: bool,
+    /// Restrict the stream to log lines containing this substring (the
+    /// `<name>.bougie.run` vhost). Set by `bougie server` / `bougie
+    /// server logs` to scope the shared dev-server log to one project.
+    /// Honoured only by the single-service form; ignored for the
+    /// multi-service combined stream.
+    #[serde(default)]
+    pub host: Option<String>,
 }
 
 impl ServiceLogsArgs {
@@ -489,10 +496,28 @@ async fn dispatch_logs(
 
     if targets.len() == 1 {
         let (_, log_path) = &targets[0];
-        dispatch_logs_single(write_half, log_path, args.lines, args.follow).await;
+        dispatch_logs_single(write_half, log_path, args.lines, args.follow, args.host.as_deref())
+            .await;
     } else {
         dispatch_logs_multi(write_half, &targets, args.lines, args.follow, args.color).await;
     }
+}
+
+/// Drain every newline-terminated line from `partial`, returning those
+/// that match `host` (when set) concatenated in order. A trailing
+/// partial line (no newline yet) is left in `partial` for the next
+/// read. With `host == None` every complete line passes through.
+fn drain_matching_lines(partial: &mut Vec<u8>, host: Option<&str>) -> String {
+    let mut out = String::new();
+    while let Some(nl) = partial.iter().position(|&b| b == b'\n') {
+        let line: Vec<u8> = partial.drain(..=nl).collect();
+        let line = String::from_utf8_lossy(&line);
+        match host {
+            Some(h) if !line.contains(h) => {}
+            _ => out.push_str(&line),
+        }
+    }
+    out
 }
 
 /// Single-service tail/follow — the original `services logs <name>`
@@ -502,11 +527,17 @@ async fn dispatch_logs_single(
     log_path: &std::path::Path,
     lines: usize,
     follow: bool,
+    host: Option<&str>,
 ) {
     use crate::daemon::logs;
 
-    // 1. Tail.
+    // 1. Tail. When a host filter is set, keep only matching lines —
+    //    tail-then-filter, so the tail may show fewer than `lines`.
     let tail = logs::tail_lines(log_path, lines).unwrap_or_default();
+    let tail: Vec<String> = match host {
+        Some(h) => tail.into_iter().filter(|l| l.contains(h)).collect(),
+        None => tail,
+    };
     let joined = tail.concat();
     if !joined.is_empty()
         && !write_progress(write_half, "stdout", &joined).await {
@@ -533,14 +564,25 @@ async fn dispatch_logs_single(
         return;
     }
     let mut buf = vec![0u8; 8 * 1024];
+    // Only used in the filtered path: holds back a trailing partial line
+    // so the host filter always sees whole lines.
+    let mut partial: Vec<u8> = Vec::new();
     loop {
         match f.read(&mut buf).await {
             Ok(0) => {
                 tokio::time::sleep(std::time::Duration::from_millis(250)).await;
             }
             Ok(n) => {
-                let chunk = String::from_utf8_lossy(&buf[..n]);
-                if !write_progress(write_half, "stdout", &chunk).await {
+                // Unfiltered: raw chunk passthrough (byte-identical to the
+                // original behaviour). Filtered: line-buffer and emit only
+                // matching complete lines.
+                let emitted = if host.is_some() {
+                    partial.extend_from_slice(&buf[..n]);
+                    drain_matching_lines(&mut partial, host)
+                } else {
+                    String::from_utf8_lossy(&buf[..n]).into_owned()
+                };
+                if !emitted.is_empty() && !write_progress(write_half, "stdout", &emitted).await {
                     return;
                 }
             }
@@ -1433,8 +1475,39 @@ mod tests {
             lines: 50,
             follow: false,
             color: false,
+            host: None,
         };
         assert_eq!(args.service_names(), vec!["mariadb".to_string()]);
+    }
+
+    #[test]
+    fn drain_keeps_only_matching_complete_lines() {
+        let mut p = b"a shop.bougie.run x\nb other.bougie.run y\nc shop.bougie.run z\ntrailing"
+            .to_vec();
+        let out = drain_matching_lines(&mut p, Some("shop.bougie.run"));
+        assert_eq!(out, "a shop.bougie.run x\nc shop.bougie.run z\n");
+        // The partial (newline-less) tail is retained for the next read.
+        assert_eq!(p, b"trailing");
+    }
+
+    #[test]
+    fn drain_without_filter_passes_every_complete_line() {
+        let mut p = b"one\ntwo\nthr".to_vec();
+        let out = drain_matching_lines(&mut p, None);
+        assert_eq!(out, "one\ntwo\n");
+        assert_eq!(p, b"thr");
+    }
+
+    #[test]
+    fn service_logs_parses_host_filter() {
+        let r = parse_request(
+            r#"{"v": 1, "method": "service.logs", "args": {"service": "server", "host": "shop.bougie.run"}}"#,
+        )
+        .unwrap();
+        let Request::ServiceLogs(args) = r else {
+            panic!("expected ServiceLogs");
+        };
+        assert_eq!(args.host.as_deref(), Some("shop.bougie.run"));
     }
 
     #[test]
