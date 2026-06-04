@@ -118,7 +118,14 @@ Top-level subcommands (from `bougie-cli`):
   — Manage Composer installs.
 - `cache {clean,prune,dir,size}` — Cache management.
 - `self {update,version}` — Manage the bougie binary.
-- `server [--subcommand]` — Dev HTTP/FastCGI server (Run, List, Hosts, Tls).
+- `server [NAME]` — Dev HTTP/FastCGI server. With no subcommand it's
+  the project verb: register the current project with the shared
+  bougied-managed server, print its `<name>.bougie.run` URL, and attach
+  to its (host-scoped) log (Ctrl-C detaches). Subcommands: `run`
+  (low-level primitive against an explicit `--config server.toml`, what
+  bougied spawns), `status` (live host/pool table via control socket,
+  `list` alias), `open`, `stop`, `logs`, `tls`, `hosts`. See
+  `SERVER_CLI_PLAN.md`.
 - `services {add,remove,list,catalog,restart,status,logs,daemon}` — Dev
   services.
 - `make [task]` — Recipe DAG walker (`start` alias for `make start`).
@@ -198,8 +205,13 @@ change up. Examples in `git log`: `feat(composer-resolver): ...`,
   shipped; ongoing work in `bougie-composer-resolver`.
 - `RESOLVER_TEST_PLAN.md` — Resolver test architecture (composer/semver
   conformance, fixtures, cross-check, derivation snapshots).
-- `SERVER_PLAN.md` — `bougie server` per upstream `SERVER.md`. 8-phase
-  bottom-up build.
+- `SERVER_PLAN.md` — `bougie server` engine per upstream `SERVER.md`.
+  8-phase bottom-up build (shipped).
+- `SERVER_CLI_PLAN.md` — `bougie server` CLI surface redesign: the
+  project verb over the shared daemon + `status`/`open`/`stop`/`logs`,
+  plus a standalone foreground fallback for Windows. All phases shipped
+  (Windows path compile-verified, runtime pending CI); delete once CI
+  confirms the Windows build.
 - `TOOL_PLAN.md` — `bougie tool` (uv-tool-style globally-installed
   isolated PHP CLI tools). Design only; no implementation yet.
 

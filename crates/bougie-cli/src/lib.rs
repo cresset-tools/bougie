@@ -185,10 +185,11 @@ pub enum Command {
     #[command(name = "self")]
     SelfCmd(SelfCommand),
 
-    /// Run the bougie development HTTP server. With no subcommand, runs
-    /// the foreground server. See SERVER.md.
-    #[command(subcommand)]
-    Server(ServerCommand),
+    /// Run the bougie development HTTP server for the current project.
+    /// With no subcommand, registers the project with the shared dev
+    /// server, prints its URL, and streams its log (Ctrl-C detaches).
+    /// See SERVER.md.
+    Server(ServerArgs),
 
     /// Manage project-scoped dev services (mariadb, redis, …). See
     /// SERVICES.md and CLI.md §3.8.
@@ -296,15 +297,51 @@ pub enum ServicesDaemonCommand {
     Version,
 }
 
+/// `bougie server` — the project verb plus its management subcommands.
+/// With no subcommand, the flattened [`ServeArgs`] drive the default
+/// "serve the current project" action; otherwise a [`ServerCommand`]
+/// runs.
+#[derive(Args, Debug)]
+#[command(args_conflicts_with_subcommands = true)]
+pub struct ServerArgs {
+    #[command(subcommand)]
+    pub command: Option<ServerCommand>,
+    #[command(flatten)]
+    pub serve: ServeArgs,
+}
+
+/// Default-action arguments for `bougie server` (no subcommand):
+/// register the current project with the shared dev server, print its
+/// URL, and stream its log.
+#[derive(Args, Debug)]
+#[allow(clippy::struct_excessive_bools)] // each bool is a distinct CLI flag
+pub struct ServeArgs {
+    /// Hostname label override — the `<name>` in `<name>.bougie.run`.
+    /// Defaults to a name derived from the project.
+    #[arg(value_name = "NAME")]
+    pub name: Option<String>,
+    /// Open the project URL in a browser once the server is ready.
+    #[arg(long)]
+    pub open: bool,
+    /// Serve over HTTPS (requires `bougie server tls install`).
+    #[arg(long)]
+    pub tls: bool,
+    /// Print the URL and return instead of attaching to the log stream.
+    #[arg(long)]
+    pub no_attach: bool,
+    /// Skip the implicit `bougie sync` before serving.
+    #[arg(long)]
+    pub no_sync: bool,
+}
+
 #[derive(Subcommand, Debug)]
 pub enum ServerCommand {
-    /// Run the server in the foreground. `--config` is mandatory: the
-    /// CLI no longer ships an `add`/`remove` mutator pair against an
-    /// XDG-default `server.toml`, so every invocation explicitly names
-    /// the file to read. The bougied-managed path
-    /// (`bougie services up server`) supplies its own service-scoped
-    /// `server.toml`; users running the server by hand point at one
-    /// they wrote themselves.
+    /// Low-level primitive: run the server process against an explicit
+    /// multi-host `server.toml`, foreground, with no daemon. This is
+    /// what `bougied` spawns and what CI / power users invoke directly;
+    /// `--config` is required because a multi-host server has no single
+    /// project to default to. The bougied-managed path (`bougie up
+    /// server`) supplies its own service-scoped `server.toml`.
     Run {
         /// `server.toml` path. Required.
         #[arg(long, value_name = "PATH")]
@@ -316,20 +353,42 @@ pub enum ServerCommand {
         #[arg(long, value_name = "FMT")]
         log_format: Option<String>,
     },
-    /// List hosts configured in a `server.toml`. `--config` is
-    /// mandatory: there is no XDG-default fallback, every invocation
-    /// names the file to read.
-    List {
-        /// `server.toml` path. Required.
+    /// Show the dev server's hosts and live pool state. Reads the
+    /// running server's control socket when available, falling back to
+    /// the configured hosts otherwise. Replaces the old `list`, which
+    /// remains as a hidden alias.
+    #[command(alias = "list")]
+    Status {
+        /// `server.toml` to inspect. Defaults to the bougied-managed
+        /// config.
         #[arg(long, value_name = "PATH")]
-        config: std::path::PathBuf,
+        config: Option<std::path::PathBuf>,
     },
-    /// Manage `/etc/hosts` overrides (phase 5).
-    #[command(subcommand)]
-    Hosts(ServerHostsCommand),
-    /// Manage local TLS via mkcert (phase 7).
+    /// Open the current project's (or NAME's) dev URL in a browser.
+    Open {
+        /// Hostname label to open. Defaults to the current project.
+        #[arg(value_name = "NAME")]
+        name: Option<String>,
+    },
+    /// Stop the shared dev server. Equivalent to `bougie down server`;
+    /// stops hosting for every project, since the server is shared.
+    Stop,
+    /// Tail the dev server's request log. In a project, defaults to
+    /// this project's host.
+    Logs {
+        /// Follow the log; runs until interrupted (Ctrl-C).
+        #[arg(short = 'f', long)]
+        follow: bool,
+        /// Number of trailing lines to print before any follow.
+        #[arg(short = 'n', long, default_value_t = 50)]
+        lines: usize,
+    },
+    /// Manage local TLS via mkcert.
     #[command(subcommand)]
     Tls(ServerTlsCommand),
+    /// Manage `/etc/hosts` overrides.
+    #[command(subcommand)]
+    Hosts(ServerHostsCommand),
 }
 
 #[derive(Subcommand, Debug)]
@@ -337,11 +396,10 @@ pub enum ServerHostsCommand {
     /// Rewrite the bougie sentinel block in /etc/hosts to match
     /// server.toml. Requires root — runs via sudo.
     Apply {
-        /// `server.toml` path. Required: there is no XDG-default
-        /// fallback, and a sudo invocation would in any case strip the
-        /// env that one used to come from.
+        /// `server.toml` to read the host list from. Defaults to the
+        /// bougied-managed config.
         #[arg(long, value_name = "PATH")]
-        config: std::path::PathBuf,
+        config: Option<std::path::PathBuf>,
     },
 }
 

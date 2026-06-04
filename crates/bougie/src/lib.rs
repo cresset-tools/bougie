@@ -14,12 +14,10 @@ pub use bougie_paths::Paths;
 pub use bougie_platform::target::Triple;
 
 use bougie_cli::{
-    CacheCommand, ComposerCommand, ExtCommand, PhpCommand, SelfCommand, ServerCommand, ToolCommand,
+    CacheCommand, ComposerCommand, ExtCommand, PhpCommand, SelfCommand, ToolCommand,
 };
 #[cfg(unix)]
-use bougie_cli::{
-    ServerHostsCommand, ServerTlsCommand, ServicesCommand, ServicesDaemonCommand,
-};
+use bougie_cli::{ServicesCommand, ServicesDaemonCommand};
 use eyre::Result;
 use std::io::IsTerminal;
 use std::process::ExitCode;
@@ -241,33 +239,7 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
         Command::SelfCmd(SelfCommand::Version { short }) => {
             commands::self_version::run(format, short)
         }
-        Command::Server(ServerCommand::Run { config, listen, log_format }) => {
-            bougie_server::server::run::run(
-                format,
-                &config,
-                listen.as_deref(),
-                log_format.as_deref(),
-            )
-        }
-        Command::Server(ServerCommand::List { config }) => {
-            bougie_server::server::helpers::list(format, &config)
-        }
-        #[cfg(unix)]
-        Command::Server(ServerCommand::Hosts(ServerHostsCommand::Apply { config })) => {
-            bougie_server::server::hosts::apply(format, &config)
-        }
-        #[cfg(unix)]
-        Command::Server(ServerCommand::Tls(ServerTlsCommand::Install)) => {
-            bougie_server::server::tls::install(format)
-        }
-        #[cfg(unix)]
-        Command::Server(ServerCommand::Tls(ServerTlsCommand::Uninstall)) => {
-            bougie_server::server::tls::uninstall(format)
-        }
-        #[cfg(not(unix))]
-        Command::Server(ServerCommand::Hosts(_) | ServerCommand::Tls(_)) => {
-            unsupported_on_windows("bougie server hosts/tls")
-        }
+        Command::Server(args) => commands::server::dispatch(format, args),
         #[cfg(unix)]
         Command::Services(ServicesCommand::Add { names }) => {
             commands::services::add::run(format, names)
