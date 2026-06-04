@@ -2917,8 +2917,49 @@ impl ResolveProvider {
             // root provides them, so they (and their exclusive transitive
             // deps) must never enter the solution. See `root_replaces`.
             .filter(|(n, _)| !self.root_replaces.contains(n))
+            // Drop a replaced original's self-coupling back-edge to its
+            // own replacer. When `name` is replaced by `n` (i.e. `n`
+            // declares `replace: { name: ... }`), Composer never installs
+            // the original `name` — the replacer `n` provides it — so the
+            // original's dependencies, including any version constraint it
+            // puts back on `n`, never apply. Emitting that edge here is
+            // unsound: it lets the shadowed original force a *different*
+            // version of its replacer than the one the project pinned,
+            // which is exactly the cycle behind the Mage-OS fork layout
+            // (`magento/framework 103.0.8-p3` → `mage-os/framework 2.1.0`
+            // while the project pins `mage-os/framework 2.0.0`, which
+            // *replaces* `magento/framework 103.0.8-p3`). The original is
+            // removed from the solution by the post-solve replaced-package
+            // filter anyway; here we just stop its noise from breaking the
+            // solve. See `replaced_by`.
+            .filter(|(n, _)| !self.replaced_by(name.as_str(), n.as_str()))
             .map(|(n, r)| (PubGrubPackage::Package(n), r))
             .collect())
+    }
+
+    /// True when `original` is `replace`d/`provide`d by `replacer` —
+    /// i.e. `replacer` declares `replace: { original: ... }` (or the
+    /// `provide` equivalent) and has been loaded into the virtual-
+    /// provider index. Used by [`Self::compute_parsed_deps`] to suppress
+    /// a shadowed original's back-edge to its own replacer (the Mage-OS
+    /// fork cycle). Checks both the exact-version index and the
+    /// wildcard/range index, mirroring the two registration paths.
+    fn replaced_by(&self, original: &str, replacer: &str) -> bool {
+        if let Some(providers) = self.virtual_providers.borrow().get(original)
+            && providers
+                .iter()
+                .any(|p| p.provider_name.as_str() == replacer)
+        {
+            return true;
+        }
+        if let Some(wildcards) = self.virtual_wildcards.borrow().get(original)
+            && wildcards
+                .iter()
+                .any(|w| w.provider_name.as_str() == replacer)
+        {
+            return true;
+        }
+        false
     }
 }
 

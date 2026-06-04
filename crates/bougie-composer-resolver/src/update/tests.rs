@@ -464,6 +464,65 @@ fn replace_conflicts_with_a_separate_require_yield_no_solution() {
 }
 
 #[test]
+fn fork_replace_back_edge_to_replacer_does_not_break_solve() {
+    // The Mage-OS fork layout. `acme/fork` is a fork of `acme/orig`:
+    //   fork@2.0.0  replace { acme/orig: 1.0.0 }   (this fork *is* orig 1.0.0)
+    //   orig@1.0.0  require { acme/fork: 2.1.0 }    (the original's sole dep
+    //                                                is a back-edge to a
+    //                                                *different* fork version)
+    // The project pins fork@2.0.0. Composer never installs orig (it's
+    // replaced by fork), so orig's back-edge to fork@2.1.0 never applies.
+    // bougie used to pull orig into the solve and let that back-edge force
+    // fork@2.1.0, contradicting the pinned fork@2.0.0 → spurious
+    // NoSolution. The `replaced_by` filter in `compute_parsed_deps` drops
+    // orig's edge to its own replacer, so the solve succeeds with
+    // fork@2.0.0.
+    let tmp = TempDir::new().unwrap();
+    let paths = paths_in(tmp.path());
+
+    let fork = p2_body_with_extras(
+        "acme/fork",
+        &[
+            ("2.0.0", json!({}), json!({"replace": {"acme/orig": "1.0.0"}})),
+            ("2.1.0", json!({}), json!({"replace": {"acme/orig": "1.0.0"}})),
+        ],
+    );
+    let orig = p2_body_with_extras(
+        "acme/orig",
+        &[("1.0.0", json!({"acme/fork": "2.1.0"}), json!({}))],
+    );
+
+    let rt = rt();
+    let (uri, _server) = rt.block_on(async {
+        let server = MockServer::start().await;
+        mount_p2(&server, "acme/fork", fork).await;
+        mount_p2(&server, "acme/orig", orig).await;
+        (server.uri(), server)
+    });
+
+    // Pin the fork at 2.0.0 and pull the original into the graph (as the
+    // real resolve does via a transitive require on the original's name).
+    let composer_json = json!({
+        "require": {"acme/fork": "2.0.0", "acme/orig": "^1.0"},
+    });
+    let client = crate::metadata::build_client().unwrap();
+    let provider =
+        ResolveProvider::build(client, paths, crate::metadata::Repo::from_url(uri), &composer_json, true).unwrap();
+    let root = provider.root_version();
+
+    let solution = resolve(&provider, PubGrubPackage::Root, root)
+        .expect("fork-replace back-edge must not break the solve");
+    let fork_version = solution
+        .get(&PubGrubPackage::Package("acme/fork".into()))
+        .expect("acme/fork should be resolved");
+    assert_eq!(
+        fork_version.to_string(),
+        "2.0.0.0",
+        "fork must stay at the pinned 2.0.0, not be dragged to 2.1.0 by the replaced original's back-edge",
+    );
+}
+
+#[test]
 fn replace_clause_as_range_intersects_with_separate_require() {
     // monolith@2.0.0 declares `replace: { acme/sub: "^2.0" }`. Root
     // separately requires sub@^2.1 (a sub-range). The intersection
