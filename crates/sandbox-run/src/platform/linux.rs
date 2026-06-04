@@ -1,10 +1,12 @@
+use std::path::{Path, PathBuf};
+
 use crate::{
     error::SandboxError,
     sandbox::{ProtectHome, ProtectSystem, SandboxPolicy},
 };
 use landlock::{
-    AccessFs, AccessNet, PathBeneath, PathFd, Ruleset, RulesetAttr, RulesetCreatedAttr,
-    RulesetStatus,
+    Access, AccessFs, AccessNet, BitFlags, CompatLevel, Compatible, PathBeneath, PathFd, Ruleset,
+    RulesetAttr, RulesetCreated, RulesetCreatedAttr, ABI,
 };
 
 // libc's setrlimit takes the resource argument as
@@ -114,68 +116,158 @@ fn apply_landlock(policy: &SandboxPolicy) -> Result<(), SandboxError> {
 
     let mut ruleset = ruleset_builder.create()?;
 
-    // Apply filesystem rules based on ProtectSystem
-    match config.protect_system {
-        ProtectSystem::No => {
-            // No system protection - allow full access to root
-            if let Ok(fd) = PathFd::new("/") {
-                ruleset = ruleset.add_rule(PathBeneath::new(fd, all_fs_access))?;
-            }
-        }
-        ProtectSystem::Yes | ProtectSystem::Full => {
-            // Allow full access to root first
-            if let Ok(fd) = PathFd::new("/") {
-                ruleset = ruleset.add_rule(PathBeneath::new(fd, all_fs_access))?;
-            }
-            // Then we'll apply read-only restrictions via separate mechanism
-            // Note: Landlock is allow-list, so we can't easily do "all except X"
-            // For now, we implement Strict mode properly and leave Yes/Full as approximate
-        }
-        ProtectSystem::Strict => {
-            // Entire FS read-only + execute, write only to explicitly allowed paths
-            if let Ok(fd) = PathFd::new("/") {
-                ruleset = ruleset.add_rule(PathBeneath::new(fd, read_access | exec_access))?;
-            }
-        }
+    // Paths carved entirely out of the base grant. Landlock is
+    // allow-list only — the sole way to make a subtree inaccessible is
+    // to never grant it and instead grant each of its siblings on the
+    // way down (`grant_beneath_excluding`). This is what makes
+    // `inaccessible_paths` and `ProtectHome` actually deny rather than
+    // silently no-op.
+    let mut deny: Vec<PathBuf> = config.inaccessible_paths.clone();
+    if config.protect_home == ProtectHome::Yes {
+        // systemd ProtectHome=yes: the standard home trees are
+        // inaccessible. (`ReadOnly` is a no-op under Strict, where the
+        // whole FS is already read-only; under a writable base it can't
+        // be expressed by an allow-list and stays best-effort.)
+        deny.push(PathBuf::from("/home"));
+        deny.push(PathBuf::from("/root"));
+        deny.push(PathBuf::from("/run/user"));
     }
+    let deny = canonicalize_existing(&deny);
 
-    // Apply read_write_paths (creates exceptions in Strict mode)
+    // Base access granted across the whole filesystem minus `deny`.
+    let base_access = match config.protect_system {
+        // Strict: read + execute everywhere; writes only through the
+        // explicit read_write_paths carve-ins below.
+        ProtectSystem::Strict => read_access | exec_access,
+        // No / Yes / Full: full access as the base. Yes/Full's intent
+        // (system dirs read-only) can't be expressed by an allow-list
+        // and stays best-effort; the security-relevant controls
+        // (inaccessible_paths, ProtectHome=yes) are enforced via `deny`.
+        ProtectSystem::No | ProtectSystem::Yes | ProtectSystem::Full => all_fs_access,
+    };
+    ruleset = grant_beneath_excluding(ruleset, Path::new("/"), base_access, &deny)?;
+
+    // Carve-ins: explicit grants that re-open access to paths sitting
+    // *under* a denied subtree — e.g. a service's own data/run/log dirs
+    // and the read-only store, which live under $HOME and would
+    // otherwise be hidden by ProtectHome=yes. Landlock unions rule
+    // rights, and nothing broader grants these paths (their parents are
+    // carved out), so these rules define their exact access.
     for path in &config.read_write_paths {
         if let Ok(fd) = PathFd::new(path) {
             ruleset = ruleset.add_rule(PathBeneath::new(fd, all_fs_access))?;
         }
     }
-
-    // Apply exec_paths - allow execute access
+    for path in &config.read_only_paths {
+        if let Ok(fd) = PathFd::new(path) {
+            ruleset = ruleset.add_rule(PathBeneath::new(fd, read_access | exec_access))?;
+        }
+    }
     for path in &config.exec_paths {
         if let Ok(fd) = PathFd::new(path) {
             ruleset = ruleset.add_rule(PathBeneath::new(fd, exec_access))?;
         }
     }
 
-    // Note: inaccessible_paths work by NOT adding rules for them in Strict mode
-    // no_exec_paths work by NOT adding execute rules for them
+    // `no_exec_paths` would need the exec grant carved around them the
+    // same way `deny` carves the read grant; left best-effort for now
+    // (no caller uses it). Network: handling BindTcp/ConnectTcp while
+    // adding no net rules denies all TCP; not handling it allows all.
 
-    // Apply ProtectHome by not adding rules for home directories in Strict mode
-    // In non-Strict mode, this is approximate since Landlock is allow-list
-
-    // Network: if private_network is true, we handle network access but add no rules,
-    // which means all TCP bind/connect is denied.
-    // If private_network is false, we don't handle network access at all (allows all by default).
-
-    // Fail closed if Landlock applied nothing. `BestEffort` (the
-    // default) silently downgrades to a no-op on kernels < 5.13 or when
-    // Landlock is disabled, returning Ok — which would let the service
-    // run completely unconfined while the daemon believes it's
-    // sandboxed. `PartiallyEnforced` (older ABI) is accepted as
-    // best-effort; only `NotEnforced` (zero confinement) is rejected.
-    let status = ruleset.restrict_self()?;
-    if status.ruleset == RulesetStatus::NotEnforced {
-        return Err(SandboxError::NotEnforced(
-            "Landlock is unavailable (requires Linux 5.13+ with Landlock enabled in the \
-             kernel); refusing to launch the service without filesystem confinement"
-                .to_string(),
-        ));
-    }
+    // Fail OPEN. `BestEffort` (the default) downgrades to a no-op on
+    // kernels < 5.13 or when Landlock is disabled, and `restrict_self`
+    // then reports `NotEnforced`. By request we proceed unconfined
+    // rather than refusing to launch the service. We can't warn from
+    // here (this runs in the post-fork pre_exec, an async-signal
+    // context), so the daemon probes `landlock_available()` up front
+    // and logs once when services will run without confinement. A
+    // genuine error from `restrict_self` (not mere non-enforcement) is
+    // still propagated.
+    let _status = ruleset.restrict_self()?;
     Ok(())
+}
+
+/// Grant `access` to everything under `dir` except the subtrees listed
+/// in `deny` (and everything beneath them).
+///
+/// Landlock has no "deny" rule: access is the union of every matching
+/// `PathBeneath` grant, so a broad grant can't be narrowed by a more
+/// specific one. To exclude a subtree we therefore never grant it and
+/// instead grant each sibling along the path to it, recursing only into
+/// the ancestor directories that actually contain a denied path. The
+/// walk touches just those ancestors (e.g. `/` then `/home` for
+/// `/home/<user>`), not the whole filesystem.
+///
+/// `deny` entries must be canonical absolute paths (see
+/// `canonicalize_existing`).
+fn grant_beneath_excluding(
+    mut ruleset: RulesetCreated,
+    dir: &Path,
+    access: BitFlags<AccessFs>,
+    deny: &[PathBuf],
+) -> Result<RulesetCreated, SandboxError> {
+    // If no denied path lives at or under `dir`, grant the whole subtree
+    // in one rule and stop descending.
+    if !deny.iter().any(|d| d.starts_with(dir)) {
+        if let Ok(fd) = PathFd::new(dir) {
+            ruleset = ruleset.add_rule(PathBeneath::new(fd, access))?;
+        }
+        return Ok(ruleset);
+    }
+
+    // Otherwise descend: grant children clear of any denied path,
+    // recurse into children that contain one, and skip exact matches
+    // (the holes themselves). If the directory can't be read we grant
+    // nothing under it — failing toward more confinement, not less.
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Ok(ruleset);
+    };
+    for entry in entries.flatten() {
+        // Resolve symlinks so the comparisons against the canonical
+        // `deny` set are accurate (a symlinked `/home` must still match)
+        // and so the grant targets the real path rather than the link.
+        // A child that can't be canonicalized (e.g. a dangling symlink)
+        // is left ungranted — again erring toward confinement.
+        let Ok(child) = std::fs::canonicalize(entry.path()) else {
+            continue;
+        };
+        if deny.contains(&child) {
+            continue;
+        }
+        if deny.iter().any(|d| d.starts_with(&child)) {
+            ruleset = grant_beneath_excluding(ruleset, &child, access, deny)?;
+        } else if let Ok(fd) = PathFd::new(&child) {
+            ruleset = ruleset.add_rule(PathBeneath::new(fd, access))?;
+        }
+    }
+    Ok(ruleset)
+}
+
+/// Canonicalize deny paths and drop any that don't resolve. A path that
+/// doesn't exist has nothing to hide, and canonical paths are required
+/// so the prefix checks in `grant_beneath_excluding` line up with the
+/// canonical entries returned by `read_dir`/`PathFd`.
+fn canonicalize_existing(paths: &[PathBuf]) -> Vec<PathBuf> {
+    paths
+        .iter()
+        .filter_map(|p| std::fs::canonicalize(p).ok())
+        .collect()
+}
+
+/// Whether the running kernel actually enforces Landlock (Linux 5.13+
+/// with Landlock enabled). This is a non-restricting probe: it builds a
+/// throwaway ruleset under `HardRequirement` compatibility — which
+/// errors instead of silently downgrading when the feature is missing —
+/// and never calls `restrict_self`, so the calling process is
+/// unaffected.
+///
+/// Intended for callers that fail open (see `apply_landlock`) but want
+/// to warn an operator that spawned processes will run unconfined.
+#[must_use]
+pub fn landlock_available() -> bool {
+    Ruleset::default()
+        .set_compatibility(CompatLevel::HardRequirement)
+        .handle_access(AccessFs::from_all(ABI::V1))
+        .and_then(|r| r.create())
+        .is_ok()
 }

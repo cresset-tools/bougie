@@ -25,11 +25,33 @@ use sandbox_run::{ProtectHome, ProtectSystem, Sandbox, SandboxPolicy};
 /// Creates the per-service data/run/log/conf directories as a side
 /// effect so the `read_write_paths` references resolve at spawn time.
 pub fn build_policy(entry: &CatalogEntry, paths: &Paths) -> Result<Option<SandboxPolicy>> {
+    warn_once_if_landlock_unavailable();
     match entry.sandbox {
         SandboxKind::Strict => build_strict(entry, paths).map(Some),
         SandboxKind::LightHome => build_light_home(entry, paths),
     }
 }
+
+/// `apply_sandbox` fails open when the kernel doesn't enforce Landlock
+/// (< 5.13 or disabled), so spawned services would run unconfined. Warn
+/// once at the first policy build so the operator knows the filesystem
+/// boundary isn't active — fail-open should never be silent.
+#[cfg(target_os = "linux")]
+fn warn_once_if_landlock_unavailable() {
+    use std::sync::Once;
+    static WARNED: Once = Once::new();
+    if !sandbox_run::landlock_available() {
+        WARNED.call_once(|| {
+            tracing::warn!(
+                "Landlock is not available on this kernel (needs Linux 5.13+ with Landlock \
+                 enabled); services will run WITHOUT filesystem confinement"
+            );
+        });
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn warn_once_if_landlock_unavailable() {}
 
 fn build_strict(entry: &CatalogEntry, paths: &Paths) -> Result<SandboxPolicy> {
     let data = paths.service_data(entry.name);
