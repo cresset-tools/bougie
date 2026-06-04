@@ -701,7 +701,11 @@ pub enum ToolCommand {
         long_about = None,
         after_help = "Use `bougie help tool run` for more details.",
         after_long_help = "",
-        display_name = "bgx"
+        display_name = "bgx",
+        // `bgx --version` / `bgx -V` exec into `bougie tool bgx`; give
+        // this variant its own version flag so it short-circuits before
+        // the required `<PACKAGE>` positional and prints `bgx <version>`.
+        version = LONG_VERSION
     )]
     Bgx(BgxArgs),
     /// Re-resolve a tool's lock and bring its vendor tree up to date.
