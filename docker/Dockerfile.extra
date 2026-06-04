@@ -7,10 +7,9 @@
 # TLS, and the slim/alpine bases ship none by default.
 #
 # Built by .github/workflows/build-docker.yml over a matrix of base images.
-# The only RUN is the cert install; on the arm64 leg that runs under QEMU
-# emulation (set up in the workflow), which is cheap for a package install.
-# The expensive Rust compile lives in the base image (docker/Dockerfile) and
-# stays emulation-free.
+# The only RUN is the cert install; on Depot's native per-arch builders the
+# arm64 leg runs it natively (no QEMU). The expensive Rust compile lives in
+# the base image (docker/Dockerfile).
 
 # The OS base, e.g. debian:trixie-slim or alpine:3.22.
 ARG BASE_IMAGE=debian:trixie-slim

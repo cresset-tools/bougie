@@ -7,65 +7,34 @@
 #
 #     COPY --from=ghcr.io/cresset-tools/bougie:latest /bougie /bgx /usr/local/bin/
 #
-# Built for both linux/amd64 and linux/arm64 from a single amd64 builder
-# via cargo-zigbuild: the `build` stage is pinned to $BUILDPLATFORM (always
-# native amd64) and cross-compiles to the requested $TARGETPLATFORM's musl
-# target, so no QEMU and no arm runner is needed. The final `scratch` stage
-# runs no code — it just holds the target-arch binary, so buildx never has
-# to emulate arm64.
+# Built natively for both linux/amd64 and linux/arm64 on Depot's per-arch
+# native builders — no QEMU, no cross-compile. The `build` stage runs on
+# Alpine, so musl is the native libc and a plain `cargo build --release`
+# yields a fully static binary on each arch; the same image therefore drops
+# into scratch, alpine, and debian alike. The final `scratch` stage runs no
+# code — it just holds the native-arch binaries.
 #
-# The binaries are static (no libc), so the same image drops into scratch,
-# alpine, and debian alike. aws-lc-sys (pulled in via sigstore) is the only
-# C/asm dependency that needs more than zig — it wants cmake + clang/libclang
-# at build time. Verified cross-building clean to aarch64-unknown-linux-musl
-# with zig 0.16.0 + cargo-zigbuild 0.22.3.
+# aws-lc-sys (pulled in via sigstore) is the only C/asm dependency that needs
+# more than a Rust toolchain — it wants cmake + clang at build time, plus the
+# usual musl build deps.
 
-# Bumps to these flow through PRs so the image stays reproducible. RUST_VERSION
+# Bumps to this flow through PRs so the image stays reproducible. RUST_VERSION
 # tracks rust-toolchain.toml (the toolchain file still wins at build time; this
 # only picks the base image).
 ARG RUST_VERSION=1.95
-ARG ZIG_VERSION=0.16.0
-ARG CARGO_ZIGBUILD_VERSION=0.22.3
 
-FROM --platform=$BUILDPLATFORM rust:${RUST_VERSION}-bookworm AS build
-ARG ZIG_VERSION
-ARG CARGO_ZIGBUILD_VERSION
+FROM rust:${RUST_VERSION}-alpine AS build
 
-# aws-lc-sys build deps (cmake + clang/libclang) plus the tools to fetch zig.
-RUN apt-get update && apt-get install -y --no-install-recommends \
-      cmake clang curl ca-certificates xz-utils \
- && rm -rf /var/lib/apt/lists/*
-
-# Pinned zig toolchain — the cross-linker that cargo-zigbuild drives. The
-# builder is always amd64 (see $BUILDPLATFORM above), so we always grab the
-# x86_64-linux zig.
-RUN curl --proto '=https' --tlsv1.2 -fsSL \
-      "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz" \
-      -o /tmp/zig.tar.xz \
- && tar -xJf /tmp/zig.tar.xz -C /opt \
- && ln -s "/opt/zig-x86_64-linux-${ZIG_VERSION}/zig" /usr/local/bin/zig \
- && rm /tmp/zig.tar.xz \
- && zig version
-
-RUN cargo install --locked cargo-zigbuild@${CARGO_ZIGBUILD_VERSION}
-
-# Map the buildx target platform to its musl rust target triple.
-ARG TARGETPLATFORM
-RUN case "${TARGETPLATFORM}" in \
-      "linux/amd64") echo "x86_64-unknown-linux-musl"  > /rust-target ;; \
-      "linux/arm64") echo "aarch64-unknown-linux-musl" > /rust-target ;; \
-      *) echo "unsupported TARGETPLATFORM: ${TARGETPLATFORM}" >&2; exit 1 ;; \
-    esac
+# aws-lc-sys build deps (cmake + clang) plus the native musl build toolchain.
+RUN apk add --no-cache cmake clang musl-dev make perl linux-headers
 
 WORKDIR /src
-# Materialize the toolchain pinned by rust-toolchain.toml, then add the musl
-# target to *that* toolchain — `rustup target add` applies to the active
-# toolchain, which is only the pinned one once the file is in WORKDIR. Copying
-# the toolchain file on its own first keeps this layer cached across
-# source-only changes.
+# Materialize the toolchain pinned by rust-toolchain.toml before the sources so
+# this layer stays cached across source-only changes. rust:alpine's default
+# host target is already the native musl triple, so no `rustup target add` is
+# needed — the static build is the default.
 COPY rust-toolchain.toml .
-RUN rustup toolchain install \
- && rustup target add "$(cat /rust-target)"
+RUN rustup toolchain install
 
 COPY . .
 
@@ -76,9 +45,9 @@ COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
     --mount=type=cache,target=/src/target,sharing=locked \
-    cargo zigbuild --release --target "$(cat /rust-target)" --bin bougie --bin bgx \
- && cp "target/$(cat /rust-target)/release/bougie" /bougie \
- && cp "target/$(cat /rust-target)/release/bgx" /bgx
+    cargo build --release --bin bougie --bin bgx \
+ && cp target/release/bougie /bougie \
+ && cp target/release/bgx /bgx
 
 FROM scratch
 COPY --from=build /bougie /bgx /
