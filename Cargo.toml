@@ -120,5 +120,16 @@ strip = "none"
 [profile.dist]
 inherits = "release"
 
+# Fast-iterating, optimized-ish builds. `release`'s `lto = "fat"` +
+# `codegen-units = 1` re-run whole-program LTO on every edit, so a
+# one-line change costs ~50s warm. This profile keeps opt-level 3 but
+# drops LTO and parallelizes codegen, taking the same warm rebuild to
+# under a second — for chasing release-only behavior or quick perf
+# sanity checks. NOT what we ship: `release`/`dist` stay fat-LTO.
+[profile.release-fast]
+inherits = "release"
+lto = false
+codegen-units = 16
+
 [profile.dev]
 # Default; mostly here so developers don't get surprised by a tuned profile.
