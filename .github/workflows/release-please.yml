@@ -63,14 +63,14 @@ jobs:
       # trigger `bougie-release.yml`; minted via the app, it does.
       - name: Mint app token
         id: app-token
-        uses: actions/create-github-app-token@v1
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ secrets.BOT_APP_ID }}
           private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
 
       - name: release-please
         id: release
-        uses: googleapis/release-please-action@v4
+        uses: googleapis/release-please-action@v5
         with:
           token: ${{ steps.app-token.outputs.token }}
           config-file: release-please-config.json
@@ -85,7 +85,7 @@ jobs:
       # though no external dep versions actually move.
       - name: Checkout release PR
         if: ${{ steps.release.outputs.pr }}
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
         with:
           ref: ${{ fromJson(steps.release.outputs.pr).headBranchName }}
           token: ${{ steps.app-token.outputs.token }}
