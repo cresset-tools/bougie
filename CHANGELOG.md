@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.18.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.17.0...bougie-v0.18.0) (2026-06-05)
+
+
+### Features
+
+* **server:** redesign `bougie server` as a project verb over the shared daemon ([#318](https://github.com/cresset-tools/bougie/issues/318)) ([131a4d5](https://github.com/cresset-tools/bougie/commit/131a4d512a6bb65ba12478438fe542aa756eeaf2))
+* **services:** add `bougie services projects` (list provisioned tenants) + `purge` ([#320](https://github.com/cresset-tools/bougie/issues/320)) ([c66de18](https://github.com/cresset-tools/bougie/commit/c66de18e9f02e8ba212821b14046d8078a57f04c))
+
+
+### Bug Fixes
+
+* **autoloader:** widen PackageSorter weight to i64 to match Composer ([#319](https://github.com/cresset-tools/bougie/issues/319)) ([75fcb2f](https://github.com/cresset-tools/bougie/commit/75fcb2f375aa2934bf0ac4aebd4584620bc415c2))
+* **cli:** make `bgx --version` work ([#311](https://github.com/cresset-tools/bougie/issues/311)) ([747a54d](https://github.com/cresset-tools/bougie/commit/747a54deb62860b6eb2dfba12b0977cd2f7724b8))
+* **composer-resolver:** don't let a replaced original's back-edge break the solve ([#317](https://github.com/cresset-tools/bougie/issues/317)) ([abade97](https://github.com/cresset-tools/bougie/commit/abade97fa671249d7be347dc52309c9728871962))
+* **sandbox:** enforce ProtectHome/inaccessible/read-only paths on Linux ([#208](https://github.com/cresset-tools/bougie/issues/208)) ([#316](https://github.com/cresset-tools/bougie/issues/316)) ([ff885a5](https://github.com/cresset-tools/bougie/commit/ff885a5aee6d2d773f06140e210d110ad404b30d))
+* **services:** derive tenant from project dir, not composer name, to stop collisions ([#321](https://github.com/cresset-tools/bougie/issues/321)) ([32959c3](https://github.com/cresset-tools/bougie/commit/32959c3e2ca53e87e2a21ff747b79ec303080ce8))
+
 ## [0.17.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.16.0...bougie-v0.17.0) (2026-06-03)
 
 
