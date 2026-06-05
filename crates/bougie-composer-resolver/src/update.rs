@@ -44,11 +44,17 @@
 //! The CLI shim wraps the outcome in a `Lock` and hands it to
 //! `bougie_composer::lockfile::write_lock`.
 //!
+//! Platform-package validation against the pinned PHP (issue #118) is
+//! handled via [`crate::platform::PlatformEnv`]: `php` requires are
+//! modeled as a single-candidate package so a dep needing a PHP the
+//! project isn't pinned to fails the solve. `ext-*` / `lib-*` / the
+//! `composer*` API packages remain unmodeled (their edges still
+//! dropped) — see the `PlatformEnv` docs for why.
+//!
 //! Out of scope (follow-ups):
 //! - `prefer-stable` candidate-ordering
-//! - Platform-package version checks against the bougie-pinned PHP
-//!   (issue #118 — affects polyfill-style `replace: { php: "..." }`
-//!   declarations too)
+//! - Platform packages beyond `php` (`ext-*`, `lib-*`, `composer*`);
+//!   `replace: { php: "..." }` provide-style declarations
 //! - Custom repositories beyond Packagist
 //! - Byte-equivalence with Composer's own lockfile output (we
 //!   promise semantic equivalence: composer install accepts our
@@ -68,6 +74,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::hash::{FxHashMap, FxHashSet};
 use crate::package_name::PackageName;
+use crate::platform::PlatformEnv;
 
 use bougie_composer::lockfile::{LockAutoload, LockPackage};
 use bougie_paths::Paths;
@@ -311,6 +318,11 @@ pub struct ResolveProvider {
     /// here and the solve retries. `versions_for` filters these out.
     conflict_excludes: RefCell<FxHashSet<(PackageName, Version)>>,
     raw_root_constraints: FxHashMap<String, String>,
+    /// Runtime platform facts (the pinned PHP version) that platform
+    /// `require`s are validated against. Defaults to modeling nothing,
+    /// which drops platform edges exactly as before #118. See
+    /// [`PlatformEnv`].
+    platform: PlatformEnv,
 }
 
 /// One entry in the virtual provider index — "real package
@@ -454,7 +466,9 @@ impl ResolveProvider {
         // Pre-built auth from composer.json's `config` section (and,
         // when called via the orchestrator, also from a project-
         // root `auth.json`). `build()` itself doesn't touch disk —
-        // the caller assembles the map.
+        // the caller assembles the map. Platform validation defaults
+        // to off (models nothing); orchestrators that know the project
+        // root supply a populated [`PlatformEnv`] via `build_with_auth`.
         Self::build_with_auth(
             client,
             paths,
@@ -462,6 +476,7 @@ impl ResolveProvider {
             composer_json,
             no_dev,
             HashMap::new(),
+            PlatformEnv::default(),
         )
     }
 
@@ -476,11 +491,12 @@ impl ResolveProvider {
         composer_json: &Value,
         no_dev: bool,
         auth: HashMap<String, crate::metadata::AuthCredentials>,
+        platform: PlatformEnv,
     ) -> Result<Self, BuildError> {
         let minimum_stability = read_minimum_stability(composer_json)?;
         let prefer_stable = read_prefer_stable(composer_json)?;
         let (root_deps, stability_flags, raw_root_constraints) =
-            read_root_requires(composer_json, no_dev)?;
+            read_root_requires(composer_json, no_dev, &platform)?;
         let root_replaces = read_root_replaces(composer_json);
         let repos = read_repositories(composer_json, default_packagist, &auth)?;
         // Any synthetic value works for the root version — pubgrub
@@ -509,6 +525,7 @@ impl ResolveProvider {
             solve_progress: RefCell::new(SolveProgress::hidden()),
             conflict_excludes: RefCell::new(FxHashSet::default()),
             raw_root_constraints,
+            platform,
         })
     }
 
@@ -1882,6 +1899,7 @@ fn read_root_replaces(composer_json: &Value) -> FxHashSet<PackageName> {
 fn read_root_requires(
     composer_json: &Value,
     no_dev: bool,
+    platform: &PlatformEnv,
 ) -> Result<
     (
         Vec<(PackageName, ComposerRange)>,
@@ -1901,7 +1919,10 @@ fn read_root_requires(
     for key in keys {
         let Some(reqs) = obj.get(*key).and_then(Value::as_object) else { continue };
         for (dep_name, raw) in reqs {
-            if is_platform(dep_name) {
+            // Platform packages bougie models (e.g. `php`) become real
+            // edges so their constraint is validated against the runtime
+            // (#118); ones it doesn't model are dropped as before.
+            if is_platform(dep_name) && !platform.models(dep_name) {
                 continue;
             }
             let raw_constraint = raw.as_str().ok_or_else(|| {
@@ -2562,6 +2583,12 @@ impl DependencyProvider for ResolveProvider {
         let PubGrubPackage::Package(name) = package else {
             return std::cmp::Reverse(0);
         };
+        // Platform packages (#118) have a single fixed candidate — no
+        // cache to peek. Treat them like a one-candidate package so the
+        // "fewer candidates first" heuristic decides them early.
+        if is_platform(name.as_str()) {
+            return std::cmp::Reverse(u32::from(self.platform.models(name.as_str())));
+        }
         // Peek the already-populated caches; never fetch from
         // `prioritize`. pubgrub calls this constantly (every time the
         // partial solution changes), and pre-fetch has already closed
@@ -2595,6 +2622,16 @@ impl DependencyProvider for ResolveProvider {
                 None
             }),
             PubGrubPackage::Package(name) => {
+                // Platform packages (#118) resolve to their single
+                // runtime candidate — the pinned PHP version for `php` —
+                // without any network/cache lookup. Out of range → no
+                // candidate, so pubgrub reports the version mismatch.
+                if is_platform(name.as_str()) {
+                    return Ok(self
+                        .platform
+                        .candidate(name.as_str())
+                        .filter(|v| range.contains(v)));
+                }
                 let versions = self.versions_for(name.as_str())?;
                 // `versions_for` sorts descending. With
                 // `prefer-stable`, do a two-pass scan: first pick the
@@ -2658,6 +2695,12 @@ impl DependencyProvider for ResolveProvider {
                 .map(|(n, r)| (PubGrubPackage::Package(n), r))
                 .collect();
             return Ok(Dependencies::Available(constraints));
+        }
+        // Platform packages (#118) carry no dependencies of their own.
+        if let PubGrubPackage::Package(name) = package {
+            if is_platform(name.as_str()) {
+                return Ok(Dependencies::Available(DependencyConstraints::default()));
+            }
         }
         let parsed = self.parsed_deps_for(package, version)?;
         // Re-collect into a fresh `DependencyConstraints` per call —
@@ -2741,6 +2784,32 @@ impl ResolveProvider {
             .borrow_mut()
             .insert(key, Arc::clone(&arc));
         Ok(arc)
+    }
+
+    /// Emit edges for the platform packages bougie models (currently
+    /// `php`) from a `require` map. `push_constraint_map` skips every
+    /// platform name unconditionally; this re-adds the modeled ones so
+    /// pubgrub validates their constraint against the single runtime
+    /// candidate (#118). Unmodeled platform names (`ext-*`, etc.) stay
+    /// dropped.
+    fn push_platform_requires(
+        &self,
+        out: &mut Vec<(PackageName, ComposerRange)>,
+        require: &std::collections::BTreeMap<String, String>,
+    ) -> Result<(), ProviderError> {
+        for (dep_name, raw) in require {
+            if !(is_platform(dep_name) && self.platform.models(dep_name)) {
+                continue;
+            }
+            let (cleaned, _flag) = split_stability_flag(raw);
+            let constraint = Constraint::parse(cleaned).map_err(|e| {
+                ProviderError(format!(
+                    "platform constraint {raw:?} on `{dep_name}` (require): {e}",
+                ))
+            })?;
+            out.push((PackageName::from(dep_name.as_str()), to_range(&constraint)));
+        }
+        Ok(())
     }
 
     /// Cache-miss path: do the actual work `get_dependencies` used
@@ -2835,6 +2904,11 @@ impl ResolveProvider {
             owner_version,
             "require",
         )?;
+        // Modeled platform requires (e.g. `php`) — `push_constraint_map`
+        // drops every platform name, so re-emit the ones bougie models
+        // as real edges. This is what makes a dependency that needs a
+        // PHP the project isn't pinned to fail the solve (#118).
+        self.push_platform_requires(&mut staging, &entry.require)?;
         // `replace` is encoded as an additional require when the
         // clause is a bare version (`replace: { sub: 2.0.0 }`). This
         // emits `sub: ==2.0.0` from the replacer, enforcing
@@ -3027,6 +3101,7 @@ pub fn dry_run_update(
         &composer_json,
         opts.no_dev,
         auth,
+        PlatformEnv::detect(project_root, &composer_json),
     )
     .map_err(|e| eyre!(e))?;
     // Probe each repo's `packages.json` and record the discovered
@@ -3121,6 +3196,11 @@ pub fn dry_run_update(
                 .filter_map(|(pkg, version)| match pkg {
                     PubGrubPackage::Root => None,
                     PubGrubPackage::Package(name) => {
+                        // Platform packages (`php`, …) aren't installable
+                        // packages — don't surface them in the plan (#118).
+                        if is_platform(name.as_str()) {
+                            return None;
+                        }
                         if virtual_selections.contains_key(&(name.clone(), version.clone())) {
                             return None;
                         }
@@ -3244,6 +3324,10 @@ pub fn resolve_for_lockfile(
     // the entire closure over the network — see `MetaCache`.)
     let meta_cache = MetaCache::default();
 
+    // Validate `php` (and other modeled platform packages) against the
+    // project's pinned runtime in both passes (#118).
+    let platform = PlatformEnv::detect(project_root, &composer_json);
+
     let full = solve_into_lock_packages(
         paths,
         default_packagist.clone(),
@@ -3252,6 +3336,7 @@ pub fn resolve_for_lockfile(
         auth.clone(),
         ProgressMode::Visible,
         meta_cache.clone(),
+        platform.clone(),
     )?;
     // Second pass is the same closure walk, now served entirely from
     // `meta_cache` — instant, so its spinner stays hidden (re-rendering
@@ -3265,6 +3350,7 @@ pub fn resolve_for_lockfile(
         auth,
         ProgressMode::Hidden,
         meta_cache,
+        platform,
     )?;
 
     let t_partition = std::time::Instant::now();
@@ -3311,6 +3397,7 @@ fn solve_into_lock_packages(
     auth: HashMap<String, crate::metadata::AuthCredentials>,
     progress: ProgressMode,
     meta_cache: MetaCache,
+    platform: PlatformEnv,
 ) -> Result<SolutionSummary> {
     let client = build_client()?;
     let mut provider = ResolveProvider::build_with_auth(
@@ -3320,6 +3407,7 @@ fn solve_into_lock_packages(
         composer_json,
         no_dev,
         auth,
+        platform,
     )
     .map_err(|e| eyre!(e))?;
     // Share the caller's metadata cache so the two passes of
@@ -3426,6 +3514,13 @@ fn solve_into_lock_packages(
             let replaced_names = collect_active_replaces(&provider, &solution_pairs);
     for (pkg, version) in solution {
         let PubGrubPackage::Package(name) = pkg else { continue };
+        // Platform packages (`php`, …) are runtime facts the solver
+        // validated against, not installable packages — Composer never
+        // writes them to composer.lock, and we have no metadata entry
+        // for them (#118).
+        if is_platform(name.as_str()) {
+            continue;
+        }
         if virtual_selections.contains_key(&(name.clone(), version.clone())) {
             continue;
         }

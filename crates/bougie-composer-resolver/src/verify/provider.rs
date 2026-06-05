@@ -19,6 +19,7 @@ use serde_json::Value;
 
 use super::range::{to_range, ComposerRange};
 use crate::package_name::PackageName;
+use crate::platform::PlatformEnv;
 
 /// pubgrub Package type. `Root` is the synthetic root that represents
 /// the project itself; `Package` wraps an interned `vendor/name`
@@ -72,10 +73,14 @@ pub struct LockVerifyProvider {
 impl LockVerifyProvider {
     /// Build from a parsed lock + the raw composer.json `Value`
     /// (top-level), reading `require` and optionally `require-dev`.
+    /// `platform` supplies the runtime candidate for modeled platform
+    /// packages (e.g. `php`); pass [`PlatformEnv::default`] to skip
+    /// platform validation (#118).
     pub fn build(
         lock: &Lock,
         composer_json: &Value,
         no_dev: bool,
+        platform: &PlatformEnv,
     ) -> Result<Self, BuildError> {
         let mut locked: FxHashMap<PackageName, Version> = FxHashMap::default();
         let mut deps: FxHashMap<PackageName, Vec<(PackageName, ComposerRange)>> =
@@ -101,7 +106,10 @@ impl LockVerifyProvider {
 
             let mut pkg_deps: Vec<(PackageName, ComposerRange)> = Vec::new();
             for (dep_name, raw_constraint) in &p.require {
-                if is_platform(dep_name) {
+                // Modeled platform packages (e.g. `php`) become real
+                // edges validated against the runtime candidate seeded
+                // into `locked` below (#118); unmodeled ones are dropped.
+                if is_platform(dep_name) && !platform.models(dep_name) {
                     continue;
                 }
                 let constraint = Constraint::parse(raw_constraint).map_err(|e| {
@@ -117,8 +125,18 @@ impl LockVerifyProvider {
             deps.insert(owner, pkg_deps);
         }
 
+        // Seed modeled platform packages (#118) as single-candidate
+        // entries so a require on e.g. `php` resolves against the
+        // runtime version. They carry no `deps` entry, so
+        // `get_dependencies` returns the empty default for them.
+        for name in ["php", "php-64bit"] {
+            if let Some(version) = platform.candidate(name) {
+                locked.insert(PackageName::from(name), version);
+            }
+        }
+
         // Root deps from composer.json.
-        let root_deps = read_root_requires(composer_json, no_dev)?;
+        let root_deps = read_root_requires(composer_json, no_dev, platform)?;
 
         // Any synthetic value works for the root version — pubgrub
         // never compares it against another candidate.
@@ -137,6 +155,7 @@ impl LockVerifyProvider {
 fn read_root_requires(
     composer_json: &Value,
     no_dev: bool,
+    platform: &PlatformEnv,
 ) -> Result<Vec<(PackageName, ComposerRange)>, BuildError> {
     let mut out: Vec<(PackageName, ComposerRange)> = Vec::new();
     let obj = composer_json
@@ -146,7 +165,10 @@ fn read_root_requires(
     for key in if no_dev { &["require"][..] } else { &["require", "require-dev"][..] } {
         let Some(reqs) = obj.get(*key).and_then(Value::as_object) else { continue };
         for (dep_name, raw) in reqs {
-            if is_platform(dep_name) {
+            // Modeled platform packages (e.g. `php`) become real edges
+            // validated against the runtime candidate (#118); others
+            // are dropped as before.
+            if is_platform(dep_name) && !platform.models(dep_name) {
                 continue;
             }
             let raw_constraint = raw

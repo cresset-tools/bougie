@@ -89,7 +89,12 @@ pub fn verify_lock(project_root: &Path, opts: VerifyOptions) -> Result<VerifyOut
         }
     }
 
-    let provider = LockVerifyProvider::build(&lock, &composer_json, opts.no_dev)
+    // Validate platform requires (currently `php`) against the
+    // project's pinned runtime (#118). Best-effort: an un-synced
+    // project (no resolved pin) models nothing and platform requires
+    // stay unchecked, as before.
+    let platform = crate::platform::PlatformEnv::detect(project_root, &composer_json);
+    let provider = LockVerifyProvider::build(&lock, &composer_json, opts.no_dev, &platform)
         .map_err(|e| eyre!(e))?;
     let root_version = provider.root_version();
 
