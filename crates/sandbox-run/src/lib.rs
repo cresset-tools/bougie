@@ -72,6 +72,13 @@ pub use command::Command;
 pub use error::SandboxError;
 pub use sandbox::{ProtectHome, ProtectSystem, Sandbox, SandboxPolicy};
 
+/// Whether the running kernel enforces Landlock (Linux 5.13+ with
+/// Landlock enabled). Callers that fail open when sandboxing is
+/// unavailable can use this to warn that spawned processes will run
+/// unconfined.
+#[cfg(target_os = "linux")]
+pub use platform::landlock_available;
+
 /// Apply a compiled policy to the **current** process. Intended for
 /// integrations that build their own `pre_exec` closure (e.g. when
 /// running under a custom runtime that owns the child handle, like

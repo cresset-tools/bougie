@@ -27,3 +27,8 @@ pub fn apply_sandbox(policy: &SandboxPolicy) -> Result<(), SandboxError> {
         compile_error!("sandbox-run only supports Linux and macOS")
     }
 }
+
+/// Whether the running kernel enforces Landlock (Linux 5.13+ with
+/// Landlock enabled). See [`linux::landlock_available`].
+#[cfg(target_os = "linux")]
+pub use linux::landlock_available;
