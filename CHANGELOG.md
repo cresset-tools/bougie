@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.18.1](https://github.com/cresset-tools/bougie/compare/bougie-v0.18.0...bougie-v0.18.1) (2026-06-05)
+
+
+### Bug Fixes
+
+* **resolver:** validate php platform requires against the pinned PHP ([#322](https://github.com/cresset-tools/bougie/issues/322)) ([007d1db](https://github.com/cresset-tools/bougie/commit/007d1dbab36fcdbf8863b837833a0a47c68a41fc)), closes [#118](https://github.com/cresset-tools/bougie/issues/118)
+
 ## [0.18.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.17.0...bougie-v0.18.0) (2026-06-05)
 
 
