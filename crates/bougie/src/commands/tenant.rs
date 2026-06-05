@@ -25,7 +25,9 @@
 
 use std::path::Path;
 
+#[cfg(unix)]
 use bougie_daemon::daemon::catalog::{self, Tenancy};
+#[cfg(unix)]
 use bougie_daemon::daemon::tenants::Tenant;
 use bougie_paths::Paths;
 
@@ -58,6 +60,7 @@ pub fn sanitize_tenant(input: &str) -> String {
 /// partially-written ledger contributes nothing rather than failing
 /// derivation. Empty on platforms with no daemon (the standalone
 /// Windows server), which collapses derivation to the plain basename.
+#[cfg(unix)]
 pub fn load_all_tenants(paths: &Paths) -> Vec<(String, Tenant)> {
     let mut out = Vec::new();
     for entry in catalog::CATALOG {
@@ -83,14 +86,29 @@ pub fn load_all_tenants(paths: &Paths) -> Vec<(String, Tenant)> {
 /// Derive the default tenant identity for `project_root`. See the module
 /// docs for the rationale; the rules are reuse → basename → hash on
 /// collision.
+#[cfg(unix)]
 pub fn derive_default_tenant(project_root: &Path, paths: &Paths) -> String {
     let canonical = canonical_path(project_root);
     let existing = load_all_tenants(paths);
     derive_from_ledger(project_root, &canonical, &existing)
 }
 
+/// On platforms with no daemon (the standalone Windows server) there are
+/// no tenant ledgers, so derivation collapses to the sanitized basename —
+/// no reuse/collision logic to run.
+#[cfg(not(unix))]
+pub fn derive_default_tenant(project_root: &Path, _paths: &Paths) -> String {
+    sanitize_tenant(
+        project_root
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("project"),
+    )
+}
+
 /// The collision/reuse logic split out from I/O so it can be unit
 /// tested with a synthetic ledger.
+#[cfg(unix)]
 fn derive_from_ledger(
     project_root: &Path,
     canonical: &Path,
@@ -123,6 +141,7 @@ fn derive_from_ledger(
 /// Canonicalize for stable identity + ledger comparison (the ledger
 /// stores canonical paths). Falls back to the path as-given when it
 /// can't be resolved (e.g. it no longer exists).
+#[cfg(unix)]
 fn canonical_path(p: &Path) -> std::path::PathBuf {
     p.canonicalize().unwrap_or_else(|_| p.to_path_buf())
 }
@@ -130,6 +149,7 @@ fn canonical_path(p: &Path) -> std::path::PathBuf {
 /// Short, stable hex digest of the canonical project path, used only to
 /// disambiguate same-basename projects. FNV-1a — no cryptographic
 /// strength needed, just a deterministic 24-bit (6 hex) tag.
+#[cfg(unix)]
 fn short_hash(p: &Path) -> String {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for b in p.as_os_str().as_encoded_bytes() {
@@ -142,17 +162,6 @@ fn short_hash(p: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
-
-    fn tenant(name: &str, project: &str) -> (String, Tenant) {
-        // Tenant has no public constructor with a preset tenant string,
-        // so go through JSON (it's Deserialize).
-        let t: Tenant = serde_json::from_str(&format!(
-            "{{\"schema_version\":1,\"tenant\":\"{name}\",\"project\":\"{project}\",\"created_at\":\"2026-06-05T00:00:00Z\"}}"
-        ))
-        .unwrap();
-        ("mariadb".to_string(), t)
-    }
 
     #[test]
     fn sanitize_normalises_slash_and_dash() {
@@ -172,6 +181,24 @@ mod tests {
         // Nothing alphanumeric survives → fallback.
         assert_eq!(sanitize_tenant("///"), "project");
         assert_eq!(sanitize_tenant(""), "project");
+    }
+}
+
+// Ledger-backed derivation only exists on Unix (no daemon elsewhere), so
+// its tests use `Tenant`/`derive_from_ledger` and are gated to match.
+#[cfg(all(test, unix))]
+mod ledger_tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn tenant(name: &str, project: &str) -> (String, Tenant) {
+        // Tenant has no public constructor with a preset tenant string,
+        // so go through JSON (it's Deserialize).
+        let t: Tenant = serde_json::from_str(&format!(
+            "{{\"schema_version\":1,\"tenant\":\"{name}\",\"project\":\"{project}\",\"created_at\":\"2026-06-05T00:00:00Z\"}}"
+        ))
+        .unwrap();
+        ("mariadb".to_string(), t)
     }
 
     #[test]
