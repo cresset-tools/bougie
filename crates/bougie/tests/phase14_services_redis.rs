@@ -414,6 +414,89 @@ fn up_with_no_tarball_falls_back_to_index_fetch() {
     stop_daemon(&env);
 }
 
+#[test]
+fn projects_purge_removes_orphaned_redis_tenant() {
+    let env = TestEnv::new();
+    install_fake_redis(&env);
+    let proj = project_with_composer("acme/blog");
+    let proj_path = proj.path().to_path_buf();
+
+    env.bougie()
+        .args(["services", "add", "redis"])
+        .current_dir(&proj_path)
+        .timeout(STEP_TIMEOUT)
+        .assert()
+        .success();
+    env.bougie()
+        .args(["up"])
+        .current_dir(&proj_path)
+        .timeout(STEP_TIMEOUT)
+        .assert()
+        .success();
+
+    let ledger = env.home_path().join("state/services/redis/tenants.json");
+    assert!(
+        fs::read_to_string(&ledger).unwrap().contains("acme_blog"),
+        "tenant should be provisioned before purge"
+    );
+
+    // Orphan the project: dropping the TempDir deletes its directory.
+    drop(proj);
+    assert!(!proj_path.exists(), "project dir should be gone");
+
+    // `purge` with no target picks the orphaned set. Runs from $HOME —
+    // it reads the ledgers globally, no project cwd required.
+    env.bougie()
+        .args(["services", "projects", "purge", "--yes"])
+        .current_dir(env.home_path())
+        .timeout(STEP_TIMEOUT)
+        .assert()
+        .success();
+
+    let after = fs::read_to_string(&ledger).unwrap_or_default();
+    assert!(
+        !after.contains("acme_blog"),
+        "orphaned tenant should be purged from the ledger: {after}"
+    );
+
+    stop_daemon(&env);
+}
+
+#[test]
+fn projects_purge_refuses_noninteractive_without_yes() {
+    // A scripted (non-TTY) purge without `--yes` must fail rather than
+    // silently destroy data.
+    let env = TestEnv::new();
+    install_fake_redis(&env);
+    let proj = project_with_composer("acme/blog");
+    env.bougie()
+        .args(["services", "add", "redis"])
+        .current_dir(proj.path())
+        .timeout(STEP_TIMEOUT)
+        .assert()
+        .success();
+    env.bougie()
+        .args(["up"])
+        .current_dir(proj.path())
+        .timeout(STEP_TIMEOUT)
+        .assert()
+        .success();
+
+    // `--all` without `--yes`, non-interactive → error, ledger intact.
+    env.bougie()
+        .args(["services", "projects", "purge", "--all"])
+        .current_dir(env.home_path())
+        .timeout(STEP_TIMEOUT)
+        .assert()
+        .failure();
+    let ledger = env.home_path().join("state/services/redis/tenants.json");
+    assert!(
+        fs::read_to_string(&ledger).unwrap().contains("acme_blog"),
+        "ledger must be untouched when purge is refused"
+    );
+    stop_daemon(&env);
+}
+
 // Suppress dead-code warning on wait_for which is reserved for future
 // log-rotation tests.
 #[allow(dead_code)]

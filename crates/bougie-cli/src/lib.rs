@@ -252,6 +252,17 @@ pub enum ServicesCommand {
         #[arg(long)]
         all: bool,
     },
+    /// List every provisioned tenant across the shared services and the
+    /// project each belongs to. Reads the on-disk tenant ledgers; no
+    /// daemon required. With `purge`, deprovisions tenants instead.
+    Projects {
+        #[command(subcommand)]
+        action: Option<ProjectsAction>,
+        /// Show the per-service allocation (redis db number, rabbitmq
+        /// vhost, server hostname, …) as an extra column.
+        #[arg(long)]
+        alloc: bool,
+    },
     /// Print the built-in service catalog (no daemon required).
     Catalog,
     /// Restart the named services (or every declared service). Stops
@@ -283,6 +294,30 @@ pub enum ServicesCommand {
     /// Inspect and control the `bougied` daemon.
     #[command(subcommand)]
     Daemon(ServicesDaemonCommand),
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ProjectsAction {
+    /// Deprovision tenants and remove them from the service ledgers.
+    /// With no flags, targets *orphaned* tenants whose project directory
+    /// no longer exists. Destructive: when the service is running this
+    /// drops the tenant's data (database, vhost, redis db, …); when it's
+    /// stopped, only the ledger entry is removed.
+    Purge {
+        /// Purge a specific project's tenants by path (it may already be
+        /// deleted) instead of the orphaned set.
+        #[arg(long)]
+        project: Option<String>,
+        /// Purge every tenant of every project. Use with care.
+        #[arg(long)]
+        all: bool,
+        /// Print what would be purged and exit without changing anything.
+        #[arg(long)]
+        dry_run: bool,
+        /// Skip the confirmation prompt (required for non-interactive use).
+        #[arg(short = 'y', long)]
+        yes: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
