@@ -22,6 +22,7 @@ mod common;
 
 use assert_cmd::cargo::cargo_bin;
 use common::TestEnv;
+use common::project_with_composer_and_public as project_with_composer;
 use std::fs;
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
@@ -40,20 +41,6 @@ fn server_test_lock() -> MutexGuard<'static, ()> {
     LOCK.get_or_init(|| Mutex::new(()))
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
-fn project_with_composer(name: &str) -> TempDir {
-    let dir = TempDir::new().expect("project tempdir");
-    fs::write(
-        dir.path().join("composer.json"),
-        format!(r#"{{"name":"{name}"}}"#),
-    )
-    .unwrap();
-    // bougie up server auto-detects `pub`/`public`. Most Laravel/
-    // Symfony projects (the realistic shape) carry `public/`, so
-    // seed that as the test fixture.
-    fs::create_dir_all(dir.path().join("public")).unwrap();
-    dir
 }
 
 fn stop_daemon(env: &TestEnv) {

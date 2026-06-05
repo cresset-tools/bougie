@@ -19,13 +19,13 @@ mod common;
 
 use assert_cmd::cargo::cargo_bin;
 use common::opensearch_fixture;
+use common::project_with_composer;
 use common::TestEnv;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
 use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
-use tempfile::TempDir;
 
 /// Serialise opensearch tests within this binary. JVM cold-start is
 /// ~15s; running multiple in parallel under `cargo test` saturates
@@ -43,16 +43,6 @@ const STEP_TIMEOUT: Duration = Duration::from_mins(3);
 
 fn should_skip() -> bool {
     std::env::var_os("BOUGIE_SKIP_REAL_OPENSEARCH").is_some()
-}
-
-fn project_with_composer(name: &str) -> TempDir {
-    let dir = TempDir::new().expect("project tempdir");
-    fs::write(
-        dir.path().join("composer.json"),
-        format!(r#"{{"name":"{name}"}}"#),
-    )
-    .unwrap();
-    dir
 }
 
 fn stop_daemon(env: &TestEnv) {
