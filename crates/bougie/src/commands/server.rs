@@ -69,43 +69,11 @@ fn derive_hostname(tenant: &str) -> String {
     format!("{}.bougie.run", tenant.replace('_', "-"))
 }
 
-/// Normalise an arbitrary label into a tenant slug: lowercase ASCII
-/// alphanumerics kept, everything else (slashes, dashes, dots) → `_`.
-/// Mirrors `services::up::sanitize_tenant` so the Unix (daemon) and
-/// standalone (Windows) paths derive identical hostnames.
-fn sanitize_tenant(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    for c in input.chars() {
-        match c {
-            'a'..='z' | 'A'..='Z' | '0'..='9' => out.push(c.to_ascii_lowercase()),
-            _ => out.push('_'),
-        }
-    }
-    out
-}
-
-/// Default tenant for a project: composer.json `name` (slashes → `_`),
-/// falling back to the project dir basename. Mirrors
-/// `services::up::derive_default_tenant`.
-fn derive_default_tenant(
-    project_root: &std::path::Path,
-    composer: Option<&bougie_config::ComposerJson>,
-) -> String {
-    if composer.is_some() {
-        let path = project_root.join("composer.json");
-        if let Ok(text) = std::fs::read_to_string(&path)
-            && let Ok(v) = serde_json::from_str::<serde_json::Value>(&text)
-            && let Some(name) = v.get("name").and_then(serde_json::Value::as_str)
-        {
-            return sanitize_tenant(name);
-        }
-    }
-    let base = project_root
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("project");
-    sanitize_tenant(base)
-}
+// Tenant derivation is shared with the `services up` path so both agree
+// on a project's identity (DB name, vhost, `<tenant>.bougie.run`) — and
+// so `server open`/`logs` re-derive the same name `up` provisioned. See
+// `crate::commands::tenant`.
+use crate::commands::tenant::{derive_default_tenant, sanitize_tenant};
 
 /// Resolve the project's web root (relative to the project dir),
 /// mirroring the daemon's `resolve_web_root`: an explicit `[server]
@@ -220,7 +188,9 @@ fn serve(format: OutputFormat, args: &ServeArgs) -> Result<ExitCode> {
     use std::io::IsTerminal;
 
     let project_root = locate_project_root()?;
-    let project = load_project(&project_root)?;
+    // Validate it's a real project (surfaces a bad composer.json early);
+    // the tenant now comes from the dir name + ledger, not composer.
+    load_project(&project_root)?;
 
     // The dev server routes PHP into this project, so it must be synced
     // (resolved PHP + conf.d + vendor) before it can serve. Matches the
@@ -234,15 +204,15 @@ fn serve(format: OutputFormat, args: &ServeArgs) -> Result<ExitCode> {
     // the zero-config "serve where I'm standing" path, so we send the
     // daemon call directly rather than going through the declared-only
     // selection in `up::run`.
+    let paths = Paths::from_env()?;
     let tenant = match &args.name {
         Some(name) => sanitize_tenant(name),
-        None => derive_default_tenant(&project_root, project.composer.as_ref()),
+        None => derive_default_tenant(&project_root, &paths),
     };
     let call_args = json!({
         "project": project_root,
         "services": [{"name": "server", "tenant": tenant}],
     });
-    let paths = Paths::from_env()?;
     let _: Value = client::call(&paths, "service.up", call_args)?;
 
     let hostname = derive_hostname(&tenant);
@@ -288,17 +258,15 @@ fn serve(format: OutputFormat, args: &ServeArgs) -> Result<ExitCode> {
 
 /// `bougie server open [NAME]` — open a project's dev URL in a browser.
 fn open(format: OutputFormat, name: Option<String>) -> Result<ExitCode> {
-    use bougie_config::load_project;
     use bougie_paths::Paths;
 
+    let paths = Paths::from_env()?;
     let tenant = if let Some(name) = name {
         sanitize_tenant(&name)
     } else {
         let project_root = locate_project_root()?;
-        let project = load_project(&project_root)?;
-        derive_default_tenant(&project_root, project.composer.as_ref())
+        derive_default_tenant(&project_root, &paths)
     };
-    let paths = Paths::from_env()?;
     let hostname = derive_hostname(&tenant);
     let url = build_url(false, &hostname, server_listen_port(&paths));
     emit(format, &OpenResult { schema_version: 1, url: url.clone() })?;
@@ -328,10 +296,9 @@ fn stop(format: OutputFormat) -> Result<ExitCode> {
 /// project (so `bougie server logs` outside a project shows everything).
 #[cfg(unix)]
 fn current_project_host() -> Option<String> {
-    use bougie_config::load_project;
     let project_root = locate_project_root().ok()?;
-    let project = load_project(&project_root).ok()?;
-    let tenant = derive_default_tenant(&project_root, project.composer.as_ref());
+    let paths = bougie_paths::Paths::from_env().ok()?;
+    let tenant = derive_default_tenant(&project_root, &paths);
     Some(derive_hostname(&tenant))
 }
 
@@ -398,14 +365,14 @@ fn serve_standalone(format: OutputFormat, args: &ServeArgs) -> Result<ExitCode> 
         crate::commands::sync::run(format, false, false)?;
     }
 
+    let paths = Paths::from_env()?;
     let tenant = match &args.name {
         Some(name) => sanitize_tenant(name),
-        None => derive_default_tenant(&project_root, project.composer.as_ref()),
+        None => derive_default_tenant(&project_root, &paths),
     };
     let hostname = derive_hostname(&tenant);
     let root = resolve_web_root(&project_root, project.bougie.server.root.as_deref())?;
 
-    let paths = Paths::from_env()?;
     let cfg_path = paths.service_conf("server").join("server.toml");
     if let Some(parent) = cfg_path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -466,7 +433,7 @@ fn windows_unsupported(feature: &str) -> Result<ExitCode> {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_url, derive_default_tenant, derive_hostname, resolve_web_root, sanitize_tenant};
+    use super::{build_url, derive_hostname, resolve_web_root, sanitize_tenant};
 
     #[test]
     fn hostname_swaps_underscores_for_hyphens() {
@@ -508,11 +475,6 @@ mod tests {
         assert_eq!(resolve_web_root(dir.path(), None).unwrap(), "pub");
     }
 
-    #[test]
-    fn default_tenant_falls_back_to_dir_basename_without_composer() {
-        let dir = tempfile::tempdir().unwrap();
-        let proj = dir.path().join("My-Shop");
-        std::fs::create_dir(&proj).unwrap();
-        assert_eq!(derive_default_tenant(&proj, None), "my_shop");
-    }
+    // Tenant derivation (basename, reuse, collision) is tested in
+    // `crate::commands::tenant`.
 }

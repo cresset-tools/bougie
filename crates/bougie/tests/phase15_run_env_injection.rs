@@ -5,9 +5,9 @@ mod common;
 
 use assert_cmd::cargo::cargo_bin;
 use common::TestEnv;
+use common::project_with_composer;
 use std::fs;
 use std::time::Duration;
-use tempfile::TempDir;
 
 const STEP_TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -20,16 +20,6 @@ fn install_fake_redis(env: &TestEnv) {
     let mut perms = fs::metadata(&dst).unwrap().permissions();
     perms.set_mode(0o755);
     fs::set_permissions(&dst, perms).unwrap();
-}
-
-fn project_with_composer(name: &str) -> TempDir {
-    let dir = TempDir::new().unwrap();
-    fs::write(
-        dir.path().join("composer.json"),
-        format!(r#"{{"name":"{name}"}}"#),
-    )
-    .unwrap();
-    dir
 }
 
 fn stop_daemon(env: &TestEnv) {
@@ -171,7 +161,7 @@ fn two_projects_get_distinct_redis_db_numbers_in_env() {
             .success();
     }
 
-    let env_var = |p: &TempDir, var: &str| -> String {
+    let env_var = |p: &common::TestProject, var: &str| -> String {
         let out = env
             .bougie()
             .args(["run", "--no-sync", "--", "/usr/bin/env"])

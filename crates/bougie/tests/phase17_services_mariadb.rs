@@ -19,13 +19,13 @@ mod common;
 
 use assert_cmd::cargo::cargo_bin;
 use common::mariadb_fixture;
+use common::project_with_composer;
 use common::TestEnv;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
 use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
-use tempfile::TempDir;
 
 /// Serialise mariadb integration tests. Each test cold-starts mariadbd
 /// (~3–5s of CPU+IO), and running five of them in parallel under
@@ -48,16 +48,6 @@ const STEP_TIMEOUT: Duration = Duration::from_mins(2);
 
 fn should_skip() -> bool {
     std::env::var_os("BOUGIE_SKIP_REAL_MARIADB").is_some()
-}
-
-fn project_with_composer(name: &str) -> TempDir {
-    let dir = TempDir::new().expect("project tempdir");
-    fs::write(
-        dir.path().join("composer.json"),
-        format!(r#"{{"name":"{name}"}}"#),
-    )
-    .unwrap();
-    dir
 }
 
 fn stop_daemon(env: &TestEnv) {

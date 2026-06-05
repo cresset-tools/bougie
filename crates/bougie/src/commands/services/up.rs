@@ -100,10 +100,10 @@ pub fn run(format: OutputFormat, names: Vec<String>, detach: bool) -> Result<Exi
         return Ok(ExitCode::SUCCESS);
     }
 
-    // Default tenant: composer.json `name` field, slash → underscore.
-    // Falls back to project dir basename when composer.json is absent
-    // or carries no `name`.
-    let default_tenant = derive_default_tenant(&project_root, project.composer.as_ref());
+    // Default tenant: sanitized project dir basename, made unique +
+    // stable against the on-disk ledgers. See `commands::tenant`.
+    let paths = Paths::from_env()?;
+    let default_tenant = crate::commands::tenant::derive_default_tenant(&project_root, &paths);
 
     let services_payload: Vec<Value> = selected
         .iter()
@@ -118,7 +118,6 @@ pub fn run(format: OutputFormat, names: Vec<String>, detach: bool) -> Result<Exi
         "services": services_payload,
     });
 
-    let paths = Paths::from_env()?;
     let reply: DaemonReply = client::call(&paths, "service.up", args)?;
     let result = ServicesUpResult {
         schema_version: 2,
@@ -161,46 +160,3 @@ pub fn run(format: OutputFormat, names: Vec<String>, detach: bool) -> Result<Exi
     Ok(ExitCode::SUCCESS)
 }
 
-fn derive_default_tenant(
-    project_root: &std::path::Path,
-    composer: Option<&bougie_config::ComposerJson>,
-) -> String {
-    // composer.json's `name` was excluded from ComposerJson's struct,
-    // so re-read it. Falls back to cwd basename on any parse error.
-    if let Some(_c) = composer {
-        let path = project_root.join("composer.json");
-        if let Ok(text) = std::fs::read_to_string(&path)
-            && let Ok(v) = serde_json::from_str::<Value>(&text)
-                && let Some(name) = v.get("name").and_then(Value::as_str) {
-                    return sanitize_tenant(name);
-                }
-    }
-    let base = project_root
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("project");
-    sanitize_tenant(base)
-}
-
-fn sanitize_tenant(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    for c in input.chars() {
-        match c {
-            'a'..='z' | 'A'..='Z' | '0'..='9' => out.push(c.to_ascii_lowercase()),
-            _ => out.push('_'),
-        }
-    }
-    out
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn sanitize_normalises_slash_and_dash() {
-        assert_eq!(sanitize_tenant("acme/blog"), "acme_blog");
-        assert_eq!(sanitize_tenant("My-Project"), "my_project");
-        assert_eq!(sanitize_tenant("ACME"), "acme");
-    }
-}
