@@ -16,14 +16,15 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use super::client;
 use bougie_cli::OutputFormat;
 use bougie_daemon::daemon::catalog::{self, Tenancy};
 use bougie_daemon::daemon::tenants::Tenant;
 use bougie_output::output::{emit, Render};
 use bougie_paths::Paths;
 use eyre::{eyre, Result};
-use serde::Serialize;
-use serde_json::Value;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 
 #[derive(Debug, Serialize)]
 pub struct ProjectsResult {
@@ -193,15 +194,36 @@ fn load_ledger(path: &Path) -> Result<Vec<Tenant>> {
 
 pub fn run(format: OutputFormat, show_alloc: bool) -> Result<ExitCode> {
     let paths = Paths::from_env()?;
+    let mut tenants = load_rows(&paths)?;
 
+    // Group by service, then project, then tenant — stable + predictable.
+    tenants.sort_by(|a, b| {
+        a.service
+            .cmp(&b.service)
+            .then_with(|| a.project.cmp(&b.project))
+            .then_with(|| a.tenant.cmp(&b.tenant))
+    });
+
+    let result = ProjectsResult {
+        schema_version: 1,
+        tenants,
+        show_alloc,
+    };
+    emit(format, &result)?;
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Read every provisioned tenant across the multi-tenant services into
+/// display rows (mariadb db/user synthesized, missing-dir flag set).
+/// Shared by the list view ([`run`]) and [`purge`].
+fn load_rows(paths: &Paths) -> Result<Vec<TenantRow>> {
     let mut tenants: Vec<TenantRow> = Vec::new();
     for entry in catalog::CATALOG {
         // Runtime-only deps (jdk, erlang) have no tenant ledger.
         if matches!(entry.tenancy, Tenancy::None) {
             continue;
         }
-        let ledger = paths.service_tenants(entry.name);
-        for t in load_ledger(&ledger)? {
+        for t in load_ledger(&paths.service_tenants(entry.name))? {
             let mut alloc = t.alloc;
             // mariadb's database + user are just the tenant name and so
             // aren't recorded in the ledger's `alloc`; synthesize them so
@@ -225,21 +247,152 @@ pub fn run(format: OutputFormat, show_alloc: bool) -> Result<ExitCode> {
             });
         }
     }
+    Ok(tenants)
+}
 
-    // Group by service, then project, then tenant — stable + predictable.
-    tenants.sort_by(|a, b| {
-        a.service
-            .cmp(&b.service)
-            .then_with(|| a.project.cmp(&b.project))
-            .then_with(|| a.tenant.cmp(&b.tenant))
-    });
+/// One project's purge outcome (plan in `--dry-run`, result otherwise).
+#[derive(Debug, Serialize)]
+pub struct PurgedProject {
+    pub project: PathBuf,
+    #[serde(skip_serializing_if = "is_false")]
+    pub missing: bool,
+    /// Services deprovisioned for this project.
+    pub services: Vec<String>,
+}
 
-    let result = ProjectsResult {
-        schema_version: 1,
-        tenants,
-        show_alloc,
+#[derive(Debug, Serialize)]
+pub struct PurgeResult {
+    pub schema_version: u32,
+    pub dry_run: bool,
+    pub purged: Vec<PurgedProject>,
+}
+
+impl Render for PurgeResult {
+    fn render_text(&self, w: &mut dyn Write) -> io::Result<()> {
+        if self.purged.is_empty() {
+            writeln!(w, "nothing to purge")?;
+            return Ok(());
+        }
+        let verb = if self.dry_run { "would purge" } else { "purged" };
+        for p in &self.purged {
+            let miss = if p.missing { " (missing)" } else { "" };
+            writeln!(
+                w,
+                "{verb} {}{miss}: {}",
+                p.project.display(),
+                p.services.join(", "),
+            )?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct DownReply {
+    #[serde(default)]
+    deprovisioned: Vec<String>,
+}
+
+/// `bougie services projects purge` — deprovision tenants and remove
+/// them from the ledgers. Default target is the *orphaned* set (project
+/// dir gone); `--project <path>` targets one project, `--all` targets
+/// everything. Destructive (with the service running it drops the
+/// tenant's data), so it confirms unless `--yes`/`--dry-run`.
+pub fn purge(
+    format: OutputFormat,
+    project: Option<String>,
+    all: bool,
+    dry_run: bool,
+    yes: bool,
+) -> Result<ExitCode> {
+    use std::collections::BTreeSet;
+    use std::io::IsTerminal;
+
+    let paths = Paths::from_env()?;
+    let rows = load_rows(&paths)?;
+
+    let targets: Vec<&TenantRow> = if all {
+        rows.iter().collect()
+    } else if let Some(p) = project {
+        // Match the ledger's canonical path, but also accept the raw
+        // form the user typed (the dir may be gone → can't canonicalize).
+        let canon = std::fs::canonicalize(&p).unwrap_or_else(|_| PathBuf::from(&p));
+        let raw = PathBuf::from(p);
+        rows.iter()
+            .filter(|r| r.project == canon || r.project == raw)
+            .collect()
+    } else {
+        rows.iter().filter(|r| r.missing).collect()
     };
-    emit(format, &result)?;
+
+    // Group by project → (missing, set of services).
+    let mut by_project: BTreeMap<PathBuf, (bool, BTreeSet<String>)> = BTreeMap::new();
+    for r in &targets {
+        let e = by_project
+            .entry(r.project.clone())
+            .or_insert((r.missing, BTreeSet::new()));
+        e.1.insert(r.service.clone());
+    }
+
+    if by_project.is_empty() {
+        emit(format, &PurgeResult { schema_version: 1, dry_run, purged: Vec::new() })?;
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    if dry_run {
+        let plan = by_project
+            .iter()
+            .map(|(proj, (missing, svcs))| PurgedProject {
+                project: proj.clone(),
+                missing: *missing,
+                services: svcs.iter().cloned().collect(),
+            })
+            .collect();
+        emit(format, &PurgeResult { schema_version: 1, dry_run: true, purged: plan })?;
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    // Destructive: confirm unless told otherwise.
+    if !yes {
+        let interactive = matches!(format, OutputFormat::Text) && std::io::stdin().is_terminal();
+        if !interactive {
+            return Err(eyre!(
+                "refusing to purge {} tenant(s) across {} project(s) without confirmation; \
+                 re-run with --yes",
+                targets.len(),
+                by_project.len(),
+            ));
+        }
+        eprint!(
+            "Purge {} tenant(s) across {} project(s)? This destroys their data. [y/N] ",
+            targets.len(),
+            by_project.len(),
+        );
+        io::Write::flush(&mut io::stderr()).ok();
+        let mut line = String::new();
+        io::stdin()
+            .read_line(&mut line)
+            .map_err(|e| eyre!("reading confirmation: {e}"))?;
+        let ans = line.trim().to_ascii_lowercase();
+        if ans != "y" && ans != "yes" {
+            eprintln!("aborted; nothing purged.");
+            return Ok(ExitCode::SUCCESS);
+        }
+    }
+
+    // Deprovision each project's services via the daemon. `service.down`
+    // matches the tenant by project path (works for already-deleted
+    // dirs) and removes the ledger entry.
+    let mut purged: Vec<PurgedProject> = Vec::new();
+    for (proj, (missing, svcs)) in &by_project {
+        let services: Vec<&String> = svcs.iter().collect();
+        let args = json!({ "project": proj, "services": services, "purge": true });
+        let reply: DownReply = client::call(&paths, "service.down", args)?;
+        let mut done = reply.deprovisioned;
+        done.sort();
+        purged.push(PurgedProject { project: proj.clone(), missing: *missing, services: done });
+    }
+    emit(format, &PurgeResult { schema_version: 1, dry_run: false, purged })?;
     Ok(ExitCode::SUCCESS)
 }
 

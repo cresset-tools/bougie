@@ -253,9 +253,12 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
             commands::services::list::run(format, all)
         }
         #[cfg(unix)]
-        Command::Services(ServicesCommand::Projects { alloc }) => {
-            commands::services::projects::run(format, alloc)
-        }
+        Command::Services(ServicesCommand::Projects { action, alloc }) => match action {
+            None => commands::services::projects::run(format, alloc),
+            Some(bougie_cli::ProjectsAction::Purge { project, all, dry_run, yes }) => {
+                commands::services::projects::purge(format, project, all, dry_run, yes)
+            }
+        },
         #[cfg(unix)]
         Command::Services(ServicesCommand::Catalog) => commands::services::catalog::run(format),
         #[cfg(unix)]

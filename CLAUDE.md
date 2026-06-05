@@ -128,7 +128,9 @@ Top-level subcommands (from `bougie-cli`):
   `SERVER_CLI_PLAN.md`.
 - `services {add,remove,list,projects,catalog,restart,status,logs,daemon}` —
   Dev services. `projects` lists every provisioned tenant across the shared
-  services and the owning project (reads the on-disk tenant ledgers; no daemon).
+  services and the owning project (reads the on-disk tenant ledgers; no daemon);
+  `projects purge` deprovisions tenants (orphaned-by-default, or `--project`/
+  `--all`) — destructive, so it confirms unless `--yes`/`--dry-run`.
 - `make [task]` — Recipe DAG walker (`start` alias for `make start`).
 
 Global flags: `--quiet`, `--verbose`, `--format {text,json-v1}`.
