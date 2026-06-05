@@ -44,12 +44,25 @@ pub struct TenantRow {
     pub tenant: String,
     /// Absolute path of the owning project.
     pub project: PathBuf,
+    /// True when the project directory no longer exists on disk — the
+    /// tenant is provisioned but orphaned (the project was moved or
+    /// deleted without `bougie down --purge`).
+    #[serde(skip_serializing_if = "is_false")]
+    pub missing: bool,
     /// RFC 3339 provisioning timestamp.
     pub created_at: String,
     /// Provisioner-specific allocation (redis `db_number`, rabbitmq
-    /// `vhost`, server `hostname`, …). Secrets are deliberately excluded.
+    /// `vhost`, server `hostname`, …). For mariadb — whose database and
+    /// user are simply the tenant name and so aren't stored in the
+    /// ledger — `database`/`user` are synthesized here for display.
+    /// Secrets are deliberately excluded.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub alloc: BTreeMap<String, Value>,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde skip predicate signature
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 impl Render for ProjectsResult {
@@ -60,7 +73,16 @@ impl Render for ProjectsResult {
         }
 
         let home = std::env::var_os("HOME").map(PathBuf::from);
-        let display_project = |p: &Path| -> String { abbreviate_home(p, home.as_deref()) };
+        // Project cell = abbreviated path, with a ` (missing)` marker
+        // when the directory is gone.
+        let project_cell = |row: &TenantRow| -> String {
+            let base = abbreviate_home(&row.project, home.as_deref());
+            if row.missing {
+                format!("{base} (missing)")
+            } else {
+                base
+            }
+        };
 
         // Dynamic column widths so long project paths still align.
         let mut w_service = "SERVICE".len();
@@ -69,7 +91,7 @@ impl Render for ProjectsResult {
         for row in &self.tenants {
             w_service = w_service.max(row.service.len());
             w_tenant = w_tenant.max(row.tenant.len());
-            w_project = w_project.max(display_project(&row.project).len());
+            w_project = w_project.max(project_cell(row).len());
         }
 
         write!(
@@ -93,7 +115,7 @@ impl Render for ProjectsResult {
                 "{:<ws$}  {:<wt$}  {:<wp$}  {}",
                 row.service,
                 row.tenant,
-                display_project(&row.project),
+                project_cell(row),
                 format_created(&row.created_at),
                 ws = w_service,
                 wt = w_tenant,
@@ -180,12 +202,26 @@ pub fn run(format: OutputFormat, show_alloc: bool) -> Result<ExitCode> {
         }
         let ledger = paths.service_tenants(entry.name);
         for t in load_ledger(&ledger)? {
+            let mut alloc = t.alloc;
+            // mariadb's database + user are just the tenant name and so
+            // aren't recorded in the ledger's `alloc`; synthesize them so
+            // `--alloc` shows where the project's data actually lives.
+            if entry.name == "mariadb" {
+                alloc
+                    .entry("database".to_string())
+                    .or_insert_with(|| Value::String(t.tenant.clone()));
+                alloc
+                    .entry("user".to_string())
+                    .or_insert_with(|| Value::String(t.tenant.clone()));
+            }
+            let missing = !t.project.exists();
             tenants.push(TenantRow {
                 service: entry.name.to_string(),
                 tenant: t.tenant,
                 project: t.project,
+                missing,
                 created_at: t.created_at,
-                alloc: t.alloc,
+                alloc,
             });
         }
     }
@@ -262,14 +298,37 @@ mod tests {
             service: "redis".into(),
             tenant: tenants[0].tenant.clone(),
             project: tenants[0].project.clone(),
+            missing: false,
             created_at: tenants[0].created_at.clone(),
             alloc: tenants[0].alloc.clone(),
         };
         let json = serde_json::to_string(&row).unwrap();
         assert!(!json.to_lowercase().contains("secret"), "secrets must never serialize: {json}");
         assert!(json.contains("db_number"));
+        // `missing` is false → omitted from JSON.
+        assert!(!json.contains("missing"));
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn render_marks_missing_projects_and_serializes_flag() {
+        let row = TenantRow {
+            service: "redis".into(),
+            tenant: "acme".into(),
+            project: "/gone/acme".into(),
+            missing: true,
+            created_at: "2026-06-05T00:00:00Z".into(),
+            alloc: BTreeMap::new(),
+        };
+        let result = ProjectsResult { schema_version: 1, tenants: vec![row], show_alloc: false };
+        let mut buf = Vec::new();
+        result.render_text(&mut buf).unwrap();
+        let text = String::from_utf8(buf).unwrap();
+        assert!(text.contains("/gone/acme (missing)"), "text: {text}");
+        // A missing flag *does* serialize to JSON (unlike the false case).
+        let json = serde_json::to_string(&result).unwrap();
+        assert!(json.contains("\"missing\":true"), "json: {json}");
     }
 
     #[test]
