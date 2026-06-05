@@ -252,6 +252,15 @@ pub enum ServicesCommand {
         #[arg(long)]
         all: bool,
     },
+    /// List every provisioned tenant across the shared services and the
+    /// project each belongs to. Reads the on-disk tenant ledgers; no
+    /// daemon required.
+    Projects {
+        /// Show the per-service allocation (redis db number, rabbitmq
+        /// vhost, server hostname, …) as an extra column.
+        #[arg(long)]
+        alloc: bool,
+    },
     /// Print the built-in service catalog (no daemon required).
     Catalog,
     /// Restart the named services (or every declared service). Stops

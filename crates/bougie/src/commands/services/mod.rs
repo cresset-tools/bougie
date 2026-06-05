@@ -12,6 +12,7 @@ pub mod daemon;
 pub mod down;
 pub mod list;
 pub mod logs;
+pub mod projects;
 pub mod remove;
 pub mod restart;
 pub mod status;

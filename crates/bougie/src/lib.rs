@@ -253,6 +253,10 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
             commands::services::list::run(format, all)
         }
         #[cfg(unix)]
+        Command::Services(ServicesCommand::Projects { alloc }) => {
+            commands::services::projects::run(format, alloc)
+        }
+        #[cfg(unix)]
         Command::Services(ServicesCommand::Catalog) => commands::services::catalog::run(format),
         #[cfg(unix)]
         Command::Services(ServicesCommand::Restart { names }) => {
