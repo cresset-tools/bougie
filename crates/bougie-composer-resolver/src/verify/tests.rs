@@ -189,8 +189,10 @@ fn transitive_version_conflict_is_reported() {
 
 #[test]
 fn platform_requirements_are_skipped() {
-    // composer.json requires php / ext-redis (which we don't model
-    // yet). Verifier should pass since there are no other packages.
+    // No `.bougie/state/resolved` pin → PlatformEnv models nothing, so
+    // even `php` is left unvalidated (and `ext-*` is never modeled).
+    // Verifier passes since there are no other packages. The pinned
+    // cases are covered by the `php_*` tests below (#118).
     let tmp = TempDir::new().unwrap();
     let composer_json = r#"{
         "name": "x",
@@ -243,4 +245,77 @@ fn no_dev_skips_dev_only_lock_failures() {
         VerifyOutcome::Valid => {}
         VerifyOutcome::Invalid { reason } => panic!("expected valid with --no-dev, got: {reason}"),
     }
+}
+
+/// Write a `.bougie/state/resolved` PHP pin so `verify_lock` models the
+/// `php` platform package (#118).
+fn write_pin(dir: &Path, version_flavor: &str) {
+    let state = dir.join(".bougie").join("state");
+    std::fs::create_dir_all(&state).unwrap();
+    std::fs::write(state.join("resolved"), version_flavor).unwrap();
+}
+
+#[test]
+fn php_root_require_satisfied_by_pin_is_valid() {
+    // Pinned PHP 8.3.31 satisfies a root `php: ^8.3` require.
+    let tmp = TempDir::new().unwrap();
+    write_pin(tmp.path(), "8.3.31-nts");
+    let composer_json = r#"{"name":"x","require":{"php":"^8.3"}}"#;
+    let hash = hash_for(composer_json);
+    let lock = format!(r#"{{"content-hash":"{hash}","packages":[],"packages-dev":[]}}"#);
+    write_project(tmp.path(), composer_json, &lock);
+    match verify_lock(tmp.path(), VerifyOptions::default()).unwrap() {
+        VerifyOutcome::Valid => {}
+        VerifyOutcome::Invalid { reason } => panic!("expected valid, got: {reason}"),
+    }
+}
+
+#[test]
+fn php_root_require_violating_pin_is_reported() {
+    // Pinned PHP 8.3.31 does NOT satisfy a root `php: >=8.4` require —
+    // exactly the case that used to resolve silently before #118.
+    let tmp = TempDir::new().unwrap();
+    write_pin(tmp.path(), "8.3.31-nts");
+    let composer_json = r#"{"name":"x","require":{"php":">=8.4"}}"#;
+    let hash = hash_for(composer_json);
+    let lock = format!(r#"{{"content-hash":"{hash}","packages":[],"packages-dev":[]}}"#);
+    write_project(tmp.path(), composer_json, &lock);
+    let VerifyOutcome::Invalid { reason } =
+        verify_lock(tmp.path(), VerifyOptions::default()).unwrap()
+    else {
+        panic!("expected invalid: pinned 8.3 cannot satisfy php >=8.4");
+    };
+    assert!(reason.contains("php"), "derivation must name php: {reason}");
+}
+
+#[test]
+fn transitive_php_require_violating_pin_is_reported() {
+    // A locked dependency requires php >=8.4 while the project is pinned
+    // to 8.3.31 — the lock can't actually install. (This is the shape of
+    // the real Mage-OS bug: endroid/qr-code 6.x needs PHP 8.4.)
+    let tmp = TempDir::new().unwrap();
+    write_pin(tmp.path(), "8.3.31-nts");
+    let composer_json = r#"{"name":"x","require":{"acme/foo":"^1.0"}}"#;
+    let hash = hash_for(composer_json);
+    let lock = format!(
+        r#"{{
+            "content-hash": "{hash}",
+            "packages": [
+                {{
+                    "name": "acme/foo",
+                    "version": "1.0.0",
+                    "require": {{"php": ">=8.4"}},
+                    "dist": {{"type":"zip","url":"https://e/f.zip","shasum":"aa"}}
+                }}
+            ],
+            "packages-dev": []
+        }}"#
+    );
+    write_project(tmp.path(), composer_json, &lock);
+    let VerifyOutcome::Invalid { reason } =
+        verify_lock(tmp.path(), VerifyOptions::default()).unwrap()
+    else {
+        panic!("expected invalid: acme/foo needs php >=8.4 but pin is 8.3");
+    };
+    assert!(reason.contains("php"), "derivation must name php: {reason}");
 }

@@ -1848,6 +1848,7 @@ fn http_basic_auth_from_config_unlocks_private_repo() {
         &composer_json,
         true,
         auth,
+        crate::platform::PlatformEnv::default(),
     )
     .unwrap();
     let root = provider.root_version();
@@ -1907,6 +1908,7 @@ fn bearer_auth_from_config_unlocks_private_repo() {
         &composer_json,
         true,
         auth,
+        crate::platform::PlatformEnv::default(),
     )
     .unwrap();
     let root = provider.root_version();
@@ -1989,6 +1991,7 @@ fn auth_json_overrides_composer_json_config() {
         &composer_json_value,
         true,
         auth,
+        crate::platform::PlatformEnv::default(),
     )
     .unwrap();
     let root = provider.root_version();
