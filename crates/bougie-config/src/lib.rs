@@ -27,6 +27,7 @@ pub struct BougieConfig {
     pub services: BTreeMap<String, ServicePin>,
     pub index: Vec<IndexEntry>,
     pub server: ServerConfig,
+    pub scripts: ScriptsConfig,
 }
 
 /// A value in the `[extensions]` table — either an exact version pin
@@ -74,6 +75,29 @@ pub struct PhpConfig {
 #[serde(default)]
 pub struct ComposerConfig {
     pub version: Option<String>,
+}
+
+/// Opt-in execution of root `composer.json` scripts (off by default).
+/// Composer only runs scripts from the *root* package, so they're the
+/// project author's own commands — but a freshly-cloned untrusted repo's
+/// `post-install-cmd` must not auto-run, hence opt-in. Lives under
+/// `[scripts]` in `bougie.toml` or `extra.bougie.scripts` in
+/// `composer.json`.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct ScriptsConfig {
+    /// `run = true` enables running root scripts during the install
+    /// lifecycle. `None` means unset (treated as `false`); a CLI
+    /// `--scripts`/`--no-scripts` flag overrides this.
+    pub run: Option<bool>,
+}
+
+impl ScriptsConfig {
+    /// Whether script execution is enabled (unset → false).
+    #[must_use]
+    pub fn enabled(&self) -> bool {
+        self.run.unwrap_or(false)
+    }
 }
 
 /// Project-level overrides for the supervised `bougie server` host

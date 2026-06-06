@@ -26,6 +26,7 @@ members = [
     "crates/bougie-platform",
     "crates/bougie-recipe",
     "crates/bougie-resolver",
+    "crates/bougie-scripts",
     "crates/bougie-semver",
     "crates/bougie-server",
     "crates/bougie-tool",
@@ -76,6 +77,7 @@ bougie-php-json = { path = "crates/bougie-php-json" }
 bougie-platform = { path = "crates/bougie-platform" }
 bougie-recipe = { path = "crates/bougie-recipe" }
 bougie-resolver = { path = "crates/bougie-resolver" }
+bougie-scripts = { path = "crates/bougie-scripts" }
 bougie-semver = { path = "crates/bougie-semver" }
 bougie-server = { path = "crates/bougie-server" }
 bougie-tool = { path = "crates/bougie-tool" }

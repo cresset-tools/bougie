@@ -3,7 +3,7 @@
 
 use super::{
     read_bougie_toml, BougieConfig, ComposerConfig, ComposerJson, IndexEntry, PhpConfig,
-    ServerConfig,
+    ScriptsConfig, ServerConfig,
 };
 #[cfg(test)]
 use super::{ExtensionPin, ServicePin};
@@ -33,6 +33,9 @@ pub fn merge(toml_cfg: BougieConfig, extra_cfg: BougieConfig) -> BougieConfig {
         index: replace_if_nonempty(extra_cfg.index, toml_cfg.index),
         server: ServerConfig {
             root: toml_cfg.server.root.or(extra_cfg.server.root),
+        },
+        scripts: ScriptsConfig {
+            run: toml_cfg.scripts.run.or(extra_cfg.scripts.run),
         },
     }
 }
@@ -250,6 +253,29 @@ mod tests {
         };
         let merged = merge(toml_cfg, extra_cfg);
         assert_eq!(merged.server.root.as_deref(), Some("public"));
+    }
+
+    // -------------------- scripts merge --------------------
+
+    #[test]
+    fn scripts_run_toml_wins_and_falls_back() {
+        // toml wins when set...
+        let merged = merge(
+            BougieConfig { scripts: super::super::ScriptsConfig { run: Some(false) }, ..Default::default() },
+            BougieConfig { scripts: super::super::ScriptsConfig { run: Some(true) }, ..Default::default() },
+        );
+        assert_eq!(merged.scripts.run, Some(false));
+        assert!(!merged.scripts.enabled());
+
+        // ...and falls back to extra.bougie when unset in toml.
+        let merged = merge(
+            BougieConfig::default(),
+            BougieConfig { scripts: super::super::ScriptsConfig { run: Some(true) }, ..Default::default() },
+        );
+        assert!(merged.scripts.enabled());
+
+        // Unset everywhere → disabled.
+        assert!(!merge(BougieConfig::default(), BougieConfig::default()).scripts.enabled());
     }
 
     #[test]

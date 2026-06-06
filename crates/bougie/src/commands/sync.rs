@@ -168,13 +168,18 @@ fn composer_json_has_external_requires(project_root: &std::path::Path) -> bool {
 }
 
 /// Materialize `vendor/` from `composer.lock`. Returns `None` when
-/// there is no lock file (project with no packages at all).
-fn install_vendor(paths: &Paths, project_root: &std::path::Path) -> Result<Option<InstallSummary>> {
+/// there is no lock file (project with no packages at all). `hooks` runs
+/// opted-in root scripts during the install lifecycle (`None` = off).
+fn install_vendor(
+    paths: &Paths,
+    project_root: &std::path::Path,
+    hooks: Option<&dyn bougie_composer_resolver::ScriptHooks>,
+) -> Result<Option<InstallSummary>> {
     let lock_path = project_root.join("composer.lock");
     if !lock_path.is_file() {
         return Ok(None);
     }
-    let summary = install_from_lock(paths, project_root, InstallOptions { no_dev: false })?;
+    let summary = install_from_lock(paths, project_root, InstallOptions { no_dev: false }, hooks)?;
     Ok(Some(summary))
 }
 
@@ -195,7 +200,12 @@ fn count_lock_packages(project_root: &std::path::Path) -> usize {
     count_arr("packages") + count_arr("packages-dev")
 }
 
-pub fn run(format: OutputFormat, offline: bool, dry_run: bool) -> Result<ExitCode> {
+pub fn run(
+    format: OutputFormat,
+    offline: bool,
+    dry_run: bool,
+    scripts: Option<bool>,
+) -> Result<ExitCode> {
     let paths = Paths::from_env()?;
     let project_root = std::env::current_dir()?;
 
@@ -220,8 +230,23 @@ pub fn run(format: OutputFormat, offline: bool, dry_run: bool) -> Result<ExitCod
     // Step 2 — toolchain (PHP + extensions + composer + shims).
     let mut result = ensure_synced(&paths, &project_root, &project, spec, flavor)?;
 
-    // Step 3 — materialize vendor/ from the lock.
-    let vendor_summary = install_vendor(&paths, &project_root)?;
+    // Step 3 — materialize vendor/ from the lock, running opted-in root
+    // scripts during the install lifecycle. The toolchain (incl. PHP) is
+    // already synced above, so the resolved PHP binary is available.
+    let hooks = if super::scripts::enabled(scripts, &project) {
+        Some(super::scripts::LifecycleHooks::new(
+            &project_root,
+            true,
+            super::scripts::Lifecycle::Install,
+        )?)
+    } else {
+        None
+    };
+    let vendor_summary = install_vendor(
+        &paths,
+        &project_root,
+        hooks.as_ref().map(|h| h as &dyn bougie_composer_resolver::ScriptHooks),
+    )?;
     if let Some(s) = vendor_summary {
         for warning in &s.warnings {
             eprintln!("warning: {warning}");
@@ -270,8 +295,23 @@ pub fn run_with_default_fallback(format: OutputFormat, dry_run: bool) -> Result<
     // Toolchain sync.
     let mut result = ensure_synced(&paths, &project_root, &project, spec, flavor)?;
 
-    // Vendor install.
-    let vendor_summary = install_vendor(&paths, &project_root)?;
+    // Vendor install. Root scripts are config-driven here (no CLI flag on
+    // the `bougie run` implicit-sync path) — only `[scripts] run = true`
+    // enables them.
+    let hooks = if super::scripts::enabled(None, &project) {
+        Some(super::scripts::LifecycleHooks::new(
+            &project_root,
+            true,
+            super::scripts::Lifecycle::Install,
+        )?)
+    } else {
+        None
+    };
+    let vendor_summary = install_vendor(
+        &paths,
+        &project_root,
+        hooks.as_ref().map(|h| h as &dyn bougie_composer_resolver::ScriptHooks),
+    )?;
     if let Some(s) = vendor_summary {
         for warning in &s.warnings {
             eprintln!("warning: {warning}");

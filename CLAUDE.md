@@ -234,10 +234,21 @@ coordinated PRs.
 
 ## Invariants and conventions
 
-- **No Composer plugins, no `pre-/post-*` scripts.** Bougie never runs
-  them. When users need a plugin's behavior (composer/installers paths,
-  Symfony Flex recipes, Laravel package discovery), reimplement it
-  natively. See `bougie-recipe` for the Flex-recipe lane.
+- **No Composer plugins.** Bougie never runs plugin install-time hooks.
+  When users need a plugin's behavior (composer/installers paths, Symfony
+  Flex recipes, Laravel package discovery), reimplement it natively. See
+  `bougie-recipe` for the Flex-recipe lane and `bougie-installers` for the
+  declarative-plugin ports.
+- **Root `composer.json` scripts: opt-in, off by default.** Composer only
+  ever runs scripts from the *root* package (never dependencies), so they
+  are the project author's own commands. `bougie-scripts` runs them when
+  enabled via `[scripts] run = true` / `--scripts` (parse → classify →
+  dispatch). The default stays deterministic-native: scripts don't run,
+  and bougie reproduces the effect of the ones it can (Laravel discovery
+  via `bougie-installers`). PHP-callback entries (`Class::method`) are
+  warn-skipped except a small native allowlist. The resolver fires
+  lifecycle hooks (`ScriptHooks`) during `install_from_lock`; the CLI
+  (`commands/scripts.rs`) builds the `ScriptContext`.
 - **Byte-equivalent Composer output where applicable.**
   `bougie-autoloader` matches Composer 2.8.12's `autoload_*.php`
   byte-for-byte across the fixture suite. `bougie-php-json` exists

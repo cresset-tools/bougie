@@ -179,7 +179,7 @@ pub fn install_into(
 
     write_composer_json(&tool_dir, &package, &constraint, &composer_extras)?;
     (ctx.resolve_lock)(paths, &tool_dir).wrap_err("resolving composer.lock for tool")?;
-    install_from_lock(paths, &tool_dir, InstallOptions { no_dev: true })
+    install_from_lock(paths, &tool_dir, InstallOptions { no_dev: true }, None)
         .wrap_err("installing tool dependencies")?;
 
     let conf_d = tool_dir.join("conf.d");

@@ -73,10 +73,12 @@ bougie-fs = { workspace = true }
 # entry has defaults on. No version literal — bougie isn't published.
 bougie-index = { path = "../bougie-index", default-features = false }
 bougie-installer = { workspace = true }
+bougie-installers = { workspace = true }
 bougie-output = { workspace = true }
 bougie-paths = { workspace = true }
 bougie-platform = { workspace = true }
 bougie-resolver = { workspace = true }
+bougie-scripts = { workspace = true }
 bougie-server = { workspace = true }
 bougie-tool = { workspace = true }
 bougie-version = { workspace = true }

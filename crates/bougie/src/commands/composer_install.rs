@@ -159,6 +159,7 @@ pub fn run(
     lock_verify: bool,
     ignore_platform_reqs: bool,
     ignore_platform_req: Vec<String>,
+    scripts: Option<bool>,
 ) -> Result<ExitCode> {
     let project_root = match working_dir {
         Some(p) => p,
@@ -206,7 +207,26 @@ pub fn run(
         )?;
     }
 
-    let summary = install_from_lock(&paths, &project_root, InstallOptions { no_dev })?;
+    // Opt-in root scripts: build the lifecycle hooks when enabled so the
+    // install fires `pre-install-cmd` / `pre-autoload-dump` /
+    // `post-autoload-dump` / `post-install-cmd`. When off, `None` keeps the
+    // deterministic native behavior (warn-and-skip + native Laravel discovery).
+    let project = bougie_config::load_project(&project_root)?;
+    let hooks = if super::scripts::enabled(scripts, &project) {
+        Some(super::scripts::LifecycleHooks::new(
+            &project_root,
+            !no_dev,
+            super::scripts::Lifecycle::Install,
+        )?)
+    } else {
+        None
+    };
+    let summary = install_from_lock(
+        &paths,
+        &project_root,
+        InstallOptions { no_dev },
+        hooks.as_ref().map(|h| h as &dyn bougie_composer_resolver::ScriptHooks),
+    )?;
     emit(format, &InstallResult::from(summary))?;
     Ok(ExitCode::SUCCESS)
 }
