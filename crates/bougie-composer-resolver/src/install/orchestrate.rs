@@ -42,6 +42,28 @@ pub struct InstallOptions {
     pub no_dev: bool,
 }
 
+/// Lifecycle hooks fired during an install when root-script execution is
+/// opted in. The resolver stays command- and PHP-agnostic: the CLI supplies
+/// an implementation that maps each hook to the right Composer event
+/// (`pre-install-cmd` vs `pre-update-cmd`, …) and runs it via
+/// `bougie-scripts`.
+///
+/// `Some(hooks)` is the scripts-ON gate: when present, the native Laravel
+/// discovery + its drift guard are skipped (the real `post-autoload-dump`
+/// entries run instead), and the "scripts not run" warning is suppressed.
+/// `None` keeps the deterministic scripts-OFF behavior.
+pub trait ScriptHooks {
+    /// `pre-install-cmd` / `pre-update-cmd` — before package operations.
+    fn pre_cmd(&self) -> Result<()>;
+    /// `pre-autoload-dump` — before the autoloader is regenerated.
+    fn pre_autoload_dump(&self) -> Result<()>;
+    /// `post-autoload-dump` — after the autoloader is regenerated. Runs the
+    /// project's real entries (e.g. Laravel's `package:discover`).
+    fn post_autoload_dump(&self) -> Result<()>;
+    /// `post-install-cmd` / `post-update-cmd` — at the very end.
+    fn post_cmd(&self) -> Result<()>;
+}
+
 /// What happened. Returned to the CLI shim for `--format json-v1`
 /// emission and rendered as a one-line text summary.
 #[derive(Debug, Clone)]
@@ -91,6 +113,7 @@ pub fn install_from_lock(
     paths: &Paths,
     project_root: &Path,
     opts: InstallOptions,
+    hooks: Option<&dyn ScriptHooks>,
 ) -> Result<InstallSummary> {
     let composer_json_path = project_root.join("composer.json");
     let composer_lock_path = project_root.join("composer.lock");
@@ -113,7 +136,7 @@ pub fn install_from_lock(
     // same as Composer. Surface it first so it leads the warning list.
     let mut warnings = Vec::new();
     warnings.extend(content_hash_warning(&composer_json_bytes, &lock)?);
-    warnings.extend(preflight(&composer_json_bytes, &lock, opts.no_dev)?);
+    warnings.extend(preflight(&composer_json_bytes, &lock, opts.no_dev, hooks.is_some())?);
 
     // Assemble per-host auth from every source bougie understands —
     // composer.json `config`, global `$COMPOSER_HOME/auth.json`,
@@ -126,6 +149,12 @@ pub fn install_from_lock(
         .map_err(|e| eyre!("parsing composer.json: {e}"))?;
     let auth: HashMap<String, AuthCredentials> =
         read_all_auth(&composer_json_value, project_root).map_err(|e| eyre!(e))?;
+
+    // `pre-install-cmd` / `pre-update-cmd` — before any package operation
+    // (download/extract). Only when the user opted into root scripts.
+    if let Some(hooks) = hooks {
+        hooks.pre_cmd()?;
+    }
 
     // Gather the packages we'll actually install. Two filters:
     //   - `path` dists: skipped silently here. Preflight already
@@ -157,7 +186,11 @@ pub fn install_from_lock(
     // defaults see, so bougie can't safely reproduce them: fail fast rather
     // than leave the app half-configured. Only applies when laravel/framework
     // is installed (the package that drives discovery).
-    if candidates.iter().any(|p| p.name == "laravel/framework") {
+    //
+    // Skipped entirely when root scripts are opted in (`hooks.is_some()`):
+    // the real `post-autoload-dump` entries run via the hook, so there's
+    // nothing to reproduce and nothing to drift from.
+    if hooks.is_none() && candidates.iter().any(|p| p.name == "laravel/framework") {
         let scripts = composer_json_value.get("scripts").cloned().unwrap_or(Value::Null);
         let blocking = bougie_installers::blocking_post_autoload_dump(&scripts);
         if !blocking.is_empty() {
@@ -310,6 +343,11 @@ pub fn install_from_lock(
     let deploy_summary = deploy_components(&install_set, &vendor_dirs, project_root);
     warnings.extend(deploy_summary.warnings);
 
+    // `pre-autoload-dump` — before the autoloader is regenerated.
+    if let Some(hooks) = hooks {
+        hooks.pre_autoload_dump()?;
+    }
+
     dump_autoload(&DumpRequest {
         project_root,
         optimize: false,
@@ -321,20 +359,33 @@ pub fn install_from_lock(
     })
     .map_err(|e| eyre!("autoload dump failed: {e}"))?;
 
-    // Native Laravel package discovery — the effect of Laravel's
-    // `post-autoload-dump` script (`artisan package:discover` +
-    // `ComposerScripts::postAutoloadDump`), which bougie won't run.
-    // Gated on `laravel/framework` being installed (the package whose
-    // script would otherwise drive discovery). Runs after the autoload
-    // dump because it reads the freshly-written `installed.json`.
-    if candidates.iter().any(|p| p.name == "laravel/framework")
-        && let Err(e) = run_laravel_discovery(project_root, &composer_json_value)
-    {
-        warnings.push(format!("laravel package discovery failed: {e}"));
+    match hooks {
+        // Scripts ON: run the project's real `post-autoload-dump` entries.
+        // Laravel's `@php artisan package:discover` writes `packages.php`
+        // itself and the `ComposerScripts::postAutoloadDump` callback is
+        // served by a native handler (clearCompiled) — no double-write.
+        Some(hooks) => hooks.post_autoload_dump()?,
+        // Scripts OFF: native Laravel package discovery — the effect of
+        // Laravel's `post-autoload-dump` script (`artisan package:discover`
+        // + `ComposerScripts::postAutoloadDump`), which bougie won't run.
+        // Gated on `laravel/framework` being installed. Runs after the
+        // autoload dump because it reads the freshly-written `installed.json`.
+        None => {
+            if candidates.iter().any(|p| p.name == "laravel/framework")
+                && let Err(e) = run_laravel_discovery(project_root, &composer_json_value)
+            {
+                warnings.push(format!("laravel package discovery failed: {e}"));
+            }
+        }
     }
 
     let bin_summary = super::bin_proxy::install_bin_proxies(project_root, &candidates);
     warnings.extend(bin_summary.warnings);
+
+    // `post-install-cmd` / `post-update-cmd` — at the very end, after bins.
+    if let Some(hooks) = hooks {
+        hooks.post_cmd()?;
+    }
 
     let packages_installed = u32::try_from(
         outcomes
@@ -628,30 +679,39 @@ fn content_hash_warning(composer_json_bytes: &[u8], lock: &Lock) -> Result<Optio
 /// Warnings are things bougie deliberately doesn't execute but can
 /// install around: Composer plugins (the package zip is skipped — the
 /// extracted tree would be inert without the install-time hook) and a
-/// non-empty `scripts` section in `composer.json` (the package set
-/// installs fine; the user's post-install hooks just don't run).
+/// non-empty `scripts` section in `composer.json` when script execution
+/// isn't opted in (the package set installs fine; the user's post-install
+/// hooks just don't run). When `scripts_on`, the hooks run the scripts, so
+/// no warning is emitted.
 ///
 /// Every hard reason is aggregated into a single error so the user
 /// sees every blocker in one pass rather than fix-one-hit-next.
-fn preflight(composer_json_bytes: &[u8], lock: &Lock, no_dev: bool) -> Result<Vec<String>> {
+fn preflight(
+    composer_json_bytes: &[u8],
+    lock: &Lock,
+    no_dev: bool,
+    scripts_on: bool,
+) -> Result<Vec<String>> {
     let mut reasons: Vec<String> = Vec::new();
     let mut warnings: Vec<String> = Vec::new();
     let mut plugin_packages: Vec<String> = Vec::new();
 
-    // composer.json scripts → not run. Warn rather than fail; the
-    // package install itself is unaffected. Users who depend on
-    // post-install scripts (cache warm-up etc.) can still run them
-    // explicitly afterwards via `bougie run -- composer run-script`.
-    if let Ok(Value::Object(obj)) = serde_json::from_slice::<Value>(composer_json_bytes)
-        && obj
+    // composer.json scripts → not run unless opted in. When scripts are
+    // off, warn — but only about scripts bougie doesn't already reproduce
+    // natively (Laravel's discovery `post-autoload-dump` runs either way).
+    // The warning advertises the opt-in rather than the old run-script
+    // workaround. When scripts are on, the hooks run them: no warning.
+    if !scripts_on
+        && let Ok(value) = serde_json::from_slice::<Value>(composer_json_bytes)
+        && value
             .get("scripts")
             .and_then(Value::as_object)
             .is_some_and(|s| !s.is_empty())
+        && !bougie_installers::only_reproduced_scripts(value.get("scripts").unwrap_or(&Value::Null))
     {
         warnings.push(
-            "composer.json declares `scripts` (post-install / post-autoload-dump etc.); \
-             bougie does not run them. Invoke them manually with \
-             `bougie run -- composer run-script <name>` if required."
+            "composer.json declares `scripts`; bougie does not run them by default. \
+             Enable with `[scripts] run = true` in bougie.toml or pass `--scripts`."
                 .into(),
         );
     }

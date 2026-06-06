@@ -391,11 +391,13 @@ dependencies = [
  "bougie-fs",
  "bougie-index",
  "bougie-installer",
+ "bougie-installers",
  "bougie-output",
  "bougie-paths",
  "bougie-platform",
  "bougie-recipe",
  "bougie-resolver",
+ "bougie-scripts",
  "bougie-semver",
  "bougie-server",
  "bougie-tool",
@@ -710,6 +712,17 @@ dependencies = [
  "bougie-semver",
  "bougie-version",
  "eyre",
+]
+
+[[package]]
+name = "bougie-scripts"
+version = "0.18.1"
+dependencies = [
+ "eyre",
+ "nix",
+ "serde_json",
+ "tempfile",
+ "wait-timeout",
 ]
 
 [[package]]
@@ -2710,6 +2723,18 @@ name = "ndk-context"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "27b02d87554356db9e9a873add8782d4ea6e3e58ea071a9adb9a2e8ddb884a8b"
+
+[[package]]
+name = "nix"
+version = "0.29.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "71e2746dc3a24dd78b3cfcb7be93368c6de9963d30f43a6a73998a9cf4b17b46"
+dependencies = [
+ "bitflags",
+ "cfg-if",
+ "cfg_aliases",
+ "libc",
+]
 
 [[package]]
 name = "nom"

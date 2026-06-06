@@ -26,6 +26,9 @@ pub fn write_bougie_toml_skeleton() -> String {
         "# xdebug = \"3.5.1\"           # exact version pin",
         "# mysqli = false               # opt this baseline extension out of auto-enable",
         "",
+        "[scripts]",
+        "# run = true              # run composer.json root scripts during the install lifecycle (off by default)",
+        "",
     ]
     .join("\n")
 }
@@ -90,6 +93,18 @@ version = "2.8.5"
         )
         .unwrap();
         assert_eq!(cfg.composer.version.as_deref(), Some("2.8.5"));
+    }
+
+    #[test]
+    fn scripts_table_roundtrips() {
+        let cfg = read_bougie_toml(
+            r"[scripts]
+run = true
+",
+        )
+        .unwrap();
+        assert_eq!(cfg.scripts.run, Some(true));
+        assert!(cfg.scripts.enabled());
     }
 
     #[test]

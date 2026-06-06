@@ -149,7 +149,7 @@ pub fn run(
     #[cfg(unix)]
     if let Ok(paths) = Paths::from_env()
         && paths.bougied_sock().exists() {
-            for (k, v) in fetch_service_env(&paths, &project_root) {
+            for (k, v) in super::env::fetch_service_env(&paths, &project_root) {
                 cmd.env(k, v);
             }
         }
@@ -200,43 +200,6 @@ fn install_xdebug_into_overlay(project_root: &Path) -> Result<()> {
         installed.load,
     )?;
     Ok(())
-}
-
-/// Best-effort IPC call to `bougied` for the project's
-/// `BOUGIE_SERVICE_*` env vars. Returns an empty Vec if anything goes
-/// wrong — `bougie run` must never fail because the daemon was down,
-/// slow, or speaking an old protocol. A connection error here is a
-/// signal to the user (PHP gets no DSN); not a CLI-level error.
-///
-/// Unix-only — the daemon isn't built on Windows in Phase 1.
-#[cfg(unix)]
-fn fetch_service_env(
-    paths: &Paths,
-    project: &Path,
-) -> Vec<(String, String)> {
-    use serde::Deserialize;
-    #[derive(Deserialize)]
-    struct EnvReply {
-        #[serde(default)]
-        vars: std::collections::BTreeMap<String, serde_json::Value>,
-    }
-    let args = serde_json::json!({"project": project});
-    let reply: Result<EnvReply> =
-        crate::commands::services::client::call(paths, "service.env", args);
-    match reply {
-        Ok(r) => r
-            .vars
-            .into_iter()
-            .filter_map(|(k, v)| {
-                let s = match v {
-                    serde_json::Value::String(s) => s,
-                    other => other.to_string(),
-                };
-                Some((k, s))
-            })
-            .collect(),
-        Err(_) => Vec::new(),
-    }
 }
 
 /// True iff the project's resolved markers point at on-disk artifacts
@@ -336,7 +299,7 @@ fn run_composer_script(
     let service_env: Vec<(String, String)> = Paths::from_env()
         .ok()
         .filter(|paths| paths.bougied_sock().exists())
-        .map(|paths| fetch_service_env(&paths, project_root))
+        .map(|paths| super::env::fetch_service_env(&paths, project_root))
         .unwrap_or_default();
 
     for step in steps {

@@ -48,7 +48,7 @@ fn content_hash_mismatch_warns_but_installs() {
 
     // A stale lock no longer blocks install — it produces a warning and
     // installs the locked (empty) package set, matching Composer.
-    let summary = install_from_lock(&paths, &proj, InstallOptions::default())
+    let summary = install_from_lock(&paths, &proj, InstallOptions::default(), None)
         .expect("stale lock must warn, not error");
     let warning = summary
         .warnings
@@ -66,7 +66,7 @@ fn missing_composer_lock_errors_with_helpful_message() {
     std::fs::create_dir_all(&proj).unwrap();
     std::fs::write(proj.join("composer.json"), MINIMAL_COMPOSER_JSON).unwrap();
 
-    let err = install_from_lock(&paths, &proj, InstallOptions::default())
+    let err = install_from_lock(&paths, &proj, InstallOptions::default(), None)
         .expect_err("must error when lock is missing");
     let msg = format!("{err:#}");
     assert!(msg.contains("composer.lock"), "{msg}");
@@ -80,7 +80,7 @@ fn missing_composer_json_errors_with_helpful_message() {
     let proj = tmp.path().join("p");
     std::fs::create_dir_all(&proj).unwrap();
 
-    let err = install_from_lock(&paths, &proj, InstallOptions::default())
+    let err = install_from_lock(&paths, &proj, InstallOptions::default(), None)
         .expect_err("must error when composer.json is missing");
     let msg = format!("{err:#}");
     assert!(msg.contains("not a Composer project"), "{msg}");
@@ -116,7 +116,7 @@ fn composer_plugin_package_warns_and_is_skipped() {
     );
     write_project(&proj, MINIMAL_COMPOSER_JSON, &lock);
 
-    let summary = install_from_lock(&paths, &proj, InstallOptions::default())
+    let summary = install_from_lock(&paths, &proj, InstallOptions::default(), None)
         .expect("install must succeed; the plugin is skipped, not rejected");
     assert_eq!(summary.packages_installed, 0);
     assert_eq!(summary.packages_skipped_plugin, 1);
@@ -161,7 +161,7 @@ fn source_only_package_is_rejected_in_preflight() {
     );
     write_project(&proj, MINIMAL_COMPOSER_JSON, &lock);
 
-    let err = install_from_lock(&paths, &proj, InstallOptions::default())
+    let err = install_from_lock(&paths, &proj, InstallOptions::default(), None)
         .expect_err("must reject source-only package");
     let msg = format!("{err:#}");
     assert!(msg.contains("acme/sourceonly"), "{msg}");
@@ -194,7 +194,7 @@ fn tar_dist_kind_is_rejected() {
     );
     write_project(&proj, MINIMAL_COMPOSER_JSON, &lock);
 
-    let err = install_from_lock(&paths, &proj, InstallOptions::default())
+    let err = install_from_lock(&paths, &proj, InstallOptions::default(), None)
         .expect_err("must reject tar dist");
     let msg = format!("{err:#}");
     assert!(msg.contains("acme/tar"), "{msg}");
@@ -223,7 +223,7 @@ fn composer_json_with_scripts_warns() {
     );
     write_project(&proj, composer_json, &lock);
 
-    let summary = install_from_lock(&paths, &proj, InstallOptions::default())
+    let summary = install_from_lock(&paths, &proj, InstallOptions::default(), None)
         .expect("install must succeed; scripts produce a warning, not an error");
     assert_eq!(summary.warnings.len(), 1, "{:?}", summary.warnings);
     assert!(summary.warnings[0].contains("scripts"), "{:?}", summary.warnings);
@@ -284,7 +284,7 @@ fn preflight_reports_all_hard_blockers_together() {
     );
     write_project(&proj, composer_json, &lock);
 
-    let err = install_from_lock(&paths, &proj, InstallOptions::default())
+    let err = install_from_lock(&paths, &proj, InstallOptions::default(), None)
         .expect_err("hard blockers must still fail install");
     let msg = format!("{err:#}");
     assert!(msg.contains("acme/tar"), "tar: {msg}");
@@ -326,6 +326,7 @@ fn no_dev_hides_dev_only_packages_from_preflight() {
         &paths,
         &proj,
         InstallOptions { no_dev: true },
+        None,
     )
     .expect("preflight should pass with --no-dev");
     assert_eq!(summary.packages_installed, 0);
@@ -443,7 +444,7 @@ fn install_attaches_per_host_auth_to_dist_download() {
     );
     write_project(&proj, &composer_json, &lock);
 
-    let summary = install_from_lock(&paths, &proj, InstallOptions::default())
+    let summary = install_from_lock(&paths, &proj, InstallOptions::default(), None)
         .expect("install must succeed with the auth header attached");
     assert_eq!(summary.packages_installed, 1);
     assert!(
@@ -530,7 +531,7 @@ fn install_accepts_empty_shasum_via_github_zipball_style_dist() {
     );
     write_project(&proj, composer_json, &lock);
 
-    let summary = install_from_lock(&paths, &proj, InstallOptions::default())
+    let summary = install_from_lock(&paths, &proj, InstallOptions::default(), None)
         .expect("install must succeed despite empty shasum");
     assert_eq!(summary.packages_installed, 1);
     assert!(
@@ -610,7 +611,7 @@ fn second_install_skips_up_to_date_packages() {
     write_project(&proj, composer_json, &lock);
 
     // First install — downloads and extracts.
-    let s1 = install_from_lock(&paths, &proj, InstallOptions::default())
+    let s1 = install_from_lock(&paths, &proj, InstallOptions::default(), None)
         .expect("first install must succeed");
     assert_eq!(s1.packages_installed, 1);
     assert_eq!(s1.packages_up_to_date, 0);
@@ -619,7 +620,7 @@ fn second_install_skips_up_to_date_packages() {
 
     // Second install — same lock, same vendor. Should be fully
     // up-to-date with no downloads or extractions.
-    let s2 = install_from_lock(&paths, &proj, InstallOptions::default())
+    let s2 = install_from_lock(&paths, &proj, InstallOptions::default(), None)
         .expect("second install must succeed");
     assert_eq!(s2.packages_installed, 0, "no fresh downloads");
     assert_eq!(s2.packages_already_present, 0, "no cache-only extractions");
@@ -755,4 +756,170 @@ fn changed_reference_forces_reinstall() {
     assert_eq!(need_install[0].name, "acme/foo");
     assert_eq!(up_to_date, 0);
     assert_eq!(removed, 0);
+}
+
+// -------------------- opt-in root scripts (ScriptHooks) --------------------
+
+use std::cell::RefCell;
+
+/// Records the lifecycle events fired, in order, so tests can assert the
+/// hook sequence without running real scripts.
+#[derive(Default)]
+struct RecordingHooks {
+    events: RefCell<Vec<&'static str>>,
+}
+
+impl ScriptHooks for RecordingHooks {
+    fn pre_cmd(&self) -> Result<()> {
+        self.events.borrow_mut().push("pre_cmd");
+        Ok(())
+    }
+    fn pre_autoload_dump(&self) -> Result<()> {
+        self.events.borrow_mut().push("pre_autoload_dump");
+        Ok(())
+    }
+    fn post_autoload_dump(&self) -> Result<()> {
+        self.events.borrow_mut().push("post_autoload_dump");
+        Ok(())
+    }
+    fn post_cmd(&self) -> Result<()> {
+        self.events.borrow_mut().push("post_cmd");
+        Ok(())
+    }
+}
+
+const SCRIPTED_COMPOSER_JSON: &str = r#"{
+    "name": "acme/test",
+    "require": {},
+    "scripts": {
+        "post-install-cmd": ["echo hi"]
+    }
+}"#;
+
+fn empty_lock_for(json: &str) -> String {
+    format!(
+        r#"{{
+            "content-hash": "{}",
+            "packages": [],
+            "packages-dev": []
+        }}"#,
+        hash_for(json)
+    )
+}
+
+#[test]
+fn hooks_fire_in_lifecycle_order() {
+    let tmp = TempDir::new().unwrap();
+    let paths = paths_in(tmp.path());
+    let proj = tmp.path().join("p");
+    std::fs::create_dir_all(&proj).unwrap();
+    write_project(&proj, MINIMAL_COMPOSER_JSON, &empty_lock_for(MINIMAL_COMPOSER_JSON));
+
+    let hooks = RecordingHooks::default();
+    install_from_lock(&paths, &proj, InstallOptions::default(), Some(&hooks))
+        .expect("install with hooks must succeed");
+    assert_eq!(
+        hooks.events.into_inner(),
+        vec!["pre_cmd", "pre_autoload_dump", "post_autoload_dump", "post_cmd"],
+    );
+}
+
+#[test]
+fn scripts_warning_suppressed_when_hooks_present() {
+    let tmp = TempDir::new().unwrap();
+    let paths = paths_in(tmp.path());
+    let proj = tmp.path().join("p");
+    std::fs::create_dir_all(&proj).unwrap();
+    write_project(&proj, SCRIPTED_COMPOSER_JSON, &empty_lock_for(SCRIPTED_COMPOSER_JSON));
+
+    // Scripts ON: hooks run them, so no "declares scripts" warning.
+    let hooks = RecordingHooks::default();
+    let on = install_from_lock(&paths, &proj, InstallOptions::default(), Some(&hooks)).unwrap();
+    assert!(
+        !on.warnings.iter().any(|w| w.contains("declares `scripts`")),
+        "scripts-on must not warn: {:?}",
+        on.warnings
+    );
+
+    // Scripts OFF: warning is present and advertises the opt-in.
+    let off = install_from_lock(&paths, &proj, InstallOptions::default(), None).unwrap();
+    let warning = off
+        .warnings
+        .iter()
+        .find(|w| w.contains("declares `scripts`"))
+        .unwrap_or_else(|| panic!("scripts-off must warn: {:?}", off.warnings));
+    assert!(warning.contains("[scripts] run = true"), "{warning}");
+    assert!(warning.contains("--scripts"), "{warning}");
+}
+
+#[test]
+fn scripts_warning_suppressed_for_only_reproduced_scripts() {
+    // A project whose only script is Laravel's standard discovery hook —
+    // bougie reproduces it natively, so claiming "does not run them" would
+    // be misleading. No laravel/framework in the lock here: we're exercising
+    // the preflight suppression, not the discovery path.
+    let json = r#"{
+        "name": "acme/test",
+        "require": {},
+        "scripts": {
+            "post-autoload-dump": ["@php artisan package:discover"]
+        }
+    }"#;
+    let tmp = TempDir::new().unwrap();
+    let paths = paths_in(tmp.path());
+    let proj = tmp.path().join("p");
+    std::fs::create_dir_all(&proj).unwrap();
+    write_project(&proj, json, &empty_lock_for(json));
+
+    let summary = install_from_lock(&paths, &proj, InstallOptions::default(), None).unwrap();
+    assert!(
+        !summary.warnings.iter().any(|w| w.contains("declares `scripts`")),
+        "pure-discovery scripts must not warn: {:?}",
+        summary.warnings
+    );
+}
+
+#[test]
+fn laravel_drift_guard_skipped_when_scripts_on() {
+    // laravel/framework as a metapackage (no dist → not fetched) plus a
+    // blocking post-autoload-dump (a custom step with no recognizable
+    // default). Scripts OFF: the drift guard errors. Scripts ON: the guard
+    // is skipped (the real post-autoload-dump runs via the hook).
+    let json = r#"{
+        "name": "acme/test",
+        "require": {},
+        "scripts": {
+            "post-autoload-dump": ["@php artisan custom:thing"]
+        }
+    }"#;
+    let lock = format!(
+        r#"{{
+            "content-hash": "{}",
+            "packages": [
+                {{
+                    "name": "laravel/framework",
+                    "version": "11.0.0",
+                    "type": "metapackage"
+                }}
+            ],
+            "packages-dev": []
+        }}"#,
+        hash_for(json)
+    );
+    let tmp = TempDir::new().unwrap();
+    let paths = paths_in(tmp.path());
+    let proj = tmp.path().join("p");
+    std::fs::create_dir_all(&proj).unwrap();
+    write_project(&proj, json, &lock);
+
+    // OFF → drift guard fires.
+    let err = install_from_lock(&paths, &proj, InstallOptions::default(), None)
+        .expect_err("drift guard must block when scripts are off");
+    assert!(format!("{err:#}").contains("post-autoload-dump"), "{err:#}");
+
+    // ON → guard skipped, hook runs instead.
+    let hooks = RecordingHooks::default();
+    install_from_lock(&paths, &proj, InstallOptions::default(), Some(&hooks))
+        .expect("scripts-on must skip the drift guard");
+    assert!(hooks.events.into_inner().contains(&"post_autoload_dump"));
 }

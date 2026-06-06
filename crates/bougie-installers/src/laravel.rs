@@ -79,6 +79,38 @@ pub fn blocking_post_autoload_dump(scripts: &Value) -> Vec<String> {
     }
 }
 
+/// Whether *every* entry across *every* event in a `composer.json`
+/// `scripts` object is one bougie already reproduces natively (the Laravel
+/// discovery `post-autoload-dump` steps). Used to suppress the
+/// "bougie does not run scripts" warning when there's genuinely nothing
+/// left un-run: if the only thing declared is Laravel's standard discovery
+/// hook, telling the user it won't run would be misleading.
+///
+/// Returns `false` for an empty/absent `scripts` object (nothing to
+/// reproduce, but also nothing to warn about — the caller gates on
+/// non-emptiness separately).
+#[must_use]
+pub fn only_reproduced_scripts(scripts: &Value) -> bool {
+    let Some(obj) = scripts.as_object() else {
+        return false;
+    };
+    let mut saw_entry = false;
+    for value in obj.values() {
+        let entries: Vec<&str> = match value {
+            Value::String(s) => vec![s.as_str()],
+            Value::Array(a) => a.iter().filter_map(Value::as_str).collect(),
+            _ => return false,
+        };
+        for e in entries {
+            saw_entry = true;
+            if !is_reproduced_script(e) {
+                return false;
+            }
+        }
+    }
+    saw_entry
+}
+
 /// Whether a single `post-autoload-dump` entry is one bougie reproduces.
 fn is_reproduced_script(entry: &str) -> bool {
     // Collapse internal whitespace so flag spacing doesn't matter.
@@ -156,6 +188,24 @@ pub fn build_package_manifest(installed_json: &Value, root_extra: &Value) -> Val
 #[must_use]
 pub fn render_packages_php(manifest: &Value) -> String {
     format!("<?php return {};", var_export(manifest, 0))
+}
+
+/// The `clearCompiled()` half of Laravel's `post-autoload-dump`: remove the
+/// stale [`STALE_CACHES`] under the project root (missing files are fine).
+/// Used as the native handler for the
+/// `Illuminate\Foundation\ComposerScripts::postAutoloadDump` callback when
+/// root scripts run — the discovery half (`packages.php`) is rebuilt by the
+/// real `@php artisan package:discover` entry alongside it.
+pub fn clear_compiled(project_root: &std::path::Path) -> std::io::Result<()> {
+    for rel in STALE_CACHES {
+        let path = project_root.join(rel);
+        match std::fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
 }
 
 /// Read a `laravel.dont-discover` string list, tolerating absence.
@@ -387,6 +437,29 @@ mod tests {
             blocking_post_autoload_dump(&scripts),
             vec!["@php artisan package:discover-v2".to_string()]
         );
+    }
+
+    #[test]
+    fn only_reproduced_scripts_suppresses_when_pure_discovery() {
+        // Only the standard Laravel discovery hook → suppress the warning.
+        assert!(only_reproduced_scripts(&json!({
+            "post-autoload-dump": [
+                "Illuminate\\Foundation\\ComposerScripts::postAutoloadDump",
+                "@php artisan package:discover --ansi"
+            ]
+        })));
+        // Single-string discovery form.
+        assert!(only_reproduced_scripts(
+            &json!({"post-autoload-dump": "@php artisan package:discover"})
+        ));
+        // A genuinely-unrun script alongside discovery → don't suppress.
+        assert!(!only_reproduced_scripts(&json!({
+            "post-autoload-dump": ["@php artisan package:discover"],
+            "post-install-cmd": ["@php artisan migrate"]
+        })));
+        // Empty / absent → false (nothing to suppress).
+        assert!(!only_reproduced_scripts(&json!({})));
+        assert!(!only_reproduced_scripts(&Value::Null));
     }
 
     #[test]

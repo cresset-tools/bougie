@@ -31,6 +31,20 @@ fn unsupported_on_windows(feature: &str) -> Result<ExitCode> {
     ))
 }
 
+/// Collapse the `--scripts` / `--no-scripts` flag pair into an explicit
+/// override: `Some(true)` for `--scripts`, `Some(false)` for
+/// `--no-scripts`, `None` when neither is passed (defer to `[scripts] run`
+/// in config). clap's `conflicts_with` guarantees they're not both set.
+fn scripts_override(scripts: bool, no_scripts: bool) -> Option<bool> {
+    if scripts {
+        Some(true)
+    } else if no_scripts {
+        Some(false)
+    } else {
+        None
+    }
+}
+
 /// Stable, human-readable name for the running subcommand, used as the
 /// `command` span field so a Ctrl-\ activity dump (and `BOUGIE_LOG`)
 /// shows which verb is running even before any deeper span opens.
@@ -80,7 +94,9 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
         Command::New { directory, toml, name, starter, start } => {
             commands::init::run_new(format, &directory, toml, name, starter, start)
         }
-        Command::Sync { offline, dry_run } => commands::sync::run(format, offline, dry_run),
+        Command::Sync { offline, dry_run, scripts, no_scripts } => {
+            commands::sync::run(format, offline, dry_run, scripts_override(scripts, no_scripts))
+        }
         #[cfg(unix)]
         Command::Up { names, detach } => commands::services::up::run(format, names, detach),
         #[cfg(not(unix))]
@@ -181,6 +197,8 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
             lock_verify,
             ignore_platform_reqs,
             ignore_platform_req,
+            scripts,
+            no_scripts,
         }) => commands::composer_install::run(
             format,
             working_dir,
@@ -189,6 +207,7 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
             lock_verify,
             ignore_platform_reqs,
             ignore_platform_req,
+            scripts_override(scripts, no_scripts),
         ),
         Command::Composer(ComposerCommand::Update {
             working_dir,

@@ -102,6 +102,14 @@ pub enum Command {
         /// Show the plan, change nothing on disk.
         #[arg(long)]
         dry_run: bool,
+        /// Run composer.json root scripts for this sync, overriding
+        /// `[scripts] run` in bougie.toml. Off by default (opt-in).
+        #[arg(long, conflicts_with = "no_scripts")]
+        scripts: bool,
+        /// Skip composer.json root scripts for this sync, overriding
+        /// `[scripts] run = true` in bougie.toml.
+        #[arg(long = "no-scripts")]
+        no_scripts: bool,
     },
 
     /// Start the project's declared services (or every service in
@@ -601,6 +609,14 @@ pub enum ComposerCommand {
         /// Ignore a specific platform requirement.
         #[arg(long = "ignore-platform-req", value_name = "REQ")]
         ignore_platform_req: Vec<String>,
+        /// Run composer.json root scripts, overriding `[scripts] run`
+        /// in bougie.toml. Off by default (opt-in).
+        #[arg(long, conflicts_with = "no_scripts")]
+        scripts: bool,
+        /// Skip composer.json root scripts, overriding `[scripts] run
+        /// = true` in bougie.toml (Composer-compatible `--no-scripts`).
+        #[arg(long = "no-scripts")]
+        no_scripts: bool,
     },
     /// Resolve the project's dependency graph from scratch (read
     /// `composer.json`, ignore any existing `composer.lock`) and write

@@ -91,7 +91,7 @@ pub fn inject(
         regenerate_and_install(ctx.paths, &tool_dir, &receipt)?;
         (ctx.resolve_lock)(ctx.paths, &tool_dir)
             .wrap_err("resolving composer.lock for tool")?;
-        install_from_lock(ctx.paths, &tool_dir, InstallOptions { no_dev: true })
+        install_from_lock(ctx.paths, &tool_dir, InstallOptions { no_dev: true }, None)
             .wrap_err("installing tool dependencies")?;
     }
 
@@ -181,7 +181,7 @@ pub fn uninject(
         regenerate_and_install(ctx.paths, &tool_dir, &receipt)?;
         (ctx.resolve_lock)(ctx.paths, &tool_dir)
             .wrap_err("resolving composer.lock for tool")?;
-        install_from_lock(ctx.paths, &tool_dir, InstallOptions { no_dev: true })
+        install_from_lock(ctx.paths, &tool_dir, InstallOptions { no_dev: true }, None)
             .wrap_err("installing tool dependencies after uninject")?;
     }
     // Extension uninstall (delete conf.d fragment) lands in the

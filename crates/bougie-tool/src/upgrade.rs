@@ -66,7 +66,7 @@ pub fn upgrade_one(
     install_mod::write_composer_json_for_receipt(&tool_dir, &receipt)?;
     (ctx.resolve_lock)(ctx.paths, &tool_dir)
         .wrap_err("resolving composer.lock for tool")?;
-    install_from_lock(ctx.paths, &tool_dir, InstallOptions { no_dev: true })
+    install_from_lock(ctx.paths, &tool_dir, InstallOptions { no_dev: true }, None)
         .wrap_err("installing tool dependencies during upgrade")?;
 
     // Rebuild bin wrappers. New bin set might differ across versions:
