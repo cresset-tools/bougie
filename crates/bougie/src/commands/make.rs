@@ -270,10 +270,22 @@ fn read_magento_backend_frontname(project_root: &std::path::Path) -> Option<Stri
     Some(rest[..end].to_string())
 }
 
+/// Read a recipe name pinned in composer.json `extra.bougie.recipe`.
+/// Written by `bougie init --starter` from the manifest's `recipe` field so a
+/// producer can name the recipe explicitly instead of relying on detection.
+fn configured_recipe(composer_text: Option<&str>) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(composer_text?).ok()?;
+    v.get("extra")?
+        .get("bougie")?
+        .get("recipe")?
+        .as_str()
+        .map(str::to_string)
+}
+
 /// Resolve the effective recipe per RECIPES.md §4: pick a builtin by
-/// sniffing composer.json (or honour `--recipe <name>`), then merge
-/// the project's `bougie.toml` recipe tables over it (or skip the
-/// builtin entirely with `--no-builtin`).
+/// honouring `--recipe <name>`, then a pinned `extra.bougie.recipe`, then
+/// sniffing composer.json — and merge the project's `bougie.toml` recipe
+/// tables over it (or skip the builtin entirely with `--no-builtin`).
 fn load_merged_recipe(
     project_root: &PathBuf,
     opts: &MakeOptions,
@@ -287,22 +299,25 @@ fn load_merged_recipe(
         None
     };
 
+    // Recipe precedence: explicit `--recipe` flag > a recipe pinned in the
+    // project's composer.json `extra.bougie.recipe` (e.g. written by
+    // `--starter` from the manifest's `recipe` field) > composer.json
+    // auto-detection.
     let chosen = match &opts.recipe {
-        Some(name) => {
-            if !BUILTINS.iter().any(|(n, _)| n == name) {
-                return Err(eyre!(
-                    "unknown builtin recipe `{name}`. Available: {}",
-                    BUILTINS
-                        .iter()
-                        .map(|(n, _)| *n)
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ));
-            }
-            name.clone()
-        }
-        None => detect_from_text(composer_text.as_deref()).to_string(),
+        Some(name) => name.clone(),
+        None => configured_recipe(composer_text.as_deref())
+            .unwrap_or_else(|| detect_from_text(composer_text.as_deref()).to_string()),
     };
+    if !BUILTINS.iter().any(|(n, _)| *n == chosen) {
+        return Err(eyre!(
+            "unknown builtin recipe `{chosen}`. Available: {}",
+            BUILTINS
+                .iter()
+                .map(|(n, _)| *n)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
 
     let builtin = if opts.no_builtin {
         Recipe::default()
@@ -326,4 +341,22 @@ fn load_merged_recipe(
         ));
     }
     Ok((chosen, merged))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::configured_recipe;
+
+    #[test]
+    fn configured_recipe_reads_extra_bougie_recipe() {
+        let json = r#"{"extra":{"bougie":{"recipe":"magento"}}}"#;
+        assert_eq!(configured_recipe(Some(json)).as_deref(), Some("magento"));
+    }
+
+    #[test]
+    fn configured_recipe_absent_when_unset() {
+        assert_eq!(configured_recipe(Some(r#"{"extra":{"bougie":{}}}"#)), None);
+        assert_eq!(configured_recipe(Some("{}")), None);
+        assert_eq!(configured_recipe(None), None);
+    }
 }
