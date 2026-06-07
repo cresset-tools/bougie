@@ -18,10 +18,12 @@
 //!   "notes": ["Hyvä themes need a license token in auth.json"]
 //! }
 //! ```
-//! Only `schema` and `composer-json` are required; the rest are optional
-//! hints (`services`/`recipe` inform `--start`; `notes` are shown to the
-//! user). bougie's own recipe auto-detection already covers Mage-OS, so
-//! the hints are advisory, not load-bearing.
+//! Only `schema` and `composer-json` are required; the rest are optional.
+//! `recipe` and `services` are persisted into the scaffolded project's
+//! `extra.bougie` block (see [`apply_project_hints`]) so they're load-bearing
+//! for `bougie start` — the producer can name the recipe explicitly rather than
+//! relying on bougie's composer.json auto-detection. `notes` are shown to the
+//! user; `name` is informational.
 
 use eyre::{Result, WrapErr, eyre};
 use serde::Deserialize;
@@ -38,19 +40,55 @@ pub(crate) struct StarterManifest {
     pub(crate) composer_json: serde_json::Value,
     #[serde(default)]
     pub(crate) notes: Vec<String>,
-    // Reserved protocol hints: parsed for forward-compat but not yet
-    // consumed (bougie's recipe auto-detection already covers the
-    // Mage-OS case; `name` is informational). Kept so the struct
-    // documents the full manifest contract.
+    /// Service names to declare in the project (→ `extra.bougie.services`).
+    #[serde(default)]
+    pub(crate) services: Vec<String>,
+    /// Builtin recipe to pin for the project (→ `extra.bougie.recipe`).
+    #[serde(default)]
+    pub(crate) recipe: Option<String>,
+    // Informational only.
     #[serde(default)]
     #[allow(dead_code)]
     pub(crate) name: Option<String>,
-    #[serde(default)]
-    #[allow(dead_code)]
-    pub(crate) services: Vec<String>,
-    #[serde(default)]
-    #[allow(dead_code)]
-    pub(crate) recipe: Option<String>,
+}
+
+/// Persist the manifest's optional `recipe` / `services` hints into the
+/// scaffolded `composer.json`'s `extra.bougie` block, so `bougie start` honours
+/// them (recipe selection + service bring-up) instead of treating them as
+/// advisory. The producer (e.g. mageos-maker) can thus name the recipe
+/// explicitly rather than relying on composer.json auto-detection.
+pub(crate) fn apply_project_hints(
+    composer_json: &mut serde_json::Value,
+    recipe: Option<&str>,
+    services: &[String],
+) {
+    if recipe.is_none() && services.is_empty() {
+        return;
+    }
+    let Some(root) = composer_json.as_object_mut() else { return };
+    let extra = root
+        .entry("extra")
+        .or_insert_with(|| serde_json::json!({}));
+    let Some(extra) = extra.as_object_mut() else { return };
+    let bougie = extra
+        .entry("bougie")
+        .or_insert_with(|| serde_json::json!({}));
+    let Some(bougie) = bougie.as_object_mut() else { return };
+
+    if let Some(recipe) = recipe {
+        bougie.insert("recipe".to_string(), serde_json::Value::String(recipe.to_string()));
+    }
+    if !services.is_empty() {
+        let svc = bougie
+            .entry("services")
+            .or_insert_with(|| serde_json::json!({}));
+        if let Some(svc) = svc.as_object_mut() {
+            for name in services {
+                svc.entry(name.clone())
+                    .or_insert_with(|| serde_json::Value::String("*".to_string()));
+            }
+        }
+    }
 }
 
 /// Resolve a `--starter` value to the manifest URL to fetch.
@@ -199,5 +237,34 @@ mod tests {
     #[test]
     fn manifest_url_rejects_non_url() {
         assert!(manifest_url("./local").is_err());
+    }
+
+    #[test]
+    fn apply_project_hints_writes_recipe_and_services() {
+        let mut composer = serde_json::json!({"require": {"php": "^8.4"}});
+        apply_project_hints(&mut composer, Some("magento"), &["mariadb".into(), "opensearch".into()]);
+
+        assert_eq!(composer["extra"]["bougie"]["recipe"], "magento");
+        assert_eq!(composer["extra"]["bougie"]["services"]["mariadb"], "*");
+        assert_eq!(composer["extra"]["bougie"]["services"]["opensearch"], "*");
+        // Pre-existing keys are preserved.
+        assert_eq!(composer["require"]["php"], "^8.4");
+    }
+
+    #[test]
+    fn apply_project_hints_is_a_noop_without_hints() {
+        let mut composer = serde_json::json!({"require": {}});
+        apply_project_hints(&mut composer, None, &[]);
+        assert!(composer.get("extra").is_none());
+    }
+
+    #[test]
+    fn manifest_parses_recipe_and_services() {
+        let m = parse(
+            r#"{"schema":1,"composer-json":{"require":{}},"recipe":"magento","services":["mariadb"]}"#,
+        )
+        .unwrap();
+        assert_eq!(m.recipe.as_deref(), Some("magento"));
+        assert_eq!(m.services, vec!["mariadb".to_string()]);
     }
 }

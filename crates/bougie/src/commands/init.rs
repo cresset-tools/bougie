@@ -131,6 +131,14 @@ fn scaffold(
                 if let Some(name) = name {
                     set_name(&mut manifest.composer_json, &name)?;
                 }
+                // Make the manifest's recipe/services hints load-bearing by
+                // persisting them into extra.bougie, so `--start` selects the
+                // declared recipe and brings up the declared services.
+                super::starter::apply_project_hints(
+                    &mut manifest.composer_json,
+                    manifest.recipe.as_deref(),
+                    &manifest.services,
+                );
                 let rendered = super::starter::render_composer_json(&manifest);
                 notes = manifest.notes;
                 rendered

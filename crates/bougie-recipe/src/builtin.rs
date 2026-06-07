@@ -16,9 +16,10 @@ pub const BUILTINS: &[(&str, &str)] = &[
 /// because `generic` is the universal fallback.
 ///
 /// Detection rules per RECIPES.md §4:
-/// - `magento/` or `mage-os/` `product-community-edition` /
-///   `magento2-base` → `magento` (Mage-OS is a drop-in Magento fork and
-///   uses the same recipe / app layout)
+/// - `magento/`, `mage-os/` or `modulargento/` `product-community-edition` /
+///   `magento2-base` → `magento` (Mage-OS and the fully-modular modulargento
+///   distribution are drop-in Magento forks and use the same recipe / app
+///   layout)
 /// - `laravel/framework` → `laravel`
 /// - otherwise → `generic`
 pub fn detect_from_text(composer_json: Option<&str>) -> &'static str {
@@ -37,6 +38,8 @@ pub fn detect_from_text(composer_json: Option<&str>) -> &'static str {
         || has("magento/magento2-base")
         || has("mage-os/product-community-edition")
         || has("mage-os/magento2-base")
+        || has("modulargento/product-community-edition")
+        || has("modulargento/magento2-base")
         || name == "magento/magento2ce"
         || name == "magento/magento2"
         || name == "magento/magento2-base"
@@ -97,6 +100,19 @@ mod tests {
         let j = r#"{"require":{"mage-os/product-community-edition":"3.0.0"}}"#;
         assert_eq!(detect_from_text(Some(j)), "magento");
         let b = r#"{"require":{"mage-os/magento2-base":"3.0.0"}}"#;
+        assert_eq!(detect_from_text(Some(b)), "magento");
+    }
+
+    #[test]
+    fn modulargento_detection() {
+        // The fully-modular modulargento distribution (modulargento/* vendor,
+        // named modulargento/project-community-edition, requiring
+        // modulargento/product-community-edition) must map to the magento
+        // recipe too — otherwise `bougie start` runs `generic` and skips
+        // services / setup:install.
+        let j = r#"{"name":"modulargento/project-community-edition","require":{"modulargento/product-community-edition":"3.0.0"}}"#;
+        assert_eq!(detect_from_text(Some(j)), "magento");
+        let b = r#"{"require":{"modulargento/magento2-base":"3.0.0"}}"#;
         assert_eq!(detect_from_text(Some(b)), "magento");
     }
 
