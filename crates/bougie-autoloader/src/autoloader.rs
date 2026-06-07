@@ -38,7 +38,7 @@ use crate::collect::{
 use crate::emit;
 use crate::installed;
 use crate::lock::{self, RootManifest};
-use crate::scan::{self, ExcludePatterns, ScanWarning};
+use crate::scan::{self, ExcludePatterns, NamespaceFilter, ScanWarning};
 use crate::vendored;
 use crate::{format_relative_path, random_hex_chars, write_atomic, DumpError, DumpRequest, PsrWarning};
 
@@ -232,11 +232,14 @@ impl Autoloader {
         })
     }
 
-    /// Total entries in the merged classmap (matches Composer's
-    /// `Generated … containing N classes` figure — always includes
-    /// the synthetic `Composer\InstalledVersions` row).
+    /// Number of entries actually written to `autoload_classmap.php`
+    /// (the `Generated … containing N classes` figure — always includes
+    /// the synthetic `Composer\InstalledVersions` row). This is the
+    /// merged classmap minus the volatile-root classes held back by
+    /// [`Autoloader::excluded_volatile_classes`], so the count never
+    /// over-reports relative to the emitted file.
     pub fn class_count(&self) -> usize {
-        self.merged.len()
+        self.merged.len() - self.excluded_volatile_classes().len()
     }
 
     /// PSR-noncompliance warnings collected during bootstrap.
@@ -504,10 +507,10 @@ impl Autoloader {
     }
 
     fn classmap_entries(&self) -> Vec<ClassmapEntry> {
-        let suppressed = self.suppressed_volatile_classes();
+        let excluded = self.excluded_volatile_classes();
         self.merged
             .iter()
-            .filter(|(class, _)| !suppressed.contains(class.as_str()))
+            .filter(|(class, _)| !excluded.contains(class.as_str()))
             .map(|(class, path_expr)| ClassmapEntry {
                 class: class.clone(),
                 path_expr: path_expr.clone(),
@@ -516,39 +519,59 @@ impl Autoloader {
     }
 
     /// Classes contributed by a *volatile* scan root (see
-    /// [`is_volatile_scan_root`]) whose backing file is currently
-    /// missing on disk. Frameworks like Magento clear and regenerate
-    /// `generated/code` out-of-band; if a class the autoloader once
-    /// scanned has since been deleted, emitting its classmap entry
-    /// would make Composer's `ClassLoader` `include` a non-existent
-    /// file (it has no `file_exists` guard) — a fatal-looking warning
-    /// that *also* prevents the framework's own generator autoloader
-    /// from regenerating the class. Suppressing the entry lets that
-    /// fallback fire. Only volatile roots are stat-checked, so the
-    /// common (all-present) case stays a no-op and output is identical
-    /// to Composer's.
-    fn suppressed_volatile_classes(&self) -> BTreeSet<&str> {
-        let mut suppressed: BTreeSet<&str> = BTreeSet::new();
+    /// [`is_volatile_scan_root`]) that must be kept out of the emitted
+    /// classmap. Frameworks like Magento clear and regenerate
+    /// `generated/code` out-of-band (every `cache:clean` /
+    /// `setup:di:compile`), so any classmap entry pointing into such a
+    /// root can become a dangling `include` target the moment the
+    /// framework wipes the directory. Composer's `ClassLoader` has no
+    /// `file_exists` guard on a classmap hit, so a dangling entry both
+    /// emits a fatal-looking warning *and* claims the class — shadowing
+    /// the framework's own generator autoloader so it never regenerates.
+    /// A re-dump can't save an already-running process (e.g. the very
+    /// `setup:di:compile` doing the wipe) whose classmap is already in
+    /// memory.
+    ///
+    /// The safe-to-drop condition depends on how the root was scanned:
+    ///
+    /// - **PSR-\* task** (`psr-0` / `psr-4`): the same paths are also
+    ///   emitted as a runtime PSR fallback (`autoload_namespaces.php` /
+    ///   `autoload_psr4.php`), so a class absent from the classmap still
+    ///   resolves via the fallback — and a *missing* file there returns
+    ///   `false`, letting the framework's generator fire. So we drop
+    ///   **all** of the root's classes from the classmap, present or not.
+    ///   Magento's `generated/code` (a `psr-0` `""` root) is the case.
+    /// - **`autoload.classmap` directive** (`NamespaceFilter::None`):
+    ///   there is *no* PSR fallback — the classmap is the only way to
+    ///   load the class — so dropping a present entry would make it
+    ///   unloadable. Here we keep present entries and drop only the
+    ///   *dangling* (deleted-file) ones, the original emit-time backstop.
+    fn excluded_volatile_classes(&self) -> BTreeSet<&str> {
+        let mut excluded: BTreeSet<&str> = BTreeSet::new();
         for state in &self.tasks {
             if !is_volatile_scan_root(&state.task.scan_root) {
                 continue;
             }
+            // A PSR-* scan has a runtime fallback; a plain classmap dir
+            // does not (see doc comment).
+            let has_psr_fallback = !matches!(state.task.filter, NamespaceFilter::None);
             for (rel, classes) in &state.per_file {
-                if state.task.install_abs.join(rel).exists() {
+                // Without a fallback, only drop entries whose file is gone.
+                if !has_psr_fallback && state.task.install_abs.join(rel).exists() {
                     continue;
                 }
                 let path_expr = task_path_expr(&state.task, rel);
                 for class in classes {
-                    // First-seen-wins: only suppress if `merged` still
-                    // resolves this class to the now-missing file (a
+                    // First-seen-wins: only exclude if `merged` still
+                    // resolves this class to the volatile file (a
                     // non-volatile task may legitimately provide it).
                     if self.merged.get(class) == Some(&path_expr) {
-                        suppressed.insert(class.as_str());
+                        excluded.insert(class.as_str());
                     }
                 }
             }
         }
-        suppressed
+        excluded
     }
 }
 
@@ -583,11 +606,13 @@ fn has_php_ext(p: &Path) -> bool {
 /// directory cleared and regenerated out-of-band. Magento's
 /// `generated/code` (registered via the root `psr-0` `""` prefix, so it
 /// lands in the optimized classmap) is the motivating case: it's wiped on
-/// every `cache:clean` / `setup:di:compile`. Entries from such roots are
-/// existence-checked at [`Autoloader::emit`] time so a class the framework
-/// has since deleted is never written as a dangling `include` target. The
-/// check is a path-component scan for `generated`, matching `generated/`
-/// and `generated/code/...`.
+/// every `cache:clean` / `setup:di:compile`. Classes from such roots are
+/// held back from the emitted classmap by
+/// [`Autoloader::excluded_volatile_classes`] — fully when a PSR-\* fallback
+/// can resolve them, dangling-only otherwise — so a class the framework
+/// wipes is never left as a dangling `include` target. The check is a
+/// path-component scan for `generated`, matching `generated/` and
+/// `generated/code/...`.
 fn is_volatile_scan_root(scan_root: &Path) -> bool {
     scan_root.components().any(|c| {
         matches!(c, std::path::Component::Normal(n) if n.eq_ignore_ascii_case("generated"))
