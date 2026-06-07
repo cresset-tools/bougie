@@ -3109,20 +3109,31 @@ pub struct DryRunOptions {
 /// conflict, exactly as Composer reports it), and packages that are no
 /// longer required simply drop out.
 ///
-/// Scope note: `--with-dependencies` and `--with-all-dependencies`
-/// currently behave identically — both let the named packages' full
-/// transitive require-closure float. Composer's finer `-w` rule (don't
-/// touch deps that are also depended on from outside the whitelist) is
-/// not yet modeled; the broader `-W` behavior is the safe superset.
+/// Scope of the float, mirroring Composer's three update modes:
+/// - neither flag (`UPDATE_ONLY_LISTED`): only the named packages float.
+/// - `--with-dependencies` / `-w` (`..._NO_ROOT_REQUIRE`): the named
+///   packages plus their transitive deps float, *except* deps that are
+///   themselves root requirements (listed in `composer.json`) — those
+///   stay pinned, and the walk doesn't recurse through them.
+/// - `--with-all-dependencies` / `-W` (`..._WITH_TRANSITIVE_DEPS`): the
+///   named packages plus their entire transitive require-closure float,
+///   including root requirements.
 #[derive(Debug, Clone)]
 pub struct PartialUpdate {
     /// Packages named on the command line — the roots of the float scope.
     pub names: Vec<String>,
-    /// Also float the named packages' transitive dependencies.
+    /// Also float the named packages' transitive dependencies, but leave
+    /// root requirements pinned (`-w`). Ignored when
+    /// `with_all_dependencies` is set.
     pub with_dependencies: bool,
-    /// Also float all of the named packages' dependencies (superset of
-    /// `with_dependencies`; see the scope note above).
+    /// Also float the named packages' entire transitive require-closure,
+    /// including root requirements (`-W`). Superset of
+    /// `with_dependencies`.
     pub with_all_dependencies: bool,
+    /// Names of the project's root requirements (`composer.json`'s
+    /// `require` + `require-dev` keys). Used to honor `-w`'s "don't touch
+    /// root requires" rule; ignored under `-W` and when no flag is set.
+    pub root_requires: Vec<String>,
     /// The existing lock — source of both the pinned versions and the
     /// dependency graph used to compute the float scope.
     pub lock: Lock,
@@ -3133,11 +3144,23 @@ impl PartialUpdate {
     /// plus their transitive require-closure when a `--with*-dependencies`
     /// flag is set. Platform/virtual requires (`php`, `ext-*`, …) are
     /// skipped — they aren't lock packages.
+    ///
+    /// Under `-w` (and not `-W`) a transitive dep that is itself a root
+    /// requirement is left out of the scope — it stays pinned — and the
+    /// walk does not recurse through it (its deps are fixed by its pinned
+    /// version). A package the user named explicitly always floats, even
+    /// if it's a root requirement.
     fn float_scope(&self) -> FxHashSet<String> {
         let mut scope: FxHashSet<String> = self.names.iter().cloned().collect();
         if !(self.with_dependencies || self.with_all_dependencies) {
             return scope;
         }
+        // `-w` keeps root requires pinned; `-W` floats everything. When
+        // both are set `-W` wins (it's the superset).
+        let keep_root_requires_pinned = self.with_dependencies && !self.with_all_dependencies;
+        let named: FxHashSet<&str> = self.names.iter().map(String::as_str).collect();
+        let root_requires: FxHashSet<&str> =
+            self.root_requires.iter().map(String::as_str).collect();
         let by_name: FxHashMap<&str, &LockPackage> = self
             .lock
             .packages
@@ -3151,7 +3174,18 @@ impl PartialUpdate {
                 continue;
             };
             for dep in pkg.require.keys() {
-                if by_name.contains_key(dep.as_str()) && scope.insert(dep.clone()) {
+                if !by_name.contains_key(dep.as_str()) {
+                    continue;
+                }
+                // `-w`: a root requirement reached transitively stays
+                // pinned (don't add, don't recurse) unless it was named.
+                if keep_root_requires_pinned
+                    && root_requires.contains(dep.as_str())
+                    && !named.contains(dep.as_str())
+                {
+                    continue;
+                }
+                if scope.insert(dep.clone()) {
                     queue.push(dep.clone());
                 }
             }
