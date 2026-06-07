@@ -101,12 +101,28 @@ pub fn run(force: bool) -> Result<ExitCode> {
 
     let client = build_client(current)?;
 
-    let latest = fetch_latest_version(&client)?;
-    if !is_newer(&latest, current)? {
+    let latest = fetch_latest_release(&client)?;
+    if !is_newer(&latest.version, current)? {
         println!("already up to date ({current})");
         return Ok(ExitCode::SUCCESS);
     }
-    println!("latest:  {latest}");
+    println!("latest:  {}", latest.version);
+
+    // A release can show up on the `/releases/latest` API the instant the
+    // GitHub Release is created, before dist has finished uploading its
+    // assets. Updating to such a tag would 404 mid-download (the archive or
+    // its `.sha256` sidecar isn't there yet). Require both to be attached
+    // before we commit; otherwise leave the user on their current version
+    // and let a later run pick it up once publishing completes.
+    let sidecar = format!("{archive}.sha256");
+    if !latest.has_asset(&archive) || !latest.has_asset(&sidecar) {
+        println!(
+            "latest release {} is published but its {target} assets aren't available yet; \
+             staying on {current} (try again once the release finishes publishing)",
+            latest.version
+        );
+        return Ok(ExitCode::SUCCESS);
+    }
 
     let bin_dir = current_exe
         .parent()
@@ -124,7 +140,7 @@ pub fn run(force: bool) -> Result<ExitCode> {
     let extract_root = tmp.path().join("extracted");
     fs::create_dir_all(&extract_root).wrap_err("preparing extract dir")?;
 
-    let tag = format!("{TAG_PREFIX}{latest}");
+    let tag = format!("{TAG_PREFIX}{}", latest.version);
 
     download(
         &client,
@@ -162,7 +178,7 @@ pub fn run(force: bool) -> Result<ExitCode> {
         replace(&new_bgx, &bgx_target)?;
     }
 
-    println!("updated bougie {current} -> {latest}");
+    println!("updated bougie {current} -> {}", latest.version);
     Ok(ExitCode::SUCCESS)
 }
 
@@ -273,6 +289,26 @@ fn canonical_lossy(p: &Path) -> PathBuf {
 #[derive(Deserialize)]
 struct GhRelease {
     tag_name: String,
+    #[serde(default)]
+    assets: Vec<GhAsset>,
+}
+
+#[derive(Deserialize)]
+struct GhAsset {
+    name: String,
+}
+
+/// The latest published release: its version (tag minus the `bougie-v`
+/// prefix) and the names of the assets currently attached to it.
+struct LatestRelease {
+    version: String,
+    asset_names: Vec<String>,
+}
+
+impl LatestRelease {
+    fn has_asset(&self, name: &str) -> bool {
+        self.asset_names.iter().any(|a| a == name)
+    }
 }
 
 fn build_client(version: &str) -> Result<reqwest::blocking::Client> {
@@ -284,7 +320,7 @@ fn build_client(version: &str) -> Result<reqwest::blocking::Client> {
         .wrap_err("building HTTP client")
 }
 
-fn fetch_latest_version(client: &reqwest::blocking::Client) -> Result<String> {
+fn fetch_latest_release(client: &reqwest::blocking::Client) -> Result<LatestRelease> {
     let release: GhRelease = client
         .get(GITHUB_API_LATEST)
         .send()
@@ -293,11 +329,15 @@ fn fetch_latest_version(client: &reqwest::blocking::Client) -> Result<String> {
         .wrap_err("GitHub Releases API returned an error status")?
         .json()
         .wrap_err("parsing GitHub Releases API response")?;
-    release
+    let version = release
         .tag_name
         .strip_prefix(TAG_PREFIX)
         .map(str::to_owned)
-        .ok_or_else(|| eyre!("unexpected tag format from GitHub API: {}", release.tag_name))
+        .ok_or_else(|| eyre!("unexpected tag format from GitHub API: {}", release.tag_name))?;
+    Ok(LatestRelease {
+        version,
+        asset_names: release.assets.into_iter().map(|a| a.name).collect(),
+    })
 }
 
 fn detect_target() -> Result<String> {
@@ -645,6 +685,57 @@ mod tests {
         // A package-manager copy in a sibling dir is not owned by the
         // installer's prefix.
         assert!(!prefix_owns_exe(&prefix.to_string_lossy(), &exe));
+    }
+
+    #[test]
+    fn latest_release_asset_lookup() {
+        let release = LatestRelease {
+            version: "0.21.0".into(),
+            asset_names: vec![
+                "bougie-aarch64-apple-darwin.tar.gz".into(),
+                "bougie-aarch64-apple-darwin.tar.gz.sha256".into(),
+            ],
+        };
+        assert!(release.has_asset("bougie-aarch64-apple-darwin.tar.gz"));
+        assert!(release.has_asset("bougie-aarch64-apple-darwin.tar.gz.sha256"));
+        // A target whose assets haven't been uploaded yet must not match.
+        assert!(!release.has_asset("bougie-x86_64-unknown-linux-gnu.tar.gz"));
+    }
+
+    #[test]
+    fn release_with_no_assets_yet_gates_update() {
+        // The published-but-empty window: the tag exists but dist hasn't
+        // uploaded anything. Nothing should be considered available.
+        let release = LatestRelease {
+            version: "0.21.0".into(),
+            asset_names: vec![],
+        };
+        assert!(!release.has_asset("bougie-aarch64-apple-darwin.tar.gz"));
+        assert!(!release.has_asset("bougie-aarch64-apple-darwin.tar.gz.sha256"));
+    }
+
+    #[test]
+    fn gh_release_deserializes_assets() {
+        let json = r#"{
+            "tag_name": "bougie-v0.21.0",
+            "assets": [
+                {"name": "bougie-aarch64-apple-darwin.tar.gz"},
+                {"name": "bougie-aarch64-apple-darwin.tar.gz.sha256"}
+            ]
+        }"#;
+        let release: GhRelease = serde_json::from_str(json).unwrap();
+        assert_eq!(release.tag_name, "bougie-v0.21.0");
+        assert_eq!(release.assets.len(), 2);
+        assert_eq!(release.assets[0].name, "bougie-aarch64-apple-darwin.tar.gz");
+    }
+
+    #[test]
+    fn gh_release_without_assets_field_defaults_empty() {
+        // Older / partial API payloads may omit `assets`; serde default
+        // keeps deserialization from failing.
+        let release: GhRelease =
+            serde_json::from_str(r#"{"tag_name": "bougie-v0.21.0"}"#).unwrap();
+        assert!(release.assets.is_empty());
     }
 
     #[test]
