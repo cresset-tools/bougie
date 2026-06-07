@@ -80,7 +80,7 @@ fn restart_replaces_the_process_and_preserves_the_tenant() {
     let ledger_before =
         fs::read_to_string(env.home_path().join("state/services/redis/tenants.json")).unwrap();
 
-    let out = env
+    let output = env
         .bougie()
         .args(["services", "restart", "--format", "json-v1"])
         .current_dir(proj.path())
@@ -88,13 +88,21 @@ fn restart_replaces_the_process_and_preserves_the_tenant() {
         .assert()
         .success()
         .get_output()
-        .stdout
         .clone();
-    let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     let restarted = v["restarted"].as_array().expect("restarted array");
     assert!(
         restarted.iter().any(|s| s == "redis"),
         "restarted list missing redis: {v}"
+    );
+
+    // Live progress: the daemon streams a stopping/starting pair on
+    // stderr so the user sees the cycle instead of a frozen prompt.
+    // It lands on stderr, so the json-v1 stdout payload stays clean.
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("stopping redis") && stderr.contains("starting redis"),
+        "expected live stopping/starting progress on stderr, got: {stderr}"
     );
 
     // New PID means the supervisor really cycled the child.
