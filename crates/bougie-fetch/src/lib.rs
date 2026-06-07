@@ -896,12 +896,20 @@ impl DownloadBar {
     }
 
     /// Build a **step-count** progress bar rendering `{prefix} {pos}/{len}
-    /// {msg}`. Unlike the byte bar from [`Self::new`], it draws immediately
-    /// and keeps drawing even when no bytes flow — for a sequence of small
+    /// {msg}`. Tracks item *counts*, not bytes — for a sequence of small
     /// units that are frequently cache hits (e.g. the baseline PHP
     /// extensions), where "12/24 intl" is the real signal and an aggregate
     /// byte bar would just sit at `0 B/0 B`. Advance with [`Self::step`]
     /// once per unit; call [`Self::finish`] at the end.
+    ///
+    /// Like [`Self::new`], the bar stays **hidden until revealed** — but
+    /// [`Self::step`] does *not* reveal it, since stepping past a cache hit
+    /// is not real work. The caller drives [`Self::reveal`] once it knows a
+    /// unit actually needed installing, so a fully-cached run (the common
+    /// `bougie run` / `bougie server` steady state, where every baseline
+    /// extension is already on disk) prints nothing at all instead of
+    /// flashing "installing 24/24". A real install reveals the bar and it
+    /// keeps drawing for the rest of the sequence.
     ///
     /// Hidden (a no-op) unless the global progress-visible flag is set,
     /// same as [`Self::new`]. A step bar tracks item *counts*, not bytes,
@@ -912,36 +920,42 @@ impl DownloadBar {
         if !bougie_output::output::progress_visible() {
             return Self::hidden();
         }
-        // Construct *with* the final draw target rather than
-        // `ProgressBar::new` + `set_draw_target`. `new` attaches
-        // indicatif's default (visible) stderr target, and the
-        // `set_style`/`set_prefix` calls below draw an initial frame to
-        // it; swapping in a fresh `stderr_with_hz` target afterwards
-        // leaves that frame orphaned — its draw-state doesn't know a
-        // frame was already emitted, so the next redraw never clears it.
-        // Because `{wide_msg}` pads that orphan to the full terminal
-        // width, writing it lands on the last column (pending wrap) and
-        // the following frame drops to a new line, stranding the orphan
-        // in scrollback (the "spurious newline" the baseline-extension
-        // bar showed — its first `step()` fires instantly on a cache hit,
-        // before the rate-limiter can interpose a clear). Building with
-        // the target up front means there is no orphaned default-target
-        // frame. (`Self::new` is unaffected: it swaps to a *hidden*
-        // target before drawing; the resolver bar swaps before its
-        // `set_style`, so neither draws to the default target.)
-        let pb = ProgressBar::with_draw_target(Some(total), ProgressDrawTarget::stderr_with_hz(15));
+        // Build hidden first (draw target swapped *before* `set_style`
+        // draws a frame), then promote on `reveal`. This is the same
+        // construction `Self::new` uses, and it sidesteps the orphaned
+        // default-target frame that `ProgressBar::new` + later
+        // `set_draw_target` would strand in scrollback (the historical
+        // "spurious newline" the baseline-extension bar showed when its
+        // first frame drew before the rate-limiter could clear it).
+        let pb = ProgressBar::new(total);
+        pb.set_draw_target(ProgressDrawTarget::hidden());
         let style = ProgressStyle::with_template(
             "  {prefix:<12} {pos}/{len} {spinner:.magenta} {wide_msg:.dim}",
         )
         .unwrap_or_else(|_| ProgressStyle::default_spinner());
         pb.set_style(style);
         pb.set_prefix(label.to_owned());
-        pb.enable_steady_tick(Duration::from_millis(120));
-        Self { pb, sink: None, download_label: label.to_owned(), pending: None }
+        Self {
+            pb,
+            sink: None,
+            download_label: label.to_owned(),
+            pending: Some(PendingActivation { activated: AtomicBool::new(false) }),
+        }
+    }
+
+    /// Promote a lazily-constructed [`steps`](Self::steps) bar to actually
+    /// draw. The caller invokes this once it discovers a unit that needs
+    /// real work; subsequent [`step`](Self::step)s then render. No-op on
+    /// hidden bars and on already-revealed ones.
+    pub fn reveal(&self) {
+        self.activate();
     }
 
     /// Label the unit now starting and advance a [`steps`](Self::steps)
-    /// bar by one. No-op on hidden bars (their draw target is hidden).
+    /// bar by one. Does *not* reveal a lazy step bar — call
+    /// [`Self::reveal`] for that. No-op visually on hidden / not-yet-
+    /// revealed bars (indicatif still tracks the position internally, so a
+    /// later reveal shows the correct count).
     pub fn step(&self, name: impl Into<String>) {
         self.pb.set_message(name.into());
         self.pb.inc(1);
@@ -1172,6 +1186,21 @@ mod tests {
         bar.mark_extracting();
         bar.set_current("ext-intl"); // restores the prefix after extraction
         bar.note_retry("php-8.3.12.tar.zst", 1, RETRY_BUDGET);
+        bar.finish();
+    }
+
+    #[test]
+    fn steps_bar_accepts_lazy_reveal_sequence() {
+        // Smoke test the count-bar driver: stepping past cache hits, a
+        // mid-sequence `reveal` (the "first real install" signal), and a
+        // final `finish` must all be panic-free. In a non-TTY test run
+        // `steps` yields a hidden bar (pending: None) so `reveal` is a
+        // no-op, but the call sites must still type-check and survive.
+        let bar = DownloadBar::steps("installing", 3);
+        bar.step("opcache"); // cache hit — stays hidden
+        bar.step("intl"); // needs install
+        bar.reveal();
+        bar.step("curl");
         bar.finish();
     }
 

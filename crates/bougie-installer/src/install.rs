@@ -470,6 +470,13 @@ pub fn install_baseline_into(
         // ("12/24 intl"), and run each extension's actual download against
         // a *hidden* byte bar so the two don't fight over the terminal
         // line (there's no `MultiProgress` in the tree to compose them).
+        //
+        // The count bar is lazy: `step` advances it while hidden, and we
+        // only `reveal` it once an extension turns out to need installing
+        // (`!already_present`). A steady-state sync — every baseline
+        // extension already on disk, which is the norm on `bougie run` /
+        // `bougie server` — therefore prints nothing instead of flashing
+        // "installing 24/24".
         let progress = DownloadBar::steps("installing", to_install.len() as u64);
         let byte_bar = DownloadBar::hidden();
         for &name in &to_install {
@@ -484,6 +491,9 @@ pub fn install_baseline_into(
                 &byte_bar,
             ) {
                 Ok(installed) => {
+                    if !installed.already_present {
+                        progress.reveal();
+                    }
                     if let Err(e) = write_install_conf_d(&conf_d, &installed) {
                         report
                             .failed
