@@ -7,10 +7,12 @@
 //! the source files under `vendored/composer-<version>/` and
 //! regenerating the byte-equivalence fixtures.
 //!
-//! `platform_check.php` is conditionally emitted by Composer (only
-//! when there's a platform requirement to check) and currently isn't
-//! exercised by any fixture, so we don't ship it yet. When that
-//! lands it'll get the same treatment.
+//! `platform_check.php` is *not* a vendored file — Composer generates
+//! it per-project from the resolved platform requirements rather than
+//! shipping a fixed copy. bougie does the same in
+//! [`crate::emit::platform_check`]; it's emitted (conditionally, when
+//! `config.platform-check` is on and there's something to check) by
+//! [`crate::Autoloader::emit`], not from this module.
 
 use std::path::Path;
 

@@ -100,6 +100,13 @@ pub struct Autoloader {
     apcu_prefix: Option<String>,
     classmap_authoritative: bool,
     no_dev: bool,
+    /// Rendered `platform_check.php` body, or `None` when
+    /// `config.platform-check` is off or there's nothing to check. When
+    /// `Some`, `emit` writes the file and `autoload_real.php` gets the
+    /// matching `require` line. Computed once at bootstrap — it's a pure
+    /// function of `composer.{json,lock}` requirements + config, which
+    /// don't change under live code edits.
+    platform_check: Option<String>,
     header: AutoloadHeader,
     /// PSR-noncompliance warnings collected during the bootstrap scan.
     /// `Autoloader::warnings()` exposes them in the `relative_path`
@@ -203,6 +210,26 @@ impl Autoloader {
 
         let merged = merge_classmap(&tasks);
 
+        // `platform_check.php`: aggregate the root + prod-package
+        // `php`/`ext-*` requirements. Dev packages are excluded
+        // (Composer skips `$devPackageNames`), so this is independent of
+        // `--no-dev`.
+        let platform_check = {
+            let mut pkgs = vec![emit::platform_check::PkgLinks {
+                require: &manifest.require,
+                replace: &manifest.replace,
+                provide: &manifest.provide,
+            }];
+            for pkg in &lock.packages {
+                pkgs.push(emit::platform_check::PkgLinks {
+                    require: &pkg.require,
+                    replace: &pkg.replace,
+                    provide: &pkg.provide,
+                });
+            }
+            emit::platform_check::generate(&pkgs, manifest.config.platform_check)
+        };
+
         let header = AutoloadHeader {
             lock_content_hash: lock.content_hash.clone(),
             autoload_config_hash: autoload_config_hash(&manifest),
@@ -227,6 +254,7 @@ impl Autoloader {
             apcu_prefix,
             classmap_authoritative: req.classmap_authoritative,
             no_dev: req.no_dev,
+            platform_check,
             header,
             psr_warnings,
         })
@@ -288,9 +316,19 @@ impl Autoloader {
                 !self.files.is_empty(),
                 self.classmap_authoritative,
                 self.apcu_prefix.as_deref(),
+                self.platform_check.is_some(),
             )
             .as_bytes(),
         )?;
+
+        // `platform_check.php` accompanies the `require` line emitted
+        // into `autoload_real.php` above. Composer deletes a stale copy
+        // when the check is off; we only ever write atomically here, so
+        // a project that turns the check off leaves no dangling require
+        // (the require line is gated on the same `Option`).
+        if let Some(body) = &self.platform_check {
+            write_atomic(&composer_dir.join("platform_check.php"), body.as_bytes())?;
+        }
 
         write_atomic(
             &composer_dir.join("autoload_static.php"),

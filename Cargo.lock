@@ -436,6 +436,7 @@ version = "0.22.0"
 dependencies = [
  "bougie-installers",
  "bougie-php-json",
+ "bougie-semver",
  "criterion",
  "md-5",
  "memchr",

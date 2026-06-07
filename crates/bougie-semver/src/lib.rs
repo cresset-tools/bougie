@@ -11,10 +11,12 @@
 //! are already committed so that as the implementations grow, the
 //! pass/fail signal is loud and locatable.
 
+pub mod bound;
 pub mod constraint;
 pub mod stability;
 pub mod version;
 
+pub use bound::Bound;
 pub use constraint::Constraint;
 pub use stability::Stability;
 pub use version::Version;

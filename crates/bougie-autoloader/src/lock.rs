@@ -34,11 +34,25 @@ pub(crate) struct Package {
     #[serde(default)]
     pub autoload: AutoloadBlock,
     /// Other packages this one requires. Composer's `PackageSorter`
-    /// uses this to build a usage graph for topological-ish sorting;
-    /// see `LockFile::reverse_sorted_packages`. Values are version
-    /// constraints we don't care about — only the keys matter.
+    /// uses this to build a usage graph for topological-ish sorting
+    /// (see `LockFile::reverse_sorted_packages`, which only reads the
+    /// keys). The constraint *values* additionally feed
+    /// `platform_check.php` generation — the `php` / `php-64bit` /
+    /// `ext-*` requirements across every prod package determine the
+    /// emitted version + extension guards.
     #[serde(default)]
     pub require: std::collections::BTreeMap<String, String>,
+    /// Packages/platform packages this one `replace`s. Together with
+    /// [`Package::provide`] this is how a polyfill declares it stands in
+    /// for an `ext-*` requirement, so the platform check skips emitting
+    /// an `extension_loaded()` guard for it (Composer's
+    /// `$extensionProviders`). Values are constraints.
+    #[serde(default)]
+    pub replace: std::collections::BTreeMap<String, String>,
+    /// Platform/virtual packages this one `provide`s — see
+    /// [`Package::replace`].
+    #[serde(default)]
+    pub provide: std::collections::BTreeMap<String, String>,
     /// `dist` block — only the `type` discriminant is read. Path-repo
     /// packages (`dist.type == "path"`) need their classmap scan roots
     /// added to the user-code watcher set so live patches see changes
@@ -72,6 +86,18 @@ pub(crate) struct AutoloadBlock {
 pub(crate) struct RootManifest {
     #[serde(default)]
     pub autoload: AutoloadBlock,
+    /// Root-package requirements. The root is the first entry in
+    /// Composer's `$packageMap`, so its `php` / `ext-*` requires feed
+    /// `platform_check.php` alongside the locked packages'.
+    #[serde(default)]
+    pub require: std::collections::BTreeMap<String, String>,
+    /// Root `replace` / `provide` — completes the extension-provider set
+    /// for the platform check (rare on a root package, but Composer
+    /// includes it).
+    #[serde(default)]
+    pub replace: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    pub provide: std::collections::BTreeMap<String, String>,
     #[serde(default, rename = "autoload-dev")]
     #[allow(dead_code)] // wired in once dev separation matters (Phase 3)
     pub autoload_dev: AutoloadBlock,
@@ -96,6 +122,49 @@ pub(crate) struct RootConfig {
     /// content-hash-changing edits.
     #[serde(default, rename = "autoloader-suffix")]
     pub autoloader_suffix: Option<String>,
+    /// `platform-check` — whether to emit `platform_check.php` and how
+    /// strict it is. Composer's default is `"php-only"`, so this field
+    /// defaults to [`PlatformCheck::PhpOnly`] when the key is absent.
+    #[serde(default, rename = "platform-check")]
+    pub platform_check: PlatformCheck,
+}
+
+/// `config.platform-check`. Composer accepts a bool or the string
+/// `"php-only"`; `false` disables the check, `true` emits both the PHP
+/// version guard and per-extension `extension_loaded()` guards, and
+/// `"php-only"` (the default) emits only the version guard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum PlatformCheck {
+    /// `false` — no `platform_check.php` at all.
+    Disabled,
+    /// `"php-only"` (Composer's default) — PHP version guard only.
+    #[default]
+    PhpOnly,
+    /// `true` — PHP version guard plus extension guards.
+    Strict,
+}
+
+impl<'de> Deserialize<'de> for PlatformCheck {
+    fn deserialize<D>(d: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Raw {
+            Bool(bool),
+            Str(String),
+        }
+        Ok(match Raw::deserialize(d)? {
+            Raw::Bool(true) => PlatformCheck::Strict,
+            Raw::Bool(false) => PlatformCheck::Disabled,
+            // Composer only blesses "php-only"; treat any other string
+            // the lenient way (its documented default behavior) rather
+            // than failing the whole dump.
+            Raw::Str(s) if s == "php-only" => PlatformCheck::PhpOnly,
+            Raw::Str(_) => PlatformCheck::PhpOnly,
+        })
+    }
 }
 
 impl LockFile {
