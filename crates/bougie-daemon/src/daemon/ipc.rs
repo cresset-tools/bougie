@@ -296,6 +296,11 @@ pub async fn handle_connection(stream: UnixStream, state: Arc<DaemonState>) {
         Ok(Request::ServiceUp(args)) => {
             dispatch_up_streaming(&mut write_half, &state, args).await;
         }
+        // Streaming: a `stopping`/`starting` progress pair per service as
+        // it cycles, then the terminal `result`.
+        Ok(Request::ServiceRestart(args)) => {
+            dispatch_restart_streaming(&mut write_half, &state, args.services).await;
+        }
         // Streaming drain: a `progress` frame per service as it stops,
         // then the terminal `result`, then the daemon tears itself down.
         Ok(Request::DaemonShutdown) => {
@@ -385,7 +390,7 @@ async fn dispatch(req: Request, state: &Arc<DaemonState>) -> ResultFrame {
         Request::ServiceDown(args) => {
             dispatch_down(state, args.project, args.services, args.purge).await
         }
-        Request::ServiceRestart(args) => dispatch_restart(state, args.services).await,
+        Request::ServiceRestart(_) => unreachable!("handled in handle_connection"),
         Request::ServiceEnv(args) => dispatch_env(state, args.project).await,
         Request::ServiceLogs(_) => unreachable!("handled in handle_connection"),
         Request::Catalog => dispatch_catalog(),
@@ -410,10 +415,18 @@ fn dispatch_catalog() -> ResultFrame {
 /// `start` — both supervisor methods are idempotent and the
 /// `Mutex<Supervisor>` serialises the pair so no concurrent
 /// `service.up` can wedge in. The tenant ledger is left alone.
-async fn dispatch_restart(
+///
+/// Streams a `stopping {name}` progress frame before each stop and a
+/// `starting {name}` frame before each (re)start, so the user sees the
+/// cycle live instead of staring at a frozen prompt. Mirrors the
+/// stderr progress convention of [`dispatch_shutdown_streaming`]. The
+/// terminal `result` still carries the `restarted` list that drives the
+/// CLI's final summary.
+async fn dispatch_restart_streaming(
+    write_half: &mut tokio::net::unix::OwnedWriteHalf,
     state: &Arc<DaemonState>,
     services: Vec<String>,
-) -> ResultFrame {
+) {
     use crate::daemon::catalog;
     let names: Vec<&str> = services.iter().map(std::string::String::as_str).collect();
     // Re-order to respect after/requires graph. Same topology used
@@ -421,7 +434,10 @@ async fn dispatch_restart(
     // way as a fresh boot.
     let order = match super::supervisor::compute_start_order(&names) {
         Ok(o) => o,
-        Err(e) => return ResultFrame::err("bad_request", e.to_string()),
+        Err(e) => {
+            write_terminal(write_half, &ResultFrame::err("bad_request", e.to_string())).await;
+            return;
+        }
     };
     let mut restarted = Vec::new();
     for name in order {
@@ -430,6 +446,7 @@ async fn dispatch_restart(
         if !catalog::find(name).is_some_and(|e| e.user_facing) {
             continue;
         }
+        let _ = write_progress(write_half, "stderr", &format!("stopping {name}\n")).await;
         let mut sup = state.supervisor.lock().await;
         // `stop` returns Ok(false) when the service wasn't running;
         // skip those — `restart` of a stopped service is a no-op,
@@ -438,23 +455,34 @@ async fn dispatch_restart(
             Ok(true) => true,
             Ok(false) => false,
             Err(e) => {
-                return ResultFrame::err(
-                    "service_stop_failed",
-                    format!("{name}: {e}"),
-                );
+                drop(sup);
+                write_terminal(
+                    write_half,
+                    &ResultFrame::err("service_stop_failed", format!("{name}: {e}")),
+                )
+                .await;
+                return;
             }
         };
         if was_running {
+            let _ = write_progress(write_half, "stderr", &format!("starting {name}\n")).await;
             if let Err(e) = sup.start(name).await {
-                return ResultFrame::err(
-                    "service_start_failed",
-                    format!("{name}: {e}"),
-                );
+                drop(sup);
+                write_terminal(
+                    write_half,
+                    &ResultFrame::err("service_start_failed", format!("{name}: {e}")),
+                )
+                .await;
+                return;
             }
             restarted.push(name.to_string());
         }
     }
-    ResultFrame::ok(serde_json::json!({"restarted": restarted}))
+    write_terminal(
+        write_half,
+        &ResultFrame::ok(serde_json::json!({"restarted": restarted})),
+    )
+    .await;
 }
 
 /// Streaming `service.logs` handler. Reads the initial tail, then
