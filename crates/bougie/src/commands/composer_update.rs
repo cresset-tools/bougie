@@ -15,8 +15,8 @@ use bougie_cli::OutputFormat;
 use bougie_composer::lockfile::{self, canonical_readme, Lock};
 use bougie_composer_resolver::metadata::Repo;
 use bougie_composer_resolver::{
-    dry_run_update, resolve_for_lockfile, DryRunOptions, LockfileSolveOutcome, ResolvedPackage,
-    UpdateSummary,
+    dry_run_update, dry_run_update_partial, resolve_for_lockfile_partial, DryRunOptions,
+    LockfileSolveOutcome, PartialUpdate, ResolvedPackage, UpdateSummary,
 };
 use bougie_output::output::{emit, Render};
 use bougie_paths::Paths;
@@ -76,11 +76,15 @@ impl Render for UpdateResult {
     }
 }
 
+#[allow(clippy::fn_params_excessive_bools)]
 pub fn run(
     format: OutputFormat,
     working_dir: Option<PathBuf>,
     no_dev: bool,
     dry_run: bool,
+    packages: Vec<String>,
+    with_dependencies: bool,
+    with_all_dependencies: bool,
 ) -> Result<ExitCode> {
     let project_root = match working_dir {
         Some(p) => p,
@@ -88,12 +92,53 @@ pub fn run(
     };
     let paths = Paths::from_env()?;
 
+    // Partial update (`composer update <pkg>...`): hold every other
+    // package at its locked version. Requires an existing composer.lock —
+    // there's nothing to pin without one (matches Composer, which refuses
+    // a partial update with no lock present).
+    let partial = if packages.is_empty() {
+        None
+    } else {
+        let lock_path = project_root.join("composer.lock");
+        if !lock_path.is_file() {
+            return Err(eyre::eyre!(
+                "cannot update a partial set of packages without a composer.lock present — \
+                 run `bougie composer update` (no package list) first to create one",
+            ));
+        }
+        let lock = Lock::read(&lock_path)
+            .wrap_err_with(|| format!("reading {}", lock_path.display()))?;
+        let partial = PartialUpdate {
+            names: packages,
+            with_dependencies,
+            with_all_dependencies,
+            lock,
+        };
+        for name in partial.unknown_names() {
+            eprintln!(
+                "warning: {name} is not present in composer.lock — \
+                 it will be added if another requirement pulls it in",
+            );
+        }
+        Some(partial)
+    };
+
     if dry_run {
         // Preserve the lighter dry-run path: single solve, just names
         // + versions. Useful when the user wants a quick "what would
         // change" without paying for the second prod-only solve.
-        let summary: UpdateSummary =
-            dry_run_update(&paths, &project_root, Repo::packagist(), DryRunOptions { no_dev })?;
+        let summary: UpdateSummary = match &partial {
+            Some(p) => dry_run_update_partial(
+                &paths,
+                &project_root,
+                Repo::packagist(),
+                DryRunOptions { no_dev },
+                Some(p),
+            )?,
+            None => {
+                dry_run_update(&paths, &project_root, Repo::packagist(), DryRunOptions { no_dev })?
+            }
+        };
         let result = UpdateResult {
             schema_version: 1,
             project_root,
@@ -108,7 +153,8 @@ pub fn run(
     }
 
     // Write-mode path: resolve, build a Lock, atomic write.
-    let (lock_path, outcome) = resolve_and_write_lock(&paths, &project_root)?;
+    let (lock_path, outcome) =
+        resolve_and_write_lock_partial(&paths, &project_root, partial.as_ref())?;
 
     let result = UpdateResult {
         schema_version: 1,
@@ -153,8 +199,19 @@ pub fn resolve_and_write_lock(
     paths: &Paths,
     project_root: &Path,
 ) -> Result<(PathBuf, LockfileSolveOutcome)> {
+    resolve_and_write_lock_partial(paths, project_root, None)
+}
+
+/// Like [`resolve_and_write_lock`], but with an optional [`PartialUpdate`]
+/// so `composer update <pkg>...` pins out-of-scope packages. `None` is a
+/// full update.
+pub fn resolve_and_write_lock_partial(
+    paths: &Paths,
+    project_root: &Path,
+    partial: Option<&PartialUpdate>,
+) -> Result<(PathBuf, LockfileSolveOutcome)> {
     let (composer_json_bytes, outcome): (Vec<u8>, LockfileSolveOutcome) =
-        resolve_for_lockfile(paths, project_root, Repo::packagist())?;
+        resolve_for_lockfile_partial(paths, project_root, Repo::packagist(), partial)?;
     let lock_path = project_root.join("composer.lock");
 
     let t_hash = std::time::Instant::now();
