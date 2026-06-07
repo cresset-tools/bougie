@@ -22,6 +22,7 @@
 //! `Or`. Matching is then a straight tree walk against the candidate
 //! version using [`Version::compare`].
 
+use crate::bound::Bound;
 use crate::version::{is_branch_alias as bougie_semver_is_branch_alias, CmpOp, Suffix, Version, VersionKind};
 use regex::Regex;
 use std::sync::OnceLock;
@@ -111,6 +112,137 @@ impl Constraint {
             Self::And(items) => items.iter().all(|c| c.matches(version)),
             Self::Or(items) => items.iter().any(|c| c.matches(version)),
         }
+    }
+
+    /// The lowest version this constraint admits, as a [`Bound`]. Port
+    /// of `Constraint::getLowerBound` + `MultiConstraint::extractBounds`
+    /// (commit `09af5e8`):
+    ///
+    /// - atomic `==`/`>=` → inclusive bound at the version; `>` →
+    ///   exclusive; `<`/`<=`/`!=` → [`Bound::zero`]; a `dev-` branch
+    ///   reference → `Bound::zero` (Composer's `strpos(... 'dev-') === 0`
+    ///   short-circuit).
+    /// - `And` (conjunctive) → the *greatest* of the members' lower
+    ///   bounds; `Or` (disjunctive) → the *least*.
+    ///
+    /// `Any` (`*` / `x`) is `Bound::zero`, matching
+    /// `MatchAllConstraint`.
+    #[must_use]
+    pub fn lower_bound(&self) -> Bound {
+        match self {
+            Self::Any => Bound::zero(),
+            Self::Op { op, version, .. } => {
+                if version.normalized.starts_with("dev-") {
+                    return Bound::zero();
+                }
+                match op {
+                    CmpOp::Eq | CmpOp::Ge => Bound::new(version.normalized.clone(), true),
+                    CmpOp::Gt => Bound::new(version.normalized.clone(), false),
+                    CmpOp::Lt | CmpOp::Le | CmpOp::Ne => Bound::zero(),
+                }
+            }
+            Self::And(items) => fold_bound(items, true, Constraint::lower_bound),
+            Self::Or(items) => fold_bound(items, false, Constraint::lower_bound),
+        }
+    }
+
+    /// The highest version this constraint admits, as a [`Bound`].
+    /// Mirror of [`Constraint::lower_bound`] on the upper side:
+    /// `==`/`<=` → inclusive; `<` → exclusive; `>`/`>=`/`!=`/`*` →
+    /// [`Bound::positive_infinity`]. `And` → the *least* of the members'
+    /// upper bounds; `Or` → the *greatest*.
+    #[must_use]
+    pub fn upper_bound(&self) -> Bound {
+        match self {
+            Self::Any => Bound::positive_infinity(),
+            Self::Op { op, version, .. } => {
+                if version.normalized.starts_with("dev-") {
+                    return Bound::positive_infinity();
+                }
+                match op {
+                    CmpOp::Eq | CmpOp::Le => Bound::new(version.normalized.clone(), true),
+                    CmpOp::Lt => Bound::new(version.normalized.clone(), false),
+                    CmpOp::Gt | CmpOp::Ge | CmpOp::Ne => Bound::positive_infinity(),
+                }
+            }
+            // For the upper fold the direction flips: conjunctive keeps
+            // the smaller (`'<'`), disjunctive the larger (`'>'`).
+            Self::And(items) => fold_bound(items, false, Constraint::upper_bound),
+            Self::Or(items) => fold_bound(items, true, Constraint::upper_bound),
+        }
+    }
+
+    /// Whether `self` and `other` admit at least one common version —
+    /// i.e. their version intervals overlap. Used by the autoloader's
+    /// `platform_check.php` generator to honor `replace`/`provide` of an
+    /// extension (Composer's `$provided->matches($link->getConstraint())`).
+    ///
+    /// `Or` is the union of its members, so it intersects `other` iff
+    /// any member does. Everything else reduces to a single contiguous
+    /// interval, so the two overlap iff `max(lowers) <= min(uppers)`
+    /// (with endpoint inclusivity deciding the touching case).
+    #[must_use]
+    pub fn intersects(&self, other: &Constraint) -> bool {
+        match (self, other) {
+            (Self::Or(items), _) => items.iter().any(|c| c.intersects(other)),
+            (_, Self::Or(items)) => items.iter().any(|c| self.intersects(c)),
+            (Self::Any, _) | (_, Self::Any) => true,
+            _ => intervals_overlap(self, other),
+        }
+    }
+}
+
+/// Fold a member list into a single bound. `keep_greater` selects the
+/// max (`true`) or the min (`false`) under [`Bound::compare_to`], which
+/// is exactly what `MultiConstraint::extractBounds` does for the
+/// conjunctive/disjunctive cases. `extract` pulls the per-member bound
+/// (lower or upper).
+fn fold_bound(
+    items: &[Constraint],
+    keep_greater: bool,
+    extract: fn(&Constraint) -> Bound,
+) -> Bound {
+    let mut acc: Option<Bound> = None;
+    for c in items {
+        let b = extract(c);
+        match &acc {
+            None => acc = Some(b),
+            Some(cur) => {
+                if b.compare_to(cur, keep_greater) {
+                    acc = Some(b);
+                }
+            }
+        }
+    }
+    acc.unwrap_or_else(Bound::zero)
+}
+
+/// Overlap test for two single-interval constraints: the effective
+/// lower bound is the greater of the two lowers, the effective upper is
+/// the lesser of the two uppers, and the interval is non-empty iff the
+/// lower sits below the upper (or they touch and both endpoints are
+/// inclusive).
+fn intervals_overlap(a: &Constraint, b: &Constraint) -> bool {
+    let la = a.lower_bound();
+    let lb = b.lower_bound();
+    let ua = a.upper_bound();
+    let ub = b.upper_bound();
+    let lower = if la.compare_to(&lb, true) { la } else { lb };
+    let upper = if ua.compare_to(&ub, false) { ua } else { ub };
+
+    if lower.is_zero() || upper.is_positive_infinity() {
+        return true;
+    }
+    if lower.is_positive_infinity() {
+        return false;
+    }
+    // Both bounds are concrete versions: the interval is non-empty when
+    // `lower < upper`, or when they coincide and neither endpoint
+    // excludes the shared version.
+    match lower.version_cmp(&upper) {
+        std::cmp::Ordering::Less => true,
+        std::cmp::Ordering::Greater => false,
+        std::cmp::Ordering::Equal => lower.is_inclusive() && upper.is_inclusive(),
     }
 }
 
@@ -783,6 +915,72 @@ mod tests {
         let c = Constraint::parse("1.0.0-dev").unwrap();
         let v = Version::parse("1.0.0-dev").unwrap();
         assert!(c.matches(&v));
+    }
+
+    // ---- lower_bound / intersects (platform_check substrate) ----------
+
+    fn lb(s: &str) -> (String, bool) {
+        let b = Constraint::parse(s).unwrap().lower_bound();
+        (b.version().to_owned(), b.is_inclusive())
+    }
+
+    #[test]
+    fn lower_bound_atomic_ops() {
+        assert_eq!(lb(">=8.1"), ("8.1.0.0".to_owned(), true));
+        assert_eq!(lb(">8.0"), ("8.0.0.0".to_owned(), false));
+        assert_eq!(lb("8.1.2"), ("8.1.2.0".to_owned(), true)); // == form
+        // Upper-only / negation constraints floor at zero.
+        assert!(Constraint::parse("<8.0").unwrap().lower_bound().is_zero());
+        assert!(Constraint::parse("!=8.0").unwrap().lower_bound().is_zero());
+        assert!(Constraint::parse("*").unwrap().lower_bound().is_zero());
+    }
+
+    #[test]
+    fn lower_bound_caret_tilde_take_the_floor() {
+        // Caret/tilde are conjunctive ranges; the lower bound is the
+        // written floor, inclusive. Matches Composer's platform check
+        // emitting `PHP_VERSION_ID >= 80100` for `^8.1`.
+        assert_eq!(lb("^8.1"), ("8.1.0.0".to_owned(), true));
+        assert_eq!(lb("~8.2.3"), ("8.2.3.0".to_owned(), true));
+        assert_eq!(lb("^8"), ("8.0.0.0".to_owned(), true));
+    }
+
+    #[test]
+    fn lower_bound_conjunction_takes_the_greater() {
+        // `>=7.4 <8.3` → floor is 7.4 (the `<8.3` clause contributes a
+        // zero lower bound, which loses).
+        assert_eq!(lb(">=7.4 <8.3"), ("7.4.0.0".to_owned(), true));
+    }
+
+    #[test]
+    fn lower_bound_disjunction_takes_the_least() {
+        // `^7.4 || ^8.0` → floor is the lower alternative, 7.4.
+        assert_eq!(lb("^7.4 || ^8.0"), ("7.4.0.0".to_owned(), true));
+    }
+
+    #[test]
+    fn intersects_any_provider_matches_everything() {
+        // A polyfill that `provide`s `ext-x: *` covers any requirement.
+        let provided = Constraint::parse("*").unwrap();
+        assert!(provided.intersects(&Constraint::parse("^2.0").unwrap()));
+        assert!(provided.intersects(&Constraint::parse("*").unwrap()));
+    }
+
+    #[test]
+    fn intersects_overlapping_and_disjoint_ranges() {
+        let p = Constraint::parse("^1.0").unwrap();
+        assert!(p.intersects(&Constraint::parse(">=1.5").unwrap())); // overlap
+        assert!(!p.intersects(&Constraint::parse("^2.0").unwrap())); // disjoint
+        // Touching at an inclusive/exclusive boundary: `<2.0` and
+        // `>=2.0` do not overlap (`^1.0` upper is exclusive 2.0).
+        assert!(!p.intersects(&Constraint::parse(">=2.0").unwrap()));
+    }
+
+    #[test]
+    fn intersects_disjunction_member_overlap() {
+        let provided = Constraint::parse("^1.0 || ^3.0").unwrap();
+        assert!(provided.intersects(&Constraint::parse("^3.1").unwrap()));
+        assert!(!provided.intersects(&Constraint::parse("^2.0").unwrap()));
     }
 
     #[test]

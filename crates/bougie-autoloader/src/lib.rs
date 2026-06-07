@@ -13,10 +13,11 @@
 //! and `installed.{json,php}`. Conditional features wired in:
 //! `--optimize`, `--classmap-authoritative`, `--no-dev`,
 //! `--apcu-autoloader` (with explicit `apcu_prefix` override for
-//! tests), and `config.autoloader-suffix` (composer.json override of
-//! the content-hash). Still pending: `config.platform-check` →
-//! `platform_check.php` (needs a constraint-parsing facility we don't
-//! yet have).
+//! tests), `config.autoloader-suffix` (composer.json override of the
+//! content-hash), and `config.platform-check` → `platform_check.php`
+//! (the PHP-version + extension guard, byte-equivalent to Composer; see
+//! `emit::platform_check`, built on `bougie_semver`'s constraint
+//! lower-bound extraction).
 
 mod autoloader;
 mod collect;

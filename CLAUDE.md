@@ -201,9 +201,6 @@ change up. Examples in `git log`: `feat(composer-resolver): ...`,
 
 ## Plan docs (in-flight)
 
-- `AUTOLOADER_PLAN.md` — `bougie composer dump-autoloader` native port.
-  Mostly shipped; remaining: platform-check emit + wire-up (the last
-  Composer-parity gap).
 - `RESOLVER_PLAN.md` — Native pubgrub-based Composer resolver. Largely
   shipped; ongoing work in `bougie-composer-resolver`.
 - `RESOLVER_TEST_PLAN.md` — Resolver test architecture (composer/semver

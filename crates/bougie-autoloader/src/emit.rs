@@ -6,6 +6,7 @@
 //! byte-equivalent to Composer 2.8 — golden fixtures in
 //! `tests/fixtures/*/expected/` are the contract.
 
+pub(crate) mod platform_check;
 pub(crate) mod real;
 pub(crate) mod static_loader;
 

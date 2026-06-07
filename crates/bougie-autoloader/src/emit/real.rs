@@ -26,11 +26,18 @@ use std::fmt::Write;
 /// responsible for handing over a string with no embedded quotes (the
 /// random default and the `--apcu-autoloader-prefix=` CLI form are
 /// both 20-hex-char strings, so this is trivially safe in practice).
+///
+/// `platform_check`: when true, inserts the
+/// `require __DIR__ . '/platform_check.php';` line between the
+/// `getLoader()` early-return guard and the bootstrap loader
+/// registration. The caller emits the matching `platform_check.php`
+/// only when this is set; the two go together (Composer's `$checkPlatform`).
 pub(crate) fn emit(
     content_hash: &str,
     has_files: bool,
     classmap_authoritative: bool,
     apcu_prefix: Option<&str>,
+    platform_check: bool,
 ) -> String {
     let mut out = String::with_capacity(2048);
 
@@ -58,9 +65,13 @@ pub(crate) fn emit(
     out.push_str("            return self::$loader;\n");
     out.push_str("        }\n\n");
 
-    // platform_check.php require — only when composer.json's
-    // `config.platform-check` is on. Our DumpRequest doesn't surface
-    // it yet; left for a follow-up.
+    // PLATFORM_CHECK — require the platform guard before anything else,
+    // when `config.platform-check` is on and there's something to
+    // check. Composer's heredoc inserts the line plus one trailing
+    // blank line.
+    if platform_check {
+        out.push_str("        require __DIR__ . '/platform_check.php';\n\n");
+    }
 
     // CLASSLOADER_INIT — register the bootstrap loader, instantiate
     // ClassLoader, unregister the bootstrap.
@@ -142,7 +153,7 @@ mod tests {
 
     #[test]
     fn minimal_shape() {
-        let s = emit("deadbeef", false, false, None);
+        let s = emit("deadbeef", false, false, None, false);
         assert!(s.starts_with("<?php\n\n// autoload_real.php"));
         assert!(s.contains("class ComposerAutoloaderInitdeadbeef\n"));
         assert!(s.ends_with("}\n"));
@@ -154,7 +165,7 @@ mod tests {
 
     #[test]
     fn classmap_authoritative_inserts_before_register() {
-        let s = emit("deadbeef", false, true, None);
+        let s = emit("deadbeef", false, true, None, false);
         let auth_pos = s.find("setClassMapAuthoritative").unwrap();
         let register_pos = s.find("$loader->register(true)").unwrap();
         assert!(auth_pos < register_pos);
@@ -162,14 +173,14 @@ mod tests {
 
     #[test]
     fn files_block_present_when_requested() {
-        let s = emit("deadbeef", true, false, None);
+        let s = emit("deadbeef", true, false, None, false);
         assert!(s.contains("$filesToLoad"));
         assert!(s.contains("$requireFile"));
     }
 
     #[test]
     fn apcu_prefix_inserts_between_classmap_authoritative_and_register() {
-        let s = emit("deadbeef", false, true, Some("abc123"));
+        let s = emit("deadbeef", false, true, Some("abc123"), false);
         let auth_pos = s.find("setClassMapAuthoritative").unwrap();
         let apcu_pos = s.find("setApcuPrefix('abc123')").unwrap();
         let register_pos = s.find("$loader->register(true)").unwrap();
@@ -179,7 +190,7 @@ mod tests {
 
     #[test]
     fn apcu_skipped_when_none() {
-        let s = emit("deadbeef", false, false, None);
+        let s = emit("deadbeef", false, false, None, false);
         assert!(!s.contains("setApcuPrefix"));
     }
 }

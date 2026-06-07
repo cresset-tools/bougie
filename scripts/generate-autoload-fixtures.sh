@@ -63,6 +63,7 @@ GENERATED_COMPOSER_DIR=(
     autoload_files.php
     autoload_real.php
     autoload_static.php
+    platform_check.php
     installed.json
     installed.php
     ClassLoader.php

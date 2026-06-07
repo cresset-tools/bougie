@@ -54,6 +54,7 @@ const EMITTED: &[&str] = &[
     "vendor/composer/autoload_files.php",
     "vendor/composer/autoload_real.php",
     "vendor/composer/autoload_static.php",
+    "vendor/composer/platform_check.php",
     "vendor/composer/installed.json",
     "vendor/composer/installed.php",
     "vendor/composer/ClassLoader.php",

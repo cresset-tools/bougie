@@ -1,0 +1,13 @@
+{
+    "name": "acme/platform-check-strict",
+    "require": {
+        "php": ">=8.2",
+        "ext-mbstring": "*",
+        "ext-json": "*",
+        "ext-pcntl": "*",
+        "ext-zend-opcache": "*"
+    },
+    "config": {
+        "platform-check": true
+    }
+}
