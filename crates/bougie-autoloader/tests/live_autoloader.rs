@@ -344,6 +344,72 @@ fn emit_drops_dangling_generated_entry() {
     );
 }
 
+/// Write a project whose `generated/code/` is registered via a `psr-0`
+/// `""` fallback — Magento's *actual* shape. Under `-o` the directory is
+/// scanned into the optimized classmap, but it is also covered by the
+/// emitted `autoload_namespaces.php` fallback.
+fn write_volatile_psr0_project(class: &str) -> TempDir {
+    let td = TempDir::new().unwrap();
+    let root = td.path();
+    std::fs::write(
+        root.join("composer.json"),
+        br#"{"name":"test/it","autoload":{"psr-0":{"":["generated/code/"]}}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("composer.lock"),
+        br#"{"content-hash":"abc","packages":[],"packages-dev":[]}"#,
+    )
+    .unwrap();
+    let dir = root.join("generated/code/Acme");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join(format!("{class}.php")),
+        format!("<?php\n\nnamespace Acme;\n\nclass {class} {{}}\n"),
+    )
+    .unwrap();
+    td
+}
+
+/// Magento's real shape: a volatile `generated/code` root reachable via a
+/// `psr-0` fallback. Because that fallback can resolve the class (and
+/// returns `false` to the framework's generator once the file is wiped),
+/// the root's classes must be held out of the optimized classmap *even
+/// while present* — otherwise a later `setup:di:compile` wipe leaves a
+/// dangling `include` target that warns and shadows the generator. This
+/// is the divergence from Composer that makes optimized classmaps safe
+/// across `di:compile`/`cache:clean`.
+#[test]
+fn psr_volatile_classes_excluded_from_optimized_classmap() {
+    let project = write_volatile_psr0_project("Proxy");
+    let root = project.path();
+    let loader = Autoloader::bootstrap(&req(root, true)).unwrap();
+    loader.emit().unwrap();
+
+    let classmap =
+        std::fs::read_to_string(root.join("vendor/composer/autoload_classmap.php")).unwrap();
+    let namespaces =
+        std::fs::read_to_string(root.join("vendor/composer/autoload_namespaces.php")).unwrap();
+
+    // Present on disk, yet kept out of the classmap...
+    assert!(
+        !classmap.contains("Acme\\\\Proxy"),
+        "a present psr-0 generated/code class must be excluded from the optimized classmap:\n{classmap}"
+    );
+    // ...because the psr-0 fallback resolves it instead.
+    assert!(
+        namespaces.contains("generated/code"),
+        "psr-0 fallback for generated/code must be emitted so excluded classes still resolve:\n{namespaces}"
+    );
+    // The reported count reflects the emitted classmap (only the synthetic
+    // InstalledVersions row survives; the Proxy is excluded).
+    assert_eq!(
+        loader.class_count(),
+        1,
+        "class_count must match the emitted classmap, not the merged set"
+    );
+}
+
 // ---------------------------------------------------------------- helpers
 
 fn fixture(name: &str) -> PathBuf {
