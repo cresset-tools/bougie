@@ -313,8 +313,11 @@ fn spawn_daemon() -> Result<()> {
     // arg0("bougied") triggers the shim role in `src/shim.rs`.
     // Null stdio so the daemon doesn't write to the CLI's tty. We
     // intentionally don't wait on the child — when the CLI exits,
-    // init reparents and reaps. Phase 9 will add `setsid` for
-    // proper detach across terminal close.
+    // init reparents and reaps. The daemon `setsid`s itself at startup
+    // (see bougie_daemon::daemon::run) so it lands in its own session,
+    // detached from this terminal's foreground group — a Ctrl-C here
+    // (e.g. detaching from a log stream) then can't take the daemon or
+    // its services down with it.
     let _child = std::process::Command::new(&exe)
         .arg0("bougied")
         .stdin(std::process::Stdio::null())
