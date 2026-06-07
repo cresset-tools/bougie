@@ -76,7 +76,7 @@ use crate::hash::{FxHashMap, FxHashSet};
 use crate::package_name::PackageName;
 use crate::platform::PlatformEnv;
 
-use bougie_composer::lockfile::{LockAutoload, LockPackage};
+use bougie_composer::lockfile::{Lock, LockAutoload, LockPackage};
 use bougie_paths::Paths;
 use bougie_semver::constraint::Constraint;
 use bougie_semver::stability::Stability;
@@ -318,6 +318,13 @@ pub struct ResolveProvider {
     /// here and the solve retries. `versions_for` filters these out.
     conflict_excludes: RefCell<FxHashSet<(PackageName, Version)>>,
     raw_root_constraints: FxHashMap<String, String>,
+    /// Partial-update pins: packages held to their currently-locked
+    /// version because they're outside the update scope (`composer
+    /// update <pkg>...`). Empty for a full update — then every package
+    /// floats. When a name is present, `choose_version` offers only the
+    /// pinned version (falling back to a free choice only if that exact
+    /// version is no longer an available candidate). See [`PartialUpdate`].
+    locked_pins: FxHashMap<PackageName, Version>,
     /// Runtime platform facts (the pinned PHP version) that platform
     /// `require`s are validated against. Defaults to modeling nothing,
     /// which drops platform edges exactly as before #118. See
@@ -525,6 +532,7 @@ impl ResolveProvider {
             solve_progress: RefCell::new(SolveProgress::hidden()),
             conflict_excludes: RefCell::new(FxHashSet::default()),
             raw_root_constraints,
+            locked_pins: FxHashMap::default(),
             platform,
         })
     }
@@ -535,6 +543,14 @@ impl ResolveProvider {
     /// hit memory instead of the network. Call before `pre_fetch_closure`.
     pub fn set_meta_cache(&mut self, cache: MetaCache) {
         self.meta_cache = cache;
+    }
+
+    /// Install the partial-update pin set (see [`PartialUpdate`]).
+    /// Call before solving. With a non-empty map this provider performs
+    /// a partial update: pinned packages stay at their locked version
+    /// and only out-of-scope names float.
+    pub fn set_locked_pins(&mut self, pins: FxHashMap<PackageName, Version>) {
+        self.locked_pins = pins;
     }
 
     /// Begin rendering the solve-phase progress spinner. Call after
@@ -2633,6 +2649,23 @@ impl DependencyProvider for ResolveProvider {
                         .filter(|v| range.contains(v)));
                 }
                 let versions = self.versions_for(name.as_str())?;
+                // Partial update (`composer update <pkg>...`): a package
+                // outside the update scope is held to its locked version.
+                // Offer exactly that version — but only if it's still an
+                // available candidate, in range, and not conflict-excluded.
+                // If the locked version has since been yanked or the range
+                // moved past it, fall through and let it float rather than
+                // dead-ending the solve.
+                if let Some(pinned) = self.locked_pins.get(name.as_str()) {
+                    if range.contains(pinned) && versions.iter().any(|(v, _)| v == pinned) {
+                        let excludes = self.conflict_excludes.borrow();
+                        let pin_excluded = !excludes.is_empty()
+                            && excludes.contains(&(name.clone(), pinned.clone()));
+                        if !pin_excluded {
+                            return Ok(Some(pinned.clone()));
+                        }
+                    }
+                }
                 // `versions_for` sorts descending. With
                 // `prefer-stable`, do a two-pass scan: first pick the
                 // highest *stable* in range, then fall back to the
@@ -3060,6 +3093,115 @@ pub struct DryRunOptions {
     pub no_dev: bool,
 }
 
+/// A partial update request: `composer update <pkg>...`.
+///
+/// Composer's partial update re-resolves only the named packages (and,
+/// with `--with-dependencies` / `--with-all-dependencies`, their
+/// transitive dependencies). Every other package in the existing
+/// `composer.lock` is held at its locked version so an unrelated
+/// upstream release can't sneak in.
+///
+/// We implement that by pinning: [`locked_pins`](Self::locked_pins)
+/// turns every out-of-scope locked package into a fixed candidate the
+/// solver must reuse. The solve still runs over the whole graph, so the
+/// named packages' new requirements are validated against the pinned
+/// set (an unsatisfiable partial update surfaces as a normal resolver
+/// conflict, exactly as Composer reports it), and packages that are no
+/// longer required simply drop out.
+///
+/// Scope note: `--with-dependencies` and `--with-all-dependencies`
+/// currently behave identically — both let the named packages' full
+/// transitive require-closure float. Composer's finer `-w` rule (don't
+/// touch deps that are also depended on from outside the whitelist) is
+/// not yet modeled; the broader `-W` behavior is the safe superset.
+#[derive(Debug, Clone)]
+pub struct PartialUpdate {
+    /// Packages named on the command line — the roots of the float scope.
+    pub names: Vec<String>,
+    /// Also float the named packages' transitive dependencies.
+    pub with_dependencies: bool,
+    /// Also float all of the named packages' dependencies (superset of
+    /// `with_dependencies`; see the scope note above).
+    pub with_all_dependencies: bool,
+    /// The existing lock — source of both the pinned versions and the
+    /// dependency graph used to compute the float scope.
+    pub lock: Lock,
+}
+
+impl PartialUpdate {
+    /// Names allowed to change version: the explicitly named packages,
+    /// plus their transitive require-closure when a `--with*-dependencies`
+    /// flag is set. Platform/virtual requires (`php`, `ext-*`, …) are
+    /// skipped — they aren't lock packages.
+    fn float_scope(&self) -> FxHashSet<String> {
+        let mut scope: FxHashSet<String> = self.names.iter().cloned().collect();
+        if !(self.with_dependencies || self.with_all_dependencies) {
+            return scope;
+        }
+        let by_name: FxHashMap<&str, &LockPackage> = self
+            .lock
+            .packages
+            .iter()
+            .chain(self.lock.packages_dev.iter())
+            .map(|p| (p.name.as_str(), p))
+            .collect();
+        let mut queue: Vec<String> = self.names.clone();
+        while let Some(n) = queue.pop() {
+            let Some(pkg) = by_name.get(n.as_str()) else {
+                continue;
+            };
+            for dep in pkg.require.keys() {
+                if by_name.contains_key(dep.as_str()) && scope.insert(dep.clone()) {
+                    queue.push(dep.clone());
+                }
+            }
+        }
+        scope
+    }
+
+    /// The pin set handed to [`ResolveProvider::set_locked_pins`]: every
+    /// locked package outside [`float_scope`](Self::float_scope), mapped
+    /// to its exact locked version. A locked version that won't parse is
+    /// dropped (the package then floats — better than aborting the solve).
+    pub fn locked_pins(&self) -> FxHashMap<PackageName, Version> {
+        let scope = self.float_scope();
+        let mut pins = FxHashMap::default();
+        for pkg in self
+            .lock
+            .packages
+            .iter()
+            .chain(self.lock.packages_dev.iter())
+        {
+            if scope.contains(&pkg.name) {
+                continue;
+            }
+            let ver = pkg.version_normalized.as_deref().unwrap_or(&pkg.version);
+            if let Ok(v) = Version::parse(ver) {
+                pins.insert(PackageName::from(pkg.name.as_str()), v);
+            }
+        }
+        pins
+    }
+
+    /// Locked package names not present in any of the existing lock
+    /// entries — used by the CLI to warn that a named package isn't
+    /// installed (Composer prints a similar notice).
+    pub fn unknown_names(&self) -> Vec<String> {
+        let known: FxHashSet<&str> = self
+            .lock
+            .packages
+            .iter()
+            .chain(self.lock.packages_dev.iter())
+            .map(|p| p.name.as_str())
+            .collect();
+        self.names
+            .iter()
+            .filter(|n| !known.contains(n.as_str()))
+            .cloned()
+            .collect()
+    }
+}
+
 /// Run a pubgrub-backed resolve of `composer.json` against the
 /// metadata host(s) and return the package set that would land in
 /// `composer.lock`.
@@ -3076,6 +3218,19 @@ pub fn dry_run_update(
     project_root: &Path,
     default_packagist: Repo,
     opts: DryRunOptions,
+) -> Result<UpdateSummary> {
+    dry_run_update_partial(paths, project_root, default_packagist, opts, None)
+}
+
+/// Like [`dry_run_update`], but with an optional [`PartialUpdate`] so
+/// `composer update <pkg>... --dry-run` previews a partial update. `None`
+/// is a full update — identical to [`dry_run_update`].
+pub fn dry_run_update_partial(
+    paths: &Paths,
+    project_root: &Path,
+    default_packagist: Repo,
+    opts: DryRunOptions,
+    partial: Option<&PartialUpdate>,
 ) -> Result<UpdateSummary> {
     let composer_json_path = project_root.join("composer.json");
     if !composer_json_path.is_file() {
@@ -3104,6 +3259,13 @@ pub fn dry_run_update(
         PlatformEnv::detect(project_root, &composer_json),
     )
     .map_err(|e| eyre!(e))?;
+    // Partial update: hold out-of-scope packages at their locked version.
+    if let Some(partial) = partial {
+        let pins = partial.locked_pins();
+        if !pins.is_empty() {
+            provider.set_locked_pins(pins);
+        }
+    }
     // Probe each repo's `packages.json` and record the discovered
     // Composer protocol (v1 vs v2) so the per-package fetcher
     // dispatches correctly. Required before any pre-fetch traffic.
@@ -3303,6 +3465,21 @@ pub fn resolve_for_lockfile(
     project_root: &Path,
     default_packagist: Repo,
 ) -> Result<(Vec<u8>, LockfileSolveOutcome)> {
+    resolve_for_lockfile_partial(paths, project_root, default_packagist, None)
+}
+
+/// Like [`resolve_for_lockfile`], but with an optional [`PartialUpdate`]:
+/// when `Some`, every locked package outside the update scope is pinned
+/// to its current version so only the named packages (and, with a
+/// `--with*-dependencies` flag, their dependencies) re-resolve. `None`
+/// is a full update — identical to [`resolve_for_lockfile`].
+pub fn resolve_for_lockfile_partial(
+    paths: &Paths,
+    project_root: &Path,
+    default_packagist: Repo,
+    partial: Option<&PartialUpdate>,
+) -> Result<(Vec<u8>, LockfileSolveOutcome)> {
+    let pins = partial.map(PartialUpdate::locked_pins).unwrap_or_default();
     let composer_json_path = project_root.join("composer.json");
     if !composer_json_path.is_file() {
         return Err(eyre!(
@@ -3337,6 +3514,7 @@ pub fn resolve_for_lockfile(
         ProgressMode::Visible,
         meta_cache.clone(),
         platform.clone(),
+        &pins,
     )?;
     // Second pass is the same closure walk, now served entirely from
     // `meta_cache` — instant, so its spinner stays hidden (re-rendering
@@ -3351,6 +3529,7 @@ pub fn resolve_for_lockfile(
         ProgressMode::Hidden,
         meta_cache,
         platform,
+        &pins,
     )?;
 
     let t_partition = std::time::Instant::now();
@@ -3398,6 +3577,7 @@ fn solve_into_lock_packages(
     progress: ProgressMode,
     meta_cache: MetaCache,
     platform: PlatformEnv,
+    pins: &FxHashMap<PackageName, Version>,
 ) -> Result<SolutionSummary> {
     let client = build_client()?;
     let mut provider = ResolveProvider::build_with_auth(
@@ -3413,6 +3593,11 @@ fn solve_into_lock_packages(
     // Share the caller's metadata cache so the two passes of
     // `resolve_for_lockfile` don't re-fetch the same `/p2/` documents.
     provider.set_meta_cache(meta_cache);
+    // Partial update: hold out-of-scope packages at their locked version.
+    // Empty for a full update.
+    if !pins.is_empty() {
+        provider.set_locked_pins(pins.clone());
+    }
     // Record discovered Composer protocols on each repo (see
     // [`ResolveProvider::discover_repos`]). Done here too because
     // `solve_into_lock_packages` builds its own provider for the

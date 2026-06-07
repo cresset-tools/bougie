@@ -31,6 +31,6 @@ pub use install::{
 };
 pub use platform::PlatformEnv;
 pub use update::{
-    dry_run_update, resolve_for_lockfile, DryRunOptions, LockfileSolveOutcome, ResolvedPackage,
-    UpdateSummary,
+    dry_run_update, dry_run_update_partial, resolve_for_lockfile, resolve_for_lockfile_partial,
+    DryRunOptions, LockfileSolveOutcome, PartialUpdate, ResolvedPackage, UpdateSummary,
 };

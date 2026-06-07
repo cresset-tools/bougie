@@ -2622,3 +2622,184 @@ fn root_wildcard_replace_excludes_package_and_its_exclusive_deps() {
     // Neither was even fetched: only acme/meta + acme/keep.
     assert_eq!(provider.cache_size(), 2, "only acme/meta + acme/keep fetched");
 }
+
+// ---------------------------------------------------------------------
+// Partial update (`composer update <pkg>...`) — pinning out-of-scope
+// packages to their locked version via `set_locked_pins`.
+// ---------------------------------------------------------------------
+
+/// Build a minimal `LockPackage` from name + version (+ optional
+/// requires) by deserializing — most fields default, so this stays terse.
+fn lock_pkg(name: &str, version: &str, require: serde_json::Value) -> LockPackage {
+    serde_json::from_value(json!({
+        "name": name,
+        "version": version,
+        "version_normalized": format!("{version}.0"),
+        "require": require,
+    }))
+    .unwrap()
+}
+
+/// Build a `Lock` holding just these `packages` (every other field
+/// defaults — `Lock` has `#[serde(default)]` on all of them).
+fn lock_with(packages: Vec<LockPackage>) -> Lock {
+    let mut lock: Lock = serde_json::from_value(json!({})).unwrap();
+    lock.packages = packages;
+    lock
+}
+
+#[test]
+fn partial_update_pins_out_of_scope_package() {
+    let tmp = TempDir::new().unwrap();
+    let paths = paths_in(tmp.path());
+
+    // Both packages have a newer release available.
+    let foo_body = p2_body("acme/foo", &[("1.5.0", json!({})), ("1.0.0", json!({}))]);
+    let bar_body = p2_body("acme/bar", &[("2.5.0", json!({})), ("2.1.0", json!({}))]);
+
+    let rt = rt();
+    let (uri, _server) = rt.block_on(async {
+        let server = MockServer::start().await;
+        mount_p2(&server, "acme/foo", foo_body).await;
+        mount_p2(&server, "acme/bar", bar_body).await;
+        (server.uri(), server)
+    });
+
+    let composer_json = json!({"require": {"acme/foo": "^1.0", "acme/bar": "^2.0"}});
+    let client = crate::metadata::build_client().unwrap();
+    let mut provider = ResolveProvider::build(
+        client,
+        paths,
+        crate::metadata::Repo::from_url(uri),
+        &composer_json,
+        true,
+    )
+    .unwrap();
+
+    // We're updating only acme/foo; acme/bar stays at its locked 2.1.0.
+    let partial = PartialUpdate {
+        names: vec!["acme/foo".into()],
+        with_dependencies: false,
+        with_all_dependencies: false,
+        lock: lock_with(vec![
+            lock_pkg("acme/foo", "1.0.0", json!({})),
+            lock_pkg("acme/bar", "2.1.0", json!({})),
+        ]),
+    };
+    provider.set_locked_pins(partial.locked_pins());
+
+    let root = provider.root_version();
+    let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
+
+    let foo = solution
+        .get(&PubGrubPackage::Package("acme/foo".into()))
+        .expect("acme/foo resolves");
+    let bar = solution
+        .get(&PubGrubPackage::Package("acme/bar".into()))
+        .expect("acme/bar resolves");
+    // Named package floats up; the pinned one stays put.
+    assert_eq!(foo.to_string(), "1.5.0.0", "named package updates");
+    assert_eq!(bar.to_string(), "2.1.0.0", "out-of-scope package stays pinned");
+}
+
+#[test]
+fn partial_update_with_dependencies_floats_transitive() {
+    let tmp = TempDir::new().unwrap();
+    let paths = paths_in(tmp.path());
+
+    let foo_body = p2_body(
+        "acme/foo",
+        &[("1.5.0", json!({"acme/bar": "^2.0"})), ("1.0.0", json!({"acme/bar": "^2.0"}))],
+    );
+    let bar_body = p2_body("acme/bar", &[("2.5.0", json!({})), ("2.1.0", json!({}))]);
+
+    let rt = rt();
+    let (uri, _server) = rt.block_on(async {
+        let server = MockServer::start().await;
+        mount_p2(&server, "acme/foo", foo_body).await;
+        mount_p2(&server, "acme/bar", bar_body).await;
+        (server.uri(), server)
+    });
+
+    let composer_json = json!({"require": {"acme/foo": "^1.0"}});
+    let client = crate::metadata::build_client().unwrap();
+    let mut provider = ResolveProvider::build(
+        client,
+        paths,
+        crate::metadata::Repo::from_url(uri),
+        &composer_json,
+        true,
+    )
+    .unwrap();
+
+    // Updating acme/foo --with-dependencies lets its dep acme/bar float too.
+    let partial = PartialUpdate {
+        names: vec!["acme/foo".into()],
+        with_dependencies: true,
+        with_all_dependencies: false,
+        lock: lock_with(vec![
+            lock_pkg("acme/foo", "1.0.0", json!({"acme/bar": "^2.0"})),
+            lock_pkg("acme/bar", "2.1.0", json!({})),
+        ]),
+    };
+    assert!(
+        partial.locked_pins().is_empty(),
+        "acme/bar is in scope via --with-dependencies, so nothing is pinned",
+    );
+    provider.set_locked_pins(partial.locked_pins());
+
+    let root = provider.root_version();
+    let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
+    let bar = solution
+        .get(&PubGrubPackage::Package("acme/bar".into()))
+        .expect("acme/bar resolves");
+    assert_eq!(bar.to_string(), "2.5.0.0", "transitive dep floats with -w");
+}
+
+#[test]
+fn partial_update_pin_falls_back_when_locked_version_gone() {
+    let tmp = TempDir::new().unwrap();
+    let paths = paths_in(tmp.path());
+
+    // Locked at 2.0.0, but the registry no longer lists it — only 2.5.0.
+    let foo_body = p2_body("acme/foo", &[("1.0.0", json!({}))]);
+    let bar_body = p2_body("acme/bar", &[("2.5.0", json!({}))]);
+
+    let rt = rt();
+    let (uri, _server) = rt.block_on(async {
+        let server = MockServer::start().await;
+        mount_p2(&server, "acme/foo", foo_body).await;
+        mount_p2(&server, "acme/bar", bar_body).await;
+        (server.uri(), server)
+    });
+
+    let composer_json = json!({"require": {"acme/foo": "^1.0", "acme/bar": "^2.0"}});
+    let client = crate::metadata::build_client().unwrap();
+    let mut provider = ResolveProvider::build(
+        client,
+        paths,
+        crate::metadata::Repo::from_url(uri),
+        &composer_json,
+        true,
+    )
+    .unwrap();
+
+    let partial = PartialUpdate {
+        names: vec!["acme/foo".into()],
+        with_dependencies: false,
+        with_all_dependencies: false,
+        lock: lock_with(vec![
+            lock_pkg("acme/foo", "1.0.0", json!({})),
+            lock_pkg("acme/bar", "2.0.0", json!({})),
+        ]),
+    };
+    provider.set_locked_pins(partial.locked_pins());
+
+    let root = provider.root_version();
+    let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
+    let bar = solution
+        .get(&PubGrubPackage::Package("acme/bar".into()))
+        .expect("acme/bar resolves");
+    // The pinned 2.0.0 is unavailable, so it floats rather than dead-ending.
+    assert_eq!(bar.to_string(), "2.5.0.0", "missing pin falls back to a free choice");
+}
