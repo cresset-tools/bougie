@@ -6,6 +6,7 @@
 
 use super::client;
 use super::config_mut::locate_project_root;
+use super::ide;
 use bougie_cli::OutputFormat;
 use bougie_config::{load_project, ServicePin};
 use bougie_daemon::daemon::store_fetch::ResolvedTool;
@@ -126,6 +127,17 @@ pub fn run(format: OutputFormat, names: Vec<String>, detach: bool) -> Result<Exi
         dependencies: reply.dependencies,
     };
     emit(format, &result)?;
+
+    // Drop a PhpStorm data source for the project's MariaDB into `.idea/`
+    // so the database is pre-wired in the IDE. Pure sugar: never let an
+    // IDE-file hiccup fail `up`. Runs before the (blocking) log attach so
+    // it happens regardless of follow/detach. Disable with
+    // `BOUGIE_IDE_DATASOURCES=0`.
+    match ide::write_phpstorm_datasources(&project_root, &paths, &result.tenants) {
+        Ok(Some(path)) => tracing::debug!("wrote PhpStorm data source to {}", path.display()),
+        Ok(None) => {}
+        Err(e) => tracing::warn!("skipped PhpStorm data source: {e:#}"),
+    }
 
     // Attach to the combined ("multilog") stream of the services we
     // brought up, the way `docker compose up` follows its containers.
