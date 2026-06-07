@@ -108,10 +108,16 @@ pub fn run(
         }
         let lock = Lock::read(&lock_path)
             .wrap_err_with(|| format!("reading {}", lock_path.display()))?;
+        // Root requirements drive `-w`'s "leave root requires pinned"
+        // rule. Read them straight from composer.json (`require` +
+        // `require-dev` keys); only needed for the `-w` path, but cheap
+        // to collect unconditionally.
+        let root_requires = read_root_require_names(&project_root);
         let partial = PartialUpdate {
             names: packages,
             with_dependencies,
             with_all_dependencies,
+            root_requires,
             lock,
         };
         for name in partial.unknown_names() {
@@ -250,5 +256,27 @@ pub fn resolve_and_write_lock_partial(
         "write_lock",
     );
     Ok((lock_path, outcome))
+}
+
+/// Collect the project's root requirement names — the keys of
+/// `composer.json`'s `require` and `require-dev` objects. Feeds
+/// [`PartialUpdate::root_requires`] so `-w` knows which transitive deps
+/// to leave pinned. A missing or malformed file yields an empty list
+/// (the resolver re-parses and reports composer.json errors itself).
+fn read_root_require_names(project_root: &Path) -> Vec<String> {
+    let path = project_root.join("composer.json");
+    let Ok(bytes) = std::fs::read(&path) else {
+        return Vec::new();
+    };
+    let Ok(json) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        return Vec::new();
+    };
+    let mut names = Vec::new();
+    for key in ["require", "require-dev"] {
+        if let Some(obj) = json.get(key).and_then(serde_json::Value::as_object) {
+            names.extend(obj.keys().cloned());
+        }
+    }
+    names
 }
 

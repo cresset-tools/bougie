@@ -2681,6 +2681,7 @@ fn partial_update_pins_out_of_scope_package() {
         names: vec!["acme/foo".into()],
         with_dependencies: false,
         with_all_dependencies: false,
+        root_requires: vec!["acme/foo".into(), "acme/bar".into()],
         lock: lock_with(vec![
             lock_pkg("acme/foo", "1.0.0", json!({})),
             lock_pkg("acme/bar", "2.1.0", json!({})),
@@ -2737,6 +2738,9 @@ fn partial_update_with_dependencies_floats_transitive() {
         names: vec!["acme/foo".into()],
         with_dependencies: true,
         with_all_dependencies: false,
+        // acme/bar is only a transitive dep (not a root require), so `-w`
+        // lets it float.
+        root_requires: vec!["acme/foo".into()],
         lock: lock_with(vec![
             lock_pkg("acme/foo", "1.0.0", json!({"acme/bar": "^2.0"})),
             lock_pkg("acme/bar", "2.1.0", json!({})),
@@ -2788,6 +2792,7 @@ fn partial_update_pin_falls_back_when_locked_version_gone() {
         names: vec!["acme/foo".into()],
         with_dependencies: false,
         with_all_dependencies: false,
+        root_requires: vec!["acme/foo".into(), "acme/bar".into()],
         lock: lock_with(vec![
             lock_pkg("acme/foo", "1.0.0", json!({})),
             lock_pkg("acme/bar", "2.0.0", json!({})),
@@ -2802,4 +2807,51 @@ fn partial_update_pin_falls_back_when_locked_version_gone() {
         .expect("acme/bar resolves");
     // The pinned 2.0.0 is unavailable, so it floats rather than dead-ending.
     assert_eq!(bar.to_string(), "2.5.0.0", "missing pin falls back to a free choice");
+}
+
+/// Pure check of the `-w` vs `-W` scope rule via the resulting pin set.
+///
+/// Graph: foo (named, root require) → bar (root require) → baz (not a
+/// root require).
+/// - `-w` leaves root requires pinned and doesn't recurse through them,
+///   so bar stays pinned and baz (only reachable via bar) stays pinned
+///   too — only foo floats.
+/// - `-W` floats the whole closure, so nothing is pinned.
+#[test]
+fn with_dependencies_vs_with_all_dependencies_scope() {
+    let lock = lock_with(vec![
+        lock_pkg("acme/foo", "1.0.0", json!({"acme/bar": "^2.0"})),
+        lock_pkg("acme/bar", "2.0.0", json!({"acme/baz": "^3.0"})),
+        lock_pkg("acme/baz", "3.0.0", json!({})),
+    ]);
+    let root_requires = vec!["acme/foo".to_string(), "acme/bar".to_string()];
+
+    // `-w`: bar is a root require → pinned, and baz (only via bar) → pinned.
+    let w = PartialUpdate {
+        names: vec!["acme/foo".into()],
+        with_dependencies: true,
+        with_all_dependencies: false,
+        root_requires: root_requires.clone(),
+        lock: lock.clone(),
+    };
+    let mut pinned: Vec<String> = w
+        .locked_pins()
+        .keys()
+        .map(std::string::ToString::to_string)
+        .collect();
+    pinned.sort();
+    assert_eq!(pinned, vec!["acme/bar", "acme/baz"], "-w keeps root requires pinned");
+
+    // `-W`: full closure floats → nothing pinned.
+    let w_all = PartialUpdate {
+        names: vec!["acme/foo".into()],
+        with_dependencies: false,
+        with_all_dependencies: true,
+        root_requires,
+        lock,
+    };
+    assert!(
+        w_all.locked_pins().is_empty(),
+        "-W floats the whole closure, leaving nothing pinned",
+    );
 }
