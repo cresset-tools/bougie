@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.22.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.21.0...bougie-v0.22.0) (2026-06-07)
+
+
+### Features
+
+* **services:** stream stopping/starting progress on restart ([#335](https://github.com/cresset-tools/bougie/issues/335)) ([9bebd13](https://github.com/cresset-tools/bougie/commit/9bebd136a6e797da374e403b687749d807c281cd))
+* **services:** write PhpStorm data source on `bougie up` ([#336](https://github.com/cresset-tools/bougie/issues/336)) ([126fec6](https://github.com/cresset-tools/bougie/commit/126fec67856d0e8e4ad39733e2d58d7e14a83642))
+
+
+### Bug Fixes
+
+* **autoloader:** exclude PSR-fallback volatile roots from the classmap ([#332](https://github.com/cresset-tools/bougie/issues/332)) ([346463b](https://github.com/cresset-tools/bougie/commit/346463b33009dc5c29b520f82a499eee934ad79b))
+* **installer:** don't flash a progress bar when baseline extensions are all installed ([#334](https://github.com/cresset-tools/bougie/issues/334)) ([630a568](https://github.com/cresset-tools/bougie/commit/630a568f47c81aa44e99f9bb3f8b0b77a5209650))
+* **self-update:** don't update to a release with no assets yet ([#331](https://github.com/cresset-tools/bougie/issues/331)) ([9664f49](https://github.com/cresset-tools/bougie/commit/9664f49a5b4960207d6f818536d79762a0026053))
+
 ## [0.21.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.20.0...bougie-v0.21.0) (2026-06-07)
 
 
