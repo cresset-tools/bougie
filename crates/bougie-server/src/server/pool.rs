@@ -138,6 +138,32 @@ impl Pool {
         let _ = guard.start_kill();
     }
 
+    /// Is the pool still dispatchable? A php-fpm master can die out from
+    /// under us — a crash (xdebug segfault), an OOM kill, or an external
+    /// SIGKILL — and php-fpm removes its listen socket on exit. The
+    /// router caches the `Arc<Pool>`, so without this check it would keep
+    /// dispatching into a vanished socket and 502 forever. We check two
+    /// things: the master process is still running (also reaps a zombie
+    /// via `try_wait`), and — on Unix — its dispatch socket still exists.
+    pub async fn is_alive(&self) -> bool {
+        {
+            let mut guard = self.child.lock().await;
+            match guard.try_wait() {
+                // Still running.
+                Ok(None) => {}
+                // Exited (Some) or unpollable (Err) — treat as dead.
+                _ => return false,
+            }
+        }
+        #[cfg(unix)]
+        if let Transport::UnixSocket(socket) = &self.transport
+            && !socket.exists()
+        {
+            return false;
+        }
+        true
+    }
+
     /// Tell the pool to pick up a fresh `conf.d/`. Unix: SIGUSR2 the
     /// php-fpm master so it rescans `PHP_INI_SCAN_DIR`, respawns
     /// workers, but keeps its PID and listening socket so in-flight
@@ -230,11 +256,26 @@ impl PoolManager {
         })?;
         let key = PoolKey::new(project, &version, &flavor, variant);
 
-        {
+        let cached = {
             let map = self.pools.lock().await;
-            if let Some(pool) = map.get(&key) {
-                return Ok(Arc::clone(pool));
+            map.get(&key).map(Arc::clone)
+        };
+        if let Some(pool) = cached {
+            if pool.is_alive().await {
+                return Ok(pool);
             }
+            // The cached master died. Evict it (guarding against a
+            // concurrent respawn that already replaced the entry) and
+            // fall through to spawn a fresh one — this is what makes the
+            // server self-heal after a crashed worker instead of wedging
+            // until a full `bougie services restart server`.
+            self.evict(&pool).await;
+            eprintln!(
+                "[pool_dead] project={} variant={} pid={} reason=respawn",
+                pool.key.project.display(),
+                pool.key.variant,
+                pool.pid(),
+            );
         }
 
         // Spawn outside the map lock — php-fpm takes ~tens of ms to
@@ -314,6 +355,25 @@ impl PoolManager {
             }
         }
         count
+    }
+
+    /// Remove `pool` from the live map iff it's still the cached entry
+    /// for its key, then terminate it. Used to self-heal: the fast path
+    /// drops a master that died between requests, and the router drops a
+    /// master that a dispatch just discovered is gone. The `Arc::ptr_eq`
+    /// guard makes this a no-op if another task already respawned and
+    /// re-inserted a fresh pool under the same key.
+    pub async fn evict(&self, pool: &Arc<Pool>) {
+        {
+            let mut map = self.pools.lock().await;
+            match map.get(&pool.key) {
+                Some(existing) if Arc::ptr_eq(existing, pool) => {
+                    map.remove(&pool.key);
+                }
+                _ => return,
+            }
+        }
+        pool.terminate().await;
     }
 
     /// Periodic scan: SIGTERM any pool whose `idle_for() > idle_pool_timeout`.
@@ -760,5 +820,78 @@ mod tests {
     fn project_label_uses_basename() {
         assert_eq!(project_label(Path::new("/home/jelle/projects/myapp")), "myapp");
         assert_eq!(project_label(Path::new("/")), "/");
+    }
+
+    // Build a Pool wrapping an arbitrary child + socket path so the
+    // liveness logic can be tested without a real php-fpm master.
+    #[cfg(unix)]
+    fn test_pool(child: Child, socket: PathBuf) -> Pool {
+        let pid = child.id().expect("child has a pid");
+        Pool {
+            key: PoolKey::new(Path::new("/p"), "8.3.12", "nts", "xdebug"),
+            transport: Transport::UnixSocket(socket),
+            php_version: "8.3.12-nts".to_owned(),
+            started_at: Instant::now(),
+            pid,
+            last_served_at: AtomicU64::new(now_millis()),
+            child: Mutex::new(child),
+        }
+    }
+
+    #[cfg(unix)]
+    fn spawn_sleeper() -> Child {
+        tokio::process::Command::new("sleep")
+            .arg("30")
+            .kill_on_drop(true)
+            .spawn()
+            .expect("spawn sleep")
+    }
+
+    // A live master with a present socket is dispatchable; deleting the
+    // socket (php-fpm removes it on exit) flips the pool to not-alive
+    // even while the process lingers.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn is_alive_tracks_socket_presence() {
+        let dir = std::env::temp_dir().join(format!("bougie-pool-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let socket = dir.join("xdebug.sock");
+        std::fs::write(&socket, b"").unwrap();
+
+        let pool = test_pool(spawn_sleeper(), socket.clone());
+        assert!(pool.is_alive().await, "live process + present socket => alive");
+
+        std::fs::remove_file(&socket).unwrap();
+        assert!(!pool.is_alive().await, "missing socket => not alive");
+
+        pool.terminate().await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // A dead master is not dispatchable even if a stale socket file
+    // happens to still be on disk.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn is_alive_false_when_master_dead() {
+        let dir = std::env::temp_dir().join(format!("bougie-pool-dead-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let socket = dir.join("xdebug.sock");
+        std::fs::write(&socket, b"").unwrap();
+
+        let pool = test_pool(spawn_sleeper(), socket);
+        assert!(pool.is_alive().await);
+
+        pool.terminate().await;
+        // SIGKILL is async; poll until try_wait observes the exit.
+        let mut dead = false;
+        for _ in 0..200 {
+            if !pool.is_alive().await {
+                dead = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(dead, "pool reports not-alive after the master is killed");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

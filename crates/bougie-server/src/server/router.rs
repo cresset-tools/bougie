@@ -339,7 +339,15 @@ async fn serve_php(
 
     let result = match fastcgi::dispatch(pool.transport(), &params, &body).await {
         Ok(r) => r,
-        Err(e) => return bad_gateway(&format!("fastcgi dispatch failed: {e:#}")),
+        Err(e) => {
+            // The master died (crash/OOM/kill) and its socket with it.
+            // Evict the dead pool so the next request respawns a fresh
+            // one rather than 502ing against the vanished socket forever.
+            // The connect happens before the script runs, so this is safe
+            // even for non-idempotent requests — nothing was executed.
+            state.pools.evict(&pool).await;
+            return bad_gateway(&format!("fastcgi dispatch failed: {e:#}"));
+        }
     };
 
     // FPM writes the script's stderr output here. Forward it to the
