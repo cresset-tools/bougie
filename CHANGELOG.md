@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.23.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.22.0...bougie-v0.23.0) (2026-06-07)
+
+
+### Features
+
+* **autoloader:** emit platform_check.php (Composer config.platform-check) ([#337](https://github.com/cresset-tools/bougie/issues/337)) ([d9bbb12](https://github.com/cresset-tools/bougie/commit/d9bbb1269b530efb4a5d10a5b04b876c6a0812c8))
+
+
+### Bug Fixes
+
+* **daemon:** setsid bougied so a terminal Ctrl-C can't kill it ([#339](https://github.com/cresset-tools/bougie/issues/339)) ([6021991](https://github.com/cresset-tools/bougie/commit/6021991736fa4818eddf8c741f8e0d25cccf75ea))
+
 ## [0.22.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.21.0...bougie-v0.22.0) (2026-06-07)
 
 
