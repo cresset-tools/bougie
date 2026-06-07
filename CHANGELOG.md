@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.20.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.19.0...bougie-v0.20.0) (2026-06-07)
+
+
+### Features
+
+* **starter:** make the manifest recipe load-bearing (+ detect modulargento) ([#326](https://github.com/cresset-tools/bougie/issues/326)) ([28453bc](https://github.com/cresset-tools/bougie/commit/28453bcd338703f19dcfb07541fa222d5a0865a3))
+
 ## [0.19.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.18.1...bougie-v0.19.0) (2026-06-06)
 
 
