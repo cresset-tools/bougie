@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.21.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.20.0...bougie-v0.21.0) (2026-06-07)
+
+
+### Features
+
+* **composer:** distinguish -w and -W in partial update ([#330](https://github.com/cresset-tools/bougie/issues/330)) ([515a562](https://github.com/cresset-tools/bougie/commit/515a56278563f4a73111a57e6ac543b910920bcc))
+* **composer:** partial update (composer update &lt;packages&gt;) ([#328](https://github.com/cresset-tools/bougie/issues/328)) ([bcf4ecd](https://github.com/cresset-tools/bougie/commit/bcf4ecde2d844ef0f25e2632315c4eee7d2b91c3))
+
 ## [0.20.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.19.0...bougie-v0.20.0) (2026-06-07)
 
 
