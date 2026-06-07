@@ -48,6 +48,25 @@ use state::DaemonState;
 
 /// Entry point for the `bougied` argv[0] role. Called from `shim::exec`.
 pub fn run(paths: Paths) -> Result<ExitCode> {
+    // Detach into our own session before doing anything else.
+    //
+    // The CLI auto-spawns us as a plain child sharing its session and
+    // foreground process group (see
+    // commands/services/client.rs::spawn_daemon). Without `setsid`, a
+    // Ctrl-C in the terminal that first ran `bougie server`/`bougie up`
+    // delivers SIGINT to the *whole* foreground group — bougied, every
+    // bougie-babysit, and the services they own — so detaching from a
+    // log stream would tear the stack down. (Linux's PR_SET_PDEATHSIG
+    // masks this in some flows; macOS has no equivalent, so it bites
+    // there reliably.) `setsid` makes us a session + group leader with
+    // no controlling terminal, so terminal-generated signals never
+    // reach us. Best-effort: it returns EPERM when we're already a
+    // group leader (e.g. `bougied` run straight from an interactive
+    // shell, where job control already put us in our own group), which
+    // is exactly the case where we're already detached enough — so a
+    // failure here is benign and we carry on.
+    let _ = rustix::process::setsid();
+
     std::fs::create_dir_all(paths.state())
         .wrap_err_with(|| format!("creating {}", paths.state().display()))?;
 
