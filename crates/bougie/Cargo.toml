@@ -8,6 +8,10 @@ repository = "https://github.com/cresset-tools/bougie"
 rust-version = "1.95"
 default-run = "bougie"
 authors.workspace = true
+# Drop CI-only fixture data and the probe example from the published
+# crate. Can't blanket-exclude `/tests` here: the `fake-redis` bin
+# target (gated on test-fixtures) lives at tests/fixtures/fake_redis.rs.
+exclude = ["/tests/fixtures/cross-check", "/examples"]
 
 [[bin]]
 name = "bougie"
@@ -70,8 +74,9 @@ bougie-fetch = { workspace = true }
 bougie-fs = { workspace = true }
 # Inline path-dep (not `{ workspace = true }`) because cargo rejects
 # member-level `default-features = false` overrides when the workspace
-# entry has defaults on. No version literal — bougie isn't published.
-bougie-index = { path = "../bougie-index", default-features = false }
+# entry has defaults on. Carries its own annotated version literal
+# (release-please rewrites it) since it bypasses the workspace entry.
+bougie-index = { path = "../bougie-index", version = "0.23.0", default-features = false } # x-release-please-version
 bougie-installer = { workspace = true }
 bougie-installers = { workspace = true }
 bougie-output = { workspace = true }

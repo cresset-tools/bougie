@@ -7,6 +7,10 @@ license = "EUPL-1.2"
 repository = "https://github.com/cresset-tools/bougie"
 rust-version = "1.95"
 authors.workspace = true
+# Keep ~3 MB of test fixtures out of the published crate; they exist
+# only for this repo's CI and are useless to a registry consumer. The
+# `benches/` dir stays (it's a declared [[bench]] target).
+exclude = ["/tests"]
 
 [dependencies]
 bougie-installers = { workspace = true }

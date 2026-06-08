@@ -1,0 +1,83 @@
+name: crates-publish
+
+# Publish every workspace crate to crates.io in dependency order, on the same
+# `release: published` event that release-please fires when it cuts a
+# `bougie-v<version>` GitHub Release (and creates the tag). Runs alongside
+# `bougie-release.yml` (cargo-dist binaries) — the two are independent: dist
+# builds the user-facing binaries, this publishes the library crates so
+# `cargo install bougie` works and the libs are consumable.
+#
+# Why cargo-workspaces and not a hand-rolled loop: crates.io accepts one crate
+# at a time and dependents can't publish until their deps are live in the
+# index. cargo-workspaces topologically orders the 28 crates, waits for each to
+# appear in the index before publishing its dependents, and — crucially —
+# SKIPS any crate whose current version is already on crates.io. That last
+# property makes this job idempotent: if it dies halfway (flaky network, index
+# lag), just re-run it and it resumes where it left off.
+#
+# `--publish-as-is` publishes the versions exactly as committed at the tag.
+# release-please already set `workspace.package.version` and the per-dep
+# version pins (the `# x-release-please-version`-annotated lines in
+# Cargo.toml); we do NOT bump/commit/tag here, only publish.
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+# Never cancel a publish mid-flight — a partially-published workspace is worse
+# than waiting. (Re-running later is safe; already-published crates are skipped.)
+concurrency:
+  group: crates-publish-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    # release-please only ever cuts `bougie-v*` releases, but be explicit so a
+    # stray manual release can't trigger a publish.
+    if: startsWith(github.event.release.tag_name, 'bougie-v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.release.tag_name }}
+          persist-credentials: false
+
+      # rust-toolchain.toml pins Rust 1.95 + rustfmt/clippy; rustup installs it
+      # on the first cargo invocation in the repo dir. cargo-workspaces is
+      # version-pinned for reproducible release behavior.
+      - name: Install cargo-workspaces
+        run: cargo install cargo-workspaces --version 0.4.2 --locked
+
+      # Speeds up the per-crate `cargo publish` verification builds (each crate
+      # is compiled to prove it packages cleanly before upload).
+      - name: Cache build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Publish to crates.io
+        env:
+          # Classic crates.io API token with publish scope, stored as a repo
+          # secret. To bootstrap 28 brand-new crates this is the path of least
+          # resistance (Trusted Publishing would need a per-crate pending
+          # publisher configured first). Once the crates exist, this can be
+          # swapped for tokenless OIDC: add `permissions: id-token: write` and
+          # a `rust-lang/crates-io-auth-action@v1` step (which exports
+          # CARGO_REGISTRY_TOKEN the same way), then drop this secret.
+          #
+          # cargo reads CARGO_REGISTRY_TOKEN from the env automatically, so we
+          # don't pass `--token` (which cargo now deprecates).
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        # --publish-as-is : publish committed versions, no bump/commit/tag.
+        # --allow-branch '*' : the tag is checked out as detached HEAD, so the
+        #   default `master`-only branch guard would otherwise reject it.
+        # --publish-interval : give the index a moment between uploads to cut
+        #   down on "dependency not yet available" retries.
+        # --yes : non-interactive.
+        run: |
+          cargo ws publish \
+            --publish-as-is \
+            --allow-branch '*' \
+            --publish-interval 15 \
+            --yes

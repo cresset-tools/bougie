@@ -7,6 +7,9 @@ license = "EUPL-1.2"
 repository = "https://github.com/cresset-tools/bougie"
 rust-version = "1.95"
 authors.workspace = true
+# Test fixtures are CI-only; exclude from the published crate. The
+# `benches/` dir stays (declared [[bench]] target).
+exclude = ["/tests"]
 
 [dependencies]
 bougie-autoloader = { workspace = true }
