@@ -11,17 +11,19 @@ contract for index format, server behavior, and service tarballs).
 
 ## Repo layout
 
-- `crates/` — 25-member Cargo workspace (see below).
+- `crates/` — 28-member Cargo workspace (see below).
 - `flake.nix` — Nix dev env with PHP, curl, bash, coreutils for running
   fixture-generation scripts. Does *not* provide the Rust toolchain (rustup
   handles that via `rust-toolchain.toml`).
 - `rust-toolchain.toml` — Pinned Rust **1.95**, `rustfmt` + `clippy`.
 - `release-please-config.json` / `.release-please-manifest.json` —
-  release-please config. Single-component "bougie" package; the only
-  version literal in the workspace is `[workspace.package].version` in
-  root `Cargo.toml` (annotated with `# x-release-please-version`).
-  Every other crate inherits it via `version.workspace = true`. Not on
-  crates.io; only `bougie-v<version>` gets tagged.
+  release-please config. Single-component "bougie" package. Each
+  `[package]` block inherits `[workspace.package].version` via
+  `version.workspace = true`; the version literals release-please
+  rewrites are all annotated with `# x-release-please-version` (the
+  workspace version plus one per `[workspace.dependencies]` entry — see
+  Release flow). All crates publish to crates.io on the `bougie-v<version>`
+  tag.
 - `.github/workflows/ci.yml` — Linux/macOS/Windows matrix. Windows builds
   only `-p bougie` (sandbox-run is Unix-only and `compile_error!`s elsewhere).
 - `.github/workflows/release-please.yml` — Opens release PRs from
@@ -168,31 +170,40 @@ Merging the PR tags `bougie-v<version>`, which triggers
   declares one package (`"."`, component `bougie`). Every workspace member
   inherits `workspace.package.version` (or is bumped via an explicit pin)
   on the same release cadence — the unified version isn't semantically
-  meaningful since none of these crates are published, it just means a
-  leaf-only `fix:` commit still drives a top-level release. This is the
-  uv approach (their internal crates sit at `0.0.X` while `uv` is at
-  `0.11.X`); bougie keeps everything at the bougie version.
-- **One version literal, period.** `[workspace.package].version` in
-  root `Cargo.toml` is annotated with `# x-release-please-version` and
-  is the only line release-please rewrites. Every `[package]` block
-  inherits via `version.workspace = true`; every `[workspace.dependencies]`
-  entry is `path`-only (no `version` field — cargo doesn't require
-  it on unpublished path deps). Don't add a `version = "..."` literal
-  anywhere else — there's no drift to detect because there's nothing
-  to drift.
+  meaningful, it just means a leaf-only `fix:` commit still drives a
+  top-level release. This is the uv approach (their internal crates sit
+  at `0.0.X` while `uv` is at `0.11.X`); bougie keeps everything at the
+  bougie version.
+- **Version literals are annotated, not avoided.** `[package]` blocks
+  inherit `[workspace.package].version` via `version.workspace = true`,
+  so they hold no literal. But every `[workspace.dependencies]` entry
+  carries both `path` *and* a `version = "..."` requirement — cargo
+  rejects a published crate whose normal deps lack a version, and there
+  is no `version.workspace = true` for a dependency's version field. So
+  each is a literal, tagged with `# x-release-please-version` so
+  release-please bumps it in lockstep with the workspace version.
+  `crates/bougie/Cargo.toml` is a release-please `extra-file` (alongside
+  root `Cargo.toml`) so its inline literals get bumped too. If you add a
+  new internal dep, annotate its `version`.
 - **One `default-features = false` exception** in
   `crates/bougie/Cargo.toml` keeps an inline `bougie-index = { path =
-  "...", default-features = false }` block: cargo rejects member-level
-  `default-features = false` overrides when the workspace entry has
-  defaults on, so the bin bypasses workspace inheritance for that one
-  dep. Still no version literal.
+  "...", version = "...", default-features = false }` block: cargo
+  rejects member-level `default-features = false` overrides when the
+  workspace entry has defaults on, so the bin bypasses workspace
+  inheritance for that one dep. It carries its own annotated version
+  literal.
 - **Cargo.lock is refreshed in-workflow.** release-please doesn't
   understand `Cargo.lock`; the workflow runs `cargo update --workspace
   --offline` on the PR branch and pushes the result so CI builds aren't
   broken by a stale lockfile.
-- **No crates.io.** Workspace-wide `publish = false`-equivalent (no
-  `cargo publish` step in the release flow). cargo-dist owns the
-  GitHub release on the `bougie-v*` tag push.
+- **Published to crates.io.** All 28 crates publish on the
+  `bougie-v<version>` tag via `.github/workflows/crates-publish.yml`
+  (`cargo ws publish --publish-as-is`, topo-ordered, idempotent re-run).
+  Needs a `CARGO_REGISTRY_TOKEN` repo secret. cargo-dist
+  (`bougie-release.yml`) independently owns the GitHub Release binaries
+  on the same tag. Test fixtures are `exclude`d from the heavier crates
+  (bougie-autoloader, bougie-composer-resolver, the `bougie` bin) to
+  keep packed crates lean.
 
 **Use conventional commit prefixes** or release-please won't pick the
 change up. Examples in `git log`: `feat(composer-resolver): ...`,
