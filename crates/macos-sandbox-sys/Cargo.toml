@@ -4,6 +4,8 @@ version.workspace = true
 description = "FFI bindings for Apple's Sandbox framework (sandbox_init_with_parameters)"
 edition.workspace = true
 license.workspace = true
+repository = "https://github.com/cresset-tools/bougie"
+rust-version = "1.95"
 authors.workspace = true
 
 [dependencies]
