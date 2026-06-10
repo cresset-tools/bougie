@@ -19,12 +19,15 @@ use bougie_index::{
     fetch::{fetch_manifest, fetch_root, fetch_section},
 };
 use bougie_index::host_to_dirname;
+use bougie_index::wire::Root;
 use bougie_paths::Paths;
 use bougie_version::request::{Flavor, VersionLike};
 use bougie_resolver::{resolve_extension, resolve_php, ResolveOptions, Selected};
 use bougie_version::version::PartialVersion;
 use eyre::{eyre, Result};
+use std::cell::RefCell;
 use std::path::PathBuf;
+use std::rc::Rc;
 
 const SECTION_NAME: &str = "interpreter/php";
 
@@ -34,6 +37,11 @@ pub struct BougieIndexBackend {
     host: String,
     target: String,
     cache_root: PathBuf,
+    /// Memoized signed root, populated on the first `resolve_*` call.
+    /// `RefCell` because the `Backend` trait resolves through `&self`;
+    /// the backend is single-threaded (never shared across threads —
+    /// `select` hands back a plain `Box<dyn Backend>`).
+    root_cache: RefCell<Option<Rc<Root>>>,
 }
 
 impl BougieIndexBackend {
@@ -48,7 +56,27 @@ impl BougieIndexBackend {
             host: host.to_owned(),
             target: target.to_owned(),
             cache_root,
+            root_cache: RefCell::new(None),
         })
+    }
+
+    /// Fetch the signed index root once and memoize it for the lifetime
+    /// of this backend instance. The first call pays the network
+    /// revalidation (`If-None-Match`, normally a 304); every later
+    /// resolve on the same instance — e.g. each baseline extension in a
+    /// single `bougie sync` — reuses the parsed root with no further
+    /// I/O. This is what keeps a warm sync at one conditional GET
+    /// instead of one per resolve. Build a fresh backend to force a
+    /// re-fetch (a republished index bumps the root, and the next
+    /// command's backend picks it up).
+    fn root(&self) -> Result<Rc<Root>> {
+        if let Some(root) = self.root_cache.borrow().as_ref() {
+            return Ok(Rc::clone(root));
+        }
+        let fetched = fetch_root(&self.client, &self.host, &self.cache_root, build_verifier)?;
+        let root = Rc::new(fetched.root);
+        *self.root_cache.borrow_mut() = Some(Rc::clone(&root));
+        Ok(root)
     }
 }
 
@@ -63,9 +91,9 @@ impl super::Backend for BougieIndexBackend {
         flavor: Flavor,
         opts: ResolveOptions,
     ) -> Result<PhpRecipe> {
-        let fetched = fetch_root(&self.client, &self.host, &self.cache_root, build_verifier)?;
-        let target_entry = fetched.root.targets.get(&self.target).ok_or_else(|| {
-            let available: Vec<String> = fetched.root.targets.keys().cloned().collect();
+        let root = self.root()?;
+        let target_entry = root.targets.get(&self.target).ok_or_else(|| {
+            let available: Vec<String> = root.targets.keys().cloned().collect();
             target_not_served(&self.host, &self.target, &available)
         })?;
         let section_ref =
@@ -83,7 +111,7 @@ impl super::Backend for BougieIndexBackend {
             &self.client,
             &self.host,
             &self.cache_root,
-            &fetched.root.version,
+            &root.version,
             &self.target,
             SECTION_NAME,
             &section_ref.sha256,
@@ -126,9 +154,9 @@ impl super::Backend for BougieIndexBackend {
         opts: ResolveOptions,
     ) -> Result<ExtRecipe> {
         let section_name = format!("extension/{name}");
-        let fetched = fetch_root(&self.client, &self.host, &self.cache_root, build_verifier)?;
-        let target_entry = fetched.root.targets.get(&self.target).ok_or_else(|| {
-            let available: Vec<String> = fetched.root.targets.keys().cloned().collect();
+        let root = self.root()?;
+        let target_entry = root.targets.get(&self.target).ok_or_else(|| {
+            let available: Vec<String> = root.targets.keys().cloned().collect();
             target_not_served(&self.host, &self.target, &available)
         })?;
         let section_ref = target_entry
@@ -146,7 +174,7 @@ impl super::Backend for BougieIndexBackend {
             &self.client,
             &self.host,
             &self.cache_root,
-            &fetched.root.version,
+            &root.version,
             &self.target,
             &section_name,
             &section_ref.sha256,

@@ -2,6 +2,7 @@
 //! fetch + extract. Shared by `bougie php install` and `bougie sync`.
 
 use bougie_backend;
+use bougie_backend::Backend;
 use crate::baseline::{BaselineFilter, BASELINE_EXTENSIONS};
 #[cfg(not(target_os = "windows"))]
 use crate::baseline::{skip_for_php_minor, skip_for_platform, PREINSTALLED_EXTENSIONS};
@@ -43,9 +44,36 @@ pub fn install_php(
     flavor_override: Option<Flavor>,
     opts: ResolveOptions,
 ) -> Result<InstalledPhp> {
+    let backend = backend_for(paths)?;
+    install_php_with_backend(&*backend, paths, request, flavor_override, opts)
+}
+
+/// Build the index backend for the host target.
+///
+/// Construct this once and reuse it across a batch of resolves (the
+/// `install_*_with_backend` entry points) so the signed index root is
+/// fetched a single time for the whole batch — see
+/// [`bougie_backend::BougieIndexBackend`]'s root memoization. A fresh
+/// backend per call (the old behavior) meant every resolve paid its own
+/// `If-None-Match` round-trip, which on a warm `bougie sync` was ~30
+/// sequential conditional GETs and the visible "stuck installing"
+/// stall.
+pub fn backend_for(paths: &Paths) -> Result<Box<dyn Backend>> {
     let target = Triple::detect()?;
     let host = std::env::var("BOUGIE_INDEX_URL").unwrap_or_else(|_| DEFAULT_INDEX_URL.into());
+    bougie_backend::select(&target, &host, paths)
+}
 
+/// [`install_php`] against a caller-provided backend, so a single sync
+/// can share one backend (and thus one root fetch) across the
+/// interpreter + baseline + preinstall steps.
+pub fn install_php_with_backend(
+    backend: &dyn Backend,
+    paths: &Paths,
+    request: &Request,
+    flavor_override: Option<Flavor>,
+    opts: ResolveOptions,
+) -> Result<InstalledPhp> {
     let (spec, in_request_flavor) = match request {
         Request::VersionLike { spec, flavor } => (spec.clone(), *flavor),
         Request::FullTag { .. } | Request::Path(_) | Request::Name(_) => {
@@ -59,7 +87,6 @@ pub fn install_php(
     // Lock the global store before mutating anything.
     let _guard = ExclusiveGuard::acquire(&paths.global_lock(), LOCK_TIMEOUT)?;
 
-    let backend = bougie_backend::select(&target, &host, paths)?;
     let recipe = backend.resolve_php(&spec, flavor, opts)?;
     let dest = install_dir(paths, recipe.version, recipe.flavor);
     let already_present = dest.exists();
@@ -162,7 +189,6 @@ pub fn install_extension(
 /// [`preinstall_into`], `sync::install_required_extensions`) can show
 /// a single combined bar across many extensions instead of one bar
 /// per artifact.
-#[tracing::instrument(skip_all, fields(extension = name))]
 pub fn install_extension_with_bar(
     paths: &Paths,
     name: &str,
@@ -172,12 +198,29 @@ pub fn install_extension_with_bar(
     opts: ResolveOptions,
     bar: &DownloadBar,
 ) -> Result<InstalledExt> {
-    let target = Triple::detect()?;
-    let host = std::env::var("BOUGIE_INDEX_URL").unwrap_or_else(|_| DEFAULT_INDEX_URL.into());
-
     let _guard = ExclusiveGuard::acquire(&paths.global_lock(), LOCK_TIMEOUT)?;
+    let backend = backend_for(paths)?;
+    install_extension_resolved(&*backend, paths, name, version_pin, php_minor, flavor, opts, bar)
+}
 
-    let backend = bougie_backend::select(&target, &host, paths)?;
+/// Core of [`install_extension_with_bar`] against a caller-provided
+/// backend, with the global store lock assumed already held by the
+/// caller. Batch callers ([`install_baseline_into_with_backend`],
+/// [`preinstall_into_with_backend`]) acquire the lock once and share a
+/// single backend across the whole loop, so the signed index root is
+/// fetched exactly once instead of per extension.
+#[allow(clippy::too_many_arguments)]
+#[tracing::instrument(skip_all, fields(extension = name))]
+fn install_extension_resolved(
+    backend: &dyn Backend,
+    paths: &Paths,
+    name: &str,
+    version_pin: Option<&str>,
+    php_minor: PartialVersion,
+    flavor: Flavor,
+    opts: ResolveOptions,
+    bar: &DownloadBar,
+) -> Result<InstalledExt> {
     let recipe = backend.resolve_extension(name, php_minor, flavor, version_pin, opts)?;
 
     let sha8: String = recipe.blob.sha256.chars().take(8).collect();
@@ -424,6 +467,44 @@ pub fn install_baseline_into(
     }
     #[cfg(not(target_os = "windows"))]
     {
+        let backend = match backend_for(paths) {
+            Ok(b) => b,
+            Err(e) => {
+                let mut report = BaselineReport::default();
+                report.failed.push(("<backend>".into(), format!("{e:#}")));
+                return report;
+            }
+        };
+        install_baseline_into_with_backend(
+            &*backend,
+            paths,
+            install_root,
+            php_minor,
+            flavor,
+            filter,
+            resolve_opts,
+        )
+    }
+}
+
+/// [`install_baseline_into`] against a caller-provided backend. The
+/// global store lock is taken once for the whole batch (not per
+/// extension), and every resolve shares `backend` so the signed index
+/// root is fetched a single time. `bougie sync` calls this so the
+/// interpreter, baseline, and preinstall steps all reuse one backend —
+/// a warm sync then costs one conditional GET total instead of one per
+/// baseline extension.
+#[cfg(not(target_os = "windows"))]
+pub fn install_baseline_into_with_backend(
+    backend: &dyn Backend,
+    paths: &Paths,
+    install_root: &Path,
+    php_minor: PartialVersion,
+    flavor: Flavor,
+    filter: &BaselineFilter,
+    resolve_opts: ResolveOptions,
+) -> BaselineReport {
+    {
         let mut report = BaselineReport::default();
         let conf_d = install_root.join("etc").join("php").join("conf.d");
         if let Err(e) = std::fs::create_dir_all(&conf_d) {
@@ -477,11 +558,22 @@ pub fn install_baseline_into(
         // extension already on disk, which is the norm on `bougie run` /
         // `bougie server` — therefore prints nothing instead of flashing
         // "installing 24/24".
+        // One lock for the whole batch — the inner resolver assumes the
+        // caller holds it, so we don't re-acquire per extension.
+        let _guard = match ExclusiveGuard::acquire(&paths.global_lock(), LOCK_TIMEOUT) {
+            Ok(g) => g,
+            Err(e) => {
+                report.failed.push(("<lock>".into(), format!("{e:#}")));
+                return report;
+            }
+        };
+
         let progress = DownloadBar::steps("installing", to_install.len() as u64);
         let byte_bar = DownloadBar::hidden();
         for &name in &to_install {
             progress.step(name);
-            match install_extension_with_bar(
+            match install_extension_resolved(
+                backend,
                 paths,
                 name,
                 None,
@@ -508,6 +600,23 @@ pub fn install_baseline_into(
         progress.finish();
         report
     }
+}
+
+/// Windows has no per-extension index resolves, so the shared backend
+/// is unused; baseline DLLs come from the interpreter ZIP. Provided so
+/// `bougie sync` can call one uniform entry point on every platform.
+#[cfg(target_os = "windows")]
+pub fn install_baseline_into_with_backend(
+    backend: &dyn Backend,
+    paths: &Paths,
+    install_root: &Path,
+    php_minor: PartialVersion,
+    flavor: Flavor,
+    filter: &BaselineFilter,
+    resolve_opts: ResolveOptions,
+) -> BaselineReport {
+    let _ = (backend, paths, php_minor, flavor, resolve_opts);
+    install_baseline_from_bundled_windows(install_root, filter)
 }
 
 /// Windows baseline path: for every name in [`BASELINE_EXTENSIONS`]
@@ -640,7 +749,7 @@ pub struct PreinstallReport {
 #[tracing::instrument(skip_all, fields(php_minor = ?php_minor, flavor = ?flavor))]
 pub fn preinstall_into(
     paths: &Paths,
-    _install_root: &Path,
+    install_root: &Path,
     php_minor: PartialVersion,
     flavor: Flavor,
     resolve_opts: ResolveOptions,
@@ -652,31 +761,79 @@ pub fn preinstall_into(
     // Phase 4b restores the preinstall behavior.
     #[cfg(target_os = "windows")]
     {
-        let _ = (paths, _install_root, php_minor, flavor, resolve_opts);
+        let _ = (paths, install_root, php_minor, flavor, resolve_opts);
         return PreinstallReport::default();
     }
     #[cfg(not(target_os = "windows"))]
     {
-        let mut report = PreinstallReport::default();
-        // Same single-bar pattern as install_baseline_into.
-        let bar = DownloadBar::new("downloading");
-        for &name in PREINSTALLED_EXTENSIONS {
-            match install_extension_with_bar(
-                paths,
-                name,
-                None,
-                php_minor,
-                flavor,
-                resolve_opts,
-                &bar,
-            ) {
-                Ok(_) => report.installed.push(name.into()),
-                Err(e) => report.failed.push((name.into(), format!("{e:#}"))),
+        let backend = match backend_for(paths) {
+            Ok(b) => b,
+            Err(e) => {
+                let mut report = PreinstallReport::default();
+                report.failed.push(("<backend>".into(), format!("{e:#}")));
+                return report;
             }
-        }
-        bar.finish();
-        report
+        };
+        preinstall_into_with_backend(&*backend, paths, install_root, php_minor, flavor, resolve_opts)
     }
+}
+
+/// [`preinstall_into`] against a caller-provided backend. Takes the
+/// global store lock once and shares `backend` across the loop, so a
+/// `bougie sync` that already resolved the index root for PHP +
+/// baseline reuses it here with no additional network round-trip.
+#[cfg(not(target_os = "windows"))]
+pub fn preinstall_into_with_backend(
+    backend: &dyn Backend,
+    paths: &Paths,
+    _install_root: &Path,
+    php_minor: PartialVersion,
+    flavor: Flavor,
+    resolve_opts: ResolveOptions,
+) -> PreinstallReport {
+    let mut report = PreinstallReport::default();
+    let _guard = match ExclusiveGuard::acquire(&paths.global_lock(), LOCK_TIMEOUT) {
+        Ok(g) => g,
+        Err(e) => {
+            report.failed.push(("<lock>".into(), format!("{e:#}")));
+            return report;
+        }
+    };
+    // Same single-bar pattern as install_baseline_into.
+    let bar = DownloadBar::new("downloading");
+    for &name in PREINSTALLED_EXTENSIONS {
+        match install_extension_resolved(
+            backend,
+            paths,
+            name,
+            None,
+            php_minor,
+            flavor,
+            resolve_opts,
+            &bar,
+        ) {
+            Ok(_) => report.installed.push(name.into()),
+            Err(e) => report.failed.push((name.into(), format!("{e:#}"))),
+        }
+    }
+    bar.finish();
+    report
+}
+
+/// Windows preinstall is a no-op (PECL via windows.php.net is Phase
+/// 4b); the shared backend is unused. Provided so `bougie sync` calls
+/// one uniform entry point on every platform.
+#[cfg(target_os = "windows")]
+pub fn preinstall_into_with_backend(
+    backend: &dyn Backend,
+    paths: &Paths,
+    _install_root: &Path,
+    php_minor: PartialVersion,
+    flavor: Flavor,
+    resolve_opts: ResolveOptions,
+) -> PreinstallReport {
+    let _ = (backend, paths, _install_root, php_minor, flavor, resolve_opts);
+    PreinstallReport::default()
 }
 
 /// Numeric conf.d prefix for a baseline (or user) extension. Mirrors
