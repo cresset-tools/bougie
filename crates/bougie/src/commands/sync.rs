@@ -7,8 +7,8 @@ use bougie_config::{load_project, ExtensionPin, ProjectConfig};
 use bougie_errors::BougieError;
 use bougie_fetch::DownloadBar;
 use bougie_installer::install::{
-    install_baseline_into, install_extension_with_bar, install_php, preinstall_into, InstalledExt,
-    InstalledPhp,
+    backend_for, install_baseline_into_with_backend, install_extension_with_bar,
+    install_php_with_backend, preinstall_into_with_backend, InstalledExt, InstalledPhp,
 };
 use bougie_output::output::{emit, Render};
 use bougie_paths::Paths;
@@ -393,8 +393,14 @@ pub fn ensure_synced(
     flavor: Flavor,
 ) -> Result<SyncResult> {
     let request = Request::VersionLike { spec, flavor: Some(flavor) };
+    // Build one backend for the whole toolchain phase. It memoizes the
+    // signed index root on first use, so the interpreter, baseline, and
+    // preinstall resolves below share a single conditional GET instead
+    // of one per resolve — a warm sync used to stall on ~30 sequential
+    // `If-None-Match` round-trips (the "stuck installing exif" symptom).
+    let backend = backend_for(paths)?;
     let installed: InstalledPhp =
-        install_php(paths, &request, Some(flavor), ResolveOptions::default())?;
+        install_php_with_backend(&*backend, paths, &request, Some(flavor), ResolveOptions::default())?;
 
     // Ensure the baseline set is present on this interpreter. Idempotent:
     // already-installed extensions short-circuit at the blob fetch, and
@@ -408,7 +414,8 @@ pub fn ensure_synced(
         minor: Some(installed.version.minor),
         patch: None,
     };
-    let baseline_report = install_baseline_into(
+    let baseline_report = install_baseline_into_with_backend(
+        &*backend,
         paths,
         &installed.install_path,
         php_minor,
@@ -424,7 +431,8 @@ pub fn ensure_synced(
     // server-side debug request doesn't pay the download cost. No
     // conf.d fragment is written here — see
     // `bougie_installer::baseline::PREINSTALLED_EXTENSIONS`.
-    let preinstall_report = preinstall_into(
+    let preinstall_report = preinstall_into_with_backend(
+        &*backend,
         paths,
         &installed.install_path,
         php_minor,
