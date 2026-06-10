@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.24.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.23.1...bougie-v0.24.0) (2026-06-10)
+
+
+### Features
+
+* **sync:** uv-style concise summary + skip redundant autoloader dump ([#347](https://github.com/cresset-tools/bougie/issues/347)) ([a845daa](https://github.com/cresset-tools/bougie/commit/a845daaf211dc194a13d65447c771e94df5e865a))
+
+
+### Performance Improvements
+
+* **installer:** fetch the index root once per sync, not per extension ([#345](https://github.com/cresset-tools/bougie/issues/345)) ([68c6b7b](https://github.com/cresset-tools/bougie/commit/68c6b7bf8df2fcedc72df4ec8ccc017a9de84e71))
+
 ## [0.23.1](https://github.com/cresset-tools/bougie/compare/bougie-v0.23.0...bougie-v0.23.1) (2026-06-08)
 
 
