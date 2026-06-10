@@ -26,6 +26,9 @@ on:
 
 permissions:
   contents: read
+  # Mint a short-lived OIDC token that crates.io exchanges for a temporary,
+  # publish-scoped API token (Trusted Publishing). No long-lived secret.
+  id-token: write
 
 # Never cancel a publish mid-flight — a partially-published workspace is worse
 # than waiting. (Re-running later is safe; already-published crates are skipped.)
@@ -56,19 +59,21 @@ jobs:
       - name: Cache build
         uses: Swatinem/rust-cache@v2
 
+      # Exchange the workflow's OIDC identity for a temporary crates.io token
+      # (valid ~30 min, scoped to the crates that trust this repo+workflow).
+      # Every one of the 28 crates has a Trusted Publisher configured on
+      # crates.io pointing at (cresset-tools/bougie, crates-publish.yml), so the
+      # single minted token can publish them all. Replaces the old
+      # CARGO_REGISTRY_TOKEN repo secret — no long-lived credential.
+      - name: Authenticate to crates.io
+        id: auth
+        uses: rust-lang/crates-io-auth-action@v1
+
       - name: Publish to crates.io
         env:
-          # Classic crates.io API token with publish scope, stored as a repo
-          # secret. To bootstrap 28 brand-new crates this is the path of least
-          # resistance (Trusted Publishing would need a per-crate pending
-          # publisher configured first). Once the crates exist, this can be
-          # swapped for tokenless OIDC: add `permissions: id-token: write` and
-          # a `rust-lang/crates-io-auth-action@v1` step (which exports
-          # CARGO_REGISTRY_TOKEN the same way), then drop this secret.
-          #
           # cargo reads CARGO_REGISTRY_TOKEN from the env automatically, so we
           # don't pass `--token` (which cargo now deprecates).
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
         # --publish-as-is : publish committed versions, no bump/commit/tag.
         # --allow-branch '*' : the tag is checked out as detached HEAD, so the
         #   default `master`-only branch guard would otherwise reject it.
