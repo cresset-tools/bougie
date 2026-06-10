@@ -25,6 +25,7 @@ use std::collections::BTreeSet;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::time::Instant;
 
 #[derive(Debug, Serialize)]
 pub struct SyncResult {
@@ -52,56 +53,116 @@ pub struct SyncResult {
     /// Vendor packages removed (were present but no longer in lock).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vendor_packages_removed: Option<u32>,
+    /// Total packages in the resolution (`composer.lock`). Drives the
+    /// uv-style `Resolved N packages` line. Filled in by `run` /
+    /// `run_with_default_fallback`; `ensure_synced` leaves it at 0.
+    pub resolved_packages: usize,
+    /// Wall-clock of the resolution phase (lock load / resolve), in
+    /// milliseconds. Filled in by the entry points, 0 from `ensure_synced`.
+    pub resolve_ms: f64,
+    /// Wall-clock of the vendor materialize/audit phase, in milliseconds.
+    pub audit_ms: f64,
 }
 
 impl Render for SyncResult {
     fn render_text(&self, w: &mut dyn Write) -> io::Result<()> {
-        writeln!(
+        use bougie_output::list_format::writeln_dim;
+
+        // uv-style summary, printed grey (dimmed): the resolution size,
+        // then what materializing vendor/ actually did. The
+        // PHP/composer/shims toolchain detail is demoted to `--verbose`
+        // so a steady-state sync stays terse. Color degrades to plain
+        // automatically on a non-color TTY or under `NO_COLOR`.
+        writeln_dim(
             w,
-            "synced php {}-{} from {}",
-            self.php_version,
-            self.php_flavor,
-            self.install_path.display()
+            &format!(
+                "Resolved {} {} in {}",
+                self.resolved_packages,
+                plural(self.resolved_packages as u64, "package", "packages"),
+                fmt_ms(self.resolve_ms),
+            ),
         )?;
-        writeln!(
-            w,
-            "synced composer {} from {}",
-            self.composer_version,
-            self.composer_path.display()
-        )?;
-        if !self.installed_extensions.is_empty() {
-            writeln!(
-                w,
-                "installed extensions from composer.json: {}",
-                self.installed_extensions.join(", ")
-            )?;
-        }
         match (self.vendor_packages_installed, self.vendor_packages_up_to_date) {
-            (Some(installed), Some(up_to_date)) if installed == 0 && up_to_date > 0 => {
+            (Some(installed), _) if installed > 0 => {
                 let removed = self.vendor_packages_removed.unwrap_or(0);
                 let removed_s = if removed > 0 {
                     format!(", {removed} removed")
                 } else {
                     String::new()
                 };
-                writeln!(w, "vendor: {up_to_date} packages up to date{removed_s}")?;
-            }
-            (Some(installed), Some(up_to_date)) => {
-                let already = up_to_date;
-                let removed = self.vendor_packages_removed.unwrap_or(0);
-                let removed_s = if removed > 0 {
-                    format!(", {removed} removed")
-                } else {
-                    String::new()
-                };
-                writeln!(
+                writeln_dim(
                     w,
-                    "vendor: installed {installed} packages ({already} cached{removed_s})",
+                    &format!(
+                        "Installed {installed} {} in {}{removed_s}",
+                        plural(u64::from(installed), "package", "packages"),
+                        fmt_ms(self.audit_ms),
+                    ),
+                )?;
+            }
+            (Some(_), Some(up_to_date)) if up_to_date > 0 => {
+                writeln_dim(
+                    w,
+                    &format!(
+                        "Audited {up_to_date} {} in {}",
+                        plural(u64::from(up_to_date), "package", "packages"),
+                        fmt_ms(self.audit_ms),
+                    ),
                 )?;
             }
             _ => {}
         }
-        writeln!(w, "shims at {}", self.shims_dir.display())
+
+        if bougie_output::output::verbose() {
+            writeln_dim(
+                w,
+                &format!(
+                    "  php {}-{} at {}",
+                    self.php_version,
+                    self.php_flavor,
+                    self.install_path.display()
+                ),
+            )?;
+            writeln_dim(
+                w,
+                &format!(
+                    "  composer {} at {}",
+                    self.composer_version,
+                    self.composer_path.display()
+                ),
+            )?;
+            if !self.installed_extensions.is_empty() {
+                writeln_dim(
+                    w,
+                    &format!(
+                        "  extensions from composer.json: {}",
+                        self.installed_extensions.join(", ")
+                    ),
+                )?;
+            }
+            writeln_dim(w, &format!("  shims at {}", self.shims_dir.display()))?;
+        }
+        Ok(())
+    }
+}
+
+/// Format an elapsed millisecond count uv-style: sub-millisecond keeps
+/// two decimals (`0.55ms`), whole milliseconds print as integers
+/// (`14ms`), and a second or more switches to `1.23s`.
+fn fmt_ms(ms: f64) -> String {
+    if ms >= 1000.0 {
+        format!("{:.2}s", ms / 1000.0)
+    } else if ms >= 1.0 {
+        format!("{ms:.0}ms")
+    } else {
+        format!("{ms:.2}ms")
+    }
+}
+
+fn plural(n: u64, one: &'static str, many: &'static str) -> &'static str {
+    if n == 1 {
+        one
+    } else {
+        many
     }
 }
 
@@ -211,8 +272,13 @@ pub fn run(
 
     // Step 1 — ensure a composer.lock exists before PHP inference so
     // `infer()` / `infer_extensions()` can read it. This must happen
-    // before `resolve_php_inputs` (which calls `infer()`).
+    // before `resolve_php_inputs` (which calls `infer()`). Timed as the
+    // "resolution" phase: a no-op lock read when warm, a full resolve +
+    // write when the lock is missing.
+    let resolve_started = Instant::now();
     ensure_lock(&paths, &project_root, offline, dry_run)?;
+    let resolved_packages = count_lock_packages(&project_root);
+    let resolve_ms = elapsed_ms(resolve_started);
 
     let project = load_project(&project_root)?;
     let (spec, flavor) = resolve_php_inputs(&project_root, &project)?;
@@ -242,14 +308,24 @@ pub fn run(
     } else {
         None
     };
+    let audit_started = Instant::now();
     let vendor_summary = install_vendor(
         &paths,
         &project_root,
         hooks.as_ref().map(|h| h as &dyn bougie_composer_resolver::ScriptHooks),
     )?;
+    result.audit_ms = elapsed_ms(audit_started);
+    result.resolved_packages = resolved_packages;
+    result.resolve_ms = resolve_ms;
     if let Some(s) = vendor_summary {
-        for warning in &s.warnings {
-            eprintln!("warning: {warning}");
+        // Soft preflight findings (skipped Composer plugins, a non-empty
+        // `scripts` section, …) recur on every sync for a given project,
+        // so they'd drown the two-line summary. Show them only under
+        // `--verbose`.
+        if bougie_output::output::verbose() {
+            for warning in &s.warnings {
+                eprintln!("warning: {warning}");
+            }
         }
         result.vendor_packages_installed =
             Some(s.packages_installed + s.packages_already_present);
@@ -259,6 +335,12 @@ pub fn run(
 
     emit(format, &result)?;
     Ok(ExitCode::SUCCESS)
+}
+
+/// Milliseconds elapsed since `started`, as the `f64` the uv-style
+/// summary lines carry.
+fn elapsed_ms(started: Instant) -> f64 {
+    started.elapsed().as_secs_f64() * 1000.0
 }
 
 /// Same as [`run`] but, when neither `composer.json` nor `bougie.toml`
@@ -277,7 +359,10 @@ pub fn run_with_default_fallback(format: OutputFormat, dry_run: bool) -> Result<
 
     // Ensure lock before PHP inference (same as `run`). Never errors
     // offline here: `bougie run` is forgiving by design.
+    let resolve_started = Instant::now();
     ensure_lock(&paths, &project_root, false, dry_run)?;
+    let resolved_packages = count_lock_packages(&project_root);
+    let resolve_ms = elapsed_ms(resolve_started);
 
     let project = load_project(&project_root)?;
     let (spec, flavor) = match resolve_php_inputs(&project_root, &project) {
@@ -307,14 +392,24 @@ pub fn run_with_default_fallback(format: OutputFormat, dry_run: bool) -> Result<
     } else {
         None
     };
+    let audit_started = Instant::now();
     let vendor_summary = install_vendor(
         &paths,
         &project_root,
         hooks.as_ref().map(|h| h as &dyn bougie_composer_resolver::ScriptHooks),
     )?;
+    result.audit_ms = elapsed_ms(audit_started);
+    result.resolved_packages = resolved_packages;
+    result.resolve_ms = resolve_ms;
     if let Some(s) = vendor_summary {
-        for warning in &s.warnings {
-            eprintln!("warning: {warning}");
+        // Soft preflight findings (skipped Composer plugins, a non-empty
+        // `scripts` section, …) recur on every sync for a given project,
+        // so they'd drown the two-line summary. Show them only under
+        // `--verbose`.
+        if bougie_output::output::verbose() {
+            for warning in &s.warnings {
+                eprintln!("warning: {warning}");
+            }
         }
         result.vendor_packages_installed =
             Some(s.packages_installed + s.packages_already_present);
@@ -478,7 +573,7 @@ pub fn ensure_synced(
     global.save(paths)?;
 
     Ok(SyncResult {
-        schema_version: 2,
+        schema_version: 3,
         php_version: installed.version.to_string(),
         php_flavor: installed.flavor.to_string(),
         install_path: installed.install_path,
@@ -487,13 +582,17 @@ pub fn ensure_synced(
         composer_version: composer_installed.version,
         composer_path: composer_installed.phar_path,
         installed_extensions,
-        // Vendor stats are filled in by the `run` / `run_with_default_fallback`
-        // callers after they call `install_vendor`. `ensure_synced` is reused
-        // by `ext add` which does NOT touch vendor/, so we leave these None
-        // here and let the two entry-point functions set them.
+        // Vendor stats + resolution timing are filled in by the `run` /
+        // `run_with_default_fallback` callers after they call
+        // `install_vendor`. `ensure_synced` is reused by `ext add` which
+        // does NOT touch vendor/, so we leave these zero/None here and
+        // let the two entry-point functions set them.
         vendor_packages_installed: None,
         vendor_packages_up_to_date: None,
         vendor_packages_removed: None,
+        resolved_packages: 0,
+        resolve_ms: 0.0,
+        audit_ms: 0.0,
     })
 }
 
@@ -898,11 +997,16 @@ fn try_seed_global_composer_shim(paths: &Paths) -> Result<()> {
                 })
                 .unwrap_or(false);
         if !owned {
-            eprintln!(
-                "warning: not seeding a global `composer` — {} already exists \
-                 and was not created by bougie",
-                link.display()
-            );
+            // A recurring, benign condition (the user has their own
+            // `composer` on PATH) — keep it out of the steady-state
+            // summary; surface it only under `--verbose`.
+            if bougie_output::output::verbose() {
+                eprintln!(
+                    "warning: not seeding a global `composer` — {} already exists \
+                     and was not created by bougie",
+                    link.display()
+                );
+            }
             return Ok(());
         }
         std::fs::remove_file(&link)?;
