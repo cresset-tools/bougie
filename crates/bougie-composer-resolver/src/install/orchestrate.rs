@@ -18,7 +18,10 @@
 //! to the user via [`InstallSummary::warnings`].
 
 use std::collections::{HashMap, HashSet};
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
+
+use rustc_hash::FxHasher;
 
 use bougie_autoloader::{dump_autoload, DumpRequest};
 use bougie_composer::lockfile::{self, Lock, LockPackage};
@@ -348,16 +351,52 @@ pub fn install_from_lock(
         hooks.pre_autoload_dump()?;
     }
 
-    dump_autoload(&DumpRequest {
-        project_root,
-        optimize: false,
-        classmap_authoritative: false,
-        no_dev: opts.no_dev,
-        apcu_autoloader: false,
-        apcu_prefix: None,
-        autoloader_suffix: None,
-    })
-    .map_err(|e| eyre!("autoload dump failed: {e}"))?;
+    // Autoloader freshness fast-path — the uv "Audited" shape. The
+    // non-optimized autoloader is a pure function of the root manifest
+    // (autoload/config/extra) and the lock (the full package set plus
+    // each package's own autoload block). When nothing was installed or
+    // removed this run, that fingerprint is unchanged, and the output is
+    // still on disk, a regenerated tree would be byte-identical — so the
+    // ~200ms dump is pure waste and we skip it. Restricted to the
+    // scripts-off default: with root scripts on we keep the
+    // unconditional dump so the `pre`/`post-autoload-dump` lifecycle is
+    // observable exactly as before.
+    let autoload_marker = project_root
+        .join("vendor/composer")
+        .join(AUTOLOAD_FRESH_MARKER);
+    let lock_bytes = std::fs::read(&composer_lock_path).unwrap_or_default();
+    let fingerprint = autoload_fingerprint(&composer_json_bytes, &lock_bytes, opts.no_dev).to_string();
+    let autoload_fresh = hooks.is_none()
+        && install_set.is_empty()
+        && packages_removed == 0
+        && project_root.join("vendor/autoload.php").is_file()
+        && std::fs::read_to_string(&autoload_marker)
+            .ok()
+            .as_deref()
+            .map(str::trim)
+            == Some(fingerprint.as_str());
+
+    if !autoload_fresh {
+        dump_autoload(&DumpRequest {
+            project_root,
+            optimize: false,
+            classmap_authoritative: false,
+            no_dev: opts.no_dev,
+            apcu_autoloader: false,
+            apcu_prefix: None,
+            autoloader_suffix: None,
+        })
+        .map_err(|e| eyre!("autoload dump failed: {e}"))?;
+        // Record the fingerprint so the next unchanged sync can skip the
+        // dump. Best-effort: a write failure just means we regenerate
+        // next time (the old behavior), so it's a warning, not an error.
+        if let Err(e) = std::fs::write(&autoload_marker, &fingerprint) {
+            warnings.push(format!(
+                "could not write autoload freshness marker {}: {e}",
+                autoload_marker.display()
+            ));
+        }
+    }
 
     match hooks {
         // Scripts ON: run the project's real `post-autoload-dump` entries.
@@ -641,6 +680,29 @@ fn host_from_url(url: &str) -> Option<&str> {
 }
 
 /// Check the lock's `content-hash` field against the current
+/// Marker file (under `vendor/composer/`) holding the autoloader
+/// freshness fingerprint from the last dump. Its presence + match lets
+/// a subsequent unchanged sync skip the autoloader regeneration.
+const AUTOLOAD_FRESH_MARKER: &str = ".bougie-autoload-fresh";
+
+/// Fingerprint of everything the non-optimized autoloader output
+/// depends on: the root manifest bytes (autoload / config /
+/// installer-paths in `extra`) and the lock bytes (the full package set
+/// and each package's own `autoload` block), plus the dev flag.
+///
+/// Non-cryptographic on purpose — this is a local freshness cache, not
+/// a trust boundary, and the crate already prefers fast hashing over
+/// pulling `sha2` for non-security work. A hash collision would only
+/// cost a skipped regeneration, recoverable with an explicit
+/// `bougie composer dump-autoloader`.
+fn autoload_fingerprint(composer_json_bytes: &[u8], lock_bytes: &[u8], no_dev: bool) -> u64 {
+    let mut h = FxHasher::default();
+    composer_json_bytes.hash(&mut h);
+    lock_bytes.hash(&mut h);
+    no_dev.hash(&mut h);
+    h.finish()
+}
+
 /// `composer.json` bytes, using the same algorithm Composer itself
 /// runs (delegated to `bougie_composer::lockfile::content_hash`).
 ///

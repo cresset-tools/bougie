@@ -181,11 +181,15 @@ fn sync_installs_php_and_writes_state() {
         .env("BOUGIE_INDEX_URL", fx.server.uri())
         .env("BOUGIE_COMPOSER_BASE_URL", fx.composer_server.uri())
         .env("BOUGIE_TRUST_ROOT_PATH", &trust)
+        .arg("--verbose")
         .arg("sync")
         .assert()
         .success()
-        .stdout(contains("synced php 8.3.12-nts"))
-        .stdout(contains("synced composer 2.8.5"));
+        // The two-line uv-style summary is always present; the
+        // interpreter/composer detail is `--verbose`-only now.
+        .stdout(contains("Resolved"))
+        .stdout(contains("php 8.3.12-nts"))
+        .stdout(contains("composer 2.8.5"));
 
     let resolved = proj.path().join(".bougie/state/resolved");
     assert!(resolved.is_file());
@@ -226,10 +230,11 @@ fn sync_honors_composer_pin_in_bougie_toml() {
         .env("BOUGIE_INDEX_URL", fx.server.uri())
         .env("BOUGIE_COMPOSER_BASE_URL", fx.composer_server.uri())
         .env("BOUGIE_TRUST_ROOT_PATH", &trust)
+        .arg("--verbose")
         .arg("sync")
         .assert()
         .success()
-        .stdout(contains("synced composer 2.8.5"));
+        .stdout(contains("composer 2.8.5"));
     assert_eq!(
         std::fs::read_to_string(proj.path().join(".bougie/state/resolved-composer"))
             .unwrap()

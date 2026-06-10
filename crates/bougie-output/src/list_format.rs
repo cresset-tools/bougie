@@ -152,6 +152,19 @@ pub fn write_styled(w: &mut dyn Write, style: Style, text: &str) -> io::Result<(
     write!(w, "{}{}{}", style.render(), text, style.render_reset())
 }
 
+/// Dim (grey) style for secondary/summary text — e.g. uv-style
+/// `Resolved N packages in …` lines.
+pub const DIM_STYLE: Style = Style::new().dimmed();
+
+/// Write `text` dimmed (grey), followed by a newline. The `dimmed` SGR
+/// renders as grey on a color terminal; the `AutoStream` / `StripStream`
+/// wrapper drops the codes entirely when the destination isn't a color
+/// TTY or `NO_COLOR` is set, so the text stays plain there.
+pub fn writeln_dim(w: &mut dyn Write, text: &str) -> io::Result<()> {
+    write_styled(w, DIM_STYLE, text)?;
+    writeln!(w)
+}
+
 /// Optional dimmed parenthetical tacked onto the end (e.g. channel
 /// label like `(stable)`).
 pub fn write_tail_note(w: &mut dyn Write, note: &str) -> io::Result<()> {
