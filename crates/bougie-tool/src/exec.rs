@@ -135,6 +135,9 @@ pub fn prepare(
     }
     scan.push(tool_dir.join("conf.d"));
 
+    // `mut` is only exercised on Unix (the PATH/unzip-shim block below);
+    // on Windows tool-exec is a stub, so the vec is never mutated.
+    #[cfg_attr(not(unix), allow(unused_mut))]
     let mut env = vec![
         ("PHP_INI_SCAN_DIR".to_string(), scan),
         ("BOUGIE_TOOL".to_string(), receipt.package.clone().into()),
