@@ -293,6 +293,7 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
         ),
         Command::Composer(ComposerCommand::Update {
             packages,
+            no_install,
             with_dependencies,
             with_all_dependencies,
             working_dir,
@@ -305,6 +306,7 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
             working_dir,
             no_dev,
             dry_run,
+            no_install,
             packages,
             with_dependencies,
             with_all_dependencies,

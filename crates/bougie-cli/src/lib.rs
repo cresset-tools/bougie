@@ -740,12 +740,15 @@ pub enum ComposerCommand {
         #[arg(long = "no-scripts")]
         no_scripts: bool,
     },
-    /// Resolve the project's dependency graph and write a fresh
-    /// `composer.lock`. With no package arguments this re-resolves from
-    /// scratch (ignoring any existing lock); naming one or more packages
-    /// does a partial update — only those packages re-resolve while every
-    /// other locked package stays pinned. Pass `--dry-run` to preview the
-    /// solution without writing the lock or touching `vendor/`.
+    /// Resolve the project's dependency graph, write a fresh
+    /// `composer.lock`, and install the result into `vendor/` (matching
+    /// Composer's `update`). With no package arguments this re-resolves
+    /// from scratch; naming one or more packages does a partial update —
+    /// only those re-resolve while every other locked package stays
+    /// pinned. `--no-install` stops after writing the lock; `--dry-run`
+    /// previews the solution without writing anything. Aliased to
+    /// `upgrade` / `u`, like Composer.
+    #[command(visible_alias = "upgrade", alias = "u")]
     Update {
         /// Packages to update (`vendor/name`). When given, only these
         /// packages re-resolve; every other package stays pinned to its
@@ -753,6 +756,10 @@ pub enum ComposerCommand {
         /// packages, the whole graph re-resolves from scratch.
         #[arg(value_name = "PACKAGES")]
         packages: Vec<String>,
+        /// Write the lock but don't install into `vendor/` (Composer's
+        /// `--no-install`).
+        #[arg(long = "no-install")]
+        no_install: bool,
         /// Also update the named packages' dependencies (Composer's
         /// `--with-dependencies` / `-w`).
         #[arg(short = 'w', long = "with-dependencies")]
