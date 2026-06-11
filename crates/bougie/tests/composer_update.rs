@@ -7,6 +7,7 @@
 //! mock.
 
 use assert_cmd::Command;
+use std::io::Write;
 use std::path::Path;
 use tempfile::TempDir;
 use wiremock::matchers::{method, path as wm_path};
@@ -14,6 +15,35 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 mod common;
 use common::TestEnv;
+
+fn sha1_hex(bytes: &[u8]) -> String {
+    use sha1::Digest as _;
+    let digest = sha1::Sha1::digest(bytes);
+    let mut s = String::with_capacity(40);
+    for b in digest {
+        use std::fmt::Write as _;
+        let _ = write!(s, "{b:02x}");
+    }
+    s
+}
+
+/// A minimal Composer dist zip wrapping one PSR-4 file under `<top>/`.
+fn build_fixture_zip(top: &str) -> Vec<u8> {
+    let mut buf: Vec<u8> = Vec::new();
+    {
+        let cursor = std::io::Cursor::new(&mut buf);
+        let mut zw = zip::ZipWriter::new(cursor);
+        let opts = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        zw.start_file(format!("{top}/composer.json"), opts).unwrap();
+        zw.write_all(br#"{"name":"acme/foo","autoload":{"psr-4":{"Acme\\Foo\\":"src/"}}}"#)
+            .unwrap();
+        zw.start_file(format!("{top}/src/Foo.php"), opts).unwrap();
+        zw.write_all(b"<?php\nnamespace Acme\\Foo; class Foo {}\n").unwrap();
+        zw.finish().unwrap();
+    }
+    buf
+}
 
 fn rt() -> tokio::runtime::Runtime {
     tokio::runtime::Builder::new_current_thread()
@@ -201,7 +231,7 @@ fn update_writes_composer_lock_to_project_root() {
     let output = env
         .bougie()
         .env("BOUGIE_PACKAGIST_BASE_URL", &uri)
-        .args(["composer", "update", "-d"])
+        .args(["composer", "update", "--no-install", "-d"])
         .arg(proj.path())
         .output()
         .expect("run bougie");
@@ -261,7 +291,7 @@ fn update_partitions_packages_into_prod_and_dev() {
     let output = env
         .bougie()
         .env("BOUGIE_PACKAGIST_BASE_URL", &uri)
-        .args(["composer", "update", "-d"])
+        .args(["composer", "update", "--no-install", "-d"])
         .arg(proj.path())
         .output()
         .expect("run bougie");
@@ -310,7 +340,7 @@ fn lock_written_by_update_passes_lock_verify() {
     let update = env
         .bougie()
         .env("BOUGIE_PACKAGIST_BASE_URL", &uri)
-        .args(["composer", "update", "-d"])
+        .args(["composer", "update", "--no-install", "-d"])
         .arg(proj.path())
         .output()
         .expect("run bougie update");
@@ -351,6 +381,95 @@ fn update_without_composer_json_errors_clearly() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("composer.json"), "{stderr}");
     assert!(stderr.contains("not a Composer project"), "{stderr}");
+}
+
+#[test]
+fn update_installs_vendor_like_composer() {
+    // Composer's `update` resolves AND installs. The metadata's dist URL
+    // and the dist itself are served by the same mock.
+    let env = TestEnv::new();
+    let proj = TempDir::new().unwrap();
+
+    let top = "acme-foo-aaaaaaaaaa";
+    let zip_body = build_fixture_zip(top);
+    let dist_hash = sha1_hex(&zip_body);
+
+    let rt = rt();
+    let (uri, _server) = rt.block_on(async {
+        let server = MockServer::start().await;
+        let server_uri = server.uri();
+        let metadata = format!(
+            r#"{{"packages":{{"acme/foo":[{{
+                "name":"acme/foo","version":"1.0.0","version_normalized":"1.0.0.0","type":"library",
+                "dist":{{"type":"zip","url":"{server_uri}/dists/acme-foo.zip","shasum":"{dist_hash}"}},
+                "autoload":{{"psr-4":{{"Acme\\Foo\\":"src/"}}}}
+            }}]}}}}"#,
+        );
+        Mock::given(method("GET"))
+            .and(wm_path("/p2/acme/foo.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(metadata))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(wm_path("/dists/acme-foo.zip"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(zip_body))
+            .mount(&server)
+            .await;
+        (server_uri, server)
+    });
+
+    write_composer_json(proj.path(), r#"{"name":"test/p","require":{"acme/foo":"^1.0"}}"#);
+
+    let output = env
+        .bougie()
+        .env("BOUGIE_PACKAGIST_BASE_URL", &uri)
+        .args(["composer", "update", "-d"])
+        .arg(proj.path())
+        .output()
+        .expect("run bougie");
+    assert!(output.status.success(), "stderr={}", String::from_utf8_lossy(&output.stderr));
+
+    // The lock was written AND vendor/ materialized (the compat fix).
+    assert!(proj.path().join("composer.lock").is_file());
+    assert!(proj.path().join("vendor/acme/foo/src/Foo.php").is_file(), "update must install vendor/");
+    assert!(proj.path().join("vendor/autoload.php").is_file());
+}
+
+#[test]
+fn upgrade_is_an_alias_of_update() {
+    // `composer upgrade` / `composer u` are Composer aliases of `update`.
+    let env = TestEnv::new();
+    let proj = TempDir::new().unwrap();
+    let foo = p2_body("acme/foo", &[("1.0.0", "{}")]);
+    let rt = rt();
+    let (uri, _server) = rt.block_on(async {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(wm_path("/p2/acme/foo.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(foo))
+            .mount(&server)
+            .await;
+        (server.uri(), server)
+    });
+    write_composer_json(proj.path(), r#"{"name":"test/p","require":{"acme/foo":"^1.0"}}"#);
+
+    for alias in ["upgrade", "u"] {
+        let _ = std::fs::remove_file(proj.path().join("composer.lock"));
+        let output = env
+            .bougie()
+            .env("BOUGIE_PACKAGIST_BASE_URL", &uri)
+            .args(["composer", alias, "--no-install", "-d"])
+            .arg(proj.path())
+            .output()
+            .expect("run bougie");
+        assert!(
+            output.status.success(),
+            "`composer {alias}` should alias update: stderr={}",
+            String::from_utf8_lossy(&output.stderr),
+        );
+        assert!(proj.path().join("composer.lock").is_file(), "`composer {alias}` wrote the lock");
+        assert!(!proj.path().join("vendor").exists(), "--no-install: no vendor for {alias}");
+    }
 }
 
 /// Use the `Command` API import so `cargo build -p bougie --tests`

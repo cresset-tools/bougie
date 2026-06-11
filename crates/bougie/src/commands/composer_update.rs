@@ -1,10 +1,11 @@
-//! `bougie composer update` — resolve `composer.json` from scratch
-//! and either preview (`--dry-run`) or write a fresh `composer.lock`.
+//! `bougie composer update` (aliases `upgrade` / `u`) — resolve
+//! `composer.json`, write a fresh `composer.lock`, and install the
+//! result into `vendor/`, matching Composer's `update`.
 //!
-//! Default mode writes the lock atomically; `--dry-run` skips the
-//! write and prints what would land. `vendor/` is still not touched
-//! here — that's `composer install`'s job. Matches Composer's
-//! split: `update` builds the lock, `install` materializes it.
+//! `--dry-run` previews the solution and writes nothing; `--no-install`
+//! stops after writing the lock (Composer's flag). Without either, it
+//! resolves, writes the lock atomically, then materializes `vendor/`
+//! via `install_from_lock`.
 
 use std::collections::BTreeMap;
 use std::io::{self, Write};
@@ -15,8 +16,9 @@ use bougie_cli::OutputFormat;
 use bougie_composer::lockfile::{self, canonical_readme, Lock};
 use bougie_composer_resolver::metadata::Repo;
 use bougie_composer_resolver::{
-    dry_run_update, dry_run_update_partial, resolve_for_lockfile_partial, DryRunOptions,
-    LockfileSolveOutcome, PartialUpdate, ResolvedPackage, UpdateSummary,
+    dry_run_update, dry_run_update_partial, install_from_lock, resolve_for_lockfile_partial,
+    DryRunOptions, InstallOptions, LockfileSolveOutcome, PartialUpdate, ResolvedPackage,
+    UpdateSummary,
 };
 use bougie_output::output::{emit, Render};
 use bougie_paths::Paths;
@@ -35,6 +37,15 @@ pub struct UpdateResult {
     /// Omitted from the dry-run output.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lock_path: Option<PathBuf>,
+    /// Packages freshly downloaded into `vendor/` by the post-lock
+    /// install. `None` when the install was skipped (`--no-install` /
+    /// `--dry-run`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub packages_installed: Option<u32>,
+    /// Packages already present in `vendor/` (cache hits). `None` when
+    /// the install was skipped.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub packages_already_present: Option<u32>,
 }
 
 impl Render for UpdateResult {
@@ -71,17 +82,24 @@ impl Render for UpdateResult {
         } else if let Some(path) = &self.lock_path {
             writeln!(w)?;
             writeln!(w, "wrote {}", path.display())?;
+            match (self.packages_installed, self.packages_already_present) {
+                (Some(fresh), Some(cached)) => {
+                    writeln!(w, "installed into vendor/ ({fresh} fresh, {cached} cached)")?;
+                }
+                _ => writeln!(w, "(--no-install: vendor/ not touched)")?,
+            }
         }
         Ok(())
     }
 }
 
-#[allow(clippy::fn_params_excessive_bools)]
+#[allow(clippy::fn_params_excessive_bools, clippy::too_many_arguments)]
 pub fn run(
     format: OutputFormat,
     working_dir: Option<PathBuf>,
     no_dev: bool,
     dry_run: bool,
+    no_install: bool,
     packages: Vec<String>,
     with_dependencies: bool,
     with_all_dependencies: bool,
@@ -153,6 +171,8 @@ pub fn run(
             packages: summary.packages,
             packages_dev: Vec::new(),
             lock_path: None,
+            packages_installed: None,
+            packages_already_present: None,
         };
         emit(format, &result)?;
         return Ok(ExitCode::SUCCESS);
@@ -161,6 +181,17 @@ pub fn run(
     // Write-mode path: resolve, build a Lock, atomic write.
     let (lock_path, outcome) =
         resolve_and_write_lock_partial(&paths, &project_root, partial.as_ref())?;
+
+    // Then materialize vendor/ — Composer's `update` resolves *and*
+    // installs. `--no-install` stops after the lock.
+    let install = if no_install {
+        None
+    } else {
+        Some(
+            install_from_lock(&paths, &project_root, InstallOptions { no_dev }, None)
+                .wrap_err("installing dependencies from the updated lock")?,
+        )
+    };
 
     let result = UpdateResult {
         schema_version: 1,
@@ -184,6 +215,8 @@ pub fn run(
             })
             .collect(),
         lock_path: Some(lock_path),
+        packages_installed: install.as_ref().map(|s| s.packages_installed),
+        packages_already_present: install.as_ref().map(|s| s.packages_already_present),
     };
     emit(format, &result)?;
     Ok(ExitCode::SUCCESS)
