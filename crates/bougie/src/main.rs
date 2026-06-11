@@ -27,14 +27,32 @@ fn main() -> ExitCode {
     #[cfg(unix)]
     bougie_recipe::set_service_env_provider(bougie::commands::services::recipe_env_for_project);
 
-    let cli = Cli::parse();
-    match bougie::run(cli) {
-        Ok(code) => code,
-        Err(err) => {
-            report_error(&err);
-            ExitCode::from(exit_code_for(&err))
-        }
-    }
+    // Parse + dispatch on a worker thread with a generous stack.
+    // clap's derived command tree for bougie's full CLI is large enough
+    // that building it inside `Cli::parse()` overflows Windows' default
+    // 1 MiB main-thread stack (STATUS_STACK_OVERFLOW / 0xC00000FD) —
+    // which would abort *every* invocation before any logic runs. A
+    // 16 MiB worker stack (lazily committed, so ~free) makes the CLI
+    // behave identically across platforms; deep resolver dispatch gets
+    // headroom for free.
+    std::thread::Builder::new()
+        .name("bougie-main".into())
+        .stack_size(16 * 1024 * 1024)
+        .spawn(|| {
+            let cli = Cli::parse();
+            match bougie::run(cli) {
+                Ok(code) => code,
+                Err(err) => {
+                    report_error(&err);
+                    ExitCode::from(exit_code_for(&err))
+                }
+            }
+        })
+        .expect("spawning bougie worker thread")
+        .join()
+        // The worker panicked; its message already reached stderr via the
+        // default hook. Mirror Rust's conventional panic exit code.
+        .unwrap_or(ExitCode::from(101))
 }
 
 /// Install a `tracing-subscriber` configured from the environment.

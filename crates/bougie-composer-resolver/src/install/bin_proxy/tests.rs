@@ -5,6 +5,7 @@ use tempfile::TempDir;
 fn make_lock_package(name: &str, bins: &[&str]) -> LockPackage {
     LockPackage {
         name: name.to_string(),
+        description: None,
         version: "1.0.0".to_string(),
         bin: bins.iter().map(|s| (*s).to_string()).collect(),
         require: BTreeMap::new(),
@@ -20,6 +21,8 @@ fn make_lock_package(name: &str, bins: &[&str]) -> LockPackage {
         source: None,
         package_type: None,
         time: None,
+        license: Vec::new(),
+        funding: Vec::new(),
     }
 }
 

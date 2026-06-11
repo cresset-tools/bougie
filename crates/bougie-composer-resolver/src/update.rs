@@ -1225,6 +1225,7 @@ impl ResolveProvider {
                 entry.provided_version.clone(),
                 LockPackage {
                     name: name.to_string(),
+                    description: None,
                     version: entry.provided_version.normalized.clone(),
                     version_normalized: Some(entry.provided_version.normalized.clone()),
                     dist: None,
@@ -1240,6 +1241,8 @@ impl ResolveProvider {
                     bin: Vec::default(),
                     extra: serde_json::Value::Null,
                     time: None,
+                    license: Vec::default(),
+                    funding: Vec::default(),
                 },
             ));
         }
@@ -2098,7 +2101,7 @@ fn parse_repo_entry(
 ///   per-host cache namespace still comes from the URL itself), and
 ///   the literal value `false` for `"packagist.org"` disables the
 ///   implicit public Packagist.
-fn read_repositories(
+pub(crate) fn read_repositories(
     composer_json: &Value,
     default_packagist: Repo,
     auth: &HashMap<String, crate::metadata::AuthCredentials>,

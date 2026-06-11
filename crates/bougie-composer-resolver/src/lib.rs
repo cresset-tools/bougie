@@ -7,11 +7,13 @@
 //! tree. The pubgrub-based solver, metadata fetcher, and lockfile
 //! reader land in later phases.
 
+pub mod audit;
 pub mod hash;
 pub mod install;
 pub mod metadata;
 pub mod package_name;
 pub mod platform;
+pub mod query;
 pub mod update;
 pub mod verify;
 
@@ -29,7 +31,11 @@ pub use install::{
     fetch_and_extract_dists, install_from_lock, DistOutcome, DistRequest, InstallOptions,
     InstallSummary, ScriptHooks,
 };
+pub use audit::{fetch_advisories, Advisory};
 pub use platform::PlatformEnv;
+pub use query::{
+    funding, latest_versions, licenses, DependencyGraph, Edge, Node, RootNode, Section,
+};
 pub use update::{
     dry_run_update, dry_run_update_partial, resolve_for_lockfile, resolve_for_lockfile_partial,
     DryRunOptions, LockfileSolveOutcome, PartialUpdate, ResolvedPackage, UpdateSummary,

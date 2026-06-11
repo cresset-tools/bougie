@@ -621,6 +621,11 @@ pub struct LockPackage {
     /// Composer canonicalizes case on resolve but the lock keeps the
     /// declared form).
     pub name: String,
+    /// Short human description. Composer writes it into the lock; we
+    /// surface it in `composer show`'s listing. Absent for some
+    /// packages, so `Option`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     /// Selected version. Format depends on the source: a semver string
     /// for stable releases (`"3.5.0"`, `"1.2.3-RC1"`), a `dev-*` ref
     /// for branch installs (`"dev-main"`, `"1.x-dev"`), or rarely an
@@ -699,6 +704,28 @@ pub struct LockPackage {
     /// in the resolver; the installer ignores it.
     #[serde(default)]
     pub time: Option<String>,
+    /// SPDX license identifier(s). Composer writes this as an array of
+    /// strings (`["MIT"]`, `["GPL-2.0-or-later", "MIT"]`); a few older
+    /// packages use a single string, which `string_list_lenient`
+    /// normalizes to a one-element vec. Consumed by `composer licenses`.
+    #[serde(default, deserialize_with = "string_list_lenient")]
+    pub license: Vec<String>,
+    /// Funding URLs declared by the package (`composer fund`). Each
+    /// entry is `{ "type": "...", "url": "..." }`; Composer groups the
+    /// output by vendor.
+    #[serde(default)]
+    pub funding: Vec<LockFunding>,
+}
+
+/// One `funding` entry — a way to financially support the package's
+/// maintainers. Composer's `fund` command groups these by vendor.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct LockFunding {
+    /// Funding platform, e.g. `"github"`, `"patreon"`, `"open_collective"`,
+    /// `"tidelift"`, or `"custom"`. Optional in the wild; defaults empty.
+    #[serde(rename = "type", default)]
+    pub kind: String,
+    pub url: String,
 }
 
 /// `dist` block — what bougie's parallel downloader actually consumes.
@@ -1628,6 +1655,7 @@ mod tests {
             content_hash: Some("0123456789abcdef0123456789abcdef".into()),
             packages: vec![LockPackage {
                 name: "acme/foo".into(),
+                description: None,
                 version: "1.2.3".into(),
                 version_normalized: Some("1.2.3.0".into()),
                 dist: Some(LockDist {
@@ -1651,6 +1679,8 @@ mod tests {
                 bin: vec![],
                 extra: Value::Null,
                 time: Some("2024-01-01T00:00:00+00:00".into()),
+                license: vec![],
+                funding: vec![],
             }],
             packages_dev: vec![],
             aliases: vec![],

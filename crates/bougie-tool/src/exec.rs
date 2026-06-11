@@ -47,8 +47,8 @@ pub struct ToolExecPrep {
 }
 
 /// Produce a [`ToolExecPrep`] from the wrapper path the kernel handed
-/// us. Pure with respect to the filesystem except for reading the
-/// receipt.
+/// us. Reads the receipt and (best-effort) ensures the `unzip` exec
+/// shim exists so the tool's `PATH` can point at it.
 pub fn prepare(
     paths: &Paths,
     wrapper: &Path,
@@ -135,10 +135,30 @@ pub fn prepare(
     }
     scan.push(tool_dir.join("conf.d"));
 
-    let env = vec![
+    // `mut` is only exercised on Unix (the PATH/unzip-shim block below);
+    // on Windows tool-exec is a stub, so the vec is never mutated.
+    #[cfg_attr(not(unix), allow(unused_mut))]
+    let mut env = vec![
         ("PHP_INI_SCAN_DIR".to_string(), scan),
         ("BOUGIE_TOOL".to_string(), receipt.package.clone().into()),
     ];
+
+    // Prepend bougie's `unzip` shim dir to the tool's PATH so tools that
+    // shell out to `unzip` work — chiefly the real Composer's
+    // `ZipDownloader`, installed via `bougie tool install
+    // composer/composer` and run with `bgx`. Scoped to the tool process
+    // (not seeded on the user's global PATH), so the system `unzip` is
+    // untouched for everything else.
+    #[cfg(unix)]
+    if let Some(shim_dir) = ensure_unzip_shim(paths) {
+        let prev = std::env::var_os("PATH").unwrap_or_default();
+        let mut new_path = shim_dir.into_os_string();
+        if !prev.is_empty() {
+            new_path.push(SCAN_DIR_SEP);
+            new_path.push(&prev);
+        }
+        env.push(("PATH".to_string(), new_path));
+    }
 
     Ok(ToolExecPrep {
         php_path: receipt.php_resolved_path.clone(),
@@ -147,6 +167,27 @@ pub fn prepare(
         package: receipt.package.clone(),
         receipt,
     })
+}
+
+/// Ensure `$BOUGIE_LOCAL/exec-shims/unzip` exists and points at the
+/// running bougie binary (whose `unzip` argv[0] role is a working
+/// `unzip`), returning the shim *directory* to prepend to a tool's
+/// `PATH`. Idempotent and best-effort: any failure returns `None` and
+/// the tool simply runs without the shim (Composer then falls back to
+/// PHP's slower `ZipArchive`).
+#[cfg(unix)]
+fn ensure_unzip_shim(paths: &Paths) -> Option<PathBuf> {
+    let dir = paths.exec_shims();
+    let link = dir.join("unzip");
+    let bougie = std::env::current_exe().ok()?;
+    let up_to_date = std::fs::read_link(&link).is_ok_and(|t| t == bougie);
+    if !up_to_date {
+        std::fs::create_dir_all(&dir).ok()?;
+        // Replace a stale/foreign entry; ignore a missing-file error.
+        let _ = std::fs::remove_file(&link);
+        std::os::unix::fs::symlink(&bougie, &link).ok()?;
+    }
+    Some(dir)
 }
 
 /// Replace the current process with the pinned PHP. Returns `Err` only
@@ -326,5 +367,34 @@ mod tests {
             .find_map(|(k, v)| (k == "BOUGIE_TOOL").then_some(v.clone()))
             .unwrap();
         assert_eq!(tool_env, OsString::from("phpstan/phpstan"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prepare_prepends_unzip_shim_to_path() {
+        let td = tempfile::TempDir::new().unwrap();
+        let tool_dir = make_tool_dir(td.path(), "composer/composer");
+        let wrapper = tool_dir.join("bin").join("composer");
+        std::fs::write(&wrapper, "<?php\n").unwrap();
+        let fake_php = std::env::current_exe().unwrap();
+        write_receipt(&tool_dir, &fake_php);
+        let paths = paths_for(td.path());
+
+        let prep = prepare(&paths, &wrapper, Vec::new()).unwrap();
+
+        // PATH is overridden, leading with bougie's exec-shims dir.
+        let path = prep
+            .env
+            .iter()
+            .find_map(|(k, v)| (k == "PATH").then_some(v.clone()))
+            .expect("tool exec must set PATH");
+        let first = std::env::split_paths(&path).next().unwrap();
+        assert_eq!(first, paths.exec_shims());
+
+        // The `unzip` shim exists and points at the running binary (whose
+        // argv[0]=unzip role is a working unzip).
+        let shim = paths.exec_shims().join("unzip");
+        assert!(shim.symlink_metadata().is_ok(), "unzip shim must exist");
+        assert_eq!(std::fs::read_link(&shim).unwrap(), fake_php);
     }
 }

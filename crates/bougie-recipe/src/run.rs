@@ -202,8 +202,8 @@ pub fn current_bougie_dir() -> Option<PathBuf> {
 /// bare `bougie` resolves to *this* running executable — never some other
 /// `bougie` that happens to be installed on `PATH`.
 ///
-/// Recipes shell out to `bougie composer install`, `bougie up`,
-/// `bougie run …` etc. If one of those resolved to a different-versioned
+/// Recipes shell out to `bougie sync`, `bougie up`, `bougie run …`
+/// etc. If one of those resolved to a different-versioned
 /// bougie, it would connect to (and forcibly restart) the daemon that
 /// this process is driving, tearing its services down mid-recipe. So we
 /// pin the executable explicitly: materialize a `bougie` symlink →

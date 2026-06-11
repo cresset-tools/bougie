@@ -47,7 +47,6 @@ fn build_php_tarball() -> (Vec<u8>, String) {
 struct Fixture {
     server: MockServer,
     pub_pem: String,
-    composer_server: MockServer,
 }
 
 async fn build_fixture() -> Fixture {
@@ -130,29 +129,7 @@ async fn build_fixture() -> Fixture {
         .respond_with(ResponseTemplate::new(200).set_body_bytes(blob_bytes))
         .mount(&server).await;
 
-    let composer_server = build_composer_mock().await;
-
-    Fixture { server, pub_pem, composer_server }
-}
-
-async fn build_composer_mock() -> MockServer {
-    let server = MockServer::start().await;
-    let phar_bytes = b"#!/usr/bin/env php\n<?php echo 'fake composer';\n".to_vec();
-    let phar_sha = hex(&phar_bytes);
-    let channels = serde_json::json!({
-        "stable": [{"version":"2.8.5","path":"/download/2.8.5/composer.phar","shasum": phar_sha}],
-        "preview": []
-    });
-    Mock::given(method("GET")).and(path("/versions"))
-        .respond_with(ResponseTemplate::new(200).set_body_bytes(serde_json::to_vec(&channels).unwrap()))
-        .mount(&server).await;
-    Mock::given(method("GET")).and(path("/download/2.8.5/composer.phar"))
-        .respond_with(ResponseTemplate::new(200).set_body_bytes(phar_bytes.clone()))
-        .mount(&server).await;
-    Mock::given(method("GET")).and(path("/download/2.8.5/composer.phar.sha256sum"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(phar_sha))
-        .mount(&server).await;
-    server
+    Fixture { server, pub_pem }
 }
 
 fn write_trust_root(env: &TestEnv, pem: &str) -> std::path::PathBuf {
@@ -179,68 +156,27 @@ fn sync_installs_php_and_writes_state() {
     env.bougie()
         .current_dir(proj.path())
         .env("BOUGIE_INDEX_URL", fx.server.uri())
-        .env("BOUGIE_COMPOSER_BASE_URL", fx.composer_server.uri())
         .env("BOUGIE_TRUST_ROOT_PATH", &trust)
         .arg("--verbose")
         .arg("sync")
         .assert()
         .success()
         // The two-line uv-style summary is always present; the
-        // interpreter/composer detail is `--verbose`-only now.
+        // interpreter detail is `--verbose`-only.
         .stdout(contains("Resolved"))
-        .stdout(contains("php 8.3.12-nts"))
-        .stdout(contains("composer 2.8.5"));
+        .stdout(contains("php 8.3.12-nts"));
 
     let resolved = proj.path().join(".bougie/state/resolved");
     assert!(resolved.is_file());
     let body = std::fs::read_to_string(&resolved).unwrap();
     assert_eq!(body.trim(), "8.3.12-nts");
 
-    let resolved_composer = proj.path().join(".bougie/state/resolved-composer");
-    assert!(resolved_composer.is_file());
-    assert_eq!(std::fs::read_to_string(&resolved_composer).unwrap().trim(), "2.8.5");
-
     let php_link = proj.path().join(".bougie/bin/php");
     assert!(php_link.symlink_metadata().is_ok());
+    // The `composer` shim is still seeded — it now routes to bougie's
+    // native Composer subcommands rather than a phar.
     let composer_link = proj.path().join(".bougie/bin/composer");
     assert!(composer_link.symlink_metadata().is_ok());
-}
-
-#[test]
-fn sync_honors_composer_pin_in_bougie_toml() {
-    let runtime = rt();
-    let fx = runtime.block_on(build_fixture());
-    let env = TestEnv::new();
-    let trust = write_trust_root(&env, &fx.pub_pem);
-    let proj = tempfile::TempDir::new().unwrap();
-
-    std::fs::write(
-        proj.path().join("composer.json"),
-        r#"{"require":{"php":"8.3.12"}}"#,
-    )
-    .unwrap();
-    std::fs::write(
-        proj.path().join("bougie.toml"),
-        "[composer]\nversion = \"2.8.5\"\n",
-    )
-    .unwrap();
-
-    env.bougie()
-        .current_dir(proj.path())
-        .env("BOUGIE_INDEX_URL", fx.server.uri())
-        .env("BOUGIE_COMPOSER_BASE_URL", fx.composer_server.uri())
-        .env("BOUGIE_TRUST_ROOT_PATH", &trust)
-        .arg("--verbose")
-        .arg("sync")
-        .assert()
-        .success()
-        .stdout(contains("composer 2.8.5"));
-    assert_eq!(
-        std::fs::read_to_string(proj.path().join(".bougie/state/resolved-composer"))
-            .unwrap()
-            .trim(),
-        "2.8.5"
-    );
 }
 
 #[test]

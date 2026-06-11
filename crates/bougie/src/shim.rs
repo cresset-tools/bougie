@@ -12,7 +12,7 @@
 
 use crate::commands::unzip;
 use bougie_paths::Paths;
-use bougie_fs::state::{read_project_resolved, read_project_resolved_composer};
+use bougie_fs::state::read_project_resolved;
 use eyre::{eyre, Result, WrapErr};
 use std::ffi::OsStr;
 #[cfg(unix)]
@@ -123,12 +123,13 @@ pub fn exec(role: Role) -> Result<ExitCode> {
         return bougie_babysit::run(args);
     }
 
-    // Composer is resolved from the working directory (not the argv[0]
-    // shim layout) and supports a no-project global fallback, so it
-    // can't go through the shared "must be synced" resolution below.
-    // Handle it up front, like the project-agnostic roles above.
+    // The `composer` shim routes to bougie's *native* Composer
+    // subcommands — there is no Composer phar. It's project-resolved
+    // from the working directory by the native commands themselves, so
+    // (like the project-agnostic roles above) it skips the shared
+    // "must be synced" resolution below.
     if role == Role::Composer {
-        return run_composer(args);
+        return run_composer_native(args);
     }
 
     let project_root = locate_project_root(&argv0)?;
@@ -185,132 +186,34 @@ pub fn exec(role: Role) -> Result<ExitCode> {
     }
 }
 
-/// Resolve the project root from the current working directory (honoring
-/// `$BOUGIE_PROJECT_ROOT`, else walking up for a `.bougie/` marker). Used
-/// by the `bougie composer <subcommand>` passthrough, which dispatches
-/// through the normal `bougie` binary rather than an argv[0] shim.
-pub fn locate_project_root_from_cwd() -> Result<PathBuf> {
-    locate_project_root(OsStr::new("composer"))
-}
-
-/// Unified Composer entry point. Forwards `args` (a composer subcommand
-/// plus its arguments) to the real Composer phar:
+/// The `composer` argv[0] shim routes to bougie's **native** Composer
+/// subcommands — bougie does not bundle or execute the Composer phar.
 ///
-/// - **Inside a project** (a `.bougie/` marker is found from the working
-///   directory, or `$BOUGIE_PROJECT_ROOT` is set): run the project's
-///   pinned phar with the project's pinned PHP and conf.d
-///   (`run_project_composer`). If the project exists but isn't synced,
-///   that path errors with a "run `bougie sync` first" hint.
-/// - **Outside any project**: fall back to a default global Composer
-///   (latest stable, fetched lazily) run with the highest installed NTS
-///   PHP (installing one if none is present). This makes project-free
-///   commands — `composer create-project`, `composer global …`,
-///   `composer diagnose` — work from anywhere.
+/// `args` is the raw composer argument vector (e.g. `["install",
+/// "--no-dev"]`); it's re-parsed as `bougie composer <args>` and
+/// dispatched through the normal CLI. Native subcommands
+/// (`install`/`update`/`require`/`show`/…) run natively; an unrecognized
+/// subcommand routes to `ComposerCommand::External`, which returns the
+/// "install the real Composer via `bougie tool`" error.
 ///
-/// Shared by the `composer` argv[0] shim (`Role::Composer`, including the
-/// global `composer` entry seeded into the tool bin dir) and the
-/// `bougie composer <subcommand>` passthrough.
-pub fn run_composer(args: Vec<std::ffi::OsString>) -> Result<ExitCode> {
-    match locate_project_root_from_cwd() {
-        Ok(project_root) => run_project_composer(&project_root, args),
-        // No `.bougie/` marker anywhere up the tree → no project context.
-        Err(_) => run_global_composer(args),
+/// Shared by the project-local `.bougie/bin/composer` shim and the
+/// global `composer` entry seeded into the tool bin dir, so a bare
+/// `composer …` from any shell behaves exactly like `bougie composer …`.
+fn run_composer_native(args: Vec<std::ffi::OsString>) -> Result<ExitCode> {
+    use clap::Parser as _;
+    let mut argv: Vec<std::ffi::OsString> = Vec::with_capacity(args.len() + 2);
+    argv.push(std::ffi::OsString::from("bougie"));
+    argv.push(std::ffi::OsString::from("composer"));
+    argv.extend(args);
+    match crate::Cli::try_parse_from(argv) {
+        Ok(cli) => crate::run(cli),
+        // Usage error, `--help`, or `--version`: clap already formatted
+        // the message and chose the stream; mirror its exit convention.
+        Err(e) => {
+            let _ = e.print();
+            Ok(ExitCode::from(u8::from(e.use_stderr()) * 2))
+        }
     }
-}
-
-/// Run the default global Composer outside any project: latest-stable
-/// phar (fetched on demand) executed by the highest installed NTS PHP,
-/// auto-installing a PHP only if none exists. No project conf.d and no
-/// `.bougie/bin` on PATH — there is no project to scope to.
-fn run_global_composer(args: Vec<std::ffi::OsString>) -> Result<ExitCode> {
-    let paths = Paths::from_env()?;
-    let installed = bougie_composer::install_composer(&paths, &bougie_composer::default_request())
-        .wrap_err("installing the default global Composer")?;
-    let phar = paths.composer_phar(&installed.version);
-
-    let php_installer = crate::commands::tool_callbacks::php_installer();
-    let choice = match bougie_tool::resolve::pick_php(&paths, None, php_installer.as_ref()) {
-        Ok(choice) => choice,
-        // Nothing installed yet — install the latest stable NTS PHP so a
-        // bare `composer` works on a fresh machine.
-        Err(_) => php_installer(&paths, ">=8.0")
-            .wrap_err("installing a PHP to run the global Composer")?,
-    };
-
-    let mut composer_args: Vec<std::ffi::OsString> = Vec::with_capacity(args.len() + 1);
-    composer_args.push(phar.into_os_string());
-    composer_args.extend(args);
-    let mut cmd = std::process::Command::new(&choice.bin);
-    cmd.args(&composer_args).env("PHP_BINARY", &choice.bin);
-    #[cfg(unix)]
-    cmd.arg0("composer");
-    run_and_propagate(cmd, "composer")
-}
-
-/// Run the project's pinned Composer phar, forwarding `args` (the
-/// composer subcommand plus its arguments) verbatim. Executes with the
-/// project's pinned PHP, project `conf.d` (`PHP_INI_SCAN_DIR`), and
-/// `.bougie/bin` prepended to `PATH`.
-///
-/// Shared by the `composer` argv[0] shim (`Role::Composer`) and the
-/// `bougie composer <subcommand>` passthrough so both run the real
-/// Composer identically. Only `install`/`update`/`validate`/`dump-autoload`
-/// are reimplemented natively; everything else routes here.
-pub fn run_project_composer(project_root: &Path, args: Vec<std::ffi::OsString>) -> Result<ExitCode> {
-    let (version, flavor) = read_project_resolved(project_root).wrap_err_with(|| {
-        format!(
-            "composer: project at {} is not synced — run `bougie sync` first",
-            project_root.display()
-        )
-    })?;
-    let paths = Paths::from_env()?;
-    let install = paths.installs().join(format!("{version}-{flavor}"));
-    // Honor an active xdebug session signalled by the parent's
-    // XDEBUG_SESSION env var (see `commands::run::run`).
-    let debug_overlay = bougie_installer::conf_d::xdebug_session_env_active();
-    let scan_dir = bougie_installer::conf_d::php_ini_scan_dir(project_root, debug_overlay);
-
-    let composer_version = read_project_resolved_composer(project_root).wrap_err_with(|| {
-        format!(
-            "composer: project at {} is not synced — run `bougie sync` first",
-            project_root.display()
-        )
-    })?;
-    let phar = paths.composer_phar(&composer_version);
-    if !phar.exists() {
-        return Err(eyre!(
-            "composer: phar at {} is missing — re-run `bougie sync`",
-            phar.display()
-        ));
-    }
-    let php_bin = install.join("bin").join(exe_name("php"));
-    if !php_bin.exists() {
-        return Err(eyre!(
-            "composer: php at {} is missing — re-run `bougie sync`",
-            php_bin.display()
-        ));
-    }
-    let mut composer_args: Vec<std::ffi::OsString> = Vec::with_capacity(args.len() + 1);
-    composer_args.push(phar.into_os_string());
-    composer_args.extend(args);
-    // Prepend `.bougie/bin` to PATH so Composer's ZipDownloader
-    // discovers our bundled `unzip` shim via Symfony's
-    // ExecutableFinder. Without this, Composer either picks up a system
-    // `unzip` (host-dependent) or falls back to PHP's slower `ZipArchive`.
-    let bin_dir = project_root.join(".bougie").join("bin");
-    let prev_path = std::env::var_os("PATH").unwrap_or_default();
-    let new_path = prepend_path(&bin_dir, &prev_path);
-    // PHP_BINARY env var pins the interpreter for child `@php` scripts:
-    // without it, Symfony's PhpExecutableFinder falls through to a PATH
-    // search and finds the bougie shim.
-    let mut cmd = std::process::Command::new(&php_bin);
-    cmd.args(&composer_args)
-        .env("PATH", new_path)
-        .env("PHP_INI_SCAN_DIR", &scan_dir)
-        .env("PHP_BINARY", &php_bin);
-    #[cfg(unix)]
-    cmd.arg0("composer");
-    run_and_propagate(cmd, "composer")
 }
 
 /// On Unix, append the target executable name verbatim (`php`).
@@ -346,25 +249,6 @@ fn run_and_propagate(mut cmd: std::process::Command, label: &str) -> Result<Exit
         Ok(ExitCode::from(code))
     }
 }
-
-/// Prepend `dir` to a `PATH` value (`:`-separated on Unix, `;`-separated
-/// on Windows), preserving the existing entries. Returns just `dir` if
-/// `prev` is empty.
-fn prepend_path(dir: &Path, prev: &std::ffi::OsStr) -> std::ffi::OsString {
-    use std::ffi::OsString;
-    let mut out = OsString::new();
-    out.push(dir.as_os_str());
-    if !prev.is_empty() {
-        out.push(PATH_SEP);
-        out.push(prev);
-    }
-    out
-}
-
-#[cfg(unix)]
-const PATH_SEP: &str = ":";
-#[cfg(not(unix))]
-const PATH_SEP: &str = ";";
 
 /// Resolve the project root the shim should read state from. In order:
 ///
@@ -449,20 +333,6 @@ mod tests {
             role_from_argv0(&OsString::from("/proj/.bougie/bin/unzip")),
             Some(Role::Unzip)
         );
-    }
-
-    #[test]
-    fn prepend_path_handles_empty_prev() {
-        let out = prepend_path(Path::new("/a/b"), std::ffi::OsStr::new(""));
-        assert_eq!(out, std::ffi::OsString::from("/a/b"));
-    }
-
-    #[test]
-    fn prepend_path_joins_with_platform_separator() {
-        let prev = format!("/usr/bin{PATH_SEP}/bin");
-        let expected = format!("/a/b{PATH_SEP}/usr/bin{PATH_SEP}/bin");
-        let out = prepend_path(Path::new("/a/b"), std::ffi::OsStr::new(&prev));
-        assert_eq!(out, std::ffi::OsString::from(expected));
     }
 
     #[test]

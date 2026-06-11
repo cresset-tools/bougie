@@ -1,6 +1,5 @@
 use bougie_installer::baseline::{self, BaselineFilter};
 use bougie_cli::OutputFormat;
-use bougie_composer::{self, default_request as default_composer_request, parse_request as parse_composer_request, Installed as InstalledComposer};
 use bougie_composer_resolver::{install_from_lock, InstallOptions, InstallSummary};
 use bougie_installer::conf_d;
 use bougie_config::{load_project, ExtensionPin, ProjectConfig};
@@ -15,7 +14,7 @@ use bougie_paths::Paths;
 use bougie_semver::Constraint;
 use bougie_version::request::{Flavor, Request, VersionLike};
 use bougie_resolver::{intersect_php, ResolveOptions};
-use bougie_fs::state::{write_project_resolved, write_project_resolved_composer, GlobalState};
+use bougie_fs::state::{write_project_resolved, GlobalState};
 use bougie_fs::store::list_installed;
 use bougie_platform::target::Triple;
 use bougie_version::version::{PartialVersion, Version};
@@ -35,8 +34,6 @@ pub struct SyncResult {
     pub install_path: PathBuf,
     pub resolved_path: PathBuf,
     pub shims_dir: PathBuf,
-    pub composer_version: String,
-    pub composer_path: PathBuf,
     /// Extensions auto-installed from `composer.json`'s `require.ext-*`
     /// — i.e. project-required extensions that weren't already provided
     /// by the core/baseline sets. Built-in (statically-linked) entries
@@ -120,14 +117,6 @@ impl Render for SyncResult {
                     self.php_version,
                     self.php_flavor,
                     self.install_path.display()
-                ),
-            )?;
-            writeln_dim(
-                w,
-                &format!(
-                    "  composer {} at {}",
-                    self.composer_version,
-                    self.composer_path.display()
                 ),
             )?;
             if !self.installed_extensions.is_empty() {
@@ -541,14 +530,6 @@ pub fn ensure_synced(
     let resolved_path =
         write_project_resolved(project_root, installed.version, installed.flavor)?;
 
-    let composer_request = match project.bougie.composer.version.as_deref() {
-        Some(s) => parse_composer_request(s)?,
-        None => default_composer_request(),
-    };
-    let composer_installed: InstalledComposer =
-        bougie_composer::install_composer(paths, &composer_request)?;
-    write_project_resolved_composer(project_root, &composer_installed.version)?;
-
     let opt_out = baseline_opt_outs(project);
     replicate_install_conf_d(&installed.install_path, project_root, &opt_out)?;
 
@@ -579,8 +560,6 @@ pub fn ensure_synced(
         install_path: installed.install_path,
         resolved_path,
         shims_dir,
-        composer_version: composer_installed.version,
-        composer_path: composer_installed.phar_path,
         installed_extensions,
         // Vendor stats + resolution timing are filled in by the `run` /
         // `run_with_default_fallback` callers after they call

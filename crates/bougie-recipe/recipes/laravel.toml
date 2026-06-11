@@ -9,7 +9,7 @@ bougie up --detach mariadb redis
 [task.vendor]
 creates = "vendor"
 deps = ["composer.lock", "composer.json"]
-run = "bougie run -- composer install"
+run = "bougie sync"
 
 [task.env]
 creates = ".env"
