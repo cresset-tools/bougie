@@ -22,7 +22,6 @@ use std::collections::BTreeMap;
 #[serde(default)]
 pub struct BougieConfig {
     pub php: PhpConfig,
-    pub composer: ComposerConfig,
     pub extensions: BTreeMap<String, ExtensionPin>,
     pub services: BTreeMap<String, ServicePin>,
     pub index: Vec<IndexEntry>,
@@ -69,12 +68,6 @@ impl ExtensionPin {
 pub struct PhpConfig {
     pub version: Option<String>,
     pub flavor: Option<String>,
-}
-
-#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
-#[serde(default)]
-pub struct ComposerConfig {
-    pub version: Option<String>,
 }
 
 /// Opt-in execution of root `composer.json` scripts (off by default).

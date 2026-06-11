@@ -168,6 +168,17 @@ impl Paths {
         self.tools().join(package.replace('/', "-"))
     }
 
+    /// `$BOUGIE_LOCAL/exec-shims/` — bougie-managed helper shims
+    /// (currently just `unzip`) that get *prepended* to a tool's `PATH`
+    /// at exec time. This lets a tool that shells out to `unzip` — e.g.
+    /// the real Composer's `ZipDownloader`, installed via
+    /// `bougie tool install composer/composer` and run with `bgx` — find
+    /// bougie's `unzip` shim, without seeding it on the user's global
+    /// `PATH` (which would shadow the system `unzip` for everything).
+    pub fn exec_shims(&self) -> PathBuf {
+        self.local.join("exec-shims")
+    }
+
     /// User-facing bin directory where tool launcher symlinks land.
     /// Resolves `BOUGIE_TOOL_BIN_DIR`, then `XDG_BIN_HOME`, then
     /// `~/.local/bin`. On Windows the default is
@@ -194,26 +205,6 @@ impl Paths {
         {
             self.local.join("bin")
         }
-    }
-
-    /// `$BOUGIE_LOCAL/composer/` — managed Composer installs, one
-    /// directory per version. Local because composer phars are
-    /// re-downloadable from getcomposer.org on demand.
-    pub fn composer_root(&self) -> PathBuf {
-        self.local.join("composer")
-    }
-    /// Path to the phar for a specific Composer version:
-    /// `$BOUGIE_LOCAL/composer/<version>/composer.phar`.
-    pub fn composer_phar(&self, version: &str) -> PathBuf {
-        self.composer_root().join(version).join("composer.phar")
-    }
-    /// Cached snapshot of getcomposer.org's `/versions` JSON.
-    pub fn composer_channels_json(&self) -> PathBuf {
-        self.composer_root().join("channels.json")
-    }
-    /// Etag sidecar for the channels JSON.
-    pub fn composer_channels_etag(&self) -> PathBuf {
-        self.composer_root().join("channels.json.etag")
     }
 
     // ---------- user state (under `home`) ----------
@@ -429,9 +420,6 @@ mod tests {
         assert_eq!(p.installs(), Path::new("/l/installs"));
         assert_eq!(p.store(), Path::new("/l/store"));
         assert_eq!(p.bin(), Path::new("/l/bin"));
-        assert_eq!(p.composer_root(), Path::new("/l/composer"));
-        assert_eq!(p.composer_phar("2.8.5"), Path::new("/l/composer/2.8.5/composer.phar"));
-        assert_eq!(p.composer_channels_json(), Path::new("/l/composer/channels.json"));
         // State (small, user-investment, may roam).
         assert_eq!(p.state(), Path::new("/h/state"));
         assert_eq!(p.global_lock(), Path::new("/h/state/locks/global.lock"));

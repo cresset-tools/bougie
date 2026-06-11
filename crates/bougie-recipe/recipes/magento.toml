@@ -24,10 +24,10 @@ bougie up --detach mariadb redis opensearch rabbitmq server
 # Gate on `vendor/autoload.php` rather than `vendor/` itself: the
 # Magento 2 monorepo commits an empty `vendor/.htaccess` so the bare
 # directory exists pre-install. `autoload.php` is the canonical
-# "composer install has run" marker.
+# "vendor has been installed" marker.
 creates = "vendor/autoload.php"
 deps = ["composer.lock", "composer.json"]
-run = "bougie composer install"
+run = "bougie sync"
 
 [task.install]
 deps = ["vendor", "services"]

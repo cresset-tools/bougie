@@ -116,8 +116,15 @@ Top-level subcommands (from `bougie-cli`):
   in the project env; supports ad-hoc extensions and xdebug overlay.
 - `php {install,uninstall,list,find,pin,upgrade,dir}` — Manage PHP
   interpreters.
-- `composer {install,update,fetch,uninstall,list,find,pin,dir,upgrade,dump-autoloader}`
-  — Manage Composer installs.
+- `composer {install,update,require,remove,show,why,why-not,outdated,audit,licenses,fund,status,validate,dump-autoload}`
+  — Native, Composer-compatible command surface (the uv-pip model). bougie
+  does **not** bundle or execute the Composer phar; every listed verb is a
+  native reimplementation. An unrecognized subcommand
+  (`create-project`, `archive`, `bump`, …) errors with a pointer to
+  `bougie tool install composer/composer`. The `composer` shim symlink in
+  `.bougie/bin/` (and the global one in the tool bin dir) routes to these
+  native subcommands, so `composer install` from a recipe or any shell runs
+  bougie's native installer.
 - `cache {clean,prune,dir,size}` — Cache management.
 - `self {update,version}` — Manage the bougie binary.
 - `server [NAME]` — Dev HTTP/FastCGI server. With no subcommand it's

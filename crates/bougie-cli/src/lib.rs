@@ -40,7 +40,10 @@ pub struct Cli {
 #[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OutputFormat {
     Text,
-    #[value(name = "json-v1")]
+    /// `json-v1` is bougie's structured envelope; `json` is accepted as
+    /// an alias so Composer-compatible subcommands (`composer show
+    /// --format json`, etc.) work with the same global flag.
+    #[value(name = "json-v1", alias = "json")]
     JsonV1,
 }
 
@@ -161,9 +164,13 @@ pub enum Command {
     #[command(subcommand)]
     Php(PhpCommand),
 
-    /// Run Composer. `install`, `update`, `validate`, and
-    /// `dump-autoload(er)` are reimplemented natively; every other
-    /// subcommand is forwarded to the project's pinned Composer phar.
+    /// Run Composer, reimplemented natively. bougie does not bundle or
+    /// execute the Composer phar; the common Composer surface
+    /// (install/update/require/remove/show/why/why-not/outdated/audit/
+    /// licenses/fund/status/validate/dump-autoload) runs natively, and an
+    /// unrecognized subcommand errors with a pointer to
+    /// `bougie tool install composer/composer` for the full upstream
+    /// Composer.
     #[command(subcommand)]
     Composer(ComposerCommand),
 
@@ -718,14 +725,265 @@ pub enum ComposerCommand {
         #[arg(short = 'd', long = "working-dir", value_name = "DIR")]
         working_dir: Option<std::path::PathBuf>,
     },
-    /// Any other composer subcommand (`require`, `remove`, `show`, `why`,
-    /// `outdated`, `audit`, `create-project`, …) is forwarded verbatim to
-    /// the project's pinned Composer phar and run with the project's PHP,
-    /// conf.d, and `vendor/bin` on `PATH`. Only `install`, `update`,
-    /// `validate`, and `dump-autoload(er)` are reimplemented natively;
-    /// everything else is the real Composer.
+    /// Add one or more packages to `composer.json` `require` (or
+    /// `require-dev`), re-resolve `composer.lock`, and install them.
+    /// Fully Composer-compatible: a bare `vendor/pkg` resolves the
+    /// latest stable and writes a caret (`^X.Y`) constraint; supply an
+    /// explicit constraint with `vendor/pkg:^1.0`, `vendor/pkg=^1.0`, or
+    /// a trailing argument (`vendor/pkg ^1.0`) — Composer's separators
+    /// are `:`, `=`, or a space (the `@` separator is *not* accepted, as
+    /// in Composer). For bougie's `>=`-default + `@`-syntax house style,
+    /// use the top-level `bougie add` instead.
+    Require {
+        /// Packages to require, as Composer name↔version pairs.
+        #[arg(value_name = "PACKAGES", required = true)]
+        packages: Vec<String>,
+        /// Add to `require-dev` instead of `require`.
+        #[arg(long = "dev")]
+        dev: bool,
+        /// Edit `composer.json` only — don't re-resolve `composer.lock`
+        /// or touch `vendor/` (Composer's `--no-update`).
+        #[arg(long = "no-update")]
+        no_update: bool,
+        /// Re-resolve and write `composer.lock` but don't install into
+        /// `vendor/` (Composer's `--no-install`).
+        #[arg(long = "no-install")]
+        no_install: bool,
+        /// Also update the new packages' dependencies (`-w`).
+        #[arg(short = 'w', long = "with-dependencies")]
+        with_dependencies: bool,
+        /// Also update all dependencies, including shared ones (`-W`).
+        #[arg(short = 'W', long = "with-all-dependencies")]
+        with_all_dependencies: bool,
+        /// Prefer the lowest matching versions when resolving.
+        #[arg(long = "prefer-lowest")]
+        prefer_lowest: bool,
+        /// Ignore all platform requirements (php, ext-*, lib-*).
+        #[arg(long = "ignore-platform-reqs")]
+        ignore_platform_reqs: bool,
+        /// Ignore a specific platform requirement.
+        #[arg(long = "ignore-platform-req", value_name = "REQ")]
+        ignore_platform_req: Vec<String>,
+        /// Run in this directory instead of CWD (`-d`).
+        #[arg(short = 'd', long = "working-dir", value_name = "DIR")]
+        working_dir: Option<std::path::PathBuf>,
+        /// Resolve and report what would change without writing
+        /// `composer.json`, `composer.lock`, or `vendor/`.
+        #[arg(long = "dry-run")]
+        dry_run: bool,
+    },
+    /// Remove one or more packages from `composer.json`, re-resolve
+    /// `composer.lock`, and uninstall them from `vendor/`. Drop-in for
+    /// `composer remove`.
+    Remove {
+        /// Packages to remove (`vendor/name`).
+        #[arg(value_name = "PACKAGES", required = true)]
+        packages: Vec<String>,
+        /// Remove from `require-dev` instead of `require`.
+        #[arg(long = "dev")]
+        dev: bool,
+        /// Edit `composer.json` only — don't re-resolve or touch
+        /// `vendor/` (Composer's `--no-update`).
+        #[arg(long = "no-update")]
+        no_update: bool,
+        /// Re-resolve and write `composer.lock` but don't touch
+        /// `vendor/` (Composer's `--no-install`).
+        #[arg(long = "no-install")]
+        no_install: bool,
+        /// Skip dev-only packages when resolving.
+        #[arg(long = "no-dev")]
+        no_dev: bool,
+        /// Ignore all platform requirements (php, ext-*, lib-*).
+        #[arg(long = "ignore-platform-reqs")]
+        ignore_platform_reqs: bool,
+        /// Ignore a specific platform requirement.
+        #[arg(long = "ignore-platform-req", value_name = "REQ")]
+        ignore_platform_req: Vec<String>,
+        /// Run in this directory instead of CWD (`-d`).
+        #[arg(short = 'd', long = "working-dir", value_name = "DIR")]
+        working_dir: Option<std::path::PathBuf>,
+        /// Resolve and report what would change without writing
+        /// `composer.json`, `composer.lock`, or `vendor/`.
+        #[arg(long = "dry-run")]
+        dry_run: bool,
+    },
+    /// List installed packages, or show details for one. Reads the
+    /// project's `composer.lock`. Drop-in for `composer show` (aliases
+    /// `info`, `list`).
+    #[command(alias = "info", alias = "list")]
+    Show {
+        /// A single `vendor/name` to show details for. With no argument,
+        /// every installed package is listed.
+        #[arg(value_name = "PACKAGE")]
+        package: Option<String>,
+        /// Render the dependency tree (`--tree` / `-t`).
+        #[arg(short = 't', long = "tree")]
+        tree: bool,
+        /// Only the project's direct dependencies (`--direct` / `-D`).
+        #[arg(short = 'D', long = "direct")]
+        direct: bool,
+        /// Only platform packages — php, ext-*, lib-* (`--platform` / `-p`).
+        #[arg(short = 'p', long = "platform")]
+        platform: bool,
+        /// Show the root package's own info (`--self` / `-s`).
+        #[arg(short = 's', long = "self")]
+        self_: bool,
+        /// Print package names only (`--name-only` / `-N`).
+        #[arg(short = 'N', long = "name-only")]
+        name_only: bool,
+        /// Show each package's install path (`--path` / `-P`).
+        #[arg(short = 'P', long = "path")]
+        path: bool,
+        /// Also fetch and show the latest available version
+        /// (`--latest` / `-l`).
+        #[arg(short = 'l', long = "latest")]
+        latest: bool,
+        /// Only packages with a newer version available
+        /// (`--outdated` / `-o`). Implies `--latest`.
+        #[arg(short = 'o', long = "outdated")]
+        outdated: bool,
+        /// Skip dev dependencies (`--no-dev`).
+        #[arg(long = "no-dev")]
+        no_dev: bool,
+        /// Run in this directory instead of CWD (`-d`).
+        #[arg(short = 'd', long = "working-dir", value_name = "DIR")]
+        working_dir: Option<std::path::PathBuf>,
+    },
+    /// Show which packages depend on a given package — i.e. why it's
+    /// installed. Drop-in for `composer why` (alias `depends`).
+    #[command(alias = "depends")]
+    Why {
+        /// The package to explain.
+        #[arg(value_name = "PACKAGE", required = true)]
+        package: String,
+        /// Recurse through the dependency chain (`--recursive` / `-r`).
+        #[arg(short = 'r', long = "recursive")]
+        recursive: bool,
+        /// Render the full dependency-of tree (`--tree` / `-t`).
+        #[arg(short = 't', long = "tree")]
+        tree: bool,
+        /// Run in this directory instead of CWD (`-d`).
+        #[arg(short = 'd', long = "working-dir", value_name = "DIR")]
+        working_dir: Option<std::path::PathBuf>,
+    },
+    /// Show what prevents a package (optionally at a version) from being
+    /// installed — conflicting requirements. Drop-in for
+    /// `composer why-not` (alias `prohibits`).
+    #[command(name = "why-not", alias = "prohibits")]
+    WhyNot {
+        /// The package to test.
+        #[arg(value_name = "PACKAGE", required = true)]
+        package: String,
+        /// The version (or constraint) to test against. Defaults to `*`.
+        #[arg(value_name = "VERSION")]
+        version: Option<String>,
+        /// Recurse through the dependency chain (`--recursive` / `-r`).
+        #[arg(short = 'r', long = "recursive")]
+        recursive: bool,
+        /// Render the full tree (`--tree` / `-t`).
+        #[arg(short = 't', long = "tree")]
+        tree: bool,
+        /// Run in this directory instead of CWD (`-d`).
+        #[arg(short = 'd', long = "working-dir", value_name = "DIR")]
+        working_dir: Option<std::path::PathBuf>,
+    },
+    /// List installed packages that have a newer version available.
+    /// Drop-in for `composer outdated` (a focused `show --latest
+    /// --outdated`). Use the global `--format json` for JSON output.
+    Outdated {
+        /// Optional `vendor/name` filters; with none, all packages are
+        /// considered.
+        #[arg(value_name = "PACKAGES")]
+        packages: Vec<String>,
+        /// Only the project's direct dependencies (`--direct` / `-D`).
+        #[arg(short = 'D', long = "direct")]
+        direct: bool,
+        /// Only show packages with a new major version (`--major-only`).
+        #[arg(long = "major-only")]
+        major_only: bool,
+        /// Only show packages with a new minor version (`--minor-only`).
+        #[arg(long = "minor-only")]
+        minor_only: bool,
+        /// Only show packages with a new patch version (`--patch-only`).
+        #[arg(long = "patch-only")]
+        patch_only: bool,
+        /// Skip dev dependencies (`--no-dev`).
+        #[arg(long = "no-dev")]
+        no_dev: bool,
+        /// Exit non-zero if any package is outdated (`--strict`).
+        #[arg(long = "strict")]
+        strict: bool,
+        /// Run in this directory instead of CWD (`-d`).
+        #[arg(short = 'd', long = "working-dir", value_name = "DIR")]
+        working_dir: Option<std::path::PathBuf>,
+    },
+    /// Check installed packages against the Packagist security-advisories
+    /// database. Drop-in for `composer audit`. Exits non-zero when
+    /// advisories are found. Use the global `--format json` for JSON.
+    Audit {
+        /// Skip dev dependencies (`--no-dev`).
+        #[arg(long = "no-dev")]
+        no_dev: bool,
+        /// How to treat abandoned packages (`--abandoned`). Currently
+        /// accepted for parity; abandoned detection is not yet wired.
+        #[arg(long = "abandoned", value_enum, default_value = "report")]
+        abandoned: AbandonedHandling,
+        /// Audit the locked set (`--locked`). bougie always reads
+        /// `composer.lock`, so this is the default behavior; accepted
+        /// for parity.
+        #[arg(long = "locked")]
+        locked: bool,
+        /// Run in this directory instead of CWD (`-d`).
+        #[arg(short = 'd', long = "working-dir", value_name = "DIR")]
+        working_dir: Option<std::path::PathBuf>,
+    },
+    /// List the license of every installed package. Drop-in for
+    /// `composer licenses`. Use the global `--format json` for JSON.
+    Licenses {
+        /// Skip dev dependencies (`--no-dev`).
+        #[arg(long = "no-dev")]
+        no_dev: bool,
+        /// Run in this directory instead of CWD (`-d`).
+        #[arg(short = 'd', long = "working-dir", value_name = "DIR")]
+        working_dir: Option<std::path::PathBuf>,
+    },
+    /// Report packages that look locally modified. Drop-in for
+    /// `composer status`. bougie installs from dist archives, so for the
+    /// common case this reports "no local changes".
+    Status {
+        /// Run in this directory instead of CWD (`-d`).
+        #[arg(short = 'd', long = "working-dir", value_name = "DIR")]
+        working_dir: Option<std::path::PathBuf>,
+    },
+    /// Show funding information for installed packages, grouped by
+    /// vendor. Drop-in for `composer fund`. Use `--format json` for JSON.
+    Fund {
+        /// Skip dev dependencies (`--no-dev`).
+        #[arg(long = "no-dev")]
+        no_dev: bool,
+        /// Run in this directory instead of CWD (`-d`).
+        #[arg(short = 'd', long = "working-dir", value_name = "DIR")]
+        working_dir: Option<std::path::PathBuf>,
+    },
+    /// Catch-all for any composer subcommand bougie does not implement
+    /// natively (`create-project`, `archive`, `bump`, `global`, …).
+    /// bougie does not bundle the Composer phar, so these no longer run;
+    /// the dispatch returns an error pointing at
+    /// `bougie tool install composer/composer` for the full upstream
+    /// Composer.
     #[command(external_subcommand)]
     External(Vec<OsString>),
+}
+
+/// How `composer audit` treats abandoned packages.
+#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AbandonedHandling {
+    /// Ignore abandoned packages entirely.
+    Ignore,
+    /// Report abandoned packages but don't fail on them.
+    Report,
+    /// Treat abandoned packages as an audit failure.
+    Fail,
 }
 
 #[derive(Subcommand, Debug)]

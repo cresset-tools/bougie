@@ -2,17 +2,13 @@
 name = "bougie-composer"
 version.workspace = true
 edition = "2024"
-description = "composer.json / composer.lock model + PHP channel fetch for bougie."
+description = "composer.json / composer.lock + Packagist v2 metadata model for bougie."
 license = "EUPL-1.2"
 repository = "https://github.com/cresset-tools/bougie"
 rust-version = "1.95"
 authors.workspace = true
 
 [dependencies]
-bougie-errors = { workspace = true }
-bougie-fetch = { workspace = true }
-bougie-fs = { workspace = true }
-bougie-paths = { workspace = true }
 bougie-php-json = { workspace = true }
 
 [dependencies.eyre]
@@ -20,11 +16,6 @@ version = "0.6"
 
 [dependencies.md-5]
 version = "0.11"
-
-[dependencies.reqwest]
-version = "0.13"
-default-features = false
-features = ["blocking", "rustls"]
 
 [dependencies.serde]
 version = "1.0"

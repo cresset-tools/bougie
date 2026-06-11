@@ -211,22 +211,6 @@ mod tests {
     }
 
     #[test]
-    fn extra_bougie_composer_version_is_parsed() {
-        let c = read_composer_json(
-            r#"{
-                "extra": {
-                    "bougie": {
-                        "composer": {"version": "2.8.5"}
-                    }
-                }
-            }"#,
-        )
-        .unwrap();
-        let cfg = c.extra_bougie.unwrap();
-        assert_eq!(cfg.composer.version.as_deref(), Some("2.8.5"));
-    }
-
-    #[test]
     fn extra_without_bougie_block_is_none() {
         let c = read_composer_json(r#"{"extra":{"other":{"k":"v"}}}"#).unwrap();
         assert!(c.extra_bougie.is_none());

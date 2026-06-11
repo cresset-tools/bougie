@@ -5,7 +5,7 @@ use bougie_installer::conf_d;
 use bougie_config::read_composer_json;
 use bougie_errors::BougieError;
 use bougie_paths::Paths;
-use bougie_fs::state::{read_project_resolved, read_project_resolved_composer};
+use bougie_fs::state::read_project_resolved;
 use eyre::{eyre, Result, WrapErr};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
@@ -204,8 +204,7 @@ fn install_xdebug_into_overlay(project_root: &Path) -> Result<()> {
 
 /// True iff the project's resolved markers point at on-disk artifacts
 /// that still exist. Used to decide whether the implicit-sync step is
-/// needed — a missing marker, missing install dir, or missing composer
-/// phar all warrant resyncing.
+/// needed — a missing marker or missing install dir warrants resyncing.
 fn is_environment_present(project_root: &Path) -> Result<bool> {
     let paths = Paths::from_env()?;
 
@@ -218,13 +217,6 @@ fn is_environment_present(project_root: &Path) -> Result<bool> {
     #[cfg(not(unix))]
     let php_bin = install.join("bin").join("php.exe");
     if !php_bin.exists() {
-        return Ok(false);
-    }
-
-    let Ok(composer_version) = read_project_resolved_composer(project_root) else {
-        return Ok(false);
-    };
-    if !paths.composer_phar(&composer_version).exists() {
         return Ok(false);
     }
     Ok(true)

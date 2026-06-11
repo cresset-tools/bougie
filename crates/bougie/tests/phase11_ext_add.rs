@@ -91,7 +91,6 @@ fn build_ext_tarball(name: &str) -> (Vec<u8>, String, String, String) {
 struct Fixture {
     server: MockServer,
     pub_pem: String,
-    composer_server: MockServer,
     /// First 8 hex chars of the redis blob's sha256, used to derive
     /// the expected store dir.
     redis_blob_sha8: String,
@@ -241,41 +240,12 @@ async fn build_fixture() -> Fixture {
         .mount(&server)
         .await;
 
-    let composer_server = build_composer_mock().await;
-
     Fixture {
         server,
         pub_pem,
-        composer_server,
         redis_blob_sha8,
         redis_so_path_in_tarball: so_path,
     }
-}
-
-async fn build_composer_mock() -> MockServer {
-    let server = MockServer::start().await;
-    let phar_bytes = b"#!/usr/bin/env php\n<?php echo 'fake composer';\n".to_vec();
-    let phar_sha = hex(&phar_bytes);
-    let channels = serde_json::json!({
-        "stable": [{"version":"2.8.5","path":"/download/2.8.5/composer.phar","shasum": phar_sha}],
-        "preview": []
-    });
-    Mock::given(method("GET"))
-        .and(path("/versions"))
-        .respond_with(ResponseTemplate::new(200).set_body_bytes(serde_json::to_vec(&channels).unwrap()))
-        .mount(&server)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/download/2.8.5/composer.phar"))
-        .respond_with(ResponseTemplate::new(200).set_body_bytes(phar_bytes.clone()))
-        .mount(&server)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/download/2.8.5/composer.phar.sha256sum"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(phar_sha))
-        .mount(&server)
-        .await;
-    server
 }
 
 fn write_trust_root(env: &TestEnv, pem: &str) -> std::path::PathBuf {
@@ -310,7 +280,6 @@ fn ext_add_redis_installs_so_and_edits_composer_json_no_composer_subprocess() {
     env.bougie()
         .current_dir(proj.path())
         .env("BOUGIE_INDEX_URL", fx.server.uri())
-        .env("BOUGIE_COMPOSER_BASE_URL", fx.composer_server.uri())
         .env("BOUGIE_TRUST_ROOT_PATH", &trust)
         .args(["ext", "add", "redis"])
         .assert()
@@ -363,14 +332,12 @@ fn ext_add_redis_installs_so_and_edits_composer_json_no_composer_subprocess() {
         so_path.display()
     );
 
-    // Verify the absence of any composer.phar subprocess artefact —
-    // the composer phar that ensure_synced fetches is a fake stub
-    // (not executable), so if `bougie ext add` had tried to `exec`
-    // composer the test would have errored out earlier. Belt and
-    // suspenders: assert that we did NOT invoke composer require by
-    // checking composer.json's formatting hasn't been mangled.
-    // Composer rewrites composer.json with its own JsonFile encoder;
-    // a pure bougie edit preserves the original JSON layout.
+    // Assert that we did NOT shell out to a real `composer require`
+    // by checking composer.json's formatting hasn't been mangled.
+    // (Upstream Composer rewrites composer.json with its own JsonFile
+    // encoder; a pure bougie edit preserves the original JSON layout.)
+    // bougie no longer bundles a Composer phar at all, so this is now
+    // a belt-and-suspenders check on the native edit path.
     let cj_bytes = std::fs::read(proj.path().join("composer.json")).unwrap();
     let cj_str = std::str::from_utf8(&cj_bytes).unwrap();
     assert!(cj_str.starts_with("{\n    \"name\":"));
@@ -417,7 +384,6 @@ fn ext_add_redis_updates_lockfile_content_hash_when_present() {
     env.bougie()
         .current_dir(proj.path())
         .env("BOUGIE_INDEX_URL", fx.server.uri())
-        .env("BOUGIE_COMPOSER_BASE_URL", fx.composer_server.uri())
         .env("BOUGIE_TRUST_ROOT_PATH", &trust)
         .args(["ext", "add", "redis"])
         .assert()
@@ -480,7 +446,6 @@ fn ext_list_only_available_marks_installed_rows() {
     env.bougie()
         .current_dir(proj.path())
         .env("BOUGIE_INDEX_URL", fx.server.uri())
-        .env("BOUGIE_COMPOSER_BASE_URL", fx.composer_server.uri())
         .env("BOUGIE_TRUST_ROOT_PATH", &trust)
         .args(["ext", "add", "redis"])
         .assert()

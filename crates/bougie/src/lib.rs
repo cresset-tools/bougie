@@ -264,7 +264,150 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
             apcu_prefix,
             autoloader_suffix,
         ),
-        Command::Composer(ComposerCommand::External(args)) => shim::run_composer(args),
+        Command::Composer(ComposerCommand::Require {
+            packages,
+            dev,
+            no_update,
+            no_install,
+            with_dependencies,
+            with_all_dependencies,
+            prefer_lowest,
+            ignore_platform_reqs: _,
+            ignore_platform_req: _,
+            working_dir,
+            dry_run,
+        }) => commands::composer_require::require(
+            format,
+            packages,
+            dev,
+            no_update,
+            no_install,
+            with_dependencies,
+            with_all_dependencies,
+            prefer_lowest,
+            working_dir,
+            dry_run,
+        ),
+        Command::Composer(ComposerCommand::Remove {
+            packages,
+            dev,
+            no_update,
+            no_install,
+            no_dev,
+            ignore_platform_reqs: _,
+            ignore_platform_req: _,
+            working_dir,
+            dry_run,
+        }) => commands::composer_require::remove(
+            format,
+            packages,
+            dev,
+            no_update,
+            no_install,
+            no_dev,
+            working_dir,
+            dry_run,
+        ),
+        Command::Composer(ComposerCommand::Show {
+            package,
+            tree,
+            direct,
+            platform,
+            self_,
+            name_only,
+            path,
+            latest,
+            outdated,
+            no_dev,
+            working_dir,
+        }) => commands::composer_show::run(
+            format,
+            commands::composer_show::ShowOptions {
+                package,
+                tree,
+                direct,
+                platform,
+                self_,
+                name_only,
+                path,
+                latest,
+                outdated,
+                no_dev,
+                working_dir,
+            },
+        ),
+        Command::Composer(ComposerCommand::Why {
+            package,
+            recursive,
+            tree,
+            working_dir,
+        }) => commands::composer_why::why(format, package, recursive, tree, working_dir),
+        Command::Composer(ComposerCommand::WhyNot {
+            package,
+            version,
+            recursive,
+            tree,
+            working_dir,
+        }) => commands::composer_why::why_not(format, package, version, recursive, tree, working_dir),
+        Command::Composer(ComposerCommand::Outdated {
+            packages,
+            direct,
+            major_only,
+            minor_only,
+            patch_only,
+            no_dev,
+            strict,
+            working_dir,
+        }) => commands::composer_outdated::run(
+            format,
+            commands::composer_outdated::OutdatedOptions {
+                packages,
+                direct,
+                major_only,
+                minor_only,
+                patch_only,
+                no_dev,
+                strict,
+                working_dir,
+            },
+        ),
+        Command::Composer(ComposerCommand::Audit {
+            no_dev,
+            abandoned,
+            locked,
+            working_dir,
+        }) => commands::composer_audit::run(
+            format,
+            commands::composer_audit::AuditOptions {
+                no_dev,
+                abandoned,
+                locked,
+                working_dir,
+            },
+        ),
+        Command::Composer(ComposerCommand::Licenses { no_dev, working_dir }) => {
+            commands::composer_licenses::run(format, no_dev, working_dir)
+        }
+        Command::Composer(ComposerCommand::Status { working_dir }) => {
+            commands::composer_status::run(format, working_dir)
+        }
+        Command::Composer(ComposerCommand::Fund { no_dev, working_dir }) => {
+            commands::composer_fund::run(format, no_dev, working_dir)
+        }
+        Command::Composer(ComposerCommand::External(args)) => {
+            let sub = args
+                .first()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            Err(eyre::eyre!(
+                "`composer {sub}` is not one of bougie's native Composer commands, \
+                 and bougie does not bundle the Composer phar.\n\
+                 Native commands: install, update, require, remove, show, why, why-not, \
+                 outdated, audit, licenses, fund, status, validate, dump-autoload.\n\
+                 For the full upstream Composer, install it as a tool:\n    \
+                 bougie tool install composer/composer",
+            ))
+        }
         Command::SelfCmd(SelfCommand::Update { force }) => commands::self_update::run(force),
         Command::SelfCmd(SelfCommand::Version { short }) => {
             commands::self_version::run(format, short)

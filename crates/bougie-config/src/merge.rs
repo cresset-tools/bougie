@@ -2,8 +2,8 @@
 //! plus the loader that orchestrates reading both files from disk.
 
 use super::{
-    read_bougie_toml, BougieConfig, ComposerConfig, ComposerJson, IndexEntry, PhpConfig,
-    ScriptsConfig, ServerConfig,
+    read_bougie_toml, BougieConfig, ComposerJson, IndexEntry, PhpConfig, ScriptsConfig,
+    ServerConfig,
 };
 #[cfg(test)]
 use super::{ExtensionPin, ServicePin};
@@ -24,9 +24,6 @@ pub fn merge(toml_cfg: BougieConfig, extra_cfg: BougieConfig) -> BougieConfig {
         php: PhpConfig {
             version: toml_cfg.php.version.or(extra_cfg.php.version),
             flavor: toml_cfg.php.flavor.or(extra_cfg.php.flavor),
-        },
-        composer: ComposerConfig {
-            version: toml_cfg.composer.version.or(extra_cfg.composer.version),
         },
         extensions: deep_merge_map(extra_cfg.extensions, toml_cfg.extensions),
         services: deep_merge_map(extra_cfg.services, toml_cfg.services),
@@ -170,31 +167,6 @@ mod tests {
         let merged = merge(toml_cfg, extra_cfg);
         assert_eq!(merged.index.len(), 1);
         assert_eq!(merged.index[0].host, "https://t");
-    }
-
-    #[test]
-    fn composer_version_toml_wins_over_extra() {
-        let toml_cfg = BougieConfig {
-            composer: ComposerConfig { version: Some("2.8.5".into()) },
-            ..Default::default()
-        };
-        let extra_cfg = BougieConfig {
-            composer: ComposerConfig { version: Some("2.7.0".into()) },
-            ..Default::default()
-        };
-        let merged = merge(toml_cfg, extra_cfg);
-        assert_eq!(merged.composer.version.as_deref(), Some("2.8.5"));
-    }
-
-    #[test]
-    fn composer_version_unset_in_toml_falls_back_to_extra() {
-        let toml_cfg = BougieConfig::default();
-        let extra_cfg = BougieConfig {
-            composer: ComposerConfig { version: Some("2.7.0".into()) },
-            ..Default::default()
-        };
-        let merged = merge(toml_cfg, extra_cfg);
-        assert_eq!(merged.composer.version.as_deref(), Some("2.7.0"));
     }
 
     #[test]

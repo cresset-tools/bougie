@@ -3,11 +3,10 @@
 //! content-hash, parallel-downloads dists into `vendor/`, and emits
 //! `vendor/autoload.php` + `vendor/composer/installed.{json,php}`.
 //!
-//! Composer phar version management (the verbs `bougie composer` used to
-//! expose: `fetch`, `list`, `pin`, …) was removed; the version is pinned
-//! via `bougie.toml [composer] version` and fetched lazily during
-//! `bougie sync`. Any non-native composer subcommand is forwarded to the
-//! real Composer phar via `shim::run_project_composer`.
+//! bougie does not bundle or execute the Composer phar; the whole
+//! `bougie composer` surface is reimplemented natively. An unrecognized
+//! subcommand errors with a pointer to `bougie tool install
+//! composer/composer` (see `ComposerCommand::External`).
 
 use std::collections::BTreeSet;
 use std::io::{self, Write};
