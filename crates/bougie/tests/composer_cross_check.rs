@@ -96,7 +96,10 @@ fn run_bougie_update(
     let output = env
         .bougie()
         .env("BOUGIE_PACKAGIST_BASE_URL", server_uri)
-        .args(["composer", "update", "--format", "json-v1", "-d"])
+        // `--no-install`: the cross-check diffs the *lock* against real
+        // Composer; vendor/ materialization isn't under test (and the
+        // fixtures don't serve dists).
+        .args(["composer", "update", "--no-install", "--format", "json-v1", "-d"])
         .arg(project_dir)
         .output()
         .expect("run bougie");
