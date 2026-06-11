@@ -55,6 +55,7 @@ fn command_name(cmd: &Command) -> &'static str {
         Command::Ext(_) => "ext",
         Command::Add { .. } => "add",
         Command::Remove { .. } => "remove",
+        Command::Lock { .. } => "lock",
         Command::Tree { .. } => "tree",
         Command::Outdated { .. } => "outdated",
         Command::Sync { .. } => "sync",
@@ -136,6 +137,7 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
             working_dir,
             dry_run,
         ),
+        Command::Lock { working_dir, dry_run } => commands::lock::run(format, working_dir, dry_run),
         Command::Tree { package, no_dev, working_dir } => commands::composer_show::run(
             format,
             commands::composer_show::ShowOptions {

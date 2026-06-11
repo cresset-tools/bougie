@@ -154,6 +154,20 @@ pub enum Command {
         dry_run: bool,
     },
 
+    /// Refresh `composer.lock` to match `composer.json` (native; uv's
+    /// `uv lock`). Minimal: keeps every package at its locked version
+    /// where still valid, re-resolving only what changed. Never bumps
+    /// versions and never installs — use `bougie composer update` to pull
+    /// newer versions.
+    Lock {
+        /// Run in this directory instead of CWD (`-d`).
+        #[arg(short = 'd', long = "working-dir", value_name = "DIR")]
+        working_dir: Option<std::path::PathBuf>,
+        /// Resolve and report what would change without writing the lock.
+        #[arg(long = "dry-run")]
+        dry_run: bool,
+    },
+
     /// Print the project's dependency tree (native; uv's `uv tree`).
     /// Reads `composer.lock`.
     Tree {

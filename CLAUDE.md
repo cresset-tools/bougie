@@ -115,6 +115,11 @@ Top-level subcommands (from `bougie-cli`):
   (vs `composer require`'s caret); shared engine, [`DefaultConstraint`]
   policy selects the default. `--frozen` = edit composer.json only;
   `--no-sync` = re-lock but don't install.
+- `lock [--dry-run]` — minimal `composer.lock` refresh (uv's `uv lock`):
+  reconcile the lock with `composer.json`, holding each package at its
+  locked version where still valid; re-resolve only what changed. Never
+  bumps versions, never installs (use `bougie composer update` to pull
+  newer). Content-hash match → offline no-op.
 - `tree [PACKAGE] [--no-dev]` — native dependency tree (uv's `uv tree`);
   delegates to the `composer show --tree` renderer.
 - `outdated [pkgs] [--direct] [--major/minor/patch-only] [--strict]` —
