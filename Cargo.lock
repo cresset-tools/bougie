@@ -671,6 +671,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "bougie-php-discovery"
+version = "0.24.0"
+dependencies = [
+ "bougie-version",
+ "eyre",
+ "tempfile",
+]
+
+[[package]]
 name = "bougie-php-json"
 version = "0.24.0"
 dependencies = [

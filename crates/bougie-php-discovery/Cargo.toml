@@ -1,0 +1,21 @@
+[package]
+name = "bougie-php-discovery"
+version.workspace = true
+edition = "2024"
+description = "Discover and probe system PHP interpreters for bougie."
+license = "EUPL-1.2"
+repository = "https://github.com/cresset-tools/bougie"
+rust-version = "1.95"
+authors.workspace = true
+
+[dependencies]
+bougie-version = { workspace = true }
+
+[dependencies.eyre]
+version = "0.6"
+
+[dev-dependencies.tempfile]
+version = "3.10"
+
+[lints]
+workspace = true

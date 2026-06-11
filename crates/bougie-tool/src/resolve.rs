@@ -17,8 +17,9 @@
 
 use bougie_fs::store;
 use bougie_paths::Paths;
-use bougie_version::request::{Request, VersionLike, parse_request};
-use bougie_version::version::{PartialVersion, Version};
+use bougie_version::matches::version_satisfies;
+use bougie_version::request::{Request, parse_request};
+use bougie_version::version::Version;
 use eyre::{Result, WrapErr, bail};
 use std::path::PathBuf;
 
@@ -139,7 +140,7 @@ pub fn pick_php(
         .into_iter()
         .filter(|(_, flavor)| flavor == &target_flavor)
         .filter_map(|(v, f)| v.parse::<Version>().ok().map(|parsed| (parsed, f)))
-        .filter(|(v, _)| version_filter.is_none_or(|spec| version_matches(v, spec)))
+        .filter(|(v, _)| version_filter.is_none_or(|spec| version_satisfies(v, spec)))
         .collect();
 
     if let Some((version, flavor)) = candidates
@@ -168,41 +169,6 @@ pub fn pick_php(
              auto-install."
         ),
     }
-}
-
-/// Mirror of `bougie-resolver`'s private `version_matches_spec`.
-/// Inlined rather than crossing a crate boundary for one helper, and
-/// rather than making the resolver helper `pub` (avoids surface bloat).
-fn version_matches(v: &Version, spec: &VersionLike) -> bool {
-    match spec {
-        VersionLike::Version(pv) => matches_partial(v, pv),
-        VersionLike::Constraint(c) => {
-            // Constraint matching is defined against the semver-shaped
-            // Version. Lift bougie's exact triple into a Composer-normalized
-            // "X.Y.Z" — same trick `bougie-resolver` uses.
-            let Ok(lifted) = bougie_semver::Version::parse(&v.to_string()) else {
-                return false;
-            };
-            c.matches(&lifted)
-        }
-    }
-}
-
-fn matches_partial(v: &Version, pv: &PartialVersion) -> bool {
-    if v.major != pv.major {
-        return false;
-    }
-    if let Some(m) = pv.minor
-        && v.minor != m
-    {
-        return false;
-    }
-    if let Some(p) = pv.patch
-        && v.patch != p
-    {
-        return false;
-    }
-    true
 }
 
 #[cfg(test)]
