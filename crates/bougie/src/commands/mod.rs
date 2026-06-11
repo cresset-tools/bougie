@@ -19,6 +19,7 @@ pub mod ext_add_remove;
 pub mod ext_list;
 pub mod infer_php;
 pub mod init;
+pub mod lock;
 pub mod php_dir;
 pub mod php_find;
 pub mod php_install;

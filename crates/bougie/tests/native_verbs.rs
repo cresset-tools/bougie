@@ -191,6 +191,130 @@ fn outdated_reports_newer_version() {
 }
 
 #[test]
+fn lock_already_in_sync_is_offline_noop() {
+    let env = TestEnv::new();
+    let proj = TempDir::new().unwrap();
+    let composer_json = r#"{"name":"test/p","require":{"acme/foo":"^1.0"}}"#;
+    write_composer_json(proj.path(), composer_json);
+    // Lock carries the *correct* content-hash for the composer.json above.
+    let hash = bougie_composer::lockfile::content_hash(composer_json.as_bytes()).unwrap();
+    let lock = format!(
+        r#"{{"content-hash":"{hash}","packages":[
+            {{"name":"acme/foo","version":"1.2.0","version_normalized":"1.2.0.0"}}
+        ],"packages-dev":[]}}"#
+    );
+    std::fs::write(proj.path().join("composer.lock"), &lock).unwrap();
+    let before = std::fs::read_to_string(proj.path().join("composer.lock")).unwrap();
+
+    // No mock server: an in-sync lock must not touch the network.
+    let out = env
+        .bougie()
+        .env("BOUGIE_PACKAGIST_BASE_URL", "http://127.0.0.1:1/none")
+        .args(["lock", "-d"])
+        .arg(proj.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "stderr={}", String::from_utf8_lossy(&out.stderr));
+    let s = String::from_utf8_lossy(&out.stdout);
+    assert!(s.contains("already in sync"), "{s}");
+    // Lock unchanged.
+    assert_eq!(std::fs::read_to_string(proj.path().join("composer.lock")).unwrap(), before);
+}
+
+#[test]
+fn lock_constraint_change_reresolves_only_that_package() {
+    let env = TestEnv::new();
+    let proj = TempDir::new().unwrap();
+    // composer.json bumps acme/foo's constraint past the locked 1.0.0;
+    // acme/bar's ^2.0 still matches its locked 2.0.0.
+    write_composer_json(
+        proj.path(),
+        r#"{"name":"test/p","require":{"acme/foo":"^1.5","acme/bar":"^2.0"}}"#,
+    );
+    // Stale content-hash (bogus) → lock proceeds to reconcile.
+    std::fs::write(
+        proj.path().join("composer.lock"),
+        r#"{"content-hash":"stale","packages":[
+            {"name":"acme/foo","version":"1.0.0","version_normalized":"1.0.0.0"},
+            {"name":"acme/bar","version":"2.0.0","version_normalized":"2.0.0.0"}
+        ],"packages-dev":[]}"#,
+    )
+    .unwrap();
+
+    let foo = p2_body("acme/foo", &["1.6.0", "1.5.0", "1.0.0"]);
+    let bar = p2_body("acme/bar", &["2.0.0"]);
+    let rt = rt();
+    let (uri, _server) = rt.block_on(async {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(wm_path("/p2/acme/foo.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(foo))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(wm_path("/p2/acme/bar.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(bar))
+            .mount(&server)
+            .await;
+        (server.uri(), server)
+    });
+
+    let out = env
+        .bougie()
+        .env("BOUGIE_PACKAGIST_BASE_URL", &uri)
+        .args(["lock", "-d"])
+        .arg(proj.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "stderr={}", String::from_utf8_lossy(&out.stderr));
+
+    let after = std::fs::read_to_string(proj.path().join("composer.lock")).unwrap();
+    // acme/foo re-resolved to the highest in ^1.5 (1.6.0); acme/bar held.
+    assert!(after.contains("\"1.6.0\""), "foo should move to 1.6.0: {after}");
+    assert!(after.contains("acme/bar") && after.contains("\"2.0.0\""), "bar stays pinned: {after}");
+    // never installs.
+    assert!(!proj.path().join("vendor").exists());
+}
+
+#[test]
+fn lock_dry_run_writes_nothing() {
+    let env = TestEnv::new();
+    let proj = TempDir::new().unwrap();
+    write_composer_json(proj.path(), r#"{"name":"test/p","require":{"acme/foo":"^1.5"}}"#);
+    std::fs::write(
+        proj.path().join("composer.lock"),
+        r#"{"content-hash":"stale","packages":[
+            {"name":"acme/foo","version":"1.0.0","version_normalized":"1.0.0.0"}
+        ],"packages-dev":[]}"#,
+    )
+    .unwrap();
+    let before = std::fs::read_to_string(proj.path().join("composer.lock")).unwrap();
+
+    let foo = p2_body("acme/foo", &["1.6.0", "1.0.0"]);
+    let rt = rt();
+    let (uri, _server) = rt.block_on(async {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(wm_path("/p2/acme/foo.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(foo))
+            .mount(&server)
+            .await;
+        (server.uri(), server)
+    });
+
+    let out = env
+        .bougie()
+        .env("BOUGIE_PACKAGIST_BASE_URL", &uri)
+        .args(["lock", "--dry-run", "-d"])
+        .arg(proj.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "stderr={}", String::from_utf8_lossy(&out.stderr));
+    // Lock untouched by --dry-run.
+    assert_eq!(std::fs::read_to_string(proj.path().join("composer.lock")).unwrap(), before);
+}
+
+#[test]
 fn remove_frozen_drops_entry() {
     let env = TestEnv::new();
     let proj = TempDir::new().unwrap();
