@@ -53,6 +53,10 @@ fn command_name(cmd: &Command) -> &'static str {
         Command::Init { .. } => "init",
         Command::New { .. } => "new",
         Command::Ext(_) => "ext",
+        Command::Add { .. } => "add",
+        Command::Remove { .. } => "remove",
+        Command::Tree { .. } => "tree",
+        Command::Outdated { .. } => "outdated",
         Command::Sync { .. } => "sync",
         Command::Up { .. } => "up",
         Command::Down { .. } => "down",
@@ -69,6 +73,7 @@ fn command_name(cmd: &Command) -> &'static str {
     }
 }
 
+#[allow(clippy::too_many_lines, reason = "top-level command dispatch is one big match")]
 pub fn run(cli: Cli) -> Result<ExitCode> {
     let format = cli.format;
 
@@ -94,6 +99,81 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
         Command::New { directory, toml, name, starter, start } => {
             commands::init::run_new(format, &directory, toml, name, starter, start)
         }
+        Command::Add {
+            packages,
+            dev,
+            with_dependencies,
+            with_all_dependencies,
+            no_sync,
+            frozen,
+            working_dir,
+            dry_run,
+        } => commands::composer_require::add(
+            format,
+            packages,
+            dev,
+            no_sync,
+            frozen,
+            with_dependencies,
+            with_all_dependencies,
+            working_dir,
+            dry_run,
+        ),
+        Command::Remove {
+            packages,
+            dev,
+            no_sync,
+            frozen,
+            working_dir,
+            dry_run,
+        } => commands::composer_require::remove(
+            format,
+            packages,
+            dev,
+            frozen,   // --frozen → edit composer.json only (no_update)
+            no_sync,  // --no-sync → re-lock but don't install (no_install)
+            false,    // top-level remove always considers dev when installing
+            working_dir,
+            dry_run,
+        ),
+        Command::Tree { package, no_dev, working_dir } => commands::composer_show::run(
+            format,
+            commands::composer_show::ShowOptions {
+                package,
+                tree: true,
+                direct: false,
+                platform: false,
+                self_: false,
+                name_only: false,
+                path: false,
+                latest: false,
+                outdated: false,
+                no_dev,
+                working_dir,
+            },
+        ),
+        Command::Outdated {
+            packages,
+            direct,
+            major_only,
+            minor_only,
+            patch_only,
+            no_dev,
+            strict,
+            working_dir,
+        } => commands::composer_outdated::run(
+            format,
+            commands::composer_outdated::OutdatedOptions {
+                packages,
+                direct,
+                major_only,
+                minor_only,
+                patch_only,
+                no_dev,
+                strict,
+                working_dir,
+            },
+        ),
         Command::Sync { offline, dry_run, scripts, no_scripts } => {
             commands::sync::run(format, offline, dry_run, scripts_override(scripts, no_scripts))
         }
