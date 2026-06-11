@@ -97,6 +97,107 @@ pub enum Command {
     #[command(subcommand)]
     Ext(ExtCommand),
 
+    /// Add one or more packages to the project and sync. The uv-flavored
+    /// twin of `composer require`: a bare `vendor/pkg` writes a `>=X.Y`
+    /// lower bound (vs `composer require`'s caret `^X.Y`), and an
+    /// explicit constraint uses the `@` syntax (`vendor/pkg@^1.0`), as in
+    /// `bougie tool install` / `bougie ext add`. Edits `composer.json`,
+    /// re-resolves `composer.lock`, and installs into `vendor/`.
+    Add {
+        /// Packages to add, `vendor/pkg` or `vendor/pkg@<constraint>`.
+        #[arg(value_name = "PACKAGES", required = true)]
+        packages: Vec<String>,
+        /// Add to `require-dev` instead of `require`.
+        #[arg(long = "dev")]
+        dev: bool,
+        /// Also update the new packages' dependencies (`-w`).
+        #[arg(short = 'w', long = "with-dependencies")]
+        with_dependencies: bool,
+        /// Also update all dependencies, including shared ones (`-W`).
+        #[arg(short = 'W', long = "with-all-dependencies")]
+        with_all_dependencies: bool,
+        /// Update `composer.json` + `composer.lock` but don't install
+        /// into `vendor/`.
+        #[arg(long = "no-sync")]
+        no_sync: bool,
+        /// Edit `composer.json` only — don't touch the lock or `vendor/`.
+        #[arg(long = "frozen")]
+        frozen: bool,
+        /// Run in this directory instead of CWD (`-d`).
+        #[arg(short = 'd', long = "working-dir", value_name = "DIR")]
+        working_dir: Option<std::path::PathBuf>,
+        /// Resolve and report what would change without writing anything.
+        #[arg(long = "dry-run")]
+        dry_run: bool,
+    },
+
+    /// Remove one or more packages from the project and sync. The
+    /// uv-flavored twin of `composer remove`.
+    Remove {
+        /// Packages to remove (`vendor/name`).
+        #[arg(value_name = "PACKAGES", required = true)]
+        packages: Vec<String>,
+        /// Remove from `require-dev` instead of `require`.
+        #[arg(long = "dev")]
+        dev: bool,
+        /// Re-resolve `composer.lock` but don't touch `vendor/`.
+        #[arg(long = "no-sync")]
+        no_sync: bool,
+        /// Edit `composer.json` only — don't touch the lock or `vendor/`.
+        #[arg(long = "frozen")]
+        frozen: bool,
+        /// Run in this directory instead of CWD (`-d`).
+        #[arg(short = 'd', long = "working-dir", value_name = "DIR")]
+        working_dir: Option<std::path::PathBuf>,
+        /// Resolve and report what would change without writing anything.
+        #[arg(long = "dry-run")]
+        dry_run: bool,
+    },
+
+    /// Print the project's dependency tree (native; uv's `uv tree`).
+    /// Reads `composer.lock`.
+    Tree {
+        /// Root the tree at this package instead of the project.
+        #[arg(value_name = "PACKAGE")]
+        package: Option<String>,
+        /// Skip dev dependencies.
+        #[arg(long = "no-dev")]
+        no_dev: bool,
+        /// Run in this directory instead of CWD (`-d`).
+        #[arg(short = 'd', long = "working-dir", value_name = "DIR")]
+        working_dir: Option<std::path::PathBuf>,
+    },
+
+    /// List installed packages with a newer version available (native;
+    /// like `uv`/`pnpm outdated`). Reads `composer.lock` and queries the
+    /// configured repositories.
+    Outdated {
+        /// Optional `vendor/name` filters; with none, all are considered.
+        #[arg(value_name = "PACKAGES")]
+        packages: Vec<String>,
+        /// Only the project's direct dependencies (`--direct` / `-D`).
+        #[arg(short = 'D', long = "direct")]
+        direct: bool,
+        /// Only packages with a new major version.
+        #[arg(long = "major-only")]
+        major_only: bool,
+        /// Only packages with a new minor version.
+        #[arg(long = "minor-only")]
+        minor_only: bool,
+        /// Only packages with a new patch version.
+        #[arg(long = "patch-only")]
+        patch_only: bool,
+        /// Skip dev dependencies.
+        #[arg(long = "no-dev")]
+        no_dev: bool,
+        /// Exit non-zero if any package is outdated.
+        #[arg(long = "strict")]
+        strict: bool,
+        /// Run in this directory instead of CWD (`-d`).
+        #[arg(short = 'd', long = "working-dir", value_name = "DIR")]
+        working_dir: Option<std::path::PathBuf>,
+    },
+
     /// Install everything the project requires.
     Sync {
         /// Don't try to download anything, this will fail if there are uncached packages.

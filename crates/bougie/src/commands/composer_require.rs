@@ -103,6 +103,39 @@ pub fn parse_name_version_pairs(args: &[String]) -> Vec<NameVersion> {
     out
 }
 
+/// Parse bougie's `@`-style supply syntax for `bougie add`:
+/// `vendor/pkg` or `vendor/pkg@<constraint>` (`vendor/pkg@^1.0`,
+/// `vendor/pkg@>=1.0 <2.0`) — the house style shared with
+/// `bougie tool install` and `bougie ext add`. Deliberately distinct
+/// from `composer require`, which uses Composer's `:`/`=`/space splitter
+/// (`@` is *not* a Composer separator). The constraint grammar is still
+/// delegated to `bougie-semver`; this only splits name from constraint.
+pub fn parse_at_pairs(args: &[String]) -> Result<Vec<NameVersion>> {
+    args.iter()
+        .map(|raw| {
+            let raw = raw.trim();
+            match raw.split_once('@') {
+                Some((name, ver)) => {
+                    if name.is_empty() {
+                        return Err(eyre!("package name cannot be empty: {raw:?}"));
+                    }
+                    if ver.is_empty() {
+                        return Err(eyre!("version after `@` cannot be empty: {raw:?}"));
+                    }
+                    Ok(NameVersion {
+                        name: name.to_string(),
+                        version: Some(ver.to_string()),
+                    })
+                }
+                None => Ok(NameVersion {
+                    name: raw.to_string(),
+                    version: None,
+                }),
+            }
+        })
+        .collect()
+}
+
 /// Replace the first `:`/`=`/space in `s` with a space, mirroring
 /// Composer's `^([^=: ]+)[=: ](.*)$` → `$1 $2`. With no separator (or a
 /// separator at position 0, which the regex's `[^=: ]+` would reject)
@@ -207,17 +240,17 @@ impl Render for RequireResult {
         let section = if self.dev { " (dev)" } else { "" };
         for it in &self.packages {
             match (self.action, &it.constraint) {
-                ("require", Some(c)) => writeln!(w, "require {} {c}{section}", it.name)?,
                 ("remove", _) => writeln!(w, "remove {}{section}", it.name)?,
-                _ => writeln!(w, "{} {}{section}", self.action, it.name)?,
+                (action, Some(c)) => writeln!(w, "{action} {} {c}{section}", it.name)?,
+                (action, None) => writeln!(w, "{action} {}{section}", it.name)?,
             }
         }
         if self.dry_run {
             writeln!(w, "\n(dry run — composer.json, composer.lock, and vendor/ unchanged)")?;
         } else if self.no_update {
-            writeln!(w, "\ncomposer.json updated (--no-update: lock and vendor/ untouched)")?;
+            writeln!(w, "\ncomposer.json updated (composer.lock and vendor/ untouched)")?;
         } else if let Some(p) = &self.lock_path {
-            let tail = if self.no_install { " (--no-install: vendor/ untouched)" } else { "" };
+            let tail = if self.no_install { " (vendor/ untouched)" } else { "" };
             writeln!(w, "\nwrote {}{tail}", p.display())?;
         }
         Ok(())
@@ -244,10 +277,87 @@ pub fn require(
     dry_run: bool,
 ) -> Result<ExitCode> {
     let _ = prefer_lowest; // resolver prefer-lowest wiring is a follow-up; flag accepted for parity.
+    // `composer require`: Composer's `:`/`=`/space supply syntax + caret
+    // default constraint.
+    let pairs = parse_name_version_pairs(&packages);
+    run_add(
+        format,
+        "require",
+        pairs,
+        DefaultConstraint::Caret,
+        dev,
+        no_update,
+        no_install,
+        with_dependencies,
+        with_all_dependencies,
+        working_dir,
+        dry_run,
+    )
+}
+
+/// `bougie add` — the uv-flavored top-level twin of `composer require`.
+/// Bougie's `@` supply syntax (`vendor/pkg@^1.0`, shared with
+/// `tool install` / `ext add`) and a `>=X.Y` lower-bound default. Same
+/// mutate→relock→install engine as `composer require`; only the parser
+/// and the [`DefaultConstraint`] policy differ.
+#[allow(
+    clippy::too_many_arguments,
+    clippy::fn_params_excessive_bools,
+    clippy::needless_pass_by_value,
+    reason = "wired from clap-parsed CLI; ownership crosses the function boundary"
+)]
+pub fn add(
+    format: OutputFormat,
+    packages: Vec<String>,
+    dev: bool,
+    no_sync: bool,
+    frozen: bool,
+    with_dependencies: bool,
+    with_all_dependencies: bool,
+    working_dir: Option<PathBuf>,
+    dry_run: bool,
+) -> Result<ExitCode> {
+    let pairs = parse_at_pairs(&packages)?;
+    run_add(
+        format,
+        "add",
+        pairs,
+        DefaultConstraint::LowerBound,
+        dev,
+        frozen,  // --frozen: edit composer.json only (no_update)
+        no_sync, // --no-sync: re-lock but don't install (no_install)
+        with_dependencies,
+        with_all_dependencies,
+        working_dir,
+        dry_run,
+    )
+}
+
+/// Shared engine behind `composer require` and `bougie add`. The only
+/// inputs that differ between the two front-ends are the parsed `pairs`
+/// (each verb has its own supply syntax) and the [`DefaultConstraint`]
+/// `policy` applied to bare packages.
+#[allow(
+    clippy::too_many_arguments,
+    clippy::fn_params_excessive_bools,
+    clippy::needless_pass_by_value,
+    reason = "shared engine fanned out from two clap front-ends"
+)]
+fn run_add(
+    format: OutputFormat,
+    label: &'static str,
+    pairs: Vec<NameVersion>,
+    policy: DefaultConstraint,
+    dev: bool,
+    no_update: bool,
+    no_install: bool,
+    with_dependencies: bool,
+    with_all_dependencies: bool,
+    working_dir: Option<PathBuf>,
+    dry_run: bool,
+) -> Result<ExitCode> {
     let project_root = resolve_root(working_dir)?;
     let paths = Paths::from_env()?;
-
-    let pairs = parse_name_version_pairs(&packages);
 
     // Resolve a constraint for every bare (no-version) real package via
     // the latest published stable; platform packages default to `*`.
@@ -281,9 +391,9 @@ pub fn require(
                         )
                     })?;
                 let best = best_stable(versions).ok_or_else(|| {
-                    eyre!("no stable version of {} found to require", p.name)
+                    eyre!("no stable version of {} found to {label}", p.name)
                 })?;
-                derive_constraint(&best, DefaultConstraint::Caret)
+                derive_constraint(&best, policy)
             }
         };
         // Validate the constraint grammar (don't reparse — just check).
@@ -303,7 +413,7 @@ pub fn require(
     if dry_run {
         return finish(
             format,
-            "require",
+            label,
             project_root,
             dev,
             true,
@@ -339,7 +449,7 @@ pub fn require(
 
     finish(
         format,
-        "require",
+        label,
         project_root,
         dev,
         false,
@@ -589,6 +699,27 @@ mod tests {
             parse_name_version_pairs(&["acme/a".into(), "ext-redis".into()]),
             vec![nv("acme/a", None), nv("ext-redis", None)]
         );
+    }
+
+    #[test]
+    fn at_pairs_for_bougie_add() {
+        // bougie add uses `@` (house style), unlike composer require.
+        assert_eq!(
+            parse_at_pairs(&["monolog/monolog@^3.5".into()]).unwrap(),
+            vec![nv("monolog/monolog", Some("^3.5"))]
+        );
+        assert_eq!(
+            parse_at_pairs(&["monolog/monolog".into()]).unwrap(),
+            vec![nv("monolog/monolog", None)]
+        );
+        // Multi-part constraint after `@` is kept verbatim.
+        assert_eq!(
+            parse_at_pairs(&["acme/a@>=1.0 <2.0".into()]).unwrap(),
+            vec![nv("acme/a", Some(">=1.0 <2.0"))]
+        );
+        // Empty name / empty version are rejected.
+        assert!(parse_at_pairs(&["@^1.0".into()]).is_err());
+        assert!(parse_at_pairs(&["acme/a@".into()]).is_err());
     }
 
     #[test]

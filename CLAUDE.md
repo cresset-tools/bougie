@@ -109,6 +109,16 @@ Top-level subcommands (from `bougie-cli`):
 - `new DIRECTORY [--toml] [--name VENDOR/PACKAGE]` — Create DIRECTORY under
   the cwd and scaffold a new project inside it.
 - `ext {add,remove,list}` — Manage PHP extensions.
+- `add <pkgs> [--dev] [--no-sync] [--frozen]` / `remove <pkgs>` — uv-style
+  top-level twins of `composer require`/`remove`. `add` uses the `@`
+  supply syntax (`vendor/pkg@^1.0`) and a `>=X.Y` lower-bound default
+  (vs `composer require`'s caret); shared engine, [`DefaultConstraint`]
+  policy selects the default. `--frozen` = edit composer.json only;
+  `--no-sync` = re-lock but don't install.
+- `tree [PACKAGE] [--no-dev]` — native dependency tree (uv's `uv tree`);
+  delegates to the `composer show --tree` renderer.
+- `outdated [pkgs] [--direct] [--major/minor/patch-only] [--strict]` —
+  native outdated check; same engine as `composer outdated`.
 - `sync [--offline] [--dry-run]` — Install everything the project requires.
 - `up [names...]` / `down [names...] [--purge]` — Start / stop declared
   services.
