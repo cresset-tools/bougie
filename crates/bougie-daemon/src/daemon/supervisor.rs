@@ -849,6 +849,16 @@ fn render_exec_env(entry: &CatalogEntry, paths: &Paths) -> Vec<(String, String)>
                 // JNA native-lib extraction + `java.io.tmpdir` write
                 // here. `/tmp` is hidden by `ProtectSystem::Strict`.
                 ("OPENSEARCH_TMPDIR".into(), tmp.display().to_string()),
+                // The `bin/opensearch` launcher is a bash script that
+                // uses here-documents; bash writes the heredoc spool
+                // file to `$TMPDIR` (or `/tmp` if unset). On macOS the
+                // inherited `TMPDIR` is a per-user dir under
+                // `/var/folders/.../T/`, which the Strict sandbox makes
+                // read-only — so the heredoc write fails and the
+                // launcher never reaches `java`. Pin `TMPDIR` to the
+                // already-RW `<datadir>/tmp` (created by `pre_start`)
+                // so the shell's temporaries land inside the sandbox.
+                ("TMPDIR".into(), tmp.display().to_string()),
                 // `opensearch-env` defaults `OPENSEARCH_PATH_CONF` to
                 // `$OPENSEARCH_HOME/config`, which is read-only in
                 // the store. The provisioner's pre_start hook copies
