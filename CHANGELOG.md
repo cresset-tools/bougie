@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.25.2](https://github.com/cresset-tools/bougie/compare/bougie-v0.25.1...bougie-v0.25.2) (2026-06-12)
+
+
+### Bug Fixes
+
+* **daemon:** allow /tmp + /var/tmp RW so macOS bash heredocs work in sandbox ([#361](https://github.com/cresset-tools/bougie/issues/361)) ([fc8f421](https://github.com/cresset-tools/bougie/commit/fc8f421cd08377d46499e92bbb6f554daa5ce1e6))
+
 ## [0.25.1](https://github.com/cresset-tools/bougie/compare/bougie-v0.25.0...bougie-v0.25.1) (2026-06-12)
 
 
