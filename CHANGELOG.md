@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.25.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.24.0...bougie-v0.25.0) (2026-06-12)
+
+
+### ⚠ BREAKING CHANGES
+
+* **composer:** bougie no longer bundles or runs the Composer phar. The `composer` argv[0] shim now dispatches to bougie's native subcommands, so `composer install` (recipes, PATH) runs the native installer. Unrecognized subcommands (create-project, archive, bump, …) error with a pointer to `bougie tool install composer/composer` — the deliberate escape hatch. Removed: bougie-composer fetch/request/resolve modules + install_composer; paths.composer_phar; the resolved-composer state file; the `[composer] version` config field; sync's phar fetch and SyncResult.composer_{version,path}.
+
+### Features
+
+* **cli:** add `bougie lock` — minimal lockfile refresh ([#351](https://github.com/cresset-tools/bougie/issues/351)) ([ca6056a](https://github.com/cresset-tools/bougie/commit/ca6056a18884b4e6b87e17b71b00dfb76c26f16f))
+* **cli:** native uv-style verbs — add, remove, tree, outdated ([#350](https://github.com/cresset-tools/bougie/issues/350)) ([b74126f](https://github.com/cresset-tools/bougie/commit/b74126fb27b960ef8b92b57d54a7ae87501f9c4c))
+* **composer:** native uv-pip Composer surface; drop the phar ([#348](https://github.com/cresset-tools/bougie/issues/348)) ([0d491f6](https://github.com/cresset-tools/bougie/commit/0d491f60853c3b0b1d32ec95afe51ecc4d6214c9))
+* **dist:** build linux-gnu against glibc 2.17 in manylinux2014 ([#355](https://github.com/cresset-tools/bougie/issues/355)) ([4ce19eb](https://github.com/cresset-tools/bougie/commit/4ce19eb809a60c8e1c2c5bb6484d02b841fad933))
+* **php:** system PHP support (uv's system-Python model) ([#354](https://github.com/cresset-tools/bougie/issues/354)) ([32eef2e](https://github.com/cresset-tools/bougie/commit/32eef2e612b3e6a3c8ee3c62d2ec17e626fa9b8e))
+
+
+### Bug Fixes
+
+* **composer:** `update` installs vendor/ + `upgrade`/`u` aliases ([#352](https://github.com/cresset-tools/bougie/issues/352)) ([a4ac00e](https://github.com/cresset-tools/bougie/commit/a4ac00e43f8cf4d1e62caa3f9002431d16d23351))
+
 ## [0.24.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.23.1...bougie-v0.24.0) (2026-06-10)
 
 
