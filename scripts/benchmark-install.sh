@@ -154,18 +154,18 @@ XMAX="$(awk -v c="$CMEAN" -v b="$BMEAN" 'BEGIN { m = (c > b) ? c : b; printf "%.
 mkdir -p "$(dirname "$OUT")"
 GP="$WORK/chart.gp"
 cat > "$GP" <<'GPEOF'
-set terminal pngcairo size 960,400 enhanced
+set terminal pngcairo size 820,180 enhanced
 set output OUT
 set datafile separator "\t"
 set style fill solid 0.9 border -1
 set xlabel "seconds (mean) — lower is better"
 set xrange [0:XMAX]
-set yrange [-0.7:COUNT-0.3]
+set yrange [-0.5:COUNT-0.5]
 set grid xtics lc rgb '#dddddd'
 set border 3
 set tics nomirror
 unset key
-plot DATA using ($2/2.0):1:(0):2:($1-0.18):($1+0.18):ytic(3) with boxxyerror lc rgb '#7c3aed', \
+plot DATA using ($2/2.0):1:(0):2:($1-0.22):($1+0.22):ytic(3) with boxxyerror lc rgb '#7c3aed', \
      DATA using 2:1:(sprintf("%.2f s", $2)) with labels left offset 1,0
 GPEOF
 
