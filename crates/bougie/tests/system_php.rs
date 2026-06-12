@@ -8,10 +8,10 @@ use assert_cmd::Command;
 use std::os::unix::fs::PermissionsExt;
 use tempfile::TempDir;
 
-/// Write an executable `php` shell stub that answers `-v` / `-m` like a
-/// real CLI and echoes a recognizable banner for any other invocation
-/// (so `bougie run -- php …` can be asserted). PHP's version flag is
-/// lowercase `-v` — uppercase `-V` is rejected by the real CLI.
+/// Write an executable `php` shell stub that answers `--version` /
+/// `--modules` like a real CLI and echoes a recognizable banner for any
+/// other invocation (so `bougie run -- php …` can be asserted). bougie
+/// probes with the long flags to avoid the `-v`/`-V` confusion.
 fn write_php_stub(dir: &std::path::Path, version: &str, extra_args_marker: &str) {
     let php = dir.join("php");
     std::fs::write(
@@ -19,8 +19,8 @@ fn write_php_stub(dir: &std::path::Path, version: &str, extra_args_marker: &str)
         format!(
             "#!/bin/sh\n\
              case \"$1\" in\n\
-               -v) echo 'PHP {version} (cli) (built: x) (NTS)';;\n\
-               -m) printf '[PHP Modules]\\nCore\\ncurl\\njson\\n';;\n\
+               --version) echo 'PHP {version} (cli) (built: x) (NTS)';;\n\
+               --modules) printf '[PHP Modules]\\nCore\\ncurl\\njson\\n';;\n\
                *) echo '{extra_args_marker}';;\n\
              esac\n"
         ),

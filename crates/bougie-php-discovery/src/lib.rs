@@ -10,7 +10,7 @@
 //! - **Probe** ([`probe`]): for a given `php`, what is its version,
 //!   thread-safety flavor, and set of loaded extensions?
 //!
-//! The probe deliberately uses `php -v` (version + flavor) and `php -m`
+//! The probe deliberately uses `php --version` (version + flavor) and `php --modules`
 //! (loaded extensions) — both terse, stable, and sufficient for
 //! selecting a system PHP against a project's `require.php` /
 //! `require.ext-*`. Heavier introspection (`php -i`, `php --ini`) is
@@ -44,9 +44,9 @@ pub struct SystemPhp {
     pub path: PathBuf,
     /// Reported version (`major.minor.patch`, distro suffixes stripped).
     pub version: Version,
-    /// Thread-safety / debug flavor parsed from the `php -v` banner.
+    /// Thread-safety / debug flavor parsed from the `php --version` banner.
     pub flavor: Flavor,
-    /// Loaded extension names, lowercased (from `php -m`). Covers both
+    /// Loaded extension names, lowercased (from `php --modules`). Covers both
     /// the `[PHP Modules]` and `[Zend Modules]` sections.
     pub extensions: Vec<String>,
 }
@@ -67,19 +67,21 @@ impl SystemPhp {
     }
 }
 
-/// Probe a single `php` binary: run `php -v` + `php -m` and parse them
+/// Probe a single `php` binary: run `php --version` + `php --modules` and parse them
 /// into a [`SystemPhp`].
 ///
 /// Errors if the binary can't be executed or its output can't be
 /// parsed (e.g. it isn't actually a PHP CLI).
 pub fn probe(php: &Path) -> Result<SystemPhp> {
-    // PHP's version flag is lowercase `-v` (uppercase `-V` is rejected
-    // as "option not found" by the standard CLI SAPI).
-    let version_out = run(php, &["-v"])?;
-    let modules_out = run(php, &["-m"])?;
+    // Use the long flags (`--version`/`--modules`) rather than the short
+    // `-v`/`-m`: PHP's version flag is the *lowercase* `-v` and uppercase
+    // `-V` is rejected outright, so the spelled-out forms remove any
+    // chance of that confusion.
+    let version_out = run(php, &["--version"])?;
+    let modules_out = run(php, &["--modules"])?;
 
     let (version, flavor) = parse_version_banner(&version_out)
-        .wrap_err_with(|| format!("parsing `{} -v` output", php.display()))?;
+        .wrap_err_with(|| format!("parsing `{} --version` output", php.display()))?;
     let extensions = parse_modules(&modules_out);
 
     let path = std::fs::canonicalize(php).unwrap_or_else(|_| php.to_path_buf());
@@ -103,7 +105,7 @@ fn run(php: &Path, args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-/// Parse the first line of `php -v` into `(version, flavor)`.
+/// Parse the first line of `php --version` into `(version, flavor)`.
 ///
 /// The banner's first line looks like:
 ///
@@ -121,15 +123,15 @@ pub fn parse_version_banner(output: &str) -> Result<(Version, Flavor)> {
     let first = output
         .lines()
         .next()
-        .ok_or_else(|| eyre!("empty `php -v` output"))?;
+        .ok_or_else(|| eyre!("empty `php --version` output"))?;
 
     let rest = first
         .strip_prefix("PHP ")
-        .ok_or_else(|| eyre!("`php -v` first line did not start with `PHP `: {first:?}"))?;
+        .ok_or_else(|| eyre!("`php --version` first line did not start with `PHP `: {first:?}"))?;
     let token = rest
         .split_whitespace()
         .next()
-        .ok_or_else(|| eyre!("no version token in `php -v` line: {first:?}"))?;
+        .ok_or_else(|| eyre!("no version token in `php --version` line: {first:?}"))?;
     let version = parse_version_prefix(token)
         .ok_or_else(|| eyre!("could not parse a version from {token:?}"))?;
 
@@ -155,7 +157,7 @@ fn parse_version_prefix(token: &str) -> Option<Version> {
     token[..end].parse::<Version>().ok()
 }
 
-/// Parse `php -m` into a sorted, deduped, lowercased list of loaded
+/// Parse `php --modules` into a sorted, deduped, lowercased list of loaded
 /// module names. Section headers (`[PHP Modules]`, `[Zend Modules]`)
 /// and blank lines are dropped.
 pub fn parse_modules(output: &str) -> Vec<String> {
@@ -397,7 +399,7 @@ mod tests {
         assert!(!is_php_name("phpunit.exe"));
     }
 
-    /// Write an executable `php` shell stub that answers `-v` and `-m`
+    /// Write an executable `php` shell stub that answers `--version` and `--modules`
     /// like a real CLI, and probe it end-to-end through `Command`.
     #[cfg(unix)]
     #[test]
@@ -410,8 +412,8 @@ mod tests {
             &php,
             "#!/bin/sh\n\
              case \"$1\" in\n\
-               -v) echo 'PHP 8.3.12 (cli) (built: x) (NTS)';;\n\
-               -m) printf '[PHP Modules]\\ncurl\\nintl\\n[Zend Modules]\\nZend OPcache\\n';;\n\
+               --version) echo 'PHP 8.3.12 (cli) (built: x) (NTS)';;\n\
+               --modules) printf '[PHP Modules]\\ncurl\\nintl\\n[Zend Modules]\\nZend OPcache\\n';;\n\
              esac\n",
         )
         .unwrap();
