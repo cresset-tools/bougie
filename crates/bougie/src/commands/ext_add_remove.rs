@@ -18,8 +18,10 @@
 //!
 //! Zero composer subprocess invocations along this path.
 
-use bougie_cli::OutputFormat;
-use crate::commands::sync::{ensure_synced, project_php_inputs};
+use bougie_cli::{OutputFormat, PhpPrefArgs};
+use crate::commands::sync::{ensure_synced_with, project_php_inputs, PhpResolution};
+use bougie_php_discovery::PhpPreference;
+use bougie_fs::state::read_project_resolved_php_path;
 use bougie_composer::lockfile::{apply_require_change, RequireChange};
 use bougie_installer::conf_d;
 use bougie_config::load_project;
@@ -84,6 +86,7 @@ pub fn add(
     format: OutputFormat,
         args: Vec<String>,
     no_sync: bool,
+    php_pref: PhpPrefArgs,
 ) -> Result<ExitCode> {
     if args.is_empty() {
         return Err(eyre!("no extensions specified"));
@@ -93,16 +96,42 @@ pub fn add(
     let project = load_project(&project_root)?;
     let (spec, flavor) = project_php_inputs(&project_root, &project)?;
 
+    // Installing a bougie extension means installing an ABI-controlled
+    // prebuilt `.so`, which only a bougie-managed PHP can take. So
+    // `ext add` requires managed PHP: under an only-system preference we
+    // error with guidance; otherwise we force a managed PHP, switching
+    // the project off a system PHP if it was on one.
+    let preference =
+        PhpPreference::resolve(php_pref.managed_php, php_pref.no_managed_php, project.bougie.php.managed)?;
+    if preference == PhpPreference::OnlySystem {
+        return Err(eyre!(
+            "`bougie ext add` needs a bougie-managed PHP to install extensions, but this \
+             project is pinned to a system PHP (`--no-managed-php` / `[php] managed = false`). \
+             Install the extension via your OS / PECL, or allow a managed PHP."
+        ));
+    }
+    let was_system = read_project_resolved_php_path(&project_root).is_some();
+
     // Run the full project sync first unless --no-sync, so the project
     // ends up in a usable state (PHP installed, composer shim, bundled
     // conf.d in place). Idempotent — a re-sync of an already-synced
     // project is fast. The "Syncing…" line surfaces only when a sync
-    // is actually being initiated for the first time.
+    // is actually being initiated for the first time. Force a managed
+    // PHP so the extension has somewhere to install.
     if !no_sync {
-        if read_project_resolved(&project_root).is_err() {
+        if was_system {
+            eprintln!("Switching to a managed PHP to install the requested extension(s)…");
+        } else if read_project_resolved(&project_root).is_err() {
             eprintln!("Syncing…");
         }
-        ensure_synced(&paths, &project_root, &project, spec, flavor)?;
+        ensure_synced_with(
+            &paths,
+            &project_root,
+            &project,
+            spec,
+            flavor,
+            PhpResolution::only_managed(),
+        )?;
     }
 
     let (php_minor, flavor) = resolved_php_for_ext_install(&project_root)?;
@@ -211,7 +240,11 @@ pub fn remove(
     let (spec, flavor) = project_php_inputs(&project_root, &project)?;
 
     if !no_sync {
-        ensure_synced(&paths, &project_root, &project, spec, flavor)?;
+        // Removing an extension doesn't need a managed PHP, so honor the
+        // project's natural preference (config-derived) rather than
+        // forcing managed — a system-PHP project stays on its system PHP.
+        let resolution = PhpResolution::from_args(PhpPrefArgs::default(), &project)?;
+        ensure_synced_with(&paths, &project_root, &project, spec, flavor, resolution)?;
     }
 
     let mut items = Vec::with_capacity(names.len());

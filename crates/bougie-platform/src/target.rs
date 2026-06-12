@@ -10,7 +10,7 @@ use std::fs::File;
 #[cfg(target_os = "linux")]
 use std::io::{Read, Seek, SeekFrom};
 #[cfg(target_os = "linux")]
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Arch {
@@ -140,16 +140,37 @@ fn detect_arch() -> Result<Arch> {
 
 #[cfg(target_os = "linux")]
 fn detect_linux_libc() -> Result<Env> {
-    let interp = read_pt_interp(Path::new("/bin/sh"))
-        .or_else(|_| read_pt_interp(Path::new("/usr/bin/env")))
-        .wrap_err("could not read PT_INTERP from /bin/sh or /usr/bin/env to detect libc")?;
-    classify_libc(&interp).ok_or_else(|| {
-        BougieError::UnknownTarget {
-            triple: format!("libc=unknown (PT_INTERP={interp})"),
-            hint: "bougie classifies the libc family by reading /bin/sh's dynamic linker; expected ld-linux-* (gnu) or ld-musl-* (musl)".into(),
+    // Read the dynamic linker (PT_INTERP) of a host ELF and classify it.
+    // Try bougie's own binary first: it's guaranteed present and is the
+    // most reliable signal for a dynamically-linked build — so we don't
+    // assume any particular external file exists. `/bin/sh` and
+    // `/usr/bin/env` are fallbacks for a statically-linked bougie (whose
+    // own image carries no PT_INTERP). A statically-linked binary yields
+    // no interp and is skipped, falling through to the next candidate.
+    let candidates: [PathBuf; 3] = [
+        std::env::current_exe().unwrap_or_else(|_| PathBuf::from("/proc/self/exe")),
+        PathBuf::from("/bin/sh"),
+        PathBuf::from("/usr/bin/env"),
+    ];
+    let mut last_err = None;
+    for cand in &candidates {
+        match read_pt_interp(cand) {
+            Ok(interp) => {
+                if let Some(env) = classify_libc(&interp) {
+                    return Ok(env);
+                }
+                last_err = Some(eyre::eyre!(
+                    "libc=unknown (PT_INTERP={interp} from {})",
+                    cand.display()
+                ));
+            }
+            Err(e) => last_err = Some(e),
         }
-        .into()
-    })
+    }
+    Err(last_err.unwrap_or_else(|| eyre::eyre!("no ELF candidate to probe"))).wrap_err(
+        "could not classify libc: read no ld-linux-*/ld-musl-* PT_INTERP from bougie's own \
+         binary, /bin/sh, or /usr/bin/env",
+    )
 }
 
 /// Classify a dynamic linker path string per CLI.md §7.2.
@@ -301,5 +322,16 @@ mod tests {
             classify_libc(&interp).is_some(),
             "expected gnu or musl, got {interp}"
         );
+    }
+
+    /// libc detection must not hard-depend on `/bin/sh` existing: a
+    /// dynamically-linked test binary classifies from its own PT_INTERP.
+    /// (A statically-linked test runner has no interp; in that case the
+    /// detector falls back to `/bin/sh` / `/usr/bin/env`, so we only
+    /// assert detection succeeds — by whichever route.)
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn detect_libc_succeeds_without_assuming_bin_sh() {
+        assert!(detect_linux_libc().is_ok());
     }
 }

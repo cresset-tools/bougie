@@ -34,6 +34,7 @@ pub fn run(
     format: OutputFormat,
     no_sync: bool,
     xdebug_flag: bool,
+    php_pref: bougie_cli::PhpPrefArgs,
 ) -> Result<ExitCode> {
     if argv.is_empty() {
         return Err(eyre!("nothing to run"));
@@ -58,7 +59,7 @@ pub fn run(
         // no `[php]version`) falls back to the highest already-installed
         // PHP, or the latest publishable >=8.0 — instead of erroring the
         // way `bougie sync` does.
-        sync::run_with_default_fallback(format, false)?;
+        sync::run_with_default_fallback(format, false, php_pref)?;
     }
 
     // composer.json `scripts.<name>` lookup. Skipped when the user

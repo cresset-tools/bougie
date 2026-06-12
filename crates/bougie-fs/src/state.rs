@@ -39,6 +39,45 @@ pub fn read_project_resolved(project_root: &Path) -> Result<(String, String)> {
     Ok((v.to_owned(), rest[1..].to_owned()))
 }
 
+/// Atomically write `<project>/.bougie/state/resolved-php-path` holding
+/// the absolute path to a **system** PHP binary. Written only when sync
+/// selects a system PHP; managed projects never have this file, so its
+/// presence is the signal "this project uses a system PHP".
+pub fn write_project_resolved_php_path(project_root: &Path, php: &Path) -> Result<PathBuf> {
+    let dir = project_root.join(".bougie").join("state");
+    fs::create_dir_all(&dir).wrap_err_with(|| format!("creating {}", dir.display()))?;
+    let dest = dir.join("resolved-php-path");
+    let tmp = dir.join("resolved-php-path.partial");
+    fs::write(&tmp, format!("{}\n", php.display()))
+        .wrap_err_with(|| format!("writing {}", tmp.display()))?;
+    fs::rename(&tmp, &dest)
+        .wrap_err_with(|| format!("rename {} → {}", tmp.display(), dest.display()))?;
+    Ok(dest)
+}
+
+/// Read the system-PHP path marker, if present. Returns `None` (not an
+/// error) when the file is absent — the common managed-PHP case.
+pub fn read_project_resolved_php_path(project_root: &Path) -> Option<PathBuf> {
+    let path = project_root.join(".bougie").join("state").join("resolved-php-path");
+    let body = fs::read_to_string(&path).ok()?;
+    let line = body.trim();
+    if line.is_empty() {
+        return None;
+    }
+    Some(PathBuf::from(line))
+}
+
+/// Remove the system-PHP path marker if present (idempotent). Called
+/// when a project switches from a system PHP back to a managed one.
+pub fn clear_project_resolved_php_path(project_root: &Path) -> Result<()> {
+    let path = project_root.join(".bougie").join("state").join("resolved-php-path");
+    match fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e).wrap_err_with(|| format!("removing {}", path.display())),
+    }
+}
+
 /// `$BOUGIE_HOME/state/state.json` shape.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -109,6 +148,24 @@ mod tests {
         let (v, f) = read_project_resolved(proj.path()).unwrap();
         assert_eq!(v, "8.3.12");
         assert_eq!(f, "zts-debug");
+    }
+
+    #[test]
+    fn resolved_php_path_round_trip() {
+        let proj = TempDir::new().unwrap();
+        // Absent → None, clear is a no-op.
+        assert!(read_project_resolved_php_path(proj.path()).is_none());
+        clear_project_resolved_php_path(proj.path()).unwrap();
+
+        let bin = Path::new("/usr/bin/php");
+        write_project_resolved_php_path(proj.path(), bin).unwrap();
+        assert_eq!(
+            read_project_resolved_php_path(proj.path()).as_deref(),
+            Some(bin)
+        );
+
+        clear_project_resolved_php_path(proj.path()).unwrap();
+        assert!(read_project_resolved_php_path(proj.path()).is_none());
     }
 
     #[test]

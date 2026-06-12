@@ -134,6 +134,16 @@ pub fn exec(role: Role) -> Result<ExitCode> {
 
     let project_root = locate_project_root(&argv0)?;
 
+    // System PHP: a `resolved-php-path` marker means sync selected a
+    // system interpreter rather than a bougie-managed install. Exec it
+    // directly — there is no install tree, and bougie deliberately does
+    // not set PHP_INI_SCAN_DIR (it can't load its ABI-controlled
+    // extensions onto a foreign build, so the system PHP keeps its own
+    // conf.d intact).
+    if let Some(system_php) = bougie_fs::state::read_project_resolved_php_path(&project_root) {
+        return exec_system_php(role, &system_php, args);
+    }
+
     let (version, flavor) = read_project_resolved(&project_root).wrap_err_with(|| {
         format!(
             "{}: project at {} is not synced — run `bougie sync` first",
@@ -184,6 +194,47 @@ pub fn exec(role: Role) -> Result<ExitCode> {
         #[cfg(unix)]
         Role::Babysit => unreachable!("babysit role handled above"),
     }
+}
+
+/// Exec a **system** PHP for the `php` / `php-fpm` role. `system_php`
+/// is the absolute path to the system `php` binary recorded in
+/// `resolved-php-path`; the `php-fpm` role resolves a sibling `php-fpm`
+/// next to it. No `PHP_INI_SCAN_DIR` is set (see [`exec`]).
+fn exec_system_php(
+    role: Role,
+    system_php: &Path,
+    args: Vec<std::ffi::OsString>,
+) -> Result<ExitCode> {
+    let bin = match role {
+        Role::Php => system_php.to_path_buf(),
+        Role::PhpFpm => {
+            let sibling = system_php
+                .parent()
+                .map(|d| d.join(exe_name("php-fpm")))
+                .filter(|p| p.exists());
+            sibling.ok_or_else(|| {
+                eyre!(
+                    "php-fpm: system PHP at {} has no sibling php-fpm; \
+                     server features need a managed PHP (drop `--no-managed-php`)",
+                    system_php.display()
+                )
+            })?
+        }
+        _ => unreachable!("exec_system_php only handles php / php-fpm"),
+    };
+    if !bin.exists() {
+        return Err(eyre!(
+            "{}: system PHP at {} no longer exists — re-run `bougie sync`",
+            role.name(),
+            bin.display()
+        ));
+    }
+    let mut cmd = std::process::Command::new(&bin);
+    cmd.args(cli_php_prelude_args(role));
+    cmd.args(&args).env("PHP_BINARY", &bin);
+    #[cfg(unix)]
+    cmd.arg0(&bin);
+    run_and_propagate(cmd, role.name())
 }
 
 /// The `composer` argv[0] shim routes to bougie's **native** Composer

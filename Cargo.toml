@@ -22,6 +22,7 @@ members = [
     "crates/bougie-installers",
     "crates/bougie-output",
     "crates/bougie-paths",
+    "crates/bougie-php-discovery",
     "crates/bougie-php-json",
     "crates/bougie-platform",
     "crates/bougie-recipe",
@@ -75,6 +76,7 @@ bougie-installer = { path = "crates/bougie-installer", version = "0.24.0" } # x-
 bougie-installers = { path = "crates/bougie-installers", version = "0.24.0" } # x-release-please-version
 bougie-output = { path = "crates/bougie-output", version = "0.24.0" } # x-release-please-version
 bougie-paths = { path = "crates/bougie-paths", version = "0.24.0" } # x-release-please-version
+bougie-php-discovery = { path = "crates/bougie-php-discovery", version = "0.24.0" } # x-release-please-version
 bougie-php-json = { path = "crates/bougie-php-json", version = "0.24.0" } # x-release-please-version
 bougie-platform = { path = "crates/bougie-platform", version = "0.24.0" } # x-release-please-version
 bougie-recipe = { path = "crates/bougie-recipe", version = "0.24.0" } # x-release-please-version

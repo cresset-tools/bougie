@@ -24,6 +24,8 @@ pub fn merge(toml_cfg: BougieConfig, extra_cfg: BougieConfig) -> BougieConfig {
         php: PhpConfig {
             version: toml_cfg.php.version.or(extra_cfg.php.version),
             flavor: toml_cfg.php.flavor.or(extra_cfg.php.flavor),
+            managed: toml_cfg.php.managed.or(extra_cfg.php.managed),
+            downloads: toml_cfg.php.downloads.or(extra_cfg.php.downloads),
         },
         extensions: deep_merge_map(extra_cfg.extensions, toml_cfg.extensions),
         services: deep_merge_map(extra_cfg.services, toml_cfg.services),
@@ -92,7 +94,7 @@ mod tests {
 
     fn cfg_with_php_version(v: &str) -> BougieConfig {
         BougieConfig {
-            php: PhpConfig { version: Some(v.into()), flavor: None },
+            php: PhpConfig { version: Some(v.into()), flavor: None, managed: None, downloads: None },
             ..Default::default()
         }
     }

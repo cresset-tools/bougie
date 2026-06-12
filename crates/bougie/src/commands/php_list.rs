@@ -131,15 +131,39 @@ pub fn run(format: OutputFormat, opts: Options<'_>) -> Result<ExitCode> {
         }
     }
 
+    // Discovered system PHPs (uv's `uv python list` shows these too).
+    // They aren't bougie-managed installs, so they appear under their own
+    // `system` status with the probed binary path. Shown unless the user
+    // asked for index entries only.
+    if !opts.only_available {
+        for php in bougie_php_discovery::discover()
+            .iter()
+            .filter_map(|p| bougie_php_discovery::probe(p).ok())
+        {
+            rows.push(Row {
+                version: php.version.to_string(),
+                flavor: php.flavor.to_string(),
+                target: host_str.clone(),
+                status: "system",
+                path: Some(php.path),
+                url: None,
+            });
+        }
+    }
+
     if !opts.only_installed {
         let available = fetch_available(&paths, &host, &opts)?;
         for row in available {
             // Don't double-count: skip rows whose (version, flavor, target)
-            // already appears as installed.
-            if rows
-                .iter()
-                .any(|r| r.version == row.version && r.flavor == row.flavor && r.target == row.target)
-            {
+            // already appears as a managed install. A system PHP at the
+            // same version doesn't suppress the "available" row — the
+            // managed build is still installable.
+            if rows.iter().any(|r| {
+                r.status == "installed"
+                    && r.version == row.version
+                    && r.flavor == row.flavor
+                    && r.target == row.target
+            }) {
                 continue;
             }
             rows.push(row);
@@ -307,7 +331,9 @@ fn collapse_to_latest_per_minor(rows: Vec<Row>) -> Vec<Row> {
     let mut latest: BTreeMap<(u32, u32, String, String), Row> = BTreeMap::new();
     let mut kept: Vec<Row> = Vec::new();
     for row in rows {
-        if row.status == "installed" {
+        // Keep concrete present interpreters (managed-installed and
+        // system) verbatim; only collapse index "available" rows.
+        if row.status == "installed" || row.status == "system" {
             kept.push(row);
             continue;
         }

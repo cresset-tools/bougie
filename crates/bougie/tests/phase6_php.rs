@@ -216,10 +216,13 @@ fn install_then_list_then_find_then_uninstall() {
 
     // After uninstall the bare `list` no longer shows the install row,
     // but the index still advertises 8.3.12 as available. `--only-installed`
-    // is the right flag to ask "what's on disk?".
+    // is the right flag to ask "what's on disk?". Disable system-PHP
+    // discovery so a PHP installed on the test host (CI images ship one)
+    // can't leak into this managed-only assertion.
     env.bougie()
         .env("BOUGIE_INDEX_URL", fx.server.uri())
         .env("BOUGIE_TRUST_ROOT_PATH", &trust_path)
+        .env("BOUGIE_SYSTEM_PHP", "0")
         .args(["php", "list", "--only-installed"])
         .assert()
         .success()
@@ -231,7 +234,11 @@ fn install_then_list_then_find_then_uninstall() {
 #[test]
 fn find_with_no_install_errors() {
     let env = TestEnv::new();
+    // Disable system-PHP discovery: with no managed install AND no system
+    // PHP, `find` must error. (CI hosts ship a system PHP that `find`
+    // would otherwise legitimately fall back to.)
     env.bougie()
+        .env("BOUGIE_SYSTEM_PHP", "0")
         .args(["php", "find"])
         .assert()
         .failure()

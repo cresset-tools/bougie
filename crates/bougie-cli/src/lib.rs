@@ -37,6 +37,25 @@ pub struct Cli {
     pub format: OutputFormat,
 }
 
+/// Shared PHP-source preference flags (uv's system-Python model adapted
+/// to PHP). Flattened into `sync` / `run`; `--managed-php` and
+/// `--no-managed-php` are mutually exclusive. With none set, bougie's
+/// default applies: prefer an installed managed PHP, then a qualifying
+/// system PHP, then download a managed one.
+#[derive(Args, Debug, Clone, Copy, Default)]
+pub struct PhpPrefArgs {
+    /// Only use a bougie-managed PHP; never a system PHP.
+    #[arg(long, conflicts_with = "no_managed_php")]
+    pub managed_php: bool,
+    /// Only use a system PHP already on this machine; never a managed one.
+    #[arg(long)]
+    pub no_managed_php: bool,
+    /// Never download a managed PHP — use an installed managed PHP or a
+    /// system one. Errors if neither is present.
+    #[arg(long)]
+    pub no_php_downloads: bool,
+}
+
 #[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OutputFormat {
     Text,
@@ -228,6 +247,8 @@ pub enum Command {
         /// `[scripts] run = true` in bougie.toml.
         #[arg(long = "no-scripts")]
         no_scripts: bool,
+        #[command(flatten)]
+        php: PhpPrefArgs,
     },
 
     /// Start the project's declared services (or every service in
@@ -270,6 +291,8 @@ pub enum Command {
         /// child. Installs xdebug on first use if not already present.
         #[arg(long)]
         xdebug: bool,
+        #[command(flatten)]
+        php: PhpPrefArgs,
         /// Command and arguments. `--` separator is optional.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
         argv: Vec<String>,
@@ -593,6 +616,8 @@ pub enum ExtCommand {
         /// Skip the implicit `bougie sync` after the composer call.
         #[arg(long)]
         no_sync: bool,
+        #[command(flatten)]
+        php: PhpPrefArgs,
     },
     /// Remove an extension dependency.
     Remove {

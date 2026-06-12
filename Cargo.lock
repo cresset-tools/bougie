@@ -394,6 +394,7 @@ dependencies = [
  "bougie-installers",
  "bougie-output",
  "bougie-paths",
+ "bougie-php-discovery",
  "bougie-platform",
  "bougie-recipe",
  "bougie-resolver",
@@ -668,6 +669,15 @@ version = "0.24.0"
 dependencies = [
  "etcetera",
  "eyre",
+]
+
+[[package]]
+name = "bougie-php-discovery"
+version = "0.24.0"
+dependencies = [
+ "bougie-version",
+ "eyre",
+ "tempfile",
 ]
 
 [[package]]
