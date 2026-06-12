@@ -558,7 +558,24 @@ pub fn ensure_synced_with(
 ) -> Result<SyncResult> {
     let required_exts = required_ext_names(project);
     let managed_installed = gather_managed_installed(paths);
-    let system = gather_system(resolution.preference);
+    // Probe system PHPs only when one could actually be selected: never
+    // under OnlyManaged, and under the default (Managed) only when no
+    // installed managed PHP already satisfies the request (managed-
+    // installed wins, so a warm managed sync/run pays no `php` spawns).
+    let need_system = match resolution.preference {
+        PhpPreference::OnlySystem => true,
+        PhpPreference::OnlyManaged => false,
+        PhpPreference::Managed => {
+            !managed_installed.iter().any(|(v, f)| {
+                *f == flavor && bougie_version::matches::version_satisfies(v, &spec)
+            })
+        }
+    };
+    let system = if need_system {
+        gather_system(resolution.preference)
+    } else {
+        Vec::new()
+    };
 
     let requirement = Requirement {
         spec: Some(&spec),
