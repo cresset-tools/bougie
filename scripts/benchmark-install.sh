@@ -139,13 +139,9 @@ hyperfine \
     --export-markdown "$WORK/bench.md"
 
 # --- chart data -----------------------------------------------------------
-# gnuplot data rows: index<TAB>mean<TAB>label<TAB>colorint
-#   composer -> amber (#f59e0b), bougie -> purple (#7c3aed, bougie brand).
+# gnuplot data rows: index<TAB>mean<TAB>label
 jq -r '.results[] | "\(.command)\t\(.mean)"' "$WORK/bench.json" \
-  | awk -F'\t' '{
-        c = ($1 ~ /bougie/) ? 8141037 : 16095243;
-        printf "%d\t%s\t%s\t%d\n", NR-1, $2, $1, c
-    }' > "$WORK/bench.dat"
+  | awk -F'\t' '{ printf "%d\t%s\t%s\n", NR-1, $2, $1 }' > "$WORK/bench.dat"
 
 COUNT="$(wc -l < "$WORK/bench.dat" | tr -d ' ')"
 CMEAN="$(jq -r '.results[] | select(.command|test("composer")) | .mean' "$WORK/bench.json")"
@@ -169,7 +165,7 @@ set grid xtics lc rgb '#dddddd'
 set border 3
 set tics nomirror
 unset key
-plot DATA using ($2/2.0):1:(0):2:($1-0.3):($1+0.3):4:ytic(3) with boxxyerror lc rgb variable, \
+plot DATA using ($2/2.0):1:(0):2:($1-0.18):($1+0.18):ytic(3) with boxxyerror lc rgb '#7c3aed', \
      DATA using 2:1:(sprintf("%.2f s", $2)) with labels left offset 1,0
 GPEOF
 
