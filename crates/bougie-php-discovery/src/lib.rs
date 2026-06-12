@@ -178,7 +178,15 @@ pub fn parse_modules(output: &str) -> Vec<String> {
 ///
 /// Discovery is best-effort: unreadable directories and broken symlinks
 /// are skipped silently.
+///
+/// Set `BOUGIE_SYSTEM_PHP` to a falsy value (`0`, `false`, `off`, `no`,
+/// `never`) to disable system-PHP discovery entirely — an escape hatch
+/// for strictly-managed / reproducible setups, and what hermetic tests
+/// use so the real host PHP can't leak in.
 pub fn discover() -> Vec<PathBuf> {
+    if system_php_disabled() {
+        return Vec::new();
+    }
     let mut found = Vec::new();
     let mut seen = std::collections::HashSet::new();
 
@@ -203,6 +211,20 @@ pub fn discover() -> Vec<PathBuf> {
     }
 
     found
+}
+
+/// Whether `BOUGIE_SYSTEM_PHP` is set to an explicit falsy value,
+/// disabling system-PHP discovery.
+fn system_php_disabled() -> bool {
+    std::env::var("BOUGIE_SYSTEM_PHP").is_ok_and(|v| is_falsy(&v))
+}
+
+/// Whether an env value reads as an explicit "off" toggle.
+fn is_falsy(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "0" | "false" | "off" | "no" | "never"
+    )
 }
 
 /// Names a `php` binary file in `dir` can take.
@@ -379,6 +401,16 @@ mod tests {
         assert!(php.has_extension("intl"));
         assert!(php.has_extension("opcache")); // matched via `Zend OPcache`
         assert!(!php.has_extension("redis"));
+    }
+
+    #[test]
+    fn falsy_env_values_disable_discovery() {
+        for v in ["0", "false", "FALSE", "off", "no", "Never", " 0 "] {
+            assert!(is_falsy(v), "{v:?} should disable");
+        }
+        for v in ["1", "true", "yes", "on", ""] {
+            assert!(!is_falsy(v), "{v:?} should not disable");
+        }
     }
 
     #[test]
