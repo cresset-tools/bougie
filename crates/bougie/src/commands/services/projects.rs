@@ -1,4 +1,4 @@
-//! `bougie services projects` — list every provisioned tenant across
+//! `bougie projects` — list every provisioned tenant across
 //! the shared services and the project each belongs to.
 //!
 //! Reads the on-disk tenant ledgers
@@ -293,7 +293,7 @@ struct DownReply {
     deprovisioned: Vec<String>,
 }
 
-/// `bougie services projects purge` — deprovision tenants and remove
+/// `bougie projects purge` — deprovision tenants and remove
 /// them from the ledgers. Default target is the *orphaned* set (project
 /// dir gone); `--project <path>` targets one project, `--all` targets
 /// everything. Destructive (with the service running it drops the
@@ -339,30 +339,40 @@ pub fn purge(
         return Ok(ExitCode::SUCCESS);
     }
 
+    // The plan: one row per project listing the services (tenants) that
+    // would be deprovisioned. Shared by `--dry-run`, the pre-confirmation
+    // listing, and the non-interactive refusal hint.
+    let plan: Vec<PurgedProject> = by_project
+        .iter()
+        .map(|(proj, (missing, svcs))| PurgedProject {
+            project: proj.clone(),
+            missing: *missing,
+            services: svcs.iter().cloned().collect(),
+        })
+        .collect();
+
     if dry_run {
-        let plan = by_project
-            .iter()
-            .map(|(proj, (missing, svcs))| PurgedProject {
-                project: proj.clone(),
-                missing: *missing,
-                services: svcs.iter().cloned().collect(),
-            })
-            .collect();
         emit(format, &PurgeResult { schema_version: 1, dry_run: true, purged: plan })?;
         return Ok(ExitCode::SUCCESS);
     }
 
-    // Destructive: confirm unless told otherwise.
+    // Destructive: confirm unless told otherwise. Either way, spell out
+    // exactly which tenants are on the chopping block first.
     if !yes {
         let interactive = matches!(format, OutputFormat::Text) && std::io::stdin().is_terminal();
         if !interactive {
             return Err(eyre!(
                 "refusing to purge {} tenant(s) across {} project(s) without confirmation; \
-                 re-run with --yes",
+                 re-run with --yes (or --dry-run to preview)",
                 targets.len(),
                 by_project.len(),
             ));
         }
+        // List the tenants up for deletion before asking.
+        let preview = PurgeResult { schema_version: 1, dry_run: true, purged: plan };
+        let mut buf = Vec::new();
+        preview.render_text(&mut buf).ok();
+        io::Write::write_all(&mut io::stderr(), &buf).ok();
         eprint!(
             "Purge {} tenant(s) across {} project(s)? This destroys their data. [y/N] ",
             targets.len(),

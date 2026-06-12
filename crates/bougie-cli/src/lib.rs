@@ -349,6 +349,12 @@ pub enum Command {
     #[command(subcommand)]
     Services(ServicesCommand),
 
+    /// Inspect and manage provisioned tenants across the shared dev
+    /// services and the project each belongs to. Reads the on-disk
+    /// tenant ledgers; no daemon required.
+    #[command(subcommand)]
+    Projects(ProjectsCommand),
+
     /// Walk a project recipe's DAG, running tasks whose freshness
     /// check fails. `bougie start` is a zero-arg alias for
     /// `bougie make start`. See RECIPES.md.
@@ -405,17 +411,6 @@ pub enum ServicesCommand {
         #[arg(long)]
         all: bool,
     },
-    /// List every provisioned tenant across the shared services and the
-    /// project each belongs to. Reads the on-disk tenant ledgers; no
-    /// daemon required. With `purge`, deprovisions tenants instead.
-    Projects {
-        #[command(subcommand)]
-        action: Option<ProjectsAction>,
-        /// Show the per-service allocation (redis db number, rabbitmq
-        /// vhost, server hostname, …) as an extra column.
-        #[arg(long)]
-        alloc: bool,
-    },
     /// Print the built-in service catalog (no daemon required).
     Catalog,
     /// Restart the named services (or every declared service). Stops
@@ -450,7 +445,16 @@ pub enum ServicesCommand {
 }
 
 #[derive(Subcommand, Debug)]
-pub enum ProjectsAction {
+pub enum ProjectsCommand {
+    /// List every provisioned tenant across the shared services and the
+    /// project each belongs to. Reads the on-disk tenant ledgers; no
+    /// daemon required.
+    List {
+        /// Show the per-service allocation (redis db number, rabbitmq
+        /// vhost, server hostname, …) as an extra column.
+        #[arg(long)]
+        alloc: bool,
+    },
     /// Deprovision tenants and remove them from the service ledgers.
     /// With no flags, targets *orphaned* tenants whose project directory
     /// no longer exists. Destructive: when the service is running this

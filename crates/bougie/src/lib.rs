@@ -17,7 +17,7 @@ use bougie_cli::{
     CacheCommand, ComposerCommand, ExtCommand, PhpCommand, SelfCommand, ToolCommand,
 };
 #[cfg(unix)]
-use bougie_cli::{ServicesCommand, ServicesDaemonCommand};
+use bougie_cli::{ProjectsCommand, ServicesCommand, ServicesDaemonCommand};
 use eyre::Result;
 use std::io::IsTerminal;
 use std::process::ExitCode;
@@ -70,6 +70,7 @@ fn command_name(cmd: &Command) -> &'static str {
         Command::SelfCmd(_) => "self",
         Command::Server(_) => "server",
         Command::Services(_) => "services",
+        Command::Projects(_) => "projects",
         Command::Make { .. } => "make",
     }
 }
@@ -510,13 +511,6 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
             commands::services::list::run(format, all)
         }
         #[cfg(unix)]
-        Command::Services(ServicesCommand::Projects { action, alloc }) => match action {
-            None => commands::services::projects::run(format, alloc),
-            Some(bougie_cli::ProjectsAction::Purge { project, all, dry_run, yes }) => {
-                commands::services::projects::purge(format, project, all, dry_run, yes)
-            }
-        },
-        #[cfg(unix)]
         Command::Services(ServicesCommand::Catalog) => commands::services::catalog::run(format),
         #[cfg(unix)]
         Command::Services(ServicesCommand::Restart { names }) => {
@@ -544,6 +538,16 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
         }
         #[cfg(not(unix))]
         Command::Services(_) => unsupported_on_windows("bougie services"),
+        #[cfg(unix)]
+        Command::Projects(ProjectsCommand::List { alloc }) => {
+            commands::services::projects::run(format, alloc)
+        }
+        #[cfg(unix)]
+        Command::Projects(ProjectsCommand::Purge { project, all, dry_run, yes }) => {
+            commands::services::projects::purge(format, project, all, dry_run, yes)
+        }
+        #[cfg(not(unix))]
+        Command::Projects(_) => unsupported_on_windows("bougie projects"),
         #[cfg(unix)]
         Command::Make {
             task,
