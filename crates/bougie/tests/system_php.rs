@@ -8,9 +8,10 @@ use assert_cmd::Command;
 use std::os::unix::fs::PermissionsExt;
 use tempfile::TempDir;
 
-/// Write an executable `php` shell stub that answers `-V` / `-m` like a
+/// Write an executable `php` shell stub that answers `-v` / `-m` like a
 /// real CLI and echoes a recognizable banner for any other invocation
-/// (so `bougie run -- php …` can be asserted).
+/// (so `bougie run -- php …` can be asserted). PHP's version flag is
+/// lowercase `-v` — uppercase `-V` is rejected by the real CLI.
 fn write_php_stub(dir: &std::path::Path, version: &str, extra_args_marker: &str) {
     let php = dir.join("php");
     std::fs::write(
@@ -18,7 +19,7 @@ fn write_php_stub(dir: &std::path::Path, version: &str, extra_args_marker: &str)
         format!(
             "#!/bin/sh\n\
              case \"$1\" in\n\
-               -V) echo 'PHP {version} (cli) (built: x) (NTS)';;\n\
+               -v) echo 'PHP {version} (cli) (built: x) (NTS)';;\n\
                -m) printf '[PHP Modules]\\nCore\\ncurl\\njson\\n';;\n\
                *) echo '{extra_args_marker}';;\n\
              esac\n"
