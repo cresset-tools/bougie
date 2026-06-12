@@ -44,8 +44,8 @@ use flate2::read::GzDecoder;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
-const GITHUB_API_LATEST: &str =
-    "https://api.github.com/repos/cresset-tools/bougie/releases/latest";
+const GITHUB_API_RELEASES: &str =
+    "https://api.github.com/repos/cresset-tools/bougie/releases?per_page=100";
 const MIRROR_BASE: &str = "https://releases.bougie.tools/github/bougie/releases/download";
 const GITHUB_BASE: &str = "https://github.com/cresset-tools/bougie/releases/download";
 const TAG_PREFIX: &str = "bougie-v";
@@ -101,27 +101,47 @@ pub fn run(force: bool) -> Result<ExitCode> {
 
     let client = build_client(current)?;
 
-    let latest = fetch_latest_release(&client)?;
-    if !is_newer(&latest.version, current)? {
+    // All published releases newer than what we're running, newest first.
+    let mut candidates: Vec<Release> = fetch_releases(&client)?
+        .into_iter()
+        .filter(|r| is_newer(&r.version, current).unwrap_or(false))
+        .collect();
+    candidates.sort_by(|a, b| version_key(b).cmp(&version_key(a)));
+
+    let Some(newest) = candidates.first() else {
         println!("already up to date ({current})");
         return Ok(ExitCode::SUCCESS);
-    }
-    println!("latest:  {}", latest.version);
+    };
+    println!("latest:  {}", newest.version);
 
-    // A release can show up on the `/releases/latest` API the instant the
-    // GitHub Release is created, before dist has finished uploading its
-    // assets. Updating to such a tag would 404 mid-download (the archive or
-    // its `.sha256` sidecar isn't there yet). Require both to be attached
-    // before we commit; otherwise leave the user on their current version
-    // and let a later run pick it up once publishing completes.
+    // A release can show up on the API the instant the GitHub Release is
+    // created, before dist has finished uploading its assets. Updating to
+    // such a tag would 404 mid-download (the archive or its `.sha256`
+    // sidecar isn't there yet). Require both to be attached before we
+    // commit. Rather than give up when the *newest* release is still mid-
+    // publish, walk back to the newest release that does have this target's
+    // assets — that's the latest version we can actually install right now.
     let sidecar = format!("{archive}.sha256");
-    if !latest.has_asset(&archive) || !latest.has_asset(&sidecar) {
+    let Some(latest) = candidates
+        .iter()
+        .find(|r| r.has_asset(&archive) && r.has_asset(&sidecar))
+    else {
         println!(
             "latest release {} is published but its {target} assets aren't available yet; \
              staying on {current} (try again once the release finishes publishing)",
-            latest.version
+            newest.version
         );
         return Ok(ExitCode::SUCCESS);
+    };
+
+    // The newest release is still mid-publish for this target, but an older
+    // (yet still newer-than-current) release has assets — update to that.
+    if latest.version != newest.version {
+        println!(
+            "newest release {} has no {target} assets yet; updating to {} \
+             (latest available for this target)",
+            newest.version, latest.version
+        );
     }
 
     let bin_dir = current_exe
@@ -290,6 +310,10 @@ fn canonical_lossy(p: &Path) -> PathBuf {
 struct GhRelease {
     tag_name: String,
     #[serde(default)]
+    draft: bool,
+    #[serde(default)]
+    prerelease: bool,
+    #[serde(default)]
     assets: Vec<GhAsset>,
 }
 
@@ -298,17 +322,23 @@ struct GhAsset {
     name: String,
 }
 
-/// The latest published release: its version (tag minus the `bougie-v`
-/// prefix) and the names of the assets currently attached to it.
-struct LatestRelease {
+/// A published release: its version (tag minus the `bougie-v` prefix) and
+/// the names of the assets currently attached to it.
+struct Release {
     version: String,
     asset_names: Vec<String>,
 }
 
-impl LatestRelease {
+impl Release {
     fn has_asset(&self, name: &str) -> bool {
         self.asset_names.iter().any(|a| a == name)
     }
+}
+
+/// Sort key: the parsed version triple, falling back to `(0,0,0)` for
+/// anything `fetch_releases` somehow let through unparsed (it shouldn't).
+fn version_key(r: &Release) -> (u64, u64, u64) {
+    parse_version(&r.version).unwrap_or((0, 0, 0))
 }
 
 fn build_client(version: &str) -> Result<reqwest::blocking::Client> {
@@ -320,21 +350,30 @@ fn build_client(version: &str) -> Result<reqwest::blocking::Client> {
         .wrap_err("building HTTP client")
 }
 
-fn fetch_latest_release(client: &reqwest::blocking::Client) -> Result<LatestRelease> {
-    let release: GhRelease = client
-        .get(GITHUB_API_LATEST)
+fn fetch_releases(client: &reqwest::blocking::Client) -> Result<Vec<Release>> {
+    let releases: Vec<GhRelease> = client
+        .get(GITHUB_API_RELEASES)
         .send()
         .wrap_err("querying GitHub Releases API")?
         .error_for_status()
         .wrap_err("GitHub Releases API returned an error status")?
         .json()
         .wrap_err("parsing GitHub Releases API response")?;
-    let version = release
-        .tag_name
-        .strip_prefix(TAG_PREFIX)
-        .map(str::to_owned)
-        .ok_or_else(|| eyre!("unexpected tag format from GitHub API: {}", release.tag_name))?;
-    Ok(LatestRelease {
+    Ok(releases.into_iter().filter_map(parse_release).collect())
+}
+
+/// Turn a raw GitHub release into a `Release`, dropping anything we can't
+/// or shouldn't update to: drafts, prereleases, non-`bougie-v` tags, and
+/// tags whose version doesn't parse as MAJOR.MINOR.PATCH.
+fn parse_release(release: GhRelease) -> Option<Release> {
+    if release.draft || release.prerelease {
+        return None;
+    }
+    let version = release.tag_name.strip_prefix(TAG_PREFIX)?.to_owned();
+    if parse_version(&version).is_err() {
+        return None;
+    }
+    Some(Release {
         version,
         asset_names: release.assets.into_iter().map(|a| a.name).collect(),
     })
@@ -689,7 +728,7 @@ mod tests {
 
     #[test]
     fn latest_release_asset_lookup() {
-        let release = LatestRelease {
+        let release = Release {
             version: "0.21.0".into(),
             asset_names: vec![
                 "bougie-aarch64-apple-darwin.tar.gz".into(),
@@ -706,12 +745,74 @@ mod tests {
     fn release_with_no_assets_yet_gates_update() {
         // The published-but-empty window: the tag exists but dist hasn't
         // uploaded anything. Nothing should be considered available.
-        let release = LatestRelease {
+        let release = Release {
             version: "0.21.0".into(),
             asset_names: vec![],
         };
         assert!(!release.has_asset("bougie-aarch64-apple-darwin.tar.gz"));
         assert!(!release.has_asset("bougie-aarch64-apple-darwin.tar.gz.sha256"));
+    }
+
+    /// The behavior the user asked for: when the newest published release
+    /// has no assets for this target yet, pick the newest release that
+    /// does — not the absolute latest, and not "stay put".
+    #[test]
+    fn picks_newest_release_with_assets_for_target() {
+        let archive = "bougie-x86_64-unknown-linux-gnu.tar.gz";
+        let sidecar = "bougie-x86_64-unknown-linux-gnu.tar.gz.sha256";
+        // 0.25.0 is published but mid-upload (no assets); 0.24.0 has them.
+        let mut candidates = vec![
+            Release {
+                version: "0.24.0".into(),
+                asset_names: vec![archive.into(), sidecar.into()],
+            },
+            Release {
+                version: "0.25.0".into(),
+                asset_names: vec![],
+            },
+        ];
+        candidates.sort_by(|a, b| version_key(b).cmp(&version_key(a)));
+        assert_eq!(candidates.first().unwrap().version, "0.25.0");
+        let picked = candidates
+            .iter()
+            .find(|r| r.has_asset(archive) && r.has_asset(sidecar))
+            .unwrap();
+        assert_eq!(picked.version, "0.24.0");
+    }
+
+    #[test]
+    fn parse_release_drops_drafts_prereleases_and_bad_tags() {
+        let good = GhRelease {
+            tag_name: "bougie-v0.25.0".into(),
+            draft: false,
+            prerelease: false,
+            assets: vec![],
+        };
+        assert_eq!(parse_release(good).unwrap().version, "0.25.0");
+
+        let draft = GhRelease {
+            tag_name: "bougie-v0.25.0".into(),
+            draft: true,
+            prerelease: false,
+            assets: vec![],
+        };
+        assert!(parse_release(draft).is_none());
+
+        let prerelease = GhRelease {
+            tag_name: "bougie-v0.25.0".into(),
+            draft: false,
+            prerelease: true,
+            assets: vec![],
+        };
+        assert!(parse_release(prerelease).is_none());
+
+        let foreign_tag = GhRelease {
+            tag_name: "v0.25.0".into(),
+            draft: false,
+            prerelease: false,
+            assets: vec![],
+        };
+        assert!(parse_release(foreign_tag).is_none());
     }
 
     #[test]
