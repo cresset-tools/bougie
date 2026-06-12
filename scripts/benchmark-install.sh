@@ -26,6 +26,10 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="${1:-$REPO_ROOT/target/bench/install-benchmark.png}"
+# Resolve OUT to an absolute path now: the benchmark cd's into a temp project
+# dir before rendering, so a relative output path would land there (and be
+# cleaned up) instead of where the caller meant.
+[[ "$OUT" = /* ]] || OUT="$PWD/$OUT"
 ITERATIONS="${ITERATIONS:-8}"
 COMPOSER_VERSION="2.8.12"
 DEFAULT_PHAR="$REPO_ROOT/.cache/composer-$COMPOSER_VERSION.phar"
@@ -124,7 +128,7 @@ rm -rf vendor
 # --- benchmark ------------------------------------------------------------
 echo "==> benchmarking ($ITERATIONS runs each) ..." >&2
 hyperfine \
-    --warmup 2 \
+    --warmup 3 \
     --runs "$ITERATIONS" \
     --prepare 'rm -rf vendor' \
     --command-name 'composer install' \
@@ -146,31 +150,30 @@ jq -r '.results[] | "\(.command)\t\(.mean)"' "$WORK/bench.json" \
 COUNT="$(wc -l < "$WORK/bench.dat" | tr -d ' ')"
 CMEAN="$(jq -r '.results[] | select(.command|test("composer")) | .mean' "$WORK/bench.json")"
 BMEAN="$(jq -r '.results[] | select(.command|test("bougie"))   | .mean' "$WORK/bench.json")"
-SPEEDUP="$(awk -v c="$CMEAN" -v b="$BMEAN" 'BEGIN { if (b > 0) printf "%.1f", c / b; else printf "?" }')"
-TITLE="Warm install: composer install vs bougie sync   —   ${ITERATIONS} runs, bougie ${SPEEDUP}x faster"
-
-# --- render ---------------------------------------------------------------
+# --- render (horizontal bars; bougie sits at the top row) -----------------
+# Data rows are index 0 = composer, 1 = bougie, so plotting y = index puts
+# bougie on top. gnuplot has no native horizontal histogram, so we draw the
+# bars as boxxyerror rectangles spanning x = 0 .. mean.
+XMAX="$(awk -v c="$CMEAN" -v b="$BMEAN" 'BEGIN { m = (c > b) ? c : b; printf "%.4f", m * 1.20 }')"
 mkdir -p "$(dirname "$OUT")"
 GP="$WORK/chart.gp"
 cat > "$GP" <<'GPEOF'
-set terminal pngcairo size 960,560 enhanced
+set terminal pngcairo size 960,400 enhanced
 set output OUT
 set datafile separator "\t"
-set title CTITLE
 set style fill solid 0.9 border -1
-set boxwidth 0.55
-set ylabel "seconds (mean) — lower is better"
-set yrange [0:*]
-set xrange [-0.7:COUNT-0.3]
-set grid ytics lc rgb '#dddddd'
+set xlabel "seconds (mean) — lower is better"
+set xrange [0:XMAX]
+set yrange [-0.7:COUNT-0.3]
+set grid xtics lc rgb '#dddddd'
 set border 3
 set tics nomirror
 unset key
-plot DATA using 1:2:4:xtic(3) with boxes lc rgb variable, \
-     DATA using 1:2:(sprintf("%.2f s", $2)) with labels offset 0,0.9
+plot DATA using ($2/2.0):1:(0):2:($1-0.3):($1+0.3):4:ytic(3) with boxxyerror lc rgb variable, \
+     DATA using 2:1:(sprintf("%.2f s", $2)) with labels left offset 1,0
 GPEOF
 
-gnuplot -e "DATA='$WORK/bench.dat'; OUT='$OUT'; COUNT=$COUNT; CTITLE='$TITLE'" "$GP"
+gnuplot -e "DATA='$WORK/bench.dat'; OUT='$OUT'; COUNT=$COUNT; XMAX=$XMAX" "$GP"
 
 echo >&2
 cat "$WORK/bench.md" >&2
