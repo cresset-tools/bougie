@@ -246,10 +246,17 @@ above stands.
    `bougie_version::matches::version_satisfies` (deduped from
    `bougie-tool`). Unit-tested against synthetic candidate sets.
    (`--no-php-downloads` wiring lands with sync in Phase 3.)
-3. **Sync + shim** — wire `select_php` into `ensure_synced`; write/read
-   `resolved-php-path`; shim routing; `require.ext-*` validation;
-   `SyncResult` reporting. Integration test with a fake `php` stub on PATH
-   under `--no-managed-php`.
+3. ✅ **Sync + shim** — `ensure_synced_with(resolution)` gathers
+   managed-installed + system candidates, runs `select`, and dispatches:
+   system source writes `resolved` + `resolved-php-path` and shims (no
+   download/install/ext); managed source clears the marker and runs the
+   existing flow. Shim `Role::Php`/`PhpFpm` reads `resolved-php-path` and
+   execs the system binary (php-fpm via sibling; no `PHP_INI_SCAN_DIR`
+   overlay). CLI `--managed-php`/`--no-managed-php`/`--no-php-downloads`
+   (flattened `PhpPrefArgs` on `sync`/`run`) + `[php] managed`/`downloads`
+   config → `PhpResolution`. `SyncResult.php_source` (managed|system).
+   Integration-tested with a fake `php` stub on PATH under
+   `--no-managed-php` (selection, marker, shim exec, missing-ext error).
 4. **ext switch-to-managed + php-list surfacing** — `bougie ext add` on a
    system-PHP project switches to managed when allowed (else errors under
    `--no-managed-php`); `php list` / `find` show system PHPs.

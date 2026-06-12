@@ -394,6 +394,7 @@ dependencies = [
  "bougie-installers",
  "bougie-output",
  "bougie-paths",
+ "bougie-php-discovery",
  "bougie-platform",
  "bougie-recipe",
  "bougie-resolver",

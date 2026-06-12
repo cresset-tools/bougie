@@ -176,8 +176,8 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
                 working_dir,
             },
         ),
-        Command::Sync { offline, dry_run, scripts, no_scripts } => {
-            commands::sync::run(format, offline, dry_run, scripts_override(scripts, no_scripts))
+        Command::Sync { offline, dry_run, scripts, no_scripts, php } => {
+            commands::sync::run(format, offline, dry_run, scripts_override(scripts, no_scripts), php)
         }
         #[cfg(unix)]
         Command::Up { names, detach } => commands::services::up::run(format, names, detach),
@@ -187,8 +187,8 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
         Command::Down { names, purge } => commands::services::down::run(format, names, purge),
         #[cfg(not(unix))]
         Command::Down { names: _, purge: _ } => unsupported_on_windows("bougie down"),
-        Command::Run { with, no_sync, xdebug, argv } => {
-            commands::run::run(&with, &argv, format, no_sync, xdebug)
+        Command::Run { with, no_sync, xdebug, php, argv } => {
+            commands::run::run(&with, &argv, format, no_sync, xdebug, php)
         }
         Command::Ext(ExtCommand::Add { args, no_sync }) => {
             commands::ext_add_remove::add(format, args, no_sync)

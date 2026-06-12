@@ -68,6 +68,14 @@ impl ExtensionPin {
 pub struct PhpConfig {
     pub version: Option<String>,
     pub flavor: Option<String>,
+    /// System-vs-managed PHP preference (uv's model). `Some(true)` ⇒
+    /// only use a bougie-managed PHP; `Some(false)` ⇒ only use a system
+    /// PHP; `None` ⇒ default (prefer installed managed, then system,
+    /// then download). Overridden by `--managed-php`/`--no-managed-php`.
+    pub managed: Option<bool>,
+    /// `Some(false)` ⇒ never download a managed PHP (use an installed
+    /// managed one or a system PHP). Overridden by `--no-php-downloads`.
+    pub downloads: Option<bool>,
 }
 
 /// Opt-in execution of root `composer.json` scripts (off by default).

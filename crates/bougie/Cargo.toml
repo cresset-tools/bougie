@@ -83,6 +83,7 @@ bougie-output = { workspace = true }
 bougie-paths = { workspace = true }
 bougie-platform = { workspace = true }
 bougie-resolver = { workspace = true }
+bougie-php-discovery = { workspace = true }
 bougie-scripts = { workspace = true }
 bougie-server = { workspace = true }
 bougie-tool = { workspace = true }

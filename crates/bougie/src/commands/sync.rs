@@ -14,8 +14,15 @@ use bougie_paths::Paths;
 use bougie_semver::Constraint;
 use bougie_version::request::{Flavor, Request, VersionLike};
 use bougie_resolver::{intersect_php, ResolveOptions};
-use bougie_fs::state::{write_project_resolved, GlobalState};
+use bougie_fs::state::{
+    clear_project_resolved_php_path, write_project_resolved, write_project_resolved_php_path,
+    GlobalState,
+};
 use bougie_fs::store::list_installed;
+use bougie_cli::PhpPrefArgs;
+use bougie_php_discovery::{
+    discover, probe, select, PhpPreference, Requirement, Selection, SystemPhp,
+};
 use bougie_platform::target::Triple;
 use bougie_version::version::{PartialVersion, Version};
 use eyre::{eyre, Result};
@@ -26,9 +33,52 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Instant;
 
+/// How sync should choose the PHP interpreter — the resolved
+/// preference (CLI flags over `[php] managed` config) plus whether
+/// downloading a managed PHP is permitted.
+#[derive(Debug, Clone, Copy)]
+pub struct PhpResolution {
+    pub preference: PhpPreference,
+    pub downloads: bool,
+}
+
+impl PhpResolution {
+    /// Resolve from the shared `--managed-php`/`--no-managed-php`/
+    /// `--no-php-downloads` flags, falling back to `[php] managed` /
+    /// `[php] downloads` config.
+    pub fn from_args(args: PhpPrefArgs, project: &ProjectConfig) -> Result<Self> {
+        let cfg = &project.bougie.php;
+        let preference =
+            PhpPreference::resolve(args.managed_php, args.no_managed_php, cfg.managed)?;
+        let downloads = if args.no_php_downloads {
+            false
+        } else {
+            cfg.downloads.unwrap_or(true)
+        };
+        Ok(Self { preference, downloads })
+    }
+
+    /// Force a bougie-managed PHP (installed or downloaded) — used by
+    /// callers that must install bougie's ABI-controlled extensions
+    /// (e.g. `bougie ext add`), which a foreign system build can't take.
+    pub fn only_managed() -> Self {
+        Self { preference: PhpPreference::OnlyManaged, downloads: true }
+    }
+}
+
+/// Whether sync selected a bougie-managed PHP or a system one.
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum PhpSourceKind {
+    Managed,
+    System,
+}
+
 #[derive(Debug, Serialize)]
 pub struct SyncResult {
     pub schema_version: u32,
+    /// Whether the resolved PHP is bougie-managed or a system install.
+    pub php_source: PhpSourceKind,
     pub php_version: String,
     pub php_flavor: String,
     pub install_path: PathBuf,
@@ -110,10 +160,14 @@ impl Render for SyncResult {
         }
 
         if bougie_output::output::verbose() {
+            let label = match self.php_source {
+                PhpSourceKind::Managed => "php",
+                PhpSourceKind::System => "system php",
+            };
             writeln_dim(
                 w,
                 &format!(
-                    "  php {}-{} at {}",
+                    "  {label} {}-{} at {}",
                     self.php_version,
                     self.php_flavor,
                     self.install_path.display()
@@ -255,6 +309,7 @@ pub fn run(
     offline: bool,
     dry_run: bool,
     scripts: Option<bool>,
+    php_pref: PhpPrefArgs,
 ) -> Result<ExitCode> {
     let paths = Paths::from_env()?;
     let project_root = std::env::current_dir()?;
@@ -271,6 +326,7 @@ pub fn run(
 
     let project = load_project(&project_root)?;
     let (spec, flavor) = resolve_php_inputs(&project_root, &project)?;
+    let resolution = PhpResolution::from_args(php_pref, &project)?;
 
     if dry_run {
         let lock_count = count_lock_packages(&project_root);
@@ -283,7 +339,8 @@ pub fn run(
     }
 
     // Step 2 — toolchain (PHP + extensions + composer + shims).
-    let mut result = ensure_synced(&paths, &project_root, &project, spec, flavor)?;
+    let mut result =
+        ensure_synced_with(&paths, &project_root, &project, spec, flavor, resolution)?;
 
     // Step 3 — materialize vendor/ from the lock, running opted-in root
     // scripts during the install lifecycle. The toolchain (incl. PHP) is
@@ -342,7 +399,11 @@ fn elapsed_ms(started: Instant) -> f64 {
 /// the explicit `bougie sync` path. `bougie sync` itself still errors
 /// when inference can't help — only `bougie run` opts in via this
 /// entry point for the install-state fallback.
-pub fn run_with_default_fallback(format: OutputFormat, dry_run: bool) -> Result<ExitCode> {
+pub fn run_with_default_fallback(
+    format: OutputFormat,
+    dry_run: bool,
+    php_pref: PhpPrefArgs,
+) -> Result<ExitCode> {
     let paths = Paths::from_env()?;
     let project_root = std::env::current_dir()?;
 
@@ -359,6 +420,7 @@ pub fn run_with_default_fallback(format: OutputFormat, dry_run: bool) -> Result<
         Err(err) if is_missing_php_constraint(&err) => default_php_inputs(&paths, &project)?,
         Err(err) => return Err(err),
     };
+    let resolution = PhpResolution::from_args(php_pref, &project)?;
 
     if dry_run {
         eprintln!("Resolving…");
@@ -367,7 +429,8 @@ pub fn run_with_default_fallback(format: OutputFormat, dry_run: bool) -> Result<
     }
 
     // Toolchain sync.
-    let mut result = ensure_synced(&paths, &project_root, &project, spec, flavor)?;
+    let mut result =
+        ensure_synced_with(&paths, &project_root, &project, spec, flavor, resolution)?;
 
     // Vendor install. Root scripts are config-driven here (no CLI flag on
     // the `bougie run` implicit-sync path) — only `[scripts] run = true`
@@ -476,6 +539,102 @@ pub fn ensure_synced(
     spec: VersionLike,
     flavor: Flavor,
 ) -> Result<SyncResult> {
+    // Default callers (the implicit `ext add` sync) keep the historical
+    // managed-only behavior; `bougie sync`/`bougie run` pass an explicit
+    // resolution via `ensure_synced_with`.
+    ensure_synced_with(paths, project_root, project, spec, flavor, PhpResolution::only_managed())
+}
+
+/// [`ensure_synced`] with an explicit [`PhpResolution`]: pick a
+/// managed-installed, system, or to-be-downloaded PHP per the
+/// preference, then sync that source.
+pub fn ensure_synced_with(
+    paths: &Paths,
+    project_root: &std::path::Path,
+    project: &ProjectConfig,
+    spec: VersionLike,
+    flavor: Flavor,
+    resolution: PhpResolution,
+) -> Result<SyncResult> {
+    let required_exts = required_ext_names(project);
+    let managed_installed = gather_managed_installed(paths);
+    let system = gather_system(resolution.preference);
+
+    let requirement = Requirement {
+        spec: Some(&spec),
+        flavor,
+        required_exts: &required_exts,
+    };
+    let selection = select(
+        resolution.preference,
+        resolution.downloads,
+        requirement,
+        &managed_installed,
+        &system,
+    )?;
+
+    match selection {
+        Selection::System(system_php) => {
+            ensure_synced_system(paths, project_root, &system_php)
+        }
+        // Both managed tiers go through the same install path:
+        // `install_php_with_backend` reuses an installed match and
+        // downloads otherwise (selection already enforced the download
+        // gate, so this only downloads when permitted).
+        Selection::ManagedInstalled { .. } | Selection::Download => {
+            ensure_synced_managed(paths, project_root, project, spec, flavor)
+        }
+    }
+}
+
+/// Sync against a **system** PHP: no download, no install tree, no
+/// extension install (selection already guaranteed every required
+/// `ext-*` is loaded). Write both resolved markers and the shims.
+fn ensure_synced_system(
+    paths: &Paths,
+    project_root: &std::path::Path,
+    system_php: &SystemPhp,
+) -> Result<SyncResult> {
+    let resolved_path =
+        write_project_resolved(project_root, system_php.version, system_php.flavor)?;
+    write_project_resolved_php_path(project_root, &system_php.path)?;
+
+    let shims_dir = write_shims(project_root)?;
+    seed_global_composer_shim(paths);
+
+    let mut global = GlobalState::load(paths)?;
+    global.host_target = Some(Triple::detect()?.to_string());
+    global.touch_project(project_root);
+    global.save(paths)?;
+
+    Ok(SyncResult {
+        schema_version: 3,
+        php_source: PhpSourceKind::System,
+        php_version: system_php.version.to_string(),
+        php_flavor: system_php.flavor.to_string(),
+        install_path: system_php.path.clone(),
+        resolved_path,
+        shims_dir,
+        installed_extensions: Vec::new(),
+        vendor_packages_installed: None,
+        vendor_packages_up_to_date: None,
+        vendor_packages_removed: None,
+        resolved_packages: 0,
+        resolve_ms: 0.0,
+        audit_ms: 0.0,
+    })
+}
+
+fn ensure_synced_managed(
+    paths: &Paths,
+    project_root: &std::path::Path,
+    project: &ProjectConfig,
+    spec: VersionLike,
+    flavor: Flavor,
+) -> Result<SyncResult> {
+    // Drop any stale system-PHP marker so a project switching back to a
+    // managed PHP stops resolving the old system binary in the shim.
+    clear_project_resolved_php_path(project_root)?;
     let request = Request::VersionLike { spec, flavor: Some(flavor) };
     // Build one backend for the whole toolchain phase. It memoizes the
     // signed index root on first use, so the interpreter, baseline, and
@@ -555,6 +714,7 @@ pub fn ensure_synced(
 
     Ok(SyncResult {
         schema_version: 3,
+        php_source: PhpSourceKind::Managed,
         php_version: installed.version.to_string(),
         php_flavor: installed.flavor.to_string(),
         install_path: installed.install_path,
@@ -573,6 +733,43 @@ pub fn ensure_synced(
         resolve_ms: 0.0,
         audit_ms: 0.0,
     })
+}
+
+/// The project's declared `require.ext-*` short names (without the
+/// `ext-` prefix) — the set a **system** PHP must already load to
+/// qualify (the ext-gate). Inferred/baseline extensions are not part of
+/// the gate: a system PHP can't take bougie's prebuilt `.so`, so the
+/// honest contract is "the system PHP already has everything declared."
+fn required_ext_names(project: &ProjectConfig) -> Vec<String> {
+    project
+        .composer
+        .as_ref()
+        .map(|c| c.require_extensions.iter().cloned().collect())
+        .unwrap_or_default()
+}
+
+/// Installed managed `(version, flavor)` pairs, parsed from the
+/// `installs/` directory layout.
+fn gather_managed_installed(paths: &Paths) -> Vec<(Version, Flavor)> {
+    list_installed(paths)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|(v, f)| {
+            let version = v.parse::<Version>().ok()?;
+            let flavor = parse_flavor(Some(&f)).ok()?;
+            Some((version, flavor))
+        })
+        .collect()
+}
+
+/// Discover + probe system PHPs. Skipped entirely under `OnlyManaged`
+/// (no need to spawn `php` when system PHPs can never be chosen). Probe
+/// failures (a non-PHP binary on PATH) are dropped silently.
+fn gather_system(preference: PhpPreference) -> Vec<SystemPhp> {
+    if preference == PhpPreference::OnlyManaged {
+        return Vec::new();
+    }
+    discover().iter().filter_map(|p| probe(p).ok()).collect()
 }
 
 /// Install every `require.ext-*` from `composer.json` that isn't
