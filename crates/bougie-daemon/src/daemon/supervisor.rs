@@ -849,15 +849,17 @@ fn render_exec_env(entry: &CatalogEntry, paths: &Paths) -> Vec<(String, String)>
                 // JNA native-lib extraction + `java.io.tmpdir` write
                 // here. `/tmp` is hidden by `ProtectSystem::Strict`.
                 ("OPENSEARCH_TMPDIR".into(), tmp.display().to_string()),
-                // The `bin/opensearch` launcher is a bash script that
-                // uses here-documents; bash writes the heredoc spool
-                // file to `$TMPDIR` (or `/tmp` if unset). On macOS the
-                // inherited `TMPDIR` is a per-user dir under
-                // `/var/folders/.../T/`, which the Strict sandbox makes
-                // read-only — so the heredoc write fails and the
-                // launcher never reaches `java`. Pin `TMPDIR` to the
-                // already-RW `<datadir>/tmp` (created by `pre_start`)
-                // so the shell's temporaries land inside the sandbox.
+                // Contain `$TMPDIR`-honouring temporaries (the JVM,
+                // `mktemp`, Linux bash heredocs) inside the already-RW
+                // `<datadir>/tmp` (created by `pre_start`) instead of the
+                // inherited system temp dir, which Strict hides.
+                //
+                // NB this does *not* fix the macOS heredoc failure: the
+                // `bin/opensearch*` launchers are bash scripts, and macOS
+                // `/bin/bash` 3.2 ignores `$TMPDIR` for here-documents
+                // (its spooler omits `MT_USETMPDIR`), writing to the
+                // compiled `/var/tmp` regardless. That carve-in lives in
+                // the sandbox policy (`sandbox::build_strict`), not here.
                 ("TMPDIR".into(), tmp.display().to_string()),
                 // `opensearch-env` defaults `OPENSEARCH_PATH_CONF` to
                 // `$OPENSEARCH_HOME/config`, which is read-only in

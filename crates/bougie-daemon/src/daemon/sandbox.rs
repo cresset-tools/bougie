@@ -88,7 +88,8 @@ fn build_strict(entry: &CatalogEntry, paths: &Paths, babysit_bin: &Path) -> Resu
     // launcher writes to `config/opensearch.keystore` and similar on
     // first start). Promote it to RW — the boundary against
     // user-input poisoning is still ProtectHome + the store being RO.
-    let rw_paths = vec![
+    #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
+    let mut rw_paths = vec![
         data.clone(),
         run.clone(),
         log.clone(),
@@ -99,6 +100,25 @@ fn build_strict(entry: &CatalogEntry, paths: &Paths, babysit_bin: &Path) -> Resu
         std::path::PathBuf::from("/dev/random"),
         std::path::PathBuf::from("/dev/urandom"),
     ];
+
+    // macOS ships `/bin/bash` 3.2.57 (the last GPLv2 release). Its
+    // here-document spooler calls `sh_mktmpfd("sh-thd", MT_USERANDOM, …)`
+    // *without* the `MT_USETMPDIR` flag that bash ≥4.2 added, so it
+    // ignores `$TMPDIR` and writes the heredoc temp file to the compiled
+    // `P_tmpdir` — `/var/tmp` on macOS, falling back to `/tmp`. The
+    // service launchers (`bin/opensearch`, `bin/opensearch-cli`,
+    // rabbitmq's `sbin/*`) use heredocs, so under `ProtectSystem::Strict`
+    // those writes EPERM with "cannot create temp file for here document".
+    // Redirecting `$TMPDIR` into the data dir doesn't help — bash 3.2's
+    // heredoc path never consults it. Grant the system scratch dirs RW so
+    // the shell can spool. macOS-only: Linux bash honours `$TMPDIR`
+    // (which we redirect into the per-service data dir), and keeping `/tmp`
+    // hidden there preserves the stronger Landlock isolation.
+    #[cfg(target_os = "macos")]
+    {
+        rw_paths.push(std::path::PathBuf::from("/tmp"));
+        rw_paths.push(std::path::PathBuf::from("/var/tmp"));
+    }
 
     // Read-only carve-ins: the store (service binaries + shared libs)
     // and the babysit binary itself. Both commonly live under $HOME and
