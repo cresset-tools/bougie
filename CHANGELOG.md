@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.25.1](https://github.com/cresset-tools/bougie/compare/bougie-v0.25.0...bougie-v0.25.1) (2026-06-12)
+
+
+### Bug Fixes
+
+* **daemon:** set TMPDIR for opensearch so bash heredocs work under macOS sandbox ([#358](https://github.com/cresset-tools/bougie/issues/358)) ([40664e5](https://github.com/cresset-tools/bougie/commit/40664e54881d9048c6bcd1579b38d47f7e38fd75))
+* **dist:** build linux-gnu at glibc 2.17 via custom in-container job ([#357](https://github.com/cresset-tools/bougie/issues/357)) ([6188e00](https://github.com/cresset-tools/bougie/commit/6188e00c4f540510d96d5b459600b63d2abbe63b))
+* **self-update:** fall back to newest release with assets for the target ([#356](https://github.com/cresset-tools/bougie/issues/356)) ([47a1df2](https://github.com/cresset-tools/bougie/commit/47a1df2fc07da138605d8c7d40a987b25c40efec))
+
 ## [0.25.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.24.0...bougie-v0.25.0) (2026-06-12)
 
 
