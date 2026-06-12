@@ -1,0 +1,138 @@
+# Custom local-artifacts build job for dist (wired in via
+# `build-local-artifacts = false` + `local-artifacts-jobs =
+# ["./build-bougie-binaries"]` in dist-workspace.toml). dist's generated
+# `custom-build-bougie-binaries` job in bougie-release.yml calls this with the
+# plan JSON; `build-global-artifacts` and `host` consume the `artifacts-*` we
+# upload here, exactly as they would dist's stock build-local-artifacts job.
+#
+# Why this exists: to floor the linux-gnu binary at glibc 2.17 we must compile
+# it inside manylinux2014 (CentOS 7). dist's own container support runs the
+# WHOLE job in the image, but GitHub's Node-24 actions (checkout, etc.) need
+# glibc >= 2.28 and die in there. So this job runs checkout + all the
+# GitHub-Actions plumbing on the host runner, and shells into the container for
+# ONLY `dist build` (uv's trick). Non-gnu targets build natively, unchanged.
+#
+# MAINTENANCE: this is a hand-maintained copy of dist's stock
+# build-local-artifacts job. After bumping `cargo-dist-version`, regenerate a
+# throwaway stock job (set `build-local-artifacts = true`, `dist generate`) and
+# re-diff the non-gnu steps below against it. Keep DIST_VERSION in sync with
+# `cargo-dist-version`.
+name: build-bougie-binaries
+
+on:
+  workflow_call:
+    inputs:
+      plan:
+        required: true
+        type: string
+
+env:
+  # Keep in lockstep with `cargo-dist-version` in dist-workspace.toml — this is
+  # the static-musl dist used inside the glibc-2.17 container (the gnu-linked
+  # dist the host installs cannot run there).
+  DIST_VERSION: "0.32.0"
+  # glibc-2.17 baseline (== manylinux2014 == CentOS 7), matching
+  # php-build-standalone's gnu leg and the `min-glibc-version` assertion.
+  GLIBC_CONTAINER: "quay.io/pypa/manylinux2014_x86_64"
+
+jobs:
+  build-local-artifacts:
+    name: build-local-artifacts (${{ join(matrix.targets, ', ') }})
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(inputs.plan).ci.github.artifacts_matrix }}
+    runs-on: ${{ matrix.runner }}
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      BUILD_MANIFEST_NAME: target/distrib/${{ join(matrix.targets, '-') }}-dist-manifest.json
+      # `--tag=<git tag>` on a real release, empty on PR dry-runs. Mirrors the
+      # plan job's `tag-flag` output (github.ref_name is the tag on push).
+      TAG_FLAG: ${{ !github.event.pull_request && format('--tag={0}', github.ref_name) || '' }}
+    steps:
+      - name: enable windows longpaths
+        run: |
+          git config --global core.longpaths true
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          submodules: recursive
+      - name: Install Rust non-interactively if not already installed
+        if: ${{ matrix.container }}
+        run: |
+          if ! command -v cargo > /dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+            echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+          fi
+      # Host dist — used for the native builds below and the Post-build step on
+      # every target (print-upload-files-from-manifest runs on the host).
+      - name: Install dist
+        run: ${{ matrix.install_dist.run }}
+      - name: Fetch local artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: artifacts-*
+          path: target/distrib/
+          merge-multiple: true
+      - name: Install dependencies
+        run: |
+          ${{ matrix.packages_install }}
+
+      # --- Build: native (mac / windows / linux-musl) ---------------------
+      - name: Build artifacts
+        if: ${{ !contains(join(matrix.targets, ' '), 'x86_64-unknown-linux-gnu') }}
+        run: |
+          dist build ${{ env.TAG_FLAG }} --print=linkage --output-format=json ${{ matrix.dist_args }} > dist-manifest.json
+          echo "dist ran successfully"
+
+      # --- Build: linux-gnu inside manylinux2014 (glibc 2.17) -------------
+      # Checkout already ran on the host; only `dist build` runs in-container,
+      # with a static-musl dist (the only kind that runs on glibc 2.17). The
+      # workspace is bind-mounted at its IDENTICAL host path (-v WS:WS -w WS):
+      # dist records absolute artifact paths in the manifest, and the host
+      # Post-build/Upload steps read those same paths, so the two must match.
+      # Output lands in $GITHUB_WORKSPACE/target/distrib on the host via the
+      # mount; we chown it back so the host steps (running as the runner user)
+      # can read it.
+      - name: Build artifacts (glibc 2.17 container)
+        if: ${{ contains(join(matrix.targets, ' '), 'x86_64-unknown-linux-gnu') }}
+        env:
+          DIST_ARGS: ${{ matrix.dist_args }}
+          REL_TAG_FLAG: ${{ env.TAG_FLAG }}
+        run: |
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE":"$GITHUB_WORKSPACE" -w "$GITHUB_WORKSPACE" \
+            -e CARGO_NET_GIT_FETCH_WITH_CLI=true \
+            -e DIST_ARGS -e REL_TAG_FLAG \
+            -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
+            -e DIST_VERSION="$DIST_VERSION" \
+            -e GITHUB_WORKSPACE="$GITHUB_WORKSPACE" \
+            "$GLIBC_CONTAINER" bash -euo pipefail -c '
+              curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs \
+                | sh -s -- -y --profile minimal --default-toolchain 1.95 >/dev/null 2>&1
+              source "$HOME/.cargo/env"
+              curl -fsSL "https://github.com/axodotdev/cargo-dist/releases/download/v${DIST_VERSION}/cargo-dist-x86_64-unknown-linux-musl.tar.xz" \
+                | tar xJ -C /tmp
+              DIST="$(find /tmp -maxdepth 2 -name dist -type f -path "*cargo-dist*" | head -1)"
+              "$DIST" build $REL_TAG_FLAG --print=linkage --output-format=json $DIST_ARGS > dist-manifest.json
+              # Hand the bind-mounted outputs back to the runner user.
+              chown -R "$HOST_UID:$HOST_GID" "$GITHUB_WORKSPACE/target" dist-manifest.json
+            '
+          echo "dist ran successfully (glibc 2.17 container)"
+
+      - id: cargo-dist
+        name: Post-build
+        shell: bash
+        run: |
+          # Parse out what we just built and upload it to scratch storage
+          echo "paths<<EOF" >> "$GITHUB_OUTPUT"
+          dist print-upload-files-from-manifest --manifest dist-manifest.json >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+          cp dist-manifest.json "$BUILD_MANIFEST_NAME"
+      - name: "Upload artifacts"
+        uses: actions/upload-artifact@v7
+        with:
+          name: artifacts-build-local-${{ join(matrix.targets, '_') }}
+          path: |
+            ${{ steps.cargo-dist.outputs.paths }}
+            ${{ env.BUILD_MANIFEST_NAME }}

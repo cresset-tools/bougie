@@ -113,24 +113,34 @@ post-announce-jobs = ["./publish-mirror", "./build-docker"]
 # (`id-token` + `attestations` for build-provenance attestation).
 github-custom-job-permissions = { "publish-mirror" = { contents = "read" }, "build-docker" = { contents = "read", packages = "write", "id-token" = "write", attestations = "write" } }
 
-# Floor the gnu build at glibc 2.17 by building it inside the manylinux2014
-# container (CentOS 7, glibc 2.17 — the manylinux2014 baseline, the same
-# floor php-build-standalone's gnu leg targets via its CentOS 7 sysroot, so
-# the bougie binary and the PHP runtimes it installs share one glibc floor).
+# Glibc-2.17 floor for the linux-gnu binary, via a custom build job — NOT
+# dist's built-in builder. Background:
 #
-# Why this and not just `min-glibc-version`: that setting is metadata only —
-# it overrides the glibc version dist *advertises* in the installer, but does
-# NOT change how the binary is built. Built natively on ubuntu-22.04 the gnu
-# binary needs glibc ~2.35 and fails on RHEL 8 / Debian 11 / Ubuntu 20.04.
-# Building inside manylinux2014 is what actually produces a 2.17-compatible
-# binary; dist then autodetects 2.17 from the linkage.
+#   * `min-glibc-version` is metadata only: it sets the floor dist
+#     *advertises* in the installer, not how the binary is built.
+#   * dist's `github-custom-runners` container support runs the *whole job*
+#     (checkout included) in the image. GitHub's JS actions ship Node 24,
+#     which needs glibc >= 2.28, so checkout dies on first run inside a
+#     glibc-2.17 (manylinux2014 / CentOS 7) container. That broke the
+#     bougie-v0.25.0 release. The lowest floor reachable that way is 2.28.
+#   * uv's trick (and ours): keep checkout + the GitHub-Actions plumbing on
+#     the host runner, and shell into the container for *only* `dist build`.
+#     dist has no built-in knob for that, so we own the build job.
 #
-# `host = ...-musl` makes dist run its own tooling as a static musl binary so
-# it executes regardless of the container's (old) glibc. The generated
-# workflow's "Install Rust non-interactively if matrix.container" step
-# rustup-installs the toolchain inside the container.
-[dist.github-custom-runners.x86_64-unknown-linux-gnu]
-container = { image = "quay.io/pypa/manylinux2014_x86_64", host = "x86_64-unknown-linux-musl" }
+# `build-local-artifacts = false` tells dist to still PLAN every target (so
+# the installer + manifest know about them) but build NONE itself; the jobs
+# in `local-artifacts-jobs` are responsible for producing every target's
+# archive. `./build-bougie-binaries` (.github/workflows/build-bougie-binaries.yml)
+# is a hand-maintained mirror of dist's stock build-local-artifacts job: it
+# runs `dist build` natively for mac/windows/musl and inside the
+# manylinux2014 container (with a static-musl `dist`, the only kind that runs
+# on glibc 2.17) for the gnu target. min-glibc-version below then asserts the
+# advertised 2.17 floor matches what that job produces.
+#
+# Maintenance note: re-diff build-bougie-binaries.yml against a freshly
+# generated stock build-local-artifacts job after every cargo-dist bump.
+build-local-artifacts = false
+local-artifacts-jobs = ["./build-bougie-binaries"]
 
 # Belt-and-suspenders: assert the advertised floor matches the manylinux2014
 # build above (2.17). With a real 2.17 build dist would autodetect this
