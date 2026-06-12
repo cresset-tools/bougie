@@ -616,6 +616,8 @@ pub enum ExtCommand {
         /// Skip the implicit `bougie sync` after the composer call.
         #[arg(long)]
         no_sync: bool,
+        #[command(flatten)]
+        php: PhpPrefArgs,
     },
     /// Remove an extension dependency.
     Remove {

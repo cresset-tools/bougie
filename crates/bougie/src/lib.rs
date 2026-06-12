@@ -190,8 +190,8 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
         Command::Run { with, no_sync, xdebug, php, argv } => {
             commands::run::run(&with, &argv, format, no_sync, xdebug, php)
         }
-        Command::Ext(ExtCommand::Add { args, no_sync }) => {
-            commands::ext_add_remove::add(format, args, no_sync)
+        Command::Ext(ExtCommand::Add { args, no_sync, php }) => {
+            commands::ext_add_remove::add(format, args, no_sync, php)
         }
         Command::Ext(ExtCommand::Remove { names, no_sync }) => {
             commands::ext_add_remove::remove(format, names, no_sync)

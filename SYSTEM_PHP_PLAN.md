@@ -257,9 +257,15 @@ above stands.
    config → `PhpResolution`. `SyncResult.php_source` (managed|system).
    Integration-tested with a fake `php` stub on PATH under
    `--no-managed-php` (selection, marker, shim exec, missing-ext error).
-4. **ext switch-to-managed + php-list surfacing** — `bougie ext add` on a
-   system-PHP project switches to managed when allowed (else errors under
-   `--no-managed-php`); `php list` / `find` show system PHPs.
+4. ✅ **ext switch-to-managed + php-list surfacing** — `bougie ext add`
+   forces a managed PHP (switching off a system PHP, with a notice) when
+   allowed; under an only-system preference (`--no-managed-php` /
+   `[php] managed = false`) it errors with guidance. `ext remove` honors
+   the project's natural (config) preference so it doesn't force a switch.
+   `php list` shows discovered system PHPs under a `system` status (kept
+   verbatim, not collapsed); `php find` falls back to a matching system
+   PHP when no managed install matches. Integration-tested (list shows
+   the stub; ext add `--no-managed-php` errors).
 5. **(Deferred)** opportunistic ABI-matched extension install onto the
    system PHP (avoids the switch).
 

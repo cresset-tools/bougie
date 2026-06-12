@@ -61,17 +61,33 @@ fn find_for_request(paths: &Paths, request: &Request) -> Result<PathBuf> {
     };
     let flavor = in_request_flavor.unwrap_or(Flavor::Nts);
     let dir = install_dir(paths, pv, flavor);
-    if !dir.exists() {
-        return Err(BougieError::Resolution {
-            kind: "php".into(),
-            detail: format!(
-                "no installed PHP at {} — run `bougie php install` first",
-                dir.display()
-            ),
-        }
-        .into());
+    if dir.exists() {
+        return Ok(dir.join("bin").join("php"));
     }
-    Ok(dir.join("bin").join("php"))
+    // Fall back to a discovered system PHP at the exact version + flavor.
+    if let Some(path) = system_phps()
+        .into_iter()
+        .find(|s| s.version == pv && s.flavor == flavor)
+        .map(|s| s.path)
+    {
+        return Ok(path);
+    }
+    Err(BougieError::Resolution {
+        kind: "php".into(),
+        detail: format!(
+            "no installed PHP at {} — run `bougie php install` first",
+            dir.display()
+        ),
+    }
+    .into())
+}
+
+/// Discovered + probed system PHPs (best-effort).
+fn system_phps() -> Vec<bougie_php_discovery::SystemPhp> {
+    bougie_php_discovery::discover()
+        .iter()
+        .filter_map(|p| bougie_php_discovery::probe(p).ok())
+        .collect()
 }
 
 fn locate_best_match(paths: &Paths, _request: &Request) -> Result<PathBuf> {
@@ -93,17 +109,28 @@ fn find_first_installed(paths: &Paths) -> Result<PathBuf> {
             _ => {}
         }
     }
-    let (v, flavor) = best.ok_or_else(|| BougieError::Resolution {
+    if let Some((v, flavor)) = best {
+        let pv = bougie_version::version::PartialVersion {
+            major: v.major,
+            minor: Some(v.minor),
+            patch: Some(v.patch),
+        };
+        let f = parse_flavor(&flavor).unwrap_or(Flavor::Nts);
+        return Ok(install_dir(paths, pv.pad(), f).join("bin").join("php"));
+    }
+    // No managed install — fall back to the highest discovered system PHP.
+    if let Some(path) = system_phps()
+        .into_iter()
+        .max_by(|a, b| a.version.cmp(&b.version))
+        .map(|s| s.path)
+    {
+        return Ok(path);
+    }
+    Err(BougieError::Resolution {
         kind: "php".into(),
         detail: "no PHP interpreter installed yet; run `bougie php install` first".into(),
-    })?;
-    let pv = bougie_version::version::PartialVersion {
-        major: v.major,
-        minor: Some(v.minor),
-        patch: Some(v.patch),
-    };
-    let f = parse_flavor(&flavor).unwrap_or(Flavor::Nts);
-    Ok(install_dir(paths, pv.pad(), f).join("bin").join("php"))
+    }
+    .into())
 }
 
 fn parse_flavor(s: &str) -> Option<Flavor> {

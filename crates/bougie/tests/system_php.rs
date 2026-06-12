@@ -93,6 +93,47 @@ fn sync_no_managed_php_uses_system_interpreter() {
 }
 
 #[test]
+fn php_list_shows_discovered_system_php() {
+    let home = TempDir::new().unwrap();
+    let cache = TempDir::new().unwrap();
+    let stub_dir = TempDir::new().unwrap();
+    write_php_stub(stub_dir.path(), "8.3.99", "STUB-PHP-RAN");
+
+    // `--only-installed` skips the network index fetch; system PHPs are
+    // still surfaced alongside managed installs.
+    bougie(&home, &cache)
+        .env("PATH", path_with(stub_dir.path()))
+        .args(["php", "list", "--only-installed"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("8.3.99"));
+}
+
+#[test]
+fn ext_add_no_managed_php_errors_with_guidance() {
+    let home = TempDir::new().unwrap();
+    let cache = TempDir::new().unwrap();
+    let proj = TempDir::new().unwrap();
+    let stub_dir = TempDir::new().unwrap();
+    write_php_stub(stub_dir.path(), "8.3.99", "STUB-PHP-RAN");
+
+    std::fs::create_dir_all(proj.path().join(".bougie")).unwrap();
+    std::fs::write(
+        proj.path().join("composer.json"),
+        r#"{"name":"acme/blog","require":{"php":"8.3.99"}}"#,
+    )
+    .unwrap();
+
+    bougie(&home, &cache)
+        .current_dir(proj.path())
+        .env("PATH", path_with(stub_dir.path()))
+        .args(["ext", "add", "redis", "--no-managed-php"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("managed PHP"));
+}
+
+#[test]
 fn sync_no_managed_php_missing_extension_errors() {
     let home = TempDir::new().unwrap();
     let cache = TempDir::new().unwrap();
