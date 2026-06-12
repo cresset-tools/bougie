@@ -22,6 +22,9 @@
             pkgs.curl      # `scripts/generate-autoload-fixtures.sh` fetch hint
             pkgs.bash      # the scripts use `set -euo pipefail`
             pkgs.coreutils # `mktemp -d`, etc., consistent across macOS/Linux
+            pkgs.hyperfine # `scripts/benchmark-install.sh` timing + stats
+            pkgs.gnuplot   # `scripts/benchmark-install.sh` PNG bar chart
+            pkgs.jq        # `scripts/benchmark-install.sh` reads hyperfine JSON
           ];
         };
       });
