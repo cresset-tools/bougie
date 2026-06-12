@@ -49,6 +49,11 @@ pub struct SystemPhp {
     /// Loaded extension names, lowercased (from `php --modules`). Covers both
     /// the `[PHP Modules]` and `[Zend Modules]` sections.
     pub extensions: Vec<String>,
+    /// Whether a `php-fpm` binary lives alongside this `php` (in its
+    /// `bin/` or the sibling `sbin/`). The dev server needs fpm; a
+    /// CLI-only build (no fpm) is still fine for `bougie run`, so this is
+    /// a *soft* preference in selection rather than a hard filter.
+    pub has_fpm: bool,
 }
 
 impl SystemPhp {
@@ -85,7 +90,8 @@ pub fn probe(php: &Path) -> Result<SystemPhp> {
     let extensions = parse_modules(&modules_out);
 
     let path = std::fs::canonicalize(php).unwrap_or_else(|_| php.to_path_buf());
-    Ok(SystemPhp { path, version, flavor, extensions })
+    let has_fpm = bougie_fs::state::system_fpm_for_php(&path).is_some();
+    Ok(SystemPhp { path, version, flavor, extensions, has_fpm })
 }
 
 /// Run `php <args>` and capture stdout as a UTF-8 string.
@@ -395,6 +401,7 @@ mod tests {
             extensions: parse_modules(
                 "[PHP Modules]\ncurl\nintl\n[Zend Modules]\nZend OPcache\n",
             ),
+            has_fpm: true,
         };
         assert!(php.has_extension("curl"));
         assert!(php.has_extension("CURL")); // case-insensitive request
@@ -451,11 +458,19 @@ mod tests {
         .unwrap();
         std::fs::set_permissions(&php, std::fs::Permissions::from_mode(0o755)).unwrap();
 
+        // No php-fpm beside it yet → has_fpm is false.
         let probed = probe(&php).unwrap();
         assert_eq!(probed.version, Version::new(8, 3, 12));
         assert_eq!(probed.flavor, Flavor::Nts);
         assert!(probed.has_extension("curl"));
         assert!(probed.has_extension("opcache"));
         assert!(!probed.has_extension("redis"));
+        assert!(!probed.has_fpm);
+
+        // Drop a sibling php-fpm (same dir) → has_fpm flips true. The
+        // probe canonicalizes `php`, so put the stub where it resolves.
+        let canonical = std::fs::canonicalize(&php).unwrap();
+        std::fs::write(canonical.with_file_name("php-fpm"), "").unwrap();
+        assert!(probe(&php).unwrap().has_fpm);
     }
 }

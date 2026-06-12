@@ -207,19 +207,14 @@ fn exec_system_php(
 ) -> Result<ExitCode> {
     let bin = match role {
         Role::Php => system_php.to_path_buf(),
-        Role::PhpFpm => {
-            let sibling = system_php
-                .parent()
-                .map(|d| d.join(exe_name("php-fpm")))
-                .filter(|p| p.exists());
-            sibling.ok_or_else(|| {
-                eyre!(
-                    "php-fpm: system PHP at {} has no sibling php-fpm; \
-                     server features need a managed PHP (drop `--no-managed-php`)",
-                    system_php.display()
-                )
-            })?
-        }
+        Role::PhpFpm => bougie_fs::state::system_fpm_for_php(system_php).ok_or_else(|| {
+            eyre!(
+                "php-fpm: system PHP at {} has no php-fpm alongside it \
+                 (looked in its bin/ and ../sbin/); server features need a \
+                 managed PHP (drop `--no-managed-php`)",
+                system_php.display()
+            )
+        })?,
         _ => unreachable!("exec_system_php only handles php / php-fpm"),
     };
     if !bin.exists() {

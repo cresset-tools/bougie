@@ -675,6 +675,7 @@ dependencies = [
 name = "bougie-php-discovery"
 version = "0.25.2"
 dependencies = [
+ "bougie-fs",
  "bougie-version",
  "eyre",
  "tempfile",

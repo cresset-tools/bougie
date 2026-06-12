@@ -95,9 +95,17 @@ pub enum Selection {
 ///   (`--no-php-downloads` ⇒ `false`).
 ///
 /// Ordering per [`PhpPreference`]:
-/// - `Managed` (default): managed-installed → system → download.
+/// - `Managed` (default): managed-installed → fpm-capable system →
+///   download → any qualifying system (fpm-less, last resort).
 /// - `OnlyManaged`: managed-installed → download.
-/// - `OnlySystem`: system only.
+/// - `OnlySystem`: system only (fpm-agnostic).
+///
+/// The default path prefers a system PHP that ships `php-fpm` over one
+/// that doesn't, falling through to a managed *download* when the only
+/// qualifying system PHP is CLI-only — so `bougie server` (which needs
+/// fpm) works out of the box. The fpm-less system PHP is still chosen as
+/// a last resort when downloads are disabled (`--no-php-downloads`),
+/// since it remains usable for CLI (`bougie run`).
 pub fn select(
     pref: PhpPreference,
     downloads: bool,
@@ -107,6 +115,7 @@ pub fn select(
 ) -> Result<Selection> {
     let managed = || best_managed(req, managed_installed);
     let sys = || best_system(req, system);
+    let sys_with_fpm = || best_system_matching(req, system, true);
 
     let selection = match pref {
         PhpPreference::OnlyManaged => managed()
@@ -114,8 +123,9 @@ pub fn select(
             .or_else(|| downloads.then_some(Selection::Download)),
         PhpPreference::Managed => managed()
             .map(|(version, flavor)| Selection::ManagedInstalled { version, flavor })
-            .or_else(|| sys().cloned().map(Selection::System))
-            .or_else(|| downloads.then_some(Selection::Download)),
+            .or_else(|| sys_with_fpm().cloned().map(Selection::System))
+            .or_else(|| downloads.then_some(Selection::Download))
+            .or_else(|| sys().cloned().map(Selection::System)),
         PhpPreference::OnlySystem => sys().cloned().map(Selection::System),
     };
 
@@ -135,11 +145,25 @@ fn best_managed(req: Requirement<'_>, installed: &[(Version, Flavor)]) -> Option
 /// Highest-versioned system PHP matching flavor + spec **and** loading
 /// every required extension.
 fn best_system<'a>(req: Requirement<'_>, system: &'a [SystemPhp]) -> Option<&'a SystemPhp> {
+    best_system_matching(req, system, false)
+}
+
+/// As [`best_system`], but optionally also require a `php-fpm` alongside
+/// the interpreter (`require_fpm`). Applying fpm as a candidate filter —
+/// rather than filtering the single best match after the fact — lets a
+/// lower-versioned fpm-capable PHP win over a higher-versioned CLI-only
+/// one when fpm is required.
+fn best_system_matching<'a>(
+    req: Requirement<'_>,
+    system: &'a [SystemPhp],
+    require_fpm: bool,
+) -> Option<&'a SystemPhp> {
     system
         .iter()
         .filter(|php| php.flavor == req.flavor)
         .filter(|php| req.spec.is_none_or(|spec| version_satisfies(&php.version, spec)))
         .filter(|php| req.required_exts.iter().all(|ext| php.has_extension(ext)))
+        .filter(|php| !require_fpm || php.has_fpm)
         .max_by(|a, b| a.version.cmp(&b.version))
 }
 
@@ -207,11 +231,16 @@ mod tests {
     }
 
     fn sys(version: Version, flavor: Flavor, exts: &[&str]) -> SystemPhp {
+        sys_fpm(version, flavor, exts, true)
+    }
+
+    fn sys_fpm(version: Version, flavor: Flavor, exts: &[&str], has_fpm: bool) -> SystemPhp {
         SystemPhp {
             path: PathBuf::from(format!("/usr/bin/php-{version}")),
             version,
             flavor,
             extensions: exts.iter().map(|e| e.to_string()).collect(),
+            has_fpm,
         }
     }
 
@@ -278,6 +307,54 @@ mod tests {
         let exts = vec!["redis".to_string()];
         let system = [sys(Version::new(8, 3, 12), Flavor::Nts, &["curl", "redis"])];
         let got = select(PhpPreference::Managed, true, req(&s, &exts), &[], &system).unwrap();
+        assert_eq!(got, Selection::System(system[0].clone()));
+    }
+
+    #[test]
+    fn default_skips_fpmless_system_for_download() {
+        // The only qualifying system PHP is CLI-only (no fpm). With
+        // downloads on, the server-needing default prefers a managed
+        // download over the fpm-less system PHP.
+        let s = spec(8, Some(3));
+        let exts: Vec<String> = vec![];
+        let system = [sys_fpm(Version::new(8, 3, 12), Flavor::Nts, &[], false)];
+        let got = select(PhpPreference::Managed, true, req(&s, &exts), &[], &system).unwrap();
+        assert_eq!(got, Selection::Download);
+    }
+
+    #[test]
+    fn default_uses_fpmless_system_when_downloads_disabled() {
+        // No download escape hatch → the fpm-less system PHP is still
+        // chosen (usable for CLI) rather than failing outright.
+        let s = spec(8, Some(3));
+        let exts: Vec<String> = vec![];
+        let system = [sys_fpm(Version::new(8, 3, 12), Flavor::Nts, &[], false)];
+        let got = select(PhpPreference::Managed, false, req(&s, &exts), &[], &system).unwrap();
+        assert_eq!(got, Selection::System(system[0].clone()));
+    }
+
+    #[test]
+    fn default_prefers_lower_fpm_system_over_higher_cli_only() {
+        // A lower-versioned fpm-capable PHP beats a higher-versioned
+        // CLI-only one when fpm is the deciding factor.
+        let s = spec(8, None);
+        let exts: Vec<String> = vec![];
+        let system = [
+            sys_fpm(Version::new(8, 4, 1), Flavor::Nts, &[], false),
+            sys_fpm(Version::new(8, 3, 12), Flavor::Nts, &[], true),
+        ];
+        let got = select(PhpPreference::Managed, true, req(&s, &exts), &[], &system).unwrap();
+        assert_eq!(got, Selection::System(system[1].clone()));
+    }
+
+    #[test]
+    fn only_system_uses_fpmless_php() {
+        // Explicit `--no-managed-php`: fpm is not required (CLI use is
+        // valid); the server errors later if fpm is actually needed.
+        let s = spec(8, Some(3));
+        let exts: Vec<String> = vec![];
+        let system = [sys_fpm(Version::new(8, 3, 12), Flavor::Nts, &[], false)];
+        let got = select(PhpPreference::OnlySystem, true, req(&s, &exts), &[], &system).unwrap();
         assert_eq!(got, Selection::System(system[0].clone()));
     }
 
