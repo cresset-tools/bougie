@@ -113,6 +113,32 @@ post-announce-jobs = ["./publish-mirror", "./build-docker"]
 # (`id-token` + `attestations` for build-provenance attestation).
 github-custom-job-permissions = { "publish-mirror" = { contents = "read" }, "build-docker" = { contents = "read", packages = "write", "id-token" = "write", attestations = "write" } }
 
+# Floor the gnu build at glibc 2.17 by building it inside the manylinux2014
+# container (CentOS 7, glibc 2.17 — the manylinux2014 baseline, the same
+# floor php-build-standalone's gnu leg targets via its CentOS 7 sysroot, so
+# the bougie binary and the PHP runtimes it installs share one glibc floor).
+#
+# Why this and not just `min-glibc-version`: that setting is metadata only —
+# it overrides the glibc version dist *advertises* in the installer, but does
+# NOT change how the binary is built. Built natively on ubuntu-22.04 the gnu
+# binary needs glibc ~2.35 and fails on RHEL 8 / Debian 11 / Ubuntu 20.04.
+# Building inside manylinux2014 is what actually produces a 2.17-compatible
+# binary; dist then autodetects 2.17 from the linkage.
+#
+# `host = ...-musl` makes dist run its own tooling as a static musl binary so
+# it executes regardless of the container's (old) glibc. The generated
+# workflow's "Install Rust non-interactively if matrix.container" step
+# rustup-installs the toolchain inside the container.
+[dist.github-custom-runners.x86_64-unknown-linux-gnu]
+container = { image = "quay.io/pypa/manylinux2014_x86_64", host = "x86_64-unknown-linux-musl" }
+
+# Belt-and-suspenders: assert the advertised floor matches the manylinux2014
+# build above (2.17). With a real 2.17 build dist would autodetect this
+# anyway; the explicit override guards against detection drift. Must stay
+# below all bare `[dist]` keys — a sub-table header captures the keys after it.
+[dist.min-glibc-version]
+"*" = "2.17"
+
 # Both binaries ship in every archive — `bgx` is the uvx-equivalent
 # short alias for `bougie tool run`. The test-only `fake-redis` bin
 # is gated behind the `test-fixtures` feature and not built in
