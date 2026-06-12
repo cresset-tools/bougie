@@ -30,6 +30,8 @@ use super::fastcgi::{self, Transport};
 use super::paths::{create_dir_0700, ServerPaths};
 use bougie_paths::Paths;
 use bougie_fs::state::read_project_resolved;
+#[cfg(unix)]
+use bougie_fs::state::{read_project_resolved_php_path, system_fpm_for_php};
 
 #[cfg(unix)]
 const POOL_READY_TIMEOUT: Duration = Duration::from_secs(2);
@@ -449,14 +451,40 @@ impl PoolManager {
             .installs()
             .join(format!("{}-{}", key.version, key.flavor));
 
+        // A project pinned to a **system** (Homebrew/distro) PHP records
+        // its interpreter in `resolved-php-path`; managed projects don't.
+        // System PHP keeps its own php.ini + extensions, so bougie spawns
+        // the system php-fpm and skips conf.d injection — its ABI-foreign
+        // `.so` fragments can't dlopen onto a foreign build. Unix-only:
+        // php-fpm doesn't exist on Windows, and `bougie sync` never
+        // selects a system PHP there.
+        #[cfg(unix)]
+        let system_php = read_project_resolved_php_path(project);
+        #[cfg(not(unix))]
+        let system_php: Option<PathBuf> = None;
+
         // Per-platform PHP runtime. Unix uses `php-fpm` (master+workers,
         // unix socket); Windows uses `php-cgi.exe -b 127.0.0.1:<port>`
         // because php-fpm is not built for Windows.
         #[cfg(unix)]
-        let binary = php_install.join("bin").join("php-fpm");
+        let binary = match &system_php {
+            Some(php) => system_fpm_for_php(php).ok_or_else(|| {
+                eyre::eyre!(
+                    "the dev server needs php-fpm, but the system PHP at {} has \
+                     none alongside it (looked in its bin/ and ../sbin/). Install \
+                     your platform's php-fpm package, or switch to a bougie-managed \
+                     PHP with `bougie php pin <version>` then `bougie sync`.",
+                    php.display()
+                )
+            })?,
+            None => php_install.join("bin").join("php-fpm"),
+        };
         #[cfg(windows)]
         let binary = php_install.join("bin").join("php-cgi.exe");
-        if !binary.exists() {
+
+        // For a managed install the binary may simply be missing (never
+        // synced); the system branch already verified existence above.
+        if system_php.is_none() && !binary.exists() {
             let label = binary
                 .file_name()
                 .and_then(|s| s.to_str())
@@ -464,6 +492,18 @@ impl PoolManager {
             return Err(eyre::eyre!(
                 "{label} not found at {} — has `bougie sync` been run for this project?",
                 binary.display()
+            ));
+        }
+
+        // bougie's xdebug build is ABI-matched to its own interpreter, so
+        // the xdebug overlay can't load onto a foreign system PHP. Fail
+        // with a pointer to a managed PHP rather than spawning a pool that
+        // would just ignore the (un-injected) overlay.
+        if system_php.is_some() && key.variant == "xdebug" {
+            return Err(eyre::eyre!(
+                "the xdebug overlay needs a bougie-managed PHP — bougie's xdebug \
+                 build is ABI-matched to its own interpreter and can't load onto a \
+                 system PHP. Switch with `bougie php pin <version>` then `bougie sync`."
             ));
         }
 
@@ -480,14 +520,27 @@ impl PoolManager {
         let project_dir = self.server_paths.project_dir(project);
         create_dir_0700(&project_dir)?;
 
+        // System PHP loads its own conf.d; bougie injects none. Managed
+        // installs get the per-variant conf.d merged from the project's
+        // `.bougie/conf.d{,-debug}/`.
+        let inject_confd = system_php.is_none();
         let confd_dir = self.server_paths.pool_confd(project, &key.variant);
-        let sources = Self::variant_source_dirs(&key.variant, project);
-        let source_refs: Vec<&Path> = sources.iter().map(PathBuf::as_path).collect();
-        conf_d::build_variant_confd(&confd_dir, &source_refs)?;
+        if inject_confd {
+            let sources = Self::variant_source_dirs(&key.variant, project);
+            let source_refs: Vec<&Path> = sources.iter().map(PathBuf::as_path).collect();
+            conf_d::build_variant_confd(&confd_dir, &source_refs)?;
+        }
 
-        let (transport, mut child) =
-            spawn_runtime(&binary, &project_dir, &confd_dir, &self.server_paths, project, &key.variant)
-                .await?;
+        let (transport, mut child) = spawn_runtime(
+            &binary,
+            &project_dir,
+            &confd_dir,
+            inject_confd,
+            &self.server_paths,
+            project,
+            &key.variant,
+        )
+        .await?;
 
         // Capture stderr in a side task, line-prefix with
         // `[fpm:<project>:<variant>]`. Drains until the child exits.
@@ -540,6 +593,7 @@ async fn spawn_runtime(
     binary: &Path,
     project_dir: &Path,
     confd_dir: &Path,
+    inject_confd: bool,
     server_paths: &ServerPaths,
     project: &Path,
     variant: &str,
@@ -550,23 +604,30 @@ async fn spawn_runtime(
     let _ = std::fs::remove_file(&socket);
 
     let conf_path = server_paths.pool_conf(project, variant);
-    let pool_conf = PoolConf { listen_socket: &socket, php_ini_scan_dir: confd_dir };
+    // System PHP (`inject_confd == false`): no bougie scan dir, so the
+    // interpreter keeps its own compiled-in conf.d + extensions.
+    let scan_dir = inject_confd.then_some(confd_dir);
+    let pool_conf = PoolConf { listen_socket: &socket, php_ini_scan_dir: scan_dir };
     conf_d::write_pool_conf(&conf_path, &pool_conf)?;
 
     let mut cmd = tokio::process::Command::new(binary);
     cmd.arg("-y").arg(&conf_path)
         .arg("-p").arg(project_dir)
-        .arg("-F")
-        // PHP_INI_SCAN_DIR must be set on php-fpm's *own* process
-        // env: the master parses INI files at startup, before any
-        // worker is forked. The pool conf's `env[PHP_INI_SCAN_DIR]`
-        // only reaches workers (it lands in $_ENV/$_SERVER for the
-        // PHP script) and so doesn't influence which fragments
-        // get loaded. Without this, the merged `xdebug.confd/`
-        // (including the xdebug.ini symlink) is scanned but
-        // overridden by php-fpm's compiled-in default.
-        .env("PHP_INI_SCAN_DIR", confd_dir)
-        .stderr(std::process::Stdio::piped())
+        .arg("-F");
+    // PHP_INI_SCAN_DIR must be set on php-fpm's *own* process
+    // env: the master parses INI files at startup, before any
+    // worker is forked. The pool conf's `env[PHP_INI_SCAN_DIR]`
+    // only reaches workers (it lands in $_ENV/$_SERVER for the
+    // PHP script) and so doesn't influence which fragments
+    // get loaded. Without this, the merged `xdebug.confd/`
+    // (including the xdebug.ini symlink) is scanned but
+    // overridden by php-fpm's compiled-in default. Skipped for a
+    // system PHP so it loads its own conf.d (Homebrew/distro), not
+    // bougie's ABI-foreign fragments.
+    if let Some(dir) = scan_dir {
+        cmd.env("PHP_INI_SCAN_DIR", dir);
+    }
+    cmd.stderr(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stdin(std::process::Stdio::null())
         .kill_on_drop(true);
@@ -584,6 +645,9 @@ async fn spawn_runtime(
     binary: &Path,
     project_dir: &Path,
     confd_dir: &Path,
+    // Windows never selects a system PHP (php-fpm is Unix-only and sync
+    // won't pick one here), so bougie always injects its conf.d.
+    _inject_confd: bool,
     _server_paths: &ServerPaths,
     _project: &Path,
     _variant: &str,

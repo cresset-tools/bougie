@@ -9,6 +9,7 @@ rust-version = "1.95"
 authors.workspace = true
 
 [dependencies]
+bougie-fs = { workspace = true }
 bougie-version = { workspace = true }
 
 [dependencies.eyre]

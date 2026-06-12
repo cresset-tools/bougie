@@ -105,13 +105,22 @@ fn link_fragment(source: &Path, link: &Path) -> Result<()> {
 pub struct PoolConf<'a> {
     /// Path to the listen unix socket.
     pub listen_socket: &'a Path,
-    /// Path to the per-variant conf.d directory.
-    pub php_ini_scan_dir: &'a Path,
+    /// Path to the per-variant conf.d directory bougie injects into the
+    /// worker env, or `None` for a **system** PHP — where bougie does not
+    /// inject its (ABI-foreign) extension fragments and the interpreter
+    /// keeps its own compiled-in conf.d (Homebrew/distro php.ini).
+    pub php_ini_scan_dir: Option<&'a Path>,
 }
 
 #[cfg(unix)]
 impl PoolConf<'_> {
     pub fn render(&self) -> String {
+        // The worker-env scan-dir line is omitted for system PHP so the
+        // interpreter loads its own extensions rather than bougie's store.
+        let scan_dir_line = match self.php_ini_scan_dir {
+            Some(dir) => format!("env[PHP_INI_SCAN_DIR] = {}\n", dir.display()),
+            None => String::new(),
+        };
         format!(
             "; managed by bougie server — regenerated on every pool spawn\n\
              [global]\n\
@@ -132,9 +141,8 @@ impl PoolConf<'_> {
              ; (e.g. Magento's pub/.user.ini). CLI php is set separately\n\
              ; (memory_limit=-1) in the argv[0] shim.\n\
              php_value[memory_limit] = 1G\n\
-             env[PHP_INI_SCAN_DIR] = {scan_dir}\n",
+             {scan_dir_line}",
             socket = self.listen_socket.display(),
-            scan_dir = self.php_ini_scan_dir.display(),
         )
     }
 }
@@ -295,7 +303,7 @@ mod tests {
     fn pool_conf_render_matches_schema() {
         let conf = PoolConf {
             listen_socket: Path::new("/run/x/normal.sock"),
-            php_ini_scan_dir: Path::new("/run/x/normal.confd"),
+            php_ini_scan_dir: Some(Path::new("/run/x/normal.confd")),
         };
         let rendered = conf.render();
         assert!(rendered.contains("listen = /run/x/normal.sock"));
@@ -317,10 +325,24 @@ mod tests {
         let path = td.path().join("normal.conf");
         let conf = PoolConf {
             listen_socket: Path::new("/run/normal.sock"),
-            php_ini_scan_dir: Path::new("/run/normal.confd"),
+            php_ini_scan_dir: Some(Path::new("/run/normal.confd")),
         };
         write_pool_conf(&path, &conf).unwrap();
         let body = std::fs::read_to_string(&path).unwrap();
         assert!(body.contains("pm = ondemand"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pool_conf_omits_scan_dir_for_system_php() {
+        let conf = PoolConf {
+            listen_socket: Path::new("/run/x/normal.sock"),
+            php_ini_scan_dir: None,
+        };
+        let rendered = conf.render();
+        assert!(rendered.contains("listen = /run/x/normal.sock"));
+        // System PHP keeps its own conf.d — bougie injects no scan dir.
+        assert!(!rendered.contains("PHP_INI_SCAN_DIR"));
+        assert!(rendered.contains("php_value[memory_limit] = 1G"));
     }
 }

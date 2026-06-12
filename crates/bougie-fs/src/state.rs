@@ -67,6 +67,31 @@ pub fn read_project_resolved_php_path(project_root: &Path) -> Option<PathBuf> {
     Some(PathBuf::from(line))
 }
 
+/// Locate the `php-fpm` belonging to a **system** PHP, given the path to
+/// its `php` binary (the value stored in `resolved-php-path`). Distros
+/// disagree on where fpm lands: Debian/Ubuntu and most package managers
+/// drop it next to `php` in `bin/`, while a stock `./configure --prefix`
+/// build — and Homebrew — install it in the sibling `sbin/`. Probe both,
+/// `bin/` first, and return the first that exists. `None` means this PHP
+/// has no fpm SAPI alongside it (CLI-only build).
+///
+/// Shared by the argv[0] `php-fpm` shim and the dev server so both agree
+/// on where a system fpm lives.
+pub fn system_fpm_for_php(system_php: &Path) -> Option<PathBuf> {
+    #[cfg(windows)]
+    let name = "php-fpm.exe";
+    #[cfg(not(windows))]
+    let name = "php-fpm";
+
+    let bin_dir = system_php.parent()?;
+    let sibling = bin_dir.join(name);
+    if sibling.exists() {
+        return Some(sibling);
+    }
+    let sbin = bin_dir.parent()?.join("sbin").join(name);
+    sbin.exists().then_some(sbin)
+}
+
 /// Remove the system-PHP path marker if present (idempotent). Called
 /// when a project switches from a system PHP back to a managed one.
 pub fn clear_project_resolved_php_path(project_root: &Path) -> Result<()> {
@@ -166,6 +191,31 @@ mod tests {
 
         clear_project_resolved_php_path(proj.path()).unwrap();
         assert!(read_project_resolved_php_path(proj.path()).is_none());
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn system_fpm_prefers_bin_then_sbin() {
+        let td = TempDir::new().unwrap();
+        let bin = td.path().join("bin");
+        let sbin = td.path().join("sbin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::create_dir_all(&sbin).unwrap();
+        let php = bin.join("php");
+        std::fs::write(&php, "").unwrap();
+
+        // No fpm anywhere → None.
+        assert!(system_fpm_for_php(&php).is_none());
+
+        // Homebrew / stock `--prefix` layout: fpm in the sibling sbin/.
+        let sbin_fpm = sbin.join("php-fpm");
+        std::fs::write(&sbin_fpm, "").unwrap();
+        assert_eq!(system_fpm_for_php(&php).as_deref(), Some(sbin_fpm.as_path()));
+
+        // bin/php-fpm (Debian-style) wins when both exist.
+        let bin_fpm = bin.join("php-fpm");
+        std::fs::write(&bin_fpm, "").unwrap();
+        assert_eq!(system_fpm_for_php(&php).as_deref(), Some(bin_fpm.as_path()));
     }
 
     #[test]
