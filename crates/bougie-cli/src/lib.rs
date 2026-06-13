@@ -281,28 +281,6 @@ pub enum Command {
         php: PhpPrefArgs,
     },
 
-    /// Deprecated alias for `bougie services up`. Hidden; forwards with a
-    /// one-line notice. Removed in a future release.
-    #[command(hide = true)]
-    Up {
-        /// Service names to bring up. Empty = every declared service.
-        names: Vec<String>,
-        /// Start the services and return immediately instead of
-        /// attaching to their combined log stream.
-        #[arg(short = 'd', long)]
-        detach: bool,
-    },
-
-    /// Deprecated alias for `bougie services down`. Hidden; forwards with
-    /// a one-line notice. Removed in a future release.
-    #[command(hide = true)]
-    Down {
-        names: Vec<String>,
-        /// Destroy persisted tenant data (e.g. FLUSHDB on redis).
-        #[arg(long)]
-        purge: bool,
-    },
-
     /// Run a command in the project environment.
     #[command(display_order = 5)]
     Run {
@@ -638,9 +616,8 @@ pub struct ServeArgs {
     #[arg(long)]
     pub tls: bool,
     /// Print the URL and return immediately instead of attaching to the
-    /// log stream. Matches `services up`'s `-d`. `--no-attach` is kept as
-    /// a hidden alias for the old spelling.
-    #[arg(short = 'd', long = "detach", alias = "no-attach")]
+    /// log stream. Matches `services up`'s `-d`.
+    #[arg(short = 'd', long = "detach")]
     pub detach: bool,
     /// Skip the implicit `bougie sync` before serving.
     #[arg(long)]
@@ -1502,25 +1479,26 @@ mod tests {
     }
 
     #[test]
-    fn top_level_up_down_still_parse_as_deprecated_aliases() {
-        // Hidden, but kept parseable so existing muscle memory / scripts
-        // forward for one release.
-        assert!(matches!(cmd(&["bougie", "up"]), Command::Up { .. }));
-        assert!(matches!(cmd(&["bougie", "down"]), Command::Down { .. }));
+    fn top_level_up_down_are_gone() {
+        // The deprecated top-level aliases were removed; `up`/`down` only
+        // exist under `services` now.
+        assert!(Cli::try_parse_from(["bougie", "up"]).is_err());
+        assert!(Cli::try_parse_from(["bougie", "down"]).is_err());
     }
 
     #[test]
-    fn server_detach_standardized_with_no_attach_alias() {
+    fn server_detach_flag() {
         for argv in [
             &["bougie", "server", "-d"][..],
             &["bougie", "server", "--detach"][..],
-            &["bougie", "server", "--no-attach"][..],
         ] {
             let Command::Server(args) = cmd(argv) else {
                 panic!("expected server for {argv:?}");
             };
             assert!(args.serve.detach, "detach should be set for {argv:?}");
         }
+        // The old `--no-attach` spelling is gone.
+        assert!(Cli::try_parse_from(["bougie", "server", "--no-attach"]).is_err());
     }
 
     #[test]

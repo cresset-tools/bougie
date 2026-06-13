@@ -102,7 +102,7 @@ fn crashed_service_is_auto_restarted_with_new_pid() {
         .assert()
         .success();
     env.bougie()
-        .args(["up"])
+        .args(["services", "up"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
@@ -159,7 +159,7 @@ fn repeated_crashes_increment_failure_count_and_grow_backoff() {
         .assert()
         .success();
     env.bougie()
-        .args(["up"])
+        .args(["services", "up"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()

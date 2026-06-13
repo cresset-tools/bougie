@@ -59,7 +59,7 @@ fn stop_daemon(env: &TestEnv) {
 }
 
 fn services_up_or_dump(env: &TestEnv, proj_path: &Path, extra_args: &[&str]) {
-    let mut args = vec!["up"];
+    let mut args = vec!["services", "up"];
     args.extend_from_slice(extra_args);
     let res = env
         .bougie()
@@ -245,7 +245,7 @@ fn down_purge_drops_vhost_and_user() {
     }
 
     env.bougie()
-        .args(["down", "--purge"])
+        .args(["services", "down", "--purge"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
@@ -377,7 +377,7 @@ fn re_up_after_plain_down_resyncs_password_to_broker() {
     // implicitly via the duplicate `add_user` failure path that the
     // re-up below exercises.
     env.bougie()
-        .args(["down"])
+        .args(["services", "down"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()

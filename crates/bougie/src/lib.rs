@@ -22,14 +22,6 @@ use eyre::Result;
 use std::io::IsTerminal;
 use std::process::ExitCode;
 
-/// Warn that a top-level verb has moved under a subcommand. Printed to
-/// stderr so it never pollutes stdout / JSON output; the call still
-/// forwards to the new home for one deprecation cycle.
-#[cfg(unix)]
-fn deprecated_alias(old: &str, new: &str) {
-    eprintln!("warning: `{old}` has moved to `{new}`; the old form will be removed in a future release.");
-}
-
 #[cfg(not(unix))]
 fn unsupported_on_windows(feature: &str) -> Result<ExitCode> {
     Err(eyre::eyre!(
@@ -67,8 +59,6 @@ fn command_name(cmd: &Command) -> &'static str {
         Command::Tree { .. } => "tree",
         Command::Outdated { .. } => "outdated",
         Command::Sync { .. } => "sync",
-        Command::Up { .. } => "up",
-        Command::Down { .. } => "down",
         Command::Run { .. } => "run",
         Command::Php(_) => "php",
         Command::Node(_) => "node",
@@ -192,22 +182,6 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
         Command::Sync { offline, dry_run, scripts, no_scripts, php } => {
             commands::sync::run(format, offline, dry_run, scripts_override(scripts, no_scripts), php)
         }
-        // `up`/`down` moved under `bougie services`; the top-level verbs
-        // are deprecated aliases that forward with a one-line notice.
-        #[cfg(unix)]
-        Command::Up { names, detach } => {
-            deprecated_alias("bougie up", "bougie services up");
-            commands::services::up::run(format, names, detach)
-        }
-        #[cfg(not(unix))]
-        Command::Up { names: _, detach: _ } => unsupported_on_windows("bougie up"),
-        #[cfg(unix)]
-        Command::Down { names, purge } => {
-            deprecated_alias("bougie down", "bougie services down");
-            commands::services::down::run(format, names, purge)
-        }
-        #[cfg(not(unix))]
-        Command::Down { names: _, purge: _ } => unsupported_on_windows("bougie down"),
         Command::Run { with, no_sync, xdebug, php_request, php, argv } => {
             commands::run::run(&with, &argv, format, no_sync, xdebug, php, php_request.as_deref())
         }

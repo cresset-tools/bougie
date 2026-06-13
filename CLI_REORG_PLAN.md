@@ -4,14 +4,11 @@ Reorganize the top-level CLI so the core workflow is discoverable and the
 "how do I start my project?" question has exactly one answer. Staged so each
 phase ships behind conventional commits without breaking muscle memory.
 
-Status: **All phases (1–4) done** (branch `feat/cli-reorg`). Ready to open a
-PR; delete this file once it ships.
+Status: **All phases (1–4) done + top-level `up`/`down` aliases removed**
+(branch `feat/cli-reorg`). Ready to open a PR; delete this file once it ships.
 
-Note: the existing `phase1x_services_*` integration tests still drive the
-deprecated top-level `bougie up`/`down` aliases (they print a stderr notice
-but forward fine). Migrate them to `bougie services up`/`down` in the same
-commit that *removes* the aliases — until then they double as forwarding
-coverage.
+The `phase1x_services_*` integration tests were migrated from the top-level
+`bougie up`/`down` to `bougie services up`/`down` in the alias-removal commit.
 
 ## Goals
 
@@ -113,7 +110,8 @@ change, not a logic move.
   for `bougie up`/`bougie down` across `recipes/` and any docs/fixtures.
 
 **Commit**: `feat(cli): move 'up'/'down' back under 'bougie services'`
-Then a follow-up release later: `feat(cli)!: remove deprecated top-level up/down`.
+Removal landed in the same PR (pre-1.0, no deprecation cycle): `feat(cli)!:
+remove deprecated top-level up/down`.
 
 ---
 
@@ -184,10 +182,14 @@ renders under `bougie --help` (long help).
 | Old | New | Transition |
 |-----|-----|-----------|
 | `bougie start` (= make start) | `bougie start` (umbrella) | superset, no break |
-| `bougie make` (ran start) | `bougie make` (lists tasks) | **behavior change** — call out in CHANGELOG |
-| `bougie up` | `bougie services up` | hidden alias 1 release, then removed |
-| `bougie down` | `bougie services down` | hidden alias 1 release, then removed |
-| `server --no-attach` | `server -d/--detach` | hidden alias 1 release |
+| `bougie make` (ran start) | `bougie make` (lists tasks) | **breaking** — `feat(cli)!` |
+| `bougie up` | `bougie services up` | **removed** (no deprecation cycle) — `feat(cli)!` |
+| `bougie down` | `bougie services down` | **removed** (no deprecation cycle) — `feat(cli)!` |
+| `server --no-attach` | `server -d/--detach` | **removed** — `feat(cli)!` |
 
-The `bougie make` no-arg change is the only hard behavior break; everything
-else is additive + aliased. Gate it on a `feat!` so release-please flags it.
+Two hard breaks, both gated `feat(cli)!` so release-please flags them: the
+`bougie make` no-arg change (Phase 1), and the alias removal (final commit —
+pre-1.0, so we skip the deprecation cycle). The final commit drops the
+top-level `up`/`down` verbs *and* the legacy `server --no-attach` spelling, and
+migrates the `phase1x_services_*` integration tests to `bougie services
+up`/`down`.
