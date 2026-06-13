@@ -159,6 +159,13 @@ Top-level subcommands (from `bougie-cli`):
   `--all`) — destructive, so it lists the targeted tenants and confirms
   unless `--yes`/`--dry-run`.
 - `make [task]` — Recipe DAG walker (`start` alias for `make start`).
+- `format [ARGS...]` — Format the project's PHP, the way `uv format` runs
+  ruff. bougie bundles no formatter: `commands/format.rs` downloads a
+  *pinned* `wick` binary (cresset-tools/wick — unconfigurable, Laravel
+  Pint-style), caches it under `<cache>/wick/<version>/`, and execs it
+  with every arg forwarded verbatim (`--check`, `--diff`, paths, `-`).
+  Pin via `BOUGIE_WICK_VERSION`; same mirror→GitHub + SHA-256 fetch as
+  `self update`. Cross-platform (wick ships Windows binaries).
 
 Global flags: `--quiet`, `--verbose`, `--format {text,json-v1}`.
 
