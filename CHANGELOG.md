@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.27.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.26.0...bougie-v0.27.0) (2026-06-13)
+
+
+### Features
+
+* **format:** add `bougie format`, the `uv format` model for PHP ([#368](https://github.com/cresset-tools/bougie/issues/368)) ([2b0e567](https://github.com/cresset-tools/bougie/commit/2b0e567c4da6c6e20f4b07308bc902d2b3a1eca3))
+* **run:** add `--php` to select the interpreter for one run ([#366](https://github.com/cresset-tools/bougie/issues/366)) ([bf47d59](https://github.com/cresset-tools/bougie/commit/bf47d59b47388efc1c35baedbfce545c0965f0d8))
+
+
+### Bug Fixes
+
+* **format:** pin wick 0.2.1 (0.2.0 shipped no binaries) ([#370](https://github.com/cresset-tools/bougie/issues/370)) ([f8808c5](https://github.com/cresset-tools/bougie/commit/f8808c525a1b31b0ebe2ee316d7339729b9bafea))
+
 ## [0.26.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.25.2...bougie-v0.26.0) (2026-06-13)
 
 
