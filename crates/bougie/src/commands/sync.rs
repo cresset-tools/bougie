@@ -25,7 +25,7 @@ use bougie_php_discovery::{
 };
 use bougie_platform::target::Triple;
 use bougie_version::version::{PartialVersion, Version};
-use eyre::{eyre, Result};
+use eyre::{eyre, Result, WrapErr};
 use serde::Serialize;
 use std::collections::BTreeSet;
 use std::io::{self, Write};
@@ -339,15 +339,42 @@ pub fn run(
     }
 
     // Step 2 — toolchain (PHP + extensions + composer + shims).
-    let mut result =
+    let result =
         ensure_synced_with(&paths, &project_root, &project, spec, flavor, resolution)?;
 
     // Step 3 — materialize vendor/ from the lock, running opted-in root
     // scripts during the install lifecycle. The toolchain (incl. PHP) is
     // already synced above, so the resolved PHP binary is available.
-    let hooks = if super::scripts::enabled(scripts, &project) {
+    finish_with_vendor(
+        &paths,
+        &project_root,
+        &project,
+        result,
+        resolved_packages,
+        resolve_ms,
+        scripts,
+        format,
+    )
+}
+
+/// Shared tail of every sync entry point: materialize `vendor/` from the
+/// lock (firing opted-in root scripts), fold the vendor + timing stats
+/// into `result`, then emit it. `scripts` is the CLI `--scripts` flag
+/// (`None` on the implicit `bougie run` path, which is config-driven).
+#[allow(clippy::too_many_arguments)]
+fn finish_with_vendor(
+    paths: &Paths,
+    project_root: &std::path::Path,
+    project: &ProjectConfig,
+    mut result: SyncResult,
+    resolved_packages: usize,
+    resolve_ms: f64,
+    scripts: Option<bool>,
+    format: OutputFormat,
+) -> Result<ExitCode> {
+    let hooks = if super::scripts::enabled(scripts, project) {
         Some(super::scripts::LifecycleHooks::new(
-            &project_root,
+            project_root,
             true,
             super::scripts::Lifecycle::Install,
         )?)
@@ -356,8 +383,8 @@ pub fn run(
     };
     let audit_started = Instant::now();
     let vendor_summary = install_vendor(
-        &paths,
-        &project_root,
+        paths,
+        project_root,
         hooks.as_ref().map(|h| h as &dyn bougie_composer_resolver::ScriptHooks),
     )?;
     result.audit_ms = elapsed_ms(audit_started);
@@ -429,48 +456,119 @@ pub fn run_with_default_fallback(
     }
 
     // Toolchain sync.
-    let mut result =
+    let result =
         ensure_synced_with(&paths, &project_root, &project, spec, flavor, resolution)?;
 
     // Vendor install. Root scripts are config-driven here (no CLI flag on
     // the `bougie run` implicit-sync path) — only `[scripts] run = true`
     // enables them.
-    let hooks = if super::scripts::enabled(None, &project) {
-        Some(super::scripts::LifecycleHooks::new(
-            &project_root,
-            true,
-            super::scripts::Lifecycle::Install,
-        )?)
-    } else {
-        None
-    };
-    let audit_started = Instant::now();
-    let vendor_summary = install_vendor(
+    finish_with_vendor(
         &paths,
         &project_root,
-        hooks.as_ref().map(|h| h as &dyn bougie_composer_resolver::ScriptHooks),
-    )?;
-    result.audit_ms = elapsed_ms(audit_started);
-    result.resolved_packages = resolved_packages;
-    result.resolve_ms = resolve_ms;
-    if let Some(s) = vendor_summary {
-        // Soft preflight findings (skipped Composer plugins, a non-empty
-        // `scripts` section, …) recur on every sync for a given project,
-        // so they'd drown the two-line summary. Show them only under
-        // `--verbose`.
-        if bougie_output::output::verbose() {
-            for warning in &s.warnings {
-                eprintln!("warning: {warning}");
-            }
-        }
-        result.vendor_packages_installed =
-            Some(s.packages_installed + s.packages_already_present);
-        result.vendor_packages_up_to_date = Some(s.packages_up_to_date);
-        result.vendor_packages_removed = Some(s.packages_removed);
+        &project,
+        result,
+        resolved_packages,
+        resolve_ms,
+        None,
+        format,
+    )
+}
+
+/// Toolchain + vendor sync driven by an explicit `--php` request
+/// (`bougie run --php <ver|constraint|path>`), overriding whatever PHP
+/// the project would otherwise infer. The uv `--python` analog.
+///
+/// - A version or constraint (`8.3`, `~8.3`, `php8.3`, `8.3z`) overrides
+///   the resolved spec/flavor and goes through the normal managed/system
+///   selection (honoring `--managed-php`/`--no-managed-php`).
+/// - A path (`/opt/php/bin/php`, `~/php/bin/php`) is probed directly and
+///   wired in as a system PHP, no download or install tree.
+/// - Full tags and bare PATH names are rejected with a pointer to the
+///   supported forms.
+pub fn run_with_php_request(
+    format: OutputFormat,
+    dry_run: bool,
+    php_pref: PhpPrefArgs,
+    request: &Request,
+) -> Result<ExitCode> {
+    let paths = Paths::from_env()?;
+    let project_root = std::env::current_dir()?;
+
+    let resolve_started = Instant::now();
+    ensure_lock(&paths, &project_root, false, dry_run)?;
+    let resolved_packages = count_lock_packages(&project_root);
+    let resolve_ms = elapsed_ms(resolve_started);
+
+    let project = load_project(&project_root)?;
+
+    if dry_run {
+        eprintln!("Resolving…");
+        eprintln!("would install php matching --php {request:?}");
+        return Ok(ExitCode::SUCCESS);
     }
 
-    emit(format, &result)?;
-    Ok(ExitCode::SUCCESS)
+    let result = match request {
+        Request::VersionLike { spec, flavor } => {
+            // A flavor carried by the request (`8.3z`) wins; otherwise
+            // fall back to the project's configured flavor.
+            let flavor = match flavor {
+                Some(f) => *f,
+                None => parse_flavor(project.bougie.php.flavor.as_deref())?,
+            };
+            let resolution = PhpResolution::from_args(php_pref, &project)?;
+            ensure_synced_with(
+                &paths,
+                &project_root,
+                &project,
+                spec.clone(),
+                flavor,
+                resolution,
+            )?
+        }
+        Request::Path(path) => {
+            let expanded = expand_tilde(path);
+            let system = probe(&expanded)
+                .wrap_err_with(|| format!("probing the PHP binary at {}", expanded.display()))?;
+            ensure_synced_system(&paths, &project_root, &system)?
+        }
+        Request::FullTag { .. } | Request::Name(_) => {
+            return Err(eyre!(
+                "`bougie run --php` accepts a version (`8.3`, `8.3.12`), a \
+                 constraint (`~8.3`, `>=8.2,<8.4`), or a path to a `php` binary; \
+                 full tags and bare PATH names are not supported here"
+            ));
+        }
+    };
+
+    finish_with_vendor(
+        &paths,
+        &project_root,
+        &project,
+        result,
+        resolved_packages,
+        resolve_ms,
+        None,
+        format,
+    )
+}
+
+/// Expand a leading `~` / `~/` to the user's home directory. Any other
+/// path (including `~user`) is returned unchanged — `probe` will surface
+/// a clear "can't execute" error if it doesn't resolve to a real binary.
+fn expand_tilde(path: &std::path::Path) -> PathBuf {
+    let Some(s) = path.to_str() else {
+        return path.to_path_buf();
+    };
+    let Some(home) = std::env::var_os("HOME") else {
+        return path.to_path_buf();
+    };
+    if s == "~" {
+        PathBuf::from(home)
+    } else if let Some(rest) = s.strip_prefix("~/") {
+        PathBuf::from(home).join(rest)
+    } else {
+        path.to_path_buf()
+    }
 }
 
 fn is_missing_php_constraint(err: &eyre::Report) -> bool {
@@ -1299,6 +1397,28 @@ fn link_shim(target: &std::path::Path, link: &std::path::Path) -> io::Result<()>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn expand_tilde_rewrites_home_prefix_only() {
+        use std::path::Path;
+        // Absolute and relative paths pass through untouched (no HOME
+        // dependency), as does `~user` — we don't resolve other users.
+        assert_eq!(
+            expand_tilde(Path::new("/opt/php/bin/php")),
+            PathBuf::from("/opt/php/bin/php")
+        );
+        assert_eq!(expand_tilde(Path::new("~bob/php")), PathBuf::from("~bob/php"));
+        // Reads ambient HOME rather than mutating it (which would race
+        // other tests in this binary). CI always sets HOME.
+        if let Some(home) = std::env::var_os("HOME") {
+            let home = PathBuf::from(home);
+            assert_eq!(expand_tilde(Path::new("~")), home);
+            assert_eq!(
+                expand_tilde(Path::new("~/php8.3/bin/php")),
+                home.join("php8.3/bin/php")
+            );
+        }
+    }
     use bougie_config::BougieConfig;
     use std::collections::BTreeMap;
     use tempfile::TempDir;

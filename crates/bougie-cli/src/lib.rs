@@ -291,6 +291,13 @@ pub enum Command {
         /// child. Installs xdebug on first use if not already present.
         #[arg(long)]
         xdebug: bool,
+        /// Run with a specific PHP interpreter. Accepts a version
+        /// (`8.3`, `8.3.12`), a constraint (`~8.3`, `>=8.2,<8.4`), or a
+        /// path to a `php` binary. Forces a sync to that interpreter,
+        /// so it can't be combined with `--no-sync`. Mirrors
+        /// `uv run --python`.
+        #[arg(long = "php", value_name = "VER|PATH", conflicts_with = "no_sync")]
+        php_request: Option<String>,
         #[command(flatten)]
         php: PhpPrefArgs,
         /// Command and arguments. `--` separator is optional.

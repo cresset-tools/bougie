@@ -188,8 +188,8 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
         Command::Down { names, purge } => commands::services::down::run(format, names, purge),
         #[cfg(not(unix))]
         Command::Down { names: _, purge: _ } => unsupported_on_windows("bougie down"),
-        Command::Run { with, no_sync, xdebug, php, argv } => {
-            commands::run::run(&with, &argv, format, no_sync, xdebug, php)
+        Command::Run { with, no_sync, xdebug, php_request, php, argv } => {
+            commands::run::run(&with, &argv, format, no_sync, xdebug, php, php_request.as_deref())
         }
         Command::Ext(ExtCommand::Add { args, no_sync, php }) => {
             commands::ext_add_remove::add(format, args, no_sync, php)
