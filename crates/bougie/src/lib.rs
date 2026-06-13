@@ -72,6 +72,7 @@ fn command_name(cmd: &Command) -> &'static str {
         Command::Services(_) => "services",
         Command::Projects(_) => "projects",
         Command::Make { .. } => "make",
+        Command::Format { .. } => "format",
     }
 }
 
@@ -573,6 +574,7 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
         ),
         #[cfg(not(unix))]
         Command::Make { .. } => unsupported_on_windows("bougie make"),
+        Command::Format { args } => commands::format::run(&args),
         Command::Tool(ToolCommand::Install { package, php, with, force }) => {
             commands::tool_install::run(format, &package, php.as_deref(), &with, force)
         }

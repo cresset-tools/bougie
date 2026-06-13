@@ -392,6 +392,22 @@ pub enum Command {
         #[arg(long)]
         print: bool,
     },
+
+    /// Format the project's PHP, the way `uv format` runs ruff.
+    ///
+    /// bougie does not bundle a formatter: on first use it downloads a
+    /// pinned `wick` binary (cresset-tools/wick — an unconfigurable,
+    /// Laravel Pint-style formatter), caches it, and execs it. Every
+    /// argument is forwarded verbatim to `wick`, so `bougie format`,
+    /// `bougie format --check`, `bougie format src/ --diff`, and
+    /// `… | bougie format -` behave exactly like the matching `wick`
+    /// invocation. Pin a specific wick with `BOUGIE_WICK_VERSION`.
+    Format {
+        /// Arguments forwarded verbatim to `wick` (paths, `--check`,
+        /// `--diff`, `-` for stdin, …).
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, value_name = "ARGS")]
+        args: Vec<std::ffi::OsString>,
+    },
 }
 
 #[derive(Subcommand, Debug)]

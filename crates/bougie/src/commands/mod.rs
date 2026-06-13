@@ -17,6 +17,7 @@ pub mod composer_why;
 pub mod env;
 pub mod ext_add_remove;
 pub mod ext_list;
+pub mod format;
 pub mod infer_php;
 pub mod init;
 pub mod lock;
