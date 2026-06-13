@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.26.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.25.2...bougie-v0.26.0) (2026-06-13)
+
+
+### Features
+
+* **cli:** promote `services projects` to top-level `bougie projects` ([#365](https://github.com/cresset-tools/bougie/issues/365)) ([da52e1d](https://github.com/cresset-tools/bougie/commit/da52e1df7d61b178a67e53413e94024db6fa6af9))
+* **server:** run the dev server against a system PHP ([#363](https://github.com/cresset-tools/bougie/issues/363)) ([9890626](https://github.com/cresset-tools/bougie/commit/98906264bdfccd27f59753ea935aa56d408e8dac))
+
 ## [0.25.2](https://github.com/cresset-tools/bougie/compare/bougie-v0.25.1...bougie-v0.25.2) (2026-06-12)
 
 
