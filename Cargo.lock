@@ -581,6 +581,7 @@ dependencies = [
  "bougie-errors",
  "bougie-output",
  "eyre",
+ "flate2",
  "indicatif",
  "reqwest",
  "sha1",

@@ -309,6 +309,11 @@ pub enum Command {
     #[command(subcommand)]
     Php(PhpCommand),
 
+    /// Manage Node.js interpreters (for projects that build frontend
+    /// assets — Vite, Laravel Mix, Magento static-content deploy).
+    #[command(subcommand)]
+    Node(NodeCommand),
+
     /// Run Composer, reimplemented natively. bougie does not bundle or
     /// execute the Composer phar; the common Composer surface
     /// (install/update/require/remove/show/why/why-not/outdated/audit/
@@ -747,6 +752,32 @@ pub enum PhpCommand {
         minor: Option<String>,
     },
     /// Show the PHP interpreter installation directory.
+    Dir,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum NodeCommand {
+    /// Install a Node.js version from nodejs.org.
+    Install {
+        /// The Node version(s) to install (e.g. `latest`, `lts`, `20`,
+        /// `20.11`, `20.11.0`). Defaults to `latest`.
+        requests: Vec<String>,
+    },
+    /// Remove an installed Node.js version.
+    Uninstall {
+        /// The Node version(s) to uninstall (exact `20.11.0`).
+        #[arg(required = true)]
+        requests: Vec<String>,
+    },
+    /// List installed Node.js versions.
+    List,
+    /// Resolve a request and show the version + download URL it maps to,
+    /// without installing.
+    Find {
+        /// A Node request to resolve (e.g. `lts`, `20`). Defaults to `latest`.
+        request: Option<String>,
+    },
+    /// Show the Node.js installation directory.
     Dir,
 }
 

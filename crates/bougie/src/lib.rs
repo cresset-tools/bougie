@@ -14,7 +14,7 @@ pub use bougie_paths::Paths;
 pub use bougie_platform::target::Triple;
 
 use bougie_cli::{
-    CacheCommand, ComposerCommand, ExtCommand, PhpCommand, SelfCommand, ToolCommand,
+    CacheCommand, ComposerCommand, ExtCommand, NodeCommand, PhpCommand, SelfCommand, ToolCommand,
 };
 #[cfg(unix)]
 use bougie_cli::{ProjectsCommand, ServicesCommand, ServicesDaemonCommand};
@@ -63,6 +63,7 @@ fn command_name(cmd: &Command) -> &'static str {
         Command::Down { .. } => "down",
         Command::Run { .. } => "run",
         Command::Php(_) => "php",
+        Command::Node(_) => "node",
         Command::Composer(_) => "composer",
         Command::Tool(_) => "tool",
         Command::ToolExec { .. } => "tool-exec",
@@ -274,6 +275,17 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
         Command::Php(PhpCommand::Upgrade { minor }) => {
             commands::php_upgrade::run(format, minor.as_deref())
         }
+        Command::Node(NodeCommand::Install { requests }) => {
+            commands::node::install(format, &requests)
+        }
+        Command::Node(NodeCommand::Uninstall { requests }) => {
+            commands::node::uninstall(format, &requests)
+        }
+        Command::Node(NodeCommand::List) => commands::node::list(format),
+        Command::Node(NodeCommand::Find { request }) => {
+            commands::node::find(format, request.as_deref())
+        }
+        Command::Node(NodeCommand::Dir) => commands::node::dir(format),
         Command::Composer(ComposerCommand::Install {
             working_dir,
             no_dev,

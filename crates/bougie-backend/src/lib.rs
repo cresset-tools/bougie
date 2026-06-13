@@ -23,9 +23,11 @@
 //! and the install code's closure-handling step is a no-op for it.
 
 pub mod bougie_index_backend;
+pub mod nodejs_org;
 pub mod windows_php_net;
 
 pub use bougie_index_backend::BougieIndexBackend;
+pub use nodejs_org::{NodeRecipe, NodeRequest, NodeVersion, NodejsOrgBackend};
 pub use windows_php_net::WindowsPhpNetBackend;
 
 use bougie_fetch::{fetch_blob, ArchiveKind, BlobOutcome, DownloadBar};

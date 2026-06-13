@@ -127,6 +127,18 @@ pub fn run(
     if bougie_bin.exists() {
         new_path.push_str(&bougie_bin.display().to_string());
     }
+    // Overlay the project's Node.js `bin/` (node/npm/npx) when the
+    // project declares node use (package.json / .nvmrc / .node-version /
+    // a node-build composer dep like Hyvä). No-op for pure-PHP projects,
+    // so PATH is untouched there.
+    if let Ok(paths) = Paths::from_env()
+        && let Some(node_bin) = super::node::project_bin_dir(&project_root, &paths)
+    {
+        if !new_path.is_empty() {
+            new_path.push_str(PATH_SEP);
+        }
+        new_path.push_str(&node_bin.display().to_string());
+    }
     for extra in &path_extras {
         if !new_path.is_empty() {
             new_path.push_str(PATH_SEP);
@@ -288,11 +300,26 @@ fn run_composer_script(
 ) -> Result<ExitCode> {
     let bougie_bin = project_root.join(".bougie").join("bin");
     let prev_path = std::env::var("PATH").unwrap_or_default();
-    let new_path = if bougie_bin.exists() {
-        format!("{}:{prev_path}", bougie_bin.display())
-    } else {
-        prev_path
-    };
+    let mut new_path = String::new();
+    if bougie_bin.exists() {
+        new_path.push_str(&bougie_bin.display().to_string());
+    }
+    // Same node overlay as the direct-exec path, so composer scripts
+    // that shell out to `npm`/`node` find the project's toolchain.
+    if let Ok(paths) = Paths::from_env()
+        && let Some(node_bin) = super::node::project_bin_dir(project_root, &paths)
+    {
+        if !new_path.is_empty() {
+            new_path.push(':');
+        }
+        new_path.push_str(&node_bin.display().to_string());
+    }
+    if !prev_path.is_empty() {
+        if !new_path.is_empty() {
+            new_path.push(':');
+        }
+        new_path.push_str(&prev_path);
+    }
 
     let env_session_set = std::env::var_os("XDEBUG_SESSION")
         .is_some_and(|v| !v.is_empty());
