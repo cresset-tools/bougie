@@ -4,7 +4,7 @@ Reorganize the top-level CLI so the core workflow is discoverable and the
 "how do I start my project?" question has exactly one answer. Staged so each
 phase ships behind conventional commits without breaking muscle memory.
 
-Status: **Phases 1–2 done** (branch `feat/cli-reorg`); Phases 3–4 pending.
+Status: **Phases 1–3 done** (branch `feat/cli-reorg`); Phase 4 pending.
 Delete this file once all phases ship.
 
 Note: the existing `phase1x_services_*` integration tests still drive the
@@ -131,9 +131,13 @@ Small, mechanical, high-signal.
   Decide: either implement `services remove --purge` to mean the same
   "destroy tenant data" as `down --purge`, or drop the flag until it does
   something. No silent no-op flags in the core surface.
-- **`server stop` vs `down server`**: with up/down under services, the second
-  spelling becomes `services down server`. Pick one canonical spelling for
-  stopping the shared server and alias the other.
+- **`server stop` vs `services down server`**: investigated — these are NOT
+  duplicates. `server stop` shuts the *shared* dev server down for every
+  project; `services down server` only deprovisions *this* project's host
+  tenant. Left both; the help text already states the distinction. No dedup.
+
+**Done.** `--no-attach` → `-d/--detach` (alias kept); `services remove --purge`
+now runs the real deprovision path; `server stop` left as-is (not a dup).
 
 **Commit**: `refactor(cli): standardize lifecycle flags (detach, purge)`
 

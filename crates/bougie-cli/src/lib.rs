@@ -477,12 +477,14 @@ pub enum ServicesCommand {
         /// One or more service names, each optionally `@<version>`.
         names: Vec<String>,
     },
-    /// Remove a service declaration from the project.
+    /// Remove a service declaration from the project. Tenant data is
+    /// kept by default (re-adding restores it); pass `--purge` to also
+    /// destroy it.
     Remove {
-        /// Service names to remove. `--purge` is reserved for the
-        /// future tenant-data-destruction path; today it has no effect.
+        /// Service names to remove.
         names: Vec<String>,
-        /// Reserved — see CLI.md §3.8.2. Today this only echoes back.
+        /// Also destroy the project's tenant data for each service
+        /// (same as `bougie services down --purge`) before undeclaring.
         #[arg(long)]
         purge: bool,
     },
@@ -600,9 +602,11 @@ pub struct ServeArgs {
     /// Serve over HTTPS (requires `bougie server tls install`).
     #[arg(long)]
     pub tls: bool,
-    /// Print the URL and return instead of attaching to the log stream.
-    #[arg(long)]
-    pub no_attach: bool,
+    /// Print the URL and return immediately instead of attaching to the
+    /// log stream. Matches `services up`'s `-d`. `--no-attach` is kept as
+    /// a hidden alias for the old spelling.
+    #[arg(short = 'd', long = "detach", alias = "no-attach")]
+    pub detach: bool,
     /// Skip the implicit `bougie sync` before serving.
     #[arg(long)]
     pub no_sync: bool,
@@ -1468,6 +1472,20 @@ mod tests {
         // forward for one release.
         assert!(matches!(cmd(&["bougie", "up"]), Command::Up { .. }));
         assert!(matches!(cmd(&["bougie", "down"]), Command::Down { .. }));
+    }
+
+    #[test]
+    fn server_detach_standardized_with_no_attach_alias() {
+        for argv in [
+            &["bougie", "server", "-d"][..],
+            &["bougie", "server", "--detach"][..],
+            &["bougie", "server", "--no-attach"][..],
+        ] {
+            let Command::Server(args) = cmd(argv) else {
+                panic!("expected server for {argv:?}");
+            };
+            assert!(args.serve.detach, "detach should be set for {argv:?}");
+        }
     }
 
     #[test]

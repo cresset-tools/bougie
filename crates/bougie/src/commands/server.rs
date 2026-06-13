@@ -234,10 +234,10 @@ fn serve(format: OutputFormat, args: &ServeArgs) -> Result<ExitCode> {
 
     // Attach to the dev server's log, the way `bougie up` follows its
     // services. Gated to interactive text mode; a non-TTY run or
-    // `--format json-v1` implicitly detaches, as does `--no-attach`.
+    // `--format json-v1` implicitly detaches, as does `-d`/`--detach`.
     // Ctrl-C only detaches the CLI; the shared server keeps running.
     let attach =
-        !args.no_attach && matches!(format, OutputFormat::Text) && std::io::stdout().is_terminal();
+        !args.detach && matches!(format, OutputFormat::Text) && std::io::stdout().is_terminal();
     if attach {
         eprintln!(
             "attached to the dev server log — Ctrl-C to detach (server keeps running); \
@@ -399,7 +399,7 @@ fn serve_standalone(format: OutputFormat, args: &ServeArgs) -> Result<ExitCode> 
         let _ = open_url(&url);
     }
 
-    // Foreground: blocks until Ctrl-C. `--no-attach` has no effect here —
+    // Foreground: blocks until Ctrl-C. `-d`/`--detach` has no effect here —
     // there's no background daemon to detach into.
     bougie_server::server::run::run(format, &cfg_path, None, None)
 }
