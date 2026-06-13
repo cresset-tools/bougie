@@ -25,9 +25,9 @@ const HELP_STYLES: Styles = Styles::styled()
 /// findable at a glance.
 const COMMAND_GROUPS: &str = "\
 Command groups:
-  Project      init, new, start, stop, run, sync, make
+  Project      init, new, start, stop, run, sync, make, format
   Dependencies add, remove, lock, tree, outdated, ext, composer
-  Toolchain    php, tool
+  Toolchain    php, node, tool
   Services     server, services, projects
   Admin        cache, self
 
@@ -315,7 +315,7 @@ pub enum Command {
 
     /// Manage Node.js interpreters (for projects that build frontend
     /// assets — Vite, Laravel Mix, Magento static-content deploy).
-    #[command(subcommand)]
+    #[command(subcommand, display_order = 21)]
     Node(NodeCommand),
 
     /// Run Composer, reimplemented natively. bougie does not bundle or
@@ -330,7 +330,7 @@ pub enum Command {
 
     /// Manage globally-installed, isolated PHP CLI tools. See
     /// `TOOL_PLAN.md` for the design.
-    #[command(subcommand, display_order = 21)]
+    #[command(subcommand, display_order = 22)]
     Tool(ToolCommand),
 
     /// Runtime shim invoked by tool wrappers (`#!.../bougie tool-exec`).
@@ -450,6 +450,7 @@ pub enum Command {
     /// `bougie format --check`, `bougie format src/ --diff`, and
     /// `… | bougie format -` behave exactly like the matching `wick`
     /// invocation. Pin a specific wick with `BOUGIE_WICK_VERSION`.
+    #[command(display_order = 8)]
     Format {
         /// Arguments forwarded verbatim to `wick` (paths, `--check`,
         /// `--diff`, `-` for stdin, …).
