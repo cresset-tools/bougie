@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.28.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.27.0...bougie-v0.28.0) (2026-06-13)
+
+
+### Features
+
+* **node:** Node.js toolchain via nodejs.org + run PATH overlay ([#371](https://github.com/cresset-tools/bougie/issues/371)) ([72b0e4d](https://github.com/cresset-tools/bougie/commit/72b0e4d846568c208f32f47b1962e7a5e4638e4e))
+* **paths:** move project toolchain into vendor/bougie; durable state under $BOUGIE_HOME ([#372](https://github.com/cresset-tools/bougie/issues/372)) ([2c92332](https://github.com/cresset-tools/bougie/commit/2c923323be730b8d9d7217e158917570dea04234))
+
+
+### Bug Fixes
+
+* **dist:** make installers prefer the origin mirror (hosting=[simple,github]) ([#374](https://github.com/cresset-tools/bougie/issues/374)) ([e627774](https://github.com/cresset-tools/bougie/commit/e6277743e7dd82b7996d975f74d5a30b5ee8a2a3))
+* **format:** pin wick 0.2.3 ([#375](https://github.com/cresset-tools/bougie/issues/375)) ([55c73dc](https://github.com/cresset-tools/bougie/commit/55c73dc4a7306f3d03a226c28f6479fe94478a08))
+
 ## [0.27.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.26.0...bougie-v0.27.0) (2026-06-13)
 
 
