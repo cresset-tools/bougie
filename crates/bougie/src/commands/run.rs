@@ -35,6 +35,7 @@ pub fn run(
     no_sync: bool,
     xdebug_flag: bool,
     php_pref: bougie_cli::PhpPrefArgs,
+    php_request: Option<&str>,
 ) -> Result<ExitCode> {
     if argv.is_empty() {
         return Err(eyre!("nothing to run"));
@@ -54,7 +55,16 @@ pub fn run(
     }
     let cwd = std::env::current_dir()?;
     let project_root = resolve_project_root(&cwd);
-    if !no_sync && !is_environment_present(&project_root)? {
+    if let Some(req) = php_request {
+        // Explicit `--php`: force a sync to the requested interpreter,
+        // overriding whatever the project would otherwise infer (and
+        // re-syncing even when the env is already present, since it may
+        // point at a different PHP). `--no-sync` is rejected at the CLI
+        // layer, so reaching here always means a sync is wanted.
+        let request = bougie_version::request::parse_request(req)
+            .wrap_err_with(|| format!("parsing --php {req:?}"))?;
+        sync::run_with_php_request(format, false, php_pref, &request)?;
+    } else if !no_sync && !is_environment_present(&project_root)? {
         // uv-parity: `bougie run` outside a project (no `require.php`,
         // no `[php]version`) falls back to the highest already-installed
         // PHP, or the latest publishable >=8.0 — instead of erroring the
