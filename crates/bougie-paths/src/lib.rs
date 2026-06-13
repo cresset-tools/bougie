@@ -147,6 +147,19 @@ impl Paths {
     pub fn installs(&self) -> PathBuf {
         self.local.join("installs")
     }
+    /// `$BOUGIE_LOCAL/node-installs/` — per-version Node.js install trees.
+    /// Separate from `installs/` (PHP) because node has no flavor axis: the
+    /// layout is `node-installs/<version>/{bin,lib,...}` (the official
+    /// tarball's `node-v<ver>-<plat>/` wrapper is stripped on extract), so
+    /// it doesn't share PHP's `<version>-<flavor>` naming.
+    pub fn node_installs(&self) -> PathBuf {
+        self.local.join("node-installs")
+    }
+    /// `$BOUGIE_LOCAL/node-installs/<version>/` — one Node.js version's
+    /// root. `node` / `npm` / `npx` live under its `bin/`.
+    pub fn node_install_dir(&self, version: &str) -> PathBuf {
+        self.node_installs().join(version)
+    }
     pub fn store(&self) -> PathBuf {
         self.local.join("store")
     }
