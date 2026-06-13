@@ -8,4 +8,4 @@ run = "bougie sync"
 
 [task.start]
 deps = ["vendor"]
-run = "bougie up --detach server"
+run = "bougie services up --detach server"

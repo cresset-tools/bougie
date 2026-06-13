@@ -46,6 +46,8 @@ pub mod tool_upgrade;
 #[cfg(unix)]
 pub mod make;
 #[cfg(unix)]
+pub mod start;
+#[cfg(unix)]
 pub mod services;
 pub mod server;
 pub mod starter;

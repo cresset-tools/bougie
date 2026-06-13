@@ -70,7 +70,7 @@ fn restart_replaces_the_process_and_preserves_the_tenant() {
         .assert()
         .success();
     env.bougie()
-        .args(["up"])
+        .args(["services", "up"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()

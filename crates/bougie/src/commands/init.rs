@@ -208,17 +208,9 @@ fn scaffold(
 /// since the recipe/services stack is.
 #[cfg(unix)]
 fn start_project(root: &Path, format: OutputFormat) -> Result<ExitCode> {
-    // `make::run` operates on the cwd, so enter the freshly-scaffolded
-    // project root first (a no-op for `init`, where root == cwd).
-    std::env::set_current_dir(root)
-        .wrap_err_with(|| format!("entering {}", root.display()))?;
-    crate::commands::make::run(
-        format,
-        crate::commands::make::MakeOptions {
-            task: Some("start".to_string()),
-            ..Default::default()
-        },
-    )
+    // Single shared entry point with `bougie start`, so `init --start`
+    // and the standalone verb never drift.
+    crate::commands::start::run_in(format, root)
 }
 
 #[cfg(not(unix))]

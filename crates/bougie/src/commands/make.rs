@@ -1,5 +1,6 @@
 //! `bougie make [task]` — walk a project recipe's DAG, applying
-//! freshness. `bougie start` is a thin alias for `bougie make start`.
+//! freshness. A bare `bougie make` lists the available tasks;
+//! `bougie start` runs the `start` task (the project umbrella).
 //! See RECIPES.md.
 
 use bougie_cli::OutputFormat;
@@ -91,11 +92,14 @@ impl Render for PrintResult {
 
 pub fn run(format: OutputFormat, opts: MakeOptions) -> Result<ExitCode> {
     let project_root = std::env::current_dir().wrap_err("getting current directory")?;
-    let task_name = opts.task.clone().unwrap_or_else(|| "start".into());
+    let task_opt = opts.task.clone();
 
     let (recipe_name, recipe) = load_merged_recipe(&project_root, &opts)?;
 
-    if opts.list {
+    // A bare `bougie make` lists the available tasks (like `just`); to
+    // bring the whole project up use `bougie start`. `--list` forces the
+    // same listing even with a task named.
+    if opts.list || (task_opt.is_none() && !opts.print) {
         let mut tasks: Vec<String> = recipe.tasks.keys().cloned().collect();
         tasks.sort();
         emit(
@@ -147,6 +151,10 @@ pub fn run(format: OutputFormat, opts: MakeOptions) -> Result<ExitCode> {
         )?;
         return Ok(ExitCode::SUCCESS);
     }
+
+    // After the list/print early returns a task is guaranteed present; the
+    // `unwrap_or_default` branch is unreachable (and avoids a panic path).
+    let task_name = task_opt.unwrap_or_default();
 
     // Sync prologue (RECIPES.md §5).
     if !opts.no_sync && !opts.dry_run && !opts.explain {
