@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.28.0...bougie-v0.29.0) (2026-06-13)
+
+
+### ⚠ BREAKING CHANGES
+
+* **cli:** `bougie make` with no task argument now lists the available recipe tasks instead of running the `start` task. Use `bougie start` (or `bougie make start`) to bring the project up.
+
+### Features
+
+* **cli:** reorganize the CLI around start/stop, group --help ([#378](https://github.com/cresset-tools/bougie/issues/378)) ([a0c629b](https://github.com/cresset-tools/bougie/commit/a0c629bae9e68a801a5e8a57f607d6108374e40b))
+* **tool:** forward bgx/tool-run args after the package without `--` ([#376](https://github.com/cresset-tools/bougie/issues/376)) ([41a99b4](https://github.com/cresset-tools/bougie/commit/41a99b46af45e5a2768e5e4d521ec99e20cf2331))
+
+
+### Bug Fixes
+
+* **autoloader:** emit root package autoload-dev when dev deps are included ([#380](https://github.com/cresset-tools/bougie/issues/380)) ([07eb2a1](https://github.com/cresset-tools/bougie/commit/07eb2a1db9cb3436f1455a482f75860cc6f460db))
+* **sync:** re-resolve stale extensions after the active interpreter changes ([#379](https://github.com/cresset-tools/bougie/issues/379)) ([4b24785](https://github.com/cresset-tools/bougie/commit/4b24785311d2517e7a673e79d7e0ed6ac529838b))
+
 ## [0.28.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.27.0...bougie-v0.28.0) (2026-06-13)
 
 
