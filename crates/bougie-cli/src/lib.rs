@@ -1271,6 +1271,7 @@ pub enum ToolCommand {
     /// `bgx` is provided as a convenient alias for `bougie tool run`;
     /// their behavior is identical.
     #[command(
+        override_usage = "bougie tool run [OPTIONS] <PACKAGE> [ARGS]...",
         after_help = "Use `bgx` as a shortcut for `bougie tool run`.\n\n\
                       Use `bougie help tool run` for more details.",
         after_long_help = ""
@@ -1338,8 +1339,6 @@ pub enum SelfCommand {
 
 #[derive(Args, Debug)]
 pub struct ToolRunArgs {
-    /// Composer package identifier, optionally with `@<constraint>`.
-    pub package: String,
     /// Pin the tool to a specific PHP for this run.
     #[arg(long, value_name = "VER")]
     pub php: Option<String>,
@@ -1347,10 +1346,17 @@ pub struct ToolRunArgs {
     /// `tool install --with`. Repeatable.
     #[arg(long, value_name = "PKG_OR_EXT")]
     pub with: Vec<String>,
-    /// Arguments forwarded to the tool. Use `--` to separate when
-    /// forwarding flags that bougie would otherwise parse.
-    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-    pub args: Vec<std::ffi::OsString>,
+    /// The tool's Composer package (optionally `@<constraint>`) followed
+    /// by the arguments to forward to it. bougie's own options must come
+    /// *before* the package; everything from the package onward is passed
+    /// to the tool verbatim, so no `--` separator is needed.
+    #[arg(
+        trailing_var_arg = true,
+        allow_hyphen_values = true,
+        required = true,
+        value_name = "PACKAGE"
+    )]
+    pub command: Vec<std::ffi::OsString>,
 }
 
 /// Args for the hidden `bgx` alias. Wraps [`ToolRunArgs`] verbatim so

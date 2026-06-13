@@ -355,6 +355,23 @@ fn tool_run_rejects_bare_package_name() {
 }
 
 #[test]
+fn tool_run_forwards_flags_after_package_without_dashdash() {
+    // Everything from the package onward is forwarded to the tool, so a
+    // flag after the package needs no `--` separator. If clap still
+    // parsed options past the package it would reject `--made-up-flag`
+    // with an "unexpected argument" error; instead we reach
+    // `request::parse` on the package (which here fails offline on the
+    // double slash), proving the trailing flag was swallowed as a
+    // forwarded arg rather than parsed by bougie.
+    let env = TestEnv::new();
+    env.bougie()
+        .args(["tool", "run", "a/b/c", "--made-up-flag", "value"])
+        .assert()
+        .failure()
+        .stderr(contains("more than one"));
+}
+
+#[test]
 fn tool_upgrade_errors_for_unknown_tool() {
     let env = TestEnv::new();
     env.bougie()
