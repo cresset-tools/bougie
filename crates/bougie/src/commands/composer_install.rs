@@ -376,7 +376,7 @@ fn detect_available_extensions(project_root: &Path) -> BTreeSet<String> {
     }
 
     // Project conf.d fragments
-    let confd = project_root.join(".bougie").join("conf.d");
+    let confd = bougie_paths::project::confd(project_root);
     if let Ok(entries) = std::fs::read_dir(&confd) {
         for entry in entries.flatten() {
             let name = entry.file_name();
@@ -395,7 +395,7 @@ fn detect_available_extensions(project_root: &Path) -> BTreeSet<String> {
     }
 
     // Also try system PHP if no bougie state
-    if !project_root.join(".bougie").join("state").join("resolved").exists() {
+    if !bougie_paths::project::resolved(project_root).exists() {
         if let Ok(output) = std::process::Command::new("php").arg("-m").output() {
             if output.status.success() {
                 let stdout = String::from_utf8_lossy(&output.stdout);

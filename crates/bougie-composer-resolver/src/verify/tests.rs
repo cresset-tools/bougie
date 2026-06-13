@@ -189,7 +189,7 @@ fn transitive_version_conflict_is_reported() {
 
 #[test]
 fn platform_requirements_are_skipped() {
-    // No `.bougie/state/resolved` pin → PlatformEnv models nothing, so
+    // No `vendor/bougie/state/resolved` pin → PlatformEnv models nothing, so
     // even `php` is left unvalidated (and `ext-*` is never modeled).
     // Verifier passes since there are no other packages. The pinned
     // cases are covered by the `php_*` tests below (#118).
@@ -247,10 +247,10 @@ fn no_dev_skips_dev_only_lock_failures() {
     }
 }
 
-/// Write a `.bougie/state/resolved` PHP pin so `verify_lock` models the
+/// Write a `vendor/bougie/state/resolved` PHP pin so `verify_lock` models the
 /// `php` platform package (#118).
 fn write_pin(dir: &Path, version_flavor: &str) {
-    let state = dir.join(".bougie").join("state");
+    let state = dir.join("vendor").join("bougie").join("state");
     std::fs::create_dir_all(&state).unwrap();
     std::fs::write(state.join("resolved"), version_flavor).unwrap();
 }

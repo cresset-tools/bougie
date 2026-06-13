@@ -1114,13 +1114,13 @@ pub fn resolved_php_for_ext_install(project_root: &Path) -> Result<(PartialVersi
         )?;
     let version = version_str
         .parse::<Version>()
-        .map_err(|e| eyre!("malformed .bougie/state/resolved: {version_str:?}: {e}"))?;
+        .map_err(|e| eyre!("malformed vendor/bougie/state/resolved: {version_str:?}: {e}"))?;
     let flavor = match flavor_str.as_str() {
         "nts" => Flavor::Nts,
         "nts-debug" => Flavor::NtsDebug,
         "zts" => Flavor::Zts,
         "zts-debug" => Flavor::ZtsDebug,
-        other => return Err(eyre!("malformed .bougie/state/resolved flavor: {other:?}")),
+        other => return Err(eyre!("malformed vendor/bougie/state/resolved flavor: {other:?}")),
     };
     let php_minor = PartialVersion {
         major: version.major,

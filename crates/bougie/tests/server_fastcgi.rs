@@ -217,8 +217,8 @@ fn fastcgi_round_trip_with_real_php_fpm() {
     // CGI params back, plus the resolved-state marker the pool manager
     // needs to find the interpreter.
     std::fs::create_dir_all(proj.path().join("public")).unwrap();
-    std::fs::create_dir_all(proj.path().join(".bougie/state")).unwrap();
-    std::fs::create_dir_all(proj.path().join(".bougie/conf.d")).unwrap();
+    std::fs::create_dir_all(proj.path().join("vendor/bougie/state")).unwrap();
+    std::fs::create_dir_all(proj.path().join("vendor/bougie/conf.d")).unwrap();
     std::fs::write(
         proj.path().join("public/index.php"),
         r#"<?php
@@ -231,7 +231,7 @@ echo "BODY=" . file_get_contents('php://input') . "\n";
 "#,
     )
     .unwrap();
-    std::fs::write(proj.path().join(".bougie/state/resolved"), &resolved).unwrap();
+    std::fs::write(proj.path().join("vendor/bougie/state/resolved"), &resolved).unwrap();
 
     let cfg = seed_single_host(xdg.path(), "fcgi-test.bougie.run", proj.path());
     let server = ServerHandle::spawn(&env, &cfg, &bougie_home);
@@ -274,10 +274,10 @@ fn xdebug_session_cookie_routes_to_xdebug_pool() {
     let proj = TempDir::new().unwrap();
 
     std::fs::create_dir_all(proj.path().join("public")).unwrap();
-    std::fs::create_dir_all(proj.path().join(".bougie/state")).unwrap();
-    std::fs::create_dir_all(proj.path().join(".bougie/conf.d")).unwrap();
+    std::fs::create_dir_all(proj.path().join("vendor/bougie/state")).unwrap();
+    std::fs::create_dir_all(proj.path().join("vendor/bougie/conf.d")).unwrap();
     std::fs::write(proj.path().join("public/index.php"), "<?php echo 'ok';").unwrap();
-    std::fs::write(proj.path().join(".bougie/state/resolved"), &resolved).unwrap();
+    std::fs::write(proj.path().join("vendor/bougie/state/resolved"), &resolved).unwrap();
 
     let cfg = seed_single_host(xdg.path(), "xdebug-test.bougie.run", proj.path());
     let server = ServerHandle::spawn(&env, &cfg, &bougie_home);
@@ -320,14 +320,14 @@ fn xdebug_session_cookie_routes_to_xdebug_pool() {
     let _ = server.shutdown();
 }
 
-/// Build a fixture project: web root + index.php + .bougie/state/resolved.
+/// Build a fixture project: web root + index.php + vendor/bougie/state/resolved.
 fn make_php_project(resolved: &str) -> TempDir {
     let proj = TempDir::new().unwrap();
     std::fs::create_dir_all(proj.path().join("public")).unwrap();
-    std::fs::create_dir_all(proj.path().join(".bougie/state")).unwrap();
-    std::fs::create_dir_all(proj.path().join(".bougie/conf.d")).unwrap();
+    std::fs::create_dir_all(proj.path().join("vendor/bougie/state")).unwrap();
+    std::fs::create_dir_all(proj.path().join("vendor/bougie/conf.d")).unwrap();
     std::fs::write(proj.path().join("public/index.php"), "<?php echo 'ok';").unwrap();
-    std::fs::write(proj.path().join(".bougie/state/resolved"), resolved).unwrap();
+    std::fs::write(proj.path().join("vendor/bougie/state/resolved"), resolved).unwrap();
     proj
 }
 
@@ -461,7 +461,7 @@ fn confd_change_triggers_reload() {
     // load anything from it; we only want to verify the watcher
     // dispatch + SIGUSR2.
     std::fs::write(
-        proj.path().join(".bougie/conf.d/99-test.ini"),
+        proj.path().join("vendor/bougie/conf.d/99-test.ini"),
         "; managed by bougie server test — touch trigger\n",
     )
     .unwrap();
@@ -491,10 +491,10 @@ fn xdebug_query_param_routes_to_xdebug_pool() {
     let proj = TempDir::new().unwrap();
 
     std::fs::create_dir_all(proj.path().join("public")).unwrap();
-    std::fs::create_dir_all(proj.path().join(".bougie/state")).unwrap();
-    std::fs::create_dir_all(proj.path().join(".bougie/conf.d")).unwrap();
+    std::fs::create_dir_all(proj.path().join("vendor/bougie/state")).unwrap();
+    std::fs::create_dir_all(proj.path().join("vendor/bougie/conf.d")).unwrap();
     std::fs::write(proj.path().join("public/index.php"), "<?php echo 'ok';").unwrap();
-    std::fs::write(proj.path().join(".bougie/state/resolved"), &resolved).unwrap();
+    std::fs::write(proj.path().join("vendor/bougie/state/resolved"), &resolved).unwrap();
 
     let cfg = seed_single_host(xdg.path(), "xdebug-q.bougie.run", proj.path());
     let server = ServerHandle::spawn(&env, &cfg, &bougie_home);

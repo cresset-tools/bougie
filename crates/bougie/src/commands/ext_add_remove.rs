@@ -260,7 +260,7 @@ pub fn remove(
                 dev: false,
             },
         )?;
-        let fragment_removed = conf_d::remove_ext_fragment(&project_root, &name)?;
+        let fragment_removed = conf_d::remove_ext_fragment(&paths, &project_root, &name)?;
 
         items.push(ExtItem {
             name,
@@ -300,7 +300,7 @@ fn parse_name_with_optional_version(raw: &str) -> Result<(String, Option<String>
     }
 }
 
-/// Read the project's resolved PHP from `.bougie/state/resolved` —
+/// Read the project's resolved PHP from `vendor/bougie/state/resolved` —
 /// that's the single source of truth for which `(php_minor, flavor)`
 /// the extension must match. Falls out of `ensure_synced`; absent
 /// only if `--no-sync` was passed against an unsynced project.
@@ -313,10 +313,11 @@ pub use bougie_installer::install::resolved_php_for_ext_install;
 
 /// Install a local `.so` file: ELF-probe it for the extension name
 /// and `zend_extension=` vs `extension=` kind, copy into the
-/// content-addressed store, and write a fragment in
-/// `.bougie/conf.d-local/`. Does not modify `composer.json` — local
-/// extensions are ad-hoc tooling (profilers, vendor binaries) and not
-/// part of the portable project dependency set.
+/// content-addressed store, and write a fragment in the durable,
+/// machine-local `conf.d-local/` (under `$BOUGIE_HOME`). Does not
+/// modify `composer.json` — local extensions are ad-hoc tooling
+/// (profilers, vendor binaries) and not part of the portable project
+/// dependency set.
 fn install_local_arg(
     paths: &Paths,
     project_root: &Path,
@@ -344,6 +345,7 @@ fn install_local_arg(
     };
     let installed = install_local_so(paths, &detected.name, &source_so, php_minor, flavor)?;
     let conf_d_path = conf_d::write_local_ext_fragment(
+        paths,
         project_root,
         &detected.name,
         &installed.so_path,
@@ -362,11 +364,11 @@ fn install_local_arg(
 fn locate_project_root() -> Result<PathBuf> {
     let cwd = std::env::current_dir()?;
     cwd.ancestors()
-        .find(|p| p.join(".bougie").is_dir())
+        .find(|p| bougie_paths::project::is_root(p))
         .map(Path::to_path_buf)
         .ok_or_else(|| {
             eyre!(
-                "no bougie project here (no `.bougie/` in {} or any parent) — \
+                "no bougie project here (no `vendor/bougie/` in {} or any parent) — \
                  run `bougie init` first",
                 cwd.display()
             )

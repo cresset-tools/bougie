@@ -14,5 +14,8 @@ version = "0.11"
 [dependencies.eyre]
 version = "0.6"
 
+[dependencies.sha2]
+version = "0.11"
+
 [lints]
 workspace = true

@@ -149,20 +149,27 @@ fn scaffold(
         created.push(rel(PathBuf::from("composer.json")));
     }
 
-    let bougie_dir = root.join(".bougie");
+    // The project-local toolchain dir lives under `vendor/` now (it's
+    // disposable — `rm -rf vendor` + `bougie sync` rebuilds it), so its
+    // path relative to the project root is `vendor/bougie`.
+    let bougie_dir = bougie_paths::project::dir(root);
+    let bougie_rel = PathBuf::from("vendor").join("bougie");
     for sub in ["conf.d", "bin", "state"] {
         let p = bougie_dir.join(sub);
         if !p.exists() {
             fs::create_dir_all(&p)
                 .wrap_err_with(|| format!("creating {}", p.display()))?;
-            created.push(rel(PathBuf::from(".bougie").join(sub)));
+            created.push(rel(bougie_rel.join(sub)));
         }
     }
 
+    // Self-contained ignore (mirrors what Cargo writes into `target/`):
+    // a single `*` keeps the whole disposable tree out of git even if
+    // the project doesn't already ignore `vendor/`.
     let gitignore = bougie_dir.join(".gitignore");
     if !gitignore.exists() {
-        fs::write(&gitignore, "bin/\nstate/\n").wrap_err("writing .bougie/.gitignore")?;
-        created.push(rel(PathBuf::from(".bougie").join(".gitignore")));
+        fs::write(&gitignore, "*\n").wrap_err("writing vendor/bougie/.gitignore")?;
+        created.push(rel(bougie_rel.join(".gitignore")));
     }
 
     if with_toml {

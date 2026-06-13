@@ -4,7 +4,7 @@
 //!   "normal" handles every request that isn't explicitly tagged for
 //!   debugging; "xdebug" is the lazy debug-friendly twin.
 //! - Variant conf.d is materialized on spawn by symlinking from the
-//!   project's `.bougie/conf.d{,-debug}/` — normal reads only `conf.d/`,
+//!   project's `vendor/bougie/conf.d{,-debug}/` — normal reads only `conf.d/`,
 //!   xdebug reads both. The pool `.conf` is rendered alongside it.
 //! - First request to the xdebug variant triggers a synchronous
 //!   `bougie install xdebug` (via `ensure_debug_extension`) so users
@@ -227,14 +227,21 @@ impl PoolManager {
         }
     }
 
-    /// Source `.bougie/conf.d*` dirs to merge into a variant's
-    /// `<variant>.confd/`. Normal pool reads only `conf.d/`; xdebug
+    /// The global bougie paths — used by the watcher to locate the
+    /// durable `conf.d-local/` under `$BOUGIE_HOME`.
+    pub fn bougie_paths(&self) -> &Paths {
+        &self.bougie_paths
+    }
+
+    /// Source conf.d dirs to merge into a variant's `<variant>.confd/`.
+    /// Normal pool reads `conf.d/` + the durable `conf.d-local/`; xdebug
     /// pool also reads `conf.d-debug/` (where xdebug.ini lives). Order
     /// matters: the regular dir comes first so a primary entry would
-    /// shadow a stale duplicate in the debug overlay.
-    fn variant_source_dirs(variant: &str, project: &Path) -> Vec<PathBuf> {
+    /// shadow a stale duplicate in the debug overlay. `conf.d-local/`
+    /// lives under `$BOUGIE_HOME`, hence the `paths` argument.
+    fn variant_source_dirs(paths: &Paths, variant: &str, project: &Path) -> Vec<PathBuf> {
         let regular = bougie_installer::conf_d::project_confd_dir(project);
-        let local = bougie_installer::conf_d::project_confd_local_dir(project);
+        let local = paths.project_confd_local(project);
         match variant {
             "xdebug" => vec![regular, local, bougie_installer::conf_d::project_confd_debug_dir(project)],
             _ => vec![regular, local],
@@ -252,7 +259,7 @@ impl PoolManager {
     pub async fn get_or_spawn(&self, project: &Path, variant: &str) -> Result<Arc<Pool>> {
         let (version, flavor) = read_project_resolved(project).wrap_err_with(|| {
             format!(
-                "reading .bougie/state/resolved in {}",
+                "reading vendor/bougie/state/resolved in {}",
                 project.display(),
             )
         })?;
@@ -317,7 +324,7 @@ impl PoolManager {
     /// Walk every active pool whose project matches `project` and
     /// re-issue `build_variant_confd` + SIGUSR2 to the master.
     ///
-    /// On file-watch events for `<project>/.bougie/conf.d/`: this is
+    /// On file-watch events for `<project>/vendor/bougie/conf.d/`: this is
     /// what swaps in a freshly-installed extension without killing the
     /// master. In-flight requests finish on the old workers; new ones
     /// see the new conf.d.
@@ -328,7 +335,8 @@ impl PoolManager {
             let confd_dir = self
                 .server_paths
                 .pool_confd(&pool.key.project, &pool.key.variant);
-            let sources = Self::variant_source_dirs(&pool.key.variant, project);
+            let sources =
+                Self::variant_source_dirs(&self.bougie_paths, &pool.key.variant, project);
             let source_refs: Vec<&Path> = sources.iter().map(PathBuf::as_path).collect();
             conf_d::build_variant_confd(&confd_dir, &source_refs)?;
             pool.reload()?;
@@ -339,7 +347,7 @@ impl PoolManager {
 
     /// Drop every active pool whose project matches `project`. The
     /// next request lazily respawns against whatever
-    /// `.bougie/state/resolved` says now — so a PHP-version change
+    /// `vendor/bougie/state/resolved` says now — so a PHP-version change
     /// rolls in transparently.
     pub async fn restart_project(&self, project: &Path) -> usize {
         let keys_to_drop: Vec<PoolKey> = {
@@ -522,11 +530,11 @@ impl PoolManager {
 
         // System PHP loads its own conf.d; bougie injects none. Managed
         // installs get the per-variant conf.d merged from the project's
-        // `.bougie/conf.d{,-debug}/`.
+        // `vendor/bougie/conf.d{,-debug}/` + the durable `conf.d-local/`.
         let inject_confd = system_php.is_none();
         let confd_dir = self.server_paths.pool_confd(project, &key.variant);
         if inject_confd {
-            let sources = Self::variant_source_dirs(&key.variant, project);
+            let sources = Self::variant_source_dirs(&self.bougie_paths, &key.variant, project);
             let source_refs: Vec<&Path> = sources.iter().map(PathBuf::as_path).collect();
             conf_d::build_variant_confd(&confd_dir, &source_refs)?;
         }
@@ -801,11 +809,11 @@ where
 
 /// Ensure a debug-only extension is installed and the server's
 /// xdebug pool can find a fragment for it. Idempotent: if a fragment
-/// for `name` already exists in *either* `.bougie/conf.d/` (because
-/// the user ran `bougie ext add xdebug`) or `.bougie/conf.d-debug/`
+/// for `name` already exists in *either* `vendor/bougie/conf.d/` (because
+/// the user ran `bougie ext add xdebug`) or `vendor/bougie/conf.d-debug/`
 /// (because a previous request already triggered this path), this is
 /// a no-op. Otherwise the .so is fetched/located in the store and a
-/// fragment is written to `.bougie/conf.d-debug/` — the server's
+/// fragment is written to `vendor/bougie/conf.d-debug/` — the server's
 /// private overlay, invisible to `bougie run` and the normal pool.
 ///
 /// The install side uses [`bougie_installer::install::install_extension`], which
@@ -817,7 +825,7 @@ async fn ensure_debug_extension(
     name: &str,
     bougie_paths: &Paths,
 ) -> Result<()> {
-    if bougie_installer::conf_d::fragment_present_anywhere(project, name) {
+    if bougie_installer::conf_d::fragment_present_anywhere(bougie_paths, project, name) {
         return Ok(());
     }
     let project = project.to_path_buf();

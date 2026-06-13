@@ -264,7 +264,7 @@ fn ext_add_redis_installs_so_and_edits_composer_json_no_composer_subprocess() {
 
     // Fresh project with a composer.json pinned to 8.3.12 (so the
     // extension resolver gets a concrete php_minor without hand-holding).
-    std::fs::create_dir_all(proj.path().join(".bougie")).unwrap();
+    std::fs::create_dir_all(proj.path().join("vendor").join("bougie")).unwrap();
     std::fs::write(
         proj.path().join("composer.json"),
         r#"{
@@ -296,7 +296,7 @@ fn ext_add_redis_installs_so_and_edits_composer_json_no_composer_subprocess() {
     );
 
     // conf.d fragment exists with the right load directive + path.
-    let frag = proj.path().join(".bougie/conf.d/20-redis.ini");
+    let frag = proj.path().join("vendor/bougie/conf.d/20-redis.ini");
     let body = std::fs::read_to_string(&frag).expect("20-redis.ini should exist");
     assert!(body.contains("extension="));
     assert!(!body.contains("zend_extension"), "redis is a regular ext, not zend");
@@ -358,7 +358,7 @@ fn ext_add_redis_updates_lockfile_content_hash_when_present() {
     }
 }
 "#;
-    std::fs::create_dir_all(proj.path().join(".bougie")).unwrap();
+    std::fs::create_dir_all(proj.path().join("vendor").join("bougie")).unwrap();
     std::fs::write(proj.path().join("composer.json"), composer_json_body).unwrap();
 
     // Pre-existing composer.lock whose content-hash matches the
@@ -429,7 +429,7 @@ fn ext_list_only_available_marks_installed_rows() {
     let trust = write_trust_root(&env, &fx.pub_pem);
     let proj = tempfile::TempDir::new().unwrap();
 
-    std::fs::create_dir_all(proj.path().join(".bougie")).unwrap();
+    std::fs::create_dir_all(proj.path().join("vendor").join("bougie")).unwrap();
     std::fs::write(
         proj.path().join("composer.json"),
         r#"{

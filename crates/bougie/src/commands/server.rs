@@ -141,7 +141,7 @@ fn open_url(url: &str) -> Result<()> {
 use bougie_output::output::emit;
 
 /// Walk up from cwd for a project root (`bougie.toml` / `composer.json`
-/// / `.bougie/`). Cross-platform mirror of
+/// / `vendor/bougie/`). Cross-platform mirror of
 /// `services::config_mut::locate_project_root`, which lives in the
 /// Unix-only services module.
 fn locate_project_root() -> Result<PathBuf> {
@@ -149,13 +149,13 @@ fn locate_project_root() -> Result<PathBuf> {
     for anc in cwd.ancestors() {
         if anc.join("bougie.toml").is_file()
             || anc.join("composer.json").is_file()
-            || anc.join(".bougie").is_dir()
+            || bougie_paths::project::is_root(anc)
         {
             return Ok(anc.to_path_buf());
         }
     }
     Err(eyre::eyre!(
-        "no bougie project found (no `composer.json`, `bougie.toml`, or `.bougie/` in {} or any parent)",
+        "no bougie project found (no `composer.json`, `bougie.toml`, or `vendor/bougie/` in {} or any parent)",
         cwd.display()
     ))
 }

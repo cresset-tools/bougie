@@ -58,7 +58,7 @@ pub struct LifecycleHooks<'a> {
 impl<'a> LifecycleHooks<'a> {
     /// Build the hooks for a project. Reads `composer.json` for the
     /// `scripts` table and resolves the project PHP binary (falling back to
-    /// the `.bougie/bin/php` shim, which is on `PATH` post-sync).
+    /// the `vendor/bougie/bin/php` shim, which is on `PATH` post-sync).
     pub fn new(project_root: &'a Path, dev_mode: bool, kind: Lifecycle) -> Result<Self> {
         let composer_json = project_root.join("composer.json");
         let value: serde_json::Value = std::fs::read(&composer_json)
@@ -68,7 +68,7 @@ impl<'a> LifecycleHooks<'a> {
         let scripts = Scripts::parse(&value);
 
         let php_bin = super::env::resolve_php_bin(project_root)
-            .unwrap_or_else(|| project_root.join(".bougie").join("bin").join("php"));
+            .unwrap_or_else(|| bougie_paths::project::bin_dir(project_root).join("php"));
         let bin_dir = project_root.join("vendor").join("bin");
         let base_env = super::env::project_script_env(project_root, dev_mode);
         let timeout = process_timeout(&value);

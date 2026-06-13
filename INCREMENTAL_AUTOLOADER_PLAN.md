@@ -18,7 +18,7 @@ profile in #107). Today's dev-loop UX is "save file, run
 dump-autoloader, wait 2 s, refresh browser."
 
 bougie-server is a long-lived process. It already watches
-`<project>/.bougie/conf.d/`, `composer.json`, and `bougie.toml`
+`<project>/vendor/bougie/conf.d/`, `composer.json`, and `bougie.toml`
 (SERVER.md §7.2; impl: `crates/bougie-server/src/server/watcher.rs`),
 and serves HTTP via axum, dispatching either to a PHP-FPM pool over
 FastCGI (`server/router.rs::serve_php`) or to a static file

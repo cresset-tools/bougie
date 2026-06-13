@@ -8,6 +8,9 @@ repository = "https://github.com/cresset-tools/bougie"
 rust-version = "1.95"
 authors.workspace = true
 
+[dependencies.bougie-paths]
+workspace = true
+
 [dependencies.eyre]
 version = "0.6"
 
