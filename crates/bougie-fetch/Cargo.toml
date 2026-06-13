@@ -15,6 +15,9 @@ bougie-output = { workspace = true }
 [dependencies.eyre]
 version = "0.6"
 
+[dependencies.flate2]
+version = "1.1"
+
 [dependencies.indicatif]
 version = "0.18"
 
