@@ -286,7 +286,7 @@ pub enum Command {
         /// Skip the implicit `bougie sync` before running.
         #[arg(long)]
         no_sync: bool,
-        /// Layer the server's debug overlay (`.bougie/conf.d-debug/`)
+        /// Layer the server's debug overlay (`vendor/bougie/conf.d-debug/`)
         /// into `PHP_INI_SCAN_DIR` and set `XDEBUG_SESSION=1` for the
         /// child. Installs xdebug on first use if not already present.
         #[arg(long)]
@@ -639,8 +639,9 @@ pub enum ExtCommand {
     /// `.so` file (e.g. `/opt/tideways/tideways-php-8.5.so`), in which
     /// case bougie copies it into the store, auto-detects the
     /// extension name and Zend-ness from the binary, and writes a
-    /// fragment to `.bougie/conf.d-local/` without touching
-    /// composer.json. Mix and match in one invocation.
+    /// fragment to the durable, machine-local `conf.d-local/` (under
+    /// `$BOUGIE_HOME`) without touching composer.json. Mix and match in
+    /// one invocation.
     Add {
         /// Extension names or `.so` paths (anything ending in `.so` is
         /// treated as a local file).

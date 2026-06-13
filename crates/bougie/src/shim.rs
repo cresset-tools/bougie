@@ -1,6 +1,6 @@
 //! `argv[0]`-dispatched exec path. Bougie is invoked as `php`,
 //! `php-fpm`, `composer`, or `unzip` via symlinks under
-//! `<project>/.bougie/bin/`. The `unzip` role exists because Composer's
+//! `<project>/vendor/bougie/bin/`. The `unzip` role exists because Composer's
 //! `ZipDownloader` prefers a PATH `unzip` over PHP's `ZipArchive`; see
 //! `commands::unzip` for the invocation surface.
 //!
@@ -89,7 +89,7 @@ fn cli_php_prelude_args(role: Role) -> &'static [&'static str] {
     }
 }
 
-/// Read `<project>/.bougie/state/resolved`, locate the install in
+/// Read `<project>/vendor/bougie/state/resolved`, locate the install in
 /// `$BOUGIE_HOME/installs/<resolved>/`, set `PHP_INI_SCAN_DIR`, and
 /// `execve` the real interpreter (or `composer`).
 pub fn exec(role: Role) -> Result<ExitCode> {
@@ -161,7 +161,7 @@ pub fn exec(role: Role) -> Result<ExitCode> {
     // this branch fires here in the shim — see
     // `commands::run::run`.
     let debug_overlay = bougie_installer::conf_d::xdebug_session_env_active();
-    let scan_dir = bougie_installer::conf_d::php_ini_scan_dir(&project_root, debug_overlay);
+    let scan_dir = bougie_installer::conf_d::php_ini_scan_dir(&paths, &project_root, debug_overlay);
 
     match role {
         Role::Php | Role::PhpFpm => {
@@ -242,7 +242,7 @@ fn exec_system_php(
 /// subcommand routes to `ComposerCommand::External`, which returns the
 /// "install the real Composer via `bougie tool`" error.
 ///
-/// Shared by the project-local `.bougie/bin/composer` shim and the
+/// Shared by the project-local `vendor/bougie/bin/composer` shim and the
 /// global `composer` entry seeded into the tool bin dir, so a bare
 /// `composer …` from any shell behaves exactly like `bougie composer …`.
 fn run_composer_native(args: Vec<std::ffi::OsString>) -> Result<ExitCode> {
@@ -299,11 +299,12 @@ fn run_and_propagate(mut cmd: std::process::Command, label: &str) -> Result<Exit
 /// Resolve the project root the shim should read state from. In order:
 ///
 /// 1. `$BOUGIE_PROJECT_ROOT` — set by `bougie run`, the most reliable source.
-/// 2. If argv[0] carries a directory part (e.g. `.bougie/bin/php` or an
-///    absolute path), walk three parents up from it (`.bougie/bin/php` →
-///    `.bougie/bin` → `.bougie` → project root).
+/// 2. If argv[0] carries a directory part (e.g. `vendor/bougie/bin/php`
+///    or an absolute path), walk four parents up from it
+///    (`vendor/bougie/bin/php` → `vendor/bougie/bin` → `vendor/bougie`
+///    → `vendor` → project root).
 /// 3. Otherwise argv[0] is a bare basename (PATH-resolved); walk up from
-///    cwd looking for a `.bougie/` directory.
+///    cwd looking for a `vendor/bougie/` directory.
 fn locate_project_root(argv0: &OsStr) -> Result<PathBuf> {
     let cwd = std::env::current_dir().wrap_err("getting cwd to locate project root")?;
     locate_project_root_inner(argv0, std::env::var_os("BOUGIE_PROJECT_ROOT"), &cwd)
@@ -328,8 +329,11 @@ fn locate_project_root_inner(
         } else {
             cwd.join(p)
         };
+        // `vendor/bougie/bin/php` → `vendor/bougie/bin` →
+        // `vendor/bougie` → `vendor` → project root (four parents).
         return abs
             .parent()
+            .and_then(|q| q.parent())
             .and_then(|q| q.parent())
             .and_then(|q| q.parent())
             .map(Path::to_path_buf)
@@ -337,12 +341,12 @@ fn locate_project_root_inner(
     }
 
     for ancestor in cwd.ancestors() {
-        if ancestor.join(".bougie").is_dir() {
+        if bougie_paths::project::is_root(ancestor) {
             return Ok(ancestor.to_path_buf());
         }
     }
     Err(eyre!(
-        "no bougie project found (no .bougie/ in {} or any parent)",
+        "no bougie project found (no vendor/bougie/ in {} or any parent)",
         cwd.display()
     ))
 }
@@ -364,7 +368,7 @@ mod tests {
     #[test]
     fn detects_each_role_by_basename() {
         assert_eq!(
-            role_from_argv0(&OsString::from("/proj/.bougie/bin/php")),
+            role_from_argv0(&OsString::from("/proj/vendor/bougie/bin/php")),
             Some(Role::Php)
         );
         assert_eq!(
@@ -376,7 +380,7 @@ mod tests {
             Some(Role::Composer)
         );
         assert_eq!(
-            role_from_argv0(&OsString::from("/proj/.bougie/bin/unzip")),
+            role_from_argv0(&OsString::from("/proj/vendor/bougie/bin/unzip")),
             Some(Role::Unzip)
         );
     }
@@ -435,9 +439,9 @@ mod tests {
     }
 
     #[test]
-    fn locate_project_root_walks_two_parents() {
+    fn locate_project_root_walks_four_parents() {
         let root = locate_project_root_inner(
-            OsStr::new("/proj/.bougie/bin/php"),
+            OsStr::new("/proj/vendor/bougie/bin/php"),
             None,
             Path::new("/anywhere"),
         )
@@ -459,7 +463,7 @@ mod tests {
     #[test]
     fn locate_project_root_walks_cwd_for_bare_argv0() {
         let proj = tempfile::TempDir::new().unwrap();
-        std::fs::create_dir_all(proj.path().join(".bougie")).unwrap();
+        std::fs::create_dir_all(proj.path().join("vendor").join("bougie")).unwrap();
         let sub = proj.path().join("a/b");
         std::fs::create_dir_all(&sub).unwrap();
         let root = locate_project_root_inner(OsStr::new("php"), None, &sub).unwrap();

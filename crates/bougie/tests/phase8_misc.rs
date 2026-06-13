@@ -71,7 +71,7 @@ fn ext_add_in_project_without_sync_triggers_implicit_sync() {
     // "Syncing…" line on stderr.
     let env = TestEnv::new();
     let proj = tempfile::TempDir::new().unwrap();
-    std::fs::create_dir_all(proj.path().join(".bougie")).unwrap();
+    std::fs::create_dir_all(proj.path().join("vendor").join("bougie")).unwrap();
     std::fs::write(
         proj.path().join("composer.json"),
         r#"{"require":{"php":"8.3.12"}}"#,

@@ -73,14 +73,14 @@ fn sync_no_managed_php_uses_system_interpreter() {
     // The system-PHP marker is written with the stub's absolute path…
     let marker = proj
         .path()
-        .join(".bougie/state/resolved-php-path");
+        .join("vendor/bougie/state/resolved-php-path");
     let recorded = std::fs::read_to_string(&marker).expect("resolved-php-path written");
     let stub_php = std::fs::canonicalize(stub_dir.path().join("php")).unwrap();
     assert_eq!(recorded.trim(), stub_php.to_string_lossy());
 
     // …and the version/flavor marker matches the probed banner.
     let resolved =
-        std::fs::read_to_string(proj.path().join(".bougie/state/resolved")).unwrap();
+        std::fs::read_to_string(proj.path().join("vendor/bougie/state/resolved")).unwrap();
     assert_eq!(resolved.trim(), "8.3.99-nts");
 
     // The `php` shim execs the system interpreter.
@@ -118,7 +118,7 @@ fn ext_add_no_managed_php_errors_with_guidance() {
     let stub_dir = TempDir::new().unwrap();
     write_php_stub(stub_dir.path(), "8.3.99", "STUB-PHP-RAN");
 
-    std::fs::create_dir_all(proj.path().join(".bougie")).unwrap();
+    std::fs::create_dir_all(proj.path().join("vendor").join("bougie")).unwrap();
     std::fs::write(
         proj.path().join("composer.json"),
         r#"{"name":"acme/blog","require":{"php":"8.3.99"}}"#,

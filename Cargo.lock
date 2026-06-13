@@ -670,6 +670,7 @@ version = "0.27.0"
 dependencies = [
  "etcetera",
  "eyre",
+ "sha2 0.11.0",
 ]
 
 [[package]]
@@ -701,6 +702,7 @@ dependencies = [
 name = "bougie-recipe"
 version = "0.27.0"
 dependencies = [
+ "bougie-paths",
  "eyre",
  "rustix",
  "serde",

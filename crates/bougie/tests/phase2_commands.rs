@@ -98,7 +98,11 @@ fn shim_dispatch_via_argv0_symlink() {
     let env = TestEnv::new();
     let bin = assert_cmd::cargo::cargo_bin("bougie");
     let dir = tempfile::TempDir::new().unwrap();
-    let php_link = dir.path().join("php");
+    // The shim lives at `<project>/vendor/bougie/bin/php`; the argv[0]
+    // walk climbs four parents back to the (un-synced) project root.
+    let bin_dir = dir.path().join("vendor").join("bougie").join("bin");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    let php_link = bin_dir.join("php");
     symlink(&bin, &php_link).unwrap();
 
     let out = std::process::Command::new(&php_link)

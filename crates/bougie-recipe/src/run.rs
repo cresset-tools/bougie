@@ -208,8 +208,8 @@ pub fn current_bougie_dir() -> Option<PathBuf> {
 /// this process is driving, tearing its services down mid-recipe. So we
 /// pin the executable explicitly: materialize a `bougie` symlink →
 /// [`std::env::current_exe`] in a dedicated shim dir under the project's
-/// `.bougie/state/` and return that dir. The symlink is refreshed each
-/// run, so it always points at the bougie actually in use.
+/// `vendor/bougie/state/` and return that dir. The symlink is refreshed
+/// each run, so it always points at the bougie actually in use.
 ///
 /// Falls back to the executable's own directory (the previous behavior)
 /// if a symlink can't be created, so recipes still run in degraded
@@ -218,7 +218,7 @@ pub fn pinned_bougie_dir(project_root: &Path) -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     #[cfg(unix)]
     {
-        let dir = project_root.join(".bougie").join("state").join("bin");
+        let dir = bougie_paths::project::state_bin_dir(project_root);
         if std::fs::create_dir_all(&dir).is_ok() {
             let link = dir.join("bougie");
             // Refresh: a stale symlink (e.g. pointing at a since-replaced
@@ -350,8 +350,8 @@ run = "touch b.out"
     fn pinned_bougie_dir_symlinks_to_current_exe() {
         let dir = tempfile::tempdir().unwrap();
         let pinned = pinned_bougie_dir(dir.path()).expect("pinned dir");
-        // Lives under the project's .bougie/state so it's ephemeral + gitignored.
-        assert!(pinned.ends_with(".bougie/state/bin"), "{pinned:?}");
+        // Lives under the project's vendor/bougie/state so it's ephemeral + gitignored.
+        assert!(pinned.ends_with("vendor/bougie/state/bin"), "{pinned:?}");
         let link = pinned.join("bougie");
         assert!(link.is_symlink(), "expected a `bougie` symlink at {link:?}");
         assert_eq!(

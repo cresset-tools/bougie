@@ -137,7 +137,7 @@ Top-level subcommands (from `bougie-cli`):
   native reimplementation. An unrecognized subcommand
   (`create-project`, `archive`, `bump`, …) errors with a pointer to
   `bougie tool install composer/composer`. The `composer` shim symlink in
-  `.bougie/bin/` (and the global one in the tool bin dir) routes to these
+  `vendor/bougie/bin/` (and the global one in the tool bin dir) routes to these
   native subcommands, so `composer install` from a recipe or any shell runs
   bougie's native installer.
 - `cache {clean,prune,dir,size}` — Cache management.

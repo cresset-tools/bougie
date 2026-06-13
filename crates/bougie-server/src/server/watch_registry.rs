@@ -43,7 +43,7 @@ pub struct UserCodeRoot {
 }
 
 /// Every prefix the dispatch loop's `classify` consults to label
-/// incoming events. Walk longest-prefix first — `<project>/.bougie/
+/// incoming events. Walk longest-prefix first — `<project>/vendor/bougie/
 /// conf.d/` wins over `<project>/` when both match.
 #[derive(Debug, Default)]
 pub struct PathMap {

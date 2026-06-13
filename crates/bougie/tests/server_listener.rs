@@ -219,7 +219,7 @@ fn unknown_host_is_404() {
 #[test]
 fn php_request_without_resolved_php_returns_502() {
     // Phase 2 replaces the phase-1 501 stub with a real FastCGI
-    // dispatcher. With no `.bougie/state/resolved` in the project,
+    // dispatcher. With no `vendor/bougie/state/resolved` in the project,
     // the pool manager can't find a php-fpm binary and surfaces the
     // failure as 502 — actionable for the user.
     let env = TestEnv::new();

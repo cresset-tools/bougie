@@ -56,7 +56,7 @@ impl PlatformEnv {
 
     /// Best-effort detection of the project's PHP version, preferring
     /// the exact resolved pin written by `sync`
-    /// (`.bougie/state/resolved`) and falling back to the *declared*
+    /// (`vendor/bougie/state/resolved`) and falling back to the *declared*
     /// pin in composer.json (`extra.bougie.php.version`). The fallback
     /// matters because `bougie php pin` records the declared pin in
     /// composer.json immediately, but the resolved marker only appears
@@ -94,13 +94,14 @@ impl PlatformEnv {
     }
 }
 
-/// Read the exact resolved PHP version from `.bougie/state/resolved`
-/// (mirrors `bougie_fs::state::read_project_resolved`, inlined to avoid
-/// a crate dependency). The marker is `<version>-<flavor>`, e.g.
-/// `8.3.31-nts`; we keep the version up to the first `-`.
+/// Read the exact resolved PHP version from
+/// `vendor/bougie/state/resolved` (mirrors
+/// `bougie_fs::state::read_project_resolved`, inlined to avoid a crate
+/// dependency). The marker is `<version>-<flavor>`, e.g. `8.3.31-nts`;
+/// we keep the version up to the first `-`.
 fn read_resolved_pin(project_root: &Path) -> Option<Version> {
     let body =
-        std::fs::read_to_string(project_root.join(".bougie").join("state").join("resolved")).ok()?;
+        std::fs::read_to_string(bougie_paths::project::resolved(project_root)).ok()?;
     let line = body.trim();
     let version = line.split('-').next().unwrap_or(line);
     Version::parse(version).ok()
@@ -154,7 +155,7 @@ mod tests {
     #[test]
     fn from_project_reads_resolved_pin() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let state = tmp.path().join(".bougie").join("state");
+        let state = tmp.path().join("vendor").join("bougie").join("state");
         std::fs::create_dir_all(&state).unwrap();
         std::fs::write(state.join("resolved"), "8.3.31-nts\n").unwrap();
         let env = PlatformEnv::from_project(tmp.path());
@@ -183,7 +184,7 @@ mod tests {
     #[test]
     fn detect_prefers_resolved_marker_over_declared_pin() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let state = tmp.path().join(".bougie").join("state");
+        let state = tmp.path().join("vendor").join("bougie").join("state");
         std::fs::create_dir_all(&state).unwrap();
         std::fs::write(state.join("resolved"), "8.3.31-nts\n").unwrap();
         let composer_json = serde_json::json!({

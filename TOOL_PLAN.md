@@ -25,8 +25,8 @@ one:
 | Invocation                | PHP used            | conf.d source         | Project-aware? |
 | ---                       | ---                 | ---                   | ---            |
 | `phpstan` (global tool)   | tool's pinned PHP   | `$TOOL_DIR/conf.d/`   | No             |
-| `bougie run phpstan`      | project's pinned PHP| `<project>/.bougie/`  | Yes            |
-| `bougie run phpunit`      | project's pinned PHP| `<project>/.bougie/`  | Yes            |
+| `bougie run phpstan`      | project's pinned PHP| `<project>/vendor/bougie/`  | Yes            |
+| `bougie run phpunit`      | project's pinned PHP| `<project>/vendor/bougie/`  | Yes            |
 
 `bougie run` opts into project context. `bougie tool` opts out of it.
 
@@ -468,7 +468,7 @@ need clean messages:
 ## Interaction with existing surfaces
 
 - **`bougie run`** is unchanged. Inside a project, it goes through
-  `.bougie/bin/php`, not `tool-exec`. The two shim paths share zero
+  `vendor/bougie/bin/php`, not `tool-exec`. The two shim paths share zero
   code at runtime, only the `bougie` binary itself.
 - **`bougie services` / `bougied`** unaffected — tools don't talk to
   the supervisor.
