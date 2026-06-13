@@ -4,8 +4,14 @@ Reorganize the top-level CLI so the core workflow is discoverable and the
 "how do I start my project?" question has exactly one answer. Staged so each
 phase ships behind conventional commits without breaking muscle memory.
 
-Status: **Phase 1 done** (branch `feat/cli-reorg`); Phases 2–4 pending.
+Status: **Phases 1–2 done** (branch `feat/cli-reorg`); Phases 3–4 pending.
 Delete this file once all phases ship.
+
+Note: the existing `phase1x_services_*` integration tests still drive the
+deprecated top-level `bougie up`/`down` aliases (they print a stderr notice
+but forward fine). Migrate them to `bougie services up`/`down` in the same
+commit that *removes* the aliases — until then they double as forwarding
+coverage.
 
 ## Goals
 

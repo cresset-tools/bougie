@@ -251,29 +251,24 @@ pub enum Command {
         php: PhpPrefArgs,
     },
 
-    /// Start the project's declared services (or every service in
-    /// `names`) and provision the project's tenant in each. Equivalent
-    /// to the former `bougie services up` — promoted to a top-level
-    /// verb because it's the most common project-startup step.
+    /// Deprecated alias for `bougie services up`. Hidden; forwards with a
+    /// one-line notice. Removed in a future release.
+    #[command(hide = true)]
     Up {
         /// Service names to bring up. Empty = every declared service.
         names: Vec<String>,
         /// Start the services and return immediately instead of
-        /// attaching to their combined log stream. Attaching is the
-        /// default for an interactive (TTY) text-mode invocation;
-        /// non-interactive runs and `--format json-v1` always detach.
+        /// attaching to their combined log stream.
         #[arg(short = 'd', long)]
         detach: bool,
     },
 
-    /// Stop the project's declared services (or every service in
-    /// `names`). The shared global process stays up while any other
-    /// project's tenant remains. Equivalent to the former
-    /// `bougie services down`.
+    /// Deprecated alias for `bougie services down`. Hidden; forwards with
+    /// a one-line notice. Removed in a future release.
+    #[command(hide = true)]
     Down {
         names: Vec<String>,
-        /// Destroy persisted tenant data (e.g. FLUSHDB on redis). Off
-        /// by default — re-adding the service should restore state.
+        /// Destroy persisted tenant data (e.g. FLUSHDB on redis).
         #[arg(long)]
         purge: bool,
     },
@@ -452,6 +447,30 @@ pub enum Command {
 
 #[derive(Subcommand, Debug)]
 pub enum ServicesCommand {
+    /// Start the project's declared services (or every service in
+    /// `names`) and provision the project's tenant in each. For the
+    /// whole-project bring-up use `bougie start`.
+    Up {
+        /// Service names to bring up. Empty = every declared service.
+        names: Vec<String>,
+        /// Start the services and return immediately instead of
+        /// attaching to their combined log stream. Attaching is the
+        /// default for an interactive (TTY) text-mode invocation;
+        /// non-interactive runs and `--format json-v1` always detach.
+        #[arg(short = 'd', long)]
+        detach: bool,
+    },
+    /// Stop the project's declared services (or every service in
+    /// `names`). The shared global process stays up while any other
+    /// project's tenant remains. For the whole-project teardown use
+    /// `bougie stop`.
+    Down {
+        names: Vec<String>,
+        /// Destroy persisted tenant data (e.g. FLUSHDB on redis). Off
+        /// by default — re-adding the service should restore state.
+        #[arg(long)]
+        purge: bool,
+    },
     /// Declare a service in the project. Errors if the name isn't in
     /// the catalog. Use `bougie services catalog` to discover names.
     Add {
@@ -491,7 +510,7 @@ pub enum ServicesCommand {
     /// Tail (and optionally follow) service logs. With no name, shows
     /// the combined ("multilog") stream of every service declared in the
     /// project, each line prefixed with its (colorized) service name —
-    /// the same view `bougie up` attaches to.
+    /// the same view `bougie services up` attaches to.
     Logs {
         /// Service name. Omit to tail every declared service at once.
         name: Option<String>,
@@ -595,8 +614,8 @@ pub enum ServerCommand {
     /// multi-host `server.toml`, foreground, with no daemon. This is
     /// what `bougied` spawns and what CI / power users invoke directly;
     /// `--config` is required because a multi-host server has no single
-    /// project to default to. The bougied-managed path (`bougie up
-    /// server`) supplies its own service-scoped `server.toml`.
+    /// project to default to. The bougied-managed path (`bougie services
+    /// up server`) supplies its own service-scoped `server.toml`.
     Run {
         /// `server.toml` path. Required.
         #[arg(long, value_name = "PATH")]
@@ -625,8 +644,8 @@ pub enum ServerCommand {
         #[arg(value_name = "NAME")]
         name: Option<String>,
     },
-    /// Stop the shared dev server. Equivalent to `bougie down server`;
-    /// stops hosting for every project, since the server is shared.
+    /// Stop the shared dev server. Equivalent to `bougie services down
+    /// server`; stops hosting for every project, since the server is shared.
     Stop,
     /// Tail the dev server's request log. In a project, defaults to
     /// this project's host.
@@ -1429,6 +1448,26 @@ mod tests {
         };
         assert_eq!(names, ["redis"]);
         assert!(purge);
+    }
+
+    #[test]
+    fn up_down_live_under_services() {
+        assert!(matches!(
+            cmd(&["bougie", "services", "up", "redis", "-d"]),
+            Command::Services(ServicesCommand::Up { detach: true, .. })
+        ));
+        assert!(matches!(
+            cmd(&["bougie", "services", "down", "--purge"]),
+            Command::Services(ServicesCommand::Down { purge: true, .. })
+        ));
+    }
+
+    #[test]
+    fn top_level_up_down_still_parse_as_deprecated_aliases() {
+        // Hidden, but kept parseable so existing muscle memory / scripts
+        // forward for one release.
+        assert!(matches!(cmd(&["bougie", "up"]), Command::Up { .. }));
+        assert!(matches!(cmd(&["bougie", "down"]), Command::Down { .. }));
     }
 
     #[test]
