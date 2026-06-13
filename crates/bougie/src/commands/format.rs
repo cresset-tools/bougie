@@ -28,11 +28,10 @@ use std::ffi::OsString;
 
 use bougie_paths::Paths;
 
-/// Default pinned wick version. `wick-v0.2.1` is the first release that
-/// carries prebuilt binaries (0.1.0 was crates.io-only; 0.2.0's binary
-/// build failed). Bump in lockstep with the wick version bougie should
-/// ship against.
-const DEFAULT_WICK_VERSION: &str = "0.2.1";
+/// Default pinned wick version (overridable with `BOUGIE_WICK_VERSION`).
+/// Bump in lockstep with the wick release bougie should ship against; the
+/// pinned version must have published prebuilt binaries.
+const DEFAULT_WICK_VERSION: &str = "0.2.3";
 const WICK_VERSION_ENV: &str = "BOUGIE_WICK_VERSION";
 
 const MIRROR_BASE: &str = "https://releases.bougie.tools/github/wick/releases/download";
