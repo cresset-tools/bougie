@@ -4,8 +4,8 @@ Reorganize the top-level CLI so the core workflow is discoverable and the
 "how do I start my project?" question has exactly one answer. Staged so each
 phase ships behind conventional commits without breaking muscle memory.
 
-Status: **Phases 1–3 done** (branch `feat/cli-reorg`); Phase 4 pending.
-Delete this file once all phases ship.
+Status: **All phases (1–4) done** (branch `feat/cli-reorg`). Ready to open a
+PR; delete this file once it ships.
 
 Note: the existing `phase1x_services_*` integration tests still drive the
 deprecated top-level `bougie up`/`down` aliases (they print a stderr notice
@@ -149,17 +149,23 @@ now runs the real deprovision path; `server stop` left as-is (not a dup).
 `--help`; clap can't group subcommands natively, but `next_help_heading` +
 deliberate variant ordering approximates it.
 
-Target grouping:
-- **Project**: `init`, `new`, `start`, `stop`, `sync`, `run`, `make`
-- **Dependencies**: `add`, `remove`, `lock`, `tree`, `outdated`, `composer`,
-  `ext`
-- **Toolchain**: `php`, `tool`
-- **Services & serving**: `services`, `server`
-- **Admin**: `cache`, `self`, `projects`
+**clap finding**: clap 4.6 derive has NO headed-group support for subcommands
+— `help_heading`/`next_help_heading` apply to args, not subcommands, and a
+`help_template` can't split the subcommand list. So "grouped help" is done two
+ways: `display_order` clusters the flat `Commands:` list, and an
+`after_long_help` cheat-sheet names the groups explicitly.
 
-Open question: `projects` was deliberately promoted to top-level this branch.
-It's low-frequency tenant admin — fits "Admin" above, but reverting placement
-is a separate call. Leave top-level for now; just group it under Admin.
+Implemented grouping (display_order bands 1–9 / 10–19 / 20–29 / 30–39 / 40–49):
+- **Project**: `init`, `new`, `start`, `stop`, `run`, `sync`, `make`
+- **Dependencies**: `add`, `remove`, `lock`, `tree`, `outdated`, `ext`,
+  `composer`
+- **Toolchain**: `php`, `tool`
+- **Services**: `server`, `services`, `projects`
+- **Admin**: `cache`, `self`
+
+`projects` grouped under Services (it's cross-project tenant admin, adjacent to
+`services`); left top-level, not reverted. The `COMMAND_GROUPS` cheat-sheet
+renders under `bougie --help` (long help).
 
 **Commit**: `docs(cli): group --help into project/deps/toolchain/services/admin`
 

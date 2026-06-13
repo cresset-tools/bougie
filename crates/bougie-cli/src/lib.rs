@@ -18,8 +18,30 @@ const HELP_STYLES: Styles = Styles::styled()
     .valid(AnsiColor::Green.on_default())
     .invalid(AnsiColor::Yellow.on_default().effects(Effects::BOLD));
 
+/// Grouped quick-reference appended to `bougie --help`. clap renders all
+/// subcommands in one flat "Commands:" list (it has no headed-group
+/// support), and `display_order` clusters that list into these same
+/// groups — this cheat-sheet just names the groups so the core verbs are
+/// findable at a glance.
+const COMMAND_GROUPS: &str = "\
+Command groups:
+  Project      init, new, start, stop, run, sync, make
+  Dependencies add, remove, lock, tree, outdated, ext, composer
+  Toolchain    php, tool
+  Services     server, services, projects
+  Admin        cache, self
+
+Run `bougie help <command>` for details on any command.";
+
 #[derive(Parser, Debug)]
-#[command(name = "bougie", version = LONG_VERSION, about, long_about = None, styles = HELP_STYLES)]
+#[command(
+    name = "bougie",
+    version = LONG_VERSION,
+    about,
+    long_about = None,
+    styles = HELP_STYLES,
+    after_long_help = COMMAND_GROUPS,
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Command,
@@ -69,6 +91,7 @@ pub enum OutputFormat {
 #[derive(Subcommand, Debug)]
 pub enum Command {
     /// Create a new project.
+    #[command(display_order = 1)]
     Init {
         /// Place bougie configuration in a bougie.toml file.
         #[arg(long)]
@@ -90,6 +113,7 @@ pub enum Command {
     },
 
     /// Create a new project in a new directory.
+    #[command(display_order = 2)]
     New {
         /// Directory to create under the current directory and scaffold
         /// the project into.
@@ -113,7 +137,7 @@ pub enum Command {
     },
 
     /// Manage PHP extensions.
-    #[command(subcommand)]
+    #[command(subcommand, display_order = 15)]
     Ext(ExtCommand),
 
     /// Add one or more packages to the project and sync. The uv-flavored
@@ -122,6 +146,7 @@ pub enum Command {
     /// explicit constraint uses the `@` syntax (`vendor/pkg@^1.0`), as in
     /// `bougie tool install` / `bougie ext add`. Edits `composer.json`,
     /// re-resolves `composer.lock`, and installs into `vendor/`.
+    #[command(display_order = 10)]
     Add {
         /// Packages to add, `vendor/pkg` or `vendor/pkg@<constraint>`.
         #[arg(value_name = "PACKAGES", required = true)]
@@ -152,6 +177,7 @@ pub enum Command {
 
     /// Remove one or more packages from the project and sync. The
     /// uv-flavored twin of `composer remove`.
+    #[command(display_order = 11)]
     Remove {
         /// Packages to remove (`vendor/name`).
         #[arg(value_name = "PACKAGES", required = true)]
@@ -178,6 +204,7 @@ pub enum Command {
     /// where still valid, re-resolving only what changed. Never bumps
     /// versions and never installs — use `bougie composer update` to pull
     /// newer versions.
+    #[command(display_order = 12)]
     Lock {
         /// Run in this directory instead of CWD (`-d`).
         #[arg(short = 'd', long = "working-dir", value_name = "DIR")]
@@ -189,6 +216,7 @@ pub enum Command {
 
     /// Print the project's dependency tree (native; uv's `uv tree`).
     /// Reads `composer.lock`.
+    #[command(display_order = 13)]
     Tree {
         /// Root the tree at this package instead of the project.
         #[arg(value_name = "PACKAGE")]
@@ -204,6 +232,7 @@ pub enum Command {
     /// List installed packages with a newer version available (native;
     /// like `uv`/`pnpm outdated`). Reads `composer.lock` and queries the
     /// configured repositories.
+    #[command(display_order = 14)]
     Outdated {
         /// Optional `vendor/name` filters; with none, all are considered.
         #[arg(value_name = "PACKAGES")]
@@ -232,6 +261,7 @@ pub enum Command {
     },
 
     /// Install everything the project requires.
+    #[command(display_order = 6)]
     Sync {
         /// Don't try to download anything, this will fail if there are uncached packages.
         #[arg(long)]
@@ -274,6 +304,7 @@ pub enum Command {
     },
 
     /// Run a command in the project environment.
+    #[command(display_order = 5)]
     Run {
         /// Add a temporary extension for this invocation.
         #[arg(long, value_name = "EXT=VER")]
@@ -301,7 +332,7 @@ pub enum Command {
     },
 
     /// Manage PHP interpreters.
-    #[command(subcommand)]
+    #[command(subcommand, display_order = 20)]
     Php(PhpCommand),
 
     /// Manage Node.js interpreters (for projects that build frontend
@@ -316,12 +347,12 @@ pub enum Command {
     /// unrecognized subcommand errors with a pointer to
     /// `bougie tool install composer/composer` for the full upstream
     /// Composer.
-    #[command(subcommand)]
+    #[command(subcommand, display_order = 16)]
     Composer(ComposerCommand),
 
     /// Manage globally-installed, isolated PHP CLI tools. See
     /// `TOOL_PLAN.md` for the design.
-    #[command(subcommand)]
+    #[command(subcommand, display_order = 21)]
     Tool(ToolCommand),
 
     /// Runtime shim invoked by tool wrappers (`#!.../bougie tool-exec`).
@@ -337,29 +368,30 @@ pub enum Command {
     },
 
     /// Manage bougie's cache.
-    #[command(subcommand)]
+    #[command(subcommand, display_order = 40)]
     Cache(CacheCommand),
 
     /// Manage the bougie binary itself.
     #[command(subcommand)]
-    #[command(name = "self")]
+    #[command(name = "self", display_order = 41)]
     SelfCmd(SelfCommand),
 
     /// Run the bougie development HTTP server for the current project.
     /// With no subcommand, registers the project with the shared dev
     /// server, prints its URL, and streams its log (Ctrl-C detaches).
     /// See SERVER.md.
+    #[command(display_order = 30)]
     Server(ServerArgs),
 
     /// Manage project-scoped dev services (mariadb, redis, …). See
     /// SERVICES.md and CLI.md §3.8.
-    #[command(subcommand)]
+    #[command(subcommand, display_order = 31)]
     Services(ServicesCommand),
 
     /// Inspect and manage provisioned tenants across the shared dev
     /// services and the project each belongs to. Reads the on-disk
     /// tenant ledgers; no daemon required.
-    #[command(subcommand)]
+    #[command(subcommand, display_order = 32)]
     Projects(ProjectsCommand),
 
     /// Bring the whole project up: run the detected recipe's `start`
@@ -367,6 +399,7 @@ pub enum Command {
     /// starts the project's services, runs any setup, and starts the
     /// dev server. The project lifecycle umbrella (ddev's `start`).
     /// For an individual task use `bougie make <task>`. Unix-only.
+    #[command(display_order = 3)]
     Start {
         /// Skip the implicit `bougie sync` prologue.
         #[arg(long)]
@@ -390,6 +423,7 @@ pub enum Command {
     /// `server` service is declared. The shared daemon and any other
     /// project's tenants stay up. The teardown twin of `bougie start`.
     /// Unix-only.
+    #[command(display_order = 4)]
     Stop {
         /// Service names to stop. Empty = every declared service.
         names: Vec<String>,
@@ -402,6 +436,7 @@ pub enum Command {
     /// Walk a project recipe's DAG, running tasks whose freshness
     /// check fails. With no task, lists the available tasks; use
     /// `bougie start` to bring the whole project up. See RECIPES.md.
+    #[command(display_order = 7)]
     Make {
         /// Task to run. With none, the available tasks are listed.
         task: Option<String>,
