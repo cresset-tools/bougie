@@ -62,6 +62,7 @@ pub(crate) fn psr4(
         installer_paths,
         |pkg| &pkg.autoload.psr4,
         |r| &r.autoload.psr4,
+        |r| &r.autoload_dev.psr4,
     )
 }
 
@@ -78,6 +79,7 @@ pub(crate) fn psr0(
         installer_paths,
         |pkg| &pkg.autoload.psr0,
         |r| &r.autoload.psr0,
+        |r| &r.autoload_dev.psr0,
     )
 }
 
@@ -88,17 +90,19 @@ pub(crate) fn psr0(
 /// packages declaring the same namespace would emit duplicate map
 /// keys in `autoload_psr4.php` — invalid PHP that silently overrides
 /// at runtime — and the path-list order would diverge from Composer's.
-fn aggregate_psr<'a, F, G>(
+fn aggregate_psr<'a, F, G, H>(
     root: &'a RootManifest,
     lock: &'a LockFile,
     no_dev: bool,
     installer_paths: &InstallerPaths,
     psr_pkg: F,
     psr_root: G,
+    psr_root_dev: H,
 ) -> Vec<Entry>
 where
     F: Fn(&'a crate::lock::Package) -> &'a Vec<(String, Vec<String>)>,
     G: Fn(&'a RootManifest) -> &'a Vec<(String, Vec<String>)>,
+    H: Fn(&'a RootManifest) -> &'a Vec<(String, Vec<String>)>,
 {
     let mut out: Vec<Entry> = vec![];
     let push = |out: &mut Vec<Entry>, prefix: &str, path: String| {
@@ -122,6 +126,22 @@ where
                 prefix,
                 format!("$baseDir . '/{}'", normalize_emit_dir(d)),
             );
+        }
+    }
+    // Root dev autoload — Composer merges the root package's `autoload-dev`
+    // into its `autoload` when dev deps are included, so these entries belong
+    // with the root block (ahead of any dependency). Skipped under `--no-dev`.
+    // Without this the root's `Tests\` (and any dev PSR-* prefix) is dropped
+    // from `autoload_psr4.php`, breaking test bootstrapping.
+    if !no_dev {
+        for (prefix, dirs) in psr_root_dev(root) {
+            for d in dirs {
+                push(
+                    &mut out,
+                    prefix,
+                    format!("$baseDir . '/{}'", normalize_emit_dir(d)),
+                );
+            }
         }
     }
     for pkg in lock.reverse_sorted_packages(no_dev) {
@@ -183,6 +203,15 @@ pub(crate) fn files(
             identifier: file_identifier("__root__", f),
             path_expr: format!("$baseDir . '/{}'", strip_leading_slash(f)),
         });
+    }
+    // Root dev `files` — included with the root block unless `--no-dev`.
+    if !no_dev {
+        for f in &root.autoload_dev.files {
+            out.push(FileEntry {
+                identifier: file_identifier("__root__", f),
+                path_expr: format!("$baseDir . '/{}'", strip_leading_slash(f)),
+            });
+        }
     }
     out
 }
@@ -279,6 +308,11 @@ pub(crate) fn build_classmap_tasks(
     for raw in &root.autoload.exclude_from_classmap {
         exclude_patterns.push((canonical(project_root.to_path_buf()), raw.clone()));
     }
+    if !no_dev {
+        for raw in &root.autoload_dev.exclude_from_classmap {
+            exclude_patterns.push((canonical(project_root.to_path_buf()), raw.clone()));
+        }
+    }
     let exclude_default = ExcludePatterns::build(&exclude_patterns);
 
     // Second pre-compiled set with the project's `vendor/` appended.
@@ -312,6 +346,19 @@ pub(crate) fn build_classmap_tasks(
             // PSR-* scan gets the auto-exclude.
             needs_vendor_exclude: false,
         });
+    }
+    // Root dev classmap dirs — merged into the root block by Composer when
+    // dev deps are included; sit with the root entries, before any package.
+    if !no_dev {
+        for dir in &root.autoload_dev.classmap {
+            tasks.push(Task {
+                origin: Origin::Root,
+                scan_root: canonical(project_root.join(strip_leading_slash(dir))),
+                install_abs: project_root_abs.clone(),
+                filter: NamespaceFilter::None,
+                needs_vendor_exclude: false,
+            });
+        }
     }
     for pkg in lock.reverse_sorted_packages(no_dev) {
         if pkg.autoload.classmap.is_empty() {
@@ -371,6 +418,30 @@ pub(crate) fn build_classmap_tasks(
                 ));
             }
         }
+        // Root dev PSR-4 — Composer merges `autoload-dev` into the root
+        // package, so its prefixes (e.g. `Tests\`) are scanned into the
+        // optimized classmap too (root-first, ahead of dependencies).
+        if !no_dev {
+            for (ns, dirs) in &root.autoload_dev.psr4 {
+                for dir in dirs {
+                    let scan_root = canonical(project_root.join(strip_leading_slash(dir)));
+                    let needs_vendor_exclude = spans_vendor(&scan_root);
+                    psr_tasks.push((
+                        ns.clone(),
+                        Task {
+                            origin: Origin::Root,
+                            scan_root: scan_root.clone(),
+                            install_abs: project_root_abs.clone(),
+                            filter: NamespaceFilter::Psr4 {
+                                namespace: ns.clone(),
+                                base: scan_root,
+                            },
+                            needs_vendor_exclude,
+                        },
+                    ));
+                }
+            }
+        }
         for (ns, dirs) in &root.autoload.psr0 {
             for dir in dirs {
                 let scan_root = canonical(project_root.join(strip_leading_slash(dir)));
@@ -388,6 +459,28 @@ pub(crate) fn build_classmap_tasks(
                         needs_vendor_exclude,
                     },
                 ));
+            }
+        }
+        // Root dev PSR-0 — same merge rule as dev PSR-4 above.
+        if !no_dev {
+            for (ns, dirs) in &root.autoload_dev.psr0 {
+                for dir in dirs {
+                    let scan_root = canonical(project_root.join(strip_leading_slash(dir)));
+                    let needs_vendor_exclude = spans_vendor(&scan_root);
+                    psr_tasks.push((
+                        ns.clone(),
+                        Task {
+                            origin: Origin::Root,
+                            scan_root: scan_root.clone(),
+                            install_abs: project_root_abs.clone(),
+                            filter: NamespaceFilter::Psr0 {
+                                namespace: ns.clone(),
+                                base: scan_root,
+                            },
+                            needs_vendor_exclude,
+                        },
+                    ));
+                }
             }
         }
         for pkg in lock.reverse_sorted_packages(no_dev) {
