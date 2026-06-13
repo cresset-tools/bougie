@@ -367,13 +367,48 @@ pub enum Command {
     #[command(subcommand)]
     Projects(ProjectsCommand),
 
+    /// Bring the whole project up: run the detected recipe's `start`
+    /// task, whose DAG syncs the toolchain + vendor, provisions and
+    /// starts the project's services, runs any setup, and starts the
+    /// dev server. The project lifecycle umbrella (ddev's `start`).
+    /// For an individual task use `bougie make <task>`. Unix-only.
+    Start {
+        /// Skip the implicit `bougie sync` prologue.
+        #[arg(long)]
+        no_sync: bool,
+        /// Show what would run, but don't execute.
+        #[arg(long)]
+        dry_run: bool,
+        /// Explain why each step runs or skips.
+        #[arg(long)]
+        explain: bool,
+        /// Ignore the builtin recipe; use only `bougie.toml`.
+        #[arg(long)]
+        no_builtin: bool,
+        /// Force a specific builtin (e.g. `magento`).
+        #[arg(long, value_name = "NAME")]
+        recipe: Option<String>,
+    },
+
+    /// Bring the project down: stop its declared services (or every
+    /// service in `names`), including the dev-server tenant when the
+    /// `server` service is declared. The shared daemon and any other
+    /// project's tenants stay up. The teardown twin of `bougie start`.
+    /// Unix-only.
+    Stop {
+        /// Service names to stop. Empty = every declared service.
+        names: Vec<String>,
+        /// Destroy persisted tenant data (e.g. FLUSHDB on redis). Off
+        /// by default — `bougie start` should restore state.
+        #[arg(long)]
+        purge: bool,
+    },
+
     /// Walk a project recipe's DAG, running tasks whose freshness
-    /// check fails. `bougie start` is a zero-arg alias for
-    /// `bougie make start`. See RECIPES.md.
-    #[command(alias = "start")]
+    /// check fails. With no task, lists the available tasks; use
+    /// `bougie start` to bring the whole project up. See RECIPES.md.
     Make {
-        /// Task to run. Defaults to `start` — so `bougie make` and
-        /// `bougie start` are equivalent.
+        /// Task to run. With none, the available tasks are listed.
         task: Option<String>,
         /// List available tasks instead of running.
         #[arg(long, conflicts_with_all = ["dry_run", "explain", "print"])]
@@ -1367,4 +1402,50 @@ pub struct ToolRunArgs {
 pub struct BgxArgs {
     #[command(flatten)]
     pub tool_run: ToolRunArgs,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    fn cmd(argv: &[&str]) -> Command {
+        Cli::try_parse_from(argv).expect("parse").command
+    }
+
+    #[test]
+    fn start_is_its_own_verb() {
+        assert!(matches!(cmd(&["bougie", "start"]), Command::Start { .. }));
+        assert!(matches!(
+            cmd(&["bougie", "start", "--no-sync", "--dry-run"]),
+            Command::Start { no_sync: true, dry_run: true, .. }
+        ));
+    }
+
+    #[test]
+    fn stop_takes_names_and_purge() {
+        let Command::Stop { names, purge } = cmd(&["bougie", "stop", "redis", "--purge"]) else {
+            panic!("expected stop");
+        };
+        assert_eq!(names, ["redis"]);
+        assert!(purge);
+    }
+
+    #[test]
+    fn make_no_longer_aliases_start() {
+        // `start` is no longer a clap alias of `make`; it's the
+        // first-class verb above. `bougie make start` is just `make`
+        // with the literal task `start`.
+        let Command::Make { task, .. } = cmd(&["bougie", "make", "start"]) else {
+            panic!("expected make");
+        };
+        assert_eq!(task.as_deref(), Some("start"));
+
+        // Bare `bougie make` parses with no task; the dispatcher turns
+        // that into a task listing.
+        let Command::Make { task, .. } = cmd(&["bougie", "make"]) else {
+            panic!("expected make");
+        };
+        assert_eq!(task, None);
+    }
 }

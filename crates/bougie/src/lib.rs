@@ -74,6 +74,8 @@ fn command_name(cmd: &Command) -> &'static str {
         Command::Projects(_) => "projects",
         Command::Make { .. } => "make",
         Command::Format { .. } => "format",
+        Command::Start { .. } => "start",
+        Command::Stop { .. } => "stop",
     }
 }
 
@@ -587,6 +589,23 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
         #[cfg(not(unix))]
         Command::Make { .. } => unsupported_on_windows("bougie make"),
         Command::Format { args } => commands::format::run(&args),
+        #[cfg(unix)]
+        Command::Start { no_sync, dry_run, explain, no_builtin, recipe } => {
+            commands::start::run(
+                format,
+                commands::start::StartOptions { no_sync, dry_run, explain, no_builtin, recipe },
+            )
+        }
+        #[cfg(not(unix))]
+        Command::Start { .. } => unsupported_on_windows("bougie start"),
+        // `stop` is the teardown twin of `start`: bring the project's
+        // declared services (the dev-server tenant among them) down. A
+        // global `server stop` is deliberately *not* run — it would tear
+        // down hosting for every other project sharing the daemon.
+        #[cfg(unix)]
+        Command::Stop { names, purge } => commands::services::down::run(format, names, purge),
+        #[cfg(not(unix))]
+        Command::Stop { .. } => unsupported_on_windows("bougie stop"),
         Command::Tool(ToolCommand::Install { package, php, with, force }) => {
             commands::tool_install::run(format, &package, php.as_deref(), &with, force)
         }
