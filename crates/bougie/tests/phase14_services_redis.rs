@@ -447,7 +447,7 @@ fn projects_purge_removes_orphaned_redis_tenant() {
     // `purge` with no target picks the orphaned set. Runs from $HOME —
     // it reads the ledgers globally, no project cwd required.
     env.bougie()
-        .args(["services", "projects", "purge", "--yes"])
+        .args(["projects", "purge", "--yes"])
         .current_dir(env.home_path())
         .timeout(STEP_TIMEOUT)
         .assert()
@@ -484,7 +484,7 @@ fn projects_purge_refuses_noninteractive_without_yes() {
 
     // `--all` without `--yes`, non-interactive → error, ledger intact.
     env.bougie()
-        .args(["services", "projects", "purge", "--all"])
+        .args(["projects", "purge", "--all"])
         .current_dir(env.home_path())
         .timeout(STEP_TIMEOUT)
         .assert()

@@ -150,11 +150,14 @@ Top-level subcommands (from `bougie-cli`):
   bougied spawns), `status` (live host/pool table via control socket,
   `list` alias), `open`, `stop`, `logs`, `tls`, `hosts`. See
   `SERVER_CLI_PLAN.md`.
-- `services {add,remove,list,projects,catalog,restart,status,logs,daemon}` —
-  Dev services. `projects` lists every provisioned tenant across the shared
+- `services {add,remove,list,catalog,restart,status,logs,daemon}` —
+  Dev services.
+- `projects {list,purge}` — Cross-project tenant management (top-level).
+  `projects list` lists every provisioned tenant across the shared
   services and the owning project (reads the on-disk tenant ledgers; no daemon);
   `projects purge` deprovisions tenants (orphaned-by-default, or `--project`/
-  `--all`) — destructive, so it confirms unless `--yes`/`--dry-run`.
+  `--all`) — destructive, so it lists the targeted tenants and confirms
+  unless `--yes`/`--dry-run`.
 - `make [task]` — Recipe DAG walker (`start` alias for `make start`).
 
 Global flags: `--quiet`, `--verbose`, `--format {text,json-v1}`.
