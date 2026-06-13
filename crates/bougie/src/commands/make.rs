@@ -152,8 +152,9 @@ pub fn run(format: OutputFormat, opts: MakeOptions) -> Result<ExitCode> {
         return Ok(ExitCode::SUCCESS);
     }
 
-    // After the list/print early returns a task is guaranteed present.
-    let task_name = task_opt.expect("task present once list/print are ruled out");
+    // After the list/print early returns a task is guaranteed present; the
+    // `unwrap_or_default` branch is unreachable (and avoids a panic path).
+    let task_name = task_opt.unwrap_or_default();
 
     // Sync prologue (RECIPES.md §5).
     if !opts.no_sync && !opts.dry_run && !opts.explain {

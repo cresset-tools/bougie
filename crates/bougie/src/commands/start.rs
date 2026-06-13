@@ -18,6 +18,7 @@ use std::process::ExitCode;
 /// [`MakeOptions`] — `start` always targets the `start` task and never
 /// lists or prints.
 #[derive(Debug, Default, Clone)]
+#[allow(clippy::struct_excessive_bools, reason = "each is a distinct forwarded CLI flag")]
 pub struct StartOptions {
     pub no_sync: bool,
     pub dry_run: bool,
