@@ -965,7 +965,14 @@ fn install_required_extensions(
         if baseline::skip_for_php_minor(name, php_minor) {
             continue;
         }
-        if is_ext_enabled_in_project(&project_conf_d, name) {
+        // Skip only when the ext is already enabled *and* its fragment
+        // targets the active interpreter minor. A fragment left over from
+        // a previous PHP pin points at an ABI-incompatible per-minor store
+        // path, so re-resolve and rewrite it instead of skipping (the
+        // `bougie sync` re-pin path — issue #360).
+        if is_ext_enabled_in_project(&project_conf_d, name)
+            && !ext_fragment_is_stale(&project_conf_d, name, php_minor)
+        {
             continue;
         }
         // bougie.toml's `[extensions]` table can pin or disable an
@@ -1027,6 +1034,68 @@ fn is_ext_enabled_in_project(conf_d: &std::path::Path, name: &str) -> bool {
         }
     }
     false
+}
+
+/// `true` if a conf.d fragment enabling `<name>` points at a per-PHP-minor
+/// store path that doesn't match `php_minor`. Extension `.so`s are
+/// ABI-specific per interpreter minor — the store dir is keyed
+/// `…+php<major><minor>…` (see `install_extension_resolved`) — so a
+/// fragment left behind by a previous PHP pin fails to `dlopen` on the
+/// newly-active interpreter (Zend ABI mismatch). When that happens
+/// `install_required_extensions` must re-resolve the ext against the
+/// active minor and rewrite the fragment rather than skip it (issue #360).
+///
+/// Only fragments carrying a `+php<NN>` store token are flagged.
+/// Baseline-replicated (`00-*`) fragments point into the install tree and
+/// are regenerated every sync, and core fragments carry no such token —
+/// both read as "not stale" and stay skipped.
+fn ext_fragment_is_stale(
+    conf_d: &std::path::Path,
+    name: &str,
+    php_minor: PartialVersion,
+) -> bool {
+    let want = format!("+php{}{}", php_minor.major, php_minor.minor.unwrap_or(0));
+    let Ok(entries) = std::fs::read_dir(conf_d) else {
+        return false;
+    };
+    let target_suffix = format!("-{name}.ini");
+    for entry in entries.flatten() {
+        let fname = entry.file_name();
+        let Some(fname) = fname.to_str() else { continue };
+        if !fname.ends_with(&target_suffix) {
+            continue;
+        }
+        let Ok(body) = std::fs::read_to_string(entry.path()) else {
+            continue;
+        };
+        for line in body.lines() {
+            let line = line.trim();
+            if !(line.starts_with("extension=") || line.starts_with("zend_extension=")) {
+                continue;
+            }
+            if let Some(token) = php_minor_token(line)
+                && token != want
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Extract the `+php<digits>` per-minor store token from an `extension=`
+/// directive line, if present. Returns `None` for fragments whose `.so`
+/// path carries no such token (core / baseline-replicated fragments).
+fn php_minor_token(line: &str) -> Option<String> {
+    let idx = line.find("+php")?;
+    let digits: String = line[idx + "+php".len()..]
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
+    if digits.is_empty() {
+        return None;
+    }
+    Some(format!("+php{digits}"))
 }
 
 /// Resolve the project's PHP inputs (constraint + flavor). Public so
@@ -1551,6 +1620,60 @@ mod tests {
         assert!(is_ext_enabled_in_project(&dir, "redis"));
         assert!(!is_ext_enabled_in_project(&dir, "xdebug"));
         assert!(!is_ext_enabled_in_project(&dir, "pdo_mysql"));
+    }
+
+    fn pv(major: u32, minor: u32) -> PartialVersion {
+        PartialVersion { major, minor: Some(minor), patch: None }
+    }
+
+    #[test]
+    fn php_minor_token_extracts_store_label() {
+        assert_eq!(
+            php_minor_token("extension=/s/ext-protobuf-5.35.1+php85-nts-abc1234/protobuf.so"),
+            Some("+php85".to_string())
+        );
+        assert_eq!(
+            php_minor_token("zend_extension=/s/ext-xdebug-3.4.0+php81-nts-deadbeef/xdebug.so"),
+            Some("+php81".to_string())
+        );
+        // Core / baseline-replicated fragments carry no store token.
+        assert_eq!(php_minor_token("extension=protobuf"), None);
+        assert_eq!(php_minor_token("extension=/install/etc/redis.so"), None);
+    }
+
+    #[test]
+    fn ext_fragment_is_stale_detects_mismatched_minor() {
+        // The #360 repro: a `20-protobuf.ini` written for php85 lingers
+        // after the project repins to ~8.1 — its `.so` is ABI-incompatible
+        // with the 8.1 interpreter and must be re-resolved.
+        let td = TempDir::new().unwrap();
+        let dir = td.path().to_path_buf();
+        std::fs::write(
+            dir.join("20-protobuf.ini"),
+            "; managed by bougie\nextension=/s/ext-protobuf-5.35.1+php85-nts-abc1234/protobuf.so\n",
+        )
+        .unwrap();
+
+        assert!(ext_fragment_is_stale(&dir, "protobuf", pv(8, 1)));
+        // Same fragment is *not* stale against the minor it was built for.
+        assert!(!ext_fragment_is_stale(&dir, "protobuf", pv(8, 5)));
+    }
+
+    #[test]
+    fn ext_fragment_is_stale_ignores_tokenless_fragments() {
+        // Baseline-replicated (`00-*`) and core fragments point into the
+        // install tree with no `+php<NN>` token — they're regenerated each
+        // sync, so they must never be flagged stale (which would force a
+        // pointless re-resolve).
+        let td = TempDir::new().unwrap();
+        let dir = td.path().to_path_buf();
+        std::fs::write(dir.join("00-20-mbstring.ini"), "extension=mbstring\n").unwrap();
+        std::fs::write(dir.join("00-20-intl.ini"), "extension=/install/etc/intl.so\n").unwrap();
+
+        assert!(!ext_fragment_is_stale(&dir, "mbstring", pv(8, 1)));
+        assert!(!ext_fragment_is_stale(&dir, "intl", pv(8, 1)));
+        // No fragment at all → not stale.
+        assert!(!ext_fragment_is_stale(&dir, "redis", pv(8, 1)));
     }
 
     /// Regression for #106: bougie run -- composer update used to
