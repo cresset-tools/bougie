@@ -602,19 +602,14 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
         Command::Tool(ToolCommand::Upgrade { package, all, reinstall }) => {
             commands::tool_upgrade::run(format, package.as_deref(), all, reinstall)
         }
-        Command::Tool(ToolCommand::Run(args)) => commands::tool_run::run(
-            format,
-            &args.package,
-            args.php.as_deref(),
-            &args.with,
-            args.args,
-        ),
+        Command::Tool(ToolCommand::Run(args)) => {
+            commands::tool_run::run(format, args.php.as_deref(), &args.with, args.command)
+        }
         Command::Tool(ToolCommand::Bgx(args)) => commands::tool_run::run(
             format,
-            &args.tool_run.package,
             args.tool_run.php.as_deref(),
             &args.tool_run.with,
-            args.tool_run.args,
+            args.tool_run.command,
         ),
         Command::Tool(ToolCommand::List) => commands::tool_list::run(format),
         Command::Tool(ToolCommand::Dir { package }) => {
