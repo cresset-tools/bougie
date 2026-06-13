@@ -99,7 +99,6 @@ pub(crate) struct RootManifest {
     #[serde(default)]
     pub provide: std::collections::BTreeMap<String, String>,
     #[serde(default, rename = "autoload-dev")]
-    #[allow(dead_code)] // wired in once dev separation matters (Phase 3)
     pub autoload_dev: AutoloadBlock,
     /// `config` block. Only the fields the autoloader cares about are
     /// extracted; everything else is dropped.
