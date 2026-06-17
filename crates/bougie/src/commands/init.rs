@@ -4,7 +4,7 @@ use bougie_output::output::{emit, Render};
 use eyre::{Result, WrapErr, eyre};
 use serde::Serialize;
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -139,6 +139,16 @@ fn scaffold(
                     manifest.recipe.as_deref(),
                     &manifest.services,
                 );
+                // Fill in any per-user placeholder tokens (e.g. a Hyvä repo
+                // slug the producer can't bake into a shared manifest) before
+                // rendering. Prompts read stdin, so only when interactive.
+                let interactive =
+                    matches!(format, OutputFormat::Text) && io::stdin().is_terminal();
+                super::starter::resolve_placeholders(
+                    &mut manifest.composer_json,
+                    &manifest.placeholders,
+                    interactive,
+                )?;
                 let rendered = super::starter::render_composer_json(&manifest);
                 notes = manifest.notes;
                 rendered
