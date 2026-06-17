@@ -645,6 +645,14 @@ pub struct LockPackage {
     /// will use it for git-ref installs.
     #[serde(default)]
     pub source: Option<LockSource>,
+    /// Package-level `transport-options` — Composer's home for a path
+    /// repository's `{"symlink": ..., "relative": ...}` install hints
+    /// (it dumps them here, as a sibling of `dist`, not nested inside
+    /// it). The install-time symlink-or-copy materializer reads them.
+    /// Empty `Value::Null` for every non-path package, suppressed from
+    /// output so only path packages carry the key.
+    #[serde(rename = "transport-options", default, skip_serializing_if = "Value::is_null")]
+    pub transport_options: Value,
     /// Transitive runtime dependencies (package name → constraint).
     /// Composer writes this in a stable order; consumers that care
     /// about ordering iterate in insertion order via `serde_json`'s
@@ -750,10 +758,12 @@ pub struct LockDist {
     /// wrapping-directory name inside Packagist zipballs.
     #[serde(default)]
     pub reference: Option<String>,
-    /// Free-form transport options Composer attaches per-dist (e.g.
-    /// `{"symlink": false, "relative": true}` for `path` dists).
-    /// Captured but not yet acted on.
-    #[serde(rename = "transport-options", default)]
+    /// Legacy field: some lockfiles carry `transport-options` nested
+    /// inside `dist`. Composer itself writes them at the *package*
+    /// level (see [`LockPackage::transport_options`]); this is kept
+    /// only so a dist that happens to carry them still round-trips.
+    /// Suppressed from output when empty so normal dists stay clean.
+    #[serde(rename = "transport-options", default, skip_serializing_if = "Value::is_null")]
     pub transport_options: Value,
 }
 
@@ -1668,6 +1678,7 @@ mod tests {
                     transport_options: serde_json::Value::default(),
                 }),
                 source: None,
+                transport_options: Value::Null,
                 require: BTreeMap::from([("php".into(), ">=8.1".into())]),
                 require_dev: BTreeMap::new(),
                 package_type: Some("library".into()),

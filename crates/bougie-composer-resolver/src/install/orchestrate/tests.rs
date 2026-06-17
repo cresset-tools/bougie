@@ -670,7 +670,7 @@ fn diff_removes_stale_vendor_dirs() {
 
     let installable = vec![&foo_lock];
     let (need_install, up_to_date, removed) =
-        diff_install_set(&installable, &state, &proj);
+        diff_install_set(&installable, &state, &proj, &std::collections::HashSet::new());
 
     assert!(need_install.is_empty(), "acme/foo is up-to-date");
     assert_eq!(up_to_date, 1);
@@ -708,7 +708,7 @@ fn missing_vendor_dir_forces_reinstall() {
     // Do NOT create the vendor dir — simulates manual deletion.
     let installable = vec![&foo_lock];
     let (need_install, up_to_date, removed) =
-        diff_install_set(&installable, &state, &proj);
+        diff_install_set(&installable, &state, &proj, &std::collections::HashSet::new());
 
     assert_eq!(need_install.len(), 1, "must re-install when vendor dir is missing");
     assert_eq!(need_install[0].name, "acme/foo");
@@ -750,7 +750,7 @@ fn changed_reference_forces_reinstall() {
 
     let installable = vec![&foo_lock];
     let (need_install, up_to_date, removed) =
-        diff_install_set(&installable, &state, &proj);
+        diff_install_set(&installable, &state, &proj, &std::collections::HashSet::new());
 
     assert_eq!(need_install.len(), 1, "must re-install when reference changed");
     assert_eq!(need_install[0].name, "acme/foo");

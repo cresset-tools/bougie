@@ -49,11 +49,17 @@ pub fn base_url() -> String {
 /// string (typically the URL's host) so two repos at different hosts
 /// can each cache a package with the same name without collision.
 ///
-/// Custom `packages.json` metadata-url discovery and non-Composer
-/// types (`vcs`, `path`, `package`, `artifact`) are still out of
-/// scope — see the module docs for follow-up status.
+/// Custom `packages.json` metadata-url discovery and the remaining
+/// non-Composer types (`vcs`, `package`, `artifact`) are still out of
+/// scope — see the module docs for follow-up status. `path`
+/// repositories are modeled via [`RepoKind::Path`].
 #[derive(Debug, Clone)]
 pub struct Repo {
+    /// What kind of repository this is. Composer-protocol repos fetch
+    /// `/p2/` metadata over HTTP from [`Repo::url`]; `path` repos
+    /// glob a local directory tree and read each package's
+    /// `composer.json` directly (no network).
+    pub kind: RepoKind,
     pub url: String,
     /// Filesystem-safe cache namespace. For production this is the
     /// URL's host (e.g. `repo.packagist.org`). For tests, set
@@ -74,6 +80,66 @@ pub struct Repo {
     /// for any composer-type repo whose packages.json couldn't be
     /// reached.
     pub protocol: Option<RepoProtocol>,
+}
+
+/// What flavor of repository a [`Repo`] is.
+///
+/// `Composer` is the HTTP `/p2/`-fetching default (public Packagist,
+/// satis, private mirrors). `Path` is a Composer `type: path`
+/// repository: a glob over a local directory tree where each matched
+/// directory's own `composer.json` is the package definition. Path
+/// repos never hit the network — their candidates are seeded into the
+/// resolver cache from disk before the solve.
+#[derive(Debug, Clone)]
+pub enum RepoKind {
+    Composer,
+    Path(PathRepoConfig),
+}
+
+/// Parsed configuration of a Composer `type: path` repository entry.
+///
+/// Holds the raw `url` (a path, possibly with `*`/`?` glob wildcards,
+/// `~`, or env vars — expanded against the project root at seed time)
+/// and the `options` block. The matched package directories are *not*
+/// stored here; they're discovered when the resolver seeds path
+/// candidates, because globbing needs the project root as a base.
+#[derive(Debug, Clone)]
+pub struct PathRepoConfig {
+    /// The repository `url` verbatim from composer.json — a filesystem
+    /// path or glob, relative to the project root unless absolute.
+    pub url: String,
+    /// `options.symlink`: `Some(true)` forces a symlink, `Some(false)`
+    /// forces a copy, `None` is Composer's default (symlink, falling
+    /// back to copy when symlinking fails).
+    pub symlink: Option<bool>,
+    /// `options.relative`: whether the symlink target is relative.
+    /// `None` means unset — Composer's install-time default is
+    /// *relative* (`true`), but the lock only records the key when the
+    /// user set it explicitly, so this stays `Option`.
+    pub relative: Option<bool>,
+    /// `options.reference`: how the locked dist `reference` is derived.
+    pub reference: ReferenceMode,
+    /// `options.versions`: explicit per-package version overrides,
+    /// keyed by package name. Wins over a `version` field inferred
+    /// from the package's git state but loses to an explicit `version`
+    /// in the package's own composer.json.
+    pub versions: FxHashMap<String, String>,
+}
+
+/// Composer's `options.reference` for a path repository — controls
+/// what goes in the locked dist's `reference` field, trading lockfile
+/// churn against reproducibility.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReferenceMode {
+    /// Default: the git HEAD commit of the package dir when it is a
+    /// git repository, otherwise a hash of its `composer.json` + repo
+    /// config.
+    Auto,
+    /// Always the config hash, ignoring git — stable across commits in
+    /// the package dir.
+    Config,
+    /// Always `null` — the lowest-churn choice.
+    None,
 }
 
 /// Auth credentials for a single repository. Skipped from `Debug`
@@ -149,7 +215,23 @@ impl Repo {
     pub fn from_url(raw: impl Into<String>) -> Self {
         let url = raw.into().trim_end_matches('/').to_owned();
         let cache_namespace = extract_cache_namespace(&url);
-        Self { url, cache_namespace, auth: None, protocol: None }
+        Self { kind: RepoKind::Composer, url, cache_namespace, auth: None, protocol: None }
+    }
+
+    /// Build a `path` repository from its parsed config. The repo's
+    /// `url` mirrors the raw path/glob (used for diagnostics and the
+    /// cache namespace); resolution to concrete package directories
+    /// happens later, against the project root. The cache namespace is
+    /// a stable hash of the raw url so two path repos can't collide.
+    pub fn path(config: PathRepoConfig) -> Self {
+        let url = config.url.clone();
+        let cache_namespace = format!("path-{:016x}", fnv1a(&url));
+        Self { kind: RepoKind::Path(config), url, cache_namespace, auth: None, protocol: None }
+    }
+
+    /// Whether this is a `type: path` repository.
+    pub fn is_path(&self) -> bool {
+        matches!(self.kind, RepoKind::Path(_))
     }
 
     /// Attach auth credentials. Chainable on `Repo::from_url`.
@@ -198,13 +280,19 @@ fn extract_cache_namespace(url: &str) -> String {
     }
     // Fallback: a short hex digest of the full URL. Use a cheap
     // FNV-style hash rather than pulling sha2 here.
+    format!("url-{:016x}", fnv1a(url))
+}
+
+/// FNV-1a 64-bit hash of a string. Cheap, allocation-free; used for
+/// filesystem-safe cache namespaces where a real digest is overkill.
+fn fnv1a(s: &str) -> u64 {
     // FNV-1a 64-bit offset basis and prime.
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for b in url.as_bytes() {
+    for b in s.as_bytes() {
         h ^= u64::from(*b);
         h = h.wrapping_mul(0x0000_0100_0000_01b3);
     }
-    format!("url-{h:016x}")
+    h
 }
 
 /// Build the default blocking HTTP client used by the metadata
