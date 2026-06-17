@@ -490,7 +490,7 @@ fn parse_version_components(s: &str) -> Vec<u32> {
 /// Union of two enablement signals: extensions bundled with the PHP
 /// install (under `<install>/lib/extensions/<api>/<name>.so`) and
 /// extensions the project has explicitly enabled via a bougie-written
-/// conf.d fragment (`<project>/.bougie/conf.d/20-<name>.ini`).
+/// conf.d fragment (`<project>/vendor/bougie/conf.d/20-<name>.ini`).
 ///
 /// Skipping the conf.d half would silently drop every `bougie ext add`
 /// from `--only-installed` and from the `installed` marker under
@@ -521,7 +521,7 @@ fn list_installed(
     // User-installed: `bougie ext add` writes `20-<name>.ini` (CLI.md
     // §6.2). The `00-XX-*.ini` files are bundled-conf mirrors and
     // surface via the path above.
-    for entry in dir_entries(&project_root.join(".bougie").join("conf.d")) {
+    for entry in dir_entries(&bougie_paths::project::confd(&project_root)) {
         let p = entry.path();
         if let Some(stem) = stem_if_ext(&p, "ini")
             && let Some(name) = stem.strip_prefix("20-")

@@ -97,7 +97,12 @@ install-path = ["$XDG_BIN_HOME/", "$XDG_DATA_HOME/../bin", "~/.local/bin"]
 # falls back to the GitHub release if the mirror is offline / empty
 # / hasn't received the new tag yet. The origin is a Hetzner box
 # (cresset-tools/infra hosts/origin) — see RELEASE.md.
-hosting = ["github"]
+#
+# The "simple" host MUST be listed here for `simple-download-url` to reach
+# the generated installer — the URL key alone only *enables* the host. With
+# `["github"]` the shell/powershell installers were silently GitHub-only;
+# listing simple first is what makes them prefer the mirror.
+hosting = ["simple", "github"]
 # Versioned artifacts live at
 # `<host>/github/bougie/releases/download/<tag>/<file>` — the same
 # layout publish-mirror.yml rsyncs to.

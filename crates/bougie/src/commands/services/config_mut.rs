@@ -16,19 +16,19 @@ pub enum ConfigTarget {
 }
 
 /// Walk up from cwd looking for the project root. Order of search:
-/// `bougie.toml`, `composer.json`, `.bougie/`. The first match wins.
+/// `bougie.toml`, `composer.json`, `vendor/bougie/`. The first match wins.
 pub fn locate_project_root() -> Result<PathBuf> {
     let cwd = std::env::current_dir().wrap_err("reading cwd")?;
     for anc in cwd.ancestors() {
         if anc.join("bougie.toml").is_file()
             || anc.join("composer.json").is_file()
-            || anc.join(".bougie").is_dir()
+            || bougie_paths::project::is_root(anc)
         {
             return Ok(anc.to_path_buf());
         }
     }
     Err(eyre!(
-        "no bougie project found (no `composer.json`, `bougie.toml`, or `.bougie/` in {} or any parent)",
+        "no bougie project found (no `composer.json`, `bougie.toml`, or `vendor/bougie/` in {} or any parent)",
         cwd.display()
     ))
 }

@@ -6,7 +6,7 @@
 //! 1. `<variant>.conf` — the FPM pool config file passed to
 //!    `php-fpm -y`. Hand-emitted INI; the schema is small and fixed.
 //! 2. `<variant>.confd/` — directory of symlinks to source fragments
-//!    under `<project>/.bougie/conf.d{,-debug}/`. The "normal" variant
+//!    under `<project>/vendor/bougie/conf.d{,-debug}/`. The "normal" variant
 //!    is built from `conf.d/` only; the "xdebug" variant merges both
 //!    `conf.d/` and `conf.d-debug/`. The overlay dir holds fragments
 //!    the server itself wrote (via

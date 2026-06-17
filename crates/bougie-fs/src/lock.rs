@@ -2,8 +2,8 @@
 //!
 //! - Global: `$BOUGIE_HOME/state/locks/global.lock` (BSD `flock(2)` on
 //!   Unix, `LockFileEx` on Windows — both via `std::fs::File::try_lock`).
-//! - Per-project: `<project>/.bougie/.lock`. Serializes `sync` within
-//!   one project.
+//! - Per-project: `<project>/vendor/bougie/.lock`. Serializes `sync`
+//!   within one project.
 //!
 //! The PID of the holder is written into the lock file at acquire time
 //! so a contender can surface it in the timeout diagnostic.

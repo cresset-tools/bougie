@@ -1,6 +1,6 @@
 //! Per-project filesystem watcher. Spec: SERVER.md §7.2.
 //!
-//! Watches each project's `.bougie/conf.d/`, `composer.json`,
+//! Watches each project's `vendor/bougie/conf.d/`, `composer.json`,
 //! `bougie.toml`, `composer.lock`, and the per-project autoload
 //! scan-roots the [`AutoloaderManager`] arms dynamically. Events are
 //! coalesced under a per-(project, kind) debounce window so a flurry
@@ -40,7 +40,7 @@ const DEBOUNCE_USER_CODE: Duration = Duration::from_millis(50);
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum ChangeKind {
-    /// `<project>/.bougie/conf.d/*.ini` was touched. Reload (SIGUSR2)
+    /// `<project>/vendor/bougie/conf.d/*.ini` was touched. Reload (SIGUSR2)
     /// every variant for the project.
     ConfD,
     /// `<project>/composer.json` or `<project>/bougie.toml` was
@@ -105,7 +105,7 @@ pub fn start(
             for sub in [
                 bougie_installer::conf_d::project_confd_dir(project),
                 bougie_installer::conf_d::project_confd_debug_dir(project),
-                bougie_installer::conf_d::project_confd_local_dir(project),
+                pool_manager.bougie_paths().project_confd_local(project),
             ] {
                 if sub.is_dir() {
                     if let Err(e) = watcher.watch(&sub, RecursiveMode::Recursive) {
@@ -483,8 +483,12 @@ mod tests {
             bougie_installer::conf_d::project_confd_debug_dir(project),
             project.to_path_buf(),
         );
+        let paths = bougie_paths::Paths::new(
+            std::path::PathBuf::from("/nonexistent-bougie-test-home"),
+            std::path::PathBuf::from("/nonexistent-bougie-test-cache"),
+        );
         m.push_confd(
-            bougie_installer::conf_d::project_confd_local_dir(project),
+            paths.project_confd_local(project),
             project.to_path_buf(),
         );
         m.push_version_input(project.to_path_buf());
@@ -495,7 +499,7 @@ mod tests {
     fn classify_routes_confd_files() {
         let project = PathBuf::from("/p/myapp");
         let map = map_for(&project);
-        let evs = classify(&map, &project.join(".bougie/conf.d/20-redis.ini"), false);
+        let evs = classify(&map, &project.join("vendor/bougie/conf.d/20-redis.ini"), false);
         assert!(evs.iter().any(|e| matches!(
             e,
             PendingEvent::Touch { project: p, kind: ChangeKind::ConfD } if p == &project

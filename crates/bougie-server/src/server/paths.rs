@@ -17,9 +17,12 @@
 //! helper stays Unix-only.
 
 use eyre::{Result, WrapErr};
-use sha2::{Digest, Sha256};
-use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
+
+/// Re-exported from `bougie-paths` so the server and the rest of the
+/// codebase agree on the per-project hash. Used here for the runtime
+/// root layout and orphan pruning.
+pub use bougie_paths::project_hash;
 
 /// Per-server-instance directory layout. Constructed once at server
 /// startup and threaded through everything that needs to spawn FPM or
@@ -166,40 +169,6 @@ impl ServerPaths {
 
 fn is_project_hash_name(name: &str) -> bool {
     name.len() == 12 && name.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
-}
-
-/// First 12 hex chars of `sha256(canonical_project_path)`. Used as the
-/// per-project directory name under `<runtime_root>/`. Canonicalization
-/// keeps the hash stable across `cd ./foo` vs. `cd $(pwd)/foo` etc. —
-/// same project, same hash.
-pub fn project_hash(project: &Path) -> String {
-    let canonical = project
-        .canonicalize()
-        .unwrap_or_else(|_| project.to_path_buf());
-    let bytes = canonical
-        .to_str()
-        .map(str::as_bytes)
-        .or_else(|| {
-            // Non-UTF-8 path: fall back to the raw OsStr bytes on unix.
-            #[cfg(unix)]
-            {
-                use std::os::unix::ffi::OsStrExt;
-                Some(canonical.as_os_str().as_bytes())
-            }
-            #[cfg(not(unix))]
-            {
-                None
-            }
-        })
-        .unwrap_or(b"");
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    let digest = hasher.finalize();
-    let mut out = String::with_capacity(12);
-    for b in digest.iter().take(6) {
-        write!(out, "{b:02x}").expect("writing to String");
-    }
-    out
 }
 
 #[cfg(unix)]

@@ -5,7 +5,7 @@
 //! dependency graph and run platform checks against a PHP that hasn't
 //! yet loaded the new ext. Doing the edits ourselves means we can:
 //!
-//! 1. Install the `.so` and enable it in `.bougie/conf.d/` *first*.
+//! 1. Install the `.so` and enable it in `vendor/bougie/conf.d/` *first*.
 //! 2. Add the `require.ext-<name>` line to composer.json directly.
 //! 3. Mirror it under `platform.ext-<name>` in composer.lock and
 //!    recompute `content-hash`.

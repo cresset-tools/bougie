@@ -43,9 +43,9 @@ pub fn resolve_php_bin(project_root: &Path) -> Option<PathBuf> {
 pub fn project_script_env(project_root: &Path, dev_mode: bool) -> Vec<(String, String)> {
     let mut env: Vec<(String, String)> = Vec::new();
 
-    // PATH: .bougie/bin (php/composer/unzip shims) + vendor/bin (composer
-    // bin proxies) + per-extension extras + the inherited PATH.
-    let bougie_bin = project_root.join(".bougie").join("bin");
+    // PATH: vendor/bougie/bin (php/composer/unzip shims) + vendor/bin
+    // (composer bin proxies) + per-extension extras + the inherited PATH.
+    let bougie_bin = bougie_paths::project::bin_dir(project_root);
     let vendor_bin = project_root.join("vendor").join("bin");
     let mut path = String::new();
     let mut push = |p: &Path| {
@@ -72,7 +72,12 @@ pub fn project_script_env(project_root: &Path, dev_mode: bool) -> Vec<(String, S
     }
     env.push(("PATH".into(), path));
 
-    let scan_dir = conf_d::php_ini_scan_dir(project_root, false);
+    // `conf.d-local/` lives under `$BOUGIE_HOME`; if that's somehow
+    // unresolvable, fall back to the project-local `conf.d/` only.
+    let scan_dir = match Paths::from_env() {
+        Ok(paths) => conf_d::php_ini_scan_dir(&paths, project_root, false),
+        Err(_) => conf_d::project_confd_dir(project_root).into_os_string(),
+    };
     env.push(("PHP_INI_SCAN_DIR".into(), scan_dir.to_string_lossy().into_owned()));
     env.push(("BOUGIE_PROJECT_ROOT".into(), project_root.display().to_string()));
     env.push(("COMPOSER_DEV_MODE".into(), if dev_mode { "1" } else { "0" }.into()));

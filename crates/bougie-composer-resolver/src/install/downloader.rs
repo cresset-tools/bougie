@@ -324,9 +324,10 @@ fn extract_from_cache(cache_root: &Path, dist: &DistRequest<'_>) -> Result<()> {
                     )
                 })?;
         }
-        ArchiveKind::TarZst => {
+        ArchiveKind::TarZst | ArchiveKind::TarGz => {
             return Err(eyre::eyre!(
-                "TarZst is not a Composer dist format; package {} has the wrong archive kind",
+                "{:?} is not a Composer dist format; package {} has the wrong archive kind",
+                dist.archive,
                 dist.package_name
             ));
         }
@@ -341,6 +342,7 @@ fn cache_path_for(cache_root: &Path, dist: &DistRequest<'_>) -> PathBuf {
     let ext = match dist.archive {
         ArchiveKind::Zip => "zip",
         ArchiveKind::TarZst => "tar.zst",
+        ArchiveKind::TarGz => "tar.gz",
     };
     let key = if dist.sha1.is_empty() {
         // The git reference can contain `/` (branch names) or even `..`,

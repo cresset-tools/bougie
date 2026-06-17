@@ -145,7 +145,7 @@ Top-level subcommands (from `bougie-cli`):
   native reimplementation. An unrecognized subcommand
   (`create-project`, `archive`, `bump`, …) errors with a pointer to
   `bougie tool install composer/composer`. The `composer` shim symlink in
-  `.bougie/bin/` (and the global one in the tool bin dir) routes to these
+  `vendor/bougie/bin/` (and the global one in the tool bin dir) routes to these
   native subcommands, so `composer install` from a recipe or any shell runs
   bougie's native installer.
 - `cache {clean,prune,dir,size}` — Cache management.
@@ -167,6 +167,13 @@ Top-level subcommands (from `bougie-cli`):
   `--all`) — destructive, so it lists the targeted tenants and confirms
   unless `--yes`/`--dry-run`.
 - `make [task]` — Recipe DAG walker (`start` alias for `make start`).
+- `format [ARGS...]` — Format the project's PHP, the way `uv format` runs
+  ruff. bougie bundles no formatter: `commands/format.rs` downloads a
+  *pinned* `wick` binary (cresset-tools/wick — unconfigurable, Laravel
+  Pint-style), caches it under `<cache>/wick/<version>/`, and execs it
+  with every arg forwarded verbatim (`--check`, `--diff`, paths, `-`).
+  Pin via `BOUGIE_WICK_VERSION`; same mirror→GitHub + SHA-256 fetch as
+  `self update`. Cross-platform (wick ships Windows binaries).
 
 Global flags: `--quiet`, `--verbose`, `--format {text,json-v1}`.
 

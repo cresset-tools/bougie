@@ -187,7 +187,7 @@ pub const WINDOWS_DLL_BASELINE_EXTRAS: &[&str] = &["openssl", "sodium"];
 /// would tank `bougie run` speed (and any normal HTTP request).
 ///
 /// Activation is the caller's job:
-/// - `bougie server` writes a fragment under `.bougie/conf.d-debug/`
+/// - `bougie server` writes a fragment under `vendor/bougie/conf.d-debug/`
 ///   the first time the xdebug pool variant is hit — see
 ///   `commands/server/pool.rs::ensure_debug_extension`.
 /// - `bougie ext add xdebug` makes the activation explicit and

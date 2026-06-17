@@ -1,7 +1,7 @@
-//! Per-project `.bougie/state/resolved` and the global
+//! Per-project `vendor/bougie/state/resolved` and the global
 //! `$BOUGIE_HOME/state/state.json` (CLI.md §2.1, §3.6.2).
 
-use bougie_paths::Paths;
+use bougie_paths::{project, Paths};
 use bougie_version::request::Flavor;
 use bougie_version::version::Version;
 use eyre::{eyre, Result, WrapErr};
@@ -10,9 +10,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 /// Atomically write the per-project resolved-version marker to
-/// `<project>/.bougie/state/resolved`. Format: `"<version>-<flavor>"`.
+/// `<project>/vendor/bougie/state/resolved`. Format: `"<version>-<flavor>"`.
 pub fn write_project_resolved(project_root: &Path, version: Version, flavor: Flavor) -> Result<PathBuf> {
-    let dir = project_root.join(".bougie").join("state");
+    let dir = project::state_dir(project_root);
     fs::create_dir_all(&dir).wrap_err_with(|| format!("creating {}", dir.display()))?;
     let dest = dir.join("resolved");
     let tmp = dir.join("resolved.partial");
@@ -27,7 +27,7 @@ pub fn write_project_resolved(project_root: &Path, version: Version, flavor: Fla
 /// (caller parses) so the shim can call this without pulling the full
 /// version + Request modules into its hot path.
 pub fn read_project_resolved(project_root: &Path) -> Result<(String, String)> {
-    let path = project_root.join(".bougie").join("state").join("resolved");
+    let path = project::resolved(project_root);
     let body = fs::read_to_string(&path)
         .wrap_err_with(|| format!("reading {}", path.display()))?;
     let line = body.trim();
@@ -39,12 +39,12 @@ pub fn read_project_resolved(project_root: &Path) -> Result<(String, String)> {
     Ok((v.to_owned(), rest[1..].to_owned()))
 }
 
-/// Atomically write `<project>/.bougie/state/resolved-php-path` holding
-/// the absolute path to a **system** PHP binary. Written only when sync
-/// selects a system PHP; managed projects never have this file, so its
-/// presence is the signal "this project uses a system PHP".
+/// Atomically write `<project>/vendor/bougie/state/resolved-php-path`
+/// holding the absolute path to a **system** PHP binary. Written only
+/// when sync selects a system PHP; managed projects never have this
+/// file, so its presence is the signal "this project uses a system PHP".
 pub fn write_project_resolved_php_path(project_root: &Path, php: &Path) -> Result<PathBuf> {
-    let dir = project_root.join(".bougie").join("state");
+    let dir = project::state_dir(project_root);
     fs::create_dir_all(&dir).wrap_err_with(|| format!("creating {}", dir.display()))?;
     let dest = dir.join("resolved-php-path");
     let tmp = dir.join("resolved-php-path.partial");
@@ -58,7 +58,7 @@ pub fn write_project_resolved_php_path(project_root: &Path, php: &Path) -> Resul
 /// Read the system-PHP path marker, if present. Returns `None` (not an
 /// error) when the file is absent — the common managed-PHP case.
 pub fn read_project_resolved_php_path(project_root: &Path) -> Option<PathBuf> {
-    let path = project_root.join(".bougie").join("state").join("resolved-php-path");
+    let path = project::resolved_php_path(project_root);
     let body = fs::read_to_string(&path).ok()?;
     let line = body.trim();
     if line.is_empty() {
@@ -95,7 +95,7 @@ pub fn system_fpm_for_php(system_php: &Path) -> Option<PathBuf> {
 /// Remove the system-PHP path marker if present (idempotent). Called
 /// when a project switches from a system PHP back to a managed one.
 pub fn clear_project_resolved_php_path(project_root: &Path) -> Result<()> {
-    let path = project_root.join(".bougie").join("state").join("resolved-php-path");
+    let path = project::resolved_php_path(project_root);
     match fs::remove_file(&path) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),

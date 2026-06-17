@@ -166,16 +166,16 @@ fn sync_installs_php_and_writes_state() {
         .stdout(contains("Resolved"))
         .stdout(contains("php 8.3.12-nts"));
 
-    let resolved = proj.path().join(".bougie/state/resolved");
+    let resolved = proj.path().join("vendor/bougie/state/resolved");
     assert!(resolved.is_file());
     let body = std::fs::read_to_string(&resolved).unwrap();
     assert_eq!(body.trim(), "8.3.12-nts");
 
-    let php_link = proj.path().join(".bougie/bin/php");
+    let php_link = proj.path().join("vendor/bougie/bin/php");
     assert!(php_link.symlink_metadata().is_ok());
     // The `composer` shim is still seeded — it now routes to bougie's
     // native Composer subcommands rather than a phar.
-    let composer_link = proj.path().join(".bougie/bin/composer");
+    let composer_link = proj.path().join("vendor/bougie/bin/composer");
     assert!(composer_link.symlink_metadata().is_ok());
 }
 
@@ -195,8 +195,8 @@ fn sync_dry_run_changes_nothing() {
         .assert()
         .success();
 
-    assert!(!proj.path().join(".bougie/state/resolved").exists());
-    assert!(!proj.path().join(".bougie/bin").exists());
+    assert!(!proj.path().join("vendor/bougie/state/resolved").exists());
+    assert!(!proj.path().join("vendor/bougie/bin").exists());
 }
 
 #[test]

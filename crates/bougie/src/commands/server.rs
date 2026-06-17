@@ -141,7 +141,7 @@ fn open_url(url: &str) -> Result<()> {
 use bougie_output::output::emit;
 
 /// Walk up from cwd for a project root (`bougie.toml` / `composer.json`
-/// / `.bougie/`). Cross-platform mirror of
+/// / `vendor/bougie/`). Cross-platform mirror of
 /// `services::config_mut::locate_project_root`, which lives in the
 /// Unix-only services module.
 fn locate_project_root() -> Result<PathBuf> {
@@ -149,13 +149,13 @@ fn locate_project_root() -> Result<PathBuf> {
     for anc in cwd.ancestors() {
         if anc.join("bougie.toml").is_file()
             || anc.join("composer.json").is_file()
-            || anc.join(".bougie").is_dir()
+            || bougie_paths::project::is_root(anc)
         {
             return Ok(anc.to_path_buf());
         }
     }
     Err(eyre::eyre!(
-        "no bougie project found (no `composer.json`, `bougie.toml`, or `.bougie/` in {} or any parent)",
+        "no bougie project found (no `composer.json`, `bougie.toml`, or `vendor/bougie/` in {} or any parent)",
         cwd.display()
     ))
 }
@@ -241,10 +241,10 @@ fn serve(format: OutputFormat, args: &ServeArgs) -> Result<ExitCode> {
 
     // Attach to the dev server's log, the way `bougie up` follows its
     // services. Gated to interactive text mode; a non-TTY run or
-    // `--format json-v1` implicitly detaches, as does `--no-attach`.
+    // `--format json-v1` implicitly detaches, as does `-d`/`--detach`.
     // Ctrl-C only detaches the CLI; the shared server keeps running.
     let attach =
-        !args.no_attach && matches!(format, OutputFormat::Text) && std::io::stdout().is_terminal();
+        !args.detach && matches!(format, OutputFormat::Text) && std::io::stdout().is_terminal();
     if attach {
         eprintln!(
             "attached to the dev server log — Ctrl-C to detach (server keeps running); \
@@ -413,7 +413,7 @@ fn serve_standalone(format: OutputFormat, args: &ServeArgs) -> Result<ExitCode> 
         let _ = open_url(&url);
     }
 
-    // Foreground: blocks until Ctrl-C. `--no-attach` has no effect here —
+    // Foreground: blocks until Ctrl-C. `-d`/`--detach` has no effect here —
     // there's no background daemon to detach into.
     bougie_server::server::run::run(format, &cfg_path, None, None)
 }

@@ -14,7 +14,7 @@ pub use bougie_paths::Paths;
 pub use bougie_platform::target::Triple;
 
 use bougie_cli::{
-    CacheCommand, ComposerCommand, ExtCommand, PhpCommand, SelfCommand, ToolCommand,
+    CacheCommand, ComposerCommand, ExtCommand, NodeCommand, PhpCommand, SelfCommand, ToolCommand,
 };
 #[cfg(unix)]
 use bougie_cli::{ProjectsCommand, ServicesCommand, ServicesDaemonCommand};
@@ -73,10 +73,9 @@ fn command_name(cmd: &Command) -> &'static str {
         Command::Tree { .. } => "tree",
         Command::Outdated { .. } => "outdated",
         Command::Sync { .. } => "sync",
-        Command::Up { .. } => "up",
-        Command::Down { .. } => "down",
         Command::Run { .. } => "run",
         Command::Php(_) => "php",
+        Command::Node(_) => "node",
         Command::Composer(_) => "composer",
         Command::Tool(_) => "tool",
         Command::ToolExec { .. } => "tool-exec",
@@ -86,6 +85,9 @@ fn command_name(cmd: &Command) -> &'static str {
         Command::Services(_) => "services",
         Command::Projects(_) => "projects",
         Command::Make { .. } => "make",
+        Command::Format { .. } => "format",
+        Command::Start { .. } => "start",
+        Command::Stop { .. } => "stop",
     }
 }
 
@@ -205,16 +207,8 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
                 resolution_strategy(resolution),
             )
         }
-        #[cfg(unix)]
-        Command::Up { names, detach } => commands::services::up::run(format, names, detach),
-        #[cfg(not(unix))]
-        Command::Up { names: _, detach: _ } => unsupported_on_windows("bougie up"),
-        #[cfg(unix)]
-        Command::Down { names, purge } => commands::services::down::run(format, names, purge),
-        #[cfg(not(unix))]
-        Command::Down { names: _, purge: _ } => unsupported_on_windows("bougie down"),
-        Command::Run { with, no_sync, xdebug, php, argv } => {
-            commands::run::run(&with, &argv, format, no_sync, xdebug, php)
+        Command::Run { with, no_sync, xdebug, php_request, php, argv } => {
+            commands::run::run(&with, &argv, format, no_sync, xdebug, php, php_request.as_deref())
         }
         Command::Ext(ExtCommand::Add { args, no_sync, php }) => {
             commands::ext_add_remove::add(format, args, no_sync, php)
@@ -298,6 +292,17 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
         Command::Php(PhpCommand::Upgrade { minor }) => {
             commands::php_upgrade::run(format, minor.as_deref())
         }
+        Command::Node(NodeCommand::Install { requests }) => {
+            commands::node::install(format, &requests)
+        }
+        Command::Node(NodeCommand::Uninstall { requests }) => {
+            commands::node::uninstall(format, &requests)
+        }
+        Command::Node(NodeCommand::List) => commands::node::list(format),
+        Command::Node(NodeCommand::Find { request }) => {
+            commands::node::find(format, request.as_deref())
+        }
+        Command::Node(NodeCommand::Dir) => commands::node::dir(format),
         Command::Composer(ComposerCommand::Install {
             working_dir,
             no_dev,
@@ -536,6 +541,14 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
         }
         Command::Server(args) => commands::server::dispatch(format, args),
         #[cfg(unix)]
+        Command::Services(ServicesCommand::Up { names, detach }) => {
+            commands::services::up::run(format, names, detach)
+        }
+        #[cfg(unix)]
+        Command::Services(ServicesCommand::Down { names, purge }) => {
+            commands::services::down::run(format, names, purge)
+        }
+        #[cfg(unix)]
         Command::Services(ServicesCommand::Add { names }) => {
             commands::services::add::run(format, names)
         }
@@ -610,6 +623,24 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
         ),
         #[cfg(not(unix))]
         Command::Make { .. } => unsupported_on_windows("bougie make"),
+        Command::Format { args } => commands::format::run(&args),
+        #[cfg(unix)]
+        Command::Start { no_sync, dry_run, explain, no_builtin, recipe } => {
+            commands::start::run(
+                format,
+                commands::start::StartOptions { no_sync, dry_run, explain, no_builtin, recipe },
+            )
+        }
+        #[cfg(not(unix))]
+        Command::Start { .. } => unsupported_on_windows("bougie start"),
+        // `stop` is the teardown twin of `start`: bring the project's
+        // declared services (the dev-server tenant among them) down. A
+        // global `server stop` is deliberately *not* run — it would tear
+        // down hosting for every other project sharing the daemon.
+        #[cfg(unix)]
+        Command::Stop { names, purge } => commands::services::down::run(format, names, purge),
+        #[cfg(not(unix))]
+        Command::Stop { .. } => unsupported_on_windows("bougie stop"),
         Command::Tool(ToolCommand::Install { package, php, with, force }) => {
             commands::tool_install::run(format, &package, php.as_deref(), &with, force)
         }
@@ -625,19 +656,14 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
         Command::Tool(ToolCommand::Upgrade { package, all, reinstall }) => {
             commands::tool_upgrade::run(format, package.as_deref(), all, reinstall)
         }
-        Command::Tool(ToolCommand::Run(args)) => commands::tool_run::run(
-            format,
-            &args.package,
-            args.php.as_deref(),
-            &args.with,
-            args.args,
-        ),
+        Command::Tool(ToolCommand::Run(args)) => {
+            commands::tool_run::run(format, args.php.as_deref(), &args.with, args.command)
+        }
         Command::Tool(ToolCommand::Bgx(args)) => commands::tool_run::run(
             format,
-            &args.tool_run.package,
             args.tool_run.php.as_deref(),
             &args.tool_run.with,
-            args.tool_run.args,
+            args.tool_run.command,
         ),
         Command::Tool(ToolCommand::List) => commands::tool_list::run(format),
         Command::Tool(ToolCommand::Dir { package }) => {

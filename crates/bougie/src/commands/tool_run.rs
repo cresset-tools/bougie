@@ -1,26 +1,40 @@
-//! `bougie tool run <vendor/name>[@<constraint>] [--php] [--with] -- args...`.
+//! `bougie tool run [--php] [--with] <vendor/name>[@<constraint>] args...`.
 //!
 //! Thin dispatcher. The heavy lifting (cache key, persistent-match
 //! lookup, cache materialisation, exec) lives in
 //! `bougie_tool::run::run`. Callbacks come from
 //! `super::tool_callbacks` so the wiring is shared with install /
 //! inject / upgrade.
+//!
+//! `command` arrives as one `trailing_var_arg` list: the first element
+//! is the tool package, everything after is forwarded to the tool
+//! verbatim (no `--` needed — bougie's own options must precede the
+//! package).
 
 use bougie_cli::OutputFormat;
 use bougie_paths::Paths;
 use bougie_tool::install::InstallContext;
 use bougie_tool::{request, run};
-use eyre::Result;
+use eyre::{Result, eyre};
 use std::ffi::OsString;
 use std::process::ExitCode;
 
 pub fn run(
     _format: OutputFormat,
-    package: &str,
     php_spec: Option<&str>,
     with: &[String],
-    args: Vec<OsString>,
+    mut command: Vec<OsString>,
 ) -> Result<ExitCode> {
+    // clap enforces `required = true`, so `command` is non-empty; keep a
+    // defensive check rather than indexing.
+    if command.is_empty() {
+        return Err(eyre!("missing tool package — usage: bgx [OPTIONS] <PACKAGE> [ARGS]..."));
+    }
+    let package_os = command.remove(0);
+    let package = package_os
+        .to_str()
+        .ok_or_else(|| eyre!("tool package name is not valid UTF-8: {package_os:?}"))?;
+    let args = command;
     let paths = Paths::from_env()?;
     let req = request::parse(package)?;
     let resolve_lock: &bougie_tool::install::LockResolver = &|paths, project_root| {

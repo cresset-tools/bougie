@@ -29,13 +29,13 @@ fn init_creates_composer_and_bougie_skeleton() {
         .assert()
         .success()
         .stdout(contains("composer.json"))
-        .stdout(contains(".bougie/conf.d"));
+        .stdout(contains("vendor/bougie/conf.d"));
 
     assert!(proj.path().join("composer.json").is_file());
-    assert!(proj.path().join(".bougie/conf.d").is_dir());
-    assert!(proj.path().join(".bougie/bin").is_dir());
-    assert!(proj.path().join(".bougie/state").is_dir());
-    assert!(proj.path().join(".bougie/.gitignore").is_file());
+    assert!(proj.path().join("vendor/bougie/conf.d").is_dir());
+    assert!(proj.path().join("vendor/bougie/bin").is_dir());
+    assert!(proj.path().join("vendor/bougie/state").is_dir());
+    assert!(proj.path().join("vendor/bougie/.gitignore").is_file());
     assert!(!proj.path().join("bougie.toml").exists());
     assert!(!proj.path().join(".php-version").exists());
 }
@@ -84,8 +84,8 @@ fn new_creates_directory_and_scaffolds_inside() {
 
     let root = proj.path().join("my-app");
     assert!(root.join("composer.json").is_file());
-    assert!(root.join(".bougie/conf.d").is_dir());
-    assert!(root.join(".bougie/.gitignore").is_file());
+    assert!(root.join("vendor/bougie/conf.d").is_dir());
+    assert!(root.join("vendor/bougie/.gitignore").is_file());
 }
 
 #[test]
@@ -246,7 +246,7 @@ fn init_starter_writes_manifest_composer_json() {
     assert!(cj.contains("acme/from-starter"), "{cj}");
     assert!(cj.contains("mage-os/product-community-edition"), "{cj}");
     // Normal scaffolding still happened.
-    assert!(proj.path().join(".bougie/conf.d").is_dir());
+    assert!(proj.path().join("vendor/bougie/conf.d").is_dir());
 }
 
 #[test]

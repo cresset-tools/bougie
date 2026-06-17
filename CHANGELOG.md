@@ -5,6 +5,59 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.28.0...bougie-v0.29.0) (2026-06-13)
+
+
+### ⚠ BREAKING CHANGES
+
+* **cli:** `bougie make` with no task argument now lists the available recipe tasks instead of running the `start` task. Use `bougie start` (or `bougie make start`) to bring the project up.
+
+### Features
+
+* **cli:** reorganize the CLI around start/stop, group --help ([#378](https://github.com/cresset-tools/bougie/issues/378)) ([a0c629b](https://github.com/cresset-tools/bougie/commit/a0c629bae9e68a801a5e8a57f607d6108374e40b))
+* **tool:** forward bgx/tool-run args after the package without `--` ([#376](https://github.com/cresset-tools/bougie/issues/376)) ([41a99b4](https://github.com/cresset-tools/bougie/commit/41a99b46af45e5a2768e5e4d521ec99e20cf2331))
+
+
+### Bug Fixes
+
+* **autoloader:** emit root package autoload-dev when dev deps are included ([#380](https://github.com/cresset-tools/bougie/issues/380)) ([07eb2a1](https://github.com/cresset-tools/bougie/commit/07eb2a1db9cb3436f1455a482f75860cc6f460db))
+* **sync:** re-resolve stale extensions after the active interpreter changes ([#379](https://github.com/cresset-tools/bougie/issues/379)) ([4b24785](https://github.com/cresset-tools/bougie/commit/4b24785311d2517e7a673e79d7e0ed6ac529838b))
+
+## [0.28.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.27.0...bougie-v0.28.0) (2026-06-13)
+
+
+### Features
+
+* **node:** Node.js toolchain via nodejs.org + run PATH overlay ([#371](https://github.com/cresset-tools/bougie/issues/371)) ([72b0e4d](https://github.com/cresset-tools/bougie/commit/72b0e4d846568c208f32f47b1962e7a5e4638e4e))
+* **paths:** move project toolchain into vendor/bougie; durable state under $BOUGIE_HOME ([#372](https://github.com/cresset-tools/bougie/issues/372)) ([2c92332](https://github.com/cresset-tools/bougie/commit/2c923323be730b8d9d7217e158917570dea04234))
+
+
+### Bug Fixes
+
+* **dist:** make installers prefer the origin mirror (hosting=[simple,github]) ([#374](https://github.com/cresset-tools/bougie/issues/374)) ([e627774](https://github.com/cresset-tools/bougie/commit/e6277743e7dd82b7996d975f74d5a30b5ee8a2a3))
+* **format:** pin wick 0.2.3 ([#375](https://github.com/cresset-tools/bougie/issues/375)) ([55c73dc](https://github.com/cresset-tools/bougie/commit/55c73dc4a7306f3d03a226c28f6479fe94478a08))
+
+## [0.27.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.26.0...bougie-v0.27.0) (2026-06-13)
+
+
+### Features
+
+* **format:** add `bougie format`, the `uv format` model for PHP ([#368](https://github.com/cresset-tools/bougie/issues/368)) ([2b0e567](https://github.com/cresset-tools/bougie/commit/2b0e567c4da6c6e20f4b07308bc902d2b3a1eca3))
+* **run:** add `--php` to select the interpreter for one run ([#366](https://github.com/cresset-tools/bougie/issues/366)) ([bf47d59](https://github.com/cresset-tools/bougie/commit/bf47d59b47388efc1c35baedbfce545c0965f0d8))
+
+
+### Bug Fixes
+
+* **format:** pin wick 0.2.1 (0.2.0 shipped no binaries) ([#370](https://github.com/cresset-tools/bougie/issues/370)) ([f8808c5](https://github.com/cresset-tools/bougie/commit/f8808c525a1b31b0ebe2ee316d7339729b9bafea))
+
+## [0.26.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.25.2...bougie-v0.26.0) (2026-06-13)
+
+
+### Features
+
+* **cli:** promote `services projects` to top-level `bougie projects` ([#365](https://github.com/cresset-tools/bougie/issues/365)) ([da52e1d](https://github.com/cresset-tools/bougie/commit/da52e1df7d61b178a67e53413e94024db6fa6af9))
+* **server:** run the dev server against a system PHP ([#363](https://github.com/cresset-tools/bougie/issues/363)) ([9890626](https://github.com/cresset-tools/bougie/commit/98906264bdfccd27f59753ea935aa56d408e8dac))
+
 ## [0.25.2](https://github.com/cresset-tools/bougie/compare/bougie-v0.25.1...bougie-v0.25.2) (2026-06-12)
 
 

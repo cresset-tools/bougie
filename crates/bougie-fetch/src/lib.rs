@@ -296,7 +296,13 @@ fn backoff_sleep(attempt: u32) {
 pub enum ArchiveKind {
     /// Zstandard-compressed POSIX tar — bougie's own publish format.
     TarZst,
-    /// Zip — windows.php.net's interpreter + PECL distribution format.
+    /// Gzip-compressed POSIX tar — nodejs.org's Unix distribution format
+    /// (`node-v<ver>-<os>-<arch>.tar.gz`). node also publishes `.tar.xz`,
+    /// but `.tar.gz` decodes via `flate2` (already in the dependency tree)
+    /// and avoids pulling in an xz/liblzma dependency.
+    TarGz,
+    /// Zip — windows.php.net's interpreter + PECL distribution format, and
+    /// nodejs.org's Windows distribution format (`node-v<ver>-win-<arch>.zip`).
     Zip,
 }
 
@@ -550,6 +556,7 @@ fn try_once_blob(
         .wrap_err_with(|| format!("creating {}", incoming.display()))?;
     match spec.archive {
         ArchiveKind::TarZst => extract_tar_zst(&tmp, &incoming, spec.strip_prefix)?,
+        ArchiveKind::TarGz => extract_tar_gz(&tmp, &incoming, spec.strip_prefix)?,
         ArchiveKind::Zip => extract_zip(&tmp, &incoming, spec.strip_prefix)?,
     }
 
@@ -590,12 +597,33 @@ fn extract_tar_zst(tar_zst: &Path, into: &Path, strip_prefix: &str) -> Result<()
     let f = File::open(tar_zst)
         .wrap_err_with(|| format!("opening {}", tar_zst.display()))?;
     let zd = zstd::stream::read::Decoder::new(f).wrap_err("zstd decoder")?;
-    let mut archive = tar::Archive::new(zd);
+    extract_tar(zd, tar_zst, into, strip_prefix)
+}
+
+/// Extract a gzip-compressed POSIX tar — nodejs.org's Unix distribution
+/// format. Same strip-prefix + symlink/hardlink handling as
+/// [`extract_tar_zst`]; only the decompressor differs (`flate2` instead of
+/// `zstd`). Node tarballs wrap their contents in `node-v<ver>-<os>-<arch>/`
+/// and contain symlinks (`bin/npm` → `../lib/node_modules/npm/bin/npm-cli.js`),
+/// both handled by [`extract_tar`].
+fn extract_tar_gz(tar_gz: &Path, into: &Path, strip_prefix: &str) -> Result<()> {
+    let f = File::open(tar_gz)
+        .wrap_err_with(|| format!("opening {}", tar_gz.display()))?;
+    let gd = flate2::read::GzDecoder::new(f);
+    extract_tar(gd, tar_gz, into, strip_prefix)
+}
+
+/// Walk a decompressed tar stream, stripping `strip_prefix` as a leading
+/// path component from every entry and rewriting hardlink targets the same
+/// way. Shared by [`extract_tar_zst`] and [`extract_tar_gz`]; `src` is the
+/// on-disk archive path, used only for error messages.
+fn extract_tar<R: Read>(reader: R, src: &Path, into: &Path, strip_prefix: &str) -> Result<()> {
+    let mut archive = tar::Archive::new(reader);
     archive.set_preserve_permissions(true);
     archive.set_preserve_mtime(true);
     for entry in archive
         .entries()
-        .wrap_err_with(|| format!("reading entries from {}", tar_zst.display()))?
+        .wrap_err_with(|| format!("reading entries from {}", src.display()))?
     {
         let mut entry = entry.wrap_err("reading archive entry")?;
         let path = entry
@@ -1314,6 +1342,68 @@ mod tests {
         assert!(into.join("bin/php").is_file());
         assert!(into.join("etc/php.ini").is_file());
         assert!(!into.join("install").exists());
+    }
+
+    #[test]
+    fn extract_tar_gz_strips_prefix_and_follows_symlinks() {
+        // Mirrors a nodejs.org tarball: contents wrapped in
+        // `node-v20.11.0-linux-x64/`, with `bin/npm` a relative symlink
+        // into `lib/` (gzip-compressed).
+        let dir = tempfile::TempDir::new().unwrap();
+        let archive_path = dir.path().join("node.tar.gz");
+        let prefix = "node-v20.11.0-linux-x64";
+
+        let mut tar_buf: Vec<u8> = Vec::new();
+        {
+            let mut builder = tar::Builder::new(&mut tar_buf);
+            let mut header = tar::Header::new_gnu();
+            header.set_size(4);
+            header.set_mode(0o755);
+            header.set_cksum();
+            builder
+                .append_data(&mut header, format!("{prefix}/bin/node"), &b"ELF\0"[..])
+                .unwrap();
+            let mut hdr_real = tar::Header::new_gnu();
+            hdr_real.set_size(3);
+            hdr_real.set_mode(0o644);
+            hdr_real.set_cksum();
+            builder
+                .append_data(
+                    &mut hdr_real,
+                    format!("{prefix}/lib/node_modules/npm/bin/npm-cli.js"),
+                    &b"js\n"[..],
+                )
+                .unwrap();
+            let mut hdr_link = tar::Header::new_gnu();
+            hdr_link.set_entry_type(tar::EntryType::Symlink);
+            hdr_link.set_size(0);
+            hdr_link.set_cksum();
+            builder
+                .append_link(
+                    &mut hdr_link,
+                    format!("{prefix}/bin/npm"),
+                    "../lib/node_modules/npm/bin/npm-cli.js",
+                )
+                .unwrap();
+            builder.finish().unwrap();
+        }
+        let mut encoder =
+            flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(&tar_buf).unwrap();
+        let gz = encoder.finish().unwrap();
+        std::fs::write(&archive_path, gz).unwrap();
+
+        let into = dir.path().join("out");
+        std::fs::create_dir_all(&into).unwrap();
+        extract_tar_gz(&archive_path, &into, prefix).unwrap();
+
+        assert!(into.join("bin/node").is_file());
+        assert!(into.join("lib/node_modules/npm/bin/npm-cli.js").is_file());
+        let link = into.join("bin/npm");
+        assert!(link.symlink_metadata().unwrap().file_type().is_symlink());
+        // The symlink resolves through the stripped tree to the real file.
+        assert_eq!(std::fs::read(&link).unwrap(), b"js\n");
+        assert!(!into.join(prefix).exists());
     }
 
     #[test]

@@ -17,9 +17,11 @@ pub mod composer_why;
 pub mod env;
 pub mod ext_add_remove;
 pub mod ext_list;
+pub mod format;
 pub mod infer_php;
 pub mod init;
 pub mod lock;
+pub mod node;
 pub mod php_dir;
 pub mod php_find;
 pub mod php_install;
@@ -43,6 +45,8 @@ pub mod tool_uninstall;
 pub mod tool_upgrade;
 #[cfg(unix)]
 pub mod make;
+#[cfg(unix)]
+pub mod start;
 #[cfg(unix)]
 pub mod services;
 pub mod server;

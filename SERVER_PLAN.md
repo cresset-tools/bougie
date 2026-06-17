@@ -21,9 +21,9 @@ v1 = phases 0–6. v1.x = phase 7 (TLS).
   matches the shape of `ExtCommand` / `PhpCommand`.
 - `src/install::Paths` — resolves `<install>/bin/php-fpm` (and `/bin/php`)
   for a given (version, flavor).
-- `src/shim` — project root location and `.bougie/state/resolved` reading;
+- `src/shim` — project root location and `vendor/vendor/bougie/state/resolved` reading;
   `locate_project_root()`, `read_project_resolved()`.
-- `src/conf_d` — listing of `.bougie/conf.d/*.ini` fragments. Reused for
+- `src/conf_d` — listing of `vendor/bougie/conf.d/*.ini` fragments. Reused for
   variant generation in phase 3.
 - `src/index/wire::LoadDirective` — needed to identify the extension name
   carried in each conf.d fragment (for the `debug_only_extensions` filter).
@@ -212,12 +212,12 @@ restart.
   - LRU eviction when `len() >= max_concurrent_pools`: evict oldest
     `last_served_at` (idle) pool first.
 - `src/commands/server/watcher.rs` (new) — `notify::RecommendedWatcher`
-  wrapping `<project>/.bougie/conf.d/`,
+  wrapping `<project>/vendor/bougie/conf.d/`,
   `<project>/composer.json`, optional `<project>/bougie.toml`.
   Debounce 250ms. On event:
   - composer.json or bougie.toml changed → recompute resolved PHP
     version. If changed, full pool restart (SIGTERM, respawn lazily).
-  - `.bougie/conf.d/` changed → regenerate variant dirs, SIGUSR2 pool.
+  - `vendor/bougie/conf.d/` changed → regenerate variant dirs, SIGUSR2 pool.
 
 **Verification**:
 - Idle a project for `idle_pool_timeout`; observe `pool_idle_out` event,

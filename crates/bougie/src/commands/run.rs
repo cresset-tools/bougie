@@ -23,7 +23,7 @@ const PATH_SEP: &str = ";";
 ///
 /// Debug overlay: when `xdebug_flag` is set or the parent's
 /// `XDEBUG_SESSION` env var is non-empty, `PHP_INI_SCAN_DIR` is
-/// widened to include `.bougie/conf.d-debug/` so server-installed
+/// widened to include `vendor/bougie/conf.d-debug/` so server-installed
 /// debug fragments load for this invocation too. With the explicit
 /// `--xdebug` flag, bougie also exports `XDEBUG_SESSION=1` to the
 /// child (if not already set) and lazily installs xdebug into
@@ -35,6 +35,7 @@ pub fn run(
     no_sync: bool,
     xdebug_flag: bool,
     php_pref: bougie_cli::PhpPrefArgs,
+    php_request: Option<&str>,
 ) -> Result<ExitCode> {
     if argv.is_empty() {
         return Err(eyre!("nothing to run"));
@@ -54,7 +55,16 @@ pub fn run(
     }
     let cwd = std::env::current_dir()?;
     let project_root = resolve_project_root(&cwd);
-    if !no_sync && !is_environment_present(&project_root)? {
+    if let Some(req) = php_request {
+        // Explicit `--php`: force a sync to the requested interpreter,
+        // overriding whatever the project would otherwise infer (and
+        // re-syncing even when the env is already present, since it may
+        // point at a different PHP). `--no-sync` is rejected at the CLI
+        // layer, so reaching here always means a sync is wanted.
+        let request = bougie_version::request::parse_request(req)
+            .wrap_err_with(|| format!("parsing --php {req:?}"))?;
+        sync::run_with_php_request(format, false, php_pref, &request)?;
+    } else if !no_sync && !is_environment_present(&project_root)? {
         // uv-parity: `bougie run` outside a project (no `require.php`,
         // no `[php]version`) falls back to the highest already-installed
         // PHP, or the latest publishable >=8.0 — instead of erroring the
@@ -85,7 +95,9 @@ pub fn run(
             );
         }
 
-    let bougie_bin = project_root.join(".bougie").join("bin");
+    let bougie_bin = bougie_paths::project::bin_dir(&project_root);
+    // Needed to locate the durable `conf.d-local/` under `$BOUGIE_HOME`.
+    let paths = Paths::from_env()?;
 
     let env_session_set = std::env::var_os("XDEBUG_SESSION")
         .is_some_and(|v| !v.is_empty());
@@ -97,12 +109,12 @@ pub fn run(
     // path is "the request was *already* set up for xdebug
     // elsewhere"; demanding bougie install something then would be a
     // surprise).
-    if xdebug_flag && !conf_d::fragment_present_anywhere(&project_root, "xdebug") {
+    if xdebug_flag && !conf_d::fragment_present_anywhere(&paths, &project_root, "xdebug") {
         install_xdebug_into_overlay(&project_root)
             .wrap_err("installing xdebug for `bougie run --xdebug`")?;
     }
 
-    let scan_dir = conf_d::php_ini_scan_dir(&project_root, debug_overlay);
+    let scan_dir = conf_d::php_ini_scan_dir(&paths, &project_root, debug_overlay);
 
     let prev_path = std::env::var("PATH").unwrap_or_default();
     // Front-load the bougie shim dir, then any per-extension PATH
@@ -116,6 +128,18 @@ pub fn run(
     let mut new_path = String::new();
     if bougie_bin.exists() {
         new_path.push_str(&bougie_bin.display().to_string());
+    }
+    // Overlay the project's Node.js `bin/` (node/npm/npx) when the
+    // project declares node use (package.json / .nvmrc / .node-version /
+    // a node-build composer dep like Hyvä). No-op for pure-PHP projects,
+    // so PATH is untouched there.
+    if let Ok(paths) = Paths::from_env()
+        && let Some(node_bin) = super::node::project_bin_dir(&project_root, &paths)
+    {
+        if !new_path.is_empty() {
+            new_path.push_str(PATH_SEP);
+        }
+        new_path.push_str(&node_bin.display().to_string());
     }
     for extra in &path_extras {
         if !new_path.is_empty() {
@@ -276,18 +300,34 @@ fn run_composer_script(
     extras: &[String],
     xdebug_flag: bool,
 ) -> Result<ExitCode> {
-    let bougie_bin = project_root.join(".bougie").join("bin");
+    let bougie_bin = bougie_paths::project::bin_dir(project_root);
     let prev_path = std::env::var("PATH").unwrap_or_default();
-    let new_path = if bougie_bin.exists() {
-        format!("{}:{prev_path}", bougie_bin.display())
-    } else {
-        prev_path
-    };
+    let mut new_path = String::new();
+    if bougie_bin.exists() {
+        new_path.push_str(&bougie_bin.display().to_string());
+    }
+    // Same node overlay as the direct-exec path, so composer scripts
+    // that shell out to `npm`/`node` find the project's toolchain.
+    if let Ok(paths) = Paths::from_env()
+        && let Some(node_bin) = super::node::project_bin_dir(project_root, &paths)
+    {
+        if !new_path.is_empty() {
+            new_path.push(':');
+        }
+        new_path.push_str(&node_bin.display().to_string());
+    }
+    if !prev_path.is_empty() {
+        if !new_path.is_empty() {
+            new_path.push(':');
+        }
+        new_path.push_str(&prev_path);
+    }
 
     let env_session_set = std::env::var_os("XDEBUG_SESSION")
         .is_some_and(|v| !v.is_empty());
     let debug_overlay = xdebug_flag || env_session_set;
-    let scan_dir = conf_d::php_ini_scan_dir(project_root, debug_overlay);
+    let paths = Paths::from_env()?;
+    let scan_dir = conf_d::php_ini_scan_dir(&paths, project_root, debug_overlay);
 
     let service_env: Vec<(String, String)> = Paths::from_env()
         .ok()
@@ -328,7 +368,7 @@ fn run_composer_script(
 }
 
 /// Walk up from `cwd` looking for the project root, marked by any of
-/// `bougie.toml`, `composer.json`, or `.bougie/`. Falls back to `cwd`
+/// `bougie.toml`, `composer.json`, or `vendor/bougie/`. Falls back to `cwd`
 /// itself if no marker is found in any ancestor — that keeps uv-parity
 /// for `bougie run python` invoked outside any project, where
 /// [`sync::run_with_default_fallback`] still does the right thing.
@@ -340,7 +380,7 @@ fn resolve_project_root(cwd: &Path) -> std::path::PathBuf {
     for anc in cwd.ancestors() {
         if anc.join("bougie.toml").is_file()
             || anc.join("composer.json").is_file()
-            || anc.join(".bougie").is_dir()
+            || bougie_paths::project::is_root(anc)
         {
             return anc.to_path_buf();
         }
@@ -377,7 +417,7 @@ mod tests {
     fn walks_up_to_dot_bougie() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
-        fs::create_dir(root.join(".bougie")).unwrap();
+        fs::create_dir_all(root.join("vendor").join("bougie")).unwrap();
         let sub = root.join("x");
         fs::create_dir_all(&sub).unwrap();
         assert_eq!(resolve_project_root(&sub), root);

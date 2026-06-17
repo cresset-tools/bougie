@@ -61,7 +61,7 @@ fn install_ext_add_run_shows_extension() {
         .success();
 
     // sync downloads PHP from windows.php.net and lays out
-    // .bougie/{bin,conf.d,php}/. We deliberately don't pin a version
+    // vendor/bougie/{bin,conf.d,php}/. We deliberately don't pin a version
     // here — the project's freshly-written `"php": "^8.4"` constraint
     // is what we want to exercise, and the backend's resolve step
     // picks whichever 8.4.x windows.php.net currently publishes.

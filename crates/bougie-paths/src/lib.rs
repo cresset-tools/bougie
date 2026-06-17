@@ -147,6 +147,19 @@ impl Paths {
     pub fn installs(&self) -> PathBuf {
         self.local.join("installs")
     }
+    /// `$BOUGIE_LOCAL/node-installs/` — per-version Node.js install trees.
+    /// Separate from `installs/` (PHP) because node has no flavor axis: the
+    /// layout is `node-installs/<version>/{bin,lib,...}` (the official
+    /// tarball's `node-v<ver>-<plat>/` wrapper is stripped on extract), so
+    /// it doesn't share PHP's `<version>-<flavor>` naming.
+    pub fn node_installs(&self) -> PathBuf {
+        self.local.join("node-installs")
+    }
+    /// `$BOUGIE_LOCAL/node-installs/<version>/` — one Node.js version's
+    /// root. `node` / `npm` / `npx` live under its `bin/`.
+    pub fn node_install_dir(&self, version: &str) -> PathBuf {
+        self.node_installs().join(version)
+    }
     pub fn store(&self) -> PathBuf {
         self.local.join("store")
     }
@@ -317,6 +330,132 @@ impl Paths {
     pub fn service_tenants(&self, name: &str) -> PathBuf {
         self.service_dir(name).join("tenants.json")
     }
+
+    // ---------- durable per-project state (under `home`) ----------
+    //
+    // The project-local toolchain dir (`project::dir`) lives under
+    // `vendor/` and is disposable — `rm -rf vendor` wipes it and a
+    // `bougie sync` regenerates it. Anything that *can't* be
+    // regenerated (because it has no other source of truth) lives
+    // here instead, keyed by a hash of the project's canonical path so
+    // it survives a vendor wipe.
+
+    /// `$BOUGIE_HOME/state/projects/<project-hash>/` — durable,
+    /// machine-local state for a single project that must outlive a
+    /// `vendor/` wipe. Keyed by [`project_hash`] so it stays stable
+    /// across `cd ./foo` vs. an absolute path.
+    pub fn project_state_dir(&self, project_root: &Path) -> PathBuf {
+        self.state()
+            .join("projects")
+            .join(project_hash(project_root))
+    }
+
+    /// `<project-state>/conf.d-local/` — machine-local extensions added
+    /// via `bougie ext add --so <path>`. These are NOT recorded in
+    /// `composer.json` and NOT mirrored by `bougie sync`, so they have
+    /// no other source of truth: they live under `$BOUGIE_HOME` rather
+    /// than in the disposable `vendor/bougie/` tree.
+    pub fn project_confd_local(&self, project_root: &Path) -> PathBuf {
+        self.project_state_dir(project_root).join("conf.d-local")
+    }
+}
+
+/// Project-local *disposable* toolchain dir and its subpaths. Lives
+/// under `vendor/` (created by `bougie sync`, wiped by `rm -rf vendor`)
+/// — analogous to a Python `.venv` or `node_modules/.bin`. Everything
+/// here is regenerable from `composer.json` / `composer.lock` + the
+/// resolver, so nothing in it is a source of truth. Durable per-project
+/// state lives under `$BOUGIE_HOME` (see [`Paths::project_confd_local`]).
+pub mod project {
+    use std::path::{Path, PathBuf};
+
+    /// `<root>/vendor/bougie` — the project-local toolchain dir.
+    pub fn dir(root: &Path) -> PathBuf {
+        root.join("vendor").join("bougie")
+    }
+
+    /// `true` if `dir` is a bougie project root (carries the marker dir).
+    /// Used by the ancestor-walk project-root discovery.
+    pub fn is_root(dir: &Path) -> bool {
+        self::dir(dir).is_dir()
+    }
+
+    /// `<root>/vendor/bougie/bin` — shim symlinks (`php`, `composer`, …).
+    pub fn bin_dir(root: &Path) -> PathBuf {
+        dir(root).join("bin")
+    }
+
+    /// `<root>/vendor/bougie/state` — resolution markers.
+    pub fn state_dir(root: &Path) -> PathBuf {
+        dir(root).join("state")
+    }
+
+    /// `<root>/vendor/bougie/state/bin` — ephemeral recipe bin dir.
+    pub fn state_bin_dir(root: &Path) -> PathBuf {
+        state_dir(root).join("bin")
+    }
+
+    /// `<root>/vendor/bougie/state/resolved` — resolved `<ver>-<flavor>`.
+    pub fn resolved(root: &Path) -> PathBuf {
+        state_dir(root).join("resolved")
+    }
+
+    /// `<root>/vendor/bougie/state/resolved-php-path` — system-PHP path
+    /// marker (present only for system-PHP projects).
+    pub fn resolved_php_path(root: &Path) -> PathBuf {
+        state_dir(root).join("resolved-php-path")
+    }
+
+    /// `<root>/vendor/bougie/conf.d` — declared-extension fragments.
+    pub fn confd(root: &Path) -> PathBuf {
+        dir(root).join("conf.d")
+    }
+
+    /// `<root>/vendor/bougie/conf.d-debug` — server lazy-xdebug overlay.
+    pub fn confd_debug(root: &Path) -> PathBuf {
+        dir(root).join("conf.d-debug")
+    }
+
+    /// `<root>/vendor/bougie/.lock` — per-project sync flock.
+    pub fn lock(root: &Path) -> PathBuf {
+        dir(root).join(".lock")
+    }
+}
+
+/// First 12 hex chars of `sha256(canonical_project_path)`. Used as the
+/// per-project directory name under `$BOUGIE_HOME/state/projects/` and
+/// the server's runtime root. Canonicalization keeps the hash stable
+/// across `cd ./foo` vs. `cd $(pwd)/foo` — same project, same hash.
+pub fn project_hash(project: &Path) -> String {
+    use sha2::{Digest, Sha256};
+    use std::fmt::Write as _;
+    let canonical = project
+        .canonicalize()
+        .unwrap_or_else(|_| project.to_path_buf());
+    let bytes = canonical
+        .to_str()
+        .map(str::as_bytes)
+        .or_else(|| {
+            // Non-UTF-8 path: fall back to the raw OsStr bytes on unix.
+            #[cfg(unix)]
+            {
+                use std::os::unix::ffi::OsStrExt;
+                Some(canonical.as_os_str().as_bytes())
+            }
+            #[cfg(not(unix))]
+            {
+                None
+            }
+        })
+        .unwrap_or(b"");
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    let digest = hasher.finalize();
+    let mut out = String::with_capacity(12);
+    for b in digest.iter().take(6) {
+        write!(out, "{b:02x}").expect("writing to String");
+    }
+    out
 }
 
 /// If a pre-split `state/` directory exists under `local` but not
@@ -462,6 +601,38 @@ mod tests {
             p.tool_dir("phpstan/phpstan"),
             Path::new("/l/tools/phpstan-phpstan")
         );
+    }
+
+    #[test]
+    fn project_local_dir_lives_under_vendor() {
+        let root = Path::new("/srv/app");
+        assert_eq!(project::dir(root), Path::new("/srv/app/vendor/bougie"));
+        assert_eq!(project::bin_dir(root), Path::new("/srv/app/vendor/bougie/bin"));
+        assert_eq!(
+            project::resolved(root),
+            Path::new("/srv/app/vendor/bougie/state/resolved")
+        );
+        assert_eq!(
+            project::confd(root),
+            Path::new("/srv/app/vendor/bougie/conf.d")
+        );
+        assert_eq!(
+            project::state_bin_dir(root),
+            Path::new("/srv/app/vendor/bougie/state/bin")
+        );
+    }
+
+    #[test]
+    fn durable_conf_d_local_lives_under_home_keyed_by_hash() {
+        let p = Paths::new(PathBuf::from("/h"), PathBuf::from("/c"));
+        let root = Path::new("/srv/app");
+        let hash = project_hash(root);
+        assert_eq!(
+            p.project_confd_local(root),
+            PathBuf::from(format!("/h/state/projects/{hash}/conf.d-local"))
+        );
+        // Distinct from the disposable vendor dir.
+        assert!(!p.project_confd_local(root).starts_with(root));
     }
 
     #[test]

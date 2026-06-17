@@ -46,7 +46,7 @@ fn logs_tail_shows_lines_the_service_wrote() {
         .assert()
         .success();
     env.bougie()
-        .args(["up"])
+        .args(["services", "up"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
@@ -100,7 +100,7 @@ fn logs_no_arg_tails_all_declared_services_combined() {
     // Only redis has a fixture binary; start just it. The mariadb
     // declaration still widens the no-arg request to the multi path.
     env.bougie()
-        .args(["up", "redis"])
+        .args(["services", "up", "redis"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
@@ -151,7 +151,7 @@ fn logs_n_truncates_to_requested_lines() {
         .assert()
         .success();
     env.bougie()
-        .args(["up"])
+        .args(["services", "up"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
@@ -228,7 +228,7 @@ fn logs_follow_streams_new_bytes_then_ends_on_disconnect() {
         .assert()
         .success();
     env.bougie()
-        .args(["up"])
+        .args(["services", "up"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
@@ -296,7 +296,7 @@ fn multi_service_logs_prefixes_each_line_with_the_service_name() {
         .assert()
         .success();
     env.bougie()
-        .args(["up"])
+        .args(["services", "up"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()

@@ -18,8 +18,30 @@ const HELP_STYLES: Styles = Styles::styled()
     .valid(AnsiColor::Green.on_default())
     .invalid(AnsiColor::Yellow.on_default().effects(Effects::BOLD));
 
+/// Grouped quick-reference appended to `bougie --help`. clap renders all
+/// subcommands in one flat "Commands:" list (it has no headed-group
+/// support), and `display_order` clusters that list into these same
+/// groups — this cheat-sheet just names the groups so the core verbs are
+/// findable at a glance.
+const COMMAND_GROUPS: &str = "\
+Command groups:
+  Project      init, new, start, stop, run, sync, make, format
+  Dependencies add, remove, lock, tree, outdated, ext, composer
+  Toolchain    php, node, tool
+  Services     server, services, projects
+  Admin        cache, self
+
+Run `bougie help <command>` for details on any command.";
+
 #[derive(Parser, Debug)]
-#[command(name = "bougie", version = LONG_VERSION, about, long_about = None, styles = HELP_STYLES)]
+#[command(
+    name = "bougie",
+    version = LONG_VERSION,
+    about,
+    long_about = None,
+    styles = HELP_STYLES,
+    after_long_help = COMMAND_GROUPS,
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Command,
@@ -86,6 +108,7 @@ pub enum ResolutionStrategy {
 #[derive(Subcommand, Debug)]
 pub enum Command {
     /// Create a new project.
+    #[command(display_order = 1)]
     Init {
         /// Place bougie configuration in a bougie.toml file.
         #[arg(long)]
@@ -107,6 +130,7 @@ pub enum Command {
     },
 
     /// Create a new project in a new directory.
+    #[command(display_order = 2)]
     New {
         /// Directory to create under the current directory and scaffold
         /// the project into.
@@ -130,7 +154,7 @@ pub enum Command {
     },
 
     /// Manage PHP extensions.
-    #[command(subcommand)]
+    #[command(subcommand, display_order = 15)]
     Ext(ExtCommand),
 
     /// Add one or more packages to the project and sync. The uv-flavored
@@ -139,6 +163,7 @@ pub enum Command {
     /// explicit constraint uses the `@` syntax (`vendor/pkg@^1.0`), as in
     /// `bougie tool install` / `bougie ext add`. Edits `composer.json`,
     /// re-resolves `composer.lock`, and installs into `vendor/`.
+    #[command(display_order = 10)]
     Add {
         /// Packages to add, `vendor/pkg` or `vendor/pkg@<constraint>`.
         #[arg(value_name = "PACKAGES", required = true)]
@@ -172,6 +197,7 @@ pub enum Command {
 
     /// Remove one or more packages from the project and sync. The
     /// uv-flavored twin of `composer remove`.
+    #[command(display_order = 11)]
     Remove {
         /// Packages to remove (`vendor/name`).
         #[arg(value_name = "PACKAGES", required = true)]
@@ -198,6 +224,7 @@ pub enum Command {
     /// where still valid, re-resolving only what changed. Never bumps
     /// versions and never installs — use `bougie composer update` to pull
     /// newer versions.
+    #[command(display_order = 12)]
     Lock {
         /// Version-preference policy when re-resolving changed requires
         /// (uv's `--resolution`).
@@ -213,6 +240,7 @@ pub enum Command {
 
     /// Print the project's dependency tree (native; uv's `uv tree`).
     /// Reads `composer.lock`.
+    #[command(display_order = 13)]
     Tree {
         /// Root the tree at this package instead of the project.
         #[arg(value_name = "PACKAGE")]
@@ -228,6 +256,7 @@ pub enum Command {
     /// List installed packages with a newer version available (native;
     /// like `uv`/`pnpm outdated`). Reads `composer.lock` and queries the
     /// configured repositories.
+    #[command(display_order = 14)]
     Outdated {
         /// Optional `vendor/name` filters; with none, all are considered.
         #[arg(value_name = "PACKAGES")]
@@ -256,6 +285,7 @@ pub enum Command {
     },
 
     /// Install everything the project requires.
+    #[command(display_order = 6)]
     Sync {
         /// Don't try to download anything, this will fail if there are uncached packages.
         #[arg(long)]
@@ -280,34 +310,8 @@ pub enum Command {
         php: PhpPrefArgs,
     },
 
-    /// Start the project's declared services (or every service in
-    /// `names`) and provision the project's tenant in each. Equivalent
-    /// to the former `bougie services up` — promoted to a top-level
-    /// verb because it's the most common project-startup step.
-    Up {
-        /// Service names to bring up. Empty = every declared service.
-        names: Vec<String>,
-        /// Start the services and return immediately instead of
-        /// attaching to their combined log stream. Attaching is the
-        /// default for an interactive (TTY) text-mode invocation;
-        /// non-interactive runs and `--format json-v1` always detach.
-        #[arg(short = 'd', long)]
-        detach: bool,
-    },
-
-    /// Stop the project's declared services (or every service in
-    /// `names`). The shared global process stays up while any other
-    /// project's tenant remains. Equivalent to the former
-    /// `bougie services down`.
-    Down {
-        names: Vec<String>,
-        /// Destroy persisted tenant data (e.g. FLUSHDB on redis). Off
-        /// by default — re-adding the service should restore state.
-        #[arg(long)]
-        purge: bool,
-    },
-
     /// Run a command in the project environment.
+    #[command(display_order = 5)]
     Run {
         /// Add a temporary extension for this invocation.
         #[arg(long, value_name = "EXT=VER")]
@@ -315,11 +319,18 @@ pub enum Command {
         /// Skip the implicit `bougie sync` before running.
         #[arg(long)]
         no_sync: bool,
-        /// Layer the server's debug overlay (`.bougie/conf.d-debug/`)
+        /// Layer the server's debug overlay (`vendor/bougie/conf.d-debug/`)
         /// into `PHP_INI_SCAN_DIR` and set `XDEBUG_SESSION=1` for the
         /// child. Installs xdebug on first use if not already present.
         #[arg(long)]
         xdebug: bool,
+        /// Run with a specific PHP interpreter. Accepts a version
+        /// (`8.3`, `8.3.12`), a constraint (`~8.3`, `>=8.2,<8.4`), or a
+        /// path to a `php` binary. Forces a sync to that interpreter,
+        /// so it can't be combined with `--no-sync`. Mirrors
+        /// `uv run --python`.
+        #[arg(long = "php", value_name = "VER|PATH", conflicts_with = "no_sync")]
+        php_request: Option<String>,
         #[command(flatten)]
         php: PhpPrefArgs,
         /// Command and arguments. `--` separator is optional.
@@ -328,8 +339,13 @@ pub enum Command {
     },
 
     /// Manage PHP interpreters.
-    #[command(subcommand)]
+    #[command(subcommand, display_order = 20)]
     Php(PhpCommand),
+
+    /// Manage Node.js interpreters (for projects that build frontend
+    /// assets — Vite, Laravel Mix, Magento static-content deploy).
+    #[command(subcommand, display_order = 21)]
+    Node(NodeCommand),
 
     /// Run Composer, reimplemented natively. bougie does not bundle or
     /// execute the Composer phar; the common Composer surface
@@ -338,12 +354,12 @@ pub enum Command {
     /// unrecognized subcommand errors with a pointer to
     /// `bougie tool install composer/composer` for the full upstream
     /// Composer.
-    #[command(subcommand)]
+    #[command(subcommand, display_order = 16)]
     Composer(ComposerCommand),
 
     /// Manage globally-installed, isolated PHP CLI tools. See
     /// `TOOL_PLAN.md` for the design.
-    #[command(subcommand)]
+    #[command(subcommand, display_order = 22)]
     Tool(ToolCommand),
 
     /// Runtime shim invoked by tool wrappers (`#!.../bougie tool-exec`).
@@ -359,38 +375,77 @@ pub enum Command {
     },
 
     /// Manage bougie's cache.
-    #[command(subcommand)]
+    #[command(subcommand, display_order = 40)]
     Cache(CacheCommand),
 
     /// Manage the bougie binary itself.
     #[command(subcommand)]
-    #[command(name = "self")]
+    #[command(name = "self", display_order = 41)]
     SelfCmd(SelfCommand),
 
     /// Run the bougie development HTTP server for the current project.
     /// With no subcommand, registers the project with the shared dev
     /// server, prints its URL, and streams its log (Ctrl-C detaches).
     /// See SERVER.md.
+    #[command(display_order = 30)]
     Server(ServerArgs),
 
     /// Manage project-scoped dev services (mariadb, redis, …). See
     /// SERVICES.md and CLI.md §3.8.
-    #[command(subcommand)]
+    #[command(subcommand, display_order = 31)]
     Services(ServicesCommand),
 
     /// Inspect and manage provisioned tenants across the shared dev
     /// services and the project each belongs to. Reads the on-disk
     /// tenant ledgers; no daemon required.
-    #[command(subcommand)]
+    #[command(subcommand, display_order = 32)]
     Projects(ProjectsCommand),
 
+    /// Bring the whole project up: run the detected recipe's `start`
+    /// task, whose DAG syncs the toolchain + vendor, provisions and
+    /// starts the project's services, runs any setup, and starts the
+    /// dev server. The project lifecycle umbrella (ddev's `start`).
+    /// For an individual task use `bougie make <task>`. Unix-only.
+    #[command(display_order = 3)]
+    Start {
+        /// Skip the implicit `bougie sync` prologue.
+        #[arg(long)]
+        no_sync: bool,
+        /// Show what would run, but don't execute.
+        #[arg(long)]
+        dry_run: bool,
+        /// Explain why each step runs or skips.
+        #[arg(long)]
+        explain: bool,
+        /// Ignore the builtin recipe; use only `bougie.toml`.
+        #[arg(long)]
+        no_builtin: bool,
+        /// Force a specific builtin (e.g. `magento`).
+        #[arg(long, value_name = "NAME")]
+        recipe: Option<String>,
+    },
+
+    /// Bring the project down: stop its declared services (or every
+    /// service in `names`), including the dev-server tenant when the
+    /// `server` service is declared. The shared daemon and any other
+    /// project's tenants stay up. The teardown twin of `bougie start`.
+    /// Unix-only.
+    #[command(display_order = 4)]
+    Stop {
+        /// Service names to stop. Empty = every declared service.
+        names: Vec<String>,
+        /// Destroy persisted tenant data (e.g. FLUSHDB on redis). Off
+        /// by default — `bougie start` should restore state.
+        #[arg(long)]
+        purge: bool,
+    },
+
     /// Walk a project recipe's DAG, running tasks whose freshness
-    /// check fails. `bougie start` is a zero-arg alias for
-    /// `bougie make start`. See RECIPES.md.
-    #[command(alias = "start")]
+    /// check fails. With no task, lists the available tasks; use
+    /// `bougie start` to bring the whole project up. See RECIPES.md.
+    #[command(display_order = 7)]
     Make {
-        /// Task to run. Defaults to `start` — so `bougie make` and
-        /// `bougie start` are equivalent.
+        /// Task to run. With none, the available tasks are listed.
         task: Option<String>,
         /// List available tasks instead of running.
         #[arg(long, conflicts_with_all = ["dry_run", "explain", "print"])]
@@ -414,22 +469,65 @@ pub enum Command {
         #[arg(long)]
         print: bool,
     },
+
+    /// Format the project's PHP, the way `uv format` runs ruff.
+    ///
+    /// bougie does not bundle a formatter: on first use it downloads a
+    /// pinned `wick` binary (cresset-tools/wick — an unconfigurable,
+    /// Laravel Pint-style formatter), caches it, and execs it. Every
+    /// argument is forwarded verbatim to `wick`, so `bougie format`,
+    /// `bougie format --check`, `bougie format src/ --diff`, and
+    /// `… | bougie format -` behave exactly like the matching `wick`
+    /// invocation. Pin a specific wick with `BOUGIE_WICK_VERSION`.
+    #[command(display_order = 8)]
+    Format {
+        /// Arguments forwarded verbatim to `wick` (paths, `--check`,
+        /// `--diff`, `-` for stdin, …).
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, value_name = "ARGS")]
+        args: Vec<std::ffi::OsString>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
 pub enum ServicesCommand {
+    /// Start the project's declared services (or every service in
+    /// `names`) and provision the project's tenant in each. For the
+    /// whole-project bring-up use `bougie start`.
+    Up {
+        /// Service names to bring up. Empty = every declared service.
+        names: Vec<String>,
+        /// Start the services and return immediately instead of
+        /// attaching to their combined log stream. Attaching is the
+        /// default for an interactive (TTY) text-mode invocation;
+        /// non-interactive runs and `--format json-v1` always detach.
+        #[arg(short = 'd', long)]
+        detach: bool,
+    },
+    /// Stop the project's declared services (or every service in
+    /// `names`). The shared global process stays up while any other
+    /// project's tenant remains. For the whole-project teardown use
+    /// `bougie stop`.
+    Down {
+        names: Vec<String>,
+        /// Destroy persisted tenant data (e.g. FLUSHDB on redis). Off
+        /// by default — re-adding the service should restore state.
+        #[arg(long)]
+        purge: bool,
+    },
     /// Declare a service in the project. Errors if the name isn't in
     /// the catalog. Use `bougie services catalog` to discover names.
     Add {
         /// One or more service names, each optionally `@<version>`.
         names: Vec<String>,
     },
-    /// Remove a service declaration from the project.
+    /// Remove a service declaration from the project. Tenant data is
+    /// kept by default (re-adding restores it); pass `--purge` to also
+    /// destroy it.
     Remove {
-        /// Service names to remove. `--purge` is reserved for the
-        /// future tenant-data-destruction path; today it has no effect.
+        /// Service names to remove.
         names: Vec<String>,
-        /// Reserved — see CLI.md §3.8.2. Today this only echoes back.
+        /// Also destroy the project's tenant data for each service
+        /// (same as `bougie services down --purge`) before undeclaring.
         #[arg(long)]
         purge: bool,
     },
@@ -457,7 +555,7 @@ pub enum ServicesCommand {
     /// Tail (and optionally follow) service logs. With no name, shows
     /// the combined ("multilog") stream of every service declared in the
     /// project, each line prefixed with its (colorized) service name —
-    /// the same view `bougie up` attaches to.
+    /// the same view `bougie services up` attaches to.
     Logs {
         /// Service name. Omit to tail every declared service at once.
         name: Option<String>,
@@ -547,9 +645,10 @@ pub struct ServeArgs {
     /// Serve over HTTPS (requires `bougie server tls install`).
     #[arg(long)]
     pub tls: bool,
-    /// Print the URL and return instead of attaching to the log stream.
-    #[arg(long)]
-    pub no_attach: bool,
+    /// Print the URL and return immediately instead of attaching to the
+    /// log stream. Matches `services up`'s `-d`.
+    #[arg(short = 'd', long = "detach")]
+    pub detach: bool,
     /// Skip the implicit `bougie sync` before serving.
     #[arg(long)]
     pub no_sync: bool,
@@ -561,8 +660,8 @@ pub enum ServerCommand {
     /// multi-host `server.toml`, foreground, with no daemon. This is
     /// what `bougied` spawns and what CI / power users invoke directly;
     /// `--config` is required because a multi-host server has no single
-    /// project to default to. The bougied-managed path (`bougie up
-    /// server`) supplies its own service-scoped `server.toml`.
+    /// project to default to. The bougied-managed path (`bougie services
+    /// up server`) supplies its own service-scoped `server.toml`.
     Run {
         /// `server.toml` path. Required.
         #[arg(long, value_name = "PATH")]
@@ -591,8 +690,8 @@ pub enum ServerCommand {
         #[arg(value_name = "NAME")]
         name: Option<String>,
     },
-    /// Stop the shared dev server. Equivalent to `bougie down server`;
-    /// stops hosting for every project, since the server is shared.
+    /// Stop the shared dev server. Equivalent to `bougie services down
+    /// server`; stops hosting for every project, since the server is shared.
     Stop,
     /// Tail the dev server's request log. In a project, defaults to
     /// this project's host.
@@ -640,8 +739,9 @@ pub enum ExtCommand {
     /// `.so` file (e.g. `/opt/tideways/tideways-php-8.5.so`), in which
     /// case bougie copies it into the store, auto-detects the
     /// extension name and Zend-ness from the binary, and writes a
-    /// fragment to `.bougie/conf.d-local/` without touching
-    /// composer.json. Mix and match in one invocation.
+    /// fragment to the durable, machine-local `conf.d-local/` (under
+    /// `$BOUGIE_HOME`) without touching composer.json. Mix and match in
+    /// one invocation.
     Add {
         /// Extension names or `.so` paths (anything ending in `.so` is
         /// treated as a local file).
@@ -753,6 +853,32 @@ pub enum PhpCommand {
         minor: Option<String>,
     },
     /// Show the PHP interpreter installation directory.
+    Dir,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum NodeCommand {
+    /// Install a Node.js version from nodejs.org.
+    Install {
+        /// The Node version(s) to install (e.g. `latest`, `lts`, `20`,
+        /// `20.11`, `20.11.0`). Defaults to `latest`.
+        requests: Vec<String>,
+    },
+    /// Remove an installed Node.js version.
+    Uninstall {
+        /// The Node version(s) to uninstall (exact `20.11.0`).
+        #[arg(required = true)]
+        requests: Vec<String>,
+    },
+    /// List installed Node.js versions.
+    List,
+    /// Resolve a request and show the version + download URL it maps to,
+    /// without installing.
+    Find {
+        /// A Node request to resolve (e.g. `lts`, `20`). Defaults to `latest`.
+        request: Option<String>,
+    },
+    /// Show the Node.js installation directory.
     Dir,
 }
 
@@ -1254,6 +1380,7 @@ pub enum ToolCommand {
     /// `bgx` is provided as a convenient alias for `bougie tool run`;
     /// their behavior is identical.
     #[command(
+        override_usage = "bougie tool run [OPTIONS] <PACKAGE> [ARGS]...",
         after_help = "Use `bgx` as a shortcut for `bougie tool run`.\n\n\
                       Use `bougie help tool run` for more details.",
         after_long_help = ""
@@ -1321,8 +1448,6 @@ pub enum SelfCommand {
 
 #[derive(Args, Debug)]
 pub struct ToolRunArgs {
-    /// Composer package identifier, optionally with `@<constraint>`.
-    pub package: String,
     /// Pin the tool to a specific PHP for this run.
     #[arg(long, value_name = "VER")]
     pub php: Option<String>,
@@ -1330,10 +1455,17 @@ pub struct ToolRunArgs {
     /// `tool install --with`. Repeatable.
     #[arg(long, value_name = "PKG_OR_EXT")]
     pub with: Vec<String>,
-    /// Arguments forwarded to the tool. Use `--` to separate when
-    /// forwarding flags that bougie would otherwise parse.
-    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-    pub args: Vec<std::ffi::OsString>,
+    /// The tool's Composer package (optionally `@<constraint>`) followed
+    /// by the arguments to forward to it. bougie's own options must come
+    /// *before* the package; everything from the package onward is passed
+    /// to the tool verbatim, so no `--` separator is needed.
+    #[arg(
+        trailing_var_arg = true,
+        allow_hyphen_values = true,
+        required = true,
+        value_name = "PACKAGE"
+    )]
+    pub command: Vec<std::ffi::OsString>,
 }
 
 /// Args for the hidden `bgx` alias. Wraps [`ToolRunArgs`] verbatim so
@@ -1343,4 +1475,85 @@ pub struct ToolRunArgs {
 pub struct BgxArgs {
     #[command(flatten)]
     pub tool_run: ToolRunArgs,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    fn cmd(argv: &[&str]) -> Command {
+        Cli::try_parse_from(argv).expect("parse").command
+    }
+
+    #[test]
+    fn start_is_its_own_verb() {
+        assert!(matches!(cmd(&["bougie", "start"]), Command::Start { .. }));
+        assert!(matches!(
+            cmd(&["bougie", "start", "--no-sync", "--dry-run"]),
+            Command::Start { no_sync: true, dry_run: true, .. }
+        ));
+    }
+
+    #[test]
+    fn stop_takes_names_and_purge() {
+        let Command::Stop { names, purge } = cmd(&["bougie", "stop", "redis", "--purge"]) else {
+            panic!("expected stop");
+        };
+        assert_eq!(names, ["redis"]);
+        assert!(purge);
+    }
+
+    #[test]
+    fn up_down_live_under_services() {
+        assert!(matches!(
+            cmd(&["bougie", "services", "up", "redis", "-d"]),
+            Command::Services(ServicesCommand::Up { detach: true, .. })
+        ));
+        assert!(matches!(
+            cmd(&["bougie", "services", "down", "--purge"]),
+            Command::Services(ServicesCommand::Down { purge: true, .. })
+        ));
+    }
+
+    #[test]
+    fn top_level_up_down_are_gone() {
+        // The deprecated top-level aliases were removed; `up`/`down` only
+        // exist under `services` now.
+        assert!(Cli::try_parse_from(["bougie", "up"]).is_err());
+        assert!(Cli::try_parse_from(["bougie", "down"]).is_err());
+    }
+
+    #[test]
+    fn server_detach_flag() {
+        for argv in [
+            &["bougie", "server", "-d"][..],
+            &["bougie", "server", "--detach"][..],
+        ] {
+            let Command::Server(args) = cmd(argv) else {
+                panic!("expected server for {argv:?}");
+            };
+            assert!(args.serve.detach, "detach should be set for {argv:?}");
+        }
+        // The old `--no-attach` spelling is gone.
+        assert!(Cli::try_parse_from(["bougie", "server", "--no-attach"]).is_err());
+    }
+
+    #[test]
+    fn make_no_longer_aliases_start() {
+        // `start` is no longer a clap alias of `make`; it's the
+        // first-class verb above. `bougie make start` is just `make`
+        // with the literal task `start`.
+        let Command::Make { task, .. } = cmd(&["bougie", "make", "start"]) else {
+            panic!("expected make");
+        };
+        assert_eq!(task.as_deref(), Some("start"));
+
+        // Bare `bougie make` parses with no task; the dispatcher turns
+        // that into a task listing.
+        let Command::Make { task, .. } = cmd(&["bougie", "make"]) else {
+            panic!("expected make");
+        };
+        assert_eq!(task, None);
+    }
 }
