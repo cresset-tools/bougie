@@ -158,7 +158,14 @@ pub fn run(format: OutputFormat, opts: MakeOptions) -> Result<ExitCode> {
 
     // Sync prologue (RECIPES.md §5).
     if !opts.no_sync && !opts.dry_run && !opts.explain {
-        sync::run(format, false, false, None, bougie_cli::PhpPrefArgs::default())?;
+        sync::run(
+            format,
+            false,
+            false,
+            None,
+            bougie_cli::PhpPrefArgs::default(),
+            bougie_composer_resolver::ResolutionStrategy::Highest,
+        )?;
     } else if opts.dry_run || opts.explain {
         eprintln!(
             "[sync]     {}",

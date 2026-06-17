@@ -330,6 +330,17 @@ pub struct ResolveProvider {
     /// which drops platform edges exactly as before #118. See
     /// [`PlatformEnv`].
     platform: PlatformEnv,
+    /// Version-preference policy for candidate selection. Defaults to
+    /// [`ResolutionStrategy::Highest`] (Composer's behavior); orchestrators
+    /// override it via [`Self::set_resolution`] when the user passes
+    /// `--resolution` / `--prefer-lowest`. Consumed in
+    /// [`Self::choose_version`].
+    resolution: ResolutionStrategy,
+    /// Names of the root (direct) requires, used to decide which packages
+    /// the [`ResolutionStrategy::LowestDirect`] policy applies the "lowest"
+    /// preference to. Built from `root_deps` so the membership test uses the
+    /// same [`PackageName`] normalization the solver feeds `choose_version`.
+    direct_deps: FxHashSet<PackageName>,
 }
 
 /// One entry in the virtual provider index — "real package
@@ -504,6 +515,8 @@ impl ResolveProvider {
         let prefer_stable = read_prefer_stable(composer_json)?;
         let (root_deps, stability_flags, raw_root_constraints) =
             read_root_requires(composer_json, no_dev, &platform)?;
+        let direct_deps: FxHashSet<PackageName> =
+            root_deps.iter().map(|(name, _)| name.clone()).collect();
         let root_replaces = read_root_replaces(composer_json);
         let repos = read_repositories(composer_json, default_packagist, &auth)?;
         // Any synthetic value works for the root version — pubgrub
@@ -534,7 +547,16 @@ impl ResolveProvider {
             raw_root_constraints,
             locked_pins: FxHashMap::default(),
             platform,
+            resolution: ResolutionStrategy::default(),
+            direct_deps,
         })
+    }
+
+    /// Set the version-preference policy for this resolve (uv's
+    /// `--resolution`). Call before solving; defaults to
+    /// [`ResolutionStrategy::Highest`] when never set.
+    pub fn set_resolution(&mut self, resolution: ResolutionStrategy) {
+        self.resolution = resolution;
     }
 
     /// Share an external [`MetaCache`] with this provider so its prefetch
@@ -2669,10 +2691,16 @@ impl DependencyProvider for ResolveProvider {
                         }
                     }
                 }
-                // `versions_for` sorts descending. With
-                // `prefer-stable`, do a two-pass scan: first pick the
-                // highest *stable* in range, then fall back to the
-                // highest in range regardless of stability. Without
+                // `versions_for` sorts descending, so scanning front-to-back
+                // picks the highest in range. Under a `lowest` resolution
+                // policy (uv's `--resolution lowest` / Composer's
+                // `--prefer-lowest`) we scan back-to-front instead to pick
+                // the lowest. `lowest-direct` applies that only to the
+                // project's direct requires; transitive deps stay highest.
+                //
+                // With `prefer-stable`, do a two-pass scan: first pick the
+                // most-preferred *stable* in range, then fall back to the
+                // most-preferred in range regardless of stability. Without
                 // prefer-stable the second pass alone is used.
                 //
                 // Cheap optimization: when the effective floor is
@@ -2683,18 +2711,40 @@ impl DependencyProvider for ResolveProvider {
                 let is_excluded = |v: &Version| -> bool {
                     !excludes.is_empty() && excludes.contains(&(name.clone(), v.clone()))
                 };
+                let prefer_lowest = match self.resolution {
+                    ResolutionStrategy::Highest => false,
+                    ResolutionStrategy::Lowest => true,
+                    ResolutionStrategy::LowestDirect => self.direct_deps.contains(name),
+                };
+                // First candidate in range (back-to-front when preferring
+                // lowest), optionally restricted to stable versions.
+                let scan = |stable_only: bool| -> Option<Version> {
+                    let matches = |v: &Version| {
+                        (!stable_only || v.stability() == Stability::Stable)
+                            && range.contains(v)
+                            && !is_excluded(v)
+                    };
+                    if prefer_lowest {
+                        versions
+                            .iter()
+                            .rev()
+                            .find(|(v, _)| matches(v))
+                            .map(|(v, _)| v.clone())
+                    } else {
+                        versions
+                            .iter()
+                            .find(|(v, _)| matches(v))
+                            .map(|(v, _)| v.clone())
+                    }
+                };
                 let floor = self.effective_stability(name.as_str());
                 if self.prefer_stable && floor != Stability::Stable {
-                    for (v, _) in versions.iter() {
-                        if v.stability() == Stability::Stable && range.contains(v) && !is_excluded(v) {
-                            return Ok(Some(v.clone()));
-                        }
+                    if let Some(v) = scan(true) {
+                        return Ok(Some(v));
                     }
                 }
-                for (v, _) in versions.iter() {
-                    if range.contains(v) && !is_excluded(v) {
-                        return Ok(Some(v.clone()));
-                    }
+                if let Some(v) = scan(false) {
+                    return Ok(Some(v));
                 }
                 // Wildcard fallback: when a real package declared
                 // `replace: { name: "*" }` (or any range-shaped
@@ -3090,10 +3140,37 @@ pub struct UpdateSummary {
     pub no_dev: bool,
 }
 
+/// Version-preference policy for a resolve, mirroring uv's
+/// `--resolution` (and Composer's `--prefer-lowest`). Controls which end
+/// of each package's in-range candidate list `choose_version` picks.
+///
+/// - [`Highest`](Self::Highest) — newest compatible version of every
+///   package. Composer's (and bougie's) default.
+/// - [`Lowest`](Self::Lowest) — oldest compatible version of *every*
+///   package, transitive deps included. Composer's `--prefer-lowest`.
+/// - [`LowestDirect`](Self::LowestDirect) — oldest compatible version of
+///   the project's *direct* (root) requires, but newest for everything
+///   they pull in transitively. The CI-friendly middle ground: it
+///   verifies your declared lower bounds without dragging ancient
+///   transitive deps along.
+///
+/// `prefer-stable` / `minimum-stability` still apply on top — `Lowest`
+/// picks the lowest *stable* in range first, exactly as `Highest` picks
+/// the highest stable first.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub enum ResolutionStrategy {
+    #[default]
+    Highest,
+    Lowest,
+    LowestDirect,
+}
+
 /// Options for [`dry_run_update`].
 #[derive(Debug, Clone, Copy, Default)]
 pub struct DryRunOptions {
     pub no_dev: bool,
+    /// Version-preference policy. Defaults to [`ResolutionStrategy::Highest`].
+    pub resolution: ResolutionStrategy,
 }
 
 /// A partial update request: `composer update <pkg>...`.
@@ -3296,6 +3373,7 @@ pub fn dry_run_update_partial(
         PlatformEnv::detect(project_root, &composer_json),
     )
     .map_err(|e| eyre!(e))?;
+    provider.set_resolution(opts.resolution);
     // Partial update: hold out-of-scope packages at their locked version.
     if let Some(partial) = partial {
         let pins = partial.locked_pins();
@@ -3501,8 +3579,9 @@ pub fn resolve_for_lockfile(
     paths: &Paths,
     project_root: &Path,
     default_packagist: Repo,
+    resolution: ResolutionStrategy,
 ) -> Result<(Vec<u8>, LockfileSolveOutcome)> {
-    resolve_for_lockfile_partial(paths, project_root, default_packagist, None)
+    resolve_for_lockfile_partial(paths, project_root, default_packagist, None, resolution)
 }
 
 /// Like [`resolve_for_lockfile`], but with an optional [`PartialUpdate`]:
@@ -3515,6 +3594,7 @@ pub fn resolve_for_lockfile_partial(
     project_root: &Path,
     default_packagist: Repo,
     partial: Option<&PartialUpdate>,
+    resolution: ResolutionStrategy,
 ) -> Result<(Vec<u8>, LockfileSolveOutcome)> {
     let pins = partial.map(PartialUpdate::locked_pins).unwrap_or_default();
     let composer_json_path = project_root.join("composer.json");
@@ -3552,6 +3632,7 @@ pub fn resolve_for_lockfile_partial(
         meta_cache.clone(),
         platform.clone(),
         &pins,
+        resolution,
     )?;
     // Second pass is the same closure walk, now served entirely from
     // `meta_cache` — instant, so its spinner stays hidden (re-rendering
@@ -3567,6 +3648,7 @@ pub fn resolve_for_lockfile_partial(
         meta_cache,
         platform,
         &pins,
+        resolution,
     )?;
 
     let t_partition = std::time::Instant::now();
@@ -3615,6 +3697,7 @@ fn solve_into_lock_packages(
     meta_cache: MetaCache,
     platform: PlatformEnv,
     pins: &FxHashMap<PackageName, Version>,
+    resolution: ResolutionStrategy,
 ) -> Result<SolutionSummary> {
     let client = build_client()?;
     let mut provider = ResolveProvider::build_with_auth(
@@ -3627,6 +3710,7 @@ fn solve_into_lock_packages(
         platform,
     )
     .map_err(|e| eyre!(e))?;
+    provider.set_resolution(resolution);
     // Share the caller's metadata cache so the two passes of
     // `resolve_for_lockfile` don't re-fetch the same `/p2/` documents.
     provider.set_meta_cache(meta_cache);

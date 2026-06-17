@@ -17,8 +17,8 @@ use bougie_composer::lockfile::{self, canonical_readme, Lock};
 use bougie_composer_resolver::metadata::Repo;
 use bougie_composer_resolver::{
     dry_run_update, dry_run_update_partial, install_from_lock, resolve_for_lockfile_partial,
-    DryRunOptions, InstallOptions, LockfileSolveOutcome, PartialUpdate, ResolvedPackage,
-    UpdateSummary,
+    DryRunOptions, InstallOptions, LockfileSolveOutcome, PartialUpdate, ResolutionStrategy,
+    ResolvedPackage, UpdateSummary,
 };
 use bougie_output::output::{emit, Render};
 use bougie_paths::Paths;
@@ -103,6 +103,7 @@ pub fn run(
     packages: Vec<String>,
     with_dependencies: bool,
     with_all_dependencies: bool,
+    resolution: ResolutionStrategy,
 ) -> Result<ExitCode> {
     let project_root = match working_dir {
         Some(p) => p,
@@ -156,12 +157,15 @@ pub fn run(
                 &paths,
                 &project_root,
                 Repo::packagist(),
-                DryRunOptions { no_dev },
+                DryRunOptions { no_dev, resolution },
                 Some(p),
             )?,
-            None => {
-                dry_run_update(&paths, &project_root, Repo::packagist(), DryRunOptions { no_dev })?
-            }
+            None => dry_run_update(
+                &paths,
+                &project_root,
+                Repo::packagist(),
+                DryRunOptions { no_dev, resolution },
+            )?,
         };
         let result = UpdateResult {
             schema_version: 1,
@@ -180,7 +184,7 @@ pub fn run(
 
     // Write-mode path: resolve, build a Lock, atomic write.
     let (lock_path, outcome) =
-        resolve_and_write_lock_partial(&paths, &project_root, partial.as_ref())?;
+        resolve_and_write_lock_partial(&paths, &project_root, partial.as_ref(), resolution)?;
 
     // Then materialize vendor/ — Composer's `update` resolves *and*
     // installs. `--no-install` stops after the lock.
@@ -237,8 +241,9 @@ pub fn run(
 pub fn resolve_and_write_lock(
     paths: &Paths,
     project_root: &Path,
+    resolution: ResolutionStrategy,
 ) -> Result<(PathBuf, LockfileSolveOutcome)> {
-    resolve_and_write_lock_partial(paths, project_root, None)
+    resolve_and_write_lock_partial(paths, project_root, None, resolution)
 }
 
 /// Like [`resolve_and_write_lock`], but with an optional [`PartialUpdate`]
@@ -248,9 +253,10 @@ pub fn resolve_and_write_lock_partial(
     paths: &Paths,
     project_root: &Path,
     partial: Option<&PartialUpdate>,
+    resolution: ResolutionStrategy,
 ) -> Result<(PathBuf, LockfileSolveOutcome)> {
     let (composer_json_bytes, outcome): (Vec<u8>, LockfileSolveOutcome) =
-        resolve_for_lockfile_partial(paths, project_root, Repo::packagist(), partial)?;
+        resolve_for_lockfile_partial(paths, project_root, Repo::packagist(), partial, resolution)?;
     let lock_path = project_root.join("composer.lock");
 
     let t_hash = std::time::Instant::now();
@@ -271,7 +277,9 @@ pub fn resolve_and_write_lock_partial(
         minimum_stability: Some(outcome.minimum_stability.clone()),
         stability_flags: outcome.stability_flags.clone(),
         prefer_stable: outcome.prefer_stable,
-        prefer_lowest: false,
+        // Composer records `--prefer-lowest` in the lock; mirror that for
+        // any non-default resolution policy (`lowest` / `lowest-direct`).
+        prefer_lowest: resolution != ResolutionStrategy::Highest,
         platform: BTreeMap::new(),
         platform_dev: BTreeMap::new(),
         platform_overrides: BTreeMap::new(),

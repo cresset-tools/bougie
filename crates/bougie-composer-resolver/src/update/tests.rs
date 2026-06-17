@@ -149,6 +149,125 @@ fn resolves_transitive_dependency() {
 }
 
 #[test]
+fn lowest_strategy_picks_lowest_in_range() {
+    let tmp = TempDir::new().unwrap();
+    let paths = paths_in(tmp.path());
+
+    // Same fixture as `resolves_single_dep_to_highest_in_range`, which
+    // resolves `^1.0` to 1.5.0; under `lowest` it must pick 1.2.0.
+    let body = p2_body(
+        "acme/foo",
+        &[
+            ("2.0.0", json!({})),
+            ("1.5.0", json!({})),
+            ("1.2.0", json!({})),
+            ("0.9.0", json!({})),
+        ],
+    );
+
+    let rt = rt();
+    let (uri, _server) = rt.block_on(async {
+        let server = MockServer::start().await;
+        mount_p2(&server, "acme/foo", body).await;
+        (server.uri(), server)
+    });
+
+    let composer_json = json!({"require": {"acme/foo": "^1.0"}});
+    let client = crate::metadata::build_client().unwrap();
+    let mut provider =
+        ResolveProvider::build(client, paths, crate::metadata::Repo::from_url(uri), &composer_json, true).unwrap();
+    provider.set_resolution(ResolutionStrategy::Lowest);
+    let root = provider.root_version();
+
+    let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
+    let foo = solution
+        .get(&PubGrubPackage::Package("acme/foo".into()))
+        .expect("acme/foo should be resolved");
+    assert_eq!(foo.to_string(), "1.2.0.0");
+}
+
+#[test]
+fn lowest_direct_lowers_direct_but_keeps_transitive_highest() {
+    let tmp = TempDir::new().unwrap();
+    let paths = paths_in(tmp.path());
+
+    // acme/foo is a *direct* require with two in-range versions; acme/bar
+    // is only reachable transitively. Under `lowest-direct`, foo drops to
+    // its lowest in-range (1.0.0) while bar stays at its highest (2.5.0).
+    let foo_body = p2_body(
+        "acme/foo",
+        &[
+            ("1.5.0", json!({"acme/bar": "^2.0"})),
+            ("1.0.0", json!({"acme/bar": "^2.0"})),
+        ],
+    );
+    let bar_body = p2_body(
+        "acme/bar",
+        &[("2.5.0", json!({})), ("2.1.0", json!({}))],
+    );
+
+    let rt = rt();
+    let (uri, _server) = rt.block_on(async {
+        let server = MockServer::start().await;
+        mount_p2(&server, "acme/foo", foo_body).await;
+        mount_p2(&server, "acme/bar", bar_body).await;
+        (server.uri(), server)
+    });
+
+    let composer_json = json!({"require": {"acme/foo": "^1.0"}});
+    let client = crate::metadata::build_client().unwrap();
+    let mut provider =
+        ResolveProvider::build(client, paths, crate::metadata::Repo::from_url(uri), &composer_json, true).unwrap();
+    provider.set_resolution(ResolutionStrategy::LowestDirect);
+    let root = provider.root_version();
+
+    let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
+    let foo = solution
+        .get(&PubGrubPackage::Package("acme/foo".into()))
+        .expect("acme/foo should be resolved");
+    let bar = solution
+        .get(&PubGrubPackage::Package("acme/bar".into()))
+        .expect("acme/bar should be resolved transitively");
+    assert_eq!(foo.to_string(), "1.0.0.0", "direct dep lowered");
+    assert_eq!(bar.to_string(), "2.5.0.0", "transitive dep stays highest");
+}
+
+#[test]
+fn lowest_strategy_lowers_transitive_too() {
+    let tmp = TempDir::new().unwrap();
+    let paths = paths_in(tmp.path());
+
+    // Same fixture as the lowest-direct test, but full `lowest` lowers the
+    // transitive bar as well (2.1.0 rather than 2.5.0).
+    let foo_body = p2_body("acme/foo", &[("1.0.0", json!({"acme/bar": "^2.0"}))]);
+    let bar_body = p2_body(
+        "acme/bar",
+        &[("2.5.0", json!({})), ("2.1.0", json!({}))],
+    );
+
+    let rt = rt();
+    let (uri, _server) = rt.block_on(async {
+        let server = MockServer::start().await;
+        mount_p2(&server, "acme/foo", foo_body).await;
+        mount_p2(&server, "acme/bar", bar_body).await;
+        (server.uri(), server)
+    });
+
+    let composer_json = json!({"require": {"acme/foo": "^1.0"}});
+    let client = crate::metadata::build_client().unwrap();
+    let mut provider =
+        ResolveProvider::build(client, paths, crate::metadata::Repo::from_url(uri), &composer_json, true).unwrap();
+    provider.set_resolution(ResolutionStrategy::Lowest);
+    let root = provider.root_version();
+
+    let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
+    let bar = solution
+        .get(&PubGrubPackage::Package("acme/bar".into()))
+        .expect("acme/bar should be resolved transitively");
+    assert_eq!(bar.to_string(), "2.1.0.0");
+}
+
+#[test]
 fn unsatisfiable_constraint_produces_no_solution() {
     let tmp = TempDir::new().unwrap();
     let paths = paths_in(tmp.path());

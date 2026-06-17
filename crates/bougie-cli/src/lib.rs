@@ -88,6 +88,23 @@ pub enum OutputFormat {
     JsonV1,
 }
 
+/// Version-preference policy for a resolve, mirroring uv's
+/// `--resolution`. Maps onto `bougie-composer-resolver`'s
+/// `ResolutionStrategy` in the dispatch layer.
+#[derive(clap::ValueEnum, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ResolutionStrategy {
+    /// Prefer the newest compatible version of every package (the default).
+    #[default]
+    Highest,
+    /// Prefer the oldest compatible version of every package, including
+    /// transitive dependencies (Composer's `--prefer-lowest`).
+    Lowest,
+    /// Prefer the oldest compatible version of the project's direct
+    /// requires, but the newest for everything they pull in transitively.
+    #[value(name = "lowest-direct")]
+    LowestDirect,
+}
+
 #[derive(Subcommand, Debug)]
 pub enum Command {
     /// Create a new project.
@@ -167,6 +184,9 @@ pub enum Command {
         /// Edit `composer.json` only — don't touch the lock or `vendor/`.
         #[arg(long = "frozen")]
         frozen: bool,
+        /// Version-preference policy when resolving (uv's `--resolution`).
+        #[arg(long = "resolution", value_name = "STRATEGY", default_value = "highest")]
+        resolution: ResolutionStrategy,
         /// Run in this directory instead of CWD (`-d`).
         #[arg(short = 'd', long = "working-dir", value_name = "DIR")]
         working_dir: Option<std::path::PathBuf>,
@@ -206,6 +226,10 @@ pub enum Command {
     /// newer versions.
     #[command(display_order = 12)]
     Lock {
+        /// Version-preference policy when re-resolving changed requires
+        /// (uv's `--resolution`).
+        #[arg(long = "resolution", value_name = "STRATEGY", default_value = "highest")]
+        resolution: ResolutionStrategy,
         /// Run in this directory instead of CWD (`-d`).
         #[arg(short = 'd', long = "working-dir", value_name = "DIR")]
         working_dir: Option<std::path::PathBuf>,
@@ -277,6 +301,11 @@ pub enum Command {
         /// `[scripts] run = true` in bougie.toml.
         #[arg(long = "no-scripts")]
         no_scripts: bool,
+        /// Version-preference policy when a fresh lock must be resolved
+        /// (uv's `--resolution`). No effect when a `composer.lock` already
+        /// exists.
+        #[arg(long = "resolution", value_name = "STRATEGY", default_value = "highest")]
+        resolution: ResolutionStrategy,
         #[command(flatten)]
         php: PhpPrefArgs,
     },
@@ -931,6 +960,14 @@ pub enum ComposerCommand {
         /// Skip dev-only root requires when resolving.
         #[arg(long = "no-dev")]
         no_dev: bool,
+        /// Version-preference policy when resolving (uv's `--resolution`).
+        #[arg(long = "resolution", value_name = "STRATEGY", default_value = "highest")]
+        resolution: ResolutionStrategy,
+        /// Prefer the lowest matching versions (Composer's
+        /// `--prefer-lowest`). Equivalent to `--resolution lowest`; when
+        /// set it overrides `--resolution`.
+        #[arg(long = "prefer-lowest")]
+        prefer_lowest: bool,
         /// Resolve and print the solution without writing
         /// `composer.lock` or touching `vendor/`. Without this flag,
         /// `update` writes a fresh `composer.lock`.

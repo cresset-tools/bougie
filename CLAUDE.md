@@ -109,17 +109,25 @@ Top-level subcommands (from `bougie-cli`):
 - `new DIRECTORY [--toml] [--name VENDOR/PACKAGE]` — Create DIRECTORY under
   the cwd and scaffold a new project inside it.
 - `ext {add,remove,list}` — Manage PHP extensions.
-- `add <pkgs> [--dev] [--no-sync] [--frozen]` / `remove <pkgs>` — uv-style
-  top-level twins of `composer require`/`remove`. `add` uses the `@`
-  supply syntax (`vendor/pkg@^1.0`) and a `>=X.Y` lower-bound default
-  (vs `composer require`'s caret); shared engine, [`DefaultConstraint`]
-  policy selects the default. `--frozen` = edit composer.json only;
-  `--no-sync` = re-lock but don't install.
-- `lock [--dry-run]` — minimal `composer.lock` refresh (uv's `uv lock`):
-  reconcile the lock with `composer.json`, holding each package at its
-  locked version where still valid; re-resolve only what changed. Never
-  bumps versions, never installs (use `bougie composer update` to pull
-  newer). Content-hash match → offline no-op.
+- `add <pkgs> [--dev] [--no-sync] [--frozen] [--resolution S]` /
+  `remove <pkgs>` — uv-style top-level twins of `composer require`/`remove`.
+  `add` uses the `@` supply syntax (`vendor/pkg@^1.0`) and a `>=X.Y`
+  lower-bound default (vs `composer require`'s caret); shared engine,
+  [`DefaultConstraint`] policy selects the default. `--frozen` = edit
+  composer.json only; `--no-sync` = re-lock but don't install.
+- `lock [--dry-run] [--resolution S]` — minimal `composer.lock` refresh
+  (uv's `uv lock`): reconcile the lock with `composer.json`, holding each
+  package at its locked version where still valid; re-resolve only what
+  changed. Never bumps versions, never installs (use `bougie composer
+  update` to pull newer). Content-hash match → offline no-op.
+- `--resolution {highest,lowest,lowest-direct}` (on `add`, `lock`, `sync`,
+  `composer update`) is uv's version-preference knob: `highest` (default)
+  picks newest in range, `lowest` picks oldest for every package,
+  `lowest-direct` picks oldest for direct requires but newest for
+  transitive. `composer require`/`composer update --prefer-lowest` map to
+  `lowest`. Threaded into `bougie-composer-resolver`'s `ResolveProvider`
+  (consumed in `choose_version`); recorded in the lock's `prefer-lowest`
+  field when non-default.
 - `tree [PACKAGE] [--no-dev]` — native dependency tree (uv's `uv tree`);
   delegates to the `composer show --tree` renderer.
 - `outdated [pkgs] [--direct] [--major/minor/patch-only] [--strict]` —

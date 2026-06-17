@@ -64,7 +64,7 @@ pub fn run(
 ) -> Result<ExitCode> {
     let paths = Paths::from_env()?;
     let resolve_lock: &bougie_tool::install::LockResolver = &|paths, project_root| {
-        super::composer_update::resolve_and_write_lock(paths, project_root).map(|_| ())
+        super::composer_update::resolve_and_write_lock(paths, project_root, bougie_composer_resolver::ResolutionStrategy::Highest).map(|_| ())
     };
     let php_installer = super::tool_callbacks::php_installer();
     let classifier = super::tool_callbacks::extension_classifier();
