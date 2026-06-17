@@ -44,6 +44,10 @@ arcstr = "1"
 # shasum the lockfile carries. Already used by `bougie-fetch` for HTTP
 # dists; we hash the local copy here for symmetry.
 sha1 = "0.10"
+# `type: path` repository globbing. Composer expands a path repo's
+# `url` with PHP's `glob()` (`*`/`?` wildcards over a directory tree);
+# this is the Rust equivalent. Small, rust-lang-maintained.
+glob = "0.3"
 
 [dependencies.indicatif]
 version = "0.18"
@@ -64,6 +68,13 @@ features = ["blocking", "rustls", "gzip"]
 [dependencies.tokio]
 version = "1"
 features = ["rt", "sync", "net", "time"]
+
+# Windows path-repository materialization. Composer installs path
+# packages as NTFS junctions (not symlinks) because junctions need no
+# elevated privilege; `junction` wraps the reparse-point `DeviceIoControl`
+# FFI so this crate can stay `unsafe_code = "deny"`.
+[target.'cfg(windows)'.dependencies]
+junction = "1"
 
 [dev-dependencies]
 tempfile = "3.10"

@@ -1910,6 +1910,309 @@ fn vcs_repo_type_is_ignored_silently() {
         .is_some());
 }
 
+#[test]
+fn path_repo_entry_parses_into_path_kind() {
+    use crate::metadata::{ReferenceMode, RepoKind};
+    let composer_json = json!({
+        "repositories": [
+            {
+                "type": "path",
+                "url": "../packages/*",
+                "options": {
+                    "symlink": false,
+                    "relative": true,
+                    "reference": "config",
+                    "versions": {"acme/local": "2.3-dev"},
+                },
+            },
+            {"packagist.org": false},
+        ],
+        "require": {"acme/local": "*"},
+    });
+    let repos = crate::update::read_repositories(
+        &composer_json,
+        crate::metadata::Repo::from_url("http://unused"),
+        &std::collections::HashMap::new(),
+    )
+    .unwrap();
+    assert_eq!(repos.len(), 1, "packagist disabled, one path repo remains");
+    let RepoKind::Path(cfg) = &repos[0].kind else {
+        panic!("expected a path repo, got {:?}", repos[0].kind);
+    };
+    assert_eq!(cfg.url, "../packages/*");
+    assert_eq!(cfg.symlink, Some(false));
+    assert_eq!(cfg.relative, Some(true));
+    assert_eq!(cfg.reference, ReferenceMode::Config);
+    assert_eq!(cfg.versions.get("acme/local").map(String::as_str), Some("2.3-dev"));
+}
+
+#[test]
+fn path_repo_defaults_when_options_omitted() {
+    use crate::metadata::{ReferenceMode, RepoKind};
+    let composer_json = json!({
+        "repositories": [{"type": "path", "url": "../pkg"}],
+        "require": {},
+    });
+    let repos = crate::update::read_repositories(
+        &composer_json,
+        crate::metadata::Repo::from_url("http://unused"),
+        &std::collections::HashMap::new(),
+    )
+    .unwrap();
+    let RepoKind::Path(cfg) = &repos[0].kind else {
+        panic!("expected a path repo");
+    };
+    assert_eq!(cfg.symlink, None, "default is Composer's symlink-or-copy");
+    assert_eq!(cfg.relative, None, "unset → install-time default (relative) applies");
+    assert_eq!(cfg.reference, ReferenceMode::Auto);
+    assert!(cfg.versions.is_empty());
+}
+
+#[test]
+fn path_repo_missing_url_errors() {
+    let composer_json = json!({
+        "repositories": [{"type": "path"}],
+        "require": {},
+    });
+    let err = crate::update::read_repositories(
+        &composer_json,
+        crate::metadata::Repo::from_url("http://unused"),
+        &std::collections::HashMap::new(),
+    )
+    .unwrap_err();
+    assert!(format!("{err}").contains("missing `url`"), "{err}");
+}
+
+
+/// Write a path-package directory under `root` with the given
+/// composer.json contents. Returns the package directory.
+fn write_path_package(root: &Path, subdir: &str, composer_json: serde_json::Value) -> std::path::PathBuf {
+    let dir = root.join(subdir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("composer.json"),
+        serde_json::to_vec_pretty(&composer_json).unwrap(),
+    )
+    .unwrap();
+    dir
+}
+
+#[test]
+fn path_repo_resolves_and_locks_path_dist() {
+    let tmp = TempDir::new().unwrap();
+    let project_root = tmp.path().join("project");
+    std::fs::create_dir_all(&project_root).unwrap();
+    let paths = paths_in(tmp.path());
+
+    write_path_package(
+        &project_root,
+        "packages/local",
+        json!({
+            "name": "acme/local",
+            "version": "1.2.3",
+            "autoload": {"psr-4": {"Acme\\Local\\": "src/"}},
+        }),
+    );
+
+    let composer_json = json!({
+        "repositories": [
+            {"type": "path", "url": "packages/*", "options": {"reference": "none"}},
+            {"packagist.org": false},
+        ],
+        "require": {"acme/local": "*"},
+    });
+
+    let client = crate::metadata::build_client().unwrap();
+    let mut provider = ResolveProvider::build(
+        client,
+        paths,
+        crate::metadata::Repo::from_url("http://unused"),
+        &composer_json,
+        true,
+    )
+    .unwrap();
+    provider.seed_path_candidates(&project_root);
+    provider.pre_fetch_closure_silent().unwrap();
+    let root = provider.root_version();
+    let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
+    assert!(
+        solution
+            .get(&PubGrubPackage::Package("acme/local".into()))
+            .is_some(),
+        "path package must be in the solution",
+    );
+
+    let version = Version::parse("1.2.3").unwrap();
+    let locked = provider
+        .lock_package_for("acme/local", &version)
+        .expect("locked entry present");
+    let dist = locked.dist.expect("path package has a dist");
+    assert_eq!(dist.kind, "path");
+    assert!(dist.shasum.is_none(), "path dists have no shasum");
+    assert_eq!(dist.reference, None, "reference: none → null");
+    assert_eq!(dist.url, "packages/local");
+    assert_eq!(
+        locked.autoload.psr_4.get("Acme\\Local\\").and_then(|v| v.as_str()),
+        Some("src/"),
+    );
+}
+
+#[test]
+fn path_repo_shadows_packagist() {
+    // A path repo declared above Packagist is canonical for its names:
+    // even though Packagist serves acme/local, the local copy wins.
+    let tmp = TempDir::new().unwrap();
+    let project_root = tmp.path().join("project");
+    std::fs::create_dir_all(&project_root).unwrap();
+    let paths = paths_in(tmp.path());
+
+    write_path_package(
+        &project_root,
+        "packages/local",
+        json!({"name": "acme/local", "version": "9.9.9"}),
+    );
+
+    // Packagist would offer a different version; if it were consulted
+    // the solver could pick it. The path repo must shadow it.
+    let body = p2_body("acme/local", &[("1.0.0", json!({}))]);
+    let rt = rt();
+    let (uri, _server) = rt.block_on(async {
+        let server = MockServer::start().await;
+        mount_p2(&server, "acme/local", body).await;
+        (server.uri(), server)
+    });
+
+    let composer_json = json!({
+        "repositories": [
+            {"type": "path", "url": "packages/local", "options": {"reference": "none"}},
+        ],
+        "require": {"acme/local": "*"},
+    });
+
+    let client = crate::metadata::build_client().unwrap();
+    let mut provider = ResolveProvider::build(
+        client,
+        paths,
+        crate::metadata::Repo::from_url(uri),
+        &composer_json,
+        true,
+    )
+    .unwrap();
+    provider.seed_path_candidates(&project_root);
+    provider.pre_fetch_closure_silent().unwrap();
+    let root = provider.root_version();
+    let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
+    let picked = solution
+        .get(&PubGrubPackage::Package("acme/local".into()))
+        .expect("acme/local resolved");
+    assert_eq!(
+        picked.to_string(),
+        "9.9.9.0",
+        "the local path version must shadow Packagist's 1.0.0",
+    );
+}
+
+#[test]
+fn path_repo_infers_dev_master_without_version_or_git() {
+    let tmp = TempDir::new().unwrap();
+    let project_root = tmp.path().join("project");
+    std::fs::create_dir_all(&project_root).unwrap();
+    let paths = paths_in(tmp.path());
+
+    // No `version` field and not a git repo → dev-master.
+    write_path_package(&project_root, "pkg", json!({"name": "acme/branchy"}));
+
+    let composer_json = json!({
+        "repositories": [
+            {"type": "path", "url": "pkg", "options": {"reference": "none"}},
+            {"packagist.org": false},
+        ],
+        "require": {"acme/branchy": "dev-master"},
+        "minimum-stability": "dev",
+    });
+
+    let client = crate::metadata::build_client().unwrap();
+    let mut provider = ResolveProvider::build(
+        client,
+        paths,
+        crate::metadata::Repo::from_url("http://unused"),
+        &composer_json,
+        true,
+    )
+    .unwrap();
+    provider.seed_path_candidates(&project_root);
+    provider.pre_fetch_closure_silent().unwrap();
+    let root = provider.root_version();
+    let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
+    let picked = solution
+        .get(&PubGrubPackage::Package("acme/branchy".into()))
+        .expect("acme/branchy resolved");
+    assert_eq!(picked.to_string(), "dev-master");
+}
+
+#[test]
+fn path_package_transitive_require_is_crawled_from_packagist() {
+    // A path package's runtime `require` on a Packagist package must
+    // be fetched and resolved — the prefetch BFS seeds the path
+    // package's requires into its frontier.
+    let tmp = TempDir::new().unwrap();
+    let project_root = tmp.path().join("project");
+    std::fs::create_dir_all(&project_root).unwrap();
+    let paths = paths_in(tmp.path());
+
+    write_path_package(
+        &project_root,
+        "packages/local",
+        json!({
+            "name": "acme/local",
+            "version": "1.0.0",
+            "require": {"acme/dep": "^2.0"},
+        }),
+    );
+
+    let body = p2_body("acme/dep", &[("2.1.0", json!({})), ("2.0.0", json!({}))]);
+    let rt = rt();
+    let (uri, _server) = rt.block_on(async {
+        let server = MockServer::start().await;
+        mount_p2(&server, "acme/dep", body).await;
+        (server.uri(), server)
+    });
+
+    let composer_json = json!({
+        "repositories": [
+            {"type": "path", "url": "packages/*", "options": {"reference": "none"}},
+            {"type": "composer", "url": uri},
+            {"packagist.org": false},
+        ],
+        "require": {"acme/local": "*"},
+    });
+
+    let client = crate::metadata::build_client().unwrap();
+    let mut provider = ResolveProvider::build(
+        client,
+        paths,
+        crate::metadata::Repo::from_url("http://unused"),
+        &composer_json,
+        true,
+    )
+    .unwrap();
+    provider.discover_repos();
+    provider.seed_path_candidates(&project_root);
+    provider.pre_fetch_closure_silent().unwrap();
+    let root = provider.root_version();
+    let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
+    assert!(
+        solution
+            .get(&PubGrubPackage::Package("acme/local".into()))
+            .is_some(),
+        "path package resolved",
+    );
+    let dep = solution
+        .get(&PubGrubPackage::Package("acme/dep".into()))
+        .expect("transitive Packagist dep of the path package resolved");
+    assert_eq!(dep.to_string(), "2.1.0.0");
+}
+
 
 // ===================== Repository auth =====================
 

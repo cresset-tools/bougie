@@ -105,9 +105,11 @@ enum ProgressMode {
 use crate::metadata::{
     fetch_package_metadata_optional, fetch_package_metadata_optional_async,
     fetch_package_metadata_v1_optional, fetch_package_metadata_v1_optional_async,
-    load_v1_provider_table, load_v1_provider_table_async, probe_protocol, Repo,
-    RepoProtocol, Variant,
+    load_v1_provider_table, load_v1_provider_table_async, probe_protocol, PathRepoConfig,
+    ReferenceMode, Repo, RepoKind, RepoProtocol, Variant,
 };
+
+mod path_repo;
 use crate::verify::{is_platform, to_range, ComposerRange, ProviderError, PubGrubPackage};
 
 /// Cache key: `(repo url, package name, stable/dev variant)` — the exact
@@ -341,6 +343,15 @@ pub struct ResolveProvider {
     /// preference to. Built from `root_deps` so the membership test uses the
     /// same [`PackageName`] normalization the solver feeds `choose_version`.
     direct_deps: FxHashSet<PackageName>,
+    /// Package names owned by a `type: path` repository — seeded into
+    /// [`Self::cache`] from disk before the solve. These names are
+    /// *canonical* to the path repo: they are never fetched from
+    /// Packagist (the prefetch BFS pre-marks them visited, and
+    /// `load_real_candidates` short-circuits them), so a path repo
+    /// shadows any same-named Packagist package, matching Composer's
+    /// repository-priority semantics. Empty unless the root
+    /// composer.json declares a path repo.
+    path_owned_names: FxHashSet<PackageName>,
 }
 
 /// One entry in the virtual provider index — "real package
@@ -549,6 +560,7 @@ impl ResolveProvider {
             platform,
             resolution: ResolutionStrategy::default(),
             direct_deps,
+            path_owned_names: FxHashSet::default(),
         })
     }
 
@@ -671,10 +683,77 @@ impl ResolveProvider {
         let original = std::mem::take(&mut self.repos);
         let mut updated = Vec::with_capacity(original.len());
         for repo in original {
+            // Path repos have no `packages.json` to probe — they're
+            // local directories seeded into the cache from disk.
+            if repo.is_path() {
+                updated.push(repo);
+                continue;
+            }
             let protocol = probe_protocol(&self.client, &repo).ok();
             updated.push(repo.with_protocol(protocol));
         }
         self.repos = updated;
+    }
+
+    /// Read every `type: path` repository's packages off disk and seed
+    /// them into the candidate cache, resolving each repo's `url` glob
+    /// against `project_root`.
+    ///
+    /// Call once, after [`Self::discover_repos`] and before
+    /// [`Self::pre_fetch_closure`]: the prefetch needs the path-owned
+    /// name set populated (so it skips fetching them from Packagist)
+    /// and the seeded entries present (so the BFS can crawl their
+    /// transitive requires). Idempotent-ish — re-running re-reads disk
+    /// and re-inserts, deduping by version.
+    ///
+    /// Priority: the first path repo (in declaration order) to define a
+    /// name owns it; a later path repo's same-named package is dropped,
+    /// mirroring Composer's top-down canonical repository order.
+    pub fn seed_path_candidates(&mut self, project_root: &Path) {
+        // Collect off-disk first so we don't hold the cache borrow
+        // across filesystem + git work.
+        let mut seeded: Vec<(PackageName, Version, LockPackage)> = Vec::new();
+        for repo in &self.repos {
+            let RepoKind::Path(cfg) = &repo.kind else { continue };
+            for dir in path_repo::expand_url(&cfg.url, project_root) {
+                match path_repo::read_path_package(&dir, cfg, project_root) {
+                    Ok(Some(sp)) => {
+                        let name = PackageName::from(sp.package.name.as_str());
+                        seeded.push((name, sp.version, sp.package));
+                    }
+                    Ok(None) => {} // already warned inside
+                    Err(e) => {
+                        tracing::warn!(
+                            dir = %dir.display(), error = %e,
+                            "failed to read path package; skipping",
+                        );
+                    }
+                }
+            }
+        }
+
+        // Insert into the cache and record ownership. First write wins
+        // for a name (declaration-order priority); a duplicate version
+        // within one name is ignored.
+        for (name, version, package) in seeded {
+            let interned = name.clone();
+            self.path_owned_names.insert(interned.clone());
+            // Register provide/replace so a path package that provides
+            // a virtual is visible to the solver.
+            self.register_virtuals_from(&interned, std::slice::from_ref(&package));
+            let mut cache = self.cache.borrow_mut();
+            let entry = cache.entry(interned).or_default();
+            if entry.iter().any(|(v, _)| *v == version) {
+                continue;
+            }
+            entry.push((version, package));
+        }
+    }
+
+    /// The package names this provider considers owned by a path repo.
+    /// Used by the prefetch BFS to avoid HTTP-fetching them.
+    fn path_owned_names(&self) -> &FxHashSet<PackageName> {
+        &self.path_owned_names
     }
 
     /// Inspect what's been fetched so far. Exposed for tests + future
@@ -970,6 +1049,13 @@ impl ResolveProvider {
         name: &str,
         floor: Stability,
     ) -> Result<Vec<(Version, LockPackage)>, ProviderError> {
+        // Path-owned names are canonical to their path repo and seeded
+        // from disk; never fall through to a Packagist fetch for them.
+        // (Normally they're already in `cache` so this path isn't hit,
+        // but a cache miss must not leak a network request.)
+        if self.path_owned_names.contains(name) {
+            return Ok(Vec::new());
+        }
         let mut versions: Vec<LockPackage> = Vec::new();
         for repo in &self.repos {
             let stable_md = self
@@ -1039,6 +1125,13 @@ impl ResolveProvider {
         package: &str,
         variant: Variant,
     ) -> eyre::Result<Option<bougie_composer::metadata::PackageMetadata>> {
+        // Path repos have no network metadata; their candidates are
+        // seeded directly into the cache before the solve. A lazy
+        // `load_real_candidates` miss must never fall through to HTTP
+        // here.
+        if repo.is_path() {
+            return Ok(None);
+        }
         match &repo.protocol {
             Some(RepoProtocol::V1(discovery)) => {
                 if variant == Variant::Dev {
@@ -1252,6 +1345,7 @@ impl ResolveProvider {
                     version_normalized: Some(entry.provided_version.normalized.clone()),
                     dist: None,
                     source: None,
+                    transport_options: serde_json::Value::Null,
                     require: BTreeMap::default(),
                     require_dev: BTreeMap::default(),
                     package_type: Some("metapackage".into()),
@@ -1350,12 +1444,32 @@ impl ResolveProvider {
         &self,
         progress: ClosureProgress,
     ) -> Result<(), ProviderError> {
-        let initial: Vec<PackageName> = self
+        let mut initial: Vec<PackageName> = self
             .root_deps
             .iter()
             .map(|(n, _)| n.clone())
             .filter(|n| !is_platform(n.as_str()))
             .collect();
+
+        // Path packages are seeded from disk, not fetched, so the BFS
+        // never visits them — but their transitive `require`s still
+        // need fetching from Packagist. Inject those require names into
+        // the initial frontier. (Only runtime `require`; Composer never
+        // installs a dependency's `require-dev`.) Path-owned names
+        // themselves are filtered below so they're never HTTP-fetched.
+        if !self.path_owned_names.is_empty() {
+            let cache = self.cache.borrow();
+            for owned in &self.path_owned_names {
+                let Some(versions) = cache.get(owned) else { continue };
+                for (_, pkg) in versions {
+                    for req in pkg.require.keys() {
+                        if !is_platform(req) {
+                            initial.push(PackageName::from(req.as_str()));
+                        }
+                    }
+                }
+            }
+        }
 
         // Current-thread runtime with I/O + time enabled is what
         // drives `reqwest::Client`'s async sockets. The fan-out runs
@@ -1429,6 +1543,7 @@ impl ResolveProvider {
                 prefetch_concurrency_limit(),
                 progress,
                 self.meta_cache.clone(),
+                self.path_owned_names().clone(),
             ))?
         };
 
@@ -1526,6 +1641,7 @@ async fn run_prefetch_fanout(
     concurrency: usize,
     progress: ClosureProgress,
     meta_cache: MetaCache,
+    path_owned: FxHashSet<PackageName>,
 ) -> Result<Vec<PrefetchOutcome>, ProviderError> {
     use std::collections::HashSet;
     let sem = Arc::new(tokio::sync::Semaphore::new(concurrency));
@@ -1547,6 +1663,14 @@ async fn run_prefetch_fanout(
     // so the once-per-name insert + the spawn-task clone are refcount
     // bumps rather than allocations.
     let mut visited: HashSet<PackageName> = HashSet::new();
+    // Pre-mark every path-owned name as visited so it is never spawned
+    // for an HTTP fetch — path packages are seeded from disk and are
+    // canonical to their path repo (they shadow Packagist). A fetched
+    // package that requires a path-owned name finds it already visited
+    // and skips it, so Packagist is never consulted for that name.
+    for name in &path_owned {
+        visited.insert(name.clone());
+    }
     let mut tasks: tokio::task::JoinSet<Result<PrefetchOutcome, ProviderError>> =
         tokio::task::JoinSet::new();
     let mut outcomes: Vec<PrefetchOutcome> = Vec::new();
@@ -1687,6 +1811,13 @@ async fn load_real_candidates_isolated(
 ) -> Result<PrefetchOutcome, ProviderError> {
     let mut versions: Vec<LockPackage> = Vec::new();
     for repo in repos {
+        // Path repos contribute nothing over the network — their
+        // candidates are seeded into the cache from disk before the
+        // prefetch runs. Skip so the BFS never tries to HTTP-fetch a
+        // path-owned name.
+        if repo.is_path() {
+            continue;
+        }
         // Hold the host's permit across this repo's stable+dev fetches,
         // so concurrent requests to one origin stay under the per-host
         // cap. Dropped at the end of the iteration. A host missing from
@@ -2064,6 +2195,49 @@ fn entry_is_disable_packagist(entry: &serde_json::Map<String, Value>) -> bool {
 /// shapes) and append to `repos` on success. Auth is looked up by
 /// the URL's host. Used by both wire shapes [`read_repositories`]
 /// accepts.
+/// Parse a `{"type": "path", "url": ..., "options": {...}}` repository
+/// entry into a [`PathRepoConfig`]. Only the JSON is read here — the
+/// `url` glob is resolved against the project root later, when the
+/// resolver seeds path candidates ([`ResolveProvider::seed_path_candidates`]).
+fn parse_path_repo(
+    entry: &serde_json::Map<String, Value>,
+) -> Result<PathRepoConfig, BuildError> {
+    let url = entry
+        .get("url")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            BuildError::Internal("repository entry of type \"path\" is missing `url`".into())
+        })?
+        .to_owned();
+    let options = entry.get("options").and_then(Value::as_object);
+    let symlink = options
+        .and_then(|o| o.get("symlink"))
+        .and_then(Value::as_bool);
+    let relative = options
+        .and_then(|o| o.get("relative"))
+        .and_then(Value::as_bool);
+    let reference = match options.and_then(|o| o.get("reference")).and_then(Value::as_str) {
+        Some("config") => ReferenceMode::Config,
+        Some("none") => ReferenceMode::None,
+        // Default and the explicit "auto" spelling.
+        None | Some("auto") => ReferenceMode::Auto,
+        Some(other) => {
+            return Err(BuildError::Internal(format!(
+                "path repository `options.reference` must be auto|config|none, got {other:?}",
+            )));
+        }
+    };
+    let mut versions = FxHashMap::default();
+    if let Some(v) = options.and_then(|o| o.get("versions")).and_then(Value::as_object) {
+        for (name, val) in v {
+            if let Some(ver) = val.as_str() {
+                versions.insert(name.clone(), ver.to_owned());
+            }
+        }
+    }
+    Ok(PathRepoConfig { url, symlink, relative, reference, versions })
+}
+
 fn parse_repo_entry(
     entry: &serde_json::Map<String, Value>,
     auth: &HashMap<String, crate::metadata::AuthCredentials>,
@@ -2094,7 +2268,12 @@ fn parse_repo_entry(
             // happen to be on Packagist too. Follow-up issue.
             Ok(())
         }
-        Some("path" | "package" | "artifact") => {
+        Some("path") => {
+            let config = parse_path_repo(entry)?;
+            repos.push(Repo::path(config));
+            Ok(())
+        }
+        Some("package" | "artifact") => {
             // Same story; non-Composer-protocol shapes need distinct
             // machinery.
             Ok(())
@@ -3391,6 +3570,8 @@ pub fn dry_run_update_partial(
         repos = provider.repos.len(),
         "discover_repos",
     );
+    // Seed `type: path` repositories from disk before the prefetch.
+    provider.seed_path_candidates(project_root);
     let t_prefetch = std::time::Instant::now();
     provider
         .pre_fetch_closure()
@@ -3624,6 +3805,7 @@ pub fn resolve_for_lockfile_partial(
 
     let full = solve_into_lock_packages(
         paths,
+        project_root,
         default_packagist.clone(),
         &composer_json,
         false,
@@ -3640,6 +3822,7 @@ pub fn resolve_for_lockfile_partial(
     // full pass.
     let prod = solve_into_lock_packages(
         paths,
+        project_root,
         default_packagist,
         &composer_json,
         true,
@@ -3689,6 +3872,7 @@ pub fn resolve_for_lockfile_partial(
 #[tracing::instrument(skip_all, fields(no_dev))]
 fn solve_into_lock_packages(
     paths: &Paths,
+    project_root: &Path,
     default_packagist: Repo,
     composer_json: &Value,
     no_dev: bool,
@@ -3731,6 +3915,10 @@ fn solve_into_lock_packages(
         no_dev,
         "discover_repos",
     );
+    // Seed `type: path` repositories from disk before the prefetch so
+    // their candidates are present and their transitive requires get
+    // crawled. No-op when the project declares no path repos.
+    provider.seed_path_candidates(project_root);
     // Eager pre-fetch: load every reachable package's metadata
     // before the solver runs so virtual providers are registered.
     // Mirrors Composer's PoolBuilder.

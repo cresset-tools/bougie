@@ -216,11 +216,31 @@ pub fn install_from_lock(
         .filter(|p| !p.is_path_dist() && !p.is_composer_plugin() && !p.is_metapackage())
         .collect();
 
+    // Path packages are materialized separately (symlink-or-copy), not
+    // downloaded. Collect them up front so the stale-sweep in
+    // `diff_install_set` knows to keep their vendor directories.
+    let installer_paths = bougie_installers::InstallerPaths::parse(&composer_json_value);
+    let path_packages: Vec<&LockPackage> =
+        candidates.iter().copied().filter(|p| p.is_path_dist()).collect();
+    let path_dests: Vec<PathBuf> = path_packages
+        .iter()
+        .map(|p| {
+            let rel = bougie_installers::install_path(
+                &p.name,
+                p.package_type.as_deref(),
+                &installer_paths,
+            );
+            project_root.join(rel)
+        })
+        .collect();
+    let path_keep_names: HashSet<&str> =
+        path_packages.iter().map(|p| p.name.as_str()).collect();
+
     // Diff against the existing installed state to skip packages whose
     // dist reference hasn't changed and whose vendor dir is still present.
     let installed_state = read_installed_state(project_root);
     let (install_set, packages_up_to_date, packages_removed) =
-        diff_install_set(&installable, &installed_state, project_root);
+        diff_install_set(&installable, &installed_state, project_root, &path_keep_names);
 
     // Each DistRequest borrows from the LockPackage; build the
     // ancillary owned data (vendor dest paths, archive enums) in a
@@ -232,7 +252,6 @@ pub fn install_from_lock(
     // `vendor/<name>`. The same computation runs in `bougie-autoloader`
     // so the generated autoload + `installed.json` install-path point at
     // the relocated tree.
-    let installer_paths = bougie_installers::InstallerPaths::parse(&composer_json_value);
     let vendor_dirs: Vec<PathBuf> = install_set
         .iter()
         .map(|p| {
@@ -346,6 +365,17 @@ pub fn install_from_lock(
     let deploy_summary = deploy_components(&install_set, &vendor_dirs, project_root);
     warnings.extend(deploy_summary.warnings);
 
+    // Materialize `type: path` packages (symlink-or-copy) into their
+    // vendor destinations. Done before the autoload dump so the
+    // generated autoloader sees the linked trees.
+    let path_summary = super::path_link::materialize_path_packages(
+        project_root,
+        &path_packages,
+        &path_dests,
+        installed_state.as_ref(),
+    );
+    warnings.extend(path_summary.warnings);
+
     // `pre-autoload-dump` — before the autoloader is regenerated.
     if let Some(hooks) = hooks {
         hooks.pre_autoload_dump()?;
@@ -369,6 +399,7 @@ pub fn install_from_lock(
     let autoload_fresh = hooks.is_none()
         && install_set.is_empty()
         && packages_removed == 0
+        && path_summary.linked == 0
         && project_root.join("vendor/autoload.php").is_file()
         && std::fs::read_to_string(&autoload_marker)
             .ok()
@@ -440,6 +471,11 @@ pub fn install_from_lock(
             .count(),
     )
     .unwrap_or(u32::MAX);
+    // Fold path-package materialization into the totals: a freshly
+    // linked/copied path package counts as installed; an unchanged one
+    // counts as up-to-date.
+    let packages_installed = packages_installed.saturating_add(path_summary.linked);
+    let packages_up_to_date = packages_up_to_date.saturating_add(path_summary.up_to_date);
     Ok(InstallSummary {
         project_root: project_root.to_path_buf(),
         packages_installed,
@@ -596,6 +632,7 @@ pub(crate) fn diff_install_set<'a>(
     installable: &[&'a LockPackage],
     installed_state: &Option<InstalledState>,
     project_root: &Path,
+    keep_names: &HashSet<&str>,
 ) -> (Vec<&'a LockPackage>, u32, u32) {
     let Some(state) = installed_state else {
         return (installable.to_vec(), 0, 0);
@@ -603,7 +640,11 @@ pub(crate) fn diff_install_set<'a>(
 
     let mut need_install: Vec<&'a LockPackage> = Vec::new();
     let mut up_to_date: u32 = 0;
-    let wanted_names: HashSet<&str> = installable.iter().map(|p| p.name.as_str()).collect();
+    // `keep_names` are packages installed by another path (path
+    // repositories materialize into `vendor/` separately) — their
+    // directories must not be swept as stale here.
+    let mut wanted_names: HashSet<&str> = installable.iter().map(|p| p.name.as_str()).collect();
+    wanted_names.extend(keep_names.iter().copied());
 
     for p in installable {
         let lock_ref = p

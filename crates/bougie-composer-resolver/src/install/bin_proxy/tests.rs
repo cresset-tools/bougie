@@ -19,6 +19,7 @@ fn make_lock_package(name: &str, bins: &[&str]) -> LockPackage {
         version_normalized: None,
         dist: None,
         source: None,
+        transport_options: serde_json::Value::Null,
         package_type: None,
         time: None,
         license: Vec::new(),
