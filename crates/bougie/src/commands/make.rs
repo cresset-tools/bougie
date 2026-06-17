@@ -163,6 +163,7 @@ pub fn run(format: OutputFormat, opts: MakeOptions) -> Result<ExitCode> {
             false,
             false,
             None,
+            None,
             bougie_cli::PhpPrefArgs::default(),
             bougie_composer_resolver::ResolutionStrategy::Highest,
         )?;

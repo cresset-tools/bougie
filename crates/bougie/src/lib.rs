@@ -36,9 +36,16 @@ fn unsupported_on_windows(feature: &str) -> Result<ExitCode> {
 /// `--no-scripts`, `None` when neither is passed (defer to `[scripts] run`
 /// in config). clap's `conflicts_with` guarantees they're not both set.
 fn scripts_override(scripts: bool, no_scripts: bool) -> Option<bool> {
-    if scripts {
+    tristate(scripts, no_scripts)
+}
+
+/// Fold a `--flag` / `--no-flag` pair into an explicit override: `--flag`
+/// wins as `Some(true)`, `--no-flag` as `Some(false)`, neither as `None`
+/// (defer to config). clap's `conflicts_with` prevents both being set.
+fn tristate(yes: bool, no: bool) -> Option<bool> {
+    if yes {
         Some(true)
-    } else if no_scripts {
+    } else if no {
         Some(false)
     } else {
         None
@@ -76,6 +83,7 @@ fn command_name(cmd: &Command) -> &'static str {
         Command::Run { .. } => "run",
         Command::Php(_) => "php",
         Command::Node(_) => "node",
+        Command::Patches(_) => "patches",
         Command::Composer(_) => "composer",
         Command::Tool(_) => "tool",
         Command::ToolExec { .. } => "tool-exec",
@@ -197,12 +205,13 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
                 working_dir,
             },
         ),
-        Command::Sync { offline, dry_run, scripts, no_scripts, resolution, php } => {
+        Command::Sync { offline, dry_run, scripts, no_scripts, patches, no_patches, resolution, php } => {
             commands::sync::run(
                 format,
                 offline,
                 dry_run,
                 scripts_override(scripts, no_scripts),
+                tristate(patches, no_patches),
                 php,
                 resolution_strategy(resolution),
             )
@@ -210,6 +219,7 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
         Command::Run { with, no_sync, xdebug, php_request, php, argv } => {
             commands::run::run(&with, &argv, format, no_sync, xdebug, php, php_request.as_deref())
         }
+        Command::Patches(cmd) => commands::patches_cmd::run(format, cmd),
         Command::Ext(ExtCommand::Add { args, no_sync, php }) => {
             commands::ext_add_remove::add(format, args, no_sync, php)
         }
@@ -312,6 +322,8 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
             ignore_platform_req,
             scripts,
             no_scripts,
+            patches,
+            no_patches,
         }) => commands::composer_install::run(
             format,
             working_dir,
@@ -321,6 +333,7 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
             ignore_platform_reqs,
             ignore_platform_req,
             scripts_override(scripts, no_scripts),
+            tristate(patches, no_patches),
         ),
         Command::Composer(ComposerCommand::Update {
             packages,

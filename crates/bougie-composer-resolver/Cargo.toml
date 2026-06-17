@@ -18,6 +18,7 @@ bougie-errors = { workspace = true }
 bougie-fetch = { workspace = true }
 bougie-installers = { workspace = true }
 bougie-output = { workspace = true }
+bougie-patches = { workspace = true }
 bougie-paths = { workspace = true }
 bougie-semver = { workspace = true }
 eyre = "0.6"

@@ -32,9 +32,7 @@ use bougie_cli::OutputFormat;
 use bougie_composer::lockfile::{apply_require_change, Lock, RequireChange};
 use bougie_composer_resolver::latest_versions;
 use bougie_composer_resolver::verify::is_platform;
-use bougie_composer_resolver::{
-    install_from_lock, InstallOptions, PartialUpdate, ResolutionStrategy,
-};
+use bougie_composer_resolver::{InstallOptions, PartialUpdate, ResolutionStrategy};
 use bougie_output::output::{emit, Render};
 use bougie_paths::Paths;
 use bougie_semver::stability::Stability;
@@ -453,8 +451,16 @@ fn run_add(
             resolution,
         )?;
         if !no_install {
-            install_from_lock(&paths, &project_root, InstallOptions { no_dev: false }, None)
-                .wrap_err("installing packages")?;
+            let project = bougie_config::load_project(&project_root)?;
+            let patch_plan = super::patches::build_plan(&paths, &project_root, &project, None)?;
+            bougie_composer_resolver::install_from_lock_with_patches(
+                &paths,
+                &project_root,
+                InstallOptions { no_dev: false },
+                None,
+                patch_plan.as_ref(),
+            )
+            .wrap_err("installing packages")?;
         }
         Some(path)
     };
@@ -531,8 +537,16 @@ pub fn remove(
             ResolutionStrategy::Highest,
         )?;
         if !no_install {
-            install_from_lock(&paths, &project_root, InstallOptions { no_dev }, None)
-                .wrap_err("uninstalling packages")?;
+            let project = bougie_config::load_project(&project_root)?;
+            let patch_plan = super::patches::build_plan(&paths, &project_root, &project, None)?;
+            bougie_composer_resolver::install_from_lock_with_patches(
+                &paths,
+                &project_root,
+                InstallOptions { no_dev },
+                None,
+                patch_plan.as_ref(),
+            )
+            .wrap_err("uninstalling packages")?;
         }
         Some(path)
     };

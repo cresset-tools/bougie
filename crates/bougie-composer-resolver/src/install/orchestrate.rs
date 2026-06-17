@@ -26,6 +26,7 @@ use rustc_hash::FxHasher;
 use bougie_autoloader::{dump_autoload, DumpRequest};
 use bougie_composer::lockfile::{self, Lock, LockPackage};
 use bougie_fetch::{ArchiveKind, DownloadBar};
+use bougie_patches::PatchPlan;
 use bougie_paths::Paths;
 use eyre::{eyre, Context, Result};
 use serde_json::Value;
@@ -100,6 +101,25 @@ pub struct InstallSummary {
 
 /// Apply `composer.lock` to `project_root`. See module docs for the
 /// flow.
+pub fn install_from_lock(
+    paths: &Paths,
+    project_root: &Path,
+    opts: InstallOptions,
+    hooks: Option<&dyn ScriptHooks>,
+) -> Result<InstallSummary> {
+    install_from_lock_with_patches(paths, project_root, opts, hooks, None)
+}
+
+/// Like [`install_from_lock`], but also applies a resolved [`PatchPlan`]
+/// (cweagans-style patches, reimplemented natively). `patches` is `None` for
+/// the patches-disabled path, which keeps install-set diffing dist-ref-only
+/// exactly as before.
+///
+/// The plan drives **two** touch points required for re-application
+/// correctness (see `bougie-patches`): pre-extraction it forces every package
+/// whose patch fingerprint changed into the install set (so a changed patch
+/// set re-extracts pristine), and post-extraction it applies the patches and
+/// rewrites `patches.lock.json`.
 ///
 /// # Panics
 ///
@@ -112,11 +132,12 @@ pub struct InstallSummary {
 /// consumer, you'll hit the unwrap; that's the failure mode the
 /// comment at the unwrap is guarding against.
 #[tracing::instrument(skip_all, fields(project_root = %project_root.display()))]
-pub fn install_from_lock(
+pub fn install_from_lock_with_patches(
     paths: &Paths,
     project_root: &Path,
     opts: InstallOptions,
     hooks: Option<&dyn ScriptHooks>,
+    patches: Option<&PatchPlan>,
 ) -> Result<InstallSummary> {
     let composer_json_path = project_root.join("composer.json");
     let composer_lock_path = project_root.join("composer.lock");
@@ -238,9 +259,29 @@ pub fn install_from_lock(
 
     // Diff against the existing installed state to skip packages whose
     // dist reference hasn't changed and whose vendor dir is still present.
+    //
+    // Patch-aware step: any package whose desired patch fingerprint differs
+    // from the applied one (`patches.lock.json`) is forced back into the
+    // install set even when its dist reference is unchanged — a patch is only
+    // ever applied to a pristine tree, so a changed patch set must re-extract.
+    // This runs *ahead* of the autoloader fast-path below, so a patch-only
+    // change can't short-circuit to "Audited".
     let installed_state = read_installed_state(project_root);
+    let force_patch: HashSet<&str> = patches
+        .map(|plan| {
+            plan.tracked_packages()
+                .filter(|name| plan.fingerprint_changed(name))
+                .collect()
+        })
+        .unwrap_or_default();
     let (install_set, packages_up_to_date, packages_removed) =
-        diff_install_set(&installable, &installed_state, project_root, &path_keep_names);
+        diff_install_set_with_force(
+            &installable,
+            &installed_state,
+            project_root,
+            &path_keep_names,
+            &force_patch,
+        );
 
     // Each DistRequest borrows from the LockPackage; build the
     // ancillary owned data (vendor dest paths, archive enums) in a
@@ -376,6 +417,12 @@ pub fn install_from_lock(
     );
     warnings.extend(path_summary.warnings);
 
+    // Native patch application. Every `install_set` member is pristine here
+    // (freshly extracted), so this is the only safe place to patch.
+    if let Some(plan) = patches {
+        apply_patch_plan(plan, &install_set, &vendor_dirs, project_root, &mut warnings)?;
+    }
+
     // `pre-autoload-dump` — before the autoloader is regenerated.
     if let Some(hooks) = hooks {
         hooks.pre_autoload_dump()?;
@@ -488,6 +535,62 @@ pub fn install_from_lock(
         no_dev: opts.no_dev,
         warnings,
     })
+}
+
+/// Apply a resolved [`PatchPlan`] to the freshly-extracted `install_set`,
+/// then rewrite `patches.lock.json` (always — it is load-bearing for the next
+/// run's diff). For each install-set member the plan targets, its patches are
+/// applied into the install dir and the new fingerprint recorded; a package
+/// that was patched before but no longer is (and was re-extracted pristine
+/// this run) drops its fingerprint. Returns `Err` only in `Abort` failure
+/// mode; otherwise apply failures surface as `warnings`.
+fn apply_patch_plan(
+    plan: &PatchPlan,
+    install_set: &[&LockPackage],
+    vendor_dirs: &[PathBuf],
+    project_root: &Path,
+    warnings: &mut Vec<String>,
+) -> Result<()> {
+    let mut new_fingerprints = plan.applied.clone();
+    let install_names: HashSet<&str> = install_set.iter().map(|p| p.name.as_str()).collect();
+
+    // Previously-patched packages now without patches, re-extracted pristine
+    // this run, drop their fingerprint.
+    for name in plan.applied.keys() {
+        if install_names.contains(name.as_str()) && !plan.patches.contains_key(name) {
+            new_fingerprints.remove(name);
+        }
+    }
+
+    for (pkg, vendor_dir) in install_set.iter().zip(vendor_dirs.iter()) {
+        let Some(pkg_patches) = plan.patches.get(&pkg.name) else {
+            continue;
+        };
+        let res = bougie_patches::apply_package_patches(
+            vendor_dir,
+            &pkg.name,
+            pkg_patches,
+            plan.failure_mode,
+            plan.skip_report,
+        )?;
+        warnings.extend(res.warnings);
+        match res.fingerprint {
+            // Fully applied → record. Partial/failed (skip mode) → drop, so
+            // the next run re-extracts and retries from pristine.
+            Some(fp) => {
+                new_fingerprints.insert(pkg.name.clone(), fp);
+            }
+            None => {
+                new_fingerprints.remove(&pkg.name);
+            }
+        }
+    }
+
+    let human = plan.write_lock.then(|| plan.human_view());
+    if let Err(e) = bougie_patches::lock::write_with_human(project_root, &new_fingerprints, human) {
+        warnings.push(format!("could not write patches.lock.json: {e}"));
+    }
+    Ok(())
 }
 
 /// Outcome of the native Magento deploy pass.
@@ -628,11 +731,34 @@ fn read_installed_state(project_root: &Path) -> Option<InstalledState> {
 /// - the subset of packages that actually need downloading/extracting,
 /// - the count of packages that are already up-to-date,
 /// - the count of stale packages whose vendor dirs were removed.
+#[cfg(test)]
 pub(crate) fn diff_install_set<'a>(
     installable: &[&'a LockPackage],
     installed_state: &Option<InstalledState>,
     project_root: &Path,
     keep_names: &HashSet<&str>,
+) -> (Vec<&'a LockPackage>, u32, u32) {
+    diff_install_set_with_force(
+        installable,
+        installed_state,
+        project_root,
+        keep_names,
+        &HashSet::new(),
+    )
+}
+
+/// Like [`diff_install_set`], but `force` names packages that must be
+/// (re-)installed even when their dist reference matches and the vendor dir is
+/// present — the patch-aware path, used to re-extract a package pristine when
+/// its patch fingerprint changed. `keep_names` are packages materialized by
+/// another path (e.g. `type: path` repositories) whose vendor dirs must not be
+/// swept as stale.
+pub(crate) fn diff_install_set_with_force<'a>(
+    installable: &[&'a LockPackage],
+    installed_state: &Option<InstalledState>,
+    project_root: &Path,
+    keep_names: &HashSet<&str>,
+    force: &HashSet<&str>,
 ) -> (Vec<&'a LockPackage>, u32, u32) {
     let Some(state) = installed_state else {
         return (installable.to_vec(), 0, 0);
@@ -654,7 +780,9 @@ pub(crate) fn diff_install_set<'a>(
             .unwrap_or("");
         let vendor_dir = project_root.join("vendor").join(&p.name);
 
-        if let Some(installed_ref) = state.packages.get(&p.name) {
+        if !force.contains(p.name.as_str())
+            && let Some(installed_ref) = state.packages.get(&p.name)
+        {
             if installed_ref == lock_ref && vendor_dir.is_dir() {
                 up_to_date = up_to_date.saturating_add(1);
                 continue;

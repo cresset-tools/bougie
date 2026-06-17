@@ -1,0 +1,11 @@
+--- a/f.txt
++++ b/f.txt
+@@ -1,7 +1,7 @@
+ HEADER
+ keep1
+ keep2
+-TARGET
++TARGET PATCHED
+ keep3
+ keep4
+ FOOTER

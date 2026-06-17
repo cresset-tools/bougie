@@ -16,7 +16,7 @@ use bougie_cli::OutputFormat;
 use bougie_composer::lockfile::{self, canonical_readme, Lock};
 use bougie_composer_resolver::metadata::Repo;
 use bougie_composer_resolver::{
-    dry_run_update, dry_run_update_partial, install_from_lock, resolve_for_lockfile_partial,
+    dry_run_update, dry_run_update_partial, resolve_for_lockfile_partial,
     DryRunOptions, InstallOptions, LockfileSolveOutcome, PartialUpdate, ResolutionStrategy,
     ResolvedPackage, UpdateSummary,
 };
@@ -191,9 +191,17 @@ pub fn run(
     let install = if no_install {
         None
     } else {
+        let project = bougie_config::load_project(&project_root)?;
+        let patch_plan = super::patches::build_plan(&paths, &project_root, &project, None)?;
         Some(
-            install_from_lock(&paths, &project_root, InstallOptions { no_dev }, None)
-                .wrap_err("installing dependencies from the updated lock")?,
+            bougie_composer_resolver::install_from_lock_with_patches(
+                &paths,
+                &project_root,
+                InstallOptions { no_dev },
+                None,
+                patch_plan.as_ref(),
+            )
+            .wrap_err("installing dependencies from the updated lock")?,
         )
     };
 

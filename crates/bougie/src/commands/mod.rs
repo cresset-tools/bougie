@@ -29,6 +29,8 @@ pub mod php_list;
 pub mod php_pin;
 pub mod php_uninstall;
 pub mod php_upgrade;
+pub mod patches;
+pub mod patches_cmd;
 pub mod run;
 pub mod scripts;
 pub mod self_update;

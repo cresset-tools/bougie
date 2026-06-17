@@ -2,8 +2,8 @@
 //! plus the loader that orchestrates reading both files from disk.
 
 use super::{
-    read_bougie_toml, BougieConfig, ComposerJson, IndexEntry, PhpConfig, ScriptsConfig,
-    ServerConfig,
+    read_bougie_toml, BougieConfig, ComposerJson, IndexEntry, PatchesConfig, PhpConfig,
+    ScriptsConfig, ServerConfig,
 };
 #[cfg(test)]
 use super::{ExtensionPin, ServicePin};
@@ -35,6 +35,16 @@ pub fn merge(toml_cfg: BougieConfig, extra_cfg: BougieConfig) -> BougieConfig {
         },
         scripts: ScriptsConfig {
             run: toml_cfg.scripts.run.or(extra_cfg.scripts.run),
+        },
+        patches: PatchesConfig {
+            enable: toml_cfg.patches.enable.or(extra_cfg.patches.enable),
+            dir: toml_cfg.patches.dir.or(extra_cfg.patches.dir),
+            exit_on_failure: toml_cfg
+                .patches
+                .exit_on_failure
+                .or(extra_cfg.patches.exit_on_failure),
+            write_lock: toml_cfg.patches.write_lock.or(extra_cfg.patches.write_lock),
+            skip_report: toml_cfg.patches.skip_report.or(extra_cfg.patches.skip_report),
         },
     }
 }

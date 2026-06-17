@@ -1,0 +1,18 @@
+--- a/vendor/magento/module-catalog/Model/Product.php	2026-06-17 10:49:17.590226240 +0000
++++ b/vendor/magento/module-catalog/Model/Product.php	2026-06-17 10:49:17.594454111 +0000
+@@ -2,6 +2,6 @@
+ namespace Magento\Catalog\Model;
+ class Product {
+     public function getPrice() {
+-        return $this->price;
++        return $this->price * $this->taxRate;
+     }
+ }
+--- a/vendor/magento/module-catalog/Block/View.php	2026-06-17 10:49:17.595013977 +0000
++++ b/vendor/magento/module-catalog/Block/View.php	2026-06-17 10:49:17.595484966 +0000
+@@ -1,4 +1,4 @@
+ <?php
+ class View {
+-    const CACHE = false;
++    const CACHE = true;
+ }

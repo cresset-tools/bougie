@@ -26,6 +26,12 @@ pub fn write_bougie_toml_skeleton() -> String {
         "[scripts]",
         "# run = true              # run composer.json root scripts during the install lifecycle (off by default)",
         "",
+        "[patches]",
+        "# enable = true           # force native patch application on/off (default: on when patches are declared)",
+        "# dir = \"patches\"          # directory of zero-config *.patch files",
+        "# exit_on_failure = true  # abort the install on the first failed patch (default: skip + warn)",
+        "# skip_report = true      # don't write PATCHES.txt into patched packages",
+        "",
     ]
     .join("\n")
 }

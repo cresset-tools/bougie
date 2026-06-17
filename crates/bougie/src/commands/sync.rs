@@ -1,8 +1,6 @@
 use bougie_installer::baseline::{self, BaselineFilter};
 use bougie_cli::OutputFormat;
-use bougie_composer_resolver::{
-    install_from_lock, InstallOptions, InstallSummary, ResolutionStrategy,
-};
+use bougie_composer_resolver::{InstallOptions, InstallSummary, ResolutionStrategy};
 use bougie_installer::conf_d;
 use bougie_config::{load_project, ExtensionPin, ProjectConfig};
 use bougie_errors::BougieError;
@@ -281,12 +279,19 @@ fn install_vendor(
     paths: &Paths,
     project_root: &std::path::Path,
     hooks: Option<&dyn bougie_composer_resolver::ScriptHooks>,
+    patches: Option<&bougie_patches::PatchPlan>,
 ) -> Result<Option<InstallSummary>> {
     let lock_path = project_root.join("composer.lock");
     if !lock_path.is_file() {
         return Ok(None);
     }
-    let summary = install_from_lock(paths, project_root, InstallOptions { no_dev: false }, hooks)?;
+    let summary = bougie_composer_resolver::install_from_lock_with_patches(
+        paths,
+        project_root,
+        InstallOptions { no_dev: false },
+        hooks,
+        patches,
+    )?;
     Ok(Some(summary))
 }
 
@@ -312,6 +317,7 @@ pub fn run(
     offline: bool,
     dry_run: bool,
     scripts: Option<bool>,
+    patches: Option<bool>,
     php_pref: PhpPrefArgs,
     pkg_resolution: ResolutionStrategy,
 ) -> Result<ExitCode> {
@@ -357,6 +363,7 @@ pub fn run(
         resolved_packages,
         resolve_ms,
         scripts,
+        patches,
         format,
     )
 }
@@ -374,6 +381,7 @@ fn finish_with_vendor(
     resolved_packages: usize,
     resolve_ms: f64,
     scripts: Option<bool>,
+    patches: Option<bool>,
     format: OutputFormat,
 ) -> Result<ExitCode> {
     let hooks = if super::scripts::enabled(scripts, project) {
@@ -385,11 +393,15 @@ fn finish_with_vendor(
     } else {
         None
     };
+    // Resolve + materialize the root patch set. `None` when patching is off
+    // or nothing is declared.
+    let patch_plan = super::patches::build_plan(paths, project_root, project, patches)?;
     let audit_started = Instant::now();
     let vendor_summary = install_vendor(
         paths,
         project_root,
         hooks.as_ref().map(|h| h as &dyn bougie_composer_resolver::ScriptHooks),
+        patch_plan.as_ref(),
     )?;
     result.audit_ms = elapsed_ms(audit_started);
     result.resolved_packages = resolved_packages;
@@ -474,6 +486,7 @@ pub fn run_with_default_fallback(
         resolved_packages,
         resolve_ms,
         None,
+        None,
         format,
     )
 }
@@ -551,6 +564,7 @@ pub fn run_with_php_request(
         result,
         resolved_packages,
         resolve_ms,
+        None,
         None,
         format,
     )
