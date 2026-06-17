@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.30.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.29.0...bougie-v0.30.0) (2026-06-17)
+
+
+### Features
+
+* **composer-resolver:** support Composer `type: path` repositories ([#382](https://github.com/cresset-tools/bougie/issues/382)) ([c4fbb7f](https://github.com/cresset-tools/bougie/commit/c4fbb7fa63c19b4e4cdd19140ab55deaa0a2fbae))
+* **init:** scaffold `--starter laravel` via the laravel installer ([#383](https://github.com/cresset-tools/bougie/issues/383)) ([7fa7c08](https://github.com/cresset-tools/bougie/commit/7fa7c083ac92f867e16879547351ee46eab027df))
+* **patches:** native cweagans/composer-patches reimplementation ([#384](https://github.com/cresset-tools/bougie/issues/384)) ([85a3ec9](https://github.com/cresset-tools/bougie/commit/85a3ec995c7360bfc9d6116bab0ba56e94ecce88))
+* **starter:** prompt for per-user placeholder tokens ([#385](https://github.com/cresset-tools/bougie/issues/385)) ([e236910](https://github.com/cresset-tools/bougie/commit/e23691063e54620a0cbb01014f2c6108906e6591))
+* top-level `bougie projects` + uv-style `--resolution` ([#381](https://github.com/cresset-tools/bougie/issues/381)) ([09b0d5c](https://github.com/cresset-tools/bougie/commit/09b0d5cb08d0b7da37f2510584cf1e1cb964382b))
+
+
+### Bug Fixes
+
+* **init:** pass ResolutionStrategy to resolve_and_write_lock ([#387](https://github.com/cresset-tools/bougie/issues/387)) ([1d60930](https://github.com/cresset-tools/bougie/commit/1d60930d7f990bbc279f08295085e930e5729802))
+
 ## [0.29.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.28.0...bougie-v0.29.0) (2026-06-13)
 
 
