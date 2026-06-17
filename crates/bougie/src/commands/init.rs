@@ -116,13 +116,37 @@ fn scaffold(
     // project, so refuse to clobber an existing composer.json.
     let composer = root.join("composer.json");
     let mut notes: Vec<String> = Vec::new();
-    if composer.exists() {
-        if starter.is_some() {
+    if composer.exists() && starter.is_some() {
+        return Err(eyre!(
+            "composer.json already exists — `--starter` scaffolds a new project; \
+             run it in an empty directory"
+        ));
+    }
+
+    // Bind the installer-package lookup to a local so the borrow of
+    // `starter` ends here — the manifest arm below still moves `starter`.
+    let installer_package = starter.as_deref().and_then(installer_starter_package);
+    if let Some(package) = installer_package {
+        // An *installer-based* starter (e.g. `--starter laravel`): rather
+        // than fetch a manifest and author composer.json ourselves, run the
+        // framework's own CLI installer — fetched + executed through the
+        // `bougie tool run` engine — which scaffolds the whole project tree
+        // (composer.json + skeleton + a composer install) in place.
+        run_installer_starter(package, root, format)?;
+        // `--name` isn't a flag the installer understands, so honour it by
+        // patching the package name into the composer.json it generated.
+        if let Some(name) = name {
+            patch_composer_name(&composer, &name)?;
+        }
+        if !composer.is_file() {
             return Err(eyre!(
-                "composer.json already exists — `--starter` scaffolds a new project; \
-                 run it in an empty directory"
+                "`{package}` finished but left no composer.json in {} — \
+                 the installer may have failed",
+                root.display()
             ));
         }
+        created.push(rel(PathBuf::from("composer.json")));
+    } else if composer.exists() {
         already.push(rel(PathBuf::from("composer.json")));
     } else {
         let contents = match starter {
@@ -230,6 +254,155 @@ fn start_project(_root: &Path, _format: OutputFormat) -> Result<ExitCode> {
     ))
 }
 
+/// Map an installer-based starter alias to the Composer package whose CLI
+/// scaffolds the project. Unlike manifest starters (which only yield a
+/// `composer.json`), these run an external installer via `bougie tool run`.
+/// `None` for anything else — those fall through to the manifest path.
+fn installer_starter_package(starter: &str) -> Option<&'static str> {
+    match starter {
+        "laravel" => Some("laravel/installer"),
+        _ => None,
+    }
+}
+
+/// Compute how to invoke an installer that creates the project directory
+/// itself (`laravel new <name>`): run it from `root`'s parent with `root`'s
+/// basename as the project name. Works for both `bougie init` (root = cwd)
+/// and `bougie new <dir>` (root = cwd/<dir>); `--force` lets the installer
+/// populate the directory bougie already created.
+fn installer_invocation(root: &Path) -> Result<(PathBuf, std::ffi::OsString)> {
+    let parent = root
+        .parent()
+        .ok_or_else(|| {
+            eyre!(
+                "cannot scaffold an installer starter at the filesystem root {}",
+                root.display()
+            )
+        })?
+        .to_path_buf();
+    let name = root
+        .file_name()
+        .ok_or_else(|| eyre!("cannot derive a project name from {}", root.display()))?
+        .to_os_string();
+    Ok((parent, name))
+}
+
+/// Fetch + run an installer-based starter (e.g. `laravel/installer`)
+/// through the `bougie tool run` engine. The tool is cached/materialised
+/// exactly as `bougie tool run` would, then spawned as a child (not
+/// execve'd — we still have toolchain scaffolding and `--start` to do
+/// afterwards) with `laravel new <name> --force` in the project's parent.
+fn run_installer_starter(package: &str, root: &Path, format: OutputFormat) -> Result<()> {
+    use bougie_paths::Paths;
+    use bougie_tool::install::InstallContext;
+    use bougie_tool::{exec, receipt, request, run};
+    use std::ffi::OsString;
+
+    let (parent, project_name) = installer_invocation(root)?;
+
+    let paths = Paths::from_env()?;
+    let req = request::parse(package)?;
+    // Same callback wiring as `commands::tool_run::run`.
+    let resolve_lock: &bougie_tool::install::LockResolver = &|paths, project_root| {
+        super::composer_update::resolve_and_write_lock(paths, project_root).map(|_| ())
+    };
+    let php_installer = super::tool_callbacks::php_installer();
+    let classifier = super::tool_callbacks::extension_classifier();
+    let ext_installer = super::tool_callbacks::extension_installer();
+    let php_requirement = super::tool_callbacks::required_php_fetcher();
+    let php_baseline = super::tool_callbacks::baseline_ensurer();
+    let ctx = InstallContext {
+        paths: &paths,
+        resolve_lock,
+        php_installer: php_installer.as_ref(),
+        classifier: classifier.as_ref(),
+        ext_installer: ext_installer.as_ref(),
+        php_requirement: php_requirement.as_ref(),
+        php_baseline: php_baseline.as_ref(),
+    };
+
+    eprintln!("note: scaffolding with `{package}` via bougie tool run…");
+
+    let plan = run::prepare(&ctx, &req, None, &[])?;
+    let receipt = receipt::read(&plan.tool_dir.join("receipt.toml"))?;
+    let entry = run::pick_bin(&receipt.entrypoints, &plan.package)?;
+    let wrapper = plan.tool_dir.join("bin").join(&entry.name);
+    if !wrapper.is_file() {
+        return Err(eyre!(
+            "tool dir {} is missing the wrapper for bin `{}`",
+            plan.tool_dir.display(),
+            entry.name
+        ));
+    }
+
+    let args: Vec<OsString> = vec![
+        OsString::from("new"),
+        project_name,
+        OsString::from("--force"),
+    ];
+    let prep = exec::prepare(&paths, &wrapper, args)?;
+
+    let mut cmd = std::process::Command::new(&prep.php_path);
+    cmd.args(&prep.argv);
+    // `prep.env` layers PHP_INI_SCAN_DIR (so the installer's PHP has the
+    // baseline extensions it needs) and the `unzip` shim. We deliberately
+    // do NOT inject bougie's native `composer` shim: the installer shells
+    // out to `composer create-project`, which bougie's native composer
+    // doesn't implement — so the installer must use the ambient (real)
+    // `composer` on PATH, the same one `bougie tool install composer/composer`
+    // would provide.
+    for (k, v) in &prep.env {
+        cmd.env(k, v);
+    }
+    cmd.current_dir(&parent);
+    cmd.stdout(installer_stdout(format));
+
+    let status = cmd
+        .status()
+        .wrap_err_with(|| format!("running `{package}` installer"))?;
+    if !status.success() {
+        return Err(eyre!("`{package}` installer exited with {status}"));
+    }
+    Ok(())
+}
+
+/// Route the installer's stdout. In text mode it inherits ours so the user
+/// sees (and can answer) its prompts; in `--format json-v1` mode its chatty
+/// output is redirected to stderr so our stdout stays a single clean JSON
+/// document.
+fn installer_stdout(format: OutputFormat) -> std::process::Stdio {
+    match format {
+        OutputFormat::Text => std::process::Stdio::inherit(),
+        OutputFormat::JsonV1 => {
+            #[cfg(unix)]
+            {
+                use std::os::fd::AsFd;
+                std::io::stderr().as_fd().try_clone_to_owned().map_or_else(
+                    |_| std::process::Stdio::inherit(),
+                    std::process::Stdio::from,
+                )
+            }
+            #[cfg(not(unix))]
+            {
+                std::process::Stdio::inherit()
+            }
+        }
+    }
+}
+
+/// Overwrite the `name` field in an already-written composer.json. Used to
+/// honour `--name` for installer starters, which author the file themselves.
+fn patch_composer_name(composer: &Path, name: &str) -> Result<()> {
+    let text = fs::read_to_string(composer).wrap_err("reading generated composer.json")?;
+    let mut value: serde_json::Value =
+        serde_json::from_str(&text).wrap_err("parsing generated composer.json")?;
+    set_name(&mut value, name)?;
+    let mut s = serde_json::to_string_pretty(&value).wrap_err("serializing composer.json")?;
+    s.push('\n');
+    fs::write(composer, s).wrap_err("writing composer.json")?;
+    Ok(())
+}
+
 fn default_composer_json(name: Option<&str>) -> String {
     let mut value = serde_json::json!({
         "require": {
@@ -252,4 +425,51 @@ fn set_name(composer_json: &mut serde_json::Value, name: &str) -> Result<()> {
         .ok_or_else(|| eyre!("starter composer-json is not a JSON object"))?;
     obj.insert("name".to_string(), serde_json::Value::String(name.to_string()));
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn laravel_is_an_installer_starter() {
+        assert_eq!(installer_starter_package("laravel"), Some("laravel/installer"));
+        // Manifest aliases / URLs are not installer starters.
+        assert_eq!(installer_starter_package("mageos"), None);
+        assert_eq!(installer_starter_package("https://example.com/starter.json"), None);
+    }
+
+    #[test]
+    fn installer_invocation_splits_parent_and_name() {
+        let (parent, name) = installer_invocation(Path::new("/home/u/proj/blog")).unwrap();
+        assert_eq!(parent, Path::new("/home/u/proj"));
+        assert_eq!(name, std::ffi::OsString::from("blog"));
+    }
+
+    #[test]
+    fn installer_invocation_rejects_filesystem_root() {
+        assert!(installer_invocation(Path::new("/")).is_err());
+    }
+
+    #[test]
+    fn patch_composer_name_overwrites_existing() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let composer = dir.path().join("composer.json");
+        // Mimic laravel/installer's default name + preserve key order.
+        fs::write(
+            &composer,
+            "{\n    \"name\": \"laravel/laravel\",\n    \"type\": \"project\"\n}\n",
+        )
+        .unwrap();
+
+        patch_composer_name(&composer, "acme/blog").unwrap();
+
+        let value: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&composer).unwrap()).unwrap();
+        assert_eq!(value["name"], "acme/blog");
+        // Other fields survive and `name` stays first (preserve_order).
+        assert_eq!(value["type"], "project");
+        let keys: Vec<&str> = value.as_object().unwrap().keys().map(String::as_str).collect();
+        assert_eq!(keys, vec!["name", "type"]);
+    }
 }
