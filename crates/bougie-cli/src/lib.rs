@@ -157,6 +157,10 @@ pub enum Command {
     #[command(subcommand, display_order = 15)]
     Ext(ExtCommand),
 
+    /// Manage native (cweagans-style) patches applied to installed packages.
+    #[command(subcommand, display_order = 16)]
+    Patches(PatchesCommand),
+
     /// Add one or more packages to the project and sync. The uv-flavored
     /// twin of `composer require`: a bare `vendor/pkg` writes a `>=X.Y`
     /// lower bound (vs `composer require`'s caret `^X.Y`), and an
@@ -306,6 +310,14 @@ pub enum Command {
         /// exists.
         #[arg(long = "resolution", value_name = "STRATEGY", default_value = "highest")]
         resolution: ResolutionStrategy,
+        /// Apply native cweagans-style patches for this sync, overriding
+        /// `[patches] enable` / `enable-patching`. On by default when
+        /// patches are declared.
+        #[arg(long, conflicts_with = "no_patches")]
+        patches: bool,
+        /// Skip native patch application for this sync.
+        #[arg(long = "no-patches")]
+        no_patches: bool,
         #[command(flatten)]
         php: PhpPrefArgs,
     },
@@ -781,6 +793,59 @@ pub enum ExtCommand {
 }
 
 #[derive(Subcommand, Debug)]
+pub enum PatchesCommand {
+    /// Add a root patch rule from a URL or local file (the `composer
+    /// require` of patches). The target package is inferred from the diff
+    /// headers unless `--package` is given.
+    Add {
+        /// An `http(s)://` URL or a local patch file path.
+        source: String,
+        /// Target package (`vendor/pkg`); inferred from the diff if omitted.
+        #[arg(long, value_name = "VENDOR/PKG")]
+        package: Option<String>,
+        /// Human description (defaults to the URL basename / filename).
+        #[arg(long)]
+        description: Option<String>,
+        /// Explicit `-pN` strip depth.
+        #[arg(long, value_name = "N")]
+        depth: Option<usize>,
+        /// Write into the external patches file rather than `extra.patches`.
+        #[arg(long = "to-file")]
+        to_file: bool,
+        /// Don't run `bougie sync` afterward.
+        #[arg(long = "no-sync")]
+        no_sync: bool,
+    },
+    /// Show the resolved patch set, plus any unadopted dependency-declared
+    /// patches (which bougie never applies automatically).
+    List,
+    /// Adopt dependency-declared patches into the root `composer.json`
+    /// (the only way a dependency's patches ever apply).
+    Import {
+        /// Dependencies to import from (default: all that declare patches).
+        packages: Vec<String>,
+        /// Import from every dependency that declares patches.
+        #[arg(long)]
+        all: bool,
+        /// Write into the external patches file rather than `extra.patches`.
+        #[arg(long = "to-file")]
+        to_file: bool,
+    },
+    /// Force a clean re-extract + re-apply for the named packages (or all):
+    /// drops their recorded fingerprints, then syncs.
+    Repatch {
+        /// Packages to repatch (default: all patched packages).
+        packages: Vec<String>,
+    },
+    /// Rebuild `patches.lock.json` from current config: re-download remote
+    /// patches and re-apply everything from pristine.
+    Relock,
+    /// Diagnose patch configuration: unresolvable `patches/` files,
+    /// `http://` URLs, missing checksums, unadopted dependency patches.
+    Doctor,
+}
+
+#[derive(Subcommand, Debug)]
 pub enum PhpCommand {
     /// Install a new PHP version.
     Install {
@@ -923,6 +988,14 @@ pub enum ComposerCommand {
         /// = true` in bougie.toml (Composer-compatible `--no-scripts`).
         #[arg(long = "no-scripts")]
         no_scripts: bool,
+        /// Apply native cweagans-style patches, overriding `[patches]
+        /// enable` / `enable-patching`. On by default when patches are
+        /// declared.
+        #[arg(long, conflicts_with = "no_patches")]
+        patches: bool,
+        /// Skip native patch application for this install.
+        #[arg(long = "no-patches")]
+        no_patches: bool,
     },
     /// Resolve the project's dependency graph, write a fresh
     /// `composer.lock`, and install the result into `vendor/` (matching

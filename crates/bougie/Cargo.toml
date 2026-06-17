@@ -80,6 +80,7 @@ bougie-index = { path = "../bougie-index", version = "0.29.0", default-features 
 bougie-installer = { workspace = true }
 bougie-installers = { workspace = true }
 bougie-output = { workspace = true }
+bougie-patches = { workspace = true }
 bougie-paths = { workspace = true }
 bougie-platform = { workspace = true }
 bougie-resolver = { workspace = true }

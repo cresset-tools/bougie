@@ -1,0 +1,38 @@
+[package]
+name = "bougie-patches"
+version.workspace = true
+edition = "2024"
+description = "Native reimplementation of cweagans/composer-patches: resolve, download, and apply patch files to installed packages during install — no PHP plugin execution. FS/PHP-agnostic core; patches applied in-process via the flickzeug fuzzy-matching diff library, never by shelling out to git/patch."
+license = "EUPL-1.2"
+repository = "https://github.com/cresset-tools/bougie"
+rust-version = "1.95"
+authors.workspace = true
+
+[dependencies]
+eyre = "0.6"
+
+# Pure-Rust unified/git-diff parsing + fuzzy hunk application (a fork of
+# diffy with GNU-patch-style fuzzy matching). Multi-file aware
+# (`Patch = Vec<Diff>`), so it owns the split + header parsing; bougie owns
+# `-p` strip, file routing, and on-disk I/O.
+flickzeug = "0.5.1"
+
+# Content fingerprints for the re-application invariant (patches.lock.json).
+[dependencies.sha2]
+version = "0.11"
+
+[dependencies.serde]
+version = "1.0"
+features = ["derive"]
+
+[dependencies.serde_json]
+version = "1.0"
+features = ["preserve_order"]
+
+# Atomic writes (temp file + rename) so a crash mid-apply never leaves a
+# truncated source file; also used in tests for scratch trees.
+[dependencies.tempfile]
+version = "3.10"
+
+[lints]
+workspace = true

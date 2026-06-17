@@ -16,7 +16,7 @@ use std::process::ExitCode;
 use bougie_cli::OutputFormat;
 use bougie_composer::lockfile::Lock;
 use bougie_composer_resolver::verify::{verify_lock, VerifyOptions, VerifyOutcome};
-use bougie_composer_resolver::{install_from_lock, InstallOptions, InstallSummary};
+use bougie_composer_resolver::{InstallOptions, InstallSummary};
 use bougie_installer::baseline;
 use bougie_output::output::{emit, Render};
 use bougie_paths::Paths;
@@ -159,6 +159,7 @@ pub fn run(
     ignore_platform_reqs: bool,
     ignore_platform_req: Vec<String>,
     scripts: Option<bool>,
+    patches: Option<bool>,
 ) -> Result<ExitCode> {
     let project_root = match working_dir {
         Some(p) => p,
@@ -220,11 +221,13 @@ pub fn run(
     } else {
         None
     };
-    let summary = install_from_lock(
+    let patch_plan = super::patches::build_plan(&paths, &project_root, &project, patches)?;
+    let summary = bougie_composer_resolver::install_from_lock_with_patches(
         &paths,
         &project_root,
         InstallOptions { no_dev },
         hooks.as_ref().map(|h| h as &dyn bougie_composer_resolver::ScriptHooks),
+        patch_plan.as_ref(),
     )?;
     emit(format, &InstallResult::from(summary))?;
     Ok(ExitCode::SUCCESS)

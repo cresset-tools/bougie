@@ -1,0 +1,15 @@
+--- a/web/core/lib/Database.php	2026-06-17 10:48:52.294544842 +0000
++++ b/web/core/lib/Database.php	2026-06-17 10:48:52.295122592 +0000
+@@ -1,9 +1,9 @@
+ <?php
+ class Database {
+     public function connect() {
+-        return $this->driver->open();
++        return $this->driver->openWithRetry();
+     }
+-    public function query($sql) {
+-        return $this->run($sql);
++    public function query($sql, array $params = []) {
++        return $this->run($sql, $params);
+     }
+ }

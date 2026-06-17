@@ -28,8 +28,8 @@ fn elapsed_ms(d: std::time::Duration) -> u64 {
 }
 
 pub use install::{
-    fetch_and_extract_dists, install_from_lock, DistOutcome, DistRequest, InstallOptions,
-    InstallSummary, ScriptHooks,
+    fetch_and_extract_dists, install_from_lock, install_from_lock_with_patches, DistOutcome,
+    DistRequest, InstallOptions, InstallSummary, ScriptHooks,
 };
 pub use audit::{fetch_advisories, Advisory};
 pub use platform::PlatformEnv;

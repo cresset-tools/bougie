@@ -27,6 +27,7 @@ pub struct BougieConfig {
     pub index: Vec<IndexEntry>,
     pub server: ServerConfig,
     pub scripts: ScriptsConfig,
+    pub patches: PatchesConfig,
 }
 
 /// A value in the `[extensions]` table — either an exact version pin
@@ -99,6 +100,32 @@ impl ScriptsConfig {
     pub fn enabled(&self) -> bool {
         self.run.unwrap_or(false)
     }
+}
+
+/// Native patch application (the `cweagans/composer-patches` reimplementation).
+/// Mirrors cweagans' superset of config; lives under `[patches]` in
+/// `bougie.toml` or `extra.bougie.patches` in `composer.json`. The Composer
+/// `extra.patches` / `extra.composer-patches.*` keys are read separately from
+/// `composer.json` `extra` by `bougie-patches` (they're Composer-namespaced,
+/// not bougie config).
+#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct PatchesConfig {
+    /// `enable-patching` superset. When unset, patching runs whenever the
+    /// root declares any patch (inline, patches-file, or a `patches/` dir);
+    /// `Some(false)` forces it off, `Some(true)` forces it on. A CLI
+    /// `--patches`/`--no-patches` flag overrides this.
+    pub enable: Option<bool>,
+    /// `patches/` directory override (default `"patches"`).
+    pub dir: Option<String>,
+    /// `composer-exit-on-patch-failure` superset: abort the install on the
+    /// first failed patch instead of skip-and-warn.
+    pub exit_on_failure: Option<bool>,
+    /// ALSO emit the v2-shaped human `patches.lock.json` serialization; the
+    /// fingerprint store itself is always written regardless.
+    pub write_lock: Option<bool>,
+    /// `COMPOSER_PATCHES_SKIP_REPORTING` superset: suppress `PATCHES.txt`.
+    pub skip_report: Option<bool>,
 }
 
 /// Project-level overrides for the supervised `bougie server` host

@@ -393,6 +393,7 @@ dependencies = [
  "bougie-installer",
  "bougie-installers",
  "bougie-output",
+ "bougie-patches",
  "bougie-paths",
  "bougie-php-discovery",
  "bougie-platform",
@@ -508,6 +509,7 @@ dependencies = [
  "bougie-fetch",
  "bougie-installers",
  "bougie-output",
+ "bougie-patches",
  "bougie-paths",
  "bougie-semver",
  "criterion",
@@ -664,6 +666,18 @@ dependencies = [
  "eyre",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "bougie-patches"
+version = "0.29.0"
+dependencies = [
+ "eyre",
+ "flickzeug",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
 ]
 
 [[package]]
@@ -1704,6 +1718,17 @@ dependencies = [
  "crc32fast",
  "miniz_oxide",
  "zlib-rs",
+]
+
+[[package]]
+name = "flickzeug"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c95ac51c7950d711fb128681fccb1dddd41c81eb230d78251e600a0296fdd30c"
+dependencies = [
+ "nu-ansi-term",
+ "strsim",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -2799,6 +2824,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "42b8cfee0e339a0337359f3c88165702ac6e600dc01c0cc9579a92d62b08477a"
 dependencies = [
  "bitflags",
+]
+
+[[package]]
+name = "nu-ansi-term"
+version = "0.50.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
+dependencies = [
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
