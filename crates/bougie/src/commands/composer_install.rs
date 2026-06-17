@@ -195,7 +195,7 @@ pub fn run(
             "warning: composer.lock not found; resolving dependencies from composer.json. \
              A fresh composer.lock will be written.",
         );
-        super::composer_update::resolve_and_write_lock(&paths, &project_root)?;
+        super::composer_update::resolve_and_write_lock(&paths, &project_root, bougie_composer_resolver::ResolutionStrategy::Highest)?;
     }
 
     if !ignore_platform_reqs {

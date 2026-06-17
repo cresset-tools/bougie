@@ -1,6 +1,8 @@
 use bougie_installer::baseline::{self, BaselineFilter};
 use bougie_cli::OutputFormat;
-use bougie_composer_resolver::{install_from_lock, InstallOptions, InstallSummary};
+use bougie_composer_resolver::{
+    install_from_lock, InstallOptions, InstallSummary, ResolutionStrategy,
+};
 use bougie_installer::conf_d;
 use bougie_config::{load_project, ExtensionPin, ProjectConfig};
 use bougie_errors::BougieError;
@@ -223,6 +225,7 @@ fn ensure_lock(
     project_root: &std::path::Path,
     offline: bool,
     dry_run: bool,
+    resolution: ResolutionStrategy,
 ) -> Result<()> {
     let lock_path = project_root.join("composer.lock");
     if lock_path.is_file() {
@@ -250,7 +253,7 @@ fn ensure_lock(
         "composer.lock not found; resolving composer.json \
          and writing a fresh composer.lock…"
     );
-    super::composer_update::resolve_and_write_lock(paths, project_root)?;
+    super::composer_update::resolve_and_write_lock(paths, project_root, resolution)?;
     Ok(())
 }
 
@@ -310,6 +313,7 @@ pub fn run(
     dry_run: bool,
     scripts: Option<bool>,
     php_pref: PhpPrefArgs,
+    pkg_resolution: ResolutionStrategy,
 ) -> Result<ExitCode> {
     let paths = Paths::from_env()?;
     let project_root = std::env::current_dir()?;
@@ -320,7 +324,7 @@ pub fn run(
     // "resolution" phase: a no-op lock read when warm, a full resolve +
     // write when the lock is missing.
     let resolve_started = Instant::now();
-    ensure_lock(&paths, &project_root, offline, dry_run)?;
+    ensure_lock(&paths, &project_root, offline, dry_run, pkg_resolution)?;
     let resolved_packages = count_lock_packages(&project_root);
     let resolve_ms = elapsed_ms(resolve_started);
 
@@ -410,7 +414,7 @@ pub fn run_with_default_fallback(
     // Ensure lock before PHP inference (same as `run`). Never errors
     // offline here: `bougie run` is forgiving by design.
     let resolve_started = Instant::now();
-    ensure_lock(&paths, &project_root, false, dry_run)?;
+    ensure_lock(&paths, &project_root, false, dry_run, ResolutionStrategy::Highest)?;
     let resolved_packages = count_lock_packages(&project_root);
     let resolve_ms = elapsed_ms(resolve_started);
 

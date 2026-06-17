@@ -45,6 +45,20 @@ fn scripts_override(scripts: bool, no_scripts: bool) -> Option<bool> {
     }
 }
 
+/// Map the clap-level `--resolution` enum onto the resolver's
+/// [`ResolutionStrategy`]. Kept here (rather than as a `From` impl) so
+/// `bougie-cli` stays free of a dependency on the resolver crate.
+fn resolution_strategy(
+    cli: bougie_cli::ResolutionStrategy,
+) -> bougie_composer_resolver::ResolutionStrategy {
+    use bougie_composer_resolver::ResolutionStrategy as R;
+    match cli {
+        bougie_cli::ResolutionStrategy::Highest => R::Highest,
+        bougie_cli::ResolutionStrategy::Lowest => R::Lowest,
+        bougie_cli::ResolutionStrategy::LowestDirect => R::LowestDirect,
+    }
+}
+
 /// Stable, human-readable name for the running subcommand, used as the
 /// `command` span field so a Ctrl-\ activity dump (and `BOUGIE_LOG`)
 /// shows which verb is running even before any deeper span opens.
@@ -108,6 +122,7 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
             with_all_dependencies,
             no_sync,
             frozen,
+            resolution,
             working_dir,
             dry_run,
         } => commands::composer_require::add(
@@ -120,6 +135,7 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
             with_all_dependencies,
             working_dir,
             dry_run,
+            resolution_strategy(resolution),
         ),
         Command::Remove {
             packages,
@@ -138,7 +154,9 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
             working_dir,
             dry_run,
         ),
-        Command::Lock { working_dir, dry_run } => commands::lock::run(format, working_dir, dry_run),
+        Command::Lock { resolution, working_dir, dry_run } => {
+            commands::lock::run(format, working_dir, dry_run, resolution_strategy(resolution))
+        }
         Command::Tree { package, no_dev, working_dir } => commands::composer_show::run(
             format,
             commands::composer_show::ShowOptions {
@@ -177,8 +195,15 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
                 working_dir,
             },
         ),
-        Command::Sync { offline, dry_run, scripts, no_scripts, php } => {
-            commands::sync::run(format, offline, dry_run, scripts_override(scripts, no_scripts), php)
+        Command::Sync { offline, dry_run, scripts, no_scripts, resolution, php } => {
+            commands::sync::run(
+                format,
+                offline,
+                dry_run,
+                scripts_override(scripts, no_scripts),
+                php,
+                resolution_strategy(resolution),
+            )
         }
         #[cfg(unix)]
         Command::Up { names, detach } => commands::services::up::run(format, names, detach),
@@ -299,19 +324,31 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
             with_all_dependencies,
             working_dir,
             no_dev,
+            resolution,
+            prefer_lowest,
             dry_run,
             ignore_platform_reqs: _,
             ignore_platform_req: _,
-        }) => commands::composer_update::run(
-            format,
-            working_dir,
-            no_dev,
-            dry_run,
-            no_install,
-            packages,
-            with_dependencies,
-            with_all_dependencies,
-        ),
+        }) => {
+            // Composer's `--prefer-lowest` is the bool twin of uv's
+            // `--resolution lowest`; when set it wins over `--resolution`.
+            let resolution = if prefer_lowest {
+                bougie_cli::ResolutionStrategy::Lowest
+            } else {
+                resolution
+            };
+            commands::composer_update::run(
+                format,
+                working_dir,
+                no_dev,
+                dry_run,
+                no_install,
+                packages,
+                with_dependencies,
+                with_all_dependencies,
+                resolution_strategy(resolution),
+            )
+        }
         Command::Composer(ComposerCommand::Validate {
             working_dir,
             strict,

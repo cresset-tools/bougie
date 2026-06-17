@@ -21,7 +21,9 @@ use bougie_cli::OutputFormat;
 use bougie_composer::lockfile::{self, Lock};
 use bougie_composer_resolver::metadata::Repo;
 use bougie_composer_resolver::verify::is_platform;
-use bougie_composer_resolver::{dry_run_update_partial, DryRunOptions, PartialUpdate};
+use bougie_composer_resolver::{
+    dry_run_update_partial, DryRunOptions, PartialUpdate, ResolutionStrategy,
+};
 use bougie_output::output::{emit, Render};
 use bougie_paths::Paths;
 use bougie_semver::constraint::Constraint;
@@ -76,6 +78,7 @@ pub fn run(
     format: OutputFormat,
     working_dir: Option<PathBuf>,
     dry_run: bool,
+    resolution: ResolutionStrategy,
 ) -> Result<ExitCode> {
     let project_root = match working_dir {
         Some(p) => p,
@@ -98,7 +101,7 @@ pub fn run(
     // (1) No lock yet → full resolve writes a fresh one.
     if !lock_path.is_file() {
         let (path, outcome) =
-            super::composer_update::resolve_and_write_lock(&paths, &project_root)?;
+            super::composer_update::resolve_and_write_lock(&paths, &project_root, resolution)?;
         return finish(
             format,
             &LockResult {
@@ -152,7 +155,7 @@ pub fn run(
             &paths,
             &project_root,
             Repo::packagist(),
-            DryRunOptions { no_dev: false },
+            DryRunOptions { no_dev: false, resolution },
             Some(&partial),
         )?;
         return finish(
@@ -173,6 +176,7 @@ pub fn run(
         &paths,
         &project_root,
         Some(&partial),
+        resolution,
     )?;
     finish(
         format,

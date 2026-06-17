@@ -196,7 +196,14 @@ fn serve(format: OutputFormat, args: &ServeArgs) -> Result<ExitCode> {
     // (resolved PHP + conf.d + vendor) before it can serve. Matches the
     // implicit sync `bougie run` / `bougie make` perform.
     if !args.no_sync {
-        crate::commands::sync::run(format, false, false, None, bougie_cli::PhpPrefArgs::default())?;
+        crate::commands::sync::run(
+            format,
+            false,
+            false,
+            None,
+            bougie_cli::PhpPrefArgs::default(),
+            bougie_composer_resolver::ResolutionStrategy::Highest,
+        )?;
     }
 
     // Provision this project as a `server` tenant. Unlike `bougie up`,
@@ -362,7 +369,14 @@ fn serve_standalone(format: OutputFormat, args: &ServeArgs) -> Result<ExitCode> 
     let project = load_project(&project_root)?;
 
     if !args.no_sync {
-        crate::commands::sync::run(format, false, false, None, bougie_cli::PhpPrefArgs::default())?;
+        crate::commands::sync::run(
+            format,
+            false,
+            false,
+            None,
+            bougie_cli::PhpPrefArgs::default(),
+            bougie_composer_resolver::ResolutionStrategy::Highest,
+        )?;
     }
 
     let paths = Paths::from_env()?;

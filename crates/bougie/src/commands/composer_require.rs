@@ -32,7 +32,9 @@ use bougie_cli::OutputFormat;
 use bougie_composer::lockfile::{apply_require_change, Lock, RequireChange};
 use bougie_composer_resolver::latest_versions;
 use bougie_composer_resolver::verify::is_platform;
-use bougie_composer_resolver::{install_from_lock, InstallOptions, PartialUpdate};
+use bougie_composer_resolver::{
+    install_from_lock, InstallOptions, PartialUpdate, ResolutionStrategy,
+};
 use bougie_output::output::{emit, Render};
 use bougie_paths::Paths;
 use bougie_semver::stability::Stability;
@@ -276,7 +278,12 @@ pub fn require(
     working_dir: Option<PathBuf>,
     dry_run: bool,
 ) -> Result<ExitCode> {
-    let _ = prefer_lowest; // resolver prefer-lowest wiring is a follow-up; flag accepted for parity.
+    // Composer's `--prefer-lowest` maps onto the `lowest` resolution policy.
+    let resolution = if prefer_lowest {
+        ResolutionStrategy::Lowest
+    } else {
+        ResolutionStrategy::Highest
+    };
     // `composer require`: Composer's `:`/`=`/space supply syntax + caret
     // default constraint.
     let pairs = parse_name_version_pairs(&packages);
@@ -292,6 +299,7 @@ pub fn require(
         with_all_dependencies,
         working_dir,
         dry_run,
+        resolution,
     )
 }
 
@@ -316,6 +324,7 @@ pub fn add(
     with_all_dependencies: bool,
     working_dir: Option<PathBuf>,
     dry_run: bool,
+    resolution: ResolutionStrategy,
 ) -> Result<ExitCode> {
     let pairs = parse_at_pairs(&packages)?;
     run_add(
@@ -330,6 +339,7 @@ pub fn add(
         with_all_dependencies,
         working_dir,
         dry_run,
+        resolution,
     )
 }
 
@@ -355,6 +365,7 @@ fn run_add(
     with_all_dependencies: bool,
     working_dir: Option<PathBuf>,
     dry_run: bool,
+    resolution: ResolutionStrategy,
 ) -> Result<ExitCode> {
     let project_root = resolve_root(working_dir)?;
     let paths = Paths::from_env()?;
@@ -439,6 +450,7 @@ fn run_add(
             &names,
             with_dependencies,
             with_all_dependencies,
+            resolution,
         )?;
         if !no_install {
             install_from_lock(&paths, &project_root, InstallOptions { no_dev: false }, None)
@@ -508,7 +520,16 @@ pub fn remove(
     let lock_path = if no_update {
         None
     } else {
-        let path = relock(&paths, &project_root, &packages, false, false)?;
+        // Removal re-resolves the remaining graph; version preference is
+        // immaterial, so keep the default (highest).
+        let path = relock(
+            &paths,
+            &project_root,
+            &packages,
+            false,
+            false,
+            ResolutionStrategy::Highest,
+        )?;
         if !no_install {
             install_from_lock(&paths, &project_root, InstallOptions { no_dev }, None)
                 .wrap_err("uninstalling packages")?;
@@ -531,6 +552,7 @@ fn relock(
     names: &[String],
     with_dependencies: bool,
     with_all_dependencies: bool,
+    resolution: ResolutionStrategy,
 ) -> Result<PathBuf> {
     let lock_path = project_root.join("composer.lock");
     if lock_path.is_file() {
@@ -548,11 +570,12 @@ fn relock(
             paths,
             project_root,
             Some(&partial),
+            resolution,
         )?;
         Ok(path)
     } else {
         let (path, _outcome) =
-            super::composer_update::resolve_and_write_lock(paths, project_root)?;
+            super::composer_update::resolve_and_write_lock(paths, project_root, resolution)?;
         Ok(path)
     }
 }
