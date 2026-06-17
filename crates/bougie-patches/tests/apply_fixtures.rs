@@ -73,6 +73,12 @@ fn run_case(case: &Path) {
 }
 
 /// Apply the same patch with GNU `patch -pN` and assert it matches `after/`.
+///
+/// Skipped unless GNU `patch` is on PATH: this is a fidelity *cross-check*
+/// against the reference implementation, and BSD `patch` (the default on
+/// macOS) diverges on file create/delete and fuzz handling — bougie's own
+/// apply is already asserted against `after/` in [`run_case`], which runs
+/// everywhere.
 fn crosscheck_gnu_patch(
     name: &str,
     case: &Path,
@@ -80,6 +86,10 @@ fn crosscheck_gnu_patch(
     depth: usize,
     expected: &BTreeMap<String, Vec<u8>>,
 ) {
+    if !is_gnu_patch() {
+        eprintln!("[{name}] skipping GNU-patch cross-check: GNU `patch` not found");
+        return;
+    }
     let work = tempfile::tempdir().unwrap();
     let before = case.join("before");
     if before.exists() {
@@ -112,6 +122,18 @@ fn crosscheck_gnu_patch(
         &gnu, expected,
         "[{name}] GNU patch produced a tree differing from after/"
     );
+}
+
+/// Whether the `patch` on PATH is GNU patch (BSD patch, e.g. on macOS,
+/// diverges on create/delete and fuzz, so the cross-check is GNU-only).
+fn is_gnu_patch() -> bool {
+    Command::new("patch")
+        .arg("--version")
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).contains("GNU"))
+        .unwrap_or(false)
 }
 
 fn copy_tree(from: &Path, to: &Path) {

@@ -182,7 +182,15 @@ fn relock(format: OutputFormat) -> Result<ExitCode> {
 }
 
 fn resync(format: OutputFormat) -> Result<ExitCode> {
-    super::sync::run(format, false, false, None, Some(true), PhpPrefArgs::default())
+    super::sync::run(
+        format,
+        false,
+        false,
+        None,
+        Some(true),
+        PhpPrefArgs::default(),
+        bougie_composer_resolver::ResolutionStrategy::Highest,
+    )
 }
 
 // ---------------------------------------------------------------- add
