@@ -61,7 +61,22 @@ pub fn run(
         written: request.to_owned(),
     };
     emit(format, &result)?;
-    Ok(ExitCode::SUCCESS)
+
+    // A pin only takes effect once the toolchain is re-resolved: the new
+    // minor has to select/download its interpreter, rebuild its per-minor
+    // extension fragments, and (when it resolves to a *system* PHP) drop
+    // the previous minor's managed conf.d. Without an auto-sync the next
+    // `bougie run` keeps loading the old minor's ABI-bound `.so`s and PHP
+    // errors on startup. Sync reads the freshly written pin from disk.
+    crate::commands::sync::run(
+        format,
+        false,
+        false,
+        None,
+        None,
+        bougie_cli::PhpPrefArgs::default(),
+        bougie_composer_resolver::ResolutionStrategy::Highest,
+    )
 }
 
 enum Target {
