@@ -729,6 +729,22 @@ fn ensure_synced_system(
     project_root: &std::path::Path,
     system_php: &SystemPhp,
 ) -> Result<SyncResult> {
+    // A prior managed sync may have populated `vendor/bougie/conf.d` with
+    // baseline + extension fragments hard-coding managed `+php<minor>`
+    // store `.so`s. A system interpreter ships its own extensions and is
+    // (almost always) a different minor, so those fragments either
+    // re-load what the system PHP already has built in ("Module already
+    // loaded") or fail to `dlopen` outright (Zend ABI mismatch). The
+    // managed branch wipes-and-replicates conf.d every sync; the system
+    // branch has no replicate step, so reconcile here or the stale
+    // fragments get force-loaded into the system PHP.
+    let system_minor = PartialVersion {
+        major: system_php.version.major,
+        minor: Some(system_php.version.minor),
+        patch: None,
+    };
+    reconcile_system_conf_d(project_root, system_minor)?;
+
     let resolved_path =
         write_project_resolved(project_root, system_php.version, system_php.flavor)?;
     write_project_resolved_php_path(project_root, &system_php.path)?;
@@ -1099,6 +1115,66 @@ fn ext_fragment_is_stale(
         }
     }
     false
+}
+
+/// Drop `vendor/bougie/conf.d` fragments that a previous *managed* sync
+/// wrote but that don't belong under the now-resolved *system*
+/// interpreter. Removes every bougie-managed fragment that is either a
+/// baseline replication (`00-*`, a managed-interpreter artifact a system
+/// PHP supplies itself) or carries a `+php<minor>` store token that
+/// doesn't match `system_minor` (ABI-incompatible with the system PHP).
+/// Hand-authored fragments — those lacking the `; managed by bougie`
+/// header — are never touched. Managed ext fragments that *do* match the
+/// system minor (e.g. a `bougie ext add` against this same system PHP)
+/// are kept.
+///
+/// This is the system-branch counterpart to
+/// [`replicate_install_conf_d`]'s wipe-and-replicate: without it, a
+/// project crossing from a managed interpreter to a system one keeps
+/// loading the managed minor's `.so`s and PHP errors on startup.
+fn reconcile_system_conf_d(
+    project_root: &std::path::Path,
+    system_minor: PartialVersion,
+) -> Result<()> {
+    let dir = bougie_paths::project::confd(project_root);
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(e) => e,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(eyre!("reading {}: {e}", dir.display())),
+    };
+    let want = format!(
+        "+php{}{}",
+        system_minor.major,
+        system_minor.minor.unwrap_or(0)
+    );
+    for entry in entries.flatten() {
+        let fname = entry.file_name();
+        let Some(fname) = fname.to_str() else { continue };
+        if std::path::Path::new(fname).extension().is_none_or(|e| e != "ini") {
+            continue;
+        }
+        let path = entry.path();
+        let Ok(body) = std::fs::read_to_string(&path) else { continue };
+        // Only ever remove bougie-managed fragments; both the baseline
+        // replication and the `ext add` writer open with this header.
+        if !body.trim_start().starts_with("; managed by bougie") {
+            continue;
+        }
+        let is_baseline = fname.starts_with("00-");
+        let stale_token = body.lines().any(|line| {
+            let line = line.trim();
+            (line.starts_with("extension=") || line.starts_with("zend_extension="))
+                && php_minor_token(line).is_some_and(|t| t != want)
+        });
+        if is_baseline || stale_token {
+            match std::fs::remove_file(&path) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(eyre!("removing {}: {e}", path.display())),
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Extract the `+php<digits>` per-minor store token from an `extension=`
@@ -1642,6 +1718,56 @@ mod tests {
 
     fn pv(major: u32, minor: u32) -> PartialVersion {
         PartialVersion { major, minor: Some(minor), patch: None }
+    }
+
+    #[test]
+    fn reconcile_system_conf_d_drops_stale_managed_keeps_matching_and_user() {
+        // Mirrors the system-PHP switch bug: a project synced against
+        // managed 8.5 left `+php85` fragments; resolving to a system 8.4
+        // must drop the baseline managed fragments and the minor-mismatched
+        // ext fragment, keep a matching-minor managed ext, and never touch a
+        // hand-authored fragment.
+        let td = TempDir::new().unwrap();
+        let dir = bougie_paths::project::confd(td.path());
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Baseline managed fragment for the old managed minor — always wrong
+        // under a system interpreter.
+        std::fs::write(
+            dir.join("00-20-ffi.ini"),
+            "; managed by bougie — do not edit\n\
+             extension=/s/ext-ffi-8.5.7+php85-nts-abc/ffi.so\n",
+        )
+        .unwrap();
+        // Managed ext fragment at the old minor — ABI-incompatible with 8.4.
+        std::fs::write(
+            dir.join("35-pdo_mysql.ini"),
+            "; managed by bougie — do not edit; regenerated by `bougie ext add pdo_mysql`\n\
+             extension=/s/ext-pdo_mysql-8.5.6+php85-nts-def/pdo_mysql.so\n",
+        )
+        .unwrap();
+        // Managed ext fragment already at the system minor — keep it.
+        std::fs::write(
+            dir.join("20-redis.ini"),
+            "; managed by bougie — do not edit; regenerated by `bougie ext add redis`\n\
+             extension=/s/ext-redis-6.1.0+php84-nts-ghi/redis.so\n",
+        )
+        .unwrap();
+        // Hand-authored fragment — never touched.
+        std::fs::write(dir.join("99-tune.ini"), "memory_limit=512M\n").unwrap();
+
+        reconcile_system_conf_d(td.path(), pv(8, 4)).unwrap();
+
+        assert!(!dir.join("00-20-ffi.ini").exists(), "baseline managed fragment should be dropped");
+        assert!(!dir.join("35-pdo_mysql.ini").exists(), "stale-minor managed ext should be dropped");
+        assert!(dir.join("20-redis.ini").exists(), "matching-minor managed ext should be kept");
+        assert!(dir.join("99-tune.ini").exists(), "user fragment must be left alone");
+    }
+
+    #[test]
+    fn reconcile_system_conf_d_handles_missing_dir() {
+        let td = TempDir::new().unwrap();
+        reconcile_system_conf_d(td.path(), pv(8, 4)).unwrap();
     }
 
     #[test]
