@@ -19,10 +19,20 @@
 //!     {"token": "{{hyva_project}}", "prompt": "Hyvä project slug",
 //!      "description": "Your Hyvä repo slug from hyva.io", "required": true}
 //!   ],
+//!   "auth": [
+//!     {"host": "hyva-themes.repo.packagist.com", "username": "token",
+//!      "prompt": "Hyvä license key", "required": true}
+//!   ],
 //!   "notes": ["Hyvä themes need a license token in auth.json"]
 //! }
 //! ```
 //! Only `schema` and `composer-json` are required; the rest are optional.
+//!
+//! `placeholders` and `auth` cover the two kinds of per-user value a shared
+//! manifest can't bake in: `placeholders` substitute into the committed
+//! `composer.json` (a repo slug, an org name), while `auth` are *secrets*
+//! (a license token / password) bougie prompts for and writes to its own
+//! credential store — never the project tree (see [`resolve_auth`]).
 //!
 //! `placeholders` lets a producer ship a *shared* manifest that still needs
 //! per-user values it must not bake in (an account-identifying repo slug, an
@@ -61,6 +71,13 @@ pub(crate) struct StarterManifest {
     /// (it must not bake them in). Resolved interactively before write.
     #[serde(default)]
     pub(crate) placeholders: Vec<Placeholder>,
+    /// Private-repo credentials the producer can't bake into a shared
+    /// manifest (a license token / password). Unlike `placeholders` — which
+    /// substitute into the committed `composer.json` — these are secrets:
+    /// bougie prompts for each and stores it in its own credential store
+    /// (never the project tree). See [`resolve_auth`].
+    #[serde(default)]
+    pub(crate) auth: Vec<AuthPrompt>,
     // Informational only.
     #[serde(default)]
     #[allow(dead_code)]
@@ -94,6 +111,39 @@ pub(crate) struct Placeholder {
 fn default_true() -> bool {
     true
 }
+
+/// One credential prompt: an `http-basic` username/password pair for a
+/// private repo `host` that bougie asks the user for and writes to its own
+/// credential store. The producer declares the host (and conventionally the
+/// `username`) but never the secret; the user supplies the password at
+/// `bougie new --starter` time. E.g. the Hyvä themes Composer repo on
+/// `hyva-themes.repo.packagist.com`, whose username is the literal `token`
+/// and whose password is the user's license key.
+#[derive(Debug, Deserialize)]
+pub(crate) struct AuthPrompt {
+    /// The repo host the credential authenticates to (the key under
+    /// `http-basic` in the credential store). Must be non-empty.
+    pub(crate) host: String,
+    /// The http-basic username. Falls back to `token` (Private Packagist's
+    /// convention) when the producer omits it.
+    #[serde(default)]
+    pub(crate) username: Option<String>,
+    /// Short question shown at the prompt. Falls back to a generic
+    /// "password for <host>" if absent.
+    #[serde(default)]
+    pub(crate) prompt: Option<String>,
+    /// Human-readable explanation printed above the prompt.
+    #[serde(default)]
+    pub(crate) description: Option<String>,
+    /// Whether an empty answer is rejected (and a non-interactive run with
+    /// no existing credential is an error). Defaults to true.
+    #[serde(default = "default_true")]
+    pub(crate) required: bool,
+}
+
+/// Private Packagist's http-basic username convention when the producer
+/// doesn't specify one (the password carries the actual token).
+const DEFAULT_AUTH_USERNAME: &str = "token";
 
 /// Persist the manifest's optional `recipe` / `services` hints into the
 /// scaffolded `composer.json`'s `extra.bougie` block, so `bougie start` honours
@@ -167,6 +217,70 @@ pub(crate) fn resolve_placeholders(
         }
     }
     Ok(())
+}
+
+/// Prompt for each manifest `auth` credential and write it to bougie's own
+/// credential store (`$XDG_CONFIG_HOME/bougie/auth.json`), so private-repo
+/// secrets (e.g. a Hyvä license key) are available to the resolve that
+/// `--start` triggers without ever landing in the project's `composer.json`.
+///
+/// A host already configured — in bougie's store or Composer's global
+/// `auth.json` — is skipped (the user set it up once, machine-wide). As with
+/// [`resolve_placeholders`], `interactive` gates reading stdin: a
+/// non-interactive run with a `required`, not-yet-configured credential is a
+/// hard error rather than a 401 mid-resolve.
+pub(crate) fn resolve_auth(auth: &[AuthPrompt], interactive: bool) -> Result<()> {
+    if auth.is_empty() {
+        return Ok(());
+    }
+    for a in auth {
+        if a.host.trim().is_empty() {
+            return Err(eyre!("starter manifest has an `auth` entry with an empty `host`"));
+        }
+        if already_configured(&a.host) {
+            eprintln!("note: credentials for {} already configured — skipping", a.host);
+            continue;
+        }
+        let username = a.username.as_deref().unwrap_or(DEFAULT_AUTH_USERNAME);
+        let label = a
+            .prompt
+            .clone()
+            .unwrap_or_else(|| format!("password for {}", a.host));
+
+        let password = if interactive {
+            // Secrets have no default: an empty answer loops while required.
+            prompt_placeholder(&label, a.description.as_deref(), None, a.required)?
+        } else if a.required {
+            return Err(eyre!(
+                "this starter needs credentials for `{}`, but input isn't interactive — \
+                 either re-run `bougie new --starter …` in a terminal, or configure it first \
+                 with `composer config --global --auth http-basic.{} {username} <KEY>`",
+                a.host,
+                a.host,
+            ));
+        } else {
+            None
+        };
+
+        if let Some(password) = password {
+            let path = bougie_composer_resolver::update::write_bougie_http_basic(
+                &a.host, username, &password,
+            )
+            .map_err(|e| eyre!("storing credentials for {}: {e}", a.host))?;
+            eprintln!("note: stored credentials for {} in {}", a.host, path.display());
+        }
+    }
+    Ok(())
+}
+
+/// Whether `host` already has credentials bougie would use — in its own
+/// store or Composer's global `auth.json`. Errors reading either store are
+/// treated as "not configured" so a malformed file prompts a fresh write
+/// rather than aborting the scaffold.
+fn already_configured(host: &str) -> bool {
+    use bougie_composer_resolver::update::{read_bougie_auth_json, read_global_auth_json};
+    read_bougie_auth_json().is_ok_and(|m| m.contains_key(host))
+        || read_global_auth_json().is_ok_and(|m| m.contains_key(host))
 }
 
 /// Ask once for a single placeholder, looping until a non-empty answer when
@@ -297,6 +411,9 @@ pub(crate) fn fetch(starter: &str) -> Result<StarterManifest> {
             "starter manifest has a placeholder with an empty `token` (prompt: {:?})",
             p.prompt
         ));
+    }
+    if manifest.auth.iter().any(|a| a.host.trim().is_empty()) {
+        return Err(eyre!("starter manifest has an `auth` entry with an empty `host`"));
     }
     Ok(manifest)
 }
@@ -507,6 +624,59 @@ mod tests {
         )
         .unwrap();
         assert!(m.placeholders.iter().any(|p| p.token.is_empty()));
+    }
+
+    #[test]
+    fn parses_auth_prompts_with_defaults() {
+        let m = parse(
+            r#"{"schema":1,"composer-json":{"require":{}},
+                "auth":[
+                  {"host":"h.example","username":"token","prompt":"Key","required":true},
+                  {"host":"other.example"}
+                ]}"#,
+        )
+        .unwrap();
+        assert_eq!(m.auth.len(), 2);
+        assert_eq!(m.auth[0].host, "h.example");
+        assert_eq!(m.auth[0].username.as_deref(), Some("token"));
+        assert_eq!(m.auth[0].prompt.as_deref(), Some("Key"));
+        assert!(m.auth[0].required);
+        // `required` defaults to true; `username` is optional (falls back to
+        // DEFAULT_AUTH_USERNAME at resolve time).
+        assert!(m.auth[1].required);
+        assert!(m.auth[1].username.is_none());
+    }
+
+    #[test]
+    fn resolve_auth_empty_list_is_noop() {
+        // No entries → nothing to prompt for, even non-interactively.
+        resolve_auth(&[], false).unwrap();
+    }
+
+    #[test]
+    fn resolve_auth_required_non_interactive_errors() {
+        let auth = vec![AuthPrompt {
+            host: "definitely-not-configured.invalid".into(),
+            username: None,
+            prompt: Some("Key".into()),
+            description: None,
+            required: true,
+        }];
+        let err = resolve_auth(&auth, false).unwrap_err();
+        assert!(err.to_string().contains("interactive"), "{err}");
+    }
+
+    #[test]
+    fn resolve_auth_rejects_empty_host() {
+        let auth = vec![AuthPrompt {
+            host: "   ".into(),
+            username: None,
+            prompt: None,
+            description: None,
+            required: false,
+        }];
+        let err = resolve_auth(&auth, false).unwrap_err();
+        assert!(err.to_string().contains("empty `host`"), "{err}");
     }
 
     #[test]

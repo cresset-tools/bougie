@@ -2565,6 +2565,126 @@ pub fn read_global_auth_json() -> Result<HashMap<String, crate::metadata::AuthCr
     Ok(HashMap::new())
 }
 
+/// Candidate locations for bougie's **own** credential store, in lookup
+/// order. Unlike [`global_auth_json_candidates`] (which mirrors Composer's
+/// `auth.json` search), this is a bougie-specific file under the user's
+/// XDG config dir. `bougie new --starter` writes prompted license keys
+/// here (e.g. a Hyvä token) so the secret stays out of the scaffolded
+/// project tree while still being picked up by every resolve.
+///
+/// First existing file wins for reads; the first entry is the write target.
+///
+/// Taking `env` as a closure keeps it pure for unit tests, matching
+/// [`global_auth_json_candidates`].
+pub(crate) fn bougie_auth_json_candidates(env: impl Fn(&str) -> Option<String>) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    if let Some(x) = env("XDG_CONFIG_HOME") {
+        out.push(PathBuf::from(x).join("bougie").join("auth.json"));
+    }
+    if let Some(h) = env("HOME") {
+        out.push(PathBuf::from(h).join(".config").join("bougie").join("auth.json"));
+    }
+    out
+}
+
+/// Read auth from bougie's own credential store, if present. Returns an
+/// empty map when no candidate file exists. See
+/// [`bougie_auth_json_candidates`] for the lookup order.
+pub fn read_bougie_auth_json() -> Result<HashMap<String, crate::metadata::AuthCredentials>, BuildError>
+{
+    for candidate in bougie_auth_json_candidates(|k| std::env::var(k).ok()) {
+        if candidate.is_file() {
+            return read_auth_json_at(&candidate);
+        }
+    }
+    Ok(HashMap::new())
+}
+
+/// The path bougie writes its credential store to: an existing candidate
+/// (updated in place) or, failing that, the first candidate (created on
+/// write). `None` when neither `XDG_CONFIG_HOME` nor `HOME` is set, so the
+/// caller can surface a clear error rather than writing to a guessed path.
+pub fn bougie_auth_json_write_target() -> Option<PathBuf> {
+    let candidates = bougie_auth_json_candidates(|k| std::env::var(k).ok());
+    candidates
+        .iter()
+        .find(|p| p.is_file())
+        .cloned()
+        .or_else(|| candidates.into_iter().next())
+}
+
+/// Merge an `http-basic` credential for `host` into bougie's own
+/// credential store ([`bougie_auth_json_candidates`]), creating the file
+/// (and parent dir) if needed and preserving any existing entries. The
+/// file is written `0600` on Unix since it holds a secret. Returns the
+/// path written.
+pub fn write_bougie_http_basic(
+    host: &str,
+    username: &str,
+    password: &str,
+) -> Result<PathBuf, BuildError> {
+    let path = bougie_auth_json_write_target().ok_or_else(|| {
+        BuildError::Internal(
+            "cannot determine a bougie config dir to store credentials \
+             (set XDG_CONFIG_HOME or HOME)"
+                .to_string(),
+        )
+    })?;
+    write_http_basic_at(&path, host, username, password)?;
+    Ok(path)
+}
+
+/// Path-based core of [`write_bougie_http_basic`], split out so it can be
+/// unit-tested without mutating the process environment.
+pub(crate) fn write_http_basic_at(
+    path: &Path,
+    host: &str,
+    username: &str,
+    password: &str,
+) -> Result<(), BuildError> {
+    // Load existing content so unrelated entries (other hosts, bearer
+    // tokens) survive; start from an empty object otherwise.
+    let mut doc: Value = if path.is_file() {
+        let bytes = std::fs::read(path)
+            .map_err(|e| BuildError::Internal(format!("reading {}: {e}", path.display())))?;
+        serde_json::from_slice(&bytes)
+            .map_err(|e| BuildError::Internal(format!("parsing {}: {e}", path.display())))?
+    } else {
+        Value::Object(serde_json::Map::new())
+    };
+    let obj = doc.as_object_mut().ok_or_else(|| {
+        BuildError::Internal(format!("{}: not a JSON object", path.display()))
+    })?;
+    let http_basic = obj
+        .entry("http-basic")
+        .or_insert_with(|| Value::Object(serde_json::Map::new()));
+    let http_basic = http_basic.as_object_mut().ok_or_else(|| {
+        BuildError::Internal(format!("{}: `http-basic` is not an object", path.display()))
+    })?;
+    http_basic.insert(
+        host.to_string(),
+        serde_json::json!({ "username": username, "password": password }),
+    );
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| BuildError::Internal(format!("creating {}: {e}", parent.display())))?;
+    }
+    let mut s = serde_json::to_string_pretty(&doc)
+        .map_err(|e| BuildError::Internal(format!("serializing {}: {e}", path.display())))?;
+    s.push('\n');
+    std::fs::write(path, s.as_bytes())
+        .map_err(|e| BuildError::Internal(format!("writing {}: {e}", path.display())))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        // Best-effort tightening; a failure here doesn't invalidate the
+        // write (the credential is stored), so don't propagate it.
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    }
+    Ok(())
+}
+
 /// Parse the JSON body of the `COMPOSER_AUTH` environment variable.
 /// The shape is the same as `auth.json` — a top-level object with
 /// `http-basic` / `bearer` (and Composer's other auth keys, which
@@ -2623,8 +2743,16 @@ pub fn read_all_auth(
     composer_json: &Value,
     project_root: &Path,
 ) -> Result<HashMap<String, crate::metadata::AuthCredentials>, BuildError> {
+    // Machine-wide credential stores merged into the lowest-precedence
+    // slot: Composer's global `auth.json` first, then bougie's own store
+    // (where `bougie new --starter` writes prompted license keys), which
+    // wins over Composer's global file for the same host. composer.json
+    // `config`, the project `auth.json`, and `COMPOSER_AUTH` still override
+    // both, exactly as before.
+    let mut machine = read_global_auth_json()?;
+    machine.extend(read_bougie_auth_json()?);
     Ok(merge_auth_sources(
-        read_global_auth_json()?,
+        machine,
         read_auth_from_composer_json(composer_json)?,
         read_auth_json(project_root)?,
         read_composer_auth_env()?,

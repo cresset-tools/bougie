@@ -173,6 +173,11 @@ fn scaffold(
                     &manifest.placeholders,
                     interactive,
                 )?;
+                // Prompt for private-repo secrets (e.g. a Hyvä license key)
+                // and stash them in bougie's credential store before the
+                // resolve `--start` triggers — keeps them out of the
+                // committed composer.json the placeholders just wrote.
+                super::starter::resolve_auth(&manifest.auth, interactive)?;
                 let rendered = super::starter::render_composer_json(&manifest);
                 notes = manifest.notes;
                 rendered
