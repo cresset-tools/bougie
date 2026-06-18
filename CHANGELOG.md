@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.31.1](https://github.com/cresset-tools/bougie/compare/bougie-v0.31.0...bougie-v0.31.1) (2026-06-18)
+
+
+### Bug Fixes
+
+* **php:** auto-sync on `php pin` and reconcile conf.d for system PHP ([#391](https://github.com/cresset-tools/bougie/issues/391)) ([ef2681b](https://github.com/cresset-tools/bougie/commit/ef2681b12dd8e949915181b1ec9a2ee37835302d))
+
 ## [0.31.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.30.0...bougie-v0.31.0) (2026-06-18)
 
 
