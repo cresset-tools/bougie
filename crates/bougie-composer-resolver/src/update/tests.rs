@@ -2734,6 +2734,61 @@ fn global_auth_json_candidates_empty_env_yields_no_candidates() {
 }
 
 #[test]
+fn bougie_auth_json_candidates_prefers_xdg_then_home() {
+    let env = |k: &str| match k {
+        "XDG_CONFIG_HOME" => Some("/xdg".into()),
+        "HOME" => Some("/home/u".into()),
+        _ => None,
+    };
+    let got = crate::update::bougie_auth_json_candidates(env);
+    assert_eq!(
+        got,
+        vec![
+            std::path::PathBuf::from("/xdg/bougie/auth.json"),
+            std::path::PathBuf::from("/home/u/.config/bougie/auth.json"),
+        ],
+    );
+    // HOME-only falls back to ~/.config/bougie.
+    let env = |k: &str| if k == "HOME" { Some("/home/u".into()) } else { None };
+    assert_eq!(
+        crate::update::bougie_auth_json_candidates(env),
+        vec![std::path::PathBuf::from("/home/u/.config/bougie/auth.json")],
+    );
+    assert!(crate::update::bougie_auth_json_candidates(|_| None).is_empty());
+}
+
+#[test]
+fn write_http_basic_at_creates_merges_and_round_trips() {
+    // Uses the path-based core so the test never touches the process env
+    // (HOME / XDG_CONFIG_HOME), keeping it safe under parallel execution.
+    let tmp = TempDir::new().unwrap();
+    // A nested dir that doesn't exist yet — the writer must create it.
+    let path = tmp.path().join("bougie").join("auth.json");
+
+    crate::update::write_http_basic_at(&path, "hyva-themes.repo.packagist.com", "token", "secret-key")
+        .unwrap();
+    // A second host merges in rather than clobbering the first.
+    crate::update::write_http_basic_at(&path, "other.example", "u2", "p2").unwrap();
+
+    let got = crate::update::read_auth_json_at(&path).unwrap();
+    match got.get("hyva-themes.repo.packagist.com").unwrap() {
+        crate::metadata::AuthCredentials::Basic { username, password } => {
+            assert_eq!(username, "token");
+            assert_eq!(password, "secret-key");
+        }
+        other => panic!("expected Basic, got {other:?}"),
+    }
+    assert!(got.contains_key("other.example"), "first host must survive the second write");
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "credential file must be 0600");
+    }
+}
+
+#[test]
 fn read_auth_json_at_returns_empty_for_missing_file() {
     let tmp = TempDir::new().unwrap();
     let out = crate::update::read_auth_json_at(&tmp.path().join("nope.json")).unwrap();
