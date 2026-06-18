@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.31.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.30.0...bougie-v0.31.0) (2026-06-18)
+
+
+### Features
+
+* **starter:** prompt for private-repo auth secrets (e.g. Hyvä license key) ([#388](https://github.com/cresset-tools/bougie/issues/388)) ([bcb17d4](https://github.com/cresset-tools/bougie/commit/bcb17d48e1e482bf005d8a88f1481937aebde212))
+
 ## [0.30.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.29.0...bougie-v0.30.0) (2026-06-17)
 
 
