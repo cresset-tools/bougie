@@ -151,6 +151,62 @@ fn tree_renders_project_hierarchy() {
     assert!(s.contains("psr/log ^3.0"), "nested transitive: {s}");
 }
 
+/// A diamond (root → a/a & b/b → shared/c → leaf/d) makes `shared/c`'s
+/// subtree reachable by two paths. `bougie tree` (uv-style) must expand
+/// it once and collapse the repeat to `(*)`; the path-local cycle guard
+/// alone would re-expand every shared subtree per path, which blows up
+/// combinatorially and hung `tree` on real lockfiles. `composer show
+/// --tree` stays Composer-exact and repeats the subtree in full.
+const DIAMOND_LOCK: &str = r#"{"content-hash":"x","packages":[
+    {"name":"a/a","version":"1.0.0","require":{"shared/c":"^1.0"}},
+    {"name":"b/b","version":"1.0.0","require":{"shared/c":"^1.0"}},
+    {"name":"shared/c","version":"1.0.0","require":{"leaf/d":"^1.0"}},
+    {"name":"leaf/d","version":"1.0.0"}
+],"packages-dev":[]}"#;
+
+#[test]
+fn tree_dedupes_shared_subtrees() {
+    let env = TestEnv::new();
+    let proj = TempDir::new().unwrap();
+    write_composer_json(
+        proj.path(),
+        r#"{"name":"test/p","require":{"a/a":"^1.0","b/b":"^1.0"}}"#,
+    );
+    std::fs::write(proj.path().join("composer.lock"), DIAMOND_LOCK).unwrap();
+
+    let out = env.bougie().args(["tree", "-d"]).arg(proj.path()).output().unwrap();
+    assert!(out.status.success(), "stderr={}", String::from_utf8_lossy(&out.stderr));
+    let s = String::from_utf8_lossy(&out.stdout);
+    // The deepest leaf is rendered exactly once — the second path to
+    // shared/c collapses before reaching it.
+    assert_eq!(s.matches("leaf/d ^1.0").count(), 1, "leaf must render once: {s}");
+    assert!(s.contains("shared/c ^1.0 (*)"), "repeat collapses to (*): {s}");
+    assert!(s.contains("(*) Package tree already displayed"), "legend: {s}");
+}
+
+#[test]
+fn composer_show_tree_keeps_full_repeat() {
+    let env = TestEnv::new();
+    let proj = TempDir::new().unwrap();
+    write_composer_json(
+        proj.path(),
+        r#"{"name":"test/p","require":{"a/a":"^1.0","b/b":"^1.0"}}"#,
+    );
+    std::fs::write(proj.path().join("composer.lock"), DIAMOND_LOCK).unwrap();
+
+    let out = env
+        .bougie()
+        .args(["composer", "show", "--tree", "-d"])
+        .arg(proj.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "stderr={}", String::from_utf8_lossy(&out.stderr));
+    let s = String::from_utf8_lossy(&out.stdout);
+    // Composer-exact: shared/c's subtree is repeated under both paths.
+    assert_eq!(s.matches("leaf/d ^1.0").count(), 2, "must repeat in full: {s}");
+    assert!(!s.contains("(*)"), "no dedupe marker in compat mode: {s}");
+}
+
 #[test]
 fn outdated_reports_newer_version() {
     let env = TestEnv::new();

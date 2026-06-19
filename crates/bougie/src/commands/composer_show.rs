@@ -31,6 +31,11 @@ use serde::Serialize;
 pub struct ShowOptions {
     pub package: Option<String>,
     pub tree: bool,
+    /// Collapse already-expanded subtrees to a single `(*)`-marked line
+    /// instead of re-rendering them (uv/`cargo tree` behavior). Set for
+    /// `bougie tree`; left off for `composer show --tree`, which matches
+    /// Composer's full-repeat output byte-for-byte.
+    pub dedupe: bool,
     pub direct: bool,
     pub platform: bool,
     pub self_: bool,
@@ -236,13 +241,13 @@ pub fn run(format: OutputFormat, opts: ShowOptions) -> Result<ExitCode> {
     // Single-package detail view.
     if let Some(pkg) = &opts.package {
         if opts.tree {
-            return show_tree(eff, &lock, &root, Some(pkg));
+            return show_tree(eff, &lock, &root, Some(pkg), opts.dedupe);
         }
         return show_detail(eff, &lock, pkg);
     }
 
     if opts.tree {
-        return show_tree(eff, &lock, &root, None);
+        return show_tree(eff, &lock, &root, None, opts.dedupe);
     }
 
     // Listing view.
@@ -427,6 +432,7 @@ fn show_tree(
     lock: &Lock,
     root: &serde_json::Value,
     single: Option<&str>,
+    dedupe: bool,
 ) -> Result<ExitCode> {
     let root_name = root
         .get("name")
@@ -441,6 +447,16 @@ fn show_tree(
         &root_requires_dev,
     );
 
+    // `expanded` tracks (canonical) names whose subtree has already been
+    // rendered, so a repeated dependency collapses to a `(*)` line rather
+    // than re-expanding. Without it a graph with shared transitive deps
+    // (the norm: psr/*, symfony/polyfill-*, …) re-renders every shared
+    // subtree once per path to it — combinatorial blow-up that hangs on
+    // real lockfiles. Only used in `dedupe` mode (`bougie tree`); the
+    // Composer-compatible `composer show --tree` keeps the full repeat.
+    let mut expanded: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut collapsed = false;
+
     let mut lines = Vec::new();
     if let Some(name) = single {
         // Tree rooted at the named package.
@@ -448,8 +464,13 @@ fn show_tree(
             return Err(eyre!("package {name} is not installed (not in composer.lock)"));
         };
         lines.push(format!("{} {}", node.name, node.version));
-        let mut seen = vec![node.name.to_ascii_lowercase()];
-        render_children(&graph, name, "", &mut lines, &mut seen);
+        if dedupe {
+            expanded.insert(node.name.to_ascii_lowercase());
+            render_children_deduped(&graph, name, "", &mut lines, &mut expanded, &mut collapsed);
+        } else {
+            let mut seen = vec![node.name.to_ascii_lowercase()];
+            render_children(&graph, name, "", &mut lines, &mut seen);
+        }
     } else {
         // Tree rooted at the project: each direct require is a top-level line.
         lines.push(root_name);
@@ -462,11 +483,32 @@ fn show_tree(
         for (i, (dep, constraint)) in directs.iter().enumerate() {
             let last = i + 1 == n;
             let branch = if last { "└──" } else { "├──" };
-            lines.push(format!("{branch}{dep} {constraint}"));
             let prefix = if last { "   " } else { "│  " };
-            let mut seen = vec![dep.to_ascii_lowercase()];
-            render_children(&graph, dep, prefix, &mut lines, &mut seen);
+            if dedupe {
+                let key = dep.to_ascii_lowercase();
+                let child = graph.node(dep);
+                let has_children = child.is_some_and(|c| !c.requires.is_empty());
+                if expanded.contains(&key) && has_children {
+                    collapsed = true;
+                    lines.push(format!("{branch}{dep} {constraint} (*)"));
+                    continue;
+                }
+                lines.push(format!("{branch}{dep} {constraint}"));
+                if child.is_none() {
+                    continue;
+                }
+                expanded.insert(key);
+                render_children_deduped(&graph, dep, prefix, &mut lines, &mut expanded, &mut collapsed);
+            } else {
+                lines.push(format!("{branch}{dep} {constraint}"));
+                let mut seen = vec![dep.to_ascii_lowercase()];
+                render_children(&graph, dep, prefix, &mut lines, &mut seen);
+            }
         }
+    }
+
+    if collapsed {
+        lines.push("(*) Package tree already displayed".to_string());
     }
 
     let tree = ShowTree {
@@ -478,7 +520,9 @@ fn show_tree(
 }
 
 /// Recursively render a node's `require` children with box-drawing
-/// prefixes. `seen` guards against dependency cycles.
+/// prefixes. `seen` guards against dependency cycles. This is the
+/// Composer-compatible renderer: shared subtrees are repeated in full,
+/// matching `composer show --tree` byte-for-byte.
 fn render_children(
     graph: &DependencyGraph,
     name: &str,
@@ -503,6 +547,49 @@ fn render_children(
         let child_prefix = format!("{prefix}{}", if last { "   " } else { "│  " });
         render_children(graph, &edge.to_raw, &child_prefix, lines, seen);
         seen.pop();
+    }
+}
+
+/// uv/`cargo tree`-style renderer for `bougie tree`: each package's
+/// subtree is expanded the first time it is seen and recorded in
+/// `expanded`; later occurrences render a single line suffixed with
+/// `(*)` (and set `collapsed` so the caller can print the legend). A
+/// node is marked into `expanded` *before* descending, so cycles and
+/// diamonds alike collapse on their second encounter — no path-local
+/// stack, and no combinatorial re-expansion.
+fn render_children_deduped(
+    graph: &DependencyGraph,
+    name: &str,
+    prefix: &str,
+    lines: &mut Vec<String>,
+    expanded: &mut std::collections::HashSet<String>,
+    collapsed: &mut bool,
+) {
+    let Some(node) = graph.node(name) else {
+        return;
+    };
+    let edges = &node.requires;
+    let n = edges.len();
+    for (i, edge) in edges.iter().enumerate() {
+        let last = i + 1 == n;
+        let branch = if last { "└──" } else { "├──" };
+        let child = graph.node(&edge.to_raw);
+        // Only collapse with `(*)` when re-expansion would actually omit
+        // children; a leaf (or platform/non-installed edge) is shown in
+        // full every time, matching `cargo tree`.
+        let has_children = child.is_some_and(|c| !c.requires.is_empty());
+        if expanded.contains(&edge.to) && has_children {
+            *collapsed = true;
+            lines.push(format!("{prefix}{branch}{} {} (*)", edge.to_raw, edge.constraint));
+            continue;
+        }
+        lines.push(format!("{prefix}{branch}{} {}", edge.to_raw, edge.constraint));
+        if child.is_none() {
+            continue;
+        }
+        expanded.insert(edge.to.clone());
+        let child_prefix = format!("{prefix}{}", if last { "   " } else { "│  " });
+        render_children_deduped(graph, &edge.to_raw, &child_prefix, lines, expanded, collapsed);
     }
 }
 
