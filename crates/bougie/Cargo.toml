@@ -76,7 +76,7 @@ bougie-fs = { workspace = true }
 # member-level `default-features = false` overrides when the workspace
 # entry has defaults on. Carries its own annotated version literal
 # (release-please rewrites it) since it bypasses the workspace entry.
-bougie-index = { path = "../bougie-index", version = "0.31.1", default-features = false } # x-release-please-version
+bougie-index = { path = "../bougie-index", version = "0.32.0", default-features = false } # x-release-please-version
 bougie-installer = { workspace = true }
 bougie-installers = { workspace = true }
 bougie-output = { workspace = true }
