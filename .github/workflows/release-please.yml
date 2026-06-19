@@ -85,7 +85,7 @@ jobs:
       # though no external dep versions actually move.
       - name: Checkout release PR
         if: ${{ steps.release.outputs.pr }}
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: ${{ fromJson(steps.release.outputs.pr).headBranchName }}
           token: ${{ steps.app-token.outputs.token }}

@@ -50,7 +50,7 @@ jobs:
       # are gated behind the `cross-check-fixtures` feature, enabled only
       # in the dedicated `cross-check` job below, which fetches the blobs
       # on demand).
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       # macos-latest runners no longer ship a usable cargo on PATH, so
       # install the toolchain explicitly. rust-toolchain.toml pins the
@@ -85,7 +85,7 @@ jobs:
     name: composer cross-check corpus
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
