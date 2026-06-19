@@ -172,6 +172,7 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
             commands::composer_show::ShowOptions {
                 package,
                 tree: true,
+                dedupe: true,
                 direct: false,
                 platform: false,
                 self_: false,
@@ -465,6 +466,7 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
             commands::composer_show::ShowOptions {
                 package,
                 tree,
+                dedupe: false,
                 direct,
                 platform,
                 self_,
