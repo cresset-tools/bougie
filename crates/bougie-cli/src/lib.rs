@@ -37,8 +37,8 @@ Run `bougie help <command>` for details on any command.";
 #[command(
     name = "bougie",
     version = LONG_VERSION,
-    about,
-    long_about = None,
+    about = "PHP toolchain management, the luxury way",
+    long_about = "PHP toolchain management, the luxury way\n\nManage your PHP installations, background services, extensions and dependencies quickly with bougie",
     styles = HELP_STYLES,
     after_long_help = COMMAND_GROUPS,
 )]
