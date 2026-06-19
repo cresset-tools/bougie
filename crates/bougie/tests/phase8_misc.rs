@@ -85,19 +85,26 @@ fn ext_add_in_project_without_sync_triggers_implicit_sync() {
         .args(["ext", "add", "xdebug"])
         .assert()
         .failure()
-        .stderr(contains("Syncing…"));
+        .stderr(contains("127.0.0.1:1"));
 }
 
 #[test]
 fn php_pin_writes_to_bougie_toml() {
+    // `php pin` writes the pin and then auto-syncs so it takes effect
+    // immediately. The write lands before the sync, so offline (with an
+    // unreachable index the toolchain re-resolve can't satisfy) the pin
+    // is still on disk; the index URL in the error proves the auto-sync
+    // fired rather than the command returning right after the write.
     let env = TestEnv::new();
     let proj = tempfile::TempDir::new().unwrap();
     std::fs::write(proj.path().join("bougie.toml"), "").unwrap();
     env.bougie()
         .current_dir(proj.path())
+        .env("BOUGIE_INDEX_URL", "http://127.0.0.1:1")
         .args(["php", "pin", "8.3.12"])
         .assert()
-        .success();
+        .failure()
+        .stderr(contains("127.0.0.1:1"));
     let body = std::fs::read_to_string(proj.path().join("bougie.toml")).unwrap();
     assert!(body.contains("8.3.12"), "got: {body}");
     assert!(body.contains("[php]"), "got: {body}");
@@ -105,6 +112,8 @@ fn php_pin_writes_to_bougie_toml() {
 
 #[test]
 fn php_pin_writes_to_composer_extra_when_no_toml() {
+    // See `php_pin_writes_to_bougie_toml`: the pin lands before the
+    // auto-sync, so it survives the offline re-resolve failure.
     let env = TestEnv::new();
     let proj = tempfile::TempDir::new().unwrap();
     std::fs::write(
@@ -114,9 +123,11 @@ fn php_pin_writes_to_composer_extra_when_no_toml() {
     .unwrap();
     env.bougie()
         .current_dir(proj.path())
+        .env("BOUGIE_INDEX_URL", "http://127.0.0.1:1")
         .args(["php", "pin", "8.3.12"])
         .assert()
-        .success();
+        .failure()
+        .stderr(contains("127.0.0.1:1"));
     let body = std::fs::read_to_string(proj.path().join("composer.json")).unwrap();
     let v: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert_eq!(v["extra"]["bougie"]["php"]["version"], "8.3.12");
