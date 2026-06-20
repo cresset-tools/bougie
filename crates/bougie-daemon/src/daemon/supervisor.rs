@@ -176,6 +176,59 @@ fn is_zero_u32(n: &u32) -> bool {
     *n == 0
 }
 
+/// A spawned-but-not-yet-healthy service, handed back by
+/// [`Supervisor::spawn_service`] to be probed *off* the supervisor lock.
+///
+/// It owns the babysit [`Child`]: while the service sits in
+/// `HealthChecking` its `child` slot in the supervisor map is `None`, so
+/// [`Supervisor::check_all`] skips it (it only reaps services whose child
+/// is present) and the health probe — up to 90s for opensearch/rabbitmq —
+/// no longer blocks `status` or the 1s reaper behind `Mutex<Supervisor>`.
+/// See [`start_service`].
+#[derive(Debug)]
+pub struct PendingHealth {
+    name: &'static str,
+    binding: Binding,
+    paths: Paths,
+    child: Child,
+}
+
+impl PendingHealth {
+    /// Probe until the service accepts connections, exits early, or its
+    /// per-service deadline elapses. Runs without the supervisor lock.
+    async fn wait_healthy(&mut self) -> Result<()> {
+        wait_for_health(&self.binding, self.name, &self.paths, &mut self.child).await
+    }
+}
+
+/// Outcome of [`Supervisor::spawn_service`] — the under-lock half of a
+/// start.
+#[derive(Debug)]
+pub enum SpawnOutcome {
+    /// The service was already Starting/HealthChecking/Running; no-op.
+    AlreadyRunning,
+    /// A fresh babysit was spawned and stamped `HealthChecking`; the
+    /// caller must probe the [`PendingHealth`] off-lock and then call
+    /// [`Supervisor::finalize_start`]. Boxed: `PendingHealth` dwarfs the
+    /// unit `AlreadyRunning` variant.
+    Spawned(Box<PendingHealth>),
+}
+
+/// Outcome of [`Supervisor::finalize_start`] — the under-lock half that
+/// resolves a `HealthChecking` service once its off-lock probe returns.
+#[derive(Debug)]
+pub enum StartFinalize {
+    /// Probe succeeded; the service is now `Running`.
+    Started,
+    /// Probe failed; the service is `Failed` (the dead/wedged babysit was
+    /// put back in the map for `check_all` to reap+reschedule).
+    Failed(eyre::Report),
+    /// The service left `HealthChecking` while the probe ran off-lock — a
+    /// racing `stop`/drain. We did not resurrect it; the now-stale babysit
+    /// [`Child`] is handed back for the caller to reap off-lock.
+    Superseded(Child),
+}
+
 #[derive(Debug)]
 pub struct Supervisor {
     services: HashMap<&'static str, ManagedService>,
@@ -264,10 +317,15 @@ impl Supervisor {
         store_layout::binary(&self.paths, entry)
     }
 
-    /// Spawn a service if it isn't already running. Walks
-    /// Stopped → Starting → `HealthChecking` → Running. Returns `true`
-    /// if this call brought the service up; `false` if it was already
-    /// running.
+    /// Spawn a service's babysit and stamp it `HealthChecking`, *without*
+    /// running the health probe — the caller ([`start_service`]) drops
+    /// the lock and probes the returned [`PendingHealth`] off-lock, then
+    /// re-locks for [`Supervisor::finalize_start`]. Splitting the start
+    /// this way keeps the up-to-90s probe from blocking `status` and the
+    /// reaper behind `Mutex<Supervisor>`.
+    ///
+    /// Returns [`SpawnOutcome::AlreadyRunning`] if the service was already
+    /// Starting/HealthChecking/Running.
     ///
     /// # Panics
     ///
@@ -275,7 +333,7 @@ impl Supervisor {
     /// calls assume `name` is in the map, which `Supervisor::new`
     /// populates from the catalog. A panic here means the catalog
     /// shifted under us mid-call.
-    pub async fn start(&mut self, name: &str) -> Result<bool> {
+    pub async fn spawn_service(&mut self, name: &str) -> Result<SpawnOutcome> {
         let entry = catalog::find(name)
             .ok_or_else(|| eyre!("unknown service `{name}`"))?;
         // Idempotence check via an immutable borrow that ends here.
@@ -288,7 +346,7 @@ impl Supervisor {
                 svc.state,
                 ServiceState::Running | ServiceState::HealthChecking | ServiceState::Starting
             ) {
-                return Ok(false);
+                return Ok(SpawnOutcome::AlreadyRunning);
             }
         }
         // Clear any pending auto-restart deadline — we're starting
@@ -523,37 +581,70 @@ impl Supervisor {
             svc.control_sock = Some(control_sock);
         }
 
-        // Health-probe with the lock-equivalent (`&mut self`) still
-        // held — the caller is expected to be holding `Mutex<Supervisor>`
-        // once, so concurrent starts of different services serialise
-        // here. Acceptable for Phase 3 (single-service redis). Phase 5+
-        // moves the probe off the lock.
-        let probe_paths = self.paths.clone();
-        let entry_name = entry.name;
-        let binding = entry.binding;
-        // Hand the child over to wait_for_health so it can short-
-        // circuit on early exit (e.g. port-conflict EADDRINUSE) and
-        // surface the exit status instead of pretending success
-        // because some other process happens to be on the catalog
-        // port.
-        let mut child_handle = self
+        // Take the child back out of the map and hand it to the caller
+        // for an *off-lock* health probe (up to 90s for opensearch /
+        // rabbitmq). While the service sits in `HealthChecking` its
+        // `child` slot is `None`, so `check_all` skips it — it only reaps
+        // services whose child is present — and the long probe no longer
+        // blocks `status` or the reaper behind `Mutex<Supervisor>`. The
+        // caller probes the returned `PendingHealth`, then re-locks
+        // briefly for `finalize_start`. `PendingHealth::wait_healthy`
+        // short-circuits on early child exit (e.g. port-conflict
+        // EADDRINUSE) so a stray process already on the catalog port
+        // can't masquerade as a healthy start.
+        let child = self
             .services
-            .get_mut(entry_name)
+            .get_mut(entry.name)
             .unwrap()
             .child
             .take()
             .expect("BUG: child was just set above");
-        let probe_result = wait_for_health(&binding, entry_name, &probe_paths, &mut child_handle).await;
-        // Put the child back so check_all / stop can find it.
-        self.services.get_mut(entry_name).unwrap().child = Some(child_handle);
-        match probe_result {
+        Ok(SpawnOutcome::Spawned(Box::new(PendingHealth {
+            name: entry.name,
+            binding: entry.binding,
+            paths: self.paths.clone(),
+            child,
+        })))
+    }
+
+    /// Resolve a service's `HealthChecking` state once its off-lock probe
+    /// (see [`PendingHealth::wait_healthy`]) returns. Held under the
+    /// supervisor lock, but only briefly. `child` is the babysit handle
+    /// the probe owned; `probe` is its result.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `name` is not in the supervisor map (a catalog/BUG
+    /// invariant, same as [`Supervisor::spawn_service`]).
+    pub fn finalize_start(
+        &mut self,
+        name: &'static str,
+        child: Child,
+        probe: Result<()>,
+    ) -> StartFinalize {
+        let svc = self
+            .services
+            .get_mut(name)
+            .expect("services map populated in Supervisor::new");
+        // If the service left `HealthChecking` while we probed off-lock —
+        // a racing `stop`/`down` or a daemon drain — honor the newer
+        // state instead of resurrecting it. `stop` already tore the group
+        // down via the pgid/cgroup backstop (the child was `None` in the
+        // map) and dropped the control socket, so hand the now-stale
+        // babysit handle back for the caller to reap off-lock.
+        if svc.state != ServiceState::HealthChecking {
+            return StartFinalize::Superseded(child);
+        }
+        // Put the child back so `check_all` / `stop` can find it again.
+        svc.child = Some(child);
+        match probe {
             Ok(()) => {
-                self.services.get_mut(entry_name).unwrap().state = ServiceState::Running;
-                Ok(true)
+                svc.state = ServiceState::Running;
+                StartFinalize::Started
             }
             Err(e) => {
-                self.services.get_mut(entry_name).unwrap().state = ServiceState::Failed;
-                Err(e)
+                svc.state = ServiceState::Failed;
+                StartFinalize::Failed(e)
             }
         }
     }
@@ -632,14 +723,17 @@ impl Supervisor {
         Ok(true)
     }
 
-    /// Reap any service whose child has exited, then start any
-    /// services whose backoff deadline is due.
+    /// Reap any service whose child has exited, then return the names of
+    /// services whose backoff deadline is now due for an auto-restart.
     ///
-    /// Called once per second by the daemon's ticker. Two passes:
-    /// first reap+schedule, then respawn — combined under the same
-    /// `&mut self` borrow so concurrent IPC handlers see a
-    /// consistent supervisor state across the cycle.
-    pub async fn check_all(&mut self) {
+    /// Called once per second by the daemon's ticker. Two passes: first
+    /// reap+schedule under this `&mut self` borrow, then collect the due
+    /// restarts. The restarts themselves are *not* performed here — the
+    /// ticker drives each one through [`start_service`] off the lock, so a
+    /// 90s health probe can't stall reaping or `status`. The due deadlines
+    /// are cleared on collection so the next tick doesn't re-issue a
+    /// restart that's already in flight.
+    pub async fn check_all(&mut self) -> Vec<&'static str> {
         // Pass 1: reap exited children, transition Failed, schedule
         // the next restart deadline with exponential backoff.
         let now = Instant::now();
@@ -720,9 +814,14 @@ impl Supervisor {
             .await;
         }
 
-        // Pass 2: collect names of services that are Failed with a
-        // due restart_at. We can't call self.start() while iterating
-        // self.services, so capture names first then act.
+        // Pass 2: collect services that are Failed with a due restart
+        // deadline. We don't restart them here — that would hold the
+        // supervisor lock across each service's (up-to-90s) health probe,
+        // re-introducing the very stall this split fixes. Clear the
+        // deadline on collection so the next tick doesn't re-issue a
+        // restart that's already in flight, and hand the names back to the
+        // ticker, which drives each restart through `start_service` off
+        // the lock.
         let due_now = Instant::now();
         let due: Vec<&'static str> = self
             .services
@@ -733,24 +832,39 @@ impl Supervisor {
             })
             .map(|s| s.name)
             .collect();
-        for name in due {
-            if let Err(e) = self.start(name).await {
-                tracing::warn!(service = name, error = %e, "auto-restart failed; will try again on next backoff tick");
-                // start() failed, but it cleared restart_at. Treat
-                // this like a fresh crash so backoff keeps growing.
-                if let Some(svc) = self.services.get_mut(name) {
-                    let now = Instant::now();
-                    svc.failure_count = svc.failure_count.saturating_add(1);
-                    svc.last_failure_at = Some(now);
-                    svc.restart_at = if svc.failure_count <= MAX_RESTART_ATTEMPTS {
-                        Some(now + compute_backoff(svc.failure_count))
-                    } else {
-                        None
-                    };
-                    svc.state = ServiceState::Failed;
-                }
+        for &name in &due {
+            if let Some(svc) = self.services.get_mut(name) {
+                svc.restart_at = None;
             }
         }
+        due
+    }
+
+    /// Record that an off-lock auto-restart (driven by the ticker via
+    /// [`start_service`]) failed during the *spawn* phase: the service is
+    /// `Failed` with no child and no pending deadline, so nothing would
+    /// otherwise retry it. Bump the failure count and schedule the next
+    /// backoff. A *probe*-phase failure instead leaves the dead babysit in
+    /// the map for the next [`Supervisor::check_all`] tick to
+    /// reap+reschedule, so this no-ops when a child is already present.
+    pub fn note_restart_failure(&mut self, name: &'static str) {
+        let Some(svc) = self.services.get_mut(name) else {
+            return;
+        };
+        if svc.child.is_some() || svc.restart_at.is_some() {
+            // Probe-failure path (check_all will reap+reschedule) or a
+            // restart already re-armed elsewhere; leave it alone.
+            return;
+        }
+        let now = Instant::now();
+        svc.failure_count = svc.failure_count.saturating_add(1);
+        svc.last_failure_at = Some(now);
+        svc.restart_at = if svc.failure_count <= MAX_RESTART_ATTEMPTS {
+            Some(now + compute_backoff(svc.failure_count))
+        } else {
+            None
+        };
+        svc.state = ServiceState::Failed;
     }
 }
 
@@ -1286,6 +1400,43 @@ fn add_with_deps(name: &str, set: &mut HashSet<&'static str>) -> Result<()> {
 /// cloned into the 1-second ticker.
 pub type Shared = Arc<Mutex<Supervisor>>;
 
+/// Start a service, running its (up-to-90s) health probe *off* the
+/// supervisor lock. This is the single entry point for operator starts,
+/// boot-time restores, and the reaper's auto-restarts — all of which
+/// previously held `Mutex<Supervisor>` across the probe, stalling
+/// `status` and the 1s reaper tick. The lock is taken only to spawn the
+/// babysit ([`Supervisor::spawn_service`]) and again, briefly, to resolve
+/// the outcome ([`Supervisor::finalize_start`]) once the probe returns.
+///
+/// Returns `Ok(true)` if this call brought the service up, `Ok(false)` if
+/// it was already running (or was stopped mid-probe), `Err` if the spawn
+/// or the health probe failed.
+pub async fn start_service(sup: &Shared, name: &str) -> Result<bool> {
+    let mut pending = match sup.lock().await.spawn_service(name).await? {
+        SpawnOutcome::AlreadyRunning => return Ok(false),
+        // Move out of the box so the fields below can be moved out by value.
+        SpawnOutcome::Spawned(pending) => *pending,
+    };
+    // Off-lock: the supervisor mutex is free for `status` and the reaper
+    // while this probe runs.
+    let name = pending.name;
+    let probe = pending.wait_healthy().await;
+    let child = pending.child;
+    // Re-lock only to finalize. Bind the guard to a statement so it drops
+    // before the `Superseded` arm awaits the child reap.
+    let finalize = sup.lock().await.finalize_start(name, child, probe);
+    match finalize {
+        StartFinalize::Started => Ok(true),
+        StartFinalize::Failed(e) => Err(e),
+        StartFinalize::Superseded(mut child) => {
+            // Stopped mid-probe; the babysit got EOF + a group teardown
+            // from `stop`. Reap it off-lock so it doesn't linger.
+            let _ = child.wait().await;
+            Ok(false)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1399,5 +1550,146 @@ mod tests {
             assert_eq!(s.failure_count, 0, "{}: failure_count should be 0", s.name);
             assert!(s.next_restart_ms.is_none(), "{}: no respawn pending", s.name);
         }
+    }
+
+    fn test_supervisor() -> Supervisor {
+        let tmp = tempfile::TempDir::new().unwrap();
+        // Leak the TempDir so the store path stays valid for the test's
+        // lifetime without threading the guard through every assertion.
+        let path: std::path::PathBuf = tmp.keep();
+        Supervisor::new(Paths::new(path.clone(), path))
+    }
+
+    /// A live child handle to stand in for a babysit in finalize tests.
+    /// `sleep` keeps it alive until we explicitly reap it.
+    fn spawn_dummy_child() -> Child {
+        tokio::process::Command::new("sleep")
+            .arg("30")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+            .expect("spawn sleep")
+    }
+
+    async fn reap(mut child: Child) {
+        let _ = child.start_kill();
+        let _ = child.wait().await;
+    }
+
+    #[tokio::test]
+    async fn finalize_start_running_on_healthy_probe() {
+        let mut sup = test_supervisor();
+        sup.services.get_mut("redis").unwrap().state = ServiceState::HealthChecking;
+        let child = spawn_dummy_child();
+        let outcome = sup.finalize_start("redis", child, Ok(()));
+        assert!(matches!(outcome, StartFinalize::Started));
+        let svc = sup.services.get("redis").unwrap();
+        assert_eq!(svc.state, ServiceState::Running);
+        assert!(svc.child.is_some(), "child put back in the map");
+        reap(sup.services.get_mut("redis").unwrap().child.take().unwrap()).await;
+    }
+
+    #[tokio::test]
+    async fn finalize_start_failed_on_probe_error() {
+        let mut sup = test_supervisor();
+        sup.services.get_mut("redis").unwrap().state = ServiceState::HealthChecking;
+        let child = spawn_dummy_child();
+        let outcome = sup.finalize_start("redis", child, Err(eyre::eyre!("port never opened")));
+        assert!(matches!(outcome, StartFinalize::Failed(_)));
+        let svc = sup.services.get("redis").unwrap();
+        assert_eq!(svc.state, ServiceState::Failed);
+        // The (dead/wedged) child is kept so the next check_all tick reaps it.
+        assert!(svc.child.is_some());
+        reap(sup.services.get_mut("redis").unwrap().child.take().unwrap()).await;
+    }
+
+    #[tokio::test]
+    async fn finalize_start_superseded_when_stopped_mid_probe() {
+        // The race the off-lock probe newly admits: `stop` runs while the
+        // probe is in flight. finalize_start must NOT resurrect the
+        // service — it must hand the stale child back instead of marking a
+        // stopped service Running.
+        let mut sup = test_supervisor();
+        sup.services.get_mut("redis").unwrap().state = ServiceState::Stopped;
+        let child = spawn_dummy_child();
+        let outcome = sup.finalize_start("redis", child, Ok(()));
+        let StartFinalize::Superseded(stale) = outcome else {
+            panic!("expected Superseded when the service left HealthChecking");
+        };
+        let svc = sup.services.get("redis").unwrap();
+        assert_eq!(svc.state, ServiceState::Stopped, "honor the newer state");
+        assert!(svc.child.is_none(), "do not stash the stale child in the map");
+        reap(stale).await;
+    }
+
+    #[tokio::test]
+    async fn check_all_returns_due_restarts_and_clears_deadline() {
+        let mut sup = test_supervisor();
+        {
+            let svc = sup.services.get_mut("redis").unwrap();
+            svc.state = ServiceState::Failed;
+            // `now` here is <= the `now` check_all samples, so it's due.
+            svc.restart_at = Some(Instant::now());
+        }
+        let due = sup.check_all().await;
+        assert!(due.contains(&"redis"), "overdue Failed service is due");
+        let svc = sup.services.get("redis").unwrap();
+        // Deadline cleared so the next tick won't double-issue the restart
+        // that's now in flight off-lock.
+        assert!(svc.restart_at.is_none());
+        // State stays Failed — the actual respawn happens via start_service.
+        assert_eq!(svc.state, ServiceState::Failed);
+    }
+
+    #[tokio::test]
+    async fn check_all_skips_failed_service_with_future_deadline() {
+        let mut sup = test_supervisor();
+        // Comfortably in the future (and not a round minute, which a
+        // pedantic lint would rather see as `from_mins`).
+        let deadline = Instant::now() + Duration::from_secs(90);
+        {
+            let svc = sup.services.get_mut("redis").unwrap();
+            svc.state = ServiceState::Failed;
+            svc.restart_at = Some(deadline);
+        }
+        let due = sup.check_all().await;
+        assert!(due.is_empty(), "not-yet-due restart is left alone");
+        assert_eq!(sup.services.get("redis").unwrap().restart_at, Some(deadline));
+    }
+
+    #[test]
+    fn note_restart_failure_arms_backoff_when_idle() {
+        let mut sup = test_supervisor();
+        {
+            let svc = sup.services.get_mut("redis").unwrap();
+            svc.state = ServiceState::Failed;
+            svc.failure_count = 1;
+            svc.restart_at = None;
+            svc.child = None;
+        }
+        sup.note_restart_failure("redis");
+        let svc = sup.services.get("redis").unwrap();
+        assert_eq!(svc.failure_count, 2, "spawn-phase failure bumps the count");
+        assert!(svc.restart_at.is_some(), "next backoff armed");
+    }
+
+    #[test]
+    fn note_restart_failure_noops_when_already_rearmed() {
+        let mut sup = test_supervisor();
+        let deadline = Instant::now() + Duration::from_secs(99);
+        {
+            let svc = sup.services.get_mut("redis").unwrap();
+            svc.state = ServiceState::Failed;
+            svc.failure_count = 3;
+            svc.restart_at = Some(deadline);
+        }
+        sup.note_restart_failure("redis");
+        let svc = sup.services.get("redis").unwrap();
+        // A probe-phase failure (handled by check_all) or an already-armed
+        // deadline must not be double-counted.
+        assert_eq!(svc.failure_count, 3);
+        assert_eq!(svc.restart_at, Some(deadline));
     }
 }

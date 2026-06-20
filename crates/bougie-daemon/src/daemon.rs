@@ -179,7 +179,28 @@ async fn serve(paths: Paths) -> Result<ExitCode> {
             loop {
                 tokio::select! {
                     _ = ticker.tick() => {
-                        supervisor.lock().await.check_all().await;
+                        // Reap exited children under the lock, then drive
+                        // each due auto-restart off the lock: a service's
+                        // health probe runs up to 90s and must not stall
+                        // reaping or `status`. Detached (not awaited) so
+                        // the ticker keeps reaping every second regardless
+                        // of probe latency.
+                        let due = supervisor.lock().await.check_all().await;
+                        for name in due {
+                            let sup = Arc::clone(&supervisor);
+                            tokio::spawn(async move {
+                                if let Err(e) =
+                                    crate::daemon::supervisor::start_service(&sup, name).await
+                                {
+                                    tracing::warn!(
+                                        service = name,
+                                        error = %e,
+                                        "auto-restart failed; will retry on a later backoff tick"
+                                    );
+                                    sup.lock().await.note_restart_failure(name);
+                                }
+                            });
+                        }
                     }
                     _ = tick_rx.changed() => {
                         if *tick_rx.borrow() {
@@ -254,7 +275,7 @@ async fn restore_services(state: &Arc<DaemonState>) {
             tracing::warn!(service = name, error = %e, "restore: pre_start");
             continue;
         }
-        match state.supervisor.lock().await.start(name).await {
+        match supervisor::start_service(&state.supervisor, name).await {
             Ok(true) => tracing::info!(service = name, "restore: re-spawned"),
             Ok(false) => {}
             Err(e) => tracing::warn!(service = name, error = %e, "restore: start"),
