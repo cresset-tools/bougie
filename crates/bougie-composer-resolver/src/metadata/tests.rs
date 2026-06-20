@@ -401,3 +401,32 @@ fn outbound_request_carries_bougie_user_agent() {
         fetch_package_metadata(&client, &paths, &Repo::from_url(&uri), "acme/ua", Variant::Stable).unwrap();
     assert_eq!(md.packages["acme/ua"][0].version, "1.0.0");
 }
+
+#[test]
+fn auth_origin_keeps_explicit_port() {
+    // Composer keys credentials by origin (host + explicit port). A
+    // mirror on a non-default port — the classic local-satis shape —
+    // must key by `host:port`, or its `auth.json` entry never matches.
+    assert_eq!(
+        auth_origin("http://127.0.0.1:8080/jelle2/klant/p2/acme/foo.json"),
+        "127.0.0.1:8080",
+    );
+    assert_eq!(auth_origin("http://127.0.0.1:8080"), "127.0.0.1:8080");
+    // No explicit port → bare host, exactly like Composer's getOrigin.
+    assert_eq!(
+        auth_origin("https://repo.packagist.org/p2/acme/foo.json"),
+        "repo.packagist.org",
+    );
+    assert_eq!(auth_origin("https://repo.example.com"), "repo.example.com");
+}
+
+#[test]
+fn auth_origin_differs_from_cache_namespace_on_port() {
+    // The two helpers diverge precisely on the port: the cache
+    // namespace strips it (filesystem-safe dir name), the auth origin
+    // keeps it (credential lookup key). Regression guard for the 401
+    // that prompted this split.
+    let url = "http://127.0.0.1:8080/satis";
+    assert_eq!(extract_cache_namespace(url), "127.0.0.1");
+    assert_eq!(auth_origin(url), "127.0.0.1:8080");
+}

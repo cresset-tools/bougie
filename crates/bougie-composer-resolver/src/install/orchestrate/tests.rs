@@ -408,10 +408,10 @@ fn install_attaches_per_host_auth_to_dist_download() {
         (server.uri(), server)
     });
 
-    // composer.json declares per-host basic auth for the mock's host
-    // (everything after `http://`, port included would be the
-    // full authority; we strip the port to match host-only).
-    let host = uri.trim_start_matches("http://").split(':').next().unwrap();
+    // composer.json declares per-origin basic auth for the mock's
+    // authority (everything after `http://`, port included) — Composer
+    // keys credentials by origin, so the `:PORT` is part of the key.
+    let host = uri.trim_start_matches("http://");
     let composer_json = format!(
         r#"{{
             "name": "acme/test",

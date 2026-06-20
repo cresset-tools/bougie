@@ -2292,12 +2292,11 @@ fn http_basic_auth_from_config_unlocks_private_repo() {
         (server.uri(), server)
     });
 
+    // Composer keys auth by origin (host + explicit port), so the
+    // lookup key must keep the `:PORT` the wiremock server binds to.
     let custom_host = custom_uri
         .strip_prefix("http://")
         .unwrap_or(&custom_uri)
-        .split(':')
-        .next()
-        .unwrap()
         .to_owned();
     let composer_json = json!({
         "repositories": [
@@ -2354,12 +2353,11 @@ fn bearer_auth_from_config_unlocks_private_repo() {
         (server.uri(), server)
     });
 
+    // Composer keys auth by origin (host + explicit port), so the
+    // lookup key must keep the `:PORT` the wiremock server binds to.
     let custom_host = custom_uri
         .strip_prefix("http://")
         .unwrap_or(&custom_uri)
-        .split(':')
-        .next()
-        .unwrap()
         .to_owned();
     let composer_json = json!({
         "repositories": [
@@ -2415,12 +2413,11 @@ fn auth_json_overrides_composer_json_config() {
         (server.uri(), server)
     });
 
+    // Composer keys auth by origin (host + explicit port), so the
+    // lookup key must keep the `:PORT` the wiremock server binds to.
     let custom_host = custom_uri
         .strip_prefix("http://")
         .unwrap_or(&custom_uri)
-        .split(':')
-        .next()
-        .unwrap()
         .to_owned();
     // composer.json has the WRONG creds; auth.json has the right.
     let composer_json_value = json!({

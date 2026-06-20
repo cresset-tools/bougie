@@ -2266,7 +2266,9 @@ fn parse_repo_entry(
                     )
                 })?;
             let repo = Repo::from_url(url);
-            let creds = auth.get(&repo.cache_namespace).cloned();
+            // Key by Composer's origin (host + explicit port), NOT the
+            // port-stripped `cache_namespace` — see `auth_origin`.
+            let creds = auth.get(&crate::metadata::auth_origin(&repo.url)).cloned();
             repos.push(repo.with_auth(creds));
             Ok(())
         }
@@ -2366,7 +2368,7 @@ pub(crate) fn read_repositories(
         // credentials for repo.packagist.org (rare but valid for
         // private-packagist.com / similar hosted mirrors that share
         // the same host).
-        let creds = auth.get(&default_packagist.cache_namespace).cloned();
+        let creds = auth.get(&crate::metadata::auth_origin(&default_packagist.url)).cloned();
         repos.push(default_packagist.with_auth(creds));
     }
     if repos.is_empty() {
