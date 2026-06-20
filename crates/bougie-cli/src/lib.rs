@@ -31,7 +31,7 @@ Command groups:
   Services     server, services, projects
   Admin        cache, self
 
-Run `bougie help <command>` for details on any command.";
+Run `bougie help <command>` for details on any command";
 
 #[derive(Parser, Debug)]
 #[command(
@@ -46,15 +46,15 @@ pub struct Cli {
     #[command(subcommand)]
     pub command: Command,
 
-    /// Suppress non-error output.
+    /// Suppress non-error output
     #[arg(short, long, global = true)]
     pub quiet: bool,
 
-    /// Verbose output.
+    /// Verbose output
     #[arg(short, long, global = true)]
     pub verbose: bool,
 
-    /// Output format.
+    /// Output format
     #[arg(long, global = true, default_value = "text")]
     pub format: OutputFormat,
 }
@@ -66,14 +66,14 @@ pub struct Cli {
 /// system PHP, then download a managed one.
 #[derive(Args, Debug, Clone, Copy, Default)]
 pub struct PhpPrefArgs {
-    /// Only use a bougie-managed PHP; never a system PHP.
+    /// Only use a bougie-managed PHP; never a system PHP
     #[arg(long, conflicts_with = "no_managed_php")]
     pub managed_php: bool,
-    /// Only use a system PHP already on this machine; never a managed one.
+    /// Only use a system PHP already on this machine; never a managed one
     #[arg(long)]
     pub no_managed_php: bool,
     /// Never download a managed PHP — use an installed managed PHP or a
-    /// system one. Errors if neither is present.
+    /// system one. Errors if neither is present
     #[arg(long)]
     pub no_php_downloads: bool,
 }
@@ -82,8 +82,8 @@ pub struct PhpPrefArgs {
 pub enum OutputFormat {
     Text,
     /// `json-v1` is bougie's structured envelope; `json` is accepted as
-    /// an alias so Composer-compatible subcommands (`composer show
-    /// --format json`, etc.) work with the same global flag.
+    /// an alias so the `composer` subcommands (`composer show --format
+    /// json`, etc.) work with the same global flag
     #[value(name = "json-v1", alias = "json")]
     JsonV1,
 }
@@ -93,102 +93,102 @@ pub enum OutputFormat {
 /// `ResolutionStrategy` in the dispatch layer.
 #[derive(clap::ValueEnum, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ResolutionStrategy {
-    /// Prefer the newest compatible version of every package (the default).
+    /// Prefer the newest compatible version of every package (the default)
     #[default]
     Highest,
     /// Prefer the oldest compatible version of every package, including
-    /// transitive dependencies (Composer's `--prefer-lowest`).
+    /// transitive dependencies
     Lowest,
     /// Prefer the oldest compatible version of the project's direct
-    /// requires, but the newest for everything they pull in transitively.
+    /// requires, but the newest for everything they pull in transitively
     #[value(name = "lowest-direct")]
     LowestDirect,
 }
 
 #[derive(Subcommand, Debug)]
 pub enum Command {
-    /// Create a new project.
+    /// Create a new project
     #[command(display_order = 1)]
     Init {
-        /// Place bougie configuration in a bougie.toml file.
+        /// Place bougie configuration in a bougie.toml file
         #[arg(long)]
         toml: bool,
         /// Set the package name (`vendor/package`) of the generated
-        /// composer.json. Overrides the name from a `--starter` manifest.
+        /// composer.json. Overrides the name from a `--starter` manifest
         #[arg(long, value_name = "VENDOR/PACKAGE")]
         name: Option<String>,
         /// Scaffold from a starter pack: a built-in alias (e.g. `mageos`)
         /// or an https URL serving a starter manifest. Writes the
-        /// starter's composer.json instead of the empty default.
+        /// starter's composer.json instead of the empty default
         #[arg(long, value_name = "URL_OR_ALIAS")]
         starter: Option<String>,
         /// After scaffolding, bring the project up. Equivalent to
-        /// `bougie start`.
+        /// `bougie start`
         #[arg(long)]
         start: bool,
     },
 
-    /// Create a new project in a new directory.
+    /// Create a new project in a new directory
     #[command(display_order = 2)]
     New {
         /// Directory to create under the current directory and scaffold
-        /// the project into.
+        /// the project into
         #[arg(value_name = "DIRECTORY")]
         directory: String,
-        /// Place bougie configuration in a bougie.toml file.
+        /// Place bougie configuration in a bougie.toml file
         #[arg(long)]
         toml: bool,
         /// Set the package name (`vendor/package`) of the generated
-        /// composer.json. Overrides the name from a `--starter` manifest.
+        /// composer.json. Overrides the name from a `--starter` manifest
         #[arg(long, value_name = "VENDOR/PACKAGE")]
         name: Option<String>,
         /// Scaffold from a starter pack: a built-in alias (e.g. `mageos`)
-        /// or an https URL serving a starter manifest.
+        /// or an https URL serving a starter manifest
         #[arg(long, value_name = "URL_OR_ALIAS")]
         starter: Option<String>,
-        /// After scaffolding, bring the project up — equivalent to
-        /// `bougie start`. Unix-only.
+        /// After scaffolding, bring the project up. Equivalent to
+        /// `bougie start`
         #[arg(long)]
         start: bool,
     },
 
-    /// Manage PHP extensions.
+    /// Manage PHP extensions
     #[command(subcommand, display_order = 15)]
     Ext(ExtCommand),
 
-    /// Manage patches applied to installed packages.
+    /// Manage patches applied to installed packages
     #[command(subcommand, display_order = 16)]
     Patches(PatchesCommand),
 
     /// Add dependencies to the project
     #[command(display_order = 10)]
     Add {
-        /// Packages to add, `vendor/pkg` or `vendor/pkg@<constraint>`.
+        /// Packages to add, `vendor/pkg` or `vendor/pkg@<constraint>`
         #[arg(value_name = "PACKAGES", required = true)]
         packages: Vec<String>,
-        /// Add to `require-dev` instead of `require`.
+        /// Add to `require-dev` instead of `require`
         #[arg(long = "dev")]
         dev: bool,
-        /// Also update the new packages' dependencies (`-w`).
+        /// Also update the new packages' dependencies (`-w`)
         #[arg(short = 'w', long = "with-dependencies")]
         with_dependencies: bool,
-        /// Also update all dependencies, including shared ones (`-W`).
+        /// Also update all dependencies, including shared ones (`-W`)
         #[arg(short = 'W', long = "with-all-dependencies")]
         with_all_dependencies: bool,
         /// Update `composer.json` + `composer.lock` but don't install
-        /// into `vendor/`.
+        /// into `vendor/`
         #[arg(long = "no-sync")]
         no_sync: bool,
-        /// Edit `composer.json` only — don't touch the lock or `vendor/`.
+        /// Edit `composer.json` only — don't touch the lock or `vendor/`
         #[arg(long = "frozen")]
         frozen: bool,
-        /// Version-preference policy when resolving (uv's `--resolution`).
+        /// Version-preference policy when resolving
         #[arg(long = "resolution", value_name = "STRATEGY", default_value = "highest")]
         resolution: ResolutionStrategy,
-        /// Run in this directory instead of CWD (`-d`).
+        /// Run in this directory instead of CWD (`-d`)
         #[arg(short = 'd', long = "working-dir", value_name = "DIR")]
         working_dir: Option<std::path::PathBuf>,
-        /// Resolve and report what would change without writing anything.
+        /// Resolve and report what would change without writing anything
         #[arg(long = "dry-run")]
         dry_run: bool,
     },
@@ -196,22 +196,22 @@ pub enum Command {
     /// Remove dependencies from the project
     #[command(display_order = 11)]
     Remove {
-        /// Packages to remove (`vendor/name`).
+        /// Packages to remove (`vendor/name`)
         #[arg(value_name = "PACKAGES", required = true)]
         packages: Vec<String>,
-        /// Remove from `require-dev` instead of `require`.
+        /// Remove from `require-dev` instead of `require`
         #[arg(long = "dev")]
         dev: bool,
-        /// Re-resolve `composer.lock` but don't touch `vendor/`.
+        /// Re-resolve `composer.lock` but don't touch `vendor/`
         #[arg(long = "no-sync")]
         no_sync: bool,
-        /// Edit `composer.json` only — don't touch the lock or `vendor/`.
+        /// Edit `composer.json` only — don't touch the lock or `vendor/`
         #[arg(long = "frozen")]
         frozen: bool,
-        /// Run in this directory instead of CWD (`-d`).
+        /// Run in this directory instead of CWD (`-d`)
         #[arg(short = 'd', long = "working-dir", value_name = "DIR")]
         working_dir: Option<std::path::PathBuf>,
-        /// Resolve and report what would change without writing anything.
+        /// Resolve and report what would change without writing anything
         #[arg(long = "dry-run")]
         dry_run: bool,
     },
@@ -220,13 +220,12 @@ pub enum Command {
     #[command(display_order = 12)]
     Lock {
         /// Version-preference policy when re-resolving changed requires
-        /// (uv's `--resolution`).
         #[arg(long = "resolution", value_name = "STRATEGY", default_value = "highest")]
         resolution: ResolutionStrategy,
-        /// Run in this directory instead of CWD (`-d`).
+        /// Run in this directory instead of CWD (`-d`)
         #[arg(short = 'd', long = "working-dir", value_name = "DIR")]
         working_dir: Option<std::path::PathBuf>,
-        /// Resolve and report what would change without writing the lock.
+        /// Resolve and report what would change without writing the lock
         #[arg(long = "dry-run")]
         dry_run: bool,
     },
@@ -234,74 +233,72 @@ pub enum Command {
     /// Display the project's dependency tree
     #[command(display_order = 13)]
     Tree {
-        /// Root the tree at this package instead of the project.
+        /// Root the tree at this package instead of the project
         #[arg(value_name = "PACKAGE")]
         package: Option<String>,
-        /// Skip dev dependencies.
+        /// Skip dev dependencies
         #[arg(long = "no-dev")]
         no_dev: bool,
-        /// Run in this directory instead of CWD (`-d`).
+        /// Run in this directory instead of CWD (`-d`)
         #[arg(short = 'd', long = "working-dir", value_name = "DIR")]
         working_dir: Option<std::path::PathBuf>,
     },
 
-    /// Shows a list of installed packages that have updates available, including their latest version
+    /// List installed packages with newer versions available
     #[command(display_order = 14)]
     Outdated {
-        /// Optional `vendor/name` filters; with none, all are considered.
+        /// Optional `vendor/name` filters; with none, all are considered
         #[arg(value_name = "PACKAGES")]
         packages: Vec<String>,
-        /// Only the project's direct dependencies (`--direct` / `-D`).
+        /// Only the project's direct dependencies (`--direct` / `-D`)
         #[arg(short = 'D', long = "direct")]
         direct: bool,
-        /// Only packages with a new major version.
+        /// Only packages with a new major version
         #[arg(long = "major-only")]
         major_only: bool,
-        /// Only packages with a new minor version.
+        /// Only packages with a new minor version
         #[arg(long = "minor-only")]
         minor_only: bool,
-        /// Only packages with a new patch version.
+        /// Only packages with a new patch version
         #[arg(long = "patch-only")]
         patch_only: bool,
-        /// Skip dev dependencies.
+        /// Skip dev dependencies
         #[arg(long = "no-dev")]
         no_dev: bool,
-        /// Exit non-zero if any package is outdated.
+        /// Exit non-zero if any package is outdated
         #[arg(long = "strict")]
         strict: bool,
-        /// Run in this directory instead of CWD (`-d`).
+        /// Run in this directory instead of CWD (`-d`)
         #[arg(short = 'd', long = "working-dir", value_name = "DIR")]
         working_dir: Option<std::path::PathBuf>,
     },
 
-    /// Install everything the project requires.
+    /// Install everything the project requires
     #[command(display_order = 6)]
     Sync {
-        /// Don't try to download anything, this will fail if there are uncached packages.
+        /// Don't try to download anything, this will fail if there are uncached packages
         #[arg(long)]
         offline: bool,
-        /// Show the plan, change nothing on disk.
+        /// Show the plan, change nothing on disk
         #[arg(long)]
         dry_run: bool,
         /// Run composer.json root scripts for this sync, overriding
-        /// `[scripts] run` in bougie.toml. Off by default (opt-in).
+        /// `[scripts] run` in bougie.toml. Off by default (opt-in)
         #[arg(long, conflicts_with = "no_scripts")]
         scripts: bool,
         /// Skip composer.json root scripts for this sync, overriding
-        /// `[scripts] run = true` in bougie.toml.
+        /// `[scripts] run = true` in bougie.toml
         #[arg(long = "no-scripts")]
         no_scripts: bool,
-        /// Version-preference policy when a fresh lock must be resolved
-        /// (uv's `--resolution`). No effect when a `composer.lock` already
-        /// exists.
+        /// Version-preference policy when a fresh lock must be resolved.
+        /// No effect when a `composer.lock` already exists
         #[arg(long = "resolution", value_name = "STRATEGY", default_value = "highest")]
         resolution: ResolutionStrategy,
-        /// Apply native cweagans-style patches for this sync, overriding
-        /// `[patches] enable` / `enable-patching`. On by default when
-        /// patches are declared.
+        /// Apply patches for this sync, overriding `[patches] enable`.
+        /// On by default when patches are declared
         #[arg(long, conflicts_with = "no_patches")]
         patches: bool,
-        /// Skip native patch application for this sync.
+        /// Skip native patch application for this sync
         #[arg(long = "no-patches")]
         no_patches: bool,
         #[command(flatten)]
@@ -311,32 +308,31 @@ pub enum Command {
     /// Run a command or script
     #[command(display_order = 5)]
     Run {
-        /// Add a temporary extension for this invocation.
+        /// Add a temporary extension for this invocation
         #[arg(long, value_name = "EXT=VER")]
         with: Vec<String>,
-        /// Skip the implicit `bougie sync` before running.
+        /// Skip the implicit `bougie sync` before running
         #[arg(long)]
         no_sync: bool,
         /// Layer the server's debug overlay (`vendor/bougie/conf.d-debug/`)
         /// into `PHP_INI_SCAN_DIR` and set `XDEBUG_SESSION=1` for the
-        /// child. Installs xdebug on first use if not already present.
+        /// child. Installs xdebug on first use if not already present
         #[arg(long)]
         xdebug: bool,
         /// Run with a specific PHP interpreter. Accepts a version
         /// (`8.3`, `8.3.12`), a constraint (`~8.3`, `>=8.2,<8.4`), or a
         /// path to a `php` binary. Forces a sync to that interpreter,
-        /// so it can't be combined with `--no-sync`. Mirrors
-        /// `uv run --python`.
+        /// so it can't be combined with `--no-sync`
         #[arg(long = "php", value_name = "VER|PATH", conflicts_with = "no_sync")]
         php_request: Option<String>,
         #[command(flatten)]
         php: PhpPrefArgs,
-        /// Command and arguments. `--` separator is optional.
+        /// Command and arguments. `--` separator is optional
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
         argv: Vec<String>,
     },
 
-    /// Manage PHP interpreters.
+    /// Manage PHP interpreters
     #[command(subcommand, display_order = 20)]
     Php(PhpCommand),
 
@@ -344,7 +340,7 @@ pub enum Command {
     #[command(subcommand, display_order = 21)]
     Node(NodeCommand),
 
-    /// Manage PHP packages with a composer compatible dependency
+    /// Manage PHP packages with a composer compatible interface
     #[command(subcommand, display_order = 16)]
     Composer(ComposerCommand),
 
@@ -353,22 +349,22 @@ pub enum Command {
     Tool(ToolCommand),
 
     /// Runtime shim invoked by tool wrappers (`#!.../bougie tool-exec`).
-    /// Not for direct CLI use; hidden from `--help`.
+    /// Not for direct CLI use; hidden from `--help`
     #[command(hide = true, name = "tool-exec")]
     ToolExec {
         /// Path to the tool wrapper script the kernel handed us as
-        /// argv[1] via the shebang.
+        /// argv[1] via the shebang
         wrapper: std::path::PathBuf,
-        /// User-supplied arguments to the tool, passed through to PHP.
+        /// User-supplied arguments to the tool, passed through to PHP
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<std::ffi::OsString>,
     },
 
-    /// Manage bougie's cache.
+    /// Manage bougie's cache
     #[command(subcommand, display_order = 40)]
     Cache(CacheCommand),
 
-    /// Manage the bougie binary itself.
+    /// Manage the bougie binary itself
     #[command(subcommand)]
     #[command(name = "self", display_order = 41)]
     SelfCmd(SelfCommand),
@@ -388,19 +384,19 @@ pub enum Command {
     /// Bring the whole project up
     #[command(display_order = 3)]
     Start {
-        /// Skip the implicit `bougie sync` prologue.
+        /// Skip the implicit `bougie sync` prologue
         #[arg(long)]
         no_sync: bool,
-        /// Show what would run, but don't execute.
+        /// Show what would run, but don't execute
         #[arg(long)]
         dry_run: bool,
-        /// Explain why each step runs or skips.
+        /// Explain why each step runs or skips
         #[arg(long)]
         explain: bool,
-        /// Ignore the builtin recipe; use only `bougie.toml`.
+        /// Ignore the builtin recipe; use only `bougie.toml`
         #[arg(long)]
         no_builtin: bool,
-        /// Force a specific builtin (e.g. `magento`).
+        /// Force a specific builtin (e.g. `magento`)
         #[arg(long, value_name = "NAME")]
         recipe: Option<String>,
     },
@@ -408,47 +404,47 @@ pub enum Command {
     /// Bring the project down
     #[command(display_order = 4)]
     Stop {
-        /// Service names to stop. Empty = every declared service.
+        /// Service names to stop. Empty = every declared service
         names: Vec<String>,
         /// Destroy persisted tenant data (e.g. FLUSHDB on redis). Off
-        /// by default — `bougie start` should restore state.
+        /// by default — `bougie start` should restore state
         #[arg(long)]
         purge: bool,
     },
 
-    /// Makefile-like task runner
+    /// Run project tasks
     #[command(display_order = 7)]
     Make {
-        /// Task to run. With none, the available tasks are listed.
+        /// Task to run. With none, the available tasks are listed
         task: Option<String>,
-        /// List available tasks instead of running.
+        /// List available tasks instead of running
         #[arg(long, conflicts_with_all = ["dry_run", "explain", "print"])]
         list: bool,
-        /// Show what would run, but don't execute.
+        /// Show what would run, but don't execute
         #[arg(long)]
         dry_run: bool,
-        /// Explain why each step runs or skips.
+        /// Explain why each step runs or skips
         #[arg(long)]
         explain: bool,
-        /// Skip the implicit `bougie sync` prologue.
+        /// Skip the implicit `bougie sync` prologue
         #[arg(long)]
         no_sync: bool,
-        /// Ignore the builtin recipe; use only `bougie.toml`.
+        /// Ignore the builtin recipe; use only `bougie.toml`
         #[arg(long)]
         no_builtin: bool,
-        /// Force a specific builtin (e.g. `magento`).
+        /// Force a specific builtin (e.g. `magento`)
         #[arg(long, value_name = "NAME")]
         recipe: Option<String>,
-        /// Print the merged recipe to stdout instead of running.
+        /// Print the merged recipe to stdout instead of running
         #[arg(long)]
         print: bool,
     },
 
-    /// Format all the PHP code in a project
+    /// Format the project's PHP code
     #[command(display_order = 8)]
     Format {
         /// Arguments forwarded verbatim to `wick` (paths, `--check`,
-        /// `--diff`, `-` for stdin, …).
+        /// `--diff`, `-` for stdin, …)
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, value_name = "ARGS")]
         args: Vec<std::ffi::OsString>,
     },
@@ -458,81 +454,81 @@ pub enum Command {
 pub enum ServicesCommand {
     /// Start the project's declared services (or every service in
     /// `names`) and provision the project's tenant in each. For the
-    /// whole-project bring-up use `bougie start`.
+    /// whole-project bring-up use `bougie start`
     Up {
-        /// Service names to bring up. Empty = every declared service.
+        /// Service names to bring up. Empty = every declared service
         names: Vec<String>,
         /// Start the services and return immediately instead of
         /// attaching to their combined log stream. Attaching is the
         /// default for an interactive (TTY) text-mode invocation;
-        /// non-interactive runs and `--format json-v1` always detach.
+        /// non-interactive runs and `--format json-v1` always detach
         #[arg(short = 'd', long)]
         detach: bool,
     },
     /// Stop the project's declared services (or every service in
     /// `names`). The shared global process stays up while any other
     /// project's tenant remains. For the whole-project teardown use
-    /// `bougie stop`.
+    /// `bougie stop`
     Down {
         names: Vec<String>,
         /// Destroy persisted tenant data (e.g. FLUSHDB on redis). Off
-        /// by default — re-adding the service should restore state.
+        /// by default — re-adding the service should restore state
         #[arg(long)]
         purge: bool,
     },
     /// Declare a service in the project. Errors if the name isn't in
-    /// the catalog. Use `bougie services catalog` to discover names.
+    /// the catalog. Use `bougie services catalog` to discover names
     Add {
-        /// One or more service names, each optionally `@<version>`.
+        /// One or more service names, each optionally `@<version>`
         names: Vec<String>,
     },
     /// Remove a service declaration from the project. Tenant data is
     /// kept by default (re-adding restores it); pass `--purge` to also
-    /// destroy it.
+    /// destroy it
     Remove {
-        /// Service names to remove.
+        /// Service names to remove
         names: Vec<String>,
         /// Also destroy the project's tenant data for each service
-        /// (same as `bougie services down --purge`) before undeclaring.
+        /// (same as `bougie services down --purge`) before undeclaring
         #[arg(long)]
         purge: bool,
     },
-    /// List the services declared in the current project.
+    /// List the services declared in the current project
     List {
         /// Reserved for cross-project listing in Phase 3+. Today this
-        /// degrades silently to per-project output.
+        /// degrades silently to per-project output
         #[arg(long)]
         all: bool,
     },
-    /// Print the built-in service catalog (no daemon required).
+    /// Print the built-in service catalog (no daemon required)
     Catalog,
     /// Restart the named services (or every declared service). Stops
     /// then starts the underlying global process; the tenant ledger
     /// is preserved, so generated passwords / DB numbers survive.
-    /// Affects every project sharing the same service.
+    /// Affects every project sharing the same service
     Restart {
         names: Vec<String>,
     },
-    /// Per-service status for the current project.
+    /// Per-service status for the current project
     Status {
-        /// Limit to a single service.
+        /// Limit to a single service
         name: Option<String>,
     },
     /// Tail (and optionally follow) service logs. With no name, shows
     /// the combined ("multilog") stream of every service declared in the
     /// project, each line prefixed with its (colorized) service name —
-    /// the same view `bougie services up` attaches to.
+    /// the same view `bougie services up` attaches to
     Logs {
-        /// Service name. Omit to tail every declared service at once.
+        /// Service name. Omit to tail every declared service at once
         name: Option<String>,
-        /// Follow the log; runs until interrupted (Ctrl-C).
+        /// Follow the log; runs until interrupted (Ctrl-C)
         #[arg(short = 'f', long)]
         follow: bool,
-        /// Number of trailing lines to print before any follow.
+        /// Number of trailing lines to print before any follow
         #[arg(short = 'n', long, default_value_t = 50)]
         lines: usize,
     },
-    /// Inspect and control the `bougied` daemon.
+    /// Inspect and control the `bougied` daemon
     #[command(subcommand)]
     Daemon(ServicesDaemonCommand),
 }
@@ -541,10 +537,10 @@ pub enum ServicesCommand {
 pub enum ProjectsCommand {
     /// List every provisioned tenant across the shared services and the
     /// project each belongs to. Reads the on-disk tenant ledgers; no
-    /// daemon required.
+    /// daemon required
     List {
         /// Show the per-service allocation (redis db number, rabbitmq
-        /// vhost, server hostname, …) as an extra column.
+        /// vhost, server hostname, …) as an extra column
         #[arg(long)]
         alloc: bool,
     },
@@ -552,19 +548,19 @@ pub enum ProjectsCommand {
     /// With no flags, targets *orphaned* tenants whose project directory
     /// no longer exists. Destructive: when the service is running this
     /// drops the tenant's data (database, vhost, redis db, …); when it's
-    /// stopped, only the ledger entry is removed.
+    /// stopped, only the ledger entry is removed
     Purge {
         /// Purge a specific project's tenants by path (it may already be
-        /// deleted) instead of the orphaned set.
+        /// deleted) instead of the orphaned set
         #[arg(long)]
         project: Option<String>,
-        /// Purge every tenant of every project. Use with care.
+        /// Purge every tenant of every project. Use with care
         #[arg(long)]
         all: bool,
-        /// Print what would be purged and exit without changing anything.
+        /// Print what would be purged and exit without changing anything
         #[arg(long)]
         dry_run: bool,
-        /// Skip the confirmation prompt (required for non-interactive use).
+        /// Skip the confirmation prompt (required for non-interactive use)
         #[arg(short = 'y', long)]
         yes: bool,
     },
@@ -573,12 +569,12 @@ pub enum ProjectsCommand {
 #[derive(Subcommand, Debug)]
 pub enum ServicesDaemonCommand {
     /// Print daemon PID, socket path, and managed-service count. The
-    /// daemon is auto-spawned if not already running.
+    /// daemon is auto-spawned if not already running
     Status,
-    /// Send a graceful shutdown to the running daemon.
+    /// Send a graceful shutdown to the running daemon
     Stop,
     /// Print the daemon's reported version (used by the CLI to detect
-    /// post-`self update` daemon-binary mismatches).
+    /// post-`self update` daemon-binary mismatches)
     Version,
 }
 
@@ -602,20 +598,20 @@ pub struct ServerArgs {
 #[allow(clippy::struct_excessive_bools)] // each bool is a distinct CLI flag
 pub struct ServeArgs {
     /// Hostname label override — the `<name>` in `<name>.bougie.run`.
-    /// Defaults to a name derived from the project.
+    /// Defaults to a name derived from the project
     #[arg(value_name = "NAME")]
     pub name: Option<String>,
-    /// Open the project URL in a browser once the server is ready.
+    /// Open the project URL in a browser once the server is ready
     #[arg(long)]
     pub open: bool,
-    /// Serve over HTTPS (requires `bougie server tls install`).
+    /// Serve over HTTPS (requires `bougie server tls install`)
     #[arg(long)]
     pub tls: bool,
     /// Print the URL and return immediately instead of attaching to the
-    /// log stream. Matches `services up`'s `-d`.
+    /// log stream. Matches `services up`'s `-d`
     #[arg(short = 'd', long = "detach")]
     pub detach: bool,
-    /// Skip the implicit `bougie sync` before serving.
+    /// Skip the implicit `bougie sync` before serving
     #[arg(long)]
     pub no_sync: bool,
 }
@@ -627,52 +623,52 @@ pub enum ServerCommand {
     /// what `bougied` spawns and what CI / power users invoke directly;
     /// `--config` is required because a multi-host server has no single
     /// project to default to. The bougied-managed path (`bougie services
-    /// up server`) supplies its own service-scoped `server.toml`.
+    /// up server`) supplies its own service-scoped `server.toml`
     Run {
-        /// `server.toml` path. Required.
+        /// `server.toml` path. Required
         #[arg(long, value_name = "PATH")]
         config: std::path::PathBuf,
-        /// CLI override of `[server].listen` (e.g. `127.0.0.1:7080`).
+        /// CLI override of `[server].listen` (e.g. `127.0.0.1:7080`)
         #[arg(long, value_name = "ADDR")]
         listen: Option<String>,
-        /// CLI override of `[server].log_format`.
+        /// CLI override of `[server].log_format`
         #[arg(long, value_name = "FMT")]
         log_format: Option<String>,
     },
     /// Show the dev server's hosts and live pool state. Reads the
     /// running server's control socket when available, falling back to
     /// the configured hosts otherwise. Replaces the old `list`, which
-    /// remains as a hidden alias.
+    /// remains as a hidden alias
     #[command(alias = "list")]
     Status {
         /// `server.toml` to inspect. Defaults to the bougied-managed
-        /// config.
+        /// config
         #[arg(long, value_name = "PATH")]
         config: Option<std::path::PathBuf>,
     },
-    /// Open the current project's (or NAME's) dev URL in a browser.
+    /// Open the current project's (or NAME's) dev URL in a browser
     Open {
-        /// Hostname label to open. Defaults to the current project.
+        /// Hostname label to open. Defaults to the current project
         #[arg(value_name = "NAME")]
         name: Option<String>,
     },
     /// Stop the shared dev server. Equivalent to `bougie services down
-    /// server`; stops hosting for every project, since the server is shared.
+    /// server`; stops hosting for every project, since the server is shared
     Stop,
     /// Tail the dev server's request log. In a project, defaults to
-    /// this project's host.
+    /// this project's host
     Logs {
-        /// Follow the log; runs until interrupted (Ctrl-C).
+        /// Follow the log; runs until interrupted (Ctrl-C)
         #[arg(short = 'f', long)]
         follow: bool,
-        /// Number of trailing lines to print before any follow.
+        /// Number of trailing lines to print before any follow
         #[arg(short = 'n', long, default_value_t = 50)]
         lines: usize,
     },
-    /// Manage local TLS via mkcert.
+    /// Manage local TLS via mkcert
     #[command(subcommand)]
     Tls(ServerTlsCommand),
-    /// Manage `/etc/hosts` overrides.
+    /// Manage `/etc/hosts` overrides
     #[command(subcommand)]
     Hosts(ServerHostsCommand),
 }
@@ -680,10 +676,10 @@ pub enum ServerCommand {
 #[derive(Subcommand, Debug)]
 pub enum ServerHostsCommand {
     /// Rewrite the bougie sentinel block in /etc/hosts to match
-    /// server.toml. Requires root — runs via sudo.
+    /// server.toml. Requires root — runs via sudo
     Apply {
         /// `server.toml` to read the host list from. Defaults to the
-        /// bougied-managed config.
+        /// bougied-managed config
         #[arg(long, value_name = "PATH")]
         config: Option<std::path::PathBuf>,
     },
@@ -691,9 +687,9 @@ pub enum ServerHostsCommand {
 
 #[derive(Subcommand, Debug)]
 pub enum ServerTlsCommand {
-    /// Fetch mkcert and install bougie's local CA.
+    /// Fetch mkcert and install bougie's local CA
     Install,
-    /// Uninstall bougie's local CA.
+    /// Uninstall bougie's local CA
     Uninstall,
 }
 
@@ -707,40 +703,40 @@ pub enum ExtCommand {
     /// extension name and Zend-ness from the binary, and writes a
     /// fragment to the durable, machine-local `conf.d-local/` (under
     /// `$BOUGIE_HOME`) without touching composer.json. Mix and match in
-    /// one invocation.
+    /// one invocation
     Add {
         /// Extension names or `.so` paths (anything ending in `.so` is
-        /// treated as a local file).
+        /// treated as a local file)
         args: Vec<String>,
-        /// Skip the implicit `bougie sync` after the composer call.
+        /// Skip the implicit `bougie sync` after the composer call
         #[arg(long)]
         no_sync: bool,
         #[command(flatten)]
         php: PhpPrefArgs,
     },
-    /// Remove an extension dependency.
+    /// Remove an extension dependency
     Remove {
-        /// The extension(s) to remove.
+        /// The extension(s) to remove
         names: Vec<String>,
-        /// Skip the implicit `bougie sync` after the composer call.
+        /// Skip the implicit `bougie sync` after the composer call
         #[arg(long)]
         no_sync: bool,
     },
-    /// List available extensions.
+    /// List available extensions
     List {
-        /// Only show installed extensions.
+        /// Only show installed extensions
         #[arg(long)]
         only_installed: bool,
-        /// Only show extensions advertised by the index.
+        /// Only show extensions advertised by the index
         #[arg(long)]
         only_available: bool,
-        /// List all extension versions, including older releases.
+        /// List all extension versions, including older releases
         #[arg(long)]
         all_versions: bool,
-        /// List extensions for all platforms, not just the host's.
+        /// List extensions for all platforms, not just the host's
         #[arg(long)]
         all_platforms: bool,
-        /// Show the URLs of available extension downloads.
+        /// Show the URLs of available extension downloads
         #[arg(long)]
         show_urls: bool,
     },
@@ -750,568 +746,561 @@ pub enum ExtCommand {
 pub enum PatchesCommand {
     /// Add a root patch rule from a URL or local file (the `composer
     /// require` of patches). The target package is inferred from the diff
-    /// headers unless `--package` is given.
+    /// headers unless `--package` is given
     Add {
-        /// An `http(s)://` URL or a local patch file path.
+        /// An `http(s)://` URL or a local patch file path
         source: String,
-        /// Target package (`vendor/pkg`); inferred from the diff if omitted.
+        /// Target package (`vendor/pkg`); inferred from the diff if omitted
         #[arg(long, value_name = "VENDOR/PKG")]
         package: Option<String>,
-        /// Human description (defaults to the URL basename / filename).
+        /// Human description (defaults to the URL basename / filename)
         #[arg(long)]
         description: Option<String>,
-        /// Explicit `-pN` strip depth.
+        /// Explicit `-pN` strip depth
         #[arg(long, value_name = "N")]
         depth: Option<usize>,
-        /// Write into the external patches file rather than `extra.patches`.
+        /// Write into the external patches file rather than `extra.patches`
         #[arg(long = "to-file")]
         to_file: bool,
-        /// Don't run `bougie sync` afterward.
+        /// Don't run `bougie sync` afterward
         #[arg(long = "no-sync")]
         no_sync: bool,
     },
     /// Show the resolved patch set, plus any unadopted dependency-declared
-    /// patches (which bougie never applies automatically).
+    /// patches (which bougie never applies automatically)
     List,
     /// Adopt dependency-declared patches into the root `composer.json`
-    /// (the only way a dependency's patches ever apply).
+    /// (the only way a dependency's patches ever apply)
     Import {
-        /// Dependencies to import from (default: all that declare patches).
+        /// Dependencies to import from (default: all that declare patches)
         packages: Vec<String>,
-        /// Import from every dependency that declares patches.
+        /// Import from every dependency that declares patches
         #[arg(long)]
         all: bool,
-        /// Write into the external patches file rather than `extra.patches`.
+        /// Write into the external patches file rather than `extra.patches`
         #[arg(long = "to-file")]
         to_file: bool,
     },
     /// Force a clean re-extract + re-apply for the named packages (or all):
-    /// drops their recorded fingerprints, then syncs.
+    /// drops their recorded fingerprints, then syncs
     Repatch {
-        /// Packages to repatch (default: all patched packages).
+        /// Packages to repatch (default: all patched packages)
         packages: Vec<String>,
     },
     /// Rebuild `patches.lock.json` from current config: re-download remote
-    /// patches and re-apply everything from pristine.
+    /// patches and re-apply everything from pristine
     Relock,
     /// Diagnose patch configuration: unresolvable `patches/` files,
-    /// `http://` URLs, missing checksums, unadopted dependency patches.
+    /// `http://` URLs, missing checksums, unadopted dependency patches
     Doctor,
 }
 
 #[derive(Subcommand, Debug)]
 pub enum PhpCommand {
-    /// Install a new PHP version.
+    /// Install a new PHP version
     Install {
-        /// The PHP version(s) to install (e.g. `8.3`, `8.3.12`, `8.3+zts`).
+        /// The PHP version(s) to install (e.g. `8.3`, `8.3.12`, `8.3+zts`)
         requests: Vec<String>,
-        /// Build flavor to install [possible values: nts, nts-debug, zts, zts-debug].
+        /// Build flavor to install [possible values: nts, nts-debug, zts, zts-debug]
         #[arg(long)]
         flavor: Option<String>,
         /// Skip the entire baseline extension set; install only the bare
-        /// Debian-aligned interpreter (`REFACTOR_DEBIAN_ALIGNED.md`).
+        /// Debian-aligned interpreter
         #[arg(long, conflicts_with = "without")]
         bare: bool,
         /// Skip a specific baseline extension. Repeatable: `--without opcache
         /// --without readline`. The named extensions must already be in the
-        /// baseline set; use `bougie ext remove` after install for anything else.
+        /// baseline set; use `bougie ext remove` after install for anything else
         #[arg(long, value_name = "EXT", action = clap::ArgAction::Append)]
         without: Vec<String>,
     },
-    /// Remove a PHP version.
+    /// Remove a PHP version
     Uninstall {
-        /// The PHP version(s) to uninstall.
+        /// The PHP version(s) to uninstall
         #[arg(required = true)]
         requests: Vec<String>,
-        /// Build flavor to uninstall [possible values: nts, nts-debug, zts, zts-debug].
+        /// Build flavor to uninstall [possible values: nts, nts-debug, zts, zts-debug]
         #[arg(long)]
         flavor: Option<String>,
     },
-    /// List available PHP interpreters.
+    /// List available PHP interpreters
     List {
-        /// A PHP request to filter by.
+        /// A PHP request to filter by
         request: Option<String>,
-        /// Only show installed PHP versions.
+        /// Only show installed PHP versions
         #[arg(long)]
         only_installed: bool,
-        /// Only show PHP versions available for download.
+        /// Only show PHP versions available for download
         #[arg(long)]
         only_available: bool,
-        /// List all PHP versions, including older patch versions.
+        /// List all PHP versions, including older patch versions
         #[arg(long)]
         all_versions: bool,
-        /// List PHP downloads for all platforms.
+        /// List PHP downloads for all platforms
         #[arg(long)]
         all_platforms: bool,
-        /// List PHP downloads for all architectures.
+        /// List PHP downloads for all architectures
         #[arg(long)]
         all_arches: bool,
-        /// Show the URLs of available PHP downloads.
+        /// Show the URLs of available PHP downloads
         #[arg(long)]
         show_urls: bool,
     },
-    /// Search for a PHP interpreter.
+    /// Search for a PHP interpreter
     Find {
-        /// A PHP request to search for.
+        /// A PHP request to search for
         request: Option<String>,
     },
-    /// Pin the project's PHP version.
+    /// Pin the project's PHP version
     Pin {
-        /// The PHP version to pin.
+        /// The PHP version to pin
         request: String,
-        /// Write the pin to `bougie.toml` (creating it if needed).
+        /// Write the pin to `bougie.toml` (creating it if needed)
         #[arg(long, conflicts_with = "composer")]
         toml: bool,
-        /// Write the pin to `composer.json`'s `require.php`.
+        /// Write the pin to `composer.json`'s `require.php`
         #[arg(long, conflicts_with = "toml")]
         composer: bool,
     },
-    /// Refresh installed interpreters to the latest published patch.
+    /// Refresh installed interpreters to the latest published patch
     Upgrade {
-        /// The PHP minor version(s) to upgrade (e.g. `8.3`).
+        /// The PHP minor version(s) to upgrade (e.g. `8.3`)
         minor: Option<String>,
     },
-    /// Show the PHP interpreter installation directory.
+    /// Show the PHP interpreter installation directory
     Dir,
 }
 
 #[derive(Subcommand, Debug)]
 pub enum NodeCommand {
-    /// Install a Node.js version from nodejs.org.
+    /// Install a Node.js version from nodejs.org
     Install {
         /// The Node version(s) to install (e.g. `latest`, `lts`, `20`,
-        /// `20.11`, `20.11.0`). Defaults to `latest`.
+        /// `20.11`, `20.11.0`). Defaults to `latest`
         requests: Vec<String>,
     },
-    /// Remove an installed Node.js version.
+    /// Remove an installed Node.js version
     Uninstall {
-        /// The Node version(s) to uninstall (exact `20.11.0`).
+        /// The Node version(s) to uninstall (exact `20.11.0`)
         #[arg(required = true)]
         requests: Vec<String>,
     },
-    /// List installed Node.js versions.
+    /// List installed Node.js versions
     List,
     /// Resolve a request and show the version + download URL it maps to,
-    /// without installing.
+    /// without installing
     Find {
-        /// A Node request to resolve (e.g. `lts`, `20`). Defaults to `latest`.
+        /// A Node request to resolve (e.g. `lts`, `20`). Defaults to `latest`
         request: Option<String>,
     },
-    /// Show the Node.js installation directory.
+    /// Show the Node.js installation directory
     Dir,
 }
 
 #[derive(Subcommand, Debug)]
 pub enum ComposerCommand {
-    /// Install a project's `vendor/` from `composer.lock`. Reads
-    /// `composer.json` + `composer.lock` in the working directory,
+    /// Install `vendor/` from `composer.lock`
+    ///
+    /// Reads `composer.json` + `composer.lock` in the working directory,
     /// content-hash-verifies the lock, parallel-downloads dists into
-    /// `vendor/`, and emits `vendor/autoload.php`.
+    /// `vendor/`, and emits `vendor/autoload.php`
     Install {
-        /// Run the install in this directory instead of CWD.
-        /// Mirrors Composer's `--working-dir` / `-d`.
+        /// Run the install in this directory instead of CWD
         #[arg(short = 'd', long = "working-dir", value_name = "DIR")]
         working_dir: Option<std::path::PathBuf>,
-        /// Skip dev-only packages and dev autoload entries.
+        /// Skip dev-only packages and dev autoload entries
         #[arg(long = "no-dev")]
         no_dev: bool,
         /// Fail if composer.lock is out of sync with composer.json.
         /// Currently a no-op — the install already errors on
-        /// content-hash mismatch by default. Accepted for parity
-        /// with Composer's CI usage.
+        /// content-hash mismatch by default
         #[arg(long = "frozen")]
         frozen: bool,
         /// Verify the lock is internally consistent (content-hash,
         /// requires, transitives) and exit. Doesn't touch `vendor/`
-        /// or run the autoloader. CI-friendly read-only check.
+        /// or run the autoloader. CI-friendly read-only check
         #[arg(long = "lock-verify")]
         lock_verify: bool,
-        /// Ignore all platform requirements (php, ext-*, lib-*).
-        /// Accepted for Composer parity; bougie does not enforce
-        /// platform requirements yet.
+        /// Ignore all platform requirements (php, ext-*, lib-*). bougie
+        /// does not enforce platform requirements yet
         #[arg(long = "ignore-platform-reqs")]
         ignore_platform_reqs: bool,
-        /// Ignore a specific platform requirement.
+        /// Ignore a specific platform requirement
         #[arg(long = "ignore-platform-req", value_name = "REQ")]
         ignore_platform_req: Vec<String>,
         /// Run composer.json root scripts, overriding `[scripts] run`
-        /// in bougie.toml. Off by default (opt-in).
+        /// in bougie.toml. Off by default (opt-in)
         #[arg(long, conflicts_with = "no_scripts")]
         scripts: bool,
         /// Skip composer.json root scripts, overriding `[scripts] run
-        /// = true` in bougie.toml (Composer-compatible `--no-scripts`).
+        /// = true` in bougie.toml
         #[arg(long = "no-scripts")]
         no_scripts: bool,
-        /// Apply native cweagans-style patches, overriding `[patches]
-        /// enable` / `enable-patching`. On by default when patches are
-        /// declared.
+        /// Apply patches, overriding `[patches] enable`. On by default
+        /// when patches are declared
         #[arg(long, conflicts_with = "no_patches")]
         patches: bool,
-        /// Skip native patch application for this install.
+        /// Skip native patch application for this install
         #[arg(long = "no-patches")]
         no_patches: bool,
     },
-    /// Resolve the project's dependency graph, write a fresh
-    /// `composer.lock`, and install the result into `vendor/` (matching
-    /// Composer's `update`). With no package arguments this re-resolves
-    /// from scratch; naming one or more packages does a partial update —
-    /// only those re-resolve while every other locked package stays
-    /// pinned. `--no-install` stops after writing the lock; `--dry-run`
-    /// previews the solution without writing anything. Aliased to
-    /// `upgrade` / `u`, like Composer.
+    /// Update dependencies and `composer.lock`
+    ///
+    /// Re-resolve the dependency graph, write a fresh `composer.lock`,
+    /// and install the result into `vendor/`. With no packages the whole
+    /// graph re-resolves; naming packages does a partial update, leaving
+    /// every other locked package pinned. `--no-install` stops after
+    /// writing the lock; `--dry-run` previews without writing. Aliased to
+    /// `upgrade` / `u`
     #[command(visible_alias = "upgrade", alias = "u")]
     Update {
         /// Packages to update (`vendor/name`). When given, only these
         /// packages re-resolve; every other package stays pinned to its
-        /// `composer.lock` version (Composer's partial update). With no
-        /// packages, the whole graph re-resolves from scratch.
+        /// `composer.lock` version. With no packages, the whole graph
+        /// re-resolves from scratch
         #[arg(value_name = "PACKAGES")]
         packages: Vec<String>,
-        /// Write the lock but don't install into `vendor/` (Composer's
-        /// `--no-install`).
+        /// Write the lock but don't install into `vendor/`
         #[arg(long = "no-install")]
         no_install: bool,
-        /// Also update the named packages' dependencies (Composer's
-        /// `--with-dependencies` / `-w`).
+        /// Also update the named packages' dependencies (`-w`)
         #[arg(short = 'w', long = "with-dependencies")]
         with_dependencies: bool,
         /// Also update all of the named packages' dependencies, including
-        /// ones shared with other packages (Composer's
-        /// `--with-all-dependencies` / `-W`).
+        /// ones shared with other packages (`-W`)
         #[arg(short = 'W', long = "with-all-dependencies")]
         with_all_dependencies: bool,
-        /// Run the update in this directory instead of CWD.
-        /// Mirrors Composer's `--working-dir` / `-d`.
+        /// Run the update in this directory instead of CWD
         #[arg(short = 'd', long = "working-dir", value_name = "DIR")]
         working_dir: Option<std::path::PathBuf>,
-        /// Skip dev-only root requires when resolving.
+        /// Skip dev-only root requires when resolving
         #[arg(long = "no-dev")]
         no_dev: bool,
-        /// Version-preference policy when resolving (uv's `--resolution`).
+        /// Version-preference policy when resolving
         #[arg(long = "resolution", value_name = "STRATEGY", default_value = "highest")]
         resolution: ResolutionStrategy,
-        /// Prefer the lowest matching versions (Composer's
-        /// `--prefer-lowest`). Equivalent to `--resolution lowest`; when
-        /// set it overrides `--resolution`.
+        /// Prefer the lowest matching versions. Equivalent to
+        /// `--resolution lowest`; when set it overrides `--resolution`
         #[arg(long = "prefer-lowest")]
         prefer_lowest: bool,
         /// Resolve and print the solution without writing
         /// `composer.lock` or touching `vendor/`. Without this flag,
-        /// `update` writes a fresh `composer.lock`.
+        /// `update` writes a fresh `composer.lock`
         #[arg(long = "dry-run")]
         dry_run: bool,
-        /// Ignore all platform requirements (php, ext-*, lib-*).
-        /// Accepted for Composer parity; bougie does not enforce
-        /// platform requirements yet.
+        /// Ignore all platform requirements (php, ext-*, lib-*). bougie
+        /// does not enforce platform requirements yet
         #[arg(long = "ignore-platform-reqs")]
         ignore_platform_reqs: bool,
-        /// Ignore a specific platform requirement.
+        /// Ignore a specific platform requirement
         #[arg(long = "ignore-platform-req", value_name = "REQ")]
         ignore_platform_req: Vec<String>,
     },
-    /// Validate composer.json structure and contents.
+    /// Validate composer.json structure and contents
     Validate {
-        /// Run in this directory instead of CWD.
+        /// Run in this directory instead of CWD
         #[arg(short = 'd', long = "working-dir", value_name = "DIR")]
         working_dir: Option<std::path::PathBuf>,
-        /// Return non-zero exit code for warnings too.
+        /// Return non-zero exit code for warnings too
         #[arg(long)]
         strict: bool,
-        /// Skip lock file freshness check.
+        /// Skip lock file freshness check
         #[arg(long = "no-check-lock")]
         no_check_lock: bool,
-        /// Skip publish-only checks (name casing, required fields).
+        /// Skip publish-only checks (name casing, required fields)
         #[arg(long = "no-check-publish")]
         no_check_publish: bool,
-        /// Skip unbound/exact version constraint warnings.
+        /// Skip unbound/exact version constraint warnings
         #[arg(long = "no-check-all")]
         no_check_all: bool,
-        /// Also validate installed dependencies' composer.json files.
+        /// Also validate installed dependencies' composer.json files
         #[arg(long = "with-dependencies")]
         with_dependencies: bool,
-        /// Force lock file checking even when `config.lock` is false.
+        /// Force lock file checking even when `config.lock` is false
         #[arg(long = "check-lock")]
         check_lock: bool,
     },
+    /// Regenerate the autoloader files
+    ///
     /// Regenerate `vendor/composer/autoload_*.php` against the current
-    /// `composer.lock`. Drop-in for `composer dump-autoload`; output
-    /// is byte-equivalent to Composer 2.8.12 with the same flags. Aliased
-    /// to `dump-autoload` for users coming from Composer muscle-memory.
+    /// `composer.lock`. Aliased to `dump-autoload`
     #[command(alias = "dump-autoload")]
     DumpAutoloader {
-        /// Optimize the classmap (`--optimize` / `-o`).
+        /// Optimize the classmap (`--optimize` / `-o`)
         #[arg(short = 'o', long = "optimize", alias = "optimize-autoloader")]
         optimize: bool,
         /// Emit the classmap-authoritative static loader
-        /// (`--classmap-authoritative` / `-a`). Implies `--optimize`.
+        /// (`--classmap-authoritative` / `-a`). Implies `--optimize`
         #[arg(short = 'a', long = "classmap-authoritative")]
         classmap_authoritative: bool,
-        /// Skip dev autoload entries (`--no-dev`).
+        /// Skip dev autoload entries (`--no-dev`)
         #[arg(long = "no-dev")]
         no_dev: bool,
-        /// Emit the `APCu` loader bootstrap (`--apcu-autoloader`).
+        /// Emit the `APCu` loader bootstrap (`--apcu-autoloader`)
         #[arg(long = "apcu-autoloader")]
         apcu_autoloader: bool,
-        /// Explicit `APCu` prefix; implies `--apcu-autoloader`.
+        /// Explicit `APCu` prefix; implies `--apcu-autoloader`
         #[arg(long = "apcu-autoloader-prefix", value_name = "PREFIX")]
         apcu_prefix: Option<String>,
         /// Override the `ComposerAutoloaderInit<X>` class suffix —
         /// otherwise the value from `composer.json`'s
         /// `config.autoloader-suffix`, or the `composer.lock`
-        /// content-hash.
+        /// content-hash
         #[arg(long = "autoloader-suffix", value_name = "SUFFIX")]
         autoloader_suffix: Option<String>,
-        /// Run the dump in this directory instead of the current one.
-        /// Mirrors Composer's `--working-dir` / `-d`.
+        /// Run the dump in this directory instead of the current one
         #[arg(short = 'd', long = "working-dir", value_name = "DIR")]
         working_dir: Option<std::path::PathBuf>,
     },
+    /// Add packages to `composer.json` and install them
+    ///
     /// Add one or more packages to `composer.json` `require` (or
-    /// `require-dev`), re-resolve `composer.lock`, and install them.
-    /// Fully Composer-compatible: a bare `vendor/pkg` resolves the
-    /// latest stable and writes a caret (`^X.Y`) constraint; supply an
-    /// explicit constraint with `vendor/pkg:^1.0`, `vendor/pkg=^1.0`, or
-    /// a trailing argument (`vendor/pkg ^1.0`) — Composer's separators
-    /// are `:`, `=`, or a space (the `@` separator is *not* accepted, as
-    /// in Composer). For bougie's `>=`-default + `@`-syntax house style,
-    /// use the top-level `bougie add` instead.
+    /// `require-dev`), re-resolve `composer.lock`, and install them. A
+    /// bare `vendor/pkg` resolves the latest stable and writes a caret
+    /// (`^X.Y`) constraint; set an explicit constraint with
+    /// `vendor/pkg:^1.0`, `vendor/pkg=^1.0`, or a trailing argument
+    /// (`vendor/pkg ^1.0`)
     Require {
-        /// Packages to require, as Composer name↔version pairs.
+        /// Packages to require (`vendor/pkg` or `vendor/pkg:<constraint>`)
         #[arg(value_name = "PACKAGES", required = true)]
         packages: Vec<String>,
-        /// Add to `require-dev` instead of `require`.
+        /// Add to `require-dev` instead of `require`
         #[arg(long = "dev")]
         dev: bool,
         /// Edit `composer.json` only — don't re-resolve `composer.lock`
-        /// or touch `vendor/` (Composer's `--no-update`).
+        /// or touch `vendor/`
         #[arg(long = "no-update")]
         no_update: bool,
         /// Re-resolve and write `composer.lock` but don't install into
-        /// `vendor/` (Composer's `--no-install`).
+        /// `vendor/`
         #[arg(long = "no-install")]
         no_install: bool,
-        /// Also update the new packages' dependencies (`-w`).
+        /// Also update the new packages' dependencies (`-w`)
         #[arg(short = 'w', long = "with-dependencies")]
         with_dependencies: bool,
-        /// Also update all dependencies, including shared ones (`-W`).
+        /// Also update all dependencies, including shared ones (`-W`)
         #[arg(short = 'W', long = "with-all-dependencies")]
         with_all_dependencies: bool,
-        /// Prefer the lowest matching versions when resolving.
+        /// Prefer the lowest matching versions when resolving
         #[arg(long = "prefer-lowest")]
         prefer_lowest: bool,
-        /// Ignore all platform requirements (php, ext-*, lib-*).
+        /// Ignore all platform requirements (php, ext-*, lib-*)
         #[arg(long = "ignore-platform-reqs")]
         ignore_platform_reqs: bool,
-        /// Ignore a specific platform requirement.
+        /// Ignore a specific platform requirement
         #[arg(long = "ignore-platform-req", value_name = "REQ")]
         ignore_platform_req: Vec<String>,
-        /// Run in this directory instead of CWD (`-d`).
+        /// Run in this directory instead of CWD (`-d`)
         #[arg(short = 'd', long = "working-dir", value_name = "DIR")]
         working_dir: Option<std::path::PathBuf>,
         /// Resolve and report what would change without writing
-        /// `composer.json`, `composer.lock`, or `vendor/`.
+        /// `composer.json`, `composer.lock`, or `vendor/`
         #[arg(long = "dry-run")]
         dry_run: bool,
     },
+    /// Remove packages and uninstall them from `vendor/`
+    ///
     /// Remove one or more packages from `composer.json`, re-resolve
-    /// `composer.lock`, and uninstall them from `vendor/`. Drop-in for
-    /// `composer remove`.
+    /// `composer.lock`, and uninstall them from `vendor/`
     Remove {
-        /// Packages to remove (`vendor/name`).
+        /// Packages to remove (`vendor/name`)
         #[arg(value_name = "PACKAGES", required = true)]
         packages: Vec<String>,
-        /// Remove from `require-dev` instead of `require`.
+        /// Remove from `require-dev` instead of `require`
         #[arg(long = "dev")]
         dev: bool,
         /// Edit `composer.json` only — don't re-resolve or touch
-        /// `vendor/` (Composer's `--no-update`).
+        /// `vendor/`
         #[arg(long = "no-update")]
         no_update: bool,
         /// Re-resolve and write `composer.lock` but don't touch
-        /// `vendor/` (Composer's `--no-install`).
+        /// `vendor/`
         #[arg(long = "no-install")]
         no_install: bool,
-        /// Skip dev-only packages when resolving.
+        /// Skip dev-only packages when resolving
         #[arg(long = "no-dev")]
         no_dev: bool,
-        /// Ignore all platform requirements (php, ext-*, lib-*).
+        /// Ignore all platform requirements (php, ext-*, lib-*)
         #[arg(long = "ignore-platform-reqs")]
         ignore_platform_reqs: bool,
-        /// Ignore a specific platform requirement.
+        /// Ignore a specific platform requirement
         #[arg(long = "ignore-platform-req", value_name = "REQ")]
         ignore_platform_req: Vec<String>,
-        /// Run in this directory instead of CWD (`-d`).
+        /// Run in this directory instead of CWD (`-d`)
         #[arg(short = 'd', long = "working-dir", value_name = "DIR")]
         working_dir: Option<std::path::PathBuf>,
         /// Resolve and report what would change without writing
-        /// `composer.json`, `composer.lock`, or `vendor/`.
+        /// `composer.json`, `composer.lock`, or `vendor/`
         #[arg(long = "dry-run")]
         dry_run: bool,
     },
-    /// List installed packages, or show details for one. Reads the
-    /// project's `composer.lock`. Drop-in for `composer show` (aliases
-    /// `info`, `list`).
+    /// List installed packages, or show details for one
+    ///
+    /// Reads the project's `composer.lock`. Aliases `info`, `list`
     #[command(alias = "info", alias = "list")]
     Show {
         /// A single `vendor/name` to show details for. With no argument,
-        /// every installed package is listed.
+        /// every installed package is listed
         #[arg(value_name = "PACKAGE")]
         package: Option<String>,
-        /// Render the dependency tree (`--tree` / `-t`).
+        /// Render the dependency tree (`--tree` / `-t`)
         #[arg(short = 't', long = "tree")]
         tree: bool,
-        /// Only the project's direct dependencies (`--direct` / `-D`).
+        /// Only the project's direct dependencies (`--direct` / `-D`)
         #[arg(short = 'D', long = "direct")]
         direct: bool,
-        /// Only platform packages — php, ext-*, lib-* (`--platform` / `-p`).
+        /// Only platform packages — php, ext-*, lib-* (`--platform` / `-p`)
         #[arg(short = 'p', long = "platform")]
         platform: bool,
-        /// Show the root package's own info (`--self` / `-s`).
+        /// Show the root package's own info (`--self` / `-s`)
         #[arg(short = 's', long = "self")]
         self_: bool,
-        /// Print package names only (`--name-only` / `-N`).
+        /// Print package names only (`--name-only` / `-N`)
         #[arg(short = 'N', long = "name-only")]
         name_only: bool,
-        /// Show each package's install path (`--path` / `-P`).
+        /// Show each package's install path (`--path` / `-P`)
         #[arg(short = 'P', long = "path")]
         path: bool,
         /// Also fetch and show the latest available version
-        /// (`--latest` / `-l`).
+        /// (`--latest` / `-l`)
         #[arg(short = 'l', long = "latest")]
         latest: bool,
         /// Only packages with a newer version available
-        /// (`--outdated` / `-o`). Implies `--latest`.
+        /// (`--outdated` / `-o`). Implies `--latest`
         #[arg(short = 'o', long = "outdated")]
         outdated: bool,
-        /// Skip dev dependencies (`--no-dev`).
+        /// Skip dev dependencies (`--no-dev`)
         #[arg(long = "no-dev")]
         no_dev: bool,
-        /// Run in this directory instead of CWD (`-d`).
+        /// Run in this directory instead of CWD (`-d`)
         #[arg(short = 'd', long = "working-dir", value_name = "DIR")]
         working_dir: Option<std::path::PathBuf>,
     },
-    /// Show which packages depend on a given package — i.e. why it's
-    /// installed. Drop-in for `composer why` (alias `depends`).
+    /// Show which packages depend on a given package
+    ///
+    /// Shows why a package is installed. Alias `depends`
     #[command(alias = "depends")]
     Why {
-        /// The package to explain.
+        /// The package to explain
         #[arg(value_name = "PACKAGE", required = true)]
         package: String,
-        /// Recurse through the dependency chain (`--recursive` / `-r`).
+        /// Recurse through the dependency chain (`--recursive` / `-r`)
         #[arg(short = 'r', long = "recursive")]
         recursive: bool,
-        /// Render the full dependency-of tree (`--tree` / `-t`).
+        /// Render the full dependency-of tree (`--tree` / `-t`)
         #[arg(short = 't', long = "tree")]
         tree: bool,
-        /// Run in this directory instead of CWD (`-d`).
+        /// Run in this directory instead of CWD (`-d`)
         #[arg(short = 'd', long = "working-dir", value_name = "DIR")]
         working_dir: Option<std::path::PathBuf>,
     },
-    /// Show what prevents a package (optionally at a version) from being
-    /// installed — conflicting requirements. Drop-in for
-    /// `composer why-not` (alias `prohibits`).
+    /// Show what prevents a package from being installed
+    ///
+    /// Reports the conflicting requirements for a package, optionally at
+    /// a given version. Alias `prohibits`
     #[command(name = "why-not", alias = "prohibits")]
     WhyNot {
-        /// The package to test.
+        /// The package to test
         #[arg(value_name = "PACKAGE", required = true)]
         package: String,
-        /// The version (or constraint) to test against. Defaults to `*`.
+        /// The version (or constraint) to test against. Defaults to `*`
         #[arg(value_name = "VERSION")]
         version: Option<String>,
-        /// Recurse through the dependency chain (`--recursive` / `-r`).
+        /// Recurse through the dependency chain (`--recursive` / `-r`)
         #[arg(short = 'r', long = "recursive")]
         recursive: bool,
-        /// Render the full tree (`--tree` / `-t`).
+        /// Render the full tree (`--tree` / `-t`)
         #[arg(short = 't', long = "tree")]
         tree: bool,
-        /// Run in this directory instead of CWD (`-d`).
+        /// Run in this directory instead of CWD (`-d`)
         #[arg(short = 'd', long = "working-dir", value_name = "DIR")]
         working_dir: Option<std::path::PathBuf>,
     },
-    /// List installed packages that have a newer version available.
-    /// Drop-in for `composer outdated` (a focused `show --latest
-    /// --outdated`). Use the global `--format json` for JSON output.
+    /// List installed packages with a newer version available
+    ///
+    /// Use the global `--format json` for JSON output
     Outdated {
         /// Optional `vendor/name` filters; with none, all packages are
-        /// considered.
+        /// considered
         #[arg(value_name = "PACKAGES")]
         packages: Vec<String>,
-        /// Only the project's direct dependencies (`--direct` / `-D`).
+        /// Only the project's direct dependencies (`--direct` / `-D`)
         #[arg(short = 'D', long = "direct")]
         direct: bool,
-        /// Only show packages with a new major version (`--major-only`).
+        /// Only show packages with a new major version (`--major-only`)
         #[arg(long = "major-only")]
         major_only: bool,
-        /// Only show packages with a new minor version (`--minor-only`).
+        /// Only show packages with a new minor version (`--minor-only`)
         #[arg(long = "minor-only")]
         minor_only: bool,
-        /// Only show packages with a new patch version (`--patch-only`).
+        /// Only show packages with a new patch version (`--patch-only`)
         #[arg(long = "patch-only")]
         patch_only: bool,
-        /// Skip dev dependencies (`--no-dev`).
+        /// Skip dev dependencies (`--no-dev`)
         #[arg(long = "no-dev")]
         no_dev: bool,
-        /// Exit non-zero if any package is outdated (`--strict`).
+        /// Exit non-zero if any package is outdated (`--strict`)
         #[arg(long = "strict")]
         strict: bool,
-        /// Run in this directory instead of CWD (`-d`).
+        /// Run in this directory instead of CWD (`-d`)
         #[arg(short = 'd', long = "working-dir", value_name = "DIR")]
         working_dir: Option<std::path::PathBuf>,
     },
-    /// Check installed packages against the Packagist security-advisories
-    /// database. Drop-in for `composer audit`. Exits non-zero when
-    /// advisories are found. Use the global `--format json` for JSON.
+    /// Check installed packages for security advisories
+    ///
+    /// Checks against the Packagist security-advisories database. Exits
+    /// non-zero when advisories are found. Use the global `--format json`
+    /// for JSON
     Audit {
-        /// Skip dev dependencies (`--no-dev`).
+        /// Skip dev dependencies (`--no-dev`)
         #[arg(long = "no-dev")]
         no_dev: bool,
-        /// How to treat abandoned packages (`--abandoned`). Currently
-        /// accepted for parity; abandoned detection is not yet wired.
+        /// How to treat abandoned packages. Detection is not yet wired
+        /// up
         #[arg(long = "abandoned", value_enum, default_value = "report")]
         abandoned: AbandonedHandling,
-        /// Audit the locked set (`--locked`). bougie always reads
-        /// `composer.lock`, so this is the default behavior; accepted
-        /// for parity.
+        /// Audit the locked set. bougie always reads `composer.lock`, so
+        /// this is the default
         #[arg(long = "locked")]
         locked: bool,
-        /// Run in this directory instead of CWD (`-d`).
+        /// Run in this directory instead of CWD (`-d`)
         #[arg(short = 'd', long = "working-dir", value_name = "DIR")]
         working_dir: Option<std::path::PathBuf>,
     },
-    /// List the license of every installed package. Drop-in for
-    /// `composer licenses`. Use the global `--format json` for JSON.
+    /// List the license of every installed package
+    ///
+    /// Use the global `--format json` for JSON
     Licenses {
-        /// Skip dev dependencies (`--no-dev`).
+        /// Skip dev dependencies (`--no-dev`)
         #[arg(long = "no-dev")]
         no_dev: bool,
-        /// Run in this directory instead of CWD (`-d`).
+        /// Run in this directory instead of CWD (`-d`)
         #[arg(short = 'd', long = "working-dir", value_name = "DIR")]
         working_dir: Option<std::path::PathBuf>,
     },
-    /// Report packages that look locally modified. Drop-in for
-    /// `composer status`. bougie installs from dist archives, so for the
-    /// common case this reports "no local changes".
+    /// Report packages that look locally modified
+    ///
+    /// bougie installs from dist archives, so for the common case this
+    /// reports "no local changes"
     Status {
-        /// Run in this directory instead of CWD (`-d`).
+        /// Run in this directory instead of CWD (`-d`)
         #[arg(short = 'd', long = "working-dir", value_name = "DIR")]
         working_dir: Option<std::path::PathBuf>,
     },
-    /// Show funding information for installed packages, grouped by
-    /// vendor. Drop-in for `composer fund`. Use `--format json` for JSON.
+    /// Show funding information for installed packages
+    ///
+    /// Grouped by vendor. Use `--format json` for JSON
     Fund {
-        /// Skip dev dependencies (`--no-dev`).
+        /// Skip dev dependencies (`--no-dev`)
         #[arg(long = "no-dev")]
         no_dev: bool,
-        /// Run in this directory instead of CWD (`-d`).
+        /// Run in this directory instead of CWD (`-d`)
         #[arg(short = 'd', long = "working-dir", value_name = "DIR")]
         working_dir: Option<std::path::PathBuf>,
     },
     /// Catch-all for any composer subcommand bougie does not implement
-    /// natively (`create-project`, `archive`, `bump`, `global`, …).
-    /// bougie does not bundle the Composer phar, so these no longer run;
-    /// the dispatch returns an error pointing at
-    /// `bougie tool install composer/composer` for the full upstream
-    /// Composer.
+    /// natively (`create-project`, `archive`, `bump`, `global`, …). These
+    /// return an error pointing at `bougie tool install composer/composer`
     #[command(external_subcommand)]
     External(Vec<OsString>),
 }
@@ -1319,85 +1308,85 @@ pub enum ComposerCommand {
 /// How `composer audit` treats abandoned packages.
 #[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AbandonedHandling {
-    /// Ignore abandoned packages entirely.
+    /// Ignore abandoned packages entirely
     Ignore,
-    /// Report abandoned packages but don't fail on them.
+    /// Report abandoned packages but don't fail on them
     Report,
-    /// Treat abandoned packages as an audit failure.
+    /// Treat abandoned packages as an audit failure
     Fail,
 }
 
 #[derive(Subcommand, Debug)]
 pub enum CacheCommand {
-    /// Wipe the full cache.
+    /// Wipe the full cache
     Clean,
-    /// Remove unneeded library files.
+    /// Remove unneeded library files
     Prune {
-        /// Show what would be pruned without removing anything.
+        /// Show what would be pruned without removing anything
         #[arg(long)]
         dry_run: bool,
-        /// Also remove tracked projects that no longer exist on disk.
+        /// Also remove tracked projects that no longer exist on disk
         #[arg(long)]
         prune_projects: bool,
     },
-    /// Show the location of the cache directory.
+    /// Show the location of the cache directory
     Dir,
-    /// Show the cache size.
+    /// Show the cache size
     Size,
 }
 
 #[derive(Subcommand, Debug)]
 pub enum ToolCommand {
     /// Install a tool. Pass `<vendor>/<name>` optionally followed by
-    /// `@<constraint>` (e.g. `phpstan/phpstan@^1.10`).
+    /// `@<constraint>` (e.g. `phpstan/phpstan@^1.10`)
     Install {
-        /// Composer package identifier, optionally with `@<constraint>`.
+        /// Composer package identifier, optionally with `@<constraint>`
         package: String,
         /// Pin the tool to a specific PHP. Accepts a version (`8.3`,
         /// `8.3.12`) or a constraint (`~8.3`, `>=8.2,<8.4`). When the
         /// requested PHP isn't installed, bougie installs it
-        /// automatically. Defaults to the highest installed NTS PHP.
+        /// automatically. Defaults to the highest installed NTS PHP
         #[arg(long, value_name = "VER")]
         php: Option<String>,
         /// Additional Composer package (`vendor/name[@<constraint>]`)
         /// or PHP extension (`intl`, `redis`) to install alongside the
-        /// tool. May be passed multiple times.
+        /// tool. May be passed multiple times
         #[arg(long, value_name = "PKG_OR_EXT")]
         with: Vec<String>,
-        /// Overwrite an existing executable at the bin-dir path.
+        /// Overwrite an existing executable at the bin-dir path
         #[arg(long)]
         force: bool,
     },
-    /// Remove an installed tool by its `<vendor>/<name>` identifier.
+    /// Remove an installed tool by its `<vendor>/<name>` identifier
     Uninstall {
-        /// Composer package identifier.
+        /// Composer package identifier
         package: String,
     },
     /// Add an extra composer package or PHP extension to an
     /// installed tool. Re-resolves the tool's lock and updates the
-    /// vendor tree in place.
+    /// vendor tree in place
     Inject {
-        /// Composer package identifier of the tool.
+        /// Composer package identifier of the tool
         package: String,
         /// Extra to add (`vendor/name[@<constraint>]` for composer
-        /// packages, bare name for PHP extensions). Repeatable.
+        /// packages, bare name for PHP extensions). Repeatable
         #[arg(long, value_name = "PKG_OR_EXT", required = true)]
         with: Vec<String>,
     },
-    /// Remove an extra previously added via `--with` / `inject`.
+    /// Remove an extra previously added via `--with` / `inject`
     Uninject {
-        /// Composer package identifier of the tool.
+        /// Composer package identifier of the tool
         package: String,
-        /// Extra to remove. Repeatable.
+        /// Extra to remove. Repeatable
         #[arg(long, value_name = "PKG_OR_EXT", required = true)]
         with: Vec<String>,
     },
-    /// List installed tools.
+    /// List installed tools
     List,
     /// Print a tool's install directory, or the tools root if no
-    /// package is given.
+    /// package is given
     Dir {
-        /// Composer package identifier; omit to print the tools root.
+        /// Composer package identifier; omit to print the tools root
         package: Option<String>,
     },
     /// Run an installed-or-cached tool one-off. Reuses an existing
@@ -1405,11 +1394,11 @@ pub enum ToolCommand {
     /// exactly; otherwise materialises into the ephemeral cache.
     ///
     /// `bgx` is provided as a convenient alias for `bougie tool run`;
-    /// their behavior is identical.
+    /// their behavior is identical
     #[command(
         override_usage = "bougie tool run [OPTIONS] <PACKAGE> [ARGS]...",
         after_help = "Use `bgx` as a shortcut for `bougie tool run`.\n\n\
-                      Use `bougie help tool run` for more details.",
+                      Use `bougie help tool run` for more details",
         after_long_help = ""
     )]
     Run(ToolRunArgs),
@@ -1423,9 +1412,9 @@ pub enum ToolCommand {
     #[command(
         hide = true,
         override_usage = "bgx [OPTIONS] <PACKAGE> [ARGS]...",
-        about = "Run a tool from a Composer package.",
+        about = "Run a tool from a PHP package",
         long_about = None,
-        after_help = "Use `bougie help tool run` for more details.",
+        after_help = "Use `bougie help tool run` for more details",
         after_long_help = "",
         display_name = "bgx",
         // `bgx --version` / `bgx -V` exec into `bougie tool bgx`; give
@@ -1436,17 +1425,17 @@ pub enum ToolCommand {
     Bgx(BgxArgs),
     /// Re-resolve a tool's lock and bring its vendor tree up to date.
     /// Pass `--all` to walk every installed tool, or `--reinstall` to
-    /// wipe and rebuild from scratch (recovery for broken state).
+    /// wipe and rebuild from scratch (recovery for broken state)
     Upgrade {
-        /// Composer package identifier. Required unless `--all`.
+        /// Composer package identifier. Required unless `--all`
         #[arg(required_unless_present = "all", conflicts_with = "all")]
         package: Option<String>,
-        /// Upgrade every installed tool.
+        /// Upgrade every installed tool
         #[arg(long)]
         all: bool,
         /// Wipe the tool dir + every entrypoint symlink and reinstall
         /// from scratch using the receipt's pinned `(package,
-        /// constraint, php_version, with, extensions)` tuple.
+        /// constraint, php_version, with, extensions)` tuple
         #[arg(long)]
         reinstall: bool,
     },
@@ -1454,20 +1443,20 @@ pub enum ToolCommand {
 
 #[derive(Subcommand, Debug)]
 pub enum SelfCommand {
-    /// Update bougie.
+    /// Update bougie
     Update {
         /// Update even when bougie can't confirm it installed this
         /// binary. By default `self update` only touches a binary that
         /// bougie's own installer placed (per the install receipt);
         /// copies from a package manager, cargo, or nix are left for
         /// that tool to update. Pass `--force` only if you know this
-        /// copy came from bougie's installer.
+        /// copy came from bougie's installer
         #[arg(long)]
         force: bool,
     },
-    /// Show bougie's version.
+    /// Show bougie's version
     Version {
-        /// Only show the version.
+        /// Only show the version
         #[arg(long)]
         short: bool,
     },
@@ -1475,17 +1464,17 @@ pub enum SelfCommand {
 
 #[derive(Args, Debug)]
 pub struct ToolRunArgs {
-    /// Pin the tool to a specific PHP for this run.
+    /// Pin the tool to a specific PHP for this run
     #[arg(long, value_name = "VER")]
     pub php: Option<String>,
     /// Extra composer package or PHP extension, same shape as
-    /// `tool install --with`. Repeatable.
+    /// `tool install --with`. Repeatable
     #[arg(long, value_name = "PKG_OR_EXT")]
     pub with: Vec<String>,
     /// The tool's Composer package (optionally `@<constraint>`) followed
     /// by the arguments to forward to it. bougie's own options must come
     /// *before* the package; everything from the package onward is passed
-    /// to the tool verbatim, so no `--` separator is needed.
+    /// to the tool verbatim, so no `--` separator is needed
     #[arg(
         trailing_var_arg = true,
         allow_hyphen_values = true,
