@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.32.2](https://github.com/cresset-tools/bougie/compare/bougie-v0.32.1...bougie-v0.32.2) (2026-06-20)
+
+
+### Bug Fixes
+
+* **composer-resolver:** accept `{"packagist": false}` BC alias to disable Packagist ([#402](https://github.com/cresset-tools/bougie/issues/402)) ([5940298](https://github.com/cresset-tools/bougie/commit/5940298c5eacba3568a141a6371cef572f365882))
+* **composer-resolver:** key repo auth by origin incl. port ([#404](https://github.com/cresset-tools/bougie/issues/404)) ([01e8e9b](https://github.com/cresset-tools/bougie/commit/01e8e9b46710cd248131ccc12dc0c508b98634cf))
+* **daemon:** run service health probe off the Supervisor mutex ([#405](https://github.com/cresset-tools/bougie/issues/405)) ([9db5d61](https://github.com/cresset-tools/bougie/commit/9db5d614d5e816c587fb4f26eb7076ced696c730)), closes [#219](https://github.com/cresset-tools/bougie/issues/219)
+
 ## [0.32.1](https://github.com/cresset-tools/bougie/compare/bougie-v0.32.0...bougie-v0.32.1) (2026-06-19)
 
 
