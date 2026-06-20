@@ -122,9 +122,8 @@ pub enum Command {
         /// starter's composer.json instead of the empty default.
         #[arg(long, value_name = "URL_OR_ALIAS")]
         starter: Option<String>,
-        /// After scaffolding, bring the project up — equivalent to
-        /// `bougie start` (sync the toolchain + vendor, then run the
-        /// project recipe). Unix-only.
+        /// After scaffolding, bring the project up. Equivalent to
+        /// `bougie start`.
         #[arg(long)]
         start: bool,
     },
@@ -157,16 +156,11 @@ pub enum Command {
     #[command(subcommand, display_order = 15)]
     Ext(ExtCommand),
 
-    /// Manage native (cweagans-style) patches applied to installed packages.
+    /// Manage patches applied to installed packages.
     #[command(subcommand, display_order = 16)]
     Patches(PatchesCommand),
 
-    /// Add one or more packages to the project and sync. The uv-flavored
-    /// twin of `composer require`: a bare `vendor/pkg` writes a `>=X.Y`
-    /// lower bound (vs `composer require`'s caret `^X.Y`), and an
-    /// explicit constraint uses the `@` syntax (`vendor/pkg@^1.0`), as in
-    /// `bougie tool install` / `bougie ext add`. Edits `composer.json`,
-    /// re-resolves `composer.lock`, and installs into `vendor/`.
+    /// Add dependencies to the project
     #[command(display_order = 10)]
     Add {
         /// Packages to add, `vendor/pkg` or `vendor/pkg@<constraint>`.
@@ -199,8 +193,7 @@ pub enum Command {
         dry_run: bool,
     },
 
-    /// Remove one or more packages from the project and sync. The
-    /// uv-flavored twin of `composer remove`.
+    /// Remove dependencies from the project
     #[command(display_order = 11)]
     Remove {
         /// Packages to remove (`vendor/name`).
@@ -223,11 +216,7 @@ pub enum Command {
         dry_run: bool,
     },
 
-    /// Refresh `composer.lock` to match `composer.json` (native; uv's
-    /// `uv lock`). Minimal: keeps every package at its locked version
-    /// where still valid, re-resolving only what changed. Never bumps
-    /// versions and never installs — use `bougie composer update` to pull
-    /// newer versions.
+    /// Update the project's lockfile
     #[command(display_order = 12)]
     Lock {
         /// Version-preference policy when re-resolving changed requires
@@ -242,8 +231,7 @@ pub enum Command {
         dry_run: bool,
     },
 
-    /// Print the project's dependency tree (native; uv's `uv tree`).
-    /// Reads `composer.lock`.
+    /// Display the project's dependency tree
     #[command(display_order = 13)]
     Tree {
         /// Root the tree at this package instead of the project.
@@ -257,9 +245,7 @@ pub enum Command {
         working_dir: Option<std::path::PathBuf>,
     },
 
-    /// List installed packages with a newer version available (native;
-    /// like `uv`/`pnpm outdated`). Reads `composer.lock` and queries the
-    /// configured repositories.
+    /// Shows a list of installed packages that have updates available, including their latest version
     #[command(display_order = 14)]
     Outdated {
         /// Optional `vendor/name` filters; with none, all are considered.
@@ -322,7 +308,7 @@ pub enum Command {
         php: PhpPrefArgs,
     },
 
-    /// Run a command in the project environment.
+    /// Run a command or script
     #[command(display_order = 5)]
     Run {
         /// Add a temporary extension for this invocation.
@@ -354,23 +340,15 @@ pub enum Command {
     #[command(subcommand, display_order = 20)]
     Php(PhpCommand),
 
-    /// Manage Node.js interpreters (for projects that build frontend
-    /// assets — Vite, Laravel Mix, Magento static-content deploy).
+    /// Manage Node.js interpreters
     #[command(subcommand, display_order = 21)]
     Node(NodeCommand),
 
-    /// Run Composer, reimplemented natively. bougie does not bundle or
-    /// execute the Composer phar; the common Composer surface
-    /// (install/update/require/remove/show/why/why-not/outdated/audit/
-    /// licenses/fund/status/validate/dump-autoload) runs natively, and an
-    /// unrecognized subcommand errors with a pointer to
-    /// `bougie tool install composer/composer` for the full upstream
-    /// Composer.
+    /// Manage PHP packages with a composer compatible dependency
     #[command(subcommand, display_order = 16)]
     Composer(ComposerCommand),
 
-    /// Manage globally-installed, isolated PHP CLI tools. See
-    /// `TOOL_PLAN.md` for the design.
+    /// Run and install commands provided by PHP packages
     #[command(subcommand, display_order = 22)]
     Tool(ToolCommand),
 
@@ -395,29 +373,19 @@ pub enum Command {
     #[command(name = "self", display_order = 41)]
     SelfCmd(SelfCommand),
 
-    /// Run the bougie development HTTP server for the current project.
-    /// With no subcommand, registers the project with the shared dev
-    /// server, prints its URL, and streams its log (Ctrl-C detaches).
-    /// See SERVER.md.
+    /// Run the bougie development HTTP server
     #[command(display_order = 30)]
     Server(ServerArgs),
 
-    /// Manage project-scoped dev services (mariadb, redis, …). See
-    /// SERVICES.md and CLI.md §3.8.
+    /// Manage project-scoped dev services
     #[command(subcommand, display_order = 31)]
     Services(ServicesCommand),
 
-    /// Inspect and manage provisioned tenants across the shared dev
-    /// services and the project each belongs to. Reads the on-disk
-    /// tenant ledgers; no daemon required.
+    /// Inspect and manage provisioned tenants
     #[command(subcommand, display_order = 32)]
     Projects(ProjectsCommand),
 
-    /// Bring the whole project up: run the detected recipe's `start`
-    /// task, whose DAG syncs the toolchain + vendor, provisions and
-    /// starts the project's services, runs any setup, and starts the
-    /// dev server. The project lifecycle umbrella (ddev's `start`).
-    /// For an individual task use `bougie make <task>`. Unix-only.
+    /// Bring the whole project up
     #[command(display_order = 3)]
     Start {
         /// Skip the implicit `bougie sync` prologue.
@@ -437,11 +405,7 @@ pub enum Command {
         recipe: Option<String>,
     },
 
-    /// Bring the project down: stop its declared services (or every
-    /// service in `names`), including the dev-server tenant when the
-    /// `server` service is declared. The shared daemon and any other
-    /// project's tenants stay up. The teardown twin of `bougie start`.
-    /// Unix-only.
+    /// Bring the project down
     #[command(display_order = 4)]
     Stop {
         /// Service names to stop. Empty = every declared service.
@@ -452,9 +416,7 @@ pub enum Command {
         purge: bool,
     },
 
-    /// Walk a project recipe's DAG, running tasks whose freshness
-    /// check fails. With no task, lists the available tasks; use
-    /// `bougie start` to bring the whole project up. See RECIPES.md.
+    /// Makefile-like task runner
     #[command(display_order = 7)]
     Make {
         /// Task to run. With none, the available tasks are listed.
@@ -482,15 +444,7 @@ pub enum Command {
         print: bool,
     },
 
-    /// Format the project's PHP, the way `uv format` runs ruff.
-    ///
-    /// bougie does not bundle a formatter: on first use it downloads a
-    /// pinned `wick` binary (cresset-tools/wick — an unconfigurable,
-    /// Laravel Pint-style formatter), caches it, and execs it. Every
-    /// argument is forwarded verbatim to `wick`, so `bougie format`,
-    /// `bougie format --check`, `bougie format src/ --diff`, and
-    /// `… | bougie format -` behave exactly like the matching `wick`
-    /// invocation. Pin a specific wick with `BOUGIE_WICK_VERSION`.
+    /// Format all the PHP code in a project
     #[command(display_order = 8)]
     Format {
         /// Arguments forwarded verbatim to `wick` (paths, `--check`,
