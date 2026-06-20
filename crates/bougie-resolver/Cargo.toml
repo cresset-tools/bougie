@@ -12,7 +12,7 @@ authors.workspace = true
 bougie-errors = { workspace = true }
 bougie-index = { workspace = true }
 bougie-version = { workspace = true }
-bougie-semver = { workspace = true }
+composer-semver = { workspace = true }
 
 [dependencies.eyre]
 version = "0.6"

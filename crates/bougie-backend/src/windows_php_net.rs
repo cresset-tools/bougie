@@ -304,12 +304,12 @@ fn pick_minor_key(spec: &VersionLike) -> Result<String> {
 /// Unions and `^8` (whose lower bound `>=8.0.0` says 8.0, fine; the
 /// caller picks the lower-bound minor on open-ended forms — same
 /// trade-off as the bare `>=8.0` case).
-fn constraint_anchor(c: &bougie_semver::Constraint) -> Option<PartialVersion> {
-    use bougie_semver::version::CmpOp;
+fn constraint_anchor(c: &composer_semver::Constraint) -> Option<PartialVersion> {
+    use composer_semver::version::CmpOp;
     match c {
         // `Any` (`*` / `x`) doesn't anchor anywhere — caller errors.
-        bougie_semver::Constraint::Any => None,
-        bougie_semver::Constraint::Op { op, version, .. } => match op {
+        composer_semver::Constraint::Any => None,
+        composer_semver::Constraint::Op { op, version, .. } => match op {
             // Lower-bound, inclusive upper-bound, and exact equality
             // all pin to the named major.minor.
             CmpOp::Ge | CmpOp::Eq | CmpOp::Le => version_major_minor(version),
@@ -324,10 +324,10 @@ fn constraint_anchor(c: &bougie_semver::Constraint) -> Option<PartialVersion> {
         //   `~8.3` → `And([>=8.3.0.0, <9.0.0.0])`     → 8.3
         //   `~8.3.0` → `And([>=8.3.0.0, <8.4.0.0])`   → 8.3
         //   `8.4.*` → `And([>=8.4.0.0, <8.5.0.0])`    → 8.4
-        bougie_semver::Constraint::And(items) => items.iter().find_map(constraint_anchor),
+        composer_semver::Constraint::And(items) => items.iter().find_map(constraint_anchor),
         // Unions span multiple minors by construction — no single
         // anchor.
-        bougie_semver::Constraint::Or(_) => None,
+        composer_semver::Constraint::Or(_) => None,
     }
 }
 
@@ -335,8 +335,8 @@ fn constraint_anchor(c: &bougie_semver::Constraint) -> Option<PartialVersion> {
 /// Returns `None` for branch versions and for numeric versions whose
 /// first two segments aren't parseable u32s (shouldn't happen for the
 /// canonical form, but we don't want to panic on malformed input).
-fn version_major_minor(v: &bougie_semver::Version) -> Option<PartialVersion> {
-    use bougie_semver::version::VersionKind;
+fn version_major_minor(v: &composer_semver::Version) -> Option<PartialVersion> {
+    use composer_semver::version::VersionKind;
     let VersionKind::Numeric { segments_raw, .. } = &v.kind else {
         return None;
     };
@@ -809,7 +809,7 @@ mod tests {
     /// a new project on Windows" flow to function.
     #[test]
     fn pick_minor_key_accepts_caret_tilde_and_pinned_op_constraints() {
-        use bougie_semver::Constraint;
+        use composer_semver::Constraint;
         let caret = VersionLike::Constraint(Constraint::parse("^8.4").unwrap());
         assert_eq!(pick_minor_key(&caret).unwrap(), "8.4");
         let tilde = VersionLike::Constraint(Constraint::parse("~8.3.0").unwrap());
@@ -822,7 +822,7 @@ mod tests {
 
     #[test]
     fn pick_minor_key_anchors_on_lower_bound_for_open_constraints() {
-        use bougie_semver::Constraint;
+        use composer_semver::Constraint;
         // `^8` expands to `>=8.0.0.0, <9.0.0.0`. The lower bound's
         // 8.0 is taken as the anchor — backend picks 8.0's latest
         // patch even though `^8` would happily accept 8.4 too. Same
@@ -836,7 +836,7 @@ mod tests {
 
     #[test]
     fn pick_minor_key_rejects_wildcard_and_unions() {
-        use bougie_semver::Constraint;
+        use composer_semver::Constraint;
         // `*` has no anchor.
         let star = VersionLike::Constraint(Constraint::parse("*").unwrap());
         assert!(pick_minor_key(&star).is_err());
@@ -849,7 +849,7 @@ mod tests {
     /// the 8.3 minor key on Windows just like everywhere else.
     #[test]
     fn pick_minor_key_accepts_wildcard_patch() {
-        use bougie_semver::Constraint;
+        use composer_semver::Constraint;
         let c = VersionLike::Constraint(Constraint::parse("8.3.*").unwrap());
         assert_eq!(pick_minor_key(&c).unwrap(), "8.3");
     }

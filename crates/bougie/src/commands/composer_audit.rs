@@ -4,7 +4,7 @@
 //! Posts the locked package names to the advisories API (via
 //! `bougie_composer_resolver::audit`), matches each advisory's
 //! `affectedVersions` constraint against the locked version with
-//! `bougie-semver`, and reports the hits. Exits non-zero when any
+//! `composer-semver`, and reports the hits. Exits non-zero when any
 //! advisory matches — CI-friendly.
 //!
 //! `--abandoned` is accepted for parity but abandoned-package detection
@@ -20,8 +20,8 @@ use bougie_composer::lockfile::Lock;
 use bougie_composer_resolver::audit::{self, Advisory};
 use bougie_composer_resolver::metadata::build_client;
 use bougie_output::output::{emit, Render};
-use bougie_semver::constraint::Constraint;
-use bougie_semver::version::Version;
+use composer_semver::constraint::Constraint;
+use composer_semver::version::Version;
 use eyre::{eyre, Context, Result};
 use serde::Serialize;
 

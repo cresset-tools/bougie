@@ -16,7 +16,7 @@ bougie-paths = { workspace = true }
 bougie-platform = { workspace = true }
 bougie-resolver = { workspace = true }
 bougie-version = { workspace = true }
-bougie-semver = { workspace = true }
+composer-semver = { workspace = true }
 
 [dependencies.eyre]
 version = "0.6"

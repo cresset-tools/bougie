@@ -16,7 +16,7 @@
 //! tests), `config.autoloader-suffix` (composer.json override of the
 //! content-hash), and `config.platform-check` → `platform_check.php`
 //! (the PHP-version + extension guard, byte-equivalent to Composer; see
-//! `emit::platform_check`, built on `bougie_semver`'s constraint
+//! `emit::platform_check`, built on `composer_semver`'s constraint
 //! lower-bound extraction).
 
 mod autoloader;

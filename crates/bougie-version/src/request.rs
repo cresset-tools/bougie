@@ -5,7 +5,7 @@
 //! the resolver (phase 5).
 
 use crate::version::PartialVersion;
-use bougie_semver::Constraint;
+use composer_semver::Constraint;
 use eyre::{eyre, Result};
 use std::path::PathBuf;
 
@@ -361,7 +361,7 @@ mod tests {
 
     #[test]
     fn php_prefix_with_constraint() {
-        use bougie_semver::version::CmpOp;
+        use composer_semver::version::CmpOp;
         let req = parse_request("php>=8.3,<8.4").unwrap();
         match req {
             Request::VersionLike { spec: VersionLike::Constraint(Constraint::And(parts)), .. } => {

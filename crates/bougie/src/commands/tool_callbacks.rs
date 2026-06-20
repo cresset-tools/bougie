@@ -46,12 +46,12 @@ pub fn required_php_fetcher() -> Box<RequiredPhpFetcher> {
             let Some(versions) = metadata.packages.get(package) else {
                 return Ok(None);
             };
-            let parsed_constraint = bougie_semver::Constraint::parse(user_constraint)
+            let parsed_constraint = composer_semver::Constraint::parse(user_constraint)
                 .map_err(|e| eyre::eyre!("parsing user constraint `{user_constraint}`: {e}"))?;
             // Versions are newest-first; pick the first one that
             // matches the user's @<constraint>.
             for v in versions {
-                let Ok(ver) = bougie_semver::Version::parse(&v.version) else {
+                let Ok(ver) = composer_semver::Version::parse(&v.version) else {
                     continue;
                 };
                 if parsed_constraint.matches(&ver) {

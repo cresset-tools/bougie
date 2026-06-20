@@ -8,7 +8,7 @@ use std::process::ExitCode;
 use bougie_cli::OutputFormat;
 use bougie_composer::lockfile::{self, Lock};
 use bougie_output::output::{emit, Render};
-use bougie_semver::constraint::Constraint;
+use composer_semver::constraint::Constraint;
 use eyre::{Context, Result};
 use serde::Serialize;
 use serde_json::Value;
@@ -994,7 +994,7 @@ fn validate_config_platform(
             ));
             continue;
         };
-        if bougie_semver::version::Version::parse(ver_str).is_err() {
+        if composer_semver::version::Version::parse(ver_str).is_err() {
             errors.push(format!(
                 "config.platform.{key}: `{ver_str}` is not a valid version",
             ));
@@ -1079,7 +1079,7 @@ fn validate_lock_requirements(
                 ));
                 continue;
             };
-            if let Ok(ver) = bougie_semver::version::Version::parse(&pkg.version) {
+            if let Ok(ver) = composer_semver::version::Version::parse(&pkg.version) {
                 if !constraint.matches(&ver) {
                     errors.push(format!(
                         "{section}.{dep_name}: locked version {} does not \

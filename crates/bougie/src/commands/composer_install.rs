@@ -20,8 +20,8 @@ use bougie_composer_resolver::{InstallOptions, InstallSummary};
 use bougie_installer::baseline;
 use bougie_output::output::{emit, Render};
 use bougie_paths::Paths;
-use bougie_semver::constraint::Constraint;
-use bougie_semver::version::Version;
+use composer_semver::constraint::Constraint;
+use composer_semver::version::Version;
 use eyre::{eyre, Context, Result};
 use serde::Serialize;
 

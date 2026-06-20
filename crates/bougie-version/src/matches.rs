@@ -18,7 +18,7 @@ pub fn version_satisfies(v: &Version, spec: &VersionLike) -> bool {
             // Version. Lift bougie's exact triple into a
             // Composer-normalized "X.Y.Z" — the same trick the resolver
             // uses.
-            let Ok(lifted) = bougie_semver::Version::parse(&v.to_string()) else {
+            let Ok(lifted) = composer_semver::Version::parse(&v.to_string()) else {
                 return false;
             };
             c.matches(&lifted)
@@ -48,7 +48,7 @@ pub fn matches_partial(v: &Version, pv: &PartialVersion) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bougie_semver::Constraint;
+    use composer_semver::Constraint;
 
     fn pv(major: u32, minor: Option<u32>, patch: Option<u32>) -> VersionLike {
         VersionLike::Version(PartialVersion { major, minor, patch })

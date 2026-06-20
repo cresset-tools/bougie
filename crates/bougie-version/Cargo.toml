@@ -9,7 +9,7 @@ rust-version = "1.95"
 authors.workspace = true
 
 [dependencies]
-bougie-semver = { workspace = true }
+composer-semver = { workspace = true }
 
 [dependencies.eyre]
 version = "0.6"

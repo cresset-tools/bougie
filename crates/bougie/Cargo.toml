@@ -89,7 +89,7 @@ bougie-scripts = { workspace = true }
 bougie-server = { workspace = true }
 bougie-tool = { workspace = true }
 bougie-version = { workspace = true }
-bougie-semver = { workspace = true }
+composer-semver = { workspace = true }
 spdx = "0.10"
 
 # `bougied` (process supervisor) and the recipe engine rely on Unix-only

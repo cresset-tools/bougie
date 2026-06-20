@@ -78,9 +78,9 @@ use crate::platform::PlatformEnv;
 
 use bougie_composer::lockfile::{Lock, LockAutoload, LockPackage};
 use bougie_paths::Paths;
-use bougie_semver::constraint::Constraint;
-use bougie_semver::stability::Stability;
-use bougie_semver::version::Version;
+use composer_semver::constraint::Constraint;
+use composer_semver::stability::Stability;
+use composer_semver::version::Version;
 use eyre::{eyre, Result, WrapErr};
 use pubgrub::{
     resolve, DefaultStringReporter, Dependencies, DependencyConstraints, DependencyProvider,
@@ -2103,7 +2103,7 @@ fn read_root_requires(
             let (cleaned, flag) = split_stability_flag(raw_constraint);
             if let Some(stability) = flag {
                 flags.insert(dep_name.clone(), stability);
-            } else if bougie_semver::version::is_branch_alias(cleaned)
+            } else if composer_semver::version::is_branch_alias(cleaned)
                 || (cleaned.len() >= 4
                     && cleaned.as_bytes()[..4].eq_ignore_ascii_case(b"dev-"))
             {
@@ -3284,7 +3284,7 @@ impl ResolveProvider {
                         .iter()
                         .map(|v| {
                             to_range(&Constraint::Op {
-                                op: bougie_semver::version::CmpOp::Eq,
+                                op: composer_semver::version::CmpOp::Eq,
                                 version: v.clone(),
                                 explicit_lower_bound: true,
                             })
@@ -3867,7 +3867,7 @@ pub fn dry_run_update_partial(
 ///
 /// Stability fields are pre-converted to Composer's wire form
 /// (`minimum-stability` keyword string, `stability-flags` integer
-/// constants) so callers don't need to depend on `bougie-semver` to
+/// constants) so callers don't need to depend on `composer-semver` to
 /// build a `Lock`.
 #[derive(Debug, Clone)]
 pub struct LockfileSolveOutcome {

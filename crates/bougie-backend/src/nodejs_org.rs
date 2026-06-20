@@ -93,7 +93,7 @@ impl std::str::FromStr for NodeRequest {
 /// A concrete `major.minor.patch` Node.js version. Node versions are
 /// plain three-segment integers (no pre-release tags on stable
 /// releases), so a dedicated tuple is simpler than pulling in the
-/// Composer-flavored [`bougie_semver::Version`].
+/// Composer-flavored [`composer_semver::Version`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct NodeVersion {
     pub major: u32,

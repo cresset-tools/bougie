@@ -29,7 +29,6 @@ members = [
     "crates/bougie-recipe",
     "crates/bougie-resolver",
     "crates/bougie-scripts",
-    "crates/bougie-semver",
     "crates/bougie-server",
     "crates/bougie-tool",
     "crates/bougie-version",
@@ -84,12 +83,17 @@ bougie-platform = { path = "crates/bougie-platform", version = "0.32.1" } # x-re
 bougie-recipe = { path = "crates/bougie-recipe", version = "0.32.1" } # x-release-please-version
 bougie-resolver = { path = "crates/bougie-resolver", version = "0.32.1" } # x-release-please-version
 bougie-scripts = { path = "crates/bougie-scripts", version = "0.32.1" } # x-release-please-version
-bougie-semver = { path = "crates/bougie-semver", version = "0.32.1" } # x-release-please-version
 bougie-server = { path = "crates/bougie-server", version = "0.32.1" } # x-release-please-version
 bougie-tool = { path = "crates/bougie-tool", version = "0.32.1" } # x-release-please-version
 bougie-version = { path = "crates/bougie-version", version = "0.32.1" } # x-release-please-version
 sandbox-run = { path = "crates/sandbox-run", version = "0.32.1" } # x-release-please-version
 macos-sandbox-sys = { path = "crates/macos-sandbox-sys", version = "0.32.1" } # x-release-please-version
+
+# External shared crate (not part of this workspace): the Composer
+# version/constraint algebra, extracted to the composer-rs workspace and
+# shared with sconce. Versioned independently on crates.io — NOT a
+# release-please marker line. Was the local `bougie-semver` crate.
+composer-semver = "0.1.0"
 
 [workspace.lints.rust]
 # `deny` rather than `forbid` so the daemon's process-supervisor can

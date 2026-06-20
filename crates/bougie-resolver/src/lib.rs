@@ -8,18 +8,18 @@
 
 use bougie_errors::BougieError;
 use bougie_index::wire::{Artifact, Section};
-use bougie_semver::Constraint;
+use composer_semver::Constraint;
 use bougie_version::request::{Flavor, VersionLike};
 use bougie_version::version::{PartialVersion, Version};
 use eyre::Result;
 
 /// Lift bougie's exact-triple Version into a Composer-flavor
-/// `bougie_semver::Version` so semver constraints can be matched
+/// `composer_semver::Version` so semver constraints can be matched
 /// against it. The triple `8.3.12` becomes the normalized `8.3.12.0`
 /// (Stable). Round-trips through Composer's parse since the canonical
 /// shape carries 4 segments + a stability suffix.
-fn lift(v: Version) -> bougie_semver::Version {
-    bougie_semver::Version::parse(&v.to_string())
+fn lift(v: Version) -> composer_semver::Version {
+    composer_semver::Version::parse(&v.to_string())
         .expect("triple version is always semver-parseable")
 }
 

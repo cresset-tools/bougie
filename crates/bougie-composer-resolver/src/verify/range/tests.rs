@@ -4,8 +4,8 @@
 //! boundary encoding.
 
 use super::to_range;
-use bougie_semver::constraint::Constraint;
-use bougie_semver::version::Version;
+use composer_semver::constraint::Constraint;
+use composer_semver::version::Version;
 
 fn parse_v(s: &str) -> Version {
     Version::parse(s).unwrap_or_else(|e| panic!("parse version {s:?}: {e}"))

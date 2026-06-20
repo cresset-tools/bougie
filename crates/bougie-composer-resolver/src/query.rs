@@ -326,7 +326,7 @@ pub fn funding(pkg: &LockPackage) -> &[LockFunding] {
 /// latest".
 ///
 /// Versions are the pretty strings (`3.5.0`, `1.2.0-RC1`, `dev-main`);
-/// the caller filters by stability / constraint via `bougie-semver`.
+/// the caller filters by stability / constraint via `composer-semver`.
 pub fn latest_versions(
     paths: &Paths,
     project_root: &Path,

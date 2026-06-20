@@ -24,7 +24,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use bougie_composer::lockfile::{LockAutoload, LockDist, LockPackage};
-use bougie_semver::Version;
+use composer_semver::Version;
 use serde_json::Value;
 
 use crate::metadata::{PathRepoConfig, ReferenceMode};

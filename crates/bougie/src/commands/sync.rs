@@ -11,7 +11,7 @@ use bougie_installer::install::{
 };
 use bougie_output::output::{emit, Render};
 use bougie_paths::Paths;
-use bougie_semver::Constraint;
+use composer_semver::Constraint;
 use bougie_version::request::{Flavor, Request, VersionLike};
 use bougie_resolver::{intersect_php, ResolveOptions};
 use bougie_fs::state::{
@@ -1823,7 +1823,7 @@ mod tests {
     /// Regression for #106: bougie run -- composer update used to
     /// fail with `invalid patch version component: "*"` whenever a
     /// project's composer.json declared a Composer-style wildcard in
-    /// `require.php`. `bougie-semver`'s parser handles the full
+    /// `require.php`. `composer-semver`'s parser handles the full
     /// Composer grammar (wildcards, hyphen ranges, unions, ...), so
     /// these now parse and lower to a constraint the resolver can
     /// satisfy against bougie's exact-triple PHP versions.

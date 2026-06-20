@@ -400,12 +400,12 @@ dependencies = [
  "bougie-recipe",
  "bougie-resolver",
  "bougie-scripts",
- "bougie-semver",
  "bougie-server",
  "bougie-tool",
  "bougie-version",
  "clap",
  "color-eyre",
+ "composer-semver",
  "eyre",
  "flate2",
  "insta",
@@ -438,7 +438,7 @@ version = "0.32.1"
 dependencies = [
  "bougie-installers",
  "bougie-php-json",
- "bougie-semver",
+ "composer-semver",
  "criterion",
  "md-5",
  "memchr",
@@ -469,8 +469,8 @@ dependencies = [
  "bougie-paths",
  "bougie-platform",
  "bougie-resolver",
- "bougie-semver",
  "bougie-version",
+ "composer-semver",
  "eyre",
  "reqwest",
  "serde",
@@ -511,7 +511,7 @@ dependencies = [
  "bougie-output",
  "bougie-patches",
  "bougie-paths",
- "bougie-semver",
+ "composer-semver",
  "criterion",
  "eyre",
  "glob",
@@ -735,8 +735,8 @@ version = "0.32.1"
 dependencies = [
  "bougie-errors",
  "bougie-index",
- "bougie-semver",
  "bougie-version",
+ "composer-semver",
  "eyre",
 ]
 
@@ -749,15 +749,6 @@ dependencies = [
  "serde_json",
  "tempfile",
  "wait-timeout",
-]
-
-[[package]]
-name = "bougie-semver"
-version = "0.32.1"
-dependencies = [
- "regex",
- "serde",
- "serde_json",
 ]
 
 [[package]]
@@ -803,8 +794,8 @@ dependencies = [
  "bougie-errors",
  "bougie-fs",
  "bougie-paths",
- "bougie-semver",
  "bougie-version",
+ "composer-semver",
  "eyre",
  "hex",
  "serde",
@@ -818,7 +809,7 @@ dependencies = [
 name = "bougie-version"
 version = "0.32.1"
 dependencies = [
- "bougie-semver",
+ "composer-semver",
  "eyre",
 ]
 
@@ -1073,6 +1064,15 @@ checksum = "ba5a308b75df32fe02788e748662718f03fde005016435c444eea572398219fd"
 dependencies = [
  "bytes",
  "memchr",
+]
+
+[[package]]
+name = "composer-semver"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "19468a4e1f2390fef462b7f723b1625f052b9a0dbf67d00b6494d496cd338b4a"
+dependencies = [
+ "regex",
 ]
 
 [[package]]
