@@ -283,6 +283,31 @@ fn extract_cache_namespace(url: &str) -> String {
     format!("url-{:016x}", fnv1a(url))
 }
 
+/// The credential-lookup key for a repository URL — Composer's
+/// `Url::getOrigin()`: the URL's host plus an explicit `:port` suffix
+/// when the URL carries one (`127.0.0.1:8080`, `repo.example.com`).
+///
+/// This is what `auth.json` / `config.http-basic` / `COMPOSER_AUTH`
+/// key credentials by, so — unlike [`extract_cache_namespace`], which
+/// strips the port to produce a filesystem-safe cache directory name —
+/// the port MUST be preserved here. Stripping it means basic/bearer
+/// credentials for a mirror on a non-default port (a common shape for
+/// local satis instances, e.g. `http://127.0.0.1:8080/...`) never
+/// match their `auth.json` entry and every request 401s.
+///
+/// Falls back to the whole URL when no host can be parsed; that won't
+/// match any host-keyed auth map, which is the correct "no
+/// credentials" outcome.
+pub(crate) fn auth_origin(url: &str) -> String {
+    if let Some(after_scheme) = url.split_once("://").map(|(_, rest)| rest) {
+        let host_and_port = after_scheme.split('/').next().unwrap_or("");
+        if !host_and_port.is_empty() {
+            return host_and_port.to_owned();
+        }
+    }
+    url.to_owned()
+}
+
 /// FNV-1a 64-bit hash of a string. Cheap, allocation-free; used for
 /// filesystem-safe cache namespaces where a real digest is overkill.
 fn fnv1a(s: &str) -> u64 {

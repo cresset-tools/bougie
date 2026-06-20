@@ -331,8 +331,8 @@ pub fn install_from_lock_with_patches(
         .iter()
         .map(|p| {
             let dist = p.dist.as_ref().unwrap();
-            host_from_url(&dist.url)
-                .and_then(|host| auth.get(host))
+            auth_origin_from_url(&dist.url)
+                .and_then(|origin| auth.get(origin))
                 .map(|creds| (creds.header_value(), creds.header_name()))
         })
         .collect();
@@ -834,18 +834,21 @@ fn new_package_bar(total: u64) -> indicatif::ProgressBar {
     pb
 }
 
-/// Extract the host portion of a URL — the bit between `://` and
-/// the next `/`, with any `:port` suffix stripped. Returns `None`
-/// for URLs without a parseable host (e.g. file URIs in tests).
-/// Used to key per-host auth lookup the same way Composer does;
-/// path differences inside the host don't matter (everything under
-/// `repo.magento.com` shares the same credentials whether the URL
-/// targets `/p/...` for metadata or `/archives/...` for a dist).
-fn host_from_url(url: &str) -> Option<&str> {
+/// Extract the credential-lookup key for a dist URL — Composer's
+/// origin: the authority between `://` and the next `/`, INCLUDING any
+/// `:port` suffix (`127.0.0.1:8080`, `repo.magento.com`). Returns
+/// `None` for URLs without a parseable host (e.g. file URIs in tests).
+/// Keys per-host auth lookup the same way the metadata path does (see
+/// [`crate::metadata::auth_origin`]) — and the same way Composer does:
+/// the port is part of the key, so a mirror on a non-default port
+/// matches its `auth.json` entry. Path differences inside the host
+/// don't matter (everything under the same authority shares
+/// credentials whether the URL targets `/p2/...` for metadata or
+/// `/archives/...` for a dist).
+fn auth_origin_from_url(url: &str) -> Option<&str> {
     let after_scheme = url.split_once("://")?.1;
     let host_and_port = after_scheme.split('/').next()?;
-    let host = host_and_port.split(':').next()?;
-    if host.is_empty() { None } else { Some(host) }
+    if host_and_port.is_empty() { None } else { Some(host_and_port) }
 }
 
 /// Check the lock's `content-hash` field against the current
