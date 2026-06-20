@@ -447,27 +447,29 @@ async fn dispatch_restart_streaming(
             continue;
         }
         let _ = write_progress(write_half, "stderr", &format!("stopping {name}\n")).await;
-        let mut sup = state.supervisor.lock().await;
         // `stop` returns Ok(false) when the service wasn't running;
         // skip those — `restart` of a stopped service is a no-op,
-        // matching `systemctl restart` semantics.
-        let was_running = match sup.stop(name).await {
-            Ok(true) => true,
-            Ok(false) => false,
-            Err(e) => {
-                drop(sup);
-                write_terminal(
-                    write_half,
-                    &ResultFrame::err("service_stop_failed", format!("{name}: {e}")),
-                )
-                .await;
-                return;
+        // matching `systemctl restart` semantics. Scope the guard so the
+        // lock is released before the (off-lock) start below.
+        let was_running = {
+            let mut sup = state.supervisor.lock().await;
+            match sup.stop(name).await {
+                Ok(true) => true,
+                Ok(false) => false,
+                Err(e) => {
+                    drop(sup);
+                    write_terminal(
+                        write_half,
+                        &ResultFrame::err("service_stop_failed", format!("{name}: {e}")),
+                    )
+                    .await;
+                    return;
+                }
             }
         };
         if was_running {
             let _ = write_progress(write_half, "stderr", &format!("starting {name}\n")).await;
-            if let Err(e) = sup.start(name).await {
-                drop(sup);
+            if let Err(e) = super::supervisor::start_service(&state.supervisor, name).await {
                 write_terminal(
                     write_half,
                     &ResultFrame::err("service_start_failed", format!("{name}: {e}")),
@@ -1215,8 +1217,10 @@ async fn dispatch_up(
                 format!("{name}: {e}"),
             );
         }
-        // Start (idempotent).
-        let start_res = state.supervisor.lock().await.start(name).await;
+        // Start (idempotent). The health probe runs off the supervisor
+        // lock, so a slow service (opensearch/rabbitmq, up to 90s) doesn't
+        // block `status` or the reaper while we wait for it to come up.
+        let start_res = super::supervisor::start_service(&state.supervisor, name).await;
         match start_res {
             Ok(true) => started.push(name.to_string()),
             Ok(false) => {}
