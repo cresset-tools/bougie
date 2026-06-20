@@ -12,8 +12,8 @@
 use bougie_composer::lockfile::{Lock, LockPackage};
 
 use crate::hash::FxHashMap;
-use bougie_semver::constraint::Constraint;
-use bougie_semver::version::Version;
+use composer_semver::constraint::Constraint;
+use composer_semver::version::Version;
 use pubgrub::{Dependencies, DependencyConstraints, DependencyProvider, PackageResolutionStatistics};
 use serde_json::Value;
 

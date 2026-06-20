@@ -78,7 +78,7 @@ pub fn pick_php_for_constraint(
     php_constraint: &str,
     installer: &PhpInstaller,
 ) -> Result<PhpChoice> {
-    let parsed = bougie_semver::Constraint::parse(php_constraint)
+    let parsed = composer_semver::Constraint::parse(php_constraint)
         .map_err(|e| eyre::eyre!("parsing tool's require.php `{php_constraint}`: {e}"))?;
     let on_disk = store::list_installed(paths)
         .map_err(|e| eyre::eyre!("listing installed PHPs: {e}"))?;
@@ -87,7 +87,7 @@ pub fn pick_php_for_constraint(
         .filter(|(_, flavor)| flavor == "nts")
         .filter_map(|(v, f)| v.parse::<Version>().ok().map(|p| (p, f)))
         .filter(|(v, _)| {
-            bougie_semver::Version::parse(&v.to_string())
+            composer_semver::Version::parse(&v.to_string())
                 .is_ok_and(|lifted| parsed.matches(&lifted))
         })
         .collect();

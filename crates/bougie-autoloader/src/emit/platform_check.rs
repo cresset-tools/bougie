@@ -16,7 +16,7 @@
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
-use bougie_semver::Constraint;
+use composer_semver::Constraint;
 
 use crate::lock::PlatformCheck;
 
@@ -55,7 +55,7 @@ pub(crate) fn generate(packages: &[PkgLinks<'_>], check: PlatformCheck) -> Optio
         }
     }
 
-    let mut lowest_php = bougie_semver::Bound::zero();
+    let mut lowest_php = composer_semver::Bound::zero();
     let mut required_php64 = false;
     // Keyed by the `var_export`ed extension literal (e.g. `'json'`) so
     // BTreeMap iteration reproduces Composer's `ksort($requiredExtensions)`.

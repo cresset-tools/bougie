@@ -3,7 +3,7 @@
 //!
 //! Composer-flavored constraints (the full grammar Composer accepts in
 //! `require.php`: wildcards, hyphen ranges, stability suffixes, etc.)
-//! live in the [`bougie_semver`] crate. This module keeps only the
+//! live in the [`composer_semver`] crate. This module keeps only the
 //! narrow exact-triple shape bougie's own index and on-disk install
 //! layout use — every bougie artifact version is `<u32>.<u32>.<u32>`
 //! by construction, and there's no need for the wider grammar here.

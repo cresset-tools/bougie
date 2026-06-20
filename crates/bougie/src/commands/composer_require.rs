@@ -15,7 +15,7 @@
 //!    (`vendor/pkg@^1.0` is invalid in Composer, and we reproduce that).
 //! 2. **Constraint grammar** — never reparsed here; the constraint
 //!    string is stored verbatim in `composer.json` and validated by
-//!    `bougie_semver::constraint::Constraint::parse`, which already ports
+//!    `composer_semver::constraint::Constraint::parse`, which already ports
 //!    Composer's full `parseConstraints` grammar.
 //!
 //! When no constraint is supplied, the [`DefaultConstraint`] policy
@@ -35,8 +35,8 @@ use bougie_composer_resolver::verify::is_platform;
 use bougie_composer_resolver::{InstallOptions, PartialUpdate, ResolutionStrategy};
 use bougie_output::output::{emit, Render};
 use bougie_paths::Paths;
-use bougie_semver::stability::Stability;
-use bougie_semver::version::Version;
+use composer_semver::stability::Stability;
+use composer_semver::version::Version;
 use eyre::{eyre, Context, Result};
 use serde::Serialize;
 
@@ -109,7 +109,7 @@ pub fn parse_name_version_pairs(args: &[String]) -> Vec<NameVersion> {
 /// `bougie tool install` and `bougie ext add`. Deliberately distinct
 /// from `composer require`, which uses Composer's `:`/`=`/space splitter
 /// (`@` is *not* a Composer separator). The constraint grammar is still
-/// delegated to `bougie-semver`; this only splits name from constraint.
+/// delegated to `composer-semver`; this only splits name from constraint.
 pub fn parse_at_pairs(args: &[String]) -> Result<Vec<NameVersion>> {
     args.iter()
         .map(|raw| {
@@ -406,7 +406,7 @@ fn run_add(
             }
         };
         // Validate the constraint grammar (don't reparse — just check).
-        bougie_semver::constraint::Constraint::parse(&constraint)
+        composer_semver::constraint::Constraint::parse(&constraint)
             .map_err(|e| eyre!("invalid version constraint {constraint:?} for {}: {e}", p.name))?;
         items.push(RequireItem {
             name: p.name.clone(),

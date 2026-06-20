@@ -23,8 +23,8 @@ use bougie_cli::OutputFormat;
 use bougie_composer::lockfile::Lock;
 use bougie_composer_resolver::DependencyGraph;
 use bougie_output::output::{emit, Render};
-use bougie_semver::constraint::Constraint;
-use bougie_semver::version::Version;
+use composer_semver::constraint::Constraint;
+use composer_semver::version::Version;
 use eyre::{eyre, Context, Result};
 use serde::Serialize;
 

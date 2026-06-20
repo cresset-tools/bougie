@@ -3,7 +3,7 @@
 //! Posts the project's installed package names to the advisories API
 //! (`POST <base>/api/security-advisories/` with repeated `packages[]`
 //! form fields) and returns the raw advisories per package. Matching
-//! advisories against locked versions (via `bougie-semver`) is the
+//! advisories against locked versions (via `composer-semver`) is the
 //! caller's job — this module is purely the network + parse layer.
 //!
 //! Reuses the resolver's existing blocking HTTP client

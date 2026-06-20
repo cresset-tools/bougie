@@ -29,7 +29,7 @@
 
 use std::path::Path;
 
-use bougie_semver::version::Version;
+use composer_semver::version::Version;
 use serde_json::Value;
 
 /// Platform package versions for one resolve/verify pass.

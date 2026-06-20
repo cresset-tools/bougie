@@ -12,8 +12,8 @@ use bougie_composer::lockfile::{Lock, LockPackage};
 use bougie_composer_resolver::latest_versions;
 use bougie_output::output::{emit, Render};
 use bougie_paths::Paths;
-use bougie_semver::stability::Stability;
-use bougie_semver::version::Version;
+use composer_semver::stability::Stability;
+use composer_semver::version::Version;
 use eyre::{eyre, Context, Result};
 use serde::Serialize;
 

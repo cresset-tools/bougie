@@ -6,7 +6,7 @@ use bougie_installer::install::{
 };
 use bougie_output::output::{emit, Render};
 use bougie_paths::Paths;
-use bougie_semver::Constraint;
+use composer_semver::Constraint;
 use bougie_version::request::{parse_request, Flavor, Request, VersionLike};
 use bougie_resolver::ResolveOptions;
 use bougie_version::version::PartialVersion;

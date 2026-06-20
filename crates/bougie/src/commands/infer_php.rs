@@ -15,7 +15,7 @@
 //! fires, returns `None` and the caller falls back to today's
 //! behavior (hard error for `bougie sync`, `>=8.0` for `bougie run`).
 
-use bougie_semver::Constraint;
+use composer_semver::Constraint;
 use serde_json::Value;
 use std::collections::BTreeSet;
 use std::fs;
@@ -307,7 +307,7 @@ fn lockfile_extensions(composer_lock: &str) -> BTreeSet<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bougie_semver::Version;
+    use composer_semver::Version;
 
     fn parses(s: &str) -> Version {
         Version::parse(s).unwrap()

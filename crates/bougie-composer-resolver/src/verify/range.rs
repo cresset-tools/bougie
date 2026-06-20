@@ -22,7 +22,7 @@
 //!
 //! The `dev` / `stable` boundary marker trick is what implements
 //! "prereleases of X satisfy `^X` but not `1` (partial)" and "`<X`
-//! rejects X-prereleases" — see [`bougie_semver::constraint`] for
+//! rejects X-prereleases" — see [`composer_semver::constraint`] for
 //! the matching tests on the same rules.
 //!
 //! Branch-only versions (`dev-feature-foo`) have no numeric body, so
@@ -30,8 +30,8 @@
 //! `Ranges` works because two distinct branches sort distinctly
 //! (lex order over the body), so the intervals don't collide.
 
-use bougie_semver::constraint::Constraint;
-use bougie_semver::version::{CmpOp, Suffix, Version, VersionKind};
+use composer_semver::constraint::Constraint;
+use composer_semver::version::{CmpOp, Suffix, Version, VersionKind};
 use pubgrub::Ranges;
 
 pub type ComposerRange = Ranges<Version>;

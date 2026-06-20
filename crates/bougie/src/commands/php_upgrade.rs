@@ -4,7 +4,7 @@ use bougie_installer::install::install_php;
 use bougie_output::output::{Render, emit};
 use bougie_paths::Paths;
 use bougie_resolver::ResolveOptions;
-use bougie_semver::Constraint;
+use composer_semver::Constraint;
 use bougie_tool::receipt::{PhpUpgrade, refresh_php_pin};
 use bougie_version::request::{Flavor, Request, VersionLike};
 use bougie_version::version::PartialVersion;

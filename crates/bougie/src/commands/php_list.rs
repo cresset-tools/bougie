@@ -287,7 +287,7 @@ fn matches_request(row: &Row, req: &Request) -> bool {
             match spec {
                 VersionLike::Version(pv) => version_matches_partial(row_v, *pv),
                 VersionLike::Constraint(c) => c.matches(
-                    &bougie_semver::Version::parse(&row_v.to_string())
+                    &composer_semver::Version::parse(&row_v.to_string())
                         .expect("triple version is always semver-parseable"),
                 ),
             }
