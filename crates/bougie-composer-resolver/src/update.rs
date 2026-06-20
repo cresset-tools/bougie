@@ -2182,12 +2182,23 @@ fn read_prefer_stable(composer_json: &Value) -> Result<bool, BuildError> {
 ///   path repositories need different machinery and are tracked as
 ///   follow-ups.
 ///
+/// Composer's `Config::disableRepoByName` carries BC support: the
+/// default public Packagist repo is named `packagist.org`, but the
+/// legacy name `packagist` disables it too. Honor both spellings so
+/// `{"packagist": false}` works the same as `{"packagist.org": false}`.
+fn name_disables_packagist(name: &str) -> bool {
+    matches!(name, "packagist.org" | "packagist")
+}
+
 /// True for an array-form entry that disables the implicit public
-/// Packagist: `{"packagist.org": false}`. The named/object form
-/// uses a different spelling (`"packagist.org"` as a top-level key
-/// with value `false`) and is handled inline in [`read_repositories`].
+/// Packagist: `{"packagist.org": false}` (or the BC alias
+/// `{"packagist": false}`). The named/object form uses a different
+/// spelling (the repo name as a top-level key with value `false`) and
+/// is handled inline in [`read_repositories`].
 fn entry_is_disable_packagist(entry: &serde_json::Map<String, Value>) -> bool {
-    entry.get("packagist.org").and_then(Value::as_bool) == Some(false)
+    entry
+        .iter()
+        .any(|(name, value)| value.as_bool() == Some(false) && name_disables_packagist(name))
 }
 
 /// Parse one repository entry (a Composer-protocol `{type, url}`
@@ -2326,14 +2337,15 @@ pub(crate) fn read_repositories(
             }
             Value::Object(named) => {
                 for (_name, value) in named {
-                    // `"packagist.org": false` — the named-form
-                    // disable spelling. Composer also accepts
-                    // `false` against any other repo key as "disable
-                    // a previously-declared default repo," but
-                    // Packagist is the only default we ship, so we
-                    // only handle the one well-defined case.
+                    // `"packagist.org": false` (or the BC alias
+                    // `"packagist": false`) — the named-form disable
+                    // spelling. Composer also accepts `false` against
+                    // any other repo key as "disable a
+                    // previously-declared default repo," but Packagist
+                    // is the only default we ship, so we only handle
+                    // the one well-defined case.
                     if value.as_bool() == Some(false) {
-                        if _name == "packagist.org" {
+                        if name_disables_packagist(_name) {
                             keep_default_packagist = false;
                         }
                         continue;

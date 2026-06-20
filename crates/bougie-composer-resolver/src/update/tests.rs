@@ -1791,6 +1791,56 @@ fn packagist_org_false_disables_public_fallback() {
 }
 
 #[test]
+fn packagist_false_bc_alias_disables_public_fallback() {
+    // Composer's `Config::disableRepoByName` treats the legacy name
+    // `packagist` as an alias for `packagist.org`, so `{"packagist":
+    // false}` disables the implicit public repo just like
+    // `{"packagist.org": false}`. bougie used to only recognize the
+    // canonical spelling and errored ("repository entry has no `type`
+    // field and is not `packagist.org: false`") on the alias.
+    let tmp = TempDir::new().unwrap();
+    let paths = paths_in(tmp.path());
+
+    let foo = p2_body("acme/foo", &[("1.0.0", json!({}))]);
+
+    let rt = rt();
+    let (custom_uri, packagist_uri, _custom, _pkgst) = rt.block_on(async {
+        let custom = MockServer::start().await;
+        mount_p2(&custom, "acme/foo", foo).await;
+        let pkgst = MockServer::start().await;
+        // Trap mock: any request to public Packagist returns 500.
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&pkgst)
+            .await;
+        (custom.uri(), pkgst.uri(), custom, pkgst)
+    });
+
+    let composer_json = json!({
+        "repositories": [
+            {"type": "composer", "url": custom_uri},
+            {"packagist": false},
+        ],
+        "require": {"acme/foo": "^1.0"},
+    });
+    let client = crate::metadata::build_client().unwrap();
+    let provider = ResolveProvider::build(
+        client,
+        paths,
+        crate::metadata::Repo::from_url(packagist_uri),
+        &composer_json,
+        true,
+    )
+    .unwrap();
+    let root = provider.root_version();
+
+    let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
+    assert!(solution
+        .get(&PubGrubPackage::Package("acme/foo".into()))
+        .is_some());
+}
+
+#[test]
 fn packagist_org_false_disables_public_fallback_named_object_form() {
     // Same intent as the array-form test above, but with the
     // named/object `repositories` shape Composer also accepts:
