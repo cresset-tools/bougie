@@ -14,6 +14,7 @@
 //! in Phases 7 / 10 / 8 respectively.
 
 pub mod bougie_server;
+pub mod mailpit;
 pub mod mariadb;
 pub mod opensearch;
 pub mod rabbitmq;
@@ -35,7 +36,9 @@ pub async fn pre_start(entry: &CatalogEntry, paths: &Paths) -> Result<()> {
         Tenancy::Opensearch => opensearch::pre_start(paths).await,
         Tenancy::Rabbitmq => rabbitmq::pre_start(paths).await,
         Tenancy::BougieServer => bougie_server::pre_start(paths).await,
-        Tenancy::Redis | Tenancy::None => Ok(()),
+        // Mailpit needs no bootstrap — the sandbox creates its data dir
+        // before spawn and Mailpit creates `mailpit.db` there itself.
+        Tenancy::Redis | Tenancy::Mailpit | Tenancy::None => Ok(()),
     }
 }
 
@@ -64,6 +67,7 @@ pub async fn provision(
         Tenancy::Rabbitmq => {
             rabbitmq::provision(paths, tenants_path, tenant_name, project).await
         }
+        Tenancy::Mailpit => mailpit::provision(tenants_path, tenant_name, project).await,
         Tenancy::None => Err(eyre!("{} has no user-facing tenancy", entry.name)),
     }
 }
@@ -89,6 +93,7 @@ pub async fn deprovision(
         Tenancy::Rabbitmq => {
             rabbitmq::deprovision(paths, tenants_path, tenant_name, purge).await
         }
+        Tenancy::Mailpit => mailpit::deprovision(tenants_path, tenant_name, purge).await,
         Tenancy::None => Ok(()),
     }
 }

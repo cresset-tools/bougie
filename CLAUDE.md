@@ -83,7 +83,7 @@ contract for index format, server behavior, and service tarballs).
 **Server / services:**
 - `bougie-daemon` — `bougied` process supervisor: service lifecycle,
   health probes, restarts, provisioning (mariadb, redis, opensearch,
-  rabbitmq, mkcert, bougie-server).
+  rabbitmq, mailpit, mkcert, bougie-server).
 - `bougie-babysit` — Per-service babysitter shim spawned by bougied;
   owns the process group, proxies signals, reports exit via socketpair.
 - `bougie-server` — Embedded HTTP/FastCGI dev server.

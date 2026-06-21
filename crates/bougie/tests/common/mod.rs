@@ -2,6 +2,7 @@
 //! plus a pre-configured `assert_cmd` builder.
 #![allow(dead_code)]
 
+pub mod mailpit_fixture;
 pub mod mariadb_fixture;
 pub mod opensearch_fixture;
 pub mod rabbitmq_fixture;
