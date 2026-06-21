@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.33.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.32.2...bougie-v0.33.0) (2026-06-21)
+
+
+### Features
+
+* **recipe:** add localdev task to disable 2FA and set indexers realtime ([#409](https://github.com/cresset-tools/bougie/issues/409)) ([796e187](https://github.com/cresset-tools/bougie/commit/796e18765123ee04f6c5cf2f73768313ae7b28dd))
+* **services:** integrate mailpit SMTP test server ([#408](https://github.com/cresset-tools/bougie/issues/408)) ([54f5682](https://github.com/cresset-tools/bougie/commit/54f5682bdb68a52d2c03f2ec0864647d164d2be6))
+* **services:** warn on `up` when env.php DB user != provisioned tenant ([#411](https://github.com/cresset-tools/bougie/issues/411)) ([85f3c6c](https://github.com/cresset-tools/bougie/commit/85f3c6c7f28102d0e0c7e8e3a1f017eb4196f441))
+
+
+### Bug Fixes
+
+* **services:** persist tenant name so it can't drift across down/purge ([#407](https://github.com/cresset-tools/bougie/issues/407)) ([046521c](https://github.com/cresset-tools/bougie/commit/046521c2e6e276f42a5246ff1b916eb04b1f5667))
+
 ## [0.32.2](https://github.com/cresset-tools/bougie/compare/bougie-v0.32.1...bougie-v0.32.2) (2026-06-20)
 
 
