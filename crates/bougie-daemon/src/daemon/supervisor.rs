@@ -985,6 +985,29 @@ fn render_exec_args(entry: &CatalogEntry, paths: &Paths) -> Vec<String> {
                 "--slow-query-log=0".into(),
             ]
         }
+        "mailpit" => {
+            // Loopback-only, like every bougie service (SERVICES.md §6).
+            // SMTP is the catalog binding (health-probed); the web UI
+            // rides on MAILPIT_HTTP_PORT. Persist caught mail to the
+            // service data dir so it survives restarts — the dir is
+            // created (and made RW) by the sandbox before spawn, and
+            // Mailpit creates the SQLite file + its WAL siblings there.
+            let smtp = format!("127.0.0.1:{}", catalog::MAILPIT_SMTP_PORT);
+            let http = format!("127.0.0.1:{}", catalog::MAILPIT_HTTP_PORT);
+            let db = paths
+                .service_data("mailpit")
+                .join("mailpit.db")
+                .display()
+                .to_string();
+            vec![
+                "--smtp".into(),
+                smtp,
+                "--listen".into(),
+                http,
+                "--database".into(),
+                db,
+            ]
+        }
         _ => Vec::new(),
     }
 }

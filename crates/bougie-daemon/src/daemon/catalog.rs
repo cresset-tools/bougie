@@ -7,6 +7,20 @@
 
 use serde::Serialize;
 
+/// Mailpit's SMTP listener port. This is the catalog `binding` — the
+/// endpoint PHP apps connect to to send mail, so it's the port the
+/// supervisor health-probes (mirrors rabbitmq exposing its AMQP port,
+/// not its management UI). Matches Mailpit's upstream default so the
+/// familiar `127.0.0.1:1025` keeps working.
+pub const MAILPIT_SMTP_PORT: u16 = 1025;
+
+/// Mailpit's HTTP web-UI / REST-API port. The single-endpoint
+/// [`Binding`] can't model a second port, so this rides alongside:
+/// hard-coded into the supervisor's exec args and surfaced to apps as
+/// `BOUGIE_SERVICE_MAILPIT_DASHBOARD_URL` (cf. rabbitmq's unmonitored
+/// management UI on 15672). Matches Mailpit's upstream default.
+pub const MAILPIT_HTTP_PORT: u16 = 8025;
+
 /// A single service the supervisor knows how to manage.
 ///
 /// All fields are `'static` so the catalog can live in `const CATALOG`
@@ -98,6 +112,13 @@ pub enum Tenancy {
     Opensearch,
     /// `rabbitmqctl add_vhost <t>; add_user <t> <pw> …`.
     Rabbitmq,
+    /// Shared global mail sink — no real per-project isolation.
+    /// Records a bare ledger row so `bougie projects list` and the
+    /// `service.env` injection see the tenant; every project shares the
+    /// one Mailpit instance (its `--tenant-id` is a single-value
+    /// startup flag, not a per-connection selector, so multi-tenant
+    /// isolation isn't possible against one shared instance).
+    Mailpit,
     /// Add `[[host]]` to server.toml; reload via control socket.
     BougieServer,
     /// Runtime-only deps (jdk, erlang) have no tenants.
@@ -176,6 +197,24 @@ pub const CATALOG: &[CatalogEntry] = &[
         runtime_deps: &["erlang"],
         user_facing: true,
         summary: "RabbitMQ 4.x AMQP broker; per-tenant vhost + user.",
+        sandbox: SandboxKind::Strict,
+    },
+    CatalogEntry {
+        name: "mailpit",
+        version: "1.30.2",
+        tarball: "mailpit-1.30.2",
+        // Single static Go binary — the index lays it out at
+        // `install/bin/mailpit`, same `bin/` convention as redis.
+        binary: "bin/mailpit",
+        // SMTP is the service endpoint apps connect to; the web UI on
+        // MAILPIT_HTTP_PORT rides alongside (see the port consts).
+        binding: Binding::Tcp { port: MAILPIT_SMTP_PORT },
+        tenancy: Tenancy::Mailpit,
+        requires: &[],
+        after: &[],
+        runtime_deps: &[],
+        user_facing: true,
+        summary: "Mailpit SMTP test server; shared mail sink with a web UI on :8025.",
         sandbox: SandboxKind::Strict,
     },
     CatalogEntry {
@@ -272,7 +311,24 @@ mod tests {
         assert!(find("mariadb").is_some());
         assert!(find("opensearch").is_some());
         assert!(find("rabbitmq").is_some());
+        assert!(find("mailpit").is_some());
         assert!(find("server").is_some());
+    }
+
+    #[test]
+    fn mailpit_is_a_user_facing_tcp_service() {
+        let mp = find("mailpit").unwrap();
+        assert!(mp.user_facing);
+        assert!(matches!(mp.tenancy, Tenancy::Mailpit));
+        // The catalog binding tracks the SMTP port — the one the
+        // supervisor health-probes and apps connect to.
+        assert!(
+            matches!(mp.binding, Binding::Tcp { port } if port == MAILPIT_SMTP_PORT),
+            "{:?}",
+            mp.binding
+        );
+        // Mailpit ships as a single static binary, no runtime deps.
+        assert!(mp.runtime_deps.is_empty());
     }
 
     #[test]
@@ -354,7 +410,7 @@ mod tests {
 
     #[test]
     fn tcp_services_use_loopback_port() {
-        for name in ["opensearch", "rabbitmq", "server"] {
+        for name in ["opensearch", "rabbitmq", "mailpit", "server"] {
             let e = find(name).unwrap();
             assert!(
                 matches!(e.binding, Binding::Tcp { .. }),

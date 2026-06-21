@@ -1154,6 +1154,26 @@ async fn dispatch_env(state: &Arc<DaemonState>, project: std::path::PathBuf) -> 
                     vars.insert(format!("{prefix}PASSWORD"), Value::String(pw));
                 }
             }
+            "mailpit" => {
+                // SMTP host/port are already emitted as _HOST/_PORT
+                // from the Tcp binding above. Compose the Symfony-Mailer
+                // style DSN from the same port so apps can splice
+                // `MAILER_DSN` directly (no auth — the dev sink accepts
+                // any/no credentials).
+                if let Binding::Tcp { port } = entry.binding {
+                    vars.insert(
+                        format!("{prefix}DSN"),
+                        Value::String(format!("smtp://{LOOPBACK}:{port}")),
+                    );
+                }
+                // The human-facing web UI / REST API lives on a second
+                // port the single-endpoint binding can't model; surface
+                // it explicitly so `bougie run` users can open it.
+                vars.insert(
+                    format!("{prefix}DASHBOARD_URL"),
+                    Value::String(format!("http://{LOOPBACK}:{}", catalog::MAILPIT_HTTP_PORT)),
+                );
+            }
             _ => {}
         }
     }
