@@ -16,12 +16,25 @@
 //! and hostname. The directory name is the signal that actually
 //! distinguishes them.
 //!
-//! Uniqueness + stability come from the on-disk tenant ledgers:
-//! 1. If this project already owns a tenant, reuse it (so DB names and
-//!    hostnames survive `up`/`down`/`up`).
-//! 2. Otherwise use the basename.
-//! 3. If a *different* project already holds that basename, append a
+//! Uniqueness + stability come from a durable per-project record plus the
+//! on-disk tenant ledgers:
+//! 1. If this project already owns a live tenant (a ledger row), reuse it
+//!    verbatim (so DB names and hostnames survive `up`/`down`/`up`).
+//! 2. Otherwise, if we already committed to a name for this project,
+//!    reuse it. The name is cached under
+//!    `$BOUGIE_HOME/state/projects/<hash>/tenant`, so it outlives the
+//!    ledger row that `down --purge` deletes. Without this, re-derivation
+//!    could *drift*: a same-basename sibling project appearing or
+//!    disappearing between runs would flip the basename/hash decision,
+//!    stranding the DB credentials baked into the project's
+//!    `app/etc/env.php` and breaking auth (the user is provisioned under
+//!    one name, Magento connects under the other).
+//! 3. Otherwise use the basename.
+//! 4. If a *different* project already holds that basename, append a
 //!    short hash of the canonical path to disambiguate.
+//!
+//! Steps 3–4 run only once: the chosen name is persisted, so steps 1–2
+//! answer every later call.
 
 use std::path::Path;
 
@@ -84,13 +97,76 @@ pub fn load_all_tenants(paths: &Paths) -> Vec<(String, Tenant)> {
 }
 
 /// Derive the default tenant identity for `project_root`. See the module
-/// docs for the rationale; the rules are reuse → basename → hash on
-/// collision.
+/// docs for the rationale; the rules are live-ledger reuse → durable
+/// cache → basename → hash on collision, with the chosen name persisted
+/// so it stays stable across a `down --purge` that wipes the ledger row.
 #[cfg(unix)]
 pub fn derive_default_tenant(project_root: &Path, paths: &Paths) -> String {
     let canonical = canonical_path(project_root);
     let existing = load_all_tenants(paths);
-    derive_from_ledger(project_root, &canonical, &existing)
+    let cached = read_tenant_cache(paths, &canonical);
+    let (name, persist) = resolve_tenant(project_root, &canonical, &existing, cached.as_deref());
+    if persist {
+        write_tenant_cache(paths, &canonical, &name);
+    }
+    name
+}
+
+/// Pure resolution policy, split from I/O so it can be unit-tested with a
+/// synthetic ledger + cache. Returns the tenant name and whether the
+/// caller should persist it to the durable cache.
+///
+/// A live ledger row is authoritative when present (and we still signal a
+/// persist, to backfill the cache for projects provisioned before it
+/// existed). A cached name wins over re-derivation, so the identity can't
+/// drift when a same-basename sibling project appears or disappears.
+#[cfg(unix)]
+fn resolve_tenant(
+    project_root: &Path,
+    canonical: &Path,
+    existing: &[(String, Tenant)],
+    cached: Option<&str>,
+) -> (String, bool) {
+    if let Some((_, t)) = existing.iter().find(|(_, t)| t.project == canonical) {
+        return (t.tenant.clone(), true);
+    }
+    if let Some(name) = cached {
+        return (name.to_string(), false);
+    }
+    (derive_from_ledger(project_root, canonical, existing), true)
+}
+
+/// `$BOUGIE_HOME/state/projects/<hash>/tenant` — the durable record of the
+/// tenant name this project committed to. Lives outside `vendor/` and
+/// outside the service ledgers, so it survives both a `vendor` wipe and a
+/// `down --purge`.
+#[cfg(unix)]
+fn tenant_cache_path(paths: &Paths, canonical: &Path) -> std::path::PathBuf {
+    paths.project_state_dir(canonical).join("tenant")
+}
+
+/// Read the cached tenant name, if any. Best-effort: a missing, empty, or
+/// unreadable file simply means "not cached".
+#[cfg(unix)]
+fn read_tenant_cache(paths: &Paths, canonical: &Path) -> Option<String> {
+    let raw = std::fs::read_to_string(tenant_cache_path(paths, canonical)).ok()?;
+    let name = raw.trim();
+    (!name.is_empty()).then(|| name.to_string())
+}
+
+/// Persist the chosen tenant name. Best-effort: a write failure only
+/// costs stability across a future purge, so it must never break
+/// derivation. No-ops when the file already records the same name.
+#[cfg(unix)]
+fn write_tenant_cache(paths: &Paths, canonical: &Path, tenant: &str) {
+    if read_tenant_cache(paths, canonical).as_deref() == Some(tenant) {
+        return;
+    }
+    let path = tenant_cache_path(paths, canonical);
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(path, format!("{tenant}\n"));
 }
 
 /// On platforms with no daemon (the standalone Windows server) there are
@@ -244,5 +320,43 @@ mod ledger_tests {
         let p = PathBuf::from("/home/u/dev/shop");
         let ledger = vec![tenant("shop", "/home/u/dev/shop")];
         assert_eq!(derive_from_ledger(&p, &p, &ledger), "shop");
+    }
+
+    #[test]
+    fn live_ledger_row_is_authoritative_and_persisted() {
+        // A live row wins even over a (stale) cached value, and we still
+        // signal a persist so the cache gets corrected/backfilled.
+        let p = PathBuf::from("/home/u/dev/shop");
+        let ledger = vec![tenant("legacy_name", "/home/u/dev/shop")];
+        let (name, persist) = resolve_tenant(&p, &p, &ledger, Some("stale_cache"));
+        assert_eq!(name, "legacy_name");
+        assert!(persist);
+    }
+
+    #[test]
+    fn cached_name_survives_a_ledger_drift() {
+        // The crux of the fix: this project's ledger row is gone (post
+        // `down --purge`) and a *different* project now holds the bare
+        // basename. Fresh derivation would drift to `shop_<hash>` and
+        // strand the credentials baked into env.php; the cache pins the
+        // original name and reports no rewrite needed.
+        let mine = PathBuf::from("/home/u/a/shop");
+        let ledger = vec![tenant("shop", "/home/u/b/shop")];
+        assert_ne!(
+            derive_from_ledger(&mine, &mine, &ledger),
+            "shop",
+            "without the cache, derivation drifts"
+        );
+        let (name, persist) = resolve_tenant(&mine, &mine, &ledger, Some("shop"));
+        assert_eq!(name, "shop");
+        assert!(!persist, "a cache hit needs no rewrite");
+    }
+
+    #[test]
+    fn fresh_project_derives_and_persists() {
+        let p = PathBuf::from("/home/u/dev/nebula");
+        let (name, persist) = resolve_tenant(&p, &p, &[], None);
+        assert_eq!(name, "nebula");
+        assert!(persist, "a freshly derived name must be cached");
     }
 }
