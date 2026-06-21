@@ -139,6 +139,28 @@ pub fn run(format: OutputFormat, names: Vec<String>, detach: bool) -> Result<Exi
         Err(e) => tracing::warn!("skipped PhpStorm data source: {e:#}"),
     }
 
+    // Magento bakes the DB user/name into `app/etc/env.php` at
+    // `setup:install` time. If that baked user no longer matches the
+    // tenant we just provisioned — e.g. the tenant drifted under an older
+    // bougie, or env.php was copied in from another project — Magento
+    // connects as a user the server won't authenticate, and that surfaces
+    // as a cryptic `SQLSTATE[HY000] [1698] Access denied` deep inside a
+    // later build step. Surface it here instead, up front, with the fix.
+    // Best-effort and stderr-only: it never fails `up` and never touches
+    // the stdout result envelope (so `--format json-v1` stays clean).
+    if let Some(tenant) = result.tenants.get("mariadb")
+        && let Some(env_user) = read_magento_db_username(&project_root)
+        && env_user != *tenant
+    {
+        eprintln!(
+            "warning: app/etc/env.php connects to MariaDB as user '{env_user}', but this \
+             project's provisioned tenant is '{tenant}'.\n         Magento will fail with \
+             `SQLSTATE[HY000] [1698] Access denied for user '{env_user}'`. Fix by re-running \
+             the installer against the current tenant (remove app/etc/env.php, then `bougie \
+             start`) or by updating the db credentials in env.php to '{tenant}'."
+        );
+    }
+
     // Attach to the combined ("multilog") stream of the services we
     // brought up, the way `docker compose up` follows its containers.
     // Gated to an interactive text-mode invocation: a non-TTY run (CI,
@@ -172,3 +194,82 @@ pub fn run(format: OutputFormat, names: Vec<String>, detach: bool) -> Result<Exi
     Ok(ExitCode::SUCCESS)
 }
 
+/// Best-effort read of the default DB connection's `username` from
+/// `app/etc/env.php` (Magento writes it at `setup:install`). Returns None
+/// when the file is missing or unreadable; the parse itself lives in
+/// [`parse_db_username`] so it can be unit-tested without a fixture file.
+fn read_magento_db_username(project_root: &std::path::Path) -> Option<String> {
+    let text = std::fs::read_to_string(project_root.join("app/etc/env.php")).ok()?;
+    parse_db_username(&text)
+}
+
+/// Pull the `'username'` under env.php's top-level `'db'` key. A regex-lite
+/// scan over the literal — the same approach `commands::make` uses to read
+/// `backend.frontName` — is robust enough for a warning, and anchoring on
+/// `'db'` keeps it from picking up an unrelated `'username'` elsewhere in
+/// the config (amqp uses `'user'`, not `'username'`). Returns None when the
+/// key can't be located.
+fn parse_db_username(env_php: &str) -> Option<String> {
+    let (_, after) = env_php.split_once("'db'")?;
+    let (_, after) = after.split_once("'username'")?;
+    let (_, after) = after.split_once("=>")?;
+    let after = after.trim_start();
+    let quote = after.chars().next()?;
+    if quote != '\'' && quote != '"' {
+        return None;
+    }
+    let rest = &after[1..];
+    let end = rest.find(quote)?;
+    Some(rest[..end].to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_db_username;
+
+    const ENV_PHP: &str = r"<?php
+return array (
+  'backend' => array ( 'frontName' => 'admin_x', ),
+  'db' => array (
+    'connection' => array (
+      'default' => array (
+        'host' => '/run/mariadb.sock',
+        'dbname' => 'mageos_lite_836b41',
+        'username' => 'mageos_lite_836b41',
+        'password' => 's3cret',
+      ),
+    ),
+  ),
+  'queue' => array (
+    'amqp' => array ( 'host' => 'localhost', 'user' => 'guest', ),
+  ),
+);
+";
+
+    #[test]
+    fn extracts_db_username() {
+        assert_eq!(
+            parse_db_username(ENV_PHP).as_deref(),
+            Some("mageos_lite_836b41")
+        );
+    }
+
+    #[test]
+    fn handles_short_array_syntax() {
+        let s =
+            "return [ 'db' => [ 'connection' => [ 'default' => [ 'username' => \"shop\" ] ] ] ];";
+        assert_eq!(parse_db_username(s).as_deref(), Some("shop"));
+    }
+
+    #[test]
+    fn does_not_mistake_amqp_user_for_db_username() {
+        // No db username present; the amqp `'user'` must not be picked up.
+        let s = "return array ( 'queue' => array ( 'amqp' => array ( 'user' => 'guest' ) ) );";
+        assert_eq!(parse_db_username(s), None);
+    }
+
+    #[test]
+    fn none_when_no_db_block() {
+        assert_eq!(parse_db_username("<?php return array ();"), None);
+    }
+}
