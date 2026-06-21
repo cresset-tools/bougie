@@ -80,8 +80,50 @@ PHP
 bougie run -- bin/magento deploy:mode:set developer
 """
 
-[task.reindex]
+[task.localdev]
 deps = ["install"]
+# Local-dev conveniences applied once after install:
+#   - Disable Magento's mandatory admin 2FA. 2.4.x ships 2FA enabled with
+#     no store-config toggle, so it has to be turned off at the module
+#     level. We deliberately DON'T use `bin/magento module:disable`: that
+#     writes the change into the *tracked* `app/etc/config.php`, leaving a
+#     dirty file that `git add .` would commit (and ship 2FA-off to every
+#     other env). Instead we override the module flags in `app/etc/env.php`
+#     — gitignored, and already rewritten by [task.install] for Redis.
+#     Magento merges env.php over config.php (env.php wins), so the modules
+#     read as disabled with nothing to commit. Only modules actually listed
+#     in config.php are flipped, so it's a no-op on builds without the Adobe
+#     IMS 2FA module (`Magento_AdminAdobeImsTwoFactorAuth`, 2.4.6+ only).
+#   - Put every indexer in realtime ("Update on Save") mode so saving a
+#     product/category reindexes immediately — no cron or consumer needed.
+#     Indexer mode lives in the database, so this doesn't touch git either.
+# Gate on env.php first (the rewrite + bin/magento can't run pre-install).
+# Idempotent: env.php flags are re-applied each run, and the check clears
+# once 2FA reads disabled and no indexer is left in schedule mode.
+check = """
+test -f app/etc/env.php || exit 1
+bougie run -- bin/magento indexer:show-mode --no-ansi 2>/dev/null | grep -q 'Update by Schedule' && exit 1
+bougie run -- bin/magento module:status Magento_TwoFactorAuth --no-ansi 2>/dev/null | grep -qi disabled
+"""
+run = """
+echo | bougie run -- php <<'PHP'
+<?php
+$cfg = is_file('app/etc/config.php') ? require 'app/etc/config.php' : ['modules' => []];
+$envFile = 'app/etc/env.php';
+$env = require $envFile;
+foreach (['Magento_TwoFactorAuth', 'Magento_AdminAdobeImsTwoFactorAuth'] as $m) {
+    if (!empty($cfg['modules']) && array_key_exists($m, $cfg['modules'])) {
+        $env['modules'][$m] = 0;
+    }
+}
+file_put_contents($envFile, '<?php' . PHP_EOL . 'return ' . var_export($env, true) . ';' . PHP_EOL);
+PHP
+bougie run -- bin/magento indexer:set-mode realtime
+bougie run -- bin/magento cache:flush
+"""
+
+[task.reindex]
+deps = ["localdev"]
 # Pre-gate on `app/etc/env.php`: bin/magento exits 0 with no stdout
 # when it can't reach the DB, which makes `grep -qv` falsely pass.
 check = """
