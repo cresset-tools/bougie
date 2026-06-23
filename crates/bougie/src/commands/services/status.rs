@@ -67,13 +67,33 @@ impl Render for ServicesStatusResult {
                     format!("{secs:.1}s")
                 },
             );
+            let binding = format_binding(&row.binding);
             writeln!(
                 w,
-                "{:14} {:15} pid={:>7} uptime={:>8}",
-                row.name, row.state, pid, uptime
+                "{:14} {:15} {:22} pid={:>7} uptime={:>8}",
+                row.name, row.state, binding, pid, uptime
             )?;
         }
         Ok(())
+    }
+}
+
+/// Render the supervisor's `binding` JSON (the serialized
+/// [`Binding`](bougie_daemon::daemon::catalog::Binding) enum, internally
+/// tagged with `kind`) as a compact address for the text table. Mirrors
+/// the wording of `bougie services catalog`. A `none` binding, a `null`,
+/// or any shape we don't recognize renders as `-`.
+fn format_binding(binding: &Value) -> String {
+    match binding.get("kind").and_then(Value::as_str) {
+        Some("tcp") => binding
+            .get("port")
+            .and_then(Value::as_u64)
+            .map_or_else(|| "-".into(), |p| format!("tcp 127.0.0.1:{p}")),
+        Some("unix_socket") => binding
+            .get("sockname")
+            .and_then(Value::as_str)
+            .map_or_else(|| "-".into(), |s| format!("socket ({s})")),
+        _ => "-".into(),
     }
 }
 
@@ -137,4 +157,58 @@ pub fn run(format: OutputFormat, name: Option<String>) -> Result<ExitCode> {
 // the filter chain above; future Phase will use this for `--all`.
 fn name_filter<'a>(_a: &'a str, _b: &'a str, _c: &'a str) -> Option<&'a str> {
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn row(name: &str, binding: Value) -> ServiceRow {
+        ServiceRow {
+            name: name.into(),
+            state: "running".into(),
+            pid: Some(4242),
+            uptime_ms: Some(12_500),
+            binding,
+            declared: true,
+            failure_count: 0,
+            next_restart_ms: None,
+        }
+    }
+
+    #[test]
+    fn format_binding_covers_every_kind() {
+        assert_eq!(
+            format_binding(&json!({"kind": "tcp", "port": 9200})),
+            "tcp 127.0.0.1:9200"
+        );
+        assert_eq!(
+            format_binding(&json!({"kind": "unix_socket", "sockname": "redis.sock"})),
+            "socket (redis.sock)"
+        );
+        // `none`, a bare null, and unknown shapes all degrade to `-`.
+        assert_eq!(format_binding(&json!({"kind": "none"})), "-");
+        assert_eq!(format_binding(&Value::Null), "-");
+        assert_eq!(format_binding(&json!({"kind": "tcp"})), "-");
+    }
+
+    #[test]
+    fn render_text_includes_the_binding_column() {
+        let result = ServicesStatusResult {
+            schema_version: 1,
+            project: "/proj".into(),
+            services: vec![
+                row("mariadb", json!({"kind": "unix_socket", "sockname": "mariadb.sock"})),
+                row("opensearch", json!({"kind": "tcp", "port": 9200})),
+            ],
+        };
+        let mut buf = Vec::new();
+        result.render_text(&mut buf).unwrap();
+        let text = String::from_utf8(buf).unwrap();
+        assert!(text.contains("socket (mariadb.sock)"), "text: {text}");
+        assert!(text.contains("tcp 127.0.0.1:9200"), "text: {text}");
+        // Existing columns survive alongside the new one.
+        assert!(text.contains("pid=   4242"), "text: {text}");
+    }
 }
