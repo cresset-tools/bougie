@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.34.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.33.0...bougie-v0.34.0) (2026-06-23)
+
+
+### Features
+
+* **services:** show service binding in `services status` text output ([#412](https://github.com/cresset-tools/bougie/issues/412)) ([d68ddec](https://github.com/cresset-tools/bougie/commit/d68ddecc6ded532733d0ba3d75ca5810dbe293c1))
+* **services:** warn on `up` when a service's TCP port is already in use ([#413](https://github.com/cresset-tools/bougie/issues/413)) ([1c520f6](https://github.com/cresset-tools/bougie/commit/1c520f6161aba99f4afdff792ef67a27fa7c7ebc))
+
 ## [0.33.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.32.2...bougie-v0.33.0) (2026-06-21)
 
 
