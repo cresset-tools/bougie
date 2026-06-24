@@ -198,6 +198,15 @@ pub async fn deprovision(
 
 // -------------------- helpers --------------------
 
+/// Health probe: `SELECT 1` via the bundled `mariadb` client. A real
+/// readiness check — the bare socket-connect the supervisor used before
+/// can succeed while mariadbd is still in crash recovery and rejecting
+/// queries; running a trivial query proves it's actually serving.
+pub(crate) async fn health(paths: &Paths, socket: &Path) -> Result<()> {
+    let bin = mariadb_client_binary(paths)?;
+    run_sql(&bin, socket, "SELECT 1").await
+}
+
 fn mariadb_client_binary(paths: &Paths) -> Result<PathBuf> {
     let entry = crate::daemon::catalog::find("mariadb")
         .ok_or_else(|| eyre!("BUG: mariadb missing from catalog"))?;
@@ -226,6 +235,11 @@ async fn run_sql(mariadb_bin: &Path, socket: &Path, sql: &str) -> Result<()> {
     // build_ctl_env note for the failure mode this guards against.
     let cwd = socket.parent().unwrap_or_else(|| Path::new("/"));
     let out = Command::new(mariadb_bin)
+        // The continuous health probe wraps this in a timeout; kill the
+        // client if that timeout drops the future so a wedged mariadbd
+        // can't leave a hung client process behind. A no-op on the
+        // provisioning path, which always awaits to completion.
+        .kill_on_drop(true)
         .current_dir(cwd)
         // Same `/etc/my.cnf` poison risk as the install-db / mariadbd
         // invocations: skip every option file and use only the args

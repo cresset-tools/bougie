@@ -70,6 +70,34 @@ pub async fn deprovision(
     Ok(())
 }
 
+/// Health probe: `PING` over the redis socket, expect `+PONG`. We ship
+/// no `redis-cli`, so — like [`flush_db`] — we speak RESP directly. This
+/// is a real liveness check: it proves redis is accepting *and answering*
+/// commands, not just that the socket is bound (which a bare connect, the
+/// supervisor's old probe, can't distinguish).
+pub(crate) async fn health(socket: &Path) -> Result<()> {
+    let mut s = tokio::net::UnixStream::connect(socket)
+        .await
+        .map_err(|e| eyre!("connecting to redis socket {}: {e}", socket.display()))?;
+    // Inline `PING` command. `+PONG\r\n` is the success reply.
+    s.write_all(b"*1\r\n$4\r\nPING\r\n")
+        .await
+        .map_err(|e| eyre!("sending PING: {e}"))?;
+    let mut buf = [0u8; 32];
+    let n = s
+        .read(&mut buf)
+        .await
+        .map_err(|e| eyre!("reading PING reply: {e}"))?;
+    if buf[..n].starts_with(b"+PONG") {
+        Ok(())
+    } else {
+        Err(eyre!(
+            "redis PING returned an unexpected reply: {:?}",
+            String::from_utf8_lossy(&buf[..n])
+        ))
+    }
+}
+
 /// `redis-cli -s <sock> -n <db> FLUSHDB`. We don't ship a redis-cli;
 /// instead, speak the resp protocol directly — `*2\r\n$6\r\nSELECT\r\n$N\r\n<n>\r\n*1\r\n$7\r\nFLUSHDB\r\n`.
 async fn flush_db(socket: &Path, db: u64) -> Result<()> {

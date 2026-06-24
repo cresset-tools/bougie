@@ -229,6 +229,38 @@ fn http_client() -> &'static reqwest::Client {
     })
 }
 
+/// Health probe: `GET /_cluster/health`, healthy when the cluster
+/// `status` is `green` or `yellow` (anything but `red`). A bare connect
+/// to 9200 — the supervisor's old probe — only proves Netty bound the
+/// port; a single-node cluster can sit `red` (unassigned shards) while
+/// still accepting connections, so the app sees failures we'd report as
+/// "Running". `yellow` is healthy here: replicas are unassigned on a
+/// one-node dev cluster by design (see `put_index_template`).
+pub(crate) async fn health() -> Result<()> {
+    let url = format!("{OPENSEARCH_BASE_URL}/_cluster/health");
+    let resp = http_client()
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| eyre!("GET {url}: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(eyre!("GET {url} returned {}", resp.status()));
+    }
+    // The daemon's reqwest is built without the `json` feature (only
+    // `blocking` + `rustls`), so parse the body text ourselves.
+    let text = resp
+        .text()
+        .await
+        .map_err(|e| eyre!("reading cluster health body: {e}"))?;
+    let body: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|e| eyre!("parsing cluster health JSON: {e}"))?;
+    match body.get("status").and_then(serde_json::Value::as_str) {
+        Some("red") => Err(eyre!("opensearch cluster status is red")),
+        Some(_) => Ok(()),
+        None => Err(eyre!("cluster health response missing `status` field")),
+    }
+}
+
 async fn put_index_template(tenant: &str) -> Result<()> {
     let body = serde_json::json!({
         "index_patterns": [format!("{tenant}-*")],
