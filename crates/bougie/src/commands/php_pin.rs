@@ -69,6 +69,7 @@ pub fn run(
     // `bougie run` keeps loading the old minor's ABI-bound `.so`s and PHP
     // errors on startup. Sync reads the freshly written pin from disk.
     crate::commands::sync::run(
+        &project_root,
         format,
         false,
         false,

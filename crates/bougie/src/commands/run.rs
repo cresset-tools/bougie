@@ -63,13 +63,13 @@ pub fn run(
         // layer, so reaching here always means a sync is wanted.
         let request = bougie_version::request::parse_request(req)
             .wrap_err_with(|| format!("parsing --php {req:?}"))?;
-        sync::run_with_php_request(format, false, php_pref, &request)?;
+        sync::run_with_php_request(&project_root, format, false, php_pref, &request)?;
     } else if !no_sync && !is_environment_present(&project_root)? {
         // uv-parity: `bougie run` outside a project (no `require.php`,
         // no `[php]version`) falls back to the highest already-installed
         // PHP, or the latest publishable >=8.0 — instead of erroring the
         // way `bougie sync` does.
-        sync::run_with_default_fallback(format, false, php_pref)?;
+        sync::run_with_default_fallback(&project_root, format, false, php_pref)?;
     }
 
     // composer.json `scripts.<name>` lookup. Skipped when the user
@@ -373,10 +373,15 @@ fn run_composer_script(
 /// for `bougie run python` invoked outside any project, where
 /// [`sync::run_with_default_fallback`] still does the right thing.
 ///
-/// Mirrors `services::config_mut::locate_project_root` but with a
-/// fallback instead of an error; `bougie run` must remain usable
-/// outside a project, while `services::*` requires a real project.
-fn resolve_project_root(cwd: &Path) -> std::path::PathBuf {
+/// Shared by the forgiving entry points `bougie run` (here) and
+/// `bougie sync` (dispatched from `lib.rs`): both thread the resolved
+/// root into `sync::*` so the toolchain materializes at the real root,
+/// not wherever the cwd happens to be (e.g. a Hyvä theme's
+/// `web/tailwind/`). Mirrors `services::config_mut::locate_project_root`
+/// but with a fallback instead of an error; `bougie run`/`bougie sync`
+/// must remain usable outside a project, while `services::*` requires a
+/// real project.
+pub(crate) fn resolve_project_root(cwd: &Path) -> std::path::PathBuf {
     for anc in cwd.ancestors() {
         if anc.join("bougie.toml").is_file()
             || anc.join("composer.json").is_file()
@@ -432,6 +437,23 @@ mod tests {
         // verbatim — preserves uv-parity for `bougie run python` outside
         // any project.
         assert_eq!(resolve_project_root(&sub), sub);
+    }
+
+    #[test]
+    fn walks_up_past_hyva_tailwind_subdir() {
+        // Regression: running `bougie run`/`bougie sync` from a Hyvä
+        // theme's `web/tailwind/` folder (has package.json, no
+        // composer.json) must resolve to the Magento project root, so the
+        // toolchain materializes there — not as a stray `vendor/bougie/`
+        // inside the theme. The resolved root is threaded into `sync::*`,
+        // which no longer falls back to the cwd.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        fs::write(root.join("composer.json"), "{}").unwrap();
+        let tailwind = root.join("app/design/frontend/Acme/theme/web/tailwind");
+        fs::create_dir_all(&tailwind).unwrap();
+        fs::write(tailwind.join("package.json"), "{}").unwrap();
+        assert_eq!(resolve_project_root(&tailwind), root);
     }
 
     #[test]

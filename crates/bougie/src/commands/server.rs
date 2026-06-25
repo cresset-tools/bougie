@@ -197,6 +197,7 @@ fn serve(format: OutputFormat, args: &ServeArgs) -> Result<ExitCode> {
     // implicit sync `bougie run` / `bougie make` perform.
     if !args.no_sync {
         crate::commands::sync::run(
+            &project_root,
             format,
             false,
             false,
@@ -371,6 +372,7 @@ fn serve_standalone(format: OutputFormat, args: &ServeArgs) -> Result<ExitCode> 
 
     if !args.no_sync {
         crate::commands::sync::run(
+            &project_root,
             format,
             false,
             false,

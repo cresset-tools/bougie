@@ -29,7 +29,7 @@ use eyre::{eyre, Result, WrapErr};
 use serde::Serialize;
 use std::collections::BTreeSet;
 use std::io::{self, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Instant;
 
@@ -312,7 +312,9 @@ fn count_lock_packages(project_root: &std::path::Path) -> usize {
     count_arr("packages") + count_arr("packages-dev")
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn run(
+    project_root: &Path,
     format: OutputFormat,
     offline: bool,
     dry_run: bool,
@@ -322,7 +324,11 @@ pub fn run(
     pkg_resolution: ResolutionStrategy,
 ) -> Result<ExitCode> {
     let paths = Paths::from_env()?;
-    let project_root = std::env::current_dir()?;
+    // The toolchain is materialized under `<project_root>/vendor/bougie`.
+    // Take the root from the caller (which walked up to find it) instead
+    // of `current_dir()`, so running from a subdirectory — e.g. a Hyvä
+    // theme's `web/tailwind/` — syncs the real project, not the cwd.
+    let project_root = project_root.to_path_buf();
 
     // Step 1 — ensure a composer.lock exists before PHP inference so
     // `infer()` / `infer_extensions()` can read it. This must happen
@@ -443,12 +449,14 @@ fn elapsed_ms(started: Instant) -> f64 {
 /// when inference can't help — only `bougie run` opts in via this
 /// entry point for the install-state fallback.
 pub fn run_with_default_fallback(
+    project_root: &Path,
     format: OutputFormat,
     dry_run: bool,
     php_pref: PhpPrefArgs,
 ) -> Result<ExitCode> {
     let paths = Paths::from_env()?;
-    let project_root = std::env::current_dir()?;
+    // See `run`: sync the caller-resolved root, never the bare cwd.
+    let project_root = project_root.to_path_buf();
 
     // Ensure lock before PHP inference (same as `run`). Never errors
     // offline here: `bougie run` is forgiving by design.
@@ -503,13 +511,15 @@ pub fn run_with_default_fallback(
 /// - Full tags and bare PATH names are rejected with a pointer to the
 ///   supported forms.
 pub fn run_with_php_request(
+    project_root: &Path,
     format: OutputFormat,
     dry_run: bool,
     php_pref: PhpPrefArgs,
     request: &Request,
 ) -> Result<ExitCode> {
     let paths = Paths::from_env()?;
-    let project_root = std::env::current_dir()?;
+    // See `run`: sync the caller-resolved root, never the bare cwd.
+    let project_root = project_root.to_path_buf();
 
     let resolve_started = Instant::now();
     ensure_lock(&paths, &project_root, false, dry_run, ResolutionStrategy::Highest)?;

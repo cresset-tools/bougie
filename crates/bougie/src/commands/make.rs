@@ -159,6 +159,7 @@ pub fn run(format: OutputFormat, opts: MakeOptions) -> Result<ExitCode> {
     // Sync prologue (RECIPES.md §5).
     if !opts.no_sync && !opts.dry_run && !opts.explain {
         sync::run(
+            &project_root,
             format,
             false,
             false,
