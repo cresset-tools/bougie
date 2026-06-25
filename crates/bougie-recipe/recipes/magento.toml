@@ -119,6 +119,7 @@ foreach (['Magento_TwoFactorAuth', 'Magento_AdminAdobeImsTwoFactorAuth'] as $m) 
 file_put_contents($envFile, '<?php' . PHP_EOL . 'return ' . var_export($env, true) . ';' . PHP_EOL);
 PHP
 bougie run -- bin/magento indexer:set-mode realtime
+bougie run -- bin/magento indexer:reindex
 bougie run -- bin/magento cache:flush
 """
 

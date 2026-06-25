@@ -840,6 +840,118 @@ impl bougie_fetch::DownloadSink for IpcDownloadSink {
 /// so the user sees a smooth bar; it's also high enough that even a
 /// 100MB/s LAN transfer (≈1600 `inc` events/s) collapses into one
 /// frame per tick instead of one per chunk.
+/// Every loopback TCP port a service occupies — the primary
+/// [`Binding::Tcp`] port plus any secondary ports the single-endpoint
+/// `Binding` can't model. Today the only multi-port service is mailpit,
+/// which binds SMTP ([`catalog::MAILPIT_SMTP_PORT`], its catalog binding)
+/// *and* a web UI / REST API ([`catalog::MAILPIT_HTTP_PORT`]) that rides
+/// alongside. Returns empty for unix-socket services + runtime-only deps.
+fn service_tcp_ports(entry: &crate::daemon::catalog::CatalogEntry) -> Vec<u16> {
+    use crate::daemon::catalog::{self, Binding};
+    let mut ports = match entry.binding {
+        Binding::Tcp { port } => vec![port],
+        Binding::UnixSocket { .. } | Binding::None => Vec::new(),
+    };
+    // mailpit's web UI isn't expressible as a `Binding`, so add it here —
+    // it's a port the service genuinely binds and a common dev collision.
+    if entry.name == "mailpit" {
+        ports.push(catalog::MAILPIT_HTTP_PORT);
+    }
+    ports
+}
+
+/// From the resolved start order and the set of services our own
+/// supervisor already has up, pick the `(name, port)` pairs whose loopback
+/// TCP port we should pre-flight probe.
+///
+/// Skips two cases that can't be real conflicts: services with no TCP port
+/// (unix-socket services + runtime-only deps never grab a shared port),
+/// and services we already run (re-running `up` is an idempotent no-op, so
+/// the port is legitimately ours). A single service may contribute more
+/// than one pair (mailpit: SMTP + web UI). Pure + cheap so it's
+/// unit-testable without a daemon or a socket.
+fn ports_to_preflight(
+    order: &[&str],
+    active: &std::collections::HashSet<String>,
+) -> Vec<(&'static str, u16)> {
+    use crate::daemon::catalog;
+    order
+        .iter()
+        .filter_map(|&name| catalog::find(name))
+        .filter(|entry| !active.contains(entry.name))
+        .flat_map(|entry| {
+            service_tcp_ports(entry)
+                .into_iter()
+                .map(move |port| (entry.name, port))
+        })
+        .collect()
+}
+
+/// Best-effort check whether something already listens on `127.0.0.1:port`
+/// (every catalog `Tcp` binding is loopback-only in v1). A successful
+/// connect means occupied; any error — refused or our own timeout — is
+/// treated as free. Bounded so a black-holed port can't stall the `up`
+/// pre-flight.
+async fn tcp_port_in_use(port: u16) -> bool {
+    matches!(
+        tokio::time::timeout(
+            std::time::Duration::from_millis(250),
+            tokio::net::TcpStream::connect(("127.0.0.1", port)),
+        )
+        .await,
+        Ok(Ok(_))
+    )
+}
+
+/// Stream a `warning: …` stderr frame for every TCP-bound service whose
+/// port is already in use by a foreign process. Advisory only: the start
+/// still proceeds (and surfaces a hard error if the bind genuinely
+/// collides). A disconnected client just drops the warnings — we ignore
+/// the write result.
+async fn preflight_port_warnings(
+    write_half: &mut tokio::net::unix::OwnedWriteHalf,
+    state: &Arc<DaemonState>,
+    services: &[ServiceRequest],
+) {
+    use crate::daemon::supervisor::{self, ServiceState};
+
+    let names: Vec<&str> = services.iter().map(|s| s.name.as_str()).collect();
+    // Resolve transitive deps so a TCP-bound dependency is covered too. If
+    // the graph can't resolve (cycle / unknown name), skip the advisory —
+    // the real start path reports that error properly.
+    let Ok(order) = supervisor::compute_start_order(&names) else {
+        return;
+    };
+
+    // Services our own supervisor already has up: their port is ours, so a
+    // re-run of `up` isn't a conflict. Snapshot once under a brief lock.
+    let active: std::collections::HashSet<String> = {
+        let sup = state.supervisor.lock().await;
+        sup.snapshot()
+            .into_iter()
+            .filter(|s| {
+                matches!(
+                    s.state,
+                    ServiceState::Running
+                        | ServiceState::HealthChecking
+                        | ServiceState::Starting
+                )
+            })
+            .map(|s| s.name)
+            .collect()
+    };
+
+    for (name, port) in ports_to_preflight(&order, &active) {
+        if tcp_port_in_use(port).await {
+            let msg = format!(
+                "warning: 127.0.0.1:{port} is already in use; starting `{name}` may fail \
+                 until you free that port\n"
+            );
+            let _ = write_progress(write_half, "stderr", &msg).await;
+        }
+    }
+}
+
 async fn dispatch_up_streaming(
     write_half: &mut tokio::net::unix::OwnedWriteHalf,
     state: &Arc<DaemonState>,
@@ -847,6 +959,13 @@ async fn dispatch_up_streaming(
 ) {
     use bougie_fetch::DownloadEvent;
     use std::time::Duration;
+
+    // Pre-flight: warn (but don't block) when a TCP-bound service's port
+    // is already taken by a process we don't manage. Emitted up-front, as
+    // a stderr progress frame the CLI prints verbatim, before the
+    // potentially slow tarball fetch + start — so the user sees the likely
+    // cause before staring at a health-check timeout.
+    preflight_port_warnings(write_half, state, &args.services).await;
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<DownloadEvent>();
     let sink: std::sync::Arc<dyn bougie_fetch::DownloadSink> =
@@ -1354,6 +1473,53 @@ pub(super) type ShutdownTx = watch::Sender<bool>;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
+
+    #[test]
+    fn preflight_skips_unix_socket_and_runtime_dep_services() {
+        // redis/mariadb bind unix sockets; jdk/erlang are runtime-only
+        // deps with no binding — none of them grab a shared TCP port.
+        let active = HashSet::new();
+        let order = ["redis", "mariadb", "jdk", "erlang"];
+        assert!(ports_to_preflight(&order, &active).is_empty());
+    }
+
+    #[test]
+    fn preflight_includes_tcp_services_not_yet_active() {
+        let active = HashSet::new();
+        let order = ["opensearch", "rabbitmq", "server"];
+        let got = ports_to_preflight(&order, &active);
+        assert!(got.contains(&("opensearch", 9200)), "{got:?}");
+        assert!(got.contains(&("rabbitmq", 5672)), "{got:?}");
+        assert!(got.contains(&("server", 7080)), "{got:?}");
+    }
+
+    #[test]
+    fn preflight_skips_services_we_already_run() {
+        // opensearch is already up under our own supervisor: its port is
+        // legitimately ours, so a re-run of `up` isn't a conflict.
+        let active: HashSet<String> = ["opensearch".to_string()].into_iter().collect();
+        let order = ["opensearch", "rabbitmq"];
+        assert_eq!(ports_to_preflight(&order, &active), vec![("rabbitmq", 5672)]);
+    }
+
+    #[test]
+    fn preflight_covers_both_mailpit_ports() {
+        use crate::daemon::catalog::{MAILPIT_HTTP_PORT, MAILPIT_SMTP_PORT};
+        // mailpit binds SMTP (its catalog `Binding`) *and* a web UI that
+        // the single-port binding can't express — pre-flight must probe both.
+        let active = HashSet::new();
+        let got = ports_to_preflight(&["mailpit"], &active);
+        assert!(got.contains(&("mailpit", MAILPIT_SMTP_PORT)), "{got:?}");
+        assert!(got.contains(&("mailpit", MAILPIT_HTTP_PORT)), "{got:?}");
+        assert_eq!(got.len(), 2, "exactly SMTP + web UI: {got:?}");
+    }
+
+    #[test]
+    fn preflight_skips_both_mailpit_ports_when_already_running() {
+        let active: HashSet<String> = ["mailpit".to_string()].into_iter().collect();
+        assert!(ports_to_preflight(&["mailpit"], &active).is_empty());
+    }
 
     #[test]
     fn parses_status_request() {
