@@ -24,7 +24,6 @@ members = [
     "crates/bougie-patches",
     "crates/bougie-paths",
     "crates/bougie-php-discovery",
-    "crates/bougie-php-json",
     "crates/bougie-platform",
     "crates/bougie-recipe",
     "crates/bougie-resolver",
@@ -78,7 +77,6 @@ bougie-output = { path = "crates/bougie-output", version = "0.34.0" } # x-releas
 bougie-patches = { path = "crates/bougie-patches", version = "0.34.0" } # x-release-please-version
 bougie-paths = { path = "crates/bougie-paths", version = "0.34.0" } # x-release-please-version
 bougie-php-discovery = { path = "crates/bougie-php-discovery", version = "0.34.0" } # x-release-please-version
-bougie-php-json = { path = "crates/bougie-php-json", version = "0.34.0" } # x-release-please-version
 bougie-platform = { path = "crates/bougie-platform", version = "0.34.0" } # x-release-please-version
 bougie-recipe = { path = "crates/bougie-recipe", version = "0.34.0" } # x-release-please-version
 bougie-resolver = { path = "crates/bougie-resolver", version = "0.34.0" } # x-release-please-version
@@ -94,6 +92,12 @@ macos-sandbox-sys = { path = "crates/macos-sandbox-sys", version = "0.34.0" } # 
 # shared with sconce. Versioned independently on crates.io — NOT a
 # release-please marker line. Was the local `bougie-semver` crate.
 composer-semver = "0.1.0"
+# Composer v2 wire-format types + PHP-exact json_encode, also extracted to the
+# composer-rs workspace and shared with sconce. Versioned independently on
+# crates.io — NOT release-please marker lines. (composer-php-json was the local
+# `bougie-php-json` crate; composer-wire was `bougie-composer::metadata`.)
+composer-php-json = "0.1"
+composer-wire = "0.1"
 
 [workspace.lints.rust]
 # `deny` rather than `forbid` so the daemon's process-supervisor can

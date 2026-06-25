@@ -57,8 +57,11 @@ contract for index format, server behavior, and service tarballs).
   with ported composer/semver test cases.
 - `bougie-version` — PHP version + Composer-constraint grammar (shared
   between CLI and resolver).
-- `bougie-php-json` — Byte-exact PHP `json_encode` for the two flag combos
-  Composer relies on (content-hash + `JsonFile::encode`).
+
+The Composer wire format and PHP-exact `json_encode` live in the shared
+`composer-rs` workspace (crates.io: `composer-semver`, `composer-wire`,
+`composer-php-json`), consumed by both bougie and sconce. `bougie-composer`
+re-exports them (`bougie_composer::php_json`, `bougie_composer::metadata`).
 
 **PHP toolchain / package management:**
 - `bougie-backend` — Pluggable PHP-distribution backends (bougie index +

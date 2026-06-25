@@ -9,8 +9,9 @@
 pub mod lockfile;
 pub mod metadata;
 
-/// Re-export of the [`bougie_php_json`] crate. Kept under
-/// `bougie_composer::php_json` for backwards compatibility with the
+/// Re-export of the [`composer_php_json`] crate (the byte-exact PHP
+/// `json_encode`, extracted to the shared `composer-rs` workspace). Kept
+/// under `bougie_composer::php_json` for backwards compatibility with the
 /// pre-extraction module path; new consumers should depend on
-/// `bougie-php-json` directly.
-pub use bougie_php_json as php_json;
+/// `composer-php-json` directly.
+pub use composer_php_json as php_json;

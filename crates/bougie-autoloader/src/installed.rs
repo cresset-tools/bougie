@@ -484,13 +484,13 @@ fn php_maybe_null(s: Option<&str>) -> String {
     }
 }
 
-/// Encode with [`bougie_php_json::Mode::Pretty`] — the byte-exact PHP
+/// Encode with [`composer_php_json::Mode::Pretty`] — the byte-exact PHP
 /// `json_encode($d, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES |
 /// JSON_UNESCAPED_UNICODE)` output that Composer's `JsonFile::encode`
 /// produces. Appends the trailing newline `JsonFile::write` writes via
 /// `file_put_contents`.
 fn format_composer_json(v: &Value) -> String {
-    let mut bytes = bougie_php_json::encode(v, bougie_php_json::Mode::Pretty);
+    let mut bytes = composer_php_json::encode(v, composer_php_json::Mode::Pretty);
     bytes.push(b'\n');
     String::from_utf8(bytes).expect("UTF-8 by construction (Pretty mode escapes non-UTF8 control bytes)")
 }
