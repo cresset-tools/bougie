@@ -182,7 +182,11 @@ fn relock(format: OutputFormat) -> Result<ExitCode> {
 }
 
 fn resync(format: OutputFormat) -> Result<ExitCode> {
+    // The patch subcommands all operate on the cwd project; keep sync on
+    // the same root they read/write their lock and patch files under.
+    let project_root = std::env::current_dir()?;
     super::sync::run(
+        &project_root,
         format,
         false,
         false,

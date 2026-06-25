@@ -207,7 +207,11 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
             },
         ),
         Command::Sync { offline, dry_run, scripts, no_scripts, patches, no_patches, resolution, php } => {
+            // Walk up to the real project root (uv-parity) so `bougie sync`
+            // from a subdirectory syncs the project, not the cwd.
+            let project_root = commands::run::resolve_project_root(&std::env::current_dir()?);
             commands::sync::run(
+                &project_root,
                 format,
                 offline,
                 dry_run,
