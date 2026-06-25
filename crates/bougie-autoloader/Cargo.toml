@@ -14,7 +14,7 @@ exclude = ["/tests"]
 
 [dependencies]
 bougie-installers = { workspace = true }
-bougie-php-json = { workspace = true }
+composer-php-json = { workspace = true }
 composer-semver = { workspace = true }
 md-5 = "0.11"
 memchr = "2"

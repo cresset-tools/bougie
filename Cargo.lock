@@ -437,7 +437,7 @@ name = "bougie-autoloader"
 version = "0.34.0"
 dependencies = [
  "bougie-installers",
- "bougie-php-json",
+ "composer-php-json",
  "composer-semver",
  "criterion",
  "md-5",
@@ -489,7 +489,8 @@ dependencies = [
 name = "bougie-composer"
 version = "0.34.0"
 dependencies = [
- "bougie-php-json",
+ "composer-php-json",
+ "composer-wire",
  "eyre",
  "md-5",
  "serde",
@@ -697,13 +698,6 @@ dependencies = [
  "bougie-version",
  "eyre",
  "tempfile",
-]
-
-[[package]]
-name = "bougie-php-json"
-version = "0.34.0"
-dependencies = [
- "serde_json",
 ]
 
 [[package]]
@@ -1067,12 +1061,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "composer-php-json"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "42bd2f3650870b0552fe7d88b6b309141beaa724aacf889e5fd6a4049cff31f9"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
 name = "composer-semver"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "19468a4e1f2390fef462b7f723b1625f052b9a0dbf67d00b6494d496cd338b4a"
 dependencies = [
  "regex",
+]
+
+[[package]]
+name = "composer-wire"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fc3c59104a94b76561a4f44a4bc48d18770d6b265c75b447ff56079de9b5f9a7"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
