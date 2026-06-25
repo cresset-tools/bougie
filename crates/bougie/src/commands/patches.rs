@@ -174,7 +174,7 @@ pub fn dependency_patches(project_root: &Path) -> Vec<DependencyPatches> {
 
 /// The `patches/` directory name: bougie `[patches] dir`, else Composer's
 /// `extra.composer-patches.patches-dir`, else the default `patches`.
-fn patches_dir_name(value: &Value, project: &ProjectConfig) -> String {
+pub fn patches_dir_name(value: &Value, project: &ProjectConfig) -> String {
     if let Some(dir) = &project.bougie.patches.dir {
         return dir.clone();
     }

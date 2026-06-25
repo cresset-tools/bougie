@@ -17,6 +17,11 @@ eyre = "0.6"
 # `-p` strip, file routing, and on-disk I/O.
 flickzeug = "0.5.1"
 
+# Unified/git-diff *generation* for `bougie patches create` (the inverse of
+# flickzeug's apply): the de-facto Myers/Patience diff crate. Already in the
+# lockfile transitively, so this pins no new version.
+similar = "2.7"
+
 # Content fingerprints for the re-application invariant (patches.lock.json).
 [dependencies.sha2]
 version = "0.11"
