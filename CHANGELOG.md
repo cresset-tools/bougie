@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.35.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.34.0...bougie-v0.35.0) (2026-06-28)
+
+
+### Features
+
+* **patches:** add `patches create` to capture vendor edits as clean patches ([#417](https://github.com/cresset-tools/bougie/issues/417)) ([d087da6](https://github.com/cresset-tools/bougie/commit/d087da611ee725096d1998a98907837aeb57b6a5))
+
+
+### Bug Fixes
+
+* **sync:** sync the discovered project root, not the cwd ([#418](https://github.com/cresset-tools/bougie/issues/418)) ([faab201](https://github.com/cresset-tools/bougie/commit/faab201286b23df6e812c8630a7fbf9ecc6770af))
+
 ## [0.34.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.33.0...bougie-v0.34.0) (2026-06-23)
 
 
