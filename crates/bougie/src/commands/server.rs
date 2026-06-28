@@ -205,6 +205,7 @@ fn serve(format: OutputFormat, args: &ServeArgs) -> Result<ExitCode> {
             None,
             bougie_cli::PhpPrefArgs::default(),
             bougie_composer_resolver::ResolutionStrategy::Highest,
+            bougie_composer_resolver::PlatformIgnore::default(),
         )?;
     }
 
@@ -380,6 +381,7 @@ fn serve_standalone(format: OutputFormat, args: &ServeArgs) -> Result<ExitCode> 
             None,
             bougie_cli::PhpPrefArgs::default(),
             bougie_composer_resolver::ResolutionStrategy::Highest,
+            bougie_composer_resolver::PlatformIgnore::default(),
         )?;
     }
 

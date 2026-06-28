@@ -167,6 +167,7 @@ pub fn run(format: OutputFormat, opts: MakeOptions) -> Result<ExitCode> {
             None,
             bougie_cli::PhpPrefArgs::default(),
             bougie_composer_resolver::ResolutionStrategy::Highest,
+            bougie_composer_resolver::PlatformIgnore::default(),
         )?;
     } else if opts.dry_run || opts.explain {
         eprintln!(

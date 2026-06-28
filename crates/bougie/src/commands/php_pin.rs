@@ -77,6 +77,7 @@ pub fn run(
         None,
         bougie_cli::PhpPrefArgs::default(),
         bougie_composer_resolver::ResolutionStrategy::Highest,
+        bougie_composer_resolver::PlatformIgnore::default(),
     )
 }
 

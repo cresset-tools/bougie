@@ -74,7 +74,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::hash::{FxHashMap, FxHashSet};
 use crate::package_name::PackageName;
-use crate::platform::PlatformEnv;
+use crate::platform::{PlatformEnv, PlatformIgnore};
 
 use bougie_composer::lockfile::{Lock, LockAutoload, LockPackage};
 use bougie_paths::Paths;
@@ -3700,8 +3700,9 @@ pub fn dry_run_update(
     project_root: &Path,
     default_packagist: Repo,
     opts: DryRunOptions,
+    ignore_platform: &PlatformIgnore,
 ) -> Result<UpdateSummary> {
-    dry_run_update_partial(paths, project_root, default_packagist, opts, None)
+    dry_run_update_partial(paths, project_root, default_packagist, opts, None, ignore_platform)
 }
 
 /// Like [`dry_run_update`], but with an optional [`PartialUpdate`] so
@@ -3713,6 +3714,7 @@ pub fn dry_run_update_partial(
     default_packagist: Repo,
     opts: DryRunOptions,
     partial: Option<&PartialUpdate>,
+    ignore_platform: &PlatformIgnore,
 ) -> Result<UpdateSummary> {
     let composer_json_path = project_root.join("composer.json");
     if !composer_json_path.is_file() {
@@ -3738,7 +3740,7 @@ pub fn dry_run_update_partial(
         &composer_json,
         opts.no_dev,
         auth,
-        PlatformEnv::detect(project_root, &composer_json),
+        PlatformEnv::detect(project_root, &composer_json).ignoring(ignore_platform.clone()),
     )
     .map_err(|e| eyre!(e))?;
     provider.set_resolution(opts.resolution);
@@ -3950,8 +3952,16 @@ pub fn resolve_for_lockfile(
     project_root: &Path,
     default_packagist: Repo,
     resolution: ResolutionStrategy,
+    ignore_platform: &PlatformIgnore,
 ) -> Result<(Vec<u8>, LockfileSolveOutcome)> {
-    resolve_for_lockfile_partial(paths, project_root, default_packagist, None, resolution)
+    resolve_for_lockfile_partial(
+        paths,
+        project_root,
+        default_packagist,
+        None,
+        resolution,
+        ignore_platform,
+    )
 }
 
 /// Like [`resolve_for_lockfile`], but with an optional [`PartialUpdate`]:
@@ -3965,6 +3975,7 @@ pub fn resolve_for_lockfile_partial(
     default_packagist: Repo,
     partial: Option<&PartialUpdate>,
     resolution: ResolutionStrategy,
+    ignore_platform: &PlatformIgnore,
 ) -> Result<(Vec<u8>, LockfileSolveOutcome)> {
     let pins = partial.map(PartialUpdate::locked_pins).unwrap_or_default();
     let composer_json_path = project_root.join("composer.json");
@@ -3989,8 +4000,11 @@ pub fn resolve_for_lockfile_partial(
     let meta_cache = MetaCache::default();
 
     // Validate `php` (and other modeled platform packages) against the
-    // project's pinned runtime in both passes (#118).
-    let platform = PlatformEnv::detect(project_root, &composer_json);
+    // project's pinned runtime in both passes (#118). Ignored platform
+    // requirements (`--ignore-platform-req(s)`) report no candidate, so
+    // their edges drop out of the solve.
+    let platform =
+        PlatformEnv::detect(project_root, &composer_json).ignoring(ignore_platform.clone());
 
     let full = solve_into_lock_packages(
         paths,

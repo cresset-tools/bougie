@@ -3108,6 +3108,57 @@ fn analyze_resolution_problems_does_not_spuriously_flag_satisfied_php() {
 }
 
 #[test]
+fn ignore_platform_req_php_drops_the_edge_and_resolves() {
+    let tmp = TempDir::new().unwrap();
+    let paths = paths_in(tmp.path());
+
+    let bar_body = p2_body("acme/bar", &[("1.0.0", json!({}))]);
+
+    let rt = rt();
+    let (uri, _server) = rt.block_on(async {
+        let server = MockServer::start().await;
+        mount_p2(&server, "acme/bar", bar_body).await;
+        (server.uri(), server)
+    });
+
+    // php is pinned to 8.3.31, which does NOT satisfy ~8.4.0||~8.5.0 —
+    // without ignoring it the solve fails (see the mismatch test below).
+    let composer_json = json!({
+        "require": {
+            "php": "~8.4.0||~8.5.0",
+            "acme/bar": "^1.0",
+        },
+    });
+    let client = crate::metadata::build_client().unwrap();
+    let auth = crate::update::read_auth_from_composer_json(&composer_json).unwrap();
+    let provider = ResolveProvider::build_with_auth(
+        client,
+        paths,
+        crate::metadata::Repo::from_url(uri),
+        &composer_json,
+        true,
+        auth,
+        crate::platform::PlatformEnv::new(Some(Version::parse("8.3.31").unwrap()))
+            .ignoring(crate::platform::PlatformIgnore::new(false, &["php".to_string()])),
+    )
+    .unwrap();
+    provider.pre_fetch_closure().unwrap();
+    let root = provider.root_version();
+
+    // With `php` ignored, the unsatisfiable php edge is dropped and the
+    // rest of the graph resolves cleanly.
+    let solution = resolve(&provider, PubGrubPackage::Root, root)
+        .expect("ignoring php should let the solve succeed");
+    assert!(solution
+        .get(&PubGrubPackage::Package("acme/bar".into()))
+        .is_some());
+    // `php` must not appear as a resolved package — it was dropped.
+    assert!(solution
+        .get(&PubGrubPackage::Package("php".into()))
+        .is_none());
+}
+
+#[test]
 fn analyze_resolution_problems_reports_php_version_mismatch_clearly() {
     let tmp = TempDir::new().unwrap();
     let paths = paths_in(tmp.path());
