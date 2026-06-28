@@ -808,6 +808,18 @@ impl ResolveProvider {
         unsatisfiable: &mut FxHashSet<String>,
     ) {
         for (name, range) in &self.root_deps {
+            // Platform packages (`php`, `php-64bit`, …) are never fetched
+            // into the metadata cache — their single candidate comes from
+            // the runtime [`PlatformEnv`], not a repository. Validate
+            // against that candidate instead, otherwise a perfectly
+            // satisfied `php` gets reported as "not found in any configured
+            // repository" on every unrelated failure, which both prints
+            // nonsense and masks the real conflict (a spurious problem here
+            // short-circuits the pubgrub derivation-tree fallback).
+            if is_platform(name.as_str()) {
+                self.collect_platform_problem(name.as_str(), range, problems, unsatisfiable);
+                continue;
+            }
             let versions = self.peek_cached_versions(name.as_str());
             let has_match = versions
                 .as_ref()
@@ -839,6 +851,41 @@ impl ResolveProvider {
                 }
             }
         }
+    }
+
+    /// Diagnose a modeled platform requirement (`php` / `php-64bit`) after a
+    /// `NoSolution`. The runtime candidate (the project's pinned PHP) is the
+    /// package's only version, so we check the requirement against it
+    /// directly rather than the (always-empty) metadata cache:
+    ///
+    /// - candidate satisfies the constraint → not a problem; stay silent so
+    ///   the real conflict surfaces (either via another problem or the
+    ///   pubgrub derivation tree).
+    /// - candidate violates the constraint → a clear PHP-version mismatch,
+    ///   naming the actual version instead of "not found in any repository".
+    /// - bougie doesn't model the package (e.g. `ext-*`) → it was dropped
+    ///   from the solve and is unconstrained, so it can't be the cause.
+    fn collect_platform_problem(
+        &self,
+        name: &str,
+        range: &ComposerRange,
+        problems: &mut Vec<String>,
+        unsatisfiable: &mut FxHashSet<String>,
+    ) {
+        let Some(candidate) = self.platform.candidate(name) else {
+            return;
+        };
+        if range.contains(&candidate) {
+            return;
+        }
+        unsatisfiable.insert(name.to_string());
+        let constraint = self.raw_constraint_for(name);
+        problems.push(format!(
+            "  Problem {}\n    \
+             - Root composer.json requires {name} {constraint}, \
+             but the project's PHP version {candidate} does not satisfy that requirement.",
+            problems.len() + 1,
+        ));
     }
 
     fn collect_transitive_conflict_problems(
