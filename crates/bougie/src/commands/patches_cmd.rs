@@ -200,6 +200,7 @@ fn resync(format: OutputFormat) -> Result<ExitCode> {
         Some(true),
         PhpPrefArgs::default(),
         bougie_composer_resolver::ResolutionStrategy::Highest,
+        bougie_composer_resolver::PlatformIgnore::default(),
     )
 }
 

@@ -66,6 +66,15 @@ fn resolution_strategy(
     }
 }
 
+/// Build a resolve-time platform-ignore filter from the
+/// `--ignore-platform-reqs` / `--ignore-platform-req=<req>` flags.
+fn platform_ignore(
+    ignore_all: bool,
+    reqs: &[String],
+) -> bougie_composer_resolver::PlatformIgnore {
+    bougie_composer_resolver::PlatformIgnore::new(ignore_all, reqs)
+}
+
 /// Stable, human-readable name for the running subcommand, used as the
 /// `command` span field so a Ctrl-\ activity dump (and `BOUGIE_LOG`)
 /// shows which verb is running even before any deeper span opens.
@@ -135,6 +144,8 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
             resolution,
             working_dir,
             dry_run,
+            ignore_platform_reqs,
+            ignore_platform_req,
         } => commands::composer_require::add(
             format,
             packages,
@@ -146,6 +157,7 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
             working_dir,
             dry_run,
             resolution_strategy(resolution),
+            platform_ignore(ignore_platform_reqs, &ignore_platform_req),
         ),
         Command::Remove {
             packages,
@@ -154,6 +166,8 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
             frozen,
             working_dir,
             dry_run,
+            ignore_platform_reqs,
+            ignore_platform_req,
         } => commands::composer_require::remove(
             format,
             packages,
@@ -163,9 +177,16 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
             false,    // top-level remove always considers dev when installing
             working_dir,
             dry_run,
+            platform_ignore(ignore_platform_reqs, &ignore_platform_req),
         ),
-        Command::Lock { resolution, working_dir, dry_run } => {
-            commands::lock::run(format, working_dir, dry_run, resolution_strategy(resolution))
+        Command::Lock { resolution, working_dir, dry_run, ignore_platform_reqs, ignore_platform_req } => {
+            commands::lock::run(
+                format,
+                working_dir,
+                dry_run,
+                resolution_strategy(resolution),
+                platform_ignore(ignore_platform_reqs, &ignore_platform_req),
+            )
         }
         Command::Tree { package, no_dev, working_dir } => commands::composer_show::run(
             format,
@@ -206,7 +227,18 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
                 working_dir,
             },
         ),
-        Command::Sync { offline, dry_run, scripts, no_scripts, patches, no_patches, resolution, php } => {
+        Command::Sync {
+            offline,
+            dry_run,
+            scripts,
+            no_scripts,
+            patches,
+            no_patches,
+            resolution,
+            ignore_platform_reqs,
+            ignore_platform_req,
+            php,
+        } => {
             // Walk up to the real project root (uv-parity) so `bougie sync`
             // from a subdirectory syncs the project, not the cwd.
             let project_root = commands::run::resolve_project_root(&std::env::current_dir()?);
@@ -219,6 +251,7 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
                 tristate(patches, no_patches),
                 php,
                 resolution_strategy(resolution),
+                platform_ignore(ignore_platform_reqs, &ignore_platform_req),
             )
         }
         Command::Run { with, no_sync, xdebug, php_request, php, argv } => {
@@ -350,8 +383,8 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
             resolution,
             prefer_lowest,
             dry_run,
-            ignore_platform_reqs: _,
-            ignore_platform_req: _,
+            ignore_platform_reqs,
+            ignore_platform_req,
         }) => {
             // Composer's `--prefer-lowest` is the bool twin of uv's
             // `--resolution lowest`; when set it wins over `--resolution`.
@@ -370,6 +403,7 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
                 with_dependencies,
                 with_all_dependencies,
                 resolution_strategy(resolution),
+                platform_ignore(ignore_platform_reqs, &ignore_platform_req),
             )
         }
         Command::Composer(ComposerCommand::Validate {
@@ -417,8 +451,8 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
             with_dependencies,
             with_all_dependencies,
             prefer_lowest,
-            ignore_platform_reqs: _,
-            ignore_platform_req: _,
+            ignore_platform_reqs,
+            ignore_platform_req,
             working_dir,
             dry_run,
         }) => commands::composer_require::require(
@@ -432,6 +466,7 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
             prefer_lowest,
             working_dir,
             dry_run,
+            platform_ignore(ignore_platform_reqs, &ignore_platform_req),
         ),
         Command::Composer(ComposerCommand::Remove {
             packages,
@@ -439,8 +474,8 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
             no_update,
             no_install,
             no_dev,
-            ignore_platform_reqs: _,
-            ignore_platform_req: _,
+            ignore_platform_reqs,
+            ignore_platform_req,
             working_dir,
             dry_run,
         }) => commands::composer_require::remove(
@@ -452,6 +487,7 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
             no_dev,
             working_dir,
             dry_run,
+            platform_ignore(ignore_platform_reqs, &ignore_platform_req),
         ),
         Command::Composer(ComposerCommand::Show {
             package,

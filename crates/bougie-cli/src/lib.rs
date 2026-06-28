@@ -191,6 +191,13 @@ pub enum Command {
         /// Resolve and report what would change without writing anything
         #[arg(long = "dry-run")]
         dry_run: bool,
+        /// Ignore all platform requirements (php, ext-*, lib-*) when resolving
+        #[arg(long = "ignore-platform-reqs")]
+        ignore_platform_reqs: bool,
+        /// Ignore a specific platform requirement (`php`, `ext-gd`, …);
+        /// repeatable, `*` wildcards allowed
+        #[arg(long = "ignore-platform-req", value_name = "REQ")]
+        ignore_platform_req: Vec<String>,
     },
 
     /// Remove dependencies from the project
@@ -214,6 +221,13 @@ pub enum Command {
         /// Resolve and report what would change without writing anything
         #[arg(long = "dry-run")]
         dry_run: bool,
+        /// Ignore all platform requirements (php, ext-*, lib-*) when resolving
+        #[arg(long = "ignore-platform-reqs")]
+        ignore_platform_reqs: bool,
+        /// Ignore a specific platform requirement (`php`, `ext-gd`, …);
+        /// repeatable, `*` wildcards allowed
+        #[arg(long = "ignore-platform-req", value_name = "REQ")]
+        ignore_platform_req: Vec<String>,
     },
 
     /// Update the project's lockfile
@@ -228,6 +242,13 @@ pub enum Command {
         /// Resolve and report what would change without writing the lock
         #[arg(long = "dry-run")]
         dry_run: bool,
+        /// Ignore all platform requirements (php, ext-*, lib-*) when resolving
+        #[arg(long = "ignore-platform-reqs")]
+        ignore_platform_reqs: bool,
+        /// Ignore a specific platform requirement (`php`, `ext-gd`, …);
+        /// repeatable, `*` wildcards allowed
+        #[arg(long = "ignore-platform-req", value_name = "REQ")]
+        ignore_platform_req: Vec<String>,
     },
 
     /// Display the project's dependency tree
@@ -301,6 +322,14 @@ pub enum Command {
         /// Skip native patch application for this sync
         #[arg(long = "no-patches")]
         no_patches: bool,
+        /// Ignore all platform requirements (php, ext-*, lib-*) when a fresh
+        /// lock must be resolved
+        #[arg(long = "ignore-platform-reqs")]
+        ignore_platform_reqs: bool,
+        /// Ignore a specific platform requirement (`php`, `ext-gd`, …);
+        /// repeatable, `*` wildcards allowed
+        #[arg(long = "ignore-platform-req", value_name = "REQ")]
+        ignore_platform_req: Vec<String>,
         #[command(flatten)]
         php: PhpPrefArgs,
     },

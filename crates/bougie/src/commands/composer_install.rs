@@ -16,7 +16,7 @@ use std::process::ExitCode;
 use bougie_cli::OutputFormat;
 use bougie_composer::lockfile::Lock;
 use bougie_composer_resolver::verify::{verify_lock, VerifyOptions, VerifyOutcome};
-use bougie_composer_resolver::{InstallOptions, InstallSummary};
+use bougie_composer_resolver::{InstallOptions, InstallSummary, PlatformIgnore};
 use bougie_installer::baseline;
 use bougie_output::output::{emit, Render};
 use bougie_paths::Paths;
@@ -182,6 +182,12 @@ pub fn run(
     }
     let paths = Paths::from_env()?;
 
+    // `--ignore-platform-req(s)`: `--ignore-platform-reqs` ignores every
+    // platform requirement, `--ignore-platform-req=<pat>` a specific one
+    // (Composer wildcards). Used both for the no-lock fallback resolve below
+    // and the verify-time check; `is_ignored` decides what to skip.
+    let ignore = PlatformIgnore::new(ignore_platform_reqs, &ignore_platform_req);
+
     // Composer-compatible fallback: when composer.lock is absent,
     // resolve from composer.json + write the lock first, then run
     // the normal install-from-lock path. Mirrors
@@ -196,16 +202,16 @@ pub fn run(
             "warning: composer.lock not found; resolving dependencies from composer.json. \
              A fresh composer.lock will be written.",
         );
-        super::composer_update::resolve_and_write_lock(&paths, &project_root, bougie_composer_resolver::ResolutionStrategy::Highest)?;
-    }
-
-    if !ignore_platform_reqs {
-        check_platform_requirements(
+        super::composer_update::resolve_and_write_lock_partial(
+            &paths,
             &project_root,
-            no_dev,
-            &ignore_platform_req,
+            None,
+            bougie_composer_resolver::ResolutionStrategy::Highest,
+            &ignore,
         )?;
     }
+
+    check_platform_requirements(&project_root, no_dev, &ignore)?;
 
     // Opt-in root scripts: build the lifecycle hooks when enabled so the
     // install fires `pre-install-cmd` / `pre-autoload-dump` /
@@ -236,7 +242,7 @@ pub fn run(
 fn check_platform_requirements(
     project_root: &Path,
     no_dev: bool,
-    ignore_specific: &[String],
+    ignore: &PlatformIgnore,
 ) -> Result<()> {
     let lock_path = project_root.join("composer.lock");
     if !lock_path.exists() {
@@ -250,8 +256,6 @@ fn check_platform_requirements(
     };
     let available_extensions = detect_available_extensions(project_root);
 
-    let ignored: BTreeSet<&str> = ignore_specific.iter().map(String::as_str).collect();
-
     let packages = if no_dev {
         lock.packages.iter().collect::<Vec<_>>()
     } else {
@@ -263,7 +267,7 @@ fn check_platform_requirements(
     for pkg in &packages {
         for (dep_name, raw_constraint) in &pkg.require {
             if dep_name == "php" {
-                if ignored.contains("php") {
+                if ignore.is_ignored("php") {
                     continue;
                 }
                 let Ok(constraint) = Constraint::parse(raw_constraint) else {
@@ -276,7 +280,7 @@ fn check_platform_requirements(
                     ));
                 }
             } else if let Some(ext_name) = dep_name.strip_prefix("ext-") {
-                if ignored.contains(dep_name.as_str()) {
+                if ignore.is_ignored(dep_name) {
                     continue;
                 }
                 if !available_extensions.contains(ext_name) {
@@ -301,7 +305,7 @@ fn check_platform_requirements(
                 for (dep_name, raw) in reqs {
                     let Some(raw_str) = raw.as_str() else { continue };
                     if dep_name == "php" {
-                        if ignored.contains("php") {
+                        if ignore.is_ignored("php") {
                             continue;
                         }
                         let Ok(constraint) = Constraint::parse(raw_str) else {
@@ -313,7 +317,7 @@ fn check_platform_requirements(
                             ));
                         }
                     } else if let Some(ext_name) = dep_name.strip_prefix("ext-") {
-                        if ignored.contains(dep_name.as_str()) {
+                        if ignore.is_ignored(dep_name) {
                             continue;
                         }
                         if !available_extensions.contains(ext_name) {

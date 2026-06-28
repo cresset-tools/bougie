@@ -17,8 +17,8 @@ use bougie_composer::lockfile::{self, canonical_readme, Lock};
 use bougie_composer_resolver::metadata::Repo;
 use bougie_composer_resolver::{
     dry_run_update, dry_run_update_partial, resolve_for_lockfile_partial,
-    DryRunOptions, InstallOptions, LockfileSolveOutcome, PartialUpdate, ResolutionStrategy,
-    ResolvedPackage, UpdateSummary,
+    DryRunOptions, InstallOptions, LockfileSolveOutcome, PartialUpdate, PlatformIgnore,
+    ResolutionStrategy, ResolvedPackage, UpdateSummary,
 };
 use bougie_output::output::{emit, Render};
 use bougie_paths::Paths;
@@ -93,7 +93,11 @@ impl Render for UpdateResult {
     }
 }
 
-#[allow(clippy::fn_params_excessive_bools, clippy::too_many_arguments)]
+#[allow(
+    clippy::fn_params_excessive_bools,
+    clippy::too_many_arguments,
+    clippy::needless_pass_by_value
+)]
 pub fn run(
     format: OutputFormat,
     working_dir: Option<PathBuf>,
@@ -104,6 +108,7 @@ pub fn run(
     with_dependencies: bool,
     with_all_dependencies: bool,
     resolution: ResolutionStrategy,
+    ignore_platform: PlatformIgnore,
 ) -> Result<ExitCode> {
     let project_root = match working_dir {
         Some(p) => p,
@@ -159,12 +164,14 @@ pub fn run(
                 Repo::packagist(),
                 DryRunOptions { no_dev, resolution },
                 Some(p),
+                &ignore_platform,
             )?,
             None => dry_run_update(
                 &paths,
                 &project_root,
                 Repo::packagist(),
                 DryRunOptions { no_dev, resolution },
+                &ignore_platform,
             )?,
         };
         let result = UpdateResult {
@@ -183,8 +190,13 @@ pub fn run(
     }
 
     // Write-mode path: resolve, build a Lock, atomic write.
-    let (lock_path, outcome) =
-        resolve_and_write_lock_partial(&paths, &project_root, partial.as_ref(), resolution)?;
+    let (lock_path, outcome) = resolve_and_write_lock_partial(
+        &paths,
+        &project_root,
+        partial.as_ref(),
+        resolution,
+        &ignore_platform,
+    )?;
 
     // Then materialize vendor/ — Composer's `update` resolves *and*
     // installs. `--no-install` stops after the lock.
@@ -251,20 +263,35 @@ pub fn resolve_and_write_lock(
     project_root: &Path,
     resolution: ResolutionStrategy,
 ) -> Result<(PathBuf, LockfileSolveOutcome)> {
-    resolve_and_write_lock_partial(paths, project_root, None, resolution)
+    resolve_and_write_lock_partial(
+        paths,
+        project_root,
+        None,
+        resolution,
+        &PlatformIgnore::default(),
+    )
 }
 
 /// Like [`resolve_and_write_lock`], but with an optional [`PartialUpdate`]
-/// so `composer update <pkg>...` pins out-of-scope packages. `None` is a
-/// full update.
+/// so `composer update <pkg>...` pins out-of-scope packages (`None` is a
+/// full update) and an `ignore_platform` filter so the resolve-time half
+/// of `--ignore-platform-req(s)` drops the matching platform edges.
 pub fn resolve_and_write_lock_partial(
     paths: &Paths,
     project_root: &Path,
     partial: Option<&PartialUpdate>,
     resolution: ResolutionStrategy,
+    ignore_platform: &PlatformIgnore,
 ) -> Result<(PathBuf, LockfileSolveOutcome)> {
     let (composer_json_bytes, outcome): (Vec<u8>, LockfileSolveOutcome) =
-        resolve_for_lockfile_partial(paths, project_root, Repo::packagist(), partial, resolution)?;
+        resolve_for_lockfile_partial(
+            paths,
+            project_root,
+            Repo::packagist(),
+            partial,
+            resolution,
+            ignore_platform,
+        )?;
     let lock_path = project_root.join("composer.lock");
 
     let t_hash = std::time::Instant::now();

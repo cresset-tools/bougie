@@ -1,6 +1,6 @@
 use bougie_installer::baseline::{self, BaselineFilter};
 use bougie_cli::OutputFormat;
-use bougie_composer_resolver::{InstallOptions, InstallSummary, ResolutionStrategy};
+use bougie_composer_resolver::{InstallOptions, InstallSummary, PlatformIgnore, ResolutionStrategy};
 use bougie_installer::conf_d;
 use bougie_config::{load_project, ExtensionPin, ProjectConfig};
 use bougie_errors::BougieError;
@@ -224,6 +224,7 @@ fn ensure_lock(
     offline: bool,
     dry_run: bool,
     resolution: ResolutionStrategy,
+    ignore_platform: &PlatformIgnore,
 ) -> Result<()> {
     let lock_path = project_root.join("composer.lock");
     if lock_path.is_file() {
@@ -251,7 +252,13 @@ fn ensure_lock(
         "composer.lock not found; resolving composer.json \
          and writing a fresh composer.lock…"
     );
-    super::composer_update::resolve_and_write_lock(paths, project_root, resolution)?;
+    super::composer_update::resolve_and_write_lock_partial(
+        paths,
+        project_root,
+        None,
+        resolution,
+        ignore_platform,
+    )?;
     Ok(())
 }
 
@@ -312,7 +319,7 @@ fn count_lock_packages(project_root: &std::path::Path) -> usize {
     count_arr("packages") + count_arr("packages-dev")
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::needless_pass_by_value)]
 pub fn run(
     project_root: &Path,
     format: OutputFormat,
@@ -322,6 +329,7 @@ pub fn run(
     patches: Option<bool>,
     php_pref: PhpPrefArgs,
     pkg_resolution: ResolutionStrategy,
+    ignore_platform: PlatformIgnore,
 ) -> Result<ExitCode> {
     let paths = Paths::from_env()?;
     // The toolchain is materialized under `<project_root>/vendor/bougie`.
@@ -336,7 +344,7 @@ pub fn run(
     // "resolution" phase: a no-op lock read when warm, a full resolve +
     // write when the lock is missing.
     let resolve_started = Instant::now();
-    ensure_lock(&paths, &project_root, offline, dry_run, pkg_resolution)?;
+    ensure_lock(&paths, &project_root, offline, dry_run, pkg_resolution, &ignore_platform)?;
     let resolved_packages = count_lock_packages(&project_root);
     let resolve_ms = elapsed_ms(resolve_started);
 
@@ -461,7 +469,14 @@ pub fn run_with_default_fallback(
     // Ensure lock before PHP inference (same as `run`). Never errors
     // offline here: `bougie run` is forgiving by design.
     let resolve_started = Instant::now();
-    ensure_lock(&paths, &project_root, false, dry_run, ResolutionStrategy::Highest)?;
+    ensure_lock(
+        &paths,
+        &project_root,
+        false,
+        dry_run,
+        ResolutionStrategy::Highest,
+        &PlatformIgnore::default(),
+    )?;
     let resolved_packages = count_lock_packages(&project_root);
     let resolve_ms = elapsed_ms(resolve_started);
 
@@ -522,7 +537,14 @@ pub fn run_with_php_request(
     let project_root = project_root.to_path_buf();
 
     let resolve_started = Instant::now();
-    ensure_lock(&paths, &project_root, false, dry_run, ResolutionStrategy::Highest)?;
+    ensure_lock(
+        &paths,
+        &project_root,
+        false,
+        dry_run,
+        ResolutionStrategy::Highest,
+        &PlatformIgnore::default(),
+    )?;
     let resolved_packages = count_lock_packages(&project_root);
     let resolve_ms = elapsed_ms(resolve_started);
 
