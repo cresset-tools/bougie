@@ -97,7 +97,7 @@ jobs:
       # run reuses them instead of re-downloading the ~56 MB tarball. The
       # fetch script is idempotent: on a cache hit it verifies and skips.
       - name: Cache cross-check fixtures
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: crates/bougie/tests/fixtures/cross-check/**/packagist-index.json.zst
           key: cross-check-fixtures-${{ hashFiles('crates/bougie/tests/fixtures/cross-check/fixtures.sha256') }}
