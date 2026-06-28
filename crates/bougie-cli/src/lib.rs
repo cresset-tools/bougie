@@ -766,6 +766,22 @@ pub enum PatchesCommand {
         #[arg(long = "no-sync")]
         no_sync: bool,
     },
+    /// Author a patch from hand-edited `vendor/` files: diff an installed
+    /// package against its originally-installed (pristine) contents and write
+    /// a clean patch into the `patches/` directory, where bougie
+    /// auto-discovers and re-applies it on the next `sync`
+    Create {
+        /// The installed package to diff (`vendor/package`)
+        #[arg(value_name = "VENDOR/PACKAGE")]
+        package: String,
+        /// Where to write the patch (default:
+        /// `<patches-dir>/<vendor>-<pkg>.patch`)
+        #[arg(long, value_name = "PATH")]
+        output: Option<String>,
+        /// Print the diff to stdout instead of writing a file
+        #[arg(long)]
+        stdout: bool,
+    },
     /// Show the resolved patch set, plus any unadopted dependency-declared
     /// patches (which bougie never applies automatically)
     List,

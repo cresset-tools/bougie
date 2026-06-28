@@ -18,6 +18,7 @@
 //! - [`model`] — the internal [`Patch`] model + v1/v2 dialect normalization.
 //! - [`diff`] — multi-file diff splitting + `-p` path stripping (over flickzeug).
 //! - [`apply`] — apply a patch to a tree with the `-p` fallback loop.
+//! - [`make`] — author a patch from an edited tree (the inverse of `apply`).
 //! - [`resolve`] — build the root patch set from `composer.json` + patches-file.
 //! - [`plan`] — the materialized [`PatchPlan`] + re-application fingerprints.
 //! - [`pass`] — the per-package apply pass (+ `PATCHES.txt`).
@@ -28,6 +29,7 @@
 pub mod apply;
 pub mod diff;
 pub mod lock;
+pub mod make;
 pub mod model;
 pub mod pass;
 pub mod plan;

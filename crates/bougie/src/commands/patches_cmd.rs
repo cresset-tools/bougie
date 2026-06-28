@@ -14,6 +14,7 @@ use bougie_cli::{OutputFormat, PatchesCommand, PhpPrefArgs};
 use bougie_config::load_project;
 use bougie_paths::Paths;
 use bougie_patches::lock;
+use bougie_patches::make::{FileEntry, MakeOutcome, make_patch};
 use bougie_patches::model::{DepthSpec, PatchSource};
 use eyre::{Result, WrapErr, bail};
 use serde_json::{Value, json};
@@ -34,6 +35,11 @@ pub fn run(format: OutputFormat, cmd: PatchesCommand) -> Result<ExitCode> {
             to_file,
             no_sync,
         } => add(format, &source, package, description, depth, to_file, no_sync),
+        PatchesCommand::Create {
+            package,
+            output,
+            stdout,
+        } => create(format, &package, output, stdout),
         PatchesCommand::Import {
             packages,
             all,
@@ -264,6 +270,330 @@ fn add(
     } else {
         resync(format)
     }
+}
+
+// ---------------------------------------------------------------- create
+
+fn create(
+    format: OutputFormat,
+    package: &str,
+    output: Option<String>,
+    stdout: bool,
+) -> Result<ExitCode> {
+    let project_root = std::env::current_dir()?;
+    if !package.contains('/') {
+        bail!("expected a `vendor/package` name, got `{package}`");
+    }
+    let project = load_project(&project_root)?;
+    let composer_value = read_composer_value(&project_root);
+
+    // Locate the package in the lock and compute its on-disk install dir
+    // (the edited tree) — `vendor/<name>` or a composer/installers remap.
+    let lock_bytes = std::fs::read(project_root.join("composer.lock"))
+        .wrap_err("reading composer.lock (run `bougie sync` first)")?;
+    let lock: Value = serde_json::from_slice(&lock_bytes).wrap_err("parsing composer.lock")?;
+    let pkg = find_locked_package(&lock, package).ok_or_else(|| {
+        eyre::eyre!("`{package}` is not in composer.lock — is it installed? Run `bougie sync` first")
+    })?;
+
+    let installer_paths = bougie_installers::InstallerPaths::parse(&composer_value);
+    let ptype = pkg.get("type").and_then(Value::as_str);
+    // The install dir relative to the project root, e.g. `vendor/acme/foo`. It
+    // doubles as the patch header prefix so the `patches/` lane can route it.
+    let install_rel = bougie_installers::install_path(package, ptype, &installer_paths);
+    let edited_dir = project_root.join(&install_rel);
+    if !edited_dir.is_dir() {
+        bail!(
+            "`{package}` is not installed at {} — run `bougie sync` first",
+            edited_dir.display()
+        );
+    }
+
+    // Materialize the pristine copy into a temp dir using the same
+    // download+extract path as install. The dist is almost always already in
+    // the cache (the package is installed), so this is a no-network cache hit.
+    let dist = pkg.get("dist").and_then(Value::as_object).ok_or_else(|| {
+        eyre::eyre!("`{package}` has no dist archive to diff against (a path or source install?)")
+    })?;
+    if dist.get("type").and_then(Value::as_str) == Some("path") {
+        bail!("`{package}` is a path repository — edit the source directly; no patch is needed");
+    }
+    let url = dist.get("url").and_then(Value::as_str).unwrap_or_default();
+    if url.is_empty() {
+        bail!("`{package}` dist entry has no url");
+    }
+    let shasum = dist.get("shasum").and_then(Value::as_str).unwrap_or_default();
+    let reference = dist.get("reference").and_then(Value::as_str).unwrap_or_default();
+
+    let paths = Paths::from_env()?;
+    let tmp = tempfile::tempdir().wrap_err("creating a temp dir for the pristine extraction")?;
+    extract_pristine(&paths, &project_root, package, url, shasum, reference, tmp.path())?;
+
+    // Where the patch will be written — resolved up front so the baseline
+    // reconstruction can exclude it (re-running `create` overwrites its own
+    // patch instead of folding it in).
+    let default_path = output.is_none();
+    let out_path = match output {
+        Some(p) => project_root.join(p),
+        None => project_root
+            .join(patches::patches_dir_name(&composer_value, &project))
+            .join(format!("{}.patch", package.replace('/', "-"))),
+    };
+
+    // If this package already has *other* patches applied (per
+    // patches.lock.json), re-apply them on top of pristine so the new patch is a
+    // clean delta — not a re-fold of the already-applied patches.
+    reconstruct_applied_baseline(&paths, &project_root, &project, package, &out_path, tmp.path())?;
+
+    // Diff the baseline against the edited tree. Headers are prefixed with the
+    // install dir (project-relative) so bougie's zero-config `patches/`
+    // directory infers the target package and `-p` depth on the next sync.
+    let files = collect_file_pairs(tmp.path(), &edited_dir)?;
+    let outcome = make_patch(&files, &install_rel);
+
+    for skipped in &outcome.binary_skipped {
+        eprintln!("warning: skipping binary file (not representable in a text patch): {skipped}");
+    }
+
+    if outcome.patch_text.is_empty() {
+        if format == OutputFormat::JsonV1 {
+            emit_create_json(package, None, &outcome)?;
+        } else {
+            let msg = format!("No changes in `{package}` versus its pristine install.");
+            if stdout {
+                eprintln!("{msg}");
+            } else {
+                println!("{msg}");
+            }
+        }
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    if stdout {
+        print!("{}", outcome.patch_text);
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    if let Some(parent) = out_path.parent() {
+        std::fs::create_dir_all(parent)
+            .wrap_err_with(|| format!("creating {}", parent.display()))?;
+    }
+    std::fs::write(&out_path, &outcome.patch_text)
+        .wrap_err_with(|| format!("writing {}", out_path.display()))?;
+    let rel_out = out_path
+        .strip_prefix(&project_root)
+        .unwrap_or(&out_path)
+        .to_string_lossy()
+        .replace('\\', "/");
+
+    if format == OutputFormat::JsonV1 {
+        emit_create_json(package, Some(&rel_out), &outcome)?;
+    } else {
+        println!("Wrote {rel_out} ({} file(s) changed).", outcome.changed_count());
+        if default_path {
+            println!(
+                "bougie auto-applies patches under `{}/` — run `bougie sync` to apply it \
+                 (`bougie patches list` to verify).",
+                patches::patches_dir_name(&composer_value, &project)
+            );
+        } else {
+            println!(
+                "Reference it from `extra.patches` (or move it under the `patches/` directory) \
+                 to apply it."
+            );
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Emit the `json-v1` payload for `patches create`.
+fn emit_create_json(package: &str, patch_file: Option<&str>, outcome: &MakeOutcome) -> Result<()> {
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&json!({
+            "package": package,
+            "patch_file": patch_file,
+            "modified": outcome.modified,
+            "created": outcome.created,
+            "deleted": outcome.deleted,
+            "binary_skipped": outcome.binary_skipped,
+        }))?
+    );
+    Ok(())
+}
+
+/// Find a locked package by name (Composer compares names case-insensitively).
+fn find_locked_package<'a>(lock: &'a Value, name: &str) -> Option<&'a Value> {
+    for key in ["packages", "packages-dev"] {
+        if let Some(arr) = lock.get(key).and_then(Value::as_array) {
+            for p in arr {
+                if p.get("name")
+                    .and_then(Value::as_str)
+                    .is_some_and(|n| n.eq_ignore_ascii_case(name))
+                {
+                    return Some(p);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Download (if not cached) and extract a package's pristine dist into `dest`,
+/// reusing the install path's downloader so URL rewriting / artifact copies /
+/// wrapper-dir stripping all behave identically to a real install.
+fn extract_pristine(
+    paths: &Paths,
+    project_root: &std::path::Path,
+    package: &str,
+    url: &str,
+    shasum: &str,
+    reference: &str,
+    dest: &std::path::Path,
+) -> Result<()> {
+    let client = bougie_fetch::default_client()?;
+    let req = bougie_composer_resolver::DistRequest {
+        package_name: package,
+        url,
+        sha1: shasum,
+        reference,
+        archive: bougie_fetch::ArchiveKind::Zip,
+        strip_prefix: None,
+        vendor_dest: dest,
+        auth_header: None,
+        auth_header_name: None,
+        project_root,
+    };
+    bougie_composer_resolver::fetch_and_extract_dists(
+        &client,
+        paths,
+        std::slice::from_ref(&req),
+        &bougie_fetch::DownloadBar::hidden(),
+    )
+    .wrap_err_with(|| {
+        format!(
+            "could not materialize the pristine copy of `{package}` (the dist may not be cached — \
+             try `bougie sync` — or it may require authentication)"
+        )
+    })?;
+    Ok(())
+}
+
+/// Reproduce the package's *other* already-applied patches on top of the
+/// pristine extraction at `dir`, so the diff that follows captures only edits
+/// layered on top of them rather than re-folding them into the new patch.
+///
+/// The patch we are about to write (`own_output`) is excluded — re-running
+/// `create` must overwrite its own patch with the full cumulative delta, not
+/// layer onto it. `patches.lock.json` witnesses whether the other patches are
+/// actually on disk: with no entry the working tree is pristine, so we apply
+/// nothing; with an entry we re-apply them (and a failure means the tree is out
+/// of sync with the lock, so we ask for a sync rather than emit a bad patch).
+fn reconstruct_applied_baseline(
+    paths: &Paths,
+    project_root: &Path,
+    project: &bougie_config::ProjectConfig,
+    package: &str,
+    own_output: &Path,
+    dir: &Path,
+) -> Result<()> {
+    let plan = patches::build_plan(paths, project_root, project, None)?;
+    let others: Vec<bougie_patches::MaterializedPatch> = plan
+        .as_ref()
+        .and_then(|p| p.patches.get(package))
+        .map(|v| {
+            v.iter()
+                .filter(|mp| !same_file(&mp.local_path, own_output))
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
+
+    if others.is_empty() {
+        return Ok(()); // pristine is the baseline
+    }
+
+    // Other patches exist for this package. They only sit on the installed tree
+    // if a prior sync applied them — patches.lock.json is the witness.
+    if !lock::read(project_root).contains_key(package) {
+        eprintln!(
+            "warning: `{package}` has patches registered but patches.lock.json shows none applied \
+             — run `bougie sync` first for an accurate baseline"
+        );
+        return Ok(());
+    }
+
+    bougie_patches::apply_package_patches(
+        dir,
+        package,
+        &others,
+        bougie_patches::model::FailureMode::Abort,
+        true, // no PATCHES.txt in the throwaway baseline
+    )
+    .wrap_err_with(|| {
+        format!(
+            "rebuilding the patched baseline for `{package}`: its existing patches no longer apply \
+             cleanly to pristine — run `bougie sync` first, then re-run `bougie patches create \
+             {package}`"
+        )
+    })?;
+    Ok(())
+}
+
+/// Whether two paths point at the same file, tolerating a not-yet-created `b`
+/// (we canonicalize its existing parent and re-join the file name).
+fn same_file(a: &Path, b: &Path) -> bool {
+    fn norm(p: &Path) -> std::path::PathBuf {
+        if let Ok(c) = p.canonicalize() {
+            return c;
+        }
+        match (p.parent(), p.file_name()) {
+            (Some(parent), Some(name)) => {
+                parent.canonicalize().unwrap_or_else(|_| parent.to_path_buf()).join(name)
+            }
+            _ => p.to_path_buf(),
+        }
+    }
+    norm(a) == norm(b)
+}
+
+/// Walk both trees and pair files by their package-relative path. Symlinks and
+/// the cweagans `PATCHES.txt` report are excluded (not source to diff).
+fn collect_file_pairs(
+    pristine: &std::path::Path,
+    edited: &std::path::Path,
+) -> Result<Vec<FileEntry>> {
+    let mut map: BTreeMap<String, FileEntry> = BTreeMap::new();
+    for (root, is_edited) in [(pristine, false), (edited, true)] {
+        for entry in walkdir::WalkDir::new(root).follow_links(false) {
+            let entry = entry.wrap_err_with(|| format!("walking {}", root.display()))?;
+            if !entry.file_type().is_file() {
+                continue;
+            }
+            let rel = entry
+                .path()
+                .strip_prefix(root)
+                .unwrap_or(entry.path())
+                .to_string_lossy()
+                .replace('\\', "/");
+            if rel == "PATCHES.txt" {
+                continue;
+            }
+            let bytes = std::fs::read(entry.path())
+                .wrap_err_with(|| format!("reading {}", entry.path().display()))?;
+            let slot = map.entry(rel.clone()).or_insert_with(|| FileEntry {
+                path: rel,
+                pristine: None,
+                edited: None,
+            });
+            if is_edited {
+                slot.edited = Some(bytes);
+            } else {
+                slot.pristine = Some(bytes);
+            }
+        }
+    }
+    Ok(map.into_values().collect())
 }
 
 // ---------------------------------------------------------------- import
