@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.36.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.35.1...bougie-v0.36.0) (2026-06-28)
+
+
+### Features
+
+* **composer-resolver:** honor --ignore-platform-req(s) at resolve time ([#427](https://github.com/cresset-tools/bougie/issues/427)) ([c304b13](https://github.com/cresset-tools/bougie/commit/c304b13746abd69ea7796266f369f14617d02f2d))
+
 ## [0.35.1](https://github.com/cresset-tools/bougie/compare/bougie-v0.35.0...bougie-v0.35.1) (2026-06-28)
 
 
