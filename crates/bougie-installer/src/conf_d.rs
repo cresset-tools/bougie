@@ -218,6 +218,9 @@ fn write_fragment_into(
     )
     .expect("writing to String");
     body.push_str(default_ini_settings_for(name));
+    if name.eq_ignore_ascii_case("spx") {
+        append_spx_settings(&mut body, so_path);
+    }
     write_atomic(&path, body.as_bytes())?;
     Ok(path)
 }
@@ -308,6 +311,51 @@ fn default_ini_settings_for(name: &str) -> &'static str {
          xdebug.start_with_request=trigger\n"
     } else {
         ""
+    }
+}
+
+/// Append SPX's default localhost web-UI settings to a freshly written
+/// `20-spx.ini` fragment.
+///
+/// SPX ships an HTTP flame-graph profiler UI, but it stays completely
+/// invisible unless three directives — all off/empty under SPX's own
+/// defaults — are set: `spx.http_enabled`, `spx.http_key`, and
+/// `spx.http_ip_whitelist`. With them unset SPX passes every request
+/// straight through, so there's no UI to see. We enable it scoped to
+/// `127.0.0.1` so `bougie` users get the profiler out of the box without
+/// exposing it off-box. The client presents the key via `?SPX_KEY=…`;
+/// `spx` is a fixed dev key, safe enough behind the loopback whitelist.
+///
+/// `spx.http_ui_assets_dir` is pinned to the ABSOLUTE path of the bundled
+/// web UI (shipped in the per-ext tarball at
+/// `share/php-spx/assets/web-ui`, three levels up from the .so's
+/// `lib/extensions/<api>/` dir). SPX's compiled-in default resolves the
+/// assets *relative to the .so at runtime*, which works under a bare
+/// `php -S` but 404s ("File not found") inside a php-fpm pool, where the
+/// relative path resolves against the pool's CWD instead. We already hold
+/// the .so's absolute store path here, so resolving it at install time is
+/// CWD-independent and works in every SAPI. Omitted when the assets dir
+/// isn't present (e.g. a `--so` local install), leaving SPX's own default.
+fn append_spx_settings(body: &mut String, so_path: &Path) {
+    body.push_str(
+        "; SPX web UI — enabled for 127.0.0.1 only. Open e.g.:\n\
+         ;   http://127.0.0.1:<port>/?SPX_KEY=spx&SPX_UI_URI=/\n\
+         spx.http_enabled=1\n\
+         spx.http_key=spx\n\
+         spx.http_ip_whitelist=127.0.0.1\n",
+    );
+    // Mirror SPX's own `<so_dir>/../../../share/php-spx/assets/web-ui`
+    // resolution, but against the absolute store path at install time so
+    // the result is absolute and CWD-independent. `canonicalize` both
+    // resolves the `..` segments and confirms the directory exists.
+    if let Some(so_dir) = so_path.parent()
+        && let Ok(assets) = so_dir
+            .join("../../../share/php-spx/assets/web-ui")
+            .canonicalize()
+        && assets.is_dir()
+    {
+        writeln!(body, "spx.http_ui_assets_dir={}", format_ini_path(&assets))
+            .expect("writing to String");
     }
 }
 
@@ -696,6 +744,66 @@ mod tests {
         let body = std::fs::read_to_string(&path).unwrap();
         assert!(!body.contains("xdebug.mode"));
         assert!(!body.contains("start_with_request"));
+        assert!(!body.contains("spx.http"));
+    }
+
+    #[test]
+    fn spx_fragment_enables_localhost_web_ui_with_absolute_assets_dir() {
+        // Store layout mirrors the per-ext tarball: the .so at
+        // <ext_root>/lib/extensions/<api>/spx.so and the bundled web UI
+        // three levels up at <ext_root>/share/php-spx/assets/web-ui.
+        let td = TempDir::new().unwrap();
+        let ext_root = td.path().join("store/ext-spx-abc123");
+        let so = ext_root.join("lib/extensions/no-debug-non-zts-20250925/spx.so");
+        std::fs::create_dir_all(so.parent().unwrap()).unwrap();
+        std::fs::write(&so, b"\x7fELF").unwrap();
+        let assets = ext_root.join("share/php-spx/assets/web-ui");
+        std::fs::create_dir_all(&assets).unwrap();
+        std::fs::write(assets.join("index.html"), b"<html></html>").unwrap();
+
+        let path =
+            write_ext_fragment(td.path(), "spx", &so, LoadDirective::Extension, &[]).unwrap();
+        let body = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            body.contains(&format!("extension={}", format_ini_path(&so))),
+            "got: {body}"
+        );
+        assert!(body.contains("spx.http_enabled=1"), "got: {body}");
+        assert!(body.contains("spx.http_key=spx"), "got: {body}");
+        assert!(body.contains("spx.http_ip_whitelist=127.0.0.1"), "got: {body}");
+        // Absolute, canonicalized path — never the relative ../../../ form
+        // that 404s under php-fpm.
+        let want = assets.canonicalize().unwrap();
+        assert!(
+            body.contains(&format!(
+                "spx.http_ui_assets_dir={}",
+                format_ini_path(&want)
+            )),
+            "got: {body}"
+        );
+        assert!(!body.contains(".."), "assets dir must be absolute: {body}");
+    }
+
+    #[test]
+    fn spx_fragment_omits_assets_dir_when_bundle_absent() {
+        // A `--so` local install: the .so has no bundled web UI alongside,
+        // so we enable the UI but leave spx.http_ui_assets_dir at SPX's own
+        // default rather than emit a bogus path.
+        let td = TempDir::new().unwrap();
+        let so = td.path().join("local/spx.so");
+        std::fs::create_dir_all(so.parent().unwrap()).unwrap();
+        std::fs::write(&so, b"\x7fELF").unwrap();
+
+        let path =
+            write_ext_fragment(td.path(), "spx", &so, LoadDirective::Extension, &[]).unwrap();
+        let body = std::fs::read_to_string(&path).unwrap();
+        assert!(body.contains("spx.http_enabled=1"), "got: {body}");
+        assert!(body.contains("spx.http_key=spx"), "got: {body}");
+        assert!(body.contains("spx.http_ip_whitelist=127.0.0.1"), "got: {body}");
+        assert!(
+            !body.contains("spx.http_ui_assets_dir"),
+            "assets dir should be omitted when absent: {body}"
+        );
     }
 
     #[test]
