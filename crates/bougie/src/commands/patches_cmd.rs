@@ -664,7 +664,18 @@ fn infer_target_for(project_root: &Path, patch_bytes: &[u8]) -> Result<String> {
     let install_paths = patches::lock_install_paths(project_root, &value);
     let inferred = bougie_patches::infer_target(&header_paths, &install_paths)
         .wrap_err("could not infer target package; pass --package")?;
-    Ok(inferred.package)
+    match inferred.scope {
+        bougie_patches::PatchScope::Package => Ok(inferred.target),
+        // A multi-package top-level patch has no single `extra.patches` key.
+        // Drop it in the `patches/` directory instead, where it applies at the
+        // project root with no configuration.
+        bougie_patches::PatchScope::Root { packages } => bail!(
+            "patch spans multiple packages ({}); it can't be added under a single \
+             `extra.patches` key — drop it in the `patches/` directory instead, \
+             where a top-level patch applies at the project root with no config",
+            packages.join(", ")
+        ),
+    }
 }
 
 /// Read `composer.json` as a JSON value, or `Null` if absent/unparseable.

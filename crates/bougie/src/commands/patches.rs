@@ -12,9 +12,9 @@ use std::path::Path;
 
 use bougie_config::ProjectConfig;
 use bougie_fetch::{ArchiveKind, BlobSpec, DownloadBar, Hash, default_client};
-use bougie_patches::model::{FailureMode, PatchSource};
+use bougie_patches::model::{FailureMode, PatchScope, PatchSource};
 use bougie_patches::{
-    MaterializedPatch, PatchPlan, content_sha256, lock, resolve_root,
+    MaterializedPatch, PatchPlan, RootPatch, content_sha256, lock, resolve_root,
 };
 use bougie_paths::Paths;
 use eyre::{Result, WrapErr, bail};
@@ -63,6 +63,7 @@ pub fn build_plan(
         }
         return Ok(Some(PatchPlan {
             patches: BTreeMap::new(),
+            root_patches: Vec::new(),
             applied,
             failure_mode: FailureMode::SkipAndWarn,
             skip_report: skip_reporting(&value, project),
@@ -77,17 +78,28 @@ pub fn build_plan(
     };
     let skip_report = skip_reporting(&value, project);
 
-    // Materialize each patch, grouped by target package in declaration order.
+    // Materialize each patch. Package-scoped patches are grouped by target;
+    // root ("top-level") patches are collected separately — they apply at the
+    // project root and couple every package they touch.
     let client = default_client()?;
     let cache_dir = paths.cache().join("patches");
     let mut grouped: BTreeMap<String, Vec<MaterializedPatch>> = BTreeMap::new();
+    let mut root_patches: Vec<RootPatch> = Vec::new();
     for patch in patches {
         let materialized = materialize(&client, &cache_dir, project_root, &patch)?;
-        grouped.entry(patch.target).or_default().push(materialized);
+        match patch.scope {
+            PatchScope::Package => {
+                grouped.entry(patch.target).or_default().push(materialized);
+            }
+            PatchScope::Root { packages } => {
+                root_patches.push(RootPatch { patch: materialized, packages });
+            }
+        }
     }
 
     Ok(Some(PatchPlan {
         patches: grouped,
+        root_patches,
         applied,
         failure_mode,
         skip_report,

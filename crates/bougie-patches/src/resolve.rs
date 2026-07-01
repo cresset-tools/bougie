@@ -88,12 +88,13 @@ pub fn resolve_patches_dir(
         let inferred = target::infer_target(&header_paths, install_paths)
             .wrap_err_with(|| format!("patches/{name}"))?;
         out.push(Patch {
-            target: inferred.package,
+            target: inferred.target,
             description: name,
             source: PatchSource::Local(path),
             sha256: None,
             depth: inferred.depth,
             extra: None,
+            scope: inferred.scope,
         });
     }
     Ok(out)
@@ -238,6 +239,34 @@ mod tests {
         assert_eq!(patches[0].target, "acme/widget");
         assert_eq!(patches[0].description, "fix.patch");
         assert_eq!(patches[0].depth, crate::DepthSpec::Fixed(4));
+    }
+
+    #[test]
+    fn patches_dir_infers_root_patch_spanning_packages() {
+        let dir = tempdir().unwrap();
+        let pdir = dir.path().join("patches");
+        fs::create_dir_all(&pdir).unwrap();
+        // A top-level patch touching two packages via project-root paths.
+        fs::write(
+            pdir.join("perf.patch"),
+            "--- a/vendor/acme/one/A.php\n+++ b/vendor/acme/one/A.php\n@@ -1 +1 @@\n-a\n+b\n\
+             --- a/vendor/acme/two/B.php\n+++ b/vendor/acme/two/B.php\n@@ -1 +1 @@\n-c\n+d\n",
+        )
+        .unwrap();
+        let install_paths = vec![
+            ("acme/one".to_string(), "vendor/acme/one".to_string()),
+            ("acme/two".to_string(), "vendor/acme/two".to_string()),
+        ];
+        let patches = resolve_patches_dir(&pdir, &install_paths).unwrap();
+        assert_eq!(patches.len(), 1);
+        assert_eq!(
+            patches[0].scope,
+            crate::model::PatchScope::Root {
+                packages: vec!["acme/one".into(), "acme/two".into()]
+            }
+        );
+        // Strip only the `a/` prefix and apply at the project root.
+        assert_eq!(patches[0].depth, crate::DepthSpec::Fixed(1));
     }
 
     #[test]

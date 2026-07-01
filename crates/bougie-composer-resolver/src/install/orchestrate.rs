@@ -26,7 +26,7 @@ use rustc_hash::FxHasher;
 use bougie_autoloader::{dump_autoload, DumpRequest};
 use bougie_composer::lockfile::{self, Lock, LockPackage};
 use bougie_fetch::{ArchiveKind, DownloadBar};
-use bougie_patches::PatchPlan;
+use bougie_patches::{ApplyOptions, FailureMode, MaterializedPatch, PatchPlan, apply_patch_text};
 use bougie_paths::Paths;
 use eyre::{eyre, Context, Result};
 use serde_json::Value;
@@ -268,11 +268,7 @@ pub fn install_from_lock_with_patches(
     // change can't short-circuit to "Audited".
     let installed_state = read_installed_state(project_root);
     let force_patch: HashSet<&str> = patches
-        .map(|plan| {
-            plan.tracked_packages()
-                .filter(|name| plan.fingerprint_changed(name))
-                .collect()
-        })
+        .map(|plan| compute_force_set(plan, &installable, &installed_state, project_root))
         .unwrap_or_default();
     let (install_set, packages_up_to_date, packages_removed) =
         diff_install_set_with_force(
@@ -537,13 +533,78 @@ pub fn install_from_lock_with_patches(
     })
 }
 
+/// The set of packages to force back into the install set for patching: those
+/// whose patch fingerprint changed, plus — for project-root patches — every
+/// package coupled to one already being re-extracted.
+///
+/// A root ("top-level") patch is applied atomically at the project root, so
+/// its packages must stay in lockstep: if any one is re-extracted this run
+/// (its dist changed, or another patch forces it), all of them must be
+/// re-extracted together and the patch re-applied — otherwise the siblings
+/// that stayed on disk would be patched twice. The coupling is expanded to a
+/// fixpoint because root patches can chain through a shared package.
+fn compute_force_set<'a>(
+    plan: &'a PatchPlan,
+    installable: &[&'a LockPackage],
+    installed_state: &Option<InstalledState>,
+    project_root: &Path,
+) -> HashSet<&'a str> {
+    // Seed: packages whose patch fingerprint changed since the applied state.
+    let mut force: HashSet<&str> = plan
+        .tracked_packages()
+        .filter(|name| plan.fingerprint_changed(name))
+        .collect();
+
+    if plan.root_patches.is_empty() {
+        return force;
+    }
+
+    let by_name: HashMap<&str, &LockPackage> =
+        installable.iter().map(|p| (p.name.as_str(), *p)).collect();
+    // Whether a package needs a fresh extract for a non-patch reason (its dist
+    // reference changed, its vendor dir is gone, or there is no prior state).
+    let needs_reextract = |name: &str| -> bool {
+        by_name.get(name).is_some_and(|p| {
+            installed_state
+                .as_ref()
+                .is_none_or(|state| !dist_up_to_date(p, state, project_root))
+        })
+    };
+
+    loop {
+        let mut added = false;
+        for rp in &plan.root_patches {
+            let any_reextract = rp
+                .packages
+                .iter()
+                .any(|pkg| force.contains(pkg.as_str()) || needs_reextract(pkg));
+            if any_reextract {
+                for pkg in &rp.packages {
+                    // Only force packages actually installable this run; a
+                    // non-installable one can't be re-extracted regardless.
+                    if let Some(p) = by_name.get(pkg.as_str())
+                        && force.insert(p.name.as_str())
+                    {
+                        added = true;
+                    }
+                }
+            }
+        }
+        if !added {
+            break;
+        }
+    }
+    force
+}
+
 /// Apply a resolved [`PatchPlan`] to the freshly-extracted `install_set`,
 /// then rewrite `patches.lock.json` (always — it is load-bearing for the next
-/// run's diff). For each install-set member the plan targets, its patches are
-/// applied into the install dir and the new fingerprint recorded; a package
-/// that was patched before but no longer is (and was re-extracted pristine
-/// this run) drops its fingerprint. Returns `Err` only in `Abort` failure
-/// mode; otherwise apply failures surface as `warnings`.
+/// run's diff). Package-scoped patches apply into each target's install dir;
+/// project-root patches apply once at the project root. Every re-extracted
+/// tracked package then earns the desired fingerprint (fully applied) or loses
+/// it (partial apply, or no longer patched — the cleanup transition). Returns
+/// `Err` only in `Abort` failure mode; otherwise apply failures surface as
+/// `warnings`.
 fn apply_patch_plan(
     plan: &PatchPlan,
     install_set: &[&LockPackage],
@@ -554,14 +615,11 @@ fn apply_patch_plan(
     let mut new_fingerprints = plan.applied.clone();
     let install_names: HashSet<&str> = install_set.iter().map(|p| p.name.as_str()).collect();
 
-    // Previously-patched packages now without patches, re-extracted pristine
-    // this run, drop their fingerprint.
-    for name in plan.applied.keys() {
-        if install_names.contains(name.as_str()) && !plan.patches.contains_key(name) {
-            new_fingerprints.remove(name);
-        }
-    }
+    // Packages whose patch set did not fully apply this run. They must not earn
+    // a fingerprint, so the next run re-extracts pristine and retries.
+    let mut failed: HashSet<String> = HashSet::new();
 
+    // 1. Package-scoped patches: apply into each package's install dir.
     for (pkg, vendor_dir) in install_set.iter().zip(vendor_dirs.iter()) {
         let Some(pkg_patches) = plan.patches.get(&pkg.name) else {
             continue;
@@ -574,14 +632,58 @@ fn apply_patch_plan(
             plan.skip_report,
         )?;
         warnings.extend(res.warnings);
-        match res.fingerprint {
-            // Fully applied → record. Partial/failed (skip mode) → drop, so
-            // the next run re-extracts and retries from pristine.
-            Some(fp) => {
-                new_fingerprints.insert(pkg.name.clone(), fp);
+        if res.fingerprint.is_none() {
+            failed.insert(pkg.name.clone());
+        }
+    }
+
+    // 2. Project-root patches: apply once each, at the project root. Coupling
+    // guarantees a root patch's packages are all-in or all-out of the install
+    // set, so `all_pristine` distinguishes "re-extracted this run, (re)apply
+    // now" from "untouched, already applied before".
+    let vendor_by_name: HashMap<&str, &PathBuf> = install_set
+        .iter()
+        .zip(vendor_dirs.iter())
+        .map(|(p, dir)| (p.name.as_str(), dir))
+        .collect();
+    for rp in &plan.root_patches {
+        let all_pristine = rp.packages.iter().all(|p| install_names.contains(p.as_str()));
+        if !all_pristine {
+            continue;
+        }
+        if apply_root_patch(project_root, &rp.patch, plan.failure_mode, warnings)? {
+            // Record the patch in each touched package's `PATCHES.txt` so every
+            // patched directory carries the same audit trail as a package-scoped
+            // patch (the package's own `PATCHES.txt`, if any, is appended to).
+            if !plan.skip_report {
+                for pkg in &rp.packages {
+                    if let Some(dir) = vendor_by_name.get(pkg.as_str())
+                        && let Err(e) = bougie_patches::append_patches_txt(dir, &[&rp.patch])
+                    {
+                        warnings.push(format!("could not update PATCHES.txt in `{}`: {e}", dir.display()));
+                    }
+                }
             }
-            None => {
-                new_fingerprints.remove(&pkg.name);
+        } else {
+            failed.extend(rp.packages.iter().cloned());
+        }
+    }
+
+    // 3. Recompute fingerprints for every tracked package re-extracted this run.
+    // Untouched packages keep their prior fingerprint.
+    for name in plan.tracked_packages() {
+        if !install_names.contains(name) {
+            continue;
+        }
+        match (failed.contains(name), plan.desired_fingerprint(name)) {
+            // Fully applied → record the combined (package + root) fingerprint.
+            (false, Some(fp)) => {
+                new_fingerprints.insert(name.to_string(), fp);
+            }
+            // Partial apply, or no longer patched → drop, so the next run
+            // re-extracts pristine (and retries any failed patch).
+            _ => {
+                new_fingerprints.remove(name);
             }
         }
     }
@@ -591,6 +693,37 @@ fn apply_patch_plan(
         warnings.push(format!("could not write patches.lock.json: {e}"));
     }
     Ok(())
+}
+
+/// Apply a single project-root ("top-level") patch at the project root
+/// (the caller records it in each touched package's `PATCHES.txt`). Returns
+/// whether it applied cleanly: in `Abort` mode a failure is an `Err`; in
+/// `SkipAndWarn` it pushes a warning and returns `Ok(false)`.
+fn apply_root_patch(
+    project_root: &Path,
+    patch: &MaterializedPatch,
+    failure_mode: FailureMode,
+    warnings: &mut Vec<String>,
+) -> Result<bool> {
+    let text = std::fs::read_to_string(&patch.local_path)
+        .with_context(|| format!("reading patch `{}`", patch.local_path.display()))?;
+    let opts = ApplyOptions { depth: patch.depth, ..ApplyOptions::default() };
+    match apply_patch_text(project_root, &text, &opts) {
+        Ok(_) => Ok(true),
+        Err(e) => match failure_mode {
+            FailureMode::Abort => Err(eyre!(
+                "patch `{}` failed to apply at the project root: {e:#}",
+                patch.description
+            )),
+            FailureMode::SkipAndWarn => {
+                warnings.push(format!(
+                    "patch `{}` failed to apply at the project root: {e:#}",
+                    patch.description
+                ));
+                Ok(false)
+            }
+        },
+    }
 }
 
 /// Outcome of the native Magento deploy pass.
@@ -773,20 +906,9 @@ pub(crate) fn diff_install_set_with_force<'a>(
     wanted_names.extend(keep_names.iter().copied());
 
     for p in installable {
-        let lock_ref = p
-            .dist
-            .as_ref()
-            .and_then(|d| d.reference.as_deref())
-            .unwrap_or("");
-        let vendor_dir = project_root.join("vendor").join(&p.name);
-
-        if !force.contains(p.name.as_str())
-            && let Some(installed_ref) = state.packages.get(&p.name)
-        {
-            if installed_ref == lock_ref && vendor_dir.is_dir() {
-                up_to_date = up_to_date.saturating_add(1);
-                continue;
-            }
+        if !force.contains(p.name.as_str()) && dist_up_to_date(p, state, project_root) {
+            up_to_date = up_to_date.saturating_add(1);
+            continue;
         }
         need_install.push(p);
     }
@@ -805,6 +927,21 @@ pub(crate) fn diff_install_set_with_force<'a>(
     }
 
     (need_install, up_to_date, removed)
+}
+
+/// Whether `p` is already installed at the locked revision: its recorded dist
+/// reference matches the lock and its `vendor/<name>` directory is present.
+/// The single source of truth for "no fresh extract needed", shared by the
+/// install-set diff and the patch-coupling force computation.
+fn dist_up_to_date(p: &LockPackage, state: &InstalledState, project_root: &Path) -> bool {
+    let lock_ref = p
+        .dist
+        .as_ref()
+        .and_then(|d| d.reference.as_deref())
+        .unwrap_or("");
+    state.packages.get(&p.name).is_some_and(|installed_ref| {
+        installed_ref == lock_ref && project_root.join("vendor").join(&p.name).is_dir()
+    })
 }
 
 /// Build the per-package install progress bar. Renders on stderr when
