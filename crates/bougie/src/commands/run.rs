@@ -40,6 +40,13 @@ pub fn run(
     if argv.is_empty() {
         return Err(eyre!("nothing to run"));
     }
+    // uv-parity: a path-shaped argv[0] with an inline `# /// script` block
+    // runs self-contained even without `--script` (`bougie run ./app.php`).
+    if let Some(result) =
+        try_inline_script(argv, format, php_request, with, xdebug_flag, php_pref)
+    {
+        return result;
+    }
     // The ad-hoc extension overlay (`--with EXT=VER`) is not implemented
     // yet. It used to be silently ignored, which made the command lie:
     // the script ran without the requested extension while the CLI
@@ -248,6 +255,44 @@ fn implicit_sync(
         );
     }
     Ok(None)
+}
+
+/// uv-parity auto-detection for `bougie run <path>` (no `--script`): when
+/// `argv[0]` is a path-shaped file carrying an inline `# /// script`
+/// block, run it as a self-contained script. Returns `Some(result)` when
+/// the script path was taken, `None` to fall through to the normal
+/// project run. A bare command or composer-script name like `bougie run
+/// test` never matches — only a path-shaped argv[0] for a readable file
+/// with a metadata block.
+fn try_inline_script(
+    argv: &[String],
+    format: OutputFormat,
+    php_request: Option<&str>,
+    with: &[String],
+    xdebug_flag: bool,
+    php_pref: bougie_cli::PhpPrefArgs,
+) -> Option<Result<ExitCode>> {
+    let first = argv.first()?;
+    if !looks_like_script_path(first) {
+        return None;
+    }
+    let source = std::fs::read_to_string(first).ok()?;
+    bougie_composer::inline::parse_inline_metadata(&source)
+        .ok()
+        .flatten()?;
+    Some(super::script::run(argv, format, php_request, with, xdebug_flag, php_pref))
+}
+
+/// Heuristic for "argv[0] is a script file, not a command or composer
+/// script name": it contains a path separator or ends with `.php`. Keeps
+/// `bougie run test` (a composer-script name) on the project path while
+/// `bougie run ./app.php` / `bougie run app.php` auto-detect as scripts.
+fn looks_like_script_path(arg: &str) -> bool {
+    arg.contains('/')
+        || arg.contains('\\')
+        || std::path::Path::new(arg)
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("php"))
 }
 
 fn install_xdebug_into_overlay(project_root: &Path) -> Result<()> {

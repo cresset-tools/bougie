@@ -296,6 +296,20 @@ impl Paths {
         self.cache_tool_run().join(key)
     }
 
+    /// Root of the ephemeral `bougie run --script` cache. Each subdir is
+    /// a self-contained env keyed by the script's inline `composer.json`
+    /// plus the `--php` request (see `commands::script::cache_key`). Like
+    /// the tool-run cache, `bougie cache prune` walks this dir by mtime
+    /// and drops entries past the TTL.
+    pub fn cache_script_run(&self) -> PathBuf {
+        self.cache.join("script-run")
+    }
+
+    /// Specific script-run cache slot: `cache_script_run/<hash>/`.
+    pub fn cache_script_run_dir(&self, key: &str) -> PathBuf {
+        self.cache_script_run().join(key)
+    }
+
     // ---------- `bougied` daemon + service supervisor paths ----------
     //
     // See SERVICES.md and CLI.md §2.1 in the php-build-standalone repo

@@ -700,6 +700,85 @@ pub fn run_with_php_request(
     Ok(outcome)
 }
 
+/// Resolve + install a self-contained script's ephemeral environment
+/// rooted at `slot` (`bougie run --script`). The slot already holds the
+/// script's inline `composer.json`; this resolves a `composer.lock`,
+/// selects + installs PHP and the declared `ext-*`, replicates conf.d,
+/// and materializes `vendor/`.
+///
+/// Unlike [`run`] / [`run_with_default_fallback`], this never emits the
+/// uv-style summary to **stdout** — a script owns its stdout, so any
+/// progress belongs on stderr (handled by the lower-level installers via
+/// the download bar). The caller skips this entirely on a cache hit.
+///
+/// `php_request` mirrors `bougie run --php`: a version/constraint or a
+/// path to a `php` binary overrides the script's declared `require.php`.
+pub fn sync_script_slot(
+    paths: &Paths,
+    slot: &std::path::Path,
+    php_request: Option<&Request>,
+    php_pref: PhpPrefArgs,
+) -> Result<()> {
+    // Resolve the inline composer.json into a lock before PHP inference,
+    // same ordering as `run`. Never offline: a script run is forgiving.
+    ensure_lock(
+        paths,
+        slot,
+        false,
+        false,
+        ResolutionStrategy::Highest,
+        &PlatformIgnore::default(),
+    )?;
+
+    let project = load_project(slot)?;
+    // A `--script` run is a one-off invocation (like `bougie run`), not a
+    // project being configured — mirror `run_with_php_request`'s context.
+    let resolution = PhpResolution::from_args(php_pref, &project, SelectionContext::OneOff)?;
+
+    match php_request {
+        Some(Request::VersionLike { spec, flavor }) => {
+            let flavor = match flavor {
+                Some(f) => *f,
+                None => parse_flavor(project.bougie.php.flavor.as_deref())?,
+            };
+            ensure_synced_with(paths, slot, &project, spec.clone(), flavor, resolution)?;
+        }
+        Some(Request::Path(path)) => {
+            let expanded = expand_tilde(path);
+            let system = probe(&expanded).wrap_err_with(|| {
+                format!("probing the PHP binary at {}", expanded.display())
+            })?;
+            ensure_synced_system(paths, slot, &system)?;
+        }
+        Some(Request::FullTag { .. } | Request::Name(_)) => {
+            return Err(eyre!(
+                "`bougie run --script --php` accepts a version (`8.3`, `8.3.12`), a \
+                 constraint (`~8.3`, `>=8.2,<8.4`), or a path to a `php` binary; \
+                 full tags and bare PATH names are not supported here"
+            ));
+        }
+        None => {
+            // No `--php` override: drive PHP off the script's own
+            // `require.php`, falling back to the highest installed (or
+            // `>=8.0`) when the inline block pins nothing — the uv-parity
+            // forgiving default shared with `run_with_default_fallback`.
+            let (spec, flavor) = match resolve_php_inputs(slot, &project) {
+                Ok(inputs) => inputs,
+                Err(err) if is_missing_php_constraint(&err) => {
+                    default_php_inputs(paths, &project)?
+                }
+                Err(err) => return Err(err),
+            };
+            ensure_synced_with(paths, slot, &project, spec, flavor, resolution)?;
+        }
+    }
+
+    // Materialize vendor/ from the resolved lock. No root scripts and no
+    // patches: a self-contained script is not a project author's tree.
+    install_vendor(paths, slot, None, None)?;
+    Ok(())
+}
+
 /// Expand a leading `~` / `~/` to the user's home directory. Any other
 /// path (including `~user`) is returned unchanged — `probe` will surface
 /// a clear "can't execute" error if it doesn't resolve to a real binary.
@@ -896,7 +975,7 @@ fn ensure_synced_system(
     write_project_resolved_php_path(project_root, &system_php.path)?;
 
     let shims_dir = write_shims(project_root)?;
-    seed_global_composer_shim(paths);
+    seed_global_shims(paths);
 
     let mut global = GlobalState::load(paths)?;
     global.host_target = Some(Triple::detect()?.to_string());
@@ -938,7 +1017,7 @@ fn ensure_synced_system_ephemeral(
     system_php: &SystemPhp,
 ) -> Result<SyncResult> {
     let shims_dir = write_shims(project_root)?;
-    seed_global_composer_shim(paths);
+    seed_global_shims(paths);
 
     let mut global = GlobalState::load(paths)?;
     global.host_target = Some(Triple::detect()?.to_string());
@@ -1042,11 +1121,12 @@ fn ensure_synced_managed(
     )?;
 
     let shims_dir = write_shims(project_root)?;
-    // Make Composer a default tool: seed a global `composer` on the
-    // user's PATH (tool bin dir) so `composer …` works from any shell,
-    // routed through bougie's project-aware shim. Best-effort and
-    // collision-safe — see `seed_global_composer_shim`.
-    seed_global_composer_shim(paths);
+    // Make Composer a default tool + the `bougie-run` shebang shim
+    // available: seed both on the user's PATH (tool bin dir) so
+    // `composer …` and `#!/usr/bin/env bougie-run` work from any shell,
+    // routed through bougie's project-aware argv[0] shim. Best-effort and
+    // collision-safe — see `seed_global_shims`.
+    seed_global_shims(paths);
 
     let mut global = GlobalState::load(paths)?;
     global.host_target = Some(Triple::detect()?.to_string());
@@ -1610,24 +1690,29 @@ fn baseline_opt_outs(project: &ProjectConfig) -> BTreeSet<String> {
         .collect()
 }
 
-/// Seed (or refresh) a global `composer` entry in the tool bin dir
-/// (`~/.local/bin` by default) so a bare `composer` resolves to bougie
-/// from any shell — i.e. Composer behaves as a default-installed tool,
-/// routed through the project-aware shim (`shim::run_composer`).
+/// Seed (or refresh) the global `composer` and `bougie-run` entries in
+/// the tool bin dir (`~/.local/bin` by default) so a bare `composer` /
+/// `bougie-run` resolves to bougie from any shell. Composer then behaves
+/// as a default-installed tool, and `#!/usr/bin/env bougie-run` script
+/// shebangs work on systems whose `env` lacks `-S` (the portable
+/// `#!/usr/bin/env -S bougie run --script` needs no shim). Both route
+/// through the project-aware argv[0] shim (`shim::exec`).
 ///
 /// Best-effort: a failure here must never fail `bougie sync`.
 /// Collision-safe: only ever refreshes a symlink bougie itself placed
-/// (one whose target is a `bougie` binary); a user's own `composer`
+/// (one whose target is a `bougie` binary); a user's own file
 /// (a real phar, or a symlink they made) is left untouched.
 #[cfg(unix)]
-fn seed_global_composer_shim(paths: &Paths) {
-    if let Err(e) = try_seed_global_composer_shim(paths) {
-        eprintln!("warning: could not seed global `composer` shim: {e}");
+fn seed_global_shims(paths: &Paths) {
+    for name in ["composer", "bougie-run"] {
+        if let Err(e) = try_seed_global_shim(paths, name) {
+            eprintln!("warning: could not seed global `{name}` shim: {e}");
+        }
     }
 }
 
 #[cfg(not(unix))]
-fn seed_global_composer_shim(_paths: &Paths) {}
+fn seed_global_shims(_paths: &Paths) {}
 
 /// True when `link` is a symlink bougie itself placed — one whose
 /// target's file stem is `bougie`. Regular files, missing paths, and
@@ -1645,9 +1730,9 @@ fn is_bougie_owned_link(link: &std::path::Path) -> bool {
 }
 
 #[cfg(unix)]
-fn try_seed_global_composer_shim(paths: &Paths) -> Result<()> {
+fn try_seed_global_shim(paths: &Paths, name: &str) -> Result<()> {
     let bin_dir = paths.tool_bin_dir();
-    let link = bin_dir.join("composer");
+    let link = bin_dir.join(name);
     if link.symlink_metadata().is_ok() {
         if !is_bougie_owned_link(&link) {
             // A recurring, benign condition (the user has their own
@@ -1655,7 +1740,7 @@ fn try_seed_global_composer_shim(paths: &Paths) -> Result<()> {
             // summary; surface it only under `--verbose`.
             if bougie_output::output::verbose() {
                 eprintln!(
-                    "warning: not seeding a global `composer` — {} already exists \
+                    "warning: not seeding a global `{name}` — {} already exists \
                      and was not created by bougie",
                     link.display()
                 );
