@@ -14,6 +14,7 @@
 pub mod catalog;
 pub mod cgroup;
 pub mod credentials;
+pub mod health;
 pub mod ipc;
 pub mod logs;
 pub mod provisioners;
@@ -172,6 +173,7 @@ async fn serve(paths: Paths) -> Result<ExitCode> {
     // Running → Failed, and (Phase 5+) fires deadline-driven restarts.
     {
         let supervisor = Arc::clone(&state.supervisor);
+        let paths = state.paths.clone();
         let mut tick_rx = shutdown_rx.clone();
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(std::time::Duration::from_secs(1));
@@ -198,6 +200,28 @@ async fn serve(paths: Paths) -> Result<ExitCode> {
                                         "auto-restart failed; will retry on a later backoff tick"
                                     );
                                     sup.lock().await.note_restart_failure(name);
+                                }
+                            });
+                        }
+
+                        // Continuous health: re-probe live services whose
+                        // probe is due, off the lock (same discipline as
+                        // start — a probe can take seconds). On a sustained
+                        // failure the service is torn down + rescheduled,
+                        // so a wedged-but-alive process no longer hides as
+                        // "Running". See `health::probe` and the
+                        // `Supervisor::health_*` methods.
+                        let health_due = supervisor.lock().await.health_due();
+                        for name in health_due {
+                            let sup = Arc::clone(&supervisor);
+                            let paths = paths.clone();
+                            tokio::spawn(async move {
+                                let ok = crate::daemon::health::probe(name, &paths)
+                                    .await
+                                    .is_ok();
+                                let outcome = sup.lock().await.record_health(name, ok);
+                                if outcome == crate::daemon::supervisor::HealthOutcome::Breach {
+                                    sup.lock().await.fail_unhealthy(name).await;
                                 }
                             });
                         }
@@ -312,6 +336,7 @@ async fn drain(state: &Arc<DaemonState>) {
                 matches!(
                     s.state,
                     ServiceState::Running
+                        | ServiceState::Unhealthy
                         | ServiceState::HealthChecking
                         | ServiceState::Starting
                 )

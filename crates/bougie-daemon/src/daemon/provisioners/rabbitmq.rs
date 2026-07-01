@@ -181,6 +181,34 @@ pub async fn deprovision(
 
 // -------------------- helpers --------------------
 
+/// Health probe: a single `rabbitmqctl status --quiet`, healthy on exit
+/// 0. The supervisor's old TCP probe was satisfied the moment the inet
+/// listener bound, but the AMQP layer keeps rejecting work until mnesia +
+/// boot modules finish loading; `ctl status` is the canonical "is the
+/// node actually up" check (it's what [`wait_for_ctl_ready`] polls).
+pub(crate) async fn health(paths: &Paths) -> Result<()> {
+    let ctl = ctl_binary(paths)?;
+    let mut cmd = Command::new(&ctl);
+    cmd.args(["status", "--quiet"]);
+    build_ctl_env(&mut cmd, paths);
+    // The continuous probe bounds this with a timeout; kill rabbitmqctl
+    // if that timeout drops the future so a wedged node can't strand it.
+    cmd.kill_on_drop(true);
+    let out = cmd
+        .output()
+        .await
+        .map_err(|e| eyre!("spawning rabbitmqctl status: {e}"))?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(eyre!(
+            "rabbitmqctl status returned non-zero (exit {}): {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim()
+        ))
+    }
+}
+
 /// Locate `sbin/rabbitmqctl` inside the rabbitmq tarball.
 fn ctl_binary(paths: &Paths) -> Result<PathBuf> {
     let entry = crate::daemon::catalog::find("rabbitmq")
