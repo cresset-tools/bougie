@@ -6,6 +6,7 @@
 //! writes: `composer.json` / `composer.lock` ([`lockfile`]) and the
 //! Packagist v2 metadata wire format ([`metadata`]).
 
+pub mod inline;
 pub mod lockfile;
 pub mod metadata;
 

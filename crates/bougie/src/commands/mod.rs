@@ -32,6 +32,7 @@ pub mod php_upgrade;
 pub mod patches;
 pub mod patches_cmd;
 pub mod run;
+pub mod script;
 pub mod scripts;
 pub mod self_update;
 pub mod self_version;
