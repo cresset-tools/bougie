@@ -19,7 +19,10 @@ use serde_json::Value;
 /// A single resolved patch rule: one diff to apply to one target package.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Patch {
-    /// Target package, `vendor/name` (the key under `extra.patches`).
+    /// Target package, `vendor/name` (the key under `extra.patches`). For a
+    /// project-root ([`PatchScope::Root`]) patch this is a display-only join of
+    /// the touched packages — application is driven off [`Patch::scope`], not
+    /// this field.
     pub target: String,
     /// Human description — the compact-form key, or the expanded
     /// `description` field. Used for `PATCHES.txt` and dedup.
@@ -34,6 +37,25 @@ pub struct Patch {
     /// Opaque `extra` object carried verbatim from the expanded form (e.g.
     /// `imported-from` provenance). `None` for compact entries.
     pub extra: Option<Value>,
+    /// Where the patch applies: inside a single package's install dir
+    /// (the default, every `extra.patches` entry) or at the project root
+    /// (a multi-package top-level `patches/` file).
+    pub scope: PatchScope,
+}
+
+/// Where a [`Patch`] is applied on disk.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum PatchScope {
+    /// Apply inside the target package's install directory. This is every
+    /// `extra.patches` entry and every single-package `patches/` file.
+    #[default]
+    Package,
+    /// Apply at the **project root** — a zero-config `patches/` file whose diff
+    /// spans multiple packages via project-root-relative paths
+    /// (`a/vendor/foo/…`, `b/vendor/bar/…`). `packages` is the sorted set of
+    /// packages the diff touches; they are coupled so a change to any one
+    /// re-extracts them all pristine before the patch is re-applied as a unit.
+    Root { packages: Vec<String> },
 }
 
 /// Where a patch's bytes come from.
@@ -116,6 +138,7 @@ pub fn parse_target_patches(target: &str, value: &Value) -> eyre::Result<Vec<Pat
                     sha256: None,
                     depth: DepthSpec::Auto,
                     extra: None,
+                    scope: PatchScope::Package,
                 })
             })
             .collect(),
@@ -153,6 +176,7 @@ fn parse_expanded_entry(target: &str, item: &Value) -> eyre::Result<Patch> {
             sha256: None,
             depth: DepthSpec::Auto,
             extra: None,
+            scope: PatchScope::Package,
         });
     }
 
@@ -187,6 +211,7 @@ fn parse_expanded_entry(target: &str, item: &Value) -> eyre::Result<Patch> {
         sha256,
         depth,
         extra,
+        scope: PatchScope::Package,
     })
 }
 

@@ -34,12 +34,26 @@ pub struct MaterializedPatch {
     pub depth: DepthSpec,
 }
 
+/// A project-root ("top-level") patch: applied once at the project root, but
+/// coupled to every package its diff touches so a change re-extracts them all
+/// pristine before it is re-applied as a unit.
+#[derive(Debug, Clone)]
+pub struct RootPatch {
+    /// The materialized patch, applied at the project root.
+    pub patch: MaterializedPatch,
+    /// The packages the patch touches (sorted, deduped). Each contributes this
+    /// patch to its re-application fingerprint.
+    pub packages: Vec<String>,
+}
+
 /// The full set of patches to apply this run, keyed by target package, plus
 /// the applied-state fingerprints from the previous run.
 #[derive(Debug, Clone, Default)]
 pub struct PatchPlan {
     /// Target package name → its patches, in apply order.
     pub patches: BTreeMap<String, Vec<MaterializedPatch>>,
+    /// Project-root patches spanning multiple packages, in apply order.
+    pub root_patches: Vec<RootPatch>,
     /// Package name → applied fingerprint, loaded from `patches.lock.json`.
     pub applied: BTreeMap<String, String>,
     /// What to do when a patch fails to apply.
@@ -53,7 +67,7 @@ pub struct PatchPlan {
 impl PatchPlan {
     /// Whether the plan declares any patch at all.
     pub fn is_empty(&self) -> bool {
-        self.patches.is_empty()
+        self.patches.is_empty() && self.root_patches.is_empty()
     }
 
     /// The packages this plan targets.
@@ -61,11 +75,25 @@ impl PatchPlan {
         self.patches.keys().map(String::as_str)
     }
 
-    /// The desired fingerprint for `package` given its patches. `None` when
-    /// the package has no patches (the no-patch state, which must differ from
-    /// any non-empty applied fingerprint to trigger a pristine restore).
+    /// The root patches (if any) that touch `package`.
+    fn root_patches_for<'a>(&'a self, package: &'a str) -> impl Iterator<Item = &'a MaterializedPatch> {
+        self.root_patches
+            .iter()
+            .filter(move |rp| rp.packages.iter().any(|p| p == package))
+            .map(|rp| &rp.patch)
+    }
+
+    /// The desired fingerprint for `package` given its patches — the
+    /// package-scoped patches followed by any root patches that touch it.
+    /// `None` when the package has no patches (the no-patch state, which must
+    /// differ from any non-empty applied fingerprint to trigger a pristine
+    /// restore).
     pub fn desired_fingerprint(&self, package: &str) -> Option<String> {
-        self.patches.get(package).map(|ps| fingerprint(ps))
+        let pkg = self.patches.get(package).map_or(&[][..], Vec::as_slice);
+        if pkg.is_empty() && self.root_patches_for(package).next().is_none() {
+            return None;
+        }
+        Some(fingerprint_iter(pkg.iter().chain(self.root_patches_for(package))))
     }
 
     /// Whether `package` must be force-re-extracted because its patch set
@@ -79,24 +107,34 @@ impl PatchPlan {
     /// `target → [ { description, url, sha256, depth? } ]`. For the
     /// `write_lock` opt-in serialization in `patches.lock.json`.
     pub fn human_view(&self) -> serde_json::Value {
-        let mut out = serde_json::Map::new();
+        let entry = |p: &MaterializedPatch| {
+            let mut e = serde_json::Map::new();
+            e.insert("description".into(), p.description.clone().into());
+            e.insert("url".into(), p.origin.clone().into());
+            e.insert("sha256".into(), p.content_sha256.clone().into());
+            if let DepthSpec::Fixed(n) = p.depth {
+                e.insert("depth".into(), n.into());
+            }
+            serde_json::Value::Object(e)
+        };
+        // Group by package, folding each root patch under every package it
+        // touches so the view reflects what is applied to that tree.
+        let mut grouped: BTreeMap<String, Vec<serde_json::Value>> = BTreeMap::new();
         for (target, patches) in &self.patches {
-            let entries: Vec<serde_json::Value> = patches
-                .iter()
-                .map(|p| {
-                    let mut e = serde_json::Map::new();
-                    e.insert("description".into(), p.description.clone().into());
-                    e.insert("url".into(), p.origin.clone().into());
-                    e.insert("sha256".into(), p.content_sha256.clone().into());
-                    if let DepthSpec::Fixed(n) = p.depth {
-                        e.insert("depth".into(), n.into());
-                    }
-                    serde_json::Value::Object(e)
-                })
-                .collect();
-            out.insert(target.clone(), serde_json::Value::Array(entries));
+            grouped.entry(target.clone()).or_default().extend(patches.iter().map(entry));
         }
-        serde_json::Value::Object(out)
+        for rp in &self.root_patches {
+            let e = entry(&rp.patch);
+            for pkg in &rp.packages {
+                grouped.entry(pkg.clone()).or_default().push(e.clone());
+            }
+        }
+        serde_json::Value::Object(
+            grouped
+                .into_iter()
+                .map(|(k, v)| (k, serde_json::Value::Array(v)))
+                .collect(),
+        )
     }
 
     /// Every package that is either targeted now or was patched before — the
@@ -107,6 +145,11 @@ impl PatchPlan {
             .keys()
             .chain(self.applied.keys())
             .map(String::as_str)
+            .chain(
+                self.root_patches
+                    .iter()
+                    .flat_map(|rp| rp.packages.iter().map(String::as_str)),
+            )
             .collect::<std::collections::BTreeSet<_>>()
             .into_iter()
     }
@@ -116,6 +159,12 @@ impl PatchPlan {
 /// file content hash + its resolved depth. Editing a local patch flips the
 /// content hash; reordering or changing depth flips the fingerprint too.
 pub fn fingerprint(patches: &[MaterializedPatch]) -> String {
+    fingerprint_iter(patches.iter())
+}
+
+/// [`fingerprint`] over an arbitrary iterator of patches — used to combine a
+/// package's own patches with the root patches that touch it.
+fn fingerprint_iter<'a>(patches: impl Iterator<Item = &'a MaterializedPatch>) -> String {
     let mut canonical = String::new();
     for p in patches {
         let depth = match p.depth {
