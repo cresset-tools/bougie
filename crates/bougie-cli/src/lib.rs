@@ -110,6 +110,12 @@ pub enum Command {
     /// Create a new project
     #[command(display_order = 1)]
     Init {
+        /// Scaffold a single self-contained script at FILE instead of a
+        /// project (uv's `uv init --script`): a `bougie run --script`
+        /// shebang + a `# /// script` composer.json block. Other flags
+        /// are ignored in this mode
+        #[arg(long = "script", value_name = "FILE")]
+        script: Option<std::path::PathBuf>,
         /// Place bougie configuration in a bougie.toml file
         #[arg(long)]
         toml: bool,
@@ -166,6 +172,12 @@ pub enum Command {
         /// Packages to add, `vendor/pkg` or `vendor/pkg@<constraint>`
         #[arg(value_name = "PACKAGES", required = true)]
         packages: Vec<String>,
+        /// Add the packages to a self-contained script's inline
+        /// `# /// script` block instead of a project's composer.json
+        /// (uv's `uv add --script`), then refresh its adjacent
+        /// `<file>.lock`
+        #[arg(long = "script", value_name = "FILE")]
+        script: Option<std::path::PathBuf>,
         /// Add to `require-dev` instead of `require`
         #[arg(long = "dev")]
         dev: bool,
@@ -233,6 +245,12 @@ pub enum Command {
     /// Update the project's lockfile
     #[command(display_order = 12)]
     Lock {
+        /// Lock a single self-contained script's inline dependencies into
+        /// an adjacent `<file>.lock` (uv's `uv lock --script`). `bougie
+        /// run --script` then installs from that lock for reproducible,
+        /// offline runs instead of re-resolving
+        #[arg(long = "script", value_name = "FILE")]
+        script: Option<std::path::PathBuf>,
         /// Version-preference policy when re-resolving changed requires
         #[arg(long = "resolution", value_name = "STRATEGY", default_value = "highest")]
         resolution: ResolutionStrategy,
@@ -337,6 +355,15 @@ pub enum Command {
     /// Run a command or script
     #[command(display_order = 5)]
     Run {
+        /// Treat the first argument as a self-contained PHP script with an
+        /// inline `# /// script` composer.json block (uv's `--script`):
+        /// resolve its declared `php` / `ext-*` / package requires into an
+        /// ephemeral cached environment and run it with the autoloader
+        /// prepended. Skips project sync and the composer-script lookup.
+        /// This is what the `#!/usr/bin/env -S bougie run --script`
+        /// shebang invokes
+        #[arg(long)]
+        script: bool,
         /// Add a temporary extension for this invocation
         #[arg(long, value_name = "EXT=VER")]
         with: Vec<String>,

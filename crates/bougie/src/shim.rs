@@ -26,6 +26,11 @@ pub enum Role {
     PhpFpm,
     Composer,
     Unzip,
+    /// `bougie-run <script> [args]` — the `#!/usr/bin/env bougie-run`
+    /// shebang fallback for systems whose `env` lacks `-S` (so the
+    /// portable `#!/usr/bin/env -S bougie run --script` can't be used).
+    /// Routes straight to `bougie run --script <script> [args]`.
+    ScriptRun,
     #[cfg(unix)]
     Bougied,
     #[cfg(unix)]
@@ -39,6 +44,7 @@ impl Role {
             Self::PhpFpm => "php-fpm",
             Self::Composer => "composer",
             Self::Unzip => "unzip",
+            Self::ScriptRun => "bougie-run",
             #[cfg(unix)]
             Self::Bougied => "bougied",
             #[cfg(unix)]
@@ -67,6 +73,7 @@ pub fn role_from_argv0(argv0: &OsStr) -> Option<Role> {
         "php-fpm" => Some(Role::PhpFpm),
         "composer" => Some(Role::Composer),
         "unzip" => Some(Role::Unzip),
+        "bougie-run" => Some(Role::ScriptRun),
         #[cfg(unix)]
         "bougied" => Some(Role::Bougied),
         #[cfg(unix)]
@@ -132,6 +139,14 @@ pub fn exec(role: Role) -> Result<ExitCode> {
         return run_composer_native(args);
     }
 
+    // The `bougie-run` shebang shim is project-agnostic: a self-contained
+    // script carries its own deps, so there's no surrounding project to
+    // resolve. `args` is already `[<script>, <script-args>…]` — exactly
+    // what `commands::script::run` expects as its argv.
+    if role == Role::ScriptRun {
+        return run_script_shim(args);
+    }
+
     let project_root = locate_project_root(&argv0)?;
 
     // System PHP: a `resolved-php-path` marker means sync selected a
@@ -189,6 +204,7 @@ pub fn exec(role: Role) -> Result<ExitCode> {
         }
         Role::Composer => unreachable!("composer role handled above"),
         Role::Unzip => unreachable!("unzip role handled above"),
+        Role::ScriptRun => unreachable!("bougie-run role handled above"),
         #[cfg(unix)]
         Role::Bougied => unreachable!("bougied role handled above"),
         #[cfg(unix)]
@@ -260,6 +276,30 @@ fn run_composer_native(args: Vec<std::ffi::OsString>) -> Result<ExitCode> {
             Ok(ExitCode::from(u8::from(e.use_stderr()) * 2))
         }
     }
+}
+
+/// The `bougie-run` argv[0] shim: route `bougie-run <script> [args]`
+/// straight to `commands::script::run` (i.e. `bougie run --script …`).
+/// `args` is the post-argv[0] vector — already `[<script>, <args>…]`,
+/// the shape `script::run` consumes. Only the bare form is available via
+/// the shebang (no `--php` / `--with` / `--xdebug`); use the explicit
+/// `bougie run --script` for those.
+fn run_script_shim(raw_args: Vec<std::ffi::OsString>) -> Result<ExitCode> {
+    let argv: Vec<String> = raw_args
+        .into_iter()
+        .map(|a| {
+            a.into_string()
+                .map_err(|bad| eyre!("script argument is not valid UTF-8: {bad:?}"))
+        })
+        .collect::<Result<_>>()?;
+    crate::commands::script::run(
+        &argv,
+        bougie_cli::OutputFormat::Text,
+        None,
+        &[],
+        false,
+        bougie_cli::PhpPrefArgs::default(),
+    )
 }
 
 /// On Unix, append the target executable name verbatim (`php`).
@@ -383,6 +423,11 @@ mod tests {
             role_from_argv0(&OsString::from("/proj/vendor/bougie/bin/unzip")),
             Some(Role::Unzip)
         );
+        assert_eq!(
+            role_from_argv0(&OsString::from("/usr/local/bin/bougie-run")),
+            Some(Role::ScriptRun)
+        );
+        assert_eq!(role_from_argv0(&OsString::from("bougie-run")), Some(Role::ScriptRun));
     }
 
     #[test]
