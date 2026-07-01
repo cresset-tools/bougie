@@ -34,8 +34,14 @@ this consolidates it and adds the continuous loop.
 | opensearch | HTTP `GET /_cluster/health` → `status != "red"` | `http_client` + `wait_for_cluster` |
 | rabbitmq | `sbin/rabbitmqctl status --quiet` exit 0 | `ctl_binary` + `build_ctl_env` |
 | mailpit | HTTP `GET :8025/` → 2xx (web UI; SMTP has no cheap probe) | reqwest (daemon dep) |
-| server | HTTP `GET :7080/` → any `< 500` (HTTP layer up, host need not exist) | reqwest |
+| server | binding connect (port bound) — see note | — |
 | jdk, erlang | none (`Binding::None`, runtime-only) | — |
+
+**Server note:** the dev server keeps the bare binding-connect probe. Its
+readiness is "listener bound + control socket up", which happens *before*
+any project host is registered; an HTTP probe would have to interpret a
+virtual-host miss (not a health signal) and would race the provisioner's
+control-socket host reload. So `server` falls through to `connect`.
 
 Each is bounded by a per-probe timeout so a hung probe can't wedge the loop.
 

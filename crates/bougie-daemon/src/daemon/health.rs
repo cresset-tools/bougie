@@ -62,15 +62,14 @@ async fn probe_inner(name: &str, paths: &Paths) -> Result<()> {
         // Mailpit's binding is the SMTP port, which has no cheap protocol
         // ping; probe the web UI instead (it comes up alongside SMTP) and
         // accept any 2xx.
-        "mailpit" => http_get(catalog::MAILPIT_HTTP_PORT, "/", HttpExpect::Success).await,
-        // The dev server: any response < 500 proves the HTTP layer is up,
-        // even when no project host is registered (it 404s, not 5xxs).
-        "server" => {
-            let Binding::Tcp { port } = entry.binding else {
-                return connect(entry, paths).await;
-            };
-            http_get(port, "/", HttpExpect::Responding).await
-        }
+        "mailpit" => http_get(catalog::MAILPIT_HTTP_PORT, "/").await,
+        // The dev server is deliberately left on the binding connect (see
+        // the fallback below): its readiness is "the listener is bound +
+        // control socket up", which happens *before* any project host is
+        // registered. An HTTP probe would have to interpret the no-host
+        // response (a virtual-host miss, not a health signal), and hitting
+        // it continuously races the provisioner's control-socket host
+        // reload. `server` therefore falls through to `connect`.
         // Runtime-only deps + anything without a richer probe: connect to
         // the binding (or trivially Ok for `Binding::None`).
         _ => connect(entry, paths).await,
@@ -112,27 +111,15 @@ fn socket_path(entry: &CatalogEntry, paths: &Paths) -> Result<PathBuf> {
     }
 }
 
-/// What HTTP status counts as healthy.
-enum HttpExpect {
-    /// 2xx only (mailpit web UI).
-    Success,
-    /// Anything `< 500` — the server is responding even if it has no host
-    /// for this request.
-    Responding,
-}
-
-async fn http_get(port: u16, path: &str, expect: HttpExpect) -> Result<()> {
+/// Probe an HTTP endpoint, healthy on a 2xx response.
+async fn http_get(port: u16, path: &str) -> Result<()> {
     let url = format!("http://127.0.0.1:{port}{path}");
     let resp = http_client()
         .get(&url)
         .send()
         .await
         .map_err(|e| eyre!("GET {url}: {e}"))?;
-    let ok = match expect {
-        HttpExpect::Success => resp.status().is_success(),
-        HttpExpect::Responding => resp.status().as_u16() < 500,
-    };
-    if ok {
+    if resp.status().is_success() {
         Ok(())
     } else {
         Err(eyre!("GET {url} returned {}", resp.status()))
