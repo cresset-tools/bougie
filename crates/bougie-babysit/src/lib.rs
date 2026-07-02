@@ -237,10 +237,6 @@ async fn serve(cfg: Config) -> Result<ExitCode> {
             status = child.wait() => {
                 let code = exit_status_code(status);
                 let _ = control.write_all(format!("exited={code}\n").as_bytes()).await;
-                // Sweep the rest of the group (a sidecar, plus any
-                // descendants the leader left behind). No-op for a
-                // single-process service.
-                cleanup_group(pgid, cfg.grace_secs).await;
                 let clamped = u8::try_from(code.clamp(0, 255)).expect("clamped to 0..=255 fits in u8");
                 break ExitCode::from(clamped);
             }
@@ -266,27 +262,33 @@ async fn serve(cfg: Config) -> Result<ExitCode> {
                     "[babysit:{}] sidecar exited and its port is down; tearing down service",
                     cfg.service_name
                 );
-                cleanup_group(pgid, cfg.grace_secs).await;
                 let _ = control.write_all(b"exited=70\n").await;
                 break ExitCode::from(70);
             }
             // Control socket closed → bougied died. Take the group down.
             () = wait_socket_eof(&mut control) => {
-                cleanup_group(pgid, cfg.grace_secs).await;
                 break ExitCode::SUCCESS;
             }
             // Bougied asked us to stop cleanly (SIGTERM), or a foreground
             // Ctrl-C hit our group (SIGINT reaches every babysit sharing
             // bougied's terminal foreground group). Either tears it down.
             () = async { tokio::select! { _ = sigterm.recv() => {}, _ = sigint.recv() => {} } } => {
-                cleanup_group(pgid, cfg.grace_secs).await;
                 break ExitCode::SUCCESS;
             }
         }
     };
 
-    // Reap the now-dead children so they don't linger as zombies held by
-    // this (about-to-exit) process.
+    // The select loop's futures (and their `&mut child` / `&mut
+    // sidecar_child` borrows) are dropped here, so cleanup can take the
+    // handles. Tear the whole group down — TERM, wait out the grace
+    // window, then KILL — reaping our direct children as they die so the
+    // group-drain poll isn't fooled by their zombies. No-op on the
+    // main-exit arm's already-reaped leader.
+    cleanup_group(pgid, cfg.grace_secs, &mut child, sidecar_child.as_mut()).await;
+
+    // Final reap for the SIGKILL path: `cleanup_group` returns the moment
+    // it sends KILL without waiting, so make sure neither direct child
+    // lingers as a zombie held by this (about-to-exit) process.
     let _ = child.wait().await;
     if let Some(mut sc) = sidecar_child {
         let _ = sc.wait().await;
@@ -404,20 +406,41 @@ async fn wait_socket_eof(s: &mut tokio::net::UnixStream) {
 }
 
 /// `killpg(pgid, SIGTERM)` → wait up to `grace_secs` for the *whole
-/// group* to drain → `killpg(SIGKILL)`. Group-centric (no child handle)
-/// so it reaps every member — the service, a sidecar, and any
-/// descendants still in the group — not just the leader. The caller
-/// separately `wait()`s its direct children to clear the zombies.
-async fn cleanup_group(pgid: i32, grace_secs: u64) {
+/// group* to drain → `killpg(SIGKILL)`. Group-centric so it reaps every
+/// member — the service, a sidecar, and any descendants still in the
+/// group — not just the leader.
+///
+/// `leader`/`sidecar` are our own direct children. We must `try_wait`
+/// them here rather than only after this returns: once SIGTERM kills
+/// them they become *zombies* held by this process, and a zombie still
+/// counts as a live process-group member for `kill(-pgid, 0)`. Without
+/// reaping them the group would never appear to drain, so every
+/// graceful stop would spin to the deadline and end in a spurious
+/// SIGKILL (and waste the whole grace window per service).
+async fn cleanup_group(
+    pgid: i32,
+    grace_secs: u64,
+    leader: &mut tokio::process::Child,
+    mut sidecar: Option<&mut tokio::process::Child>,
+) {
     let Some(pgrp) = rustix::process::Pid::from_raw(pgid) else {
         return;
     };
     let _ = rustix::process::kill_process_group(pgrp, rustix::process::Signal::TERM);
-    // Poll for the group to empty. `test_kill_process_group` is
-    // `kill(-pgid, 0)`: `Ok` while members remain, `Err(ESRCH)` once
-    // gone.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(grace_secs);
-    while rustix::process::test_kill_process_group(pgrp).is_ok() {
+    loop {
+        // Reap our direct children as they exit so they stop counting as
+        // group members. `try_wait` is non-blocking and idempotent on an
+        // already-reaped child (returns the cached status).
+        let _ = leader.try_wait();
+        if let Some(sc) = sidecar.as_deref_mut() {
+            let _ = sc.try_wait();
+        }
+        // `test_kill_process_group` is `kill(-pgid, 0)`: `Ok` while
+        // members remain, `Err(ESRCH)` once the group is empty.
+        if rustix::process::test_kill_process_group(pgrp).is_err() {
+            return;
+        }
         if tokio::time::Instant::now() >= deadline {
             let _ = rustix::process::kill_process_group(pgrp, rustix::process::Signal::KILL);
             break;
@@ -506,5 +529,29 @@ mod tests {
     fn parse_args_rejects_unknown_flag() {
         let err = parse_args(vec![os("--whatever"), os("x"), os("--")]).unwrap_err();
         assert!(err.to_string().contains("unknown flag"));
+    }
+
+    #[tokio::test]
+    async fn cleanup_group_drains_promptly_when_leader_exits_on_sigterm() {
+        // A single-process service in its own group. SIGTERM kills the
+        // `sleep`, which then lingers as a zombie held by this process
+        // until reaped. cleanup_group must reap it and return well before
+        // the grace deadline — the pre-fix version never reaped inside the
+        // loop, so the zombie kept `kill(-pgid, 0)` returning Ok and it
+        // spun the entire grace window before a spurious SIGKILL.
+        let mut child = spawn_in_group(&os("sleep"), &[os("30")], None).expect("spawn leader");
+        let pgid = i32::try_from(child.id().expect("pid")).unwrap();
+
+        let start = tokio::time::Instant::now();
+        // Generous grace so a spin-to-deadline regression is unmistakable.
+        cleanup_group(pgid, 10, &mut child, None).await;
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed < Duration::from_secs(3),
+            "cleanup should drain promptly once the leader dies, took {elapsed:?}"
+        );
+        // Leader was reaped inside cleanup_group; a second wait is a no-op.
+        let _ = child.wait().await;
     }
 }
