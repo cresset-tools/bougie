@@ -13,7 +13,8 @@ name: crates-publish
 # appear in the index before publishing its dependents, and — crucially —
 # SKIPS any crate whose current version is already on crates.io. That last
 # property makes this job idempotent: if it dies halfway (flaky network, index
-# lag), just re-run it and it resumes where it left off.
+# lag), a re-run resumes where it left off — which is why the publish step
+# below retries itself instead of leaving that re-run to a human.
 #
 # `--publish-as-is` publishes the versions exactly as committed at the tag.
 # release-please already set `workspace.package.version` and the per-dep
@@ -80,9 +81,33 @@ jobs:
         # --publish-interval : give the index a moment between uploads to cut
         #   down on "dependency not yet available" retries.
         # --yes : non-interactive.
+        #
+        # The retry loop: after uploading a crate, stable cargo waits at most
+        # 60s (hard-coded — `publish.timeout` is still nightly-only,
+        # rust-lang/cargo#11222) for it to appear in the index. When crates.io
+        # propagation lags past that, packaging the next dependent crate can't
+        # resolve the just-published dep and the whole topological publish
+        # aborts (#390, #398, #424 — it hit about every other release, each
+        # time fixed by a manual re-run). A stuck attempt fails fast at the
+        # blocking crate, so failed attempts are cheap; the sleeps buy the
+        # index up to ~10 extra minutes to catch up. Kept well under the ~30
+        # min validity of the Trusted Publishing token minted above — and if
+        # that ever expires mid-retry, the job fails red and a manual re-run
+        # (fresh token) still works, same as before.
         run: |
-          cargo ws publish \
-            --publish-as-is \
-            --allow-branch '*' \
-            --publish-interval 15 \
-            --yes
+          attempts=5
+          for attempt in $(seq 1 "$attempts"); do
+            if [ "$attempt" -gt 1 ]; then
+              echo "::warning::cargo ws publish attempt $((attempt - 1)) failed (crates.io index propagation lag?); retrying in 120s (attempt ${attempt}/${attempts})"
+              sleep 120
+            fi
+            if cargo ws publish \
+              --publish-as-is \
+              --allow-branch '*' \
+              --publish-interval 15 \
+              --yes; then
+              exit 0
+            fi
+          done
+          echo "::error::cargo ws publish still failing after ${attempts} attempts"
+          exit 1
