@@ -749,6 +749,7 @@ fn cache_key_distinguishes_dists_without_shasum_or_reference() {
         auth_header: None,
         auth_header_name: None,
         project_root: proj,
+        fallbacks: &[],
     };
     let css = DistRequest {
         package_name: "acme/css-kit",
