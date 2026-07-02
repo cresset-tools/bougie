@@ -689,6 +689,31 @@ fn extract_tar<R: Read>(reader: R, src: &Path, into: &Path, strip_prefix: &str) 
             })?;
             continue;
         }
+        // Symlink targets need validating too. `entry.unpack` materializes
+        // a symlink verbatim, with *no* containment check — that's a
+        // guarantee only `unpack_in`/`Archive::unpack` provide (see the
+        // hardlink comment above). A symlink whose target escapes `into`
+        // (an absolute path, or `..` segments that climb above the root)
+        // could be planted and then written *through* by a later regular
+        // -file entry, escaping the extraction root. Legitimate archives
+        // (node's `bin/npm` → `../lib/node_modules/npm/bin/npm-cli.js`)
+        // use relative targets that stay inside the tree, so validate
+        // relative to the symlink's own location rather than rejecting
+        // symlinks outright.
+        if entry.header().entry_type().is_symlink() {
+            let link_name = entry
+                .link_name()
+                .wrap_err("reading symlink target")?
+                .ok_or_else(|| eyre::eyre!("symlink entry for {} has no link name", path.display()))?
+                .into_owned();
+            if symlink_target_escapes(&rewritten, &link_name) {
+                return Err(eyre::eyre!(
+                    "symlink entry {} → {} escapes the extraction root",
+                    path.display(),
+                    link_name.display()
+                ));
+            }
+        }
         entry
             .unpack(&dest)
             .wrap_err_with(|| format!("unpacking {} → {}", path.display(), dest.display()))?;
@@ -830,6 +855,44 @@ fn is_safe_archive_path(path: &Path) -> bool {
         Component::Normal(_) | Component::CurDir => true,
         Component::ParentDir | Component::RootDir | Component::Prefix(_) => false,
     })
+}
+
+/// Whether a symlink `target` — as seen from the symlink's own
+/// archive-relative location `link_rel` (already `is_safe_archive_path`
+/// -validated) — resolves *outside* the extraction root. Purely
+/// lexical (no filesystem access; the target need not exist yet): an
+/// absolute target always escapes, and a relative target escapes when
+/// its `..` segments climb above the root. Unlike [`is_safe_archive_path`]
+/// this tolerates interior `..` (node ships `bin/npm` →
+/// `../lib/node_modules/npm/bin/npm-cli.js`) as long as the net path
+/// stays within the tree.
+fn symlink_target_escapes(link_rel: &Path, target: &Path) -> bool {
+    use std::path::Component;
+    if target.is_absolute() {
+        return true;
+    }
+    // Seed the component stack with the symlink's parent directory, then
+    // fold the target over it. A `ParentDir` that would pop past the
+    // root, or any absolute/prefix component, escapes.
+    let mut depth: usize = link_rel.parent().map_or(0, |p| {
+        p.components()
+            .filter(|c| matches!(c, Component::Normal(_)))
+            .count()
+    });
+    for c in target.components() {
+        match c {
+            Component::CurDir => {}
+            Component::Normal(_) => depth += 1,
+            Component::ParentDir => {
+                let Some(next) = depth.checked_sub(1) else {
+                    return true;
+                };
+                depth = next;
+            }
+            Component::RootDir | Component::Prefix(_) => return true,
+        }
+    }
+    false
 }
 
 /// Stream `from` into `into` and verify its sha256. Used by callers
@@ -1526,6 +1589,57 @@ mod tests {
         let m2 = std::fs::metadata(&linked).unwrap();
         assert_eq!(m1.ino(), m2.ino());
         assert_eq!(std::fs::read(&linked).unwrap(), body);
+    }
+
+    #[test]
+    fn symlink_target_escapes_detects_escapes() {
+        // Absolute targets always escape.
+        assert!(symlink_target_escapes(Path::new("pwn"), Path::new("/etc/passwd")));
+        // A top-level symlink climbing above the root escapes.
+        assert!(symlink_target_escapes(Path::new("pwn"), Path::new("../outside")));
+        assert!(symlink_target_escapes(Path::new("a/b"), Path::new("../../../outside")));
+        // Legitimate intra-archive relative symlinks stay inside.
+        assert!(!symlink_target_escapes(
+            Path::new("bin/npm"),
+            Path::new("../lib/node_modules/npm/bin/npm-cli.js"),
+        ));
+        assert!(!symlink_target_escapes(Path::new("a/b/c"), Path::new("../../d")));
+        // Net-neutral `..` that lands back at the root is fine.
+        assert!(!symlink_target_escapes(Path::new("a/b"), Path::new("../c")));
+    }
+
+    #[test]
+    fn extract_tar_rejects_symlink_escaping_the_root() {
+        // A malicious archive plants a symlink pointing outside the
+        // extraction root; a later regular-file entry could then be
+        // written *through* it. `extract_tar` must reject the symlink
+        // rather than materialize it.
+        let dir = tempfile::TempDir::new().unwrap();
+        let archive_path = dir.path().join("evil.tar.zst");
+
+        let mut tar_buf: Vec<u8> = Vec::new();
+        {
+            let mut builder = tar::Builder::new(&mut tar_buf);
+            let mut hdr_link = tar::Header::new_gnu();
+            hdr_link.set_entry_type(tar::EntryType::Symlink);
+            hdr_link.set_size(0);
+            hdr_link.set_cksum();
+            builder
+                .append_link(&mut hdr_link, "pwn", "../../../../../../tmp/escape")
+                .unwrap();
+            builder.finish().unwrap();
+        }
+        let zst = zstd::encode_all(&tar_buf[..], 0).unwrap();
+        std::fs::write(&archive_path, zst).unwrap();
+
+        let into = dir.path().join("out");
+        std::fs::create_dir_all(&into).unwrap();
+        let err = extract_tar_zst(&archive_path, &into, "").unwrap_err();
+        assert!(
+            err.to_string().contains("escapes the extraction root"),
+            "unexpected error: {err:#}"
+        );
+        assert!(into.join("pwn").symlink_metadata().is_err());
     }
 
     /// windows.php.net's interpreter ZIP wraps `php.exe`, `ext/*.dll`,
