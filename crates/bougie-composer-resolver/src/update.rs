@@ -689,8 +689,11 @@ impl ResolveProvider {
                 updated.push(repo);
                 continue;
             }
-            let protocol = probe_protocol(&self.client, &repo).ok();
-            updated.push(repo.with_protocol(protocol));
+            let (protocol, dist_mirrors) = match probe_protocol(&self.client, &repo) {
+                Ok((protocol, mirrors)) => (Some(protocol), mirrors),
+                Err(_) => (None, Vec::new()),
+            };
+            updated.push(repo.with_protocol(protocol).with_dist_mirrors(dist_mirrors));
         }
         self.repos = updated;
     }

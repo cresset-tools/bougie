@@ -85,6 +85,27 @@ pub struct DistRequest<'a> {
     /// path straight into `dist.url` as a project-relative string).
     /// Tests that only exercise HTTP dists can pass any path.
     pub project_root: &'a Path,
+    /// Fallback download locations, tried in order when the GET
+    /// against [`url`](Self::url) fails — Composer's dist-mirror
+    /// semantics (`Package::getDistUrls` + `FileDownloader`'s
+    /// try-next-URL loop). The orchestrator builds the full candidate
+    /// list from the lock's `dist.mirrors` (preferred mirror first),
+    /// puts the first candidate in `url` and the rest here. Empty for
+    /// the overwhelming majority of dists — public Packagist declares
+    /// no mirrors.
+    pub fallbacks: &'a [DistCandidate],
+}
+
+/// One alternative download location for a dist: a fully substituted
+/// mirror URL plus its pre-rendered per-host auth header. Owned
+/// strings (unlike the borrowed fields on [`DistRequest`]) because the
+/// URLs are produced by placeholder substitution at request-build
+/// time and have no longer-lived home to borrow from.
+#[derive(Debug, Clone)]
+pub struct DistCandidate {
+    pub url: String,
+    pub auth_header: Option<String>,
+    pub auth_header_name: Option<&'static str>,
 }
 
 /// Per-dist outcome reported back to the caller so the install
@@ -169,21 +190,58 @@ fn download_to_cache(
     if !is_http_url(dist.url) {
         return copy_local_dist(dist, &cache_path);
     }
-    let url = rewrite_github_dist_url(dist.url);
-    let spec = bougie_fetch::BlobSpec {
-        url: &url,
-        hash: Hash::sha1(dist.sha1),
-        partial_dir: cache_root,
-        dest: &cache_path,
-        strip_prefix: "",
-        archive: dist.archive,
-        auth_header: dist.auth_header,
-        auth_header_name: dist.auth_header_name,
-    };
-    bougie_fetch::fetch_file(client, &spec, bar).wrap_err_with(|| {
-        format!("downloading dist for {} from {:?}", dist.package_name, url)
-    })?;
-    Ok(DistOutcome::Downloaded)
+    // Composer's FileDownloader loop: try each candidate URL in order,
+    // warn-and-continue on failure, surface the last error when every
+    // candidate is exhausted. `fallbacks` is empty for repos without
+    // dist mirrors, so the common path is a single attempt.
+    let candidates = std::iter::once((dist.url, dist.auth_header, dist.auth_header_name)).chain(
+        dist.fallbacks
+            .iter()
+            .map(|c| (c.url.as_str(), c.auth_header.as_deref(), c.auth_header_name)),
+    );
+    let total = 1 + dist.fallbacks.len();
+    let mut last_err: Option<eyre::Report> = None;
+    for (idx, (url, auth_header, auth_header_name)) in candidates.enumerate() {
+        let url = rewrite_github_dist_url(url);
+        let spec = bougie_fetch::BlobSpec {
+            url: &url,
+            hash: Hash::sha1(dist.sha1),
+            partial_dir: cache_root,
+            dest: &cache_path,
+            strip_prefix: "",
+            archive: dist.archive,
+            auth_header,
+            auth_header_name,
+        };
+        match bougie_fetch::fetch_file(client, &spec, bar) {
+            Ok(_) => return Ok(DistOutcome::Downloaded),
+            Err(err) => {
+                if idx + 1 < total {
+                    tracing::warn!(
+                        package = dist.package_name,
+                        url = %url,
+                        error = %err,
+                        "dist download failed; trying the next mirror",
+                    );
+                }
+                last_err = Some(err.wrap_err(format!(
+                    "downloading dist for {} from {:?}",
+                    dist.package_name, url,
+                )));
+            }
+        }
+    }
+    // The candidate iterator always yields at least the primary URL,
+    // so reaching this point means the loop ran and stored an error.
+    let err = last_err.expect("download loop ran at least once");
+    if total > 1 {
+        Err(err.wrap_err(format!(
+            "downloading dist for {}: all {} candidate URLs failed",
+            dist.package_name, total,
+        )))
+    } else {
+        Err(err)
+    }
 }
 
 fn is_http_url(s: &str) -> bool {

@@ -10,6 +10,7 @@ authors.workspace = true
 
 [dependencies]
 composer-php-json = { workspace = true }
+composer-semver = { workspace = true }
 composer-wire = { workspace = true }
 
 [dependencies.eyre]

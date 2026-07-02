@@ -464,6 +464,7 @@ fn extract_pristine(
         auth_header: None,
         auth_header_name: None,
         project_root,
+        fallbacks: &[],
     };
     bougie_composer_resolver::fetch_and_extract_dists(
         &client,

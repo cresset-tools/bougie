@@ -348,12 +348,19 @@ pub fn latest_versions(
     // table loaded up front.
     let mut probed: Vec<ProbedRepo> = Vec::new();
     for repo in repos {
-        let protocol = probe_protocol(&client, &repo).unwrap_or(RepoProtocol::V2);
+        let (protocol, dist_mirrors) =
+            probe_protocol(&client, &repo).unwrap_or((RepoProtocol::V2, Vec::new()));
         let table = match &protocol {
             RepoProtocol::V1(disc) => Some(load_v1_provider_table(&client, paths, &repo, disc)?),
             RepoProtocol::V2 => None,
         };
-        probed.push((repo.clone().with_protocol(Some(protocol.clone())), protocol, table));
+        probed.push((
+            repo.clone()
+                .with_protocol(Some(protocol.clone()))
+                .with_dist_mirrors(dist_mirrors),
+            protocol,
+            table,
+        ));
     }
 
     let mut out: FxHashMap<String, Vec<String>> = FxHashMap::default();
