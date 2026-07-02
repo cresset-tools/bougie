@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.37.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.36.0...bougie-v0.37.0) (2026-07-02)
+
+
+### Features
+
+* **patches:** apply multi-package top-level patches at the project root ([#430](https://github.com/cresset-tools/bougie/issues/430)) ([33e1124](https://github.com/cresset-tools/bougie/commit/33e1124135afd172f83db4a093ac607d3e899a0c))
+* **php-discovery:** only use system PHP for one-off runs by default ([#433](https://github.com/cresset-tools/bougie/issues/433)) ([a934e49](https://github.com/cresset-tools/bougie/commit/a934e49c893cc2281fac7df0ab2c2123df1adfcd))
+
+
+### Bug Fixes
+
+* **release:** auto-retry crates-publish past crates.io index lag ([#435](https://github.com/cresset-tools/bougie/issues/435)) ([be788bc](https://github.com/cresset-tools/bougie/commit/be788bc5059e146f639e96ca387cb25b535aed02)), closes [#424](https://github.com/cresset-tools/bougie/issues/424)
+
 ## [0.36.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.35.1...bougie-v0.36.0) (2026-06-28)
 
 
