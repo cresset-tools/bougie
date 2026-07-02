@@ -5,6 +5,61 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.38.1](https://github.com/cresset-tools/bougie/compare/bougie-v0.38.0...bougie-v0.38.1) (2026-07-02)
+
+
+### Bug Fixes
+
+* four tier-1 correctness/safety bugs (extraction, autoloader, cache key, license) ([#432](https://github.com/cresset-tools/bougie/issues/432)) ([9a7c619](https://github.com/cresset-tools/bougie/commit/9a7c619209b1a200f3738e4d9c75c0ab15a8fffa))
+* **server:** surface php-fpm startup errors and stop orphaning workers ([#438](https://github.com/cresset-tools/bougie/issues/438)) ([6bd9701](https://github.com/cresset-tools/bougie/commit/6bd9701a991cd3dea301bf97faeaf87c8a43c8ba))
+* tier-2 service-supervision correctness (grace window, restart, rotation, sandbox, flock) ([#436](https://github.com/cresset-tools/bougie/issues/436)) ([d1b2abe](https://github.com/cresset-tools/bougie/commit/d1b2abecb43f33cc48ffda01530b69f2c77d4bff))
+
+## [0.38.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.37.0...bougie-v0.38.0) (2026-07-02)
+
+
+### Features
+
+* **composer:** support repository dist mirrors (Private Packagist) ([#439](https://github.com/cresset-tools/bougie/issues/439)) ([7b0f2ff](https://github.com/cresset-tools/bougie/commit/7b0f2ff4c18562152dbb3144ae6f4e376d8394e3))
+
+## [0.37.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.36.0...bougie-v0.37.0) (2026-07-02)
+
+
+### Features
+
+* **patches:** apply multi-package top-level patches at the project root ([#430](https://github.com/cresset-tools/bougie/issues/430)) ([33e1124](https://github.com/cresset-tools/bougie/commit/33e1124135afd172f83db4a093ac607d3e899a0c))
+* **php-discovery:** only use system PHP for one-off runs by default ([#433](https://github.com/cresset-tools/bougie/issues/433)) ([a934e49](https://github.com/cresset-tools/bougie/commit/a934e49c893cc2281fac7df0ab2c2123df1adfcd))
+
+
+### Bug Fixes
+
+* **release:** auto-retry crates-publish past crates.io index lag ([#435](https://github.com/cresset-tools/bougie/issues/435)) ([be788bc](https://github.com/cresset-tools/bougie/commit/be788bc5059e146f639e96ca387cb25b535aed02)), closes [#424](https://github.com/cresset-tools/bougie/issues/424)
+
+## [0.36.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.35.1...bougie-v0.36.0) (2026-06-28)
+
+
+### Features
+
+* **composer-resolver:** honor --ignore-platform-req(s) at resolve time ([#427](https://github.com/cresset-tools/bougie/issues/427)) ([c304b13](https://github.com/cresset-tools/bougie/commit/c304b13746abd69ea7796266f369f14617d02f2d))
+
+## [0.35.1](https://github.com/cresset-tools/bougie/compare/bougie-v0.35.0...bougie-v0.35.1) (2026-06-28)
+
+
+### Bug Fixes
+
+* **composer-resolver:** stop reporting satisfied `php` as missing from repos ([#425](https://github.com/cresset-tools/bougie/issues/425)) ([3efac2c](https://github.com/cresset-tools/bougie/commit/3efac2ce46869a0c27f3d2d586531af628661277))
+
+## [0.35.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.34.0...bougie-v0.35.0) (2026-06-28)
+
+
+### Features
+
+* **patches:** add `patches create` to capture vendor edits as clean patches ([#417](https://github.com/cresset-tools/bougie/issues/417)) ([d087da6](https://github.com/cresset-tools/bougie/commit/d087da611ee725096d1998a98907837aeb57b6a5))
+
+
+### Bug Fixes
+
+* **sync:** sync the discovered project root, not the cwd ([#418](https://github.com/cresset-tools/bougie/issues/418)) ([faab201](https://github.com/cresset-tools/bougie/commit/faab201286b23df6e812c8630a7fbf9ecc6770af))
+
 ## [0.34.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.33.0...bougie-v0.34.0) (2026-06-23)
 
 

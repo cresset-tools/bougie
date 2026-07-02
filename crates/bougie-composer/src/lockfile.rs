@@ -21,6 +21,7 @@ use eyre::{eyre, Result, WrapErr};
 use md5::{Digest, Md5};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Value};
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -66,7 +67,12 @@ where
 /// `(array) $paths` on each list item and then iterates the
 /// resulting array's *values*. The practical effect is:
 ///
-/// - Strings pass through verbatim.
+/// - A bare string normalizes to a one-element vec. Composer's schema
+///   allows several of these fields to be either a string or an array
+///   (`license` is the common one — `ArrayLoader` does
+///   `(array) $config['license']`), and PHP's `(array)"MIT"` yields
+///   `["MIT"]`. Accepting the string here mirrors that.
+/// - Strings inside an array pass through verbatim.
 /// - Objects (a real-world quirk: `amphp/process` v0.1.3 ships
 ///   `classmap: [{"Amp\\Process": "Process.php"}]`, almost certainly
 ///   a `psr-4` declaration that landed in `classmap`) contribute
@@ -77,15 +83,23 @@ where
 ///   dropped silently rather than failing the whole entry.
 ///
 /// Bougie's pre-fix strict `Vec<String>` deserialize rejected the
-/// whole `LockPackage` over the object item, which broke any
-/// resolve that walked across the offending version.
+/// whole `LockPackage` over the object item — and, before this, over a
+/// scalar `"license": "MIT"` — which broke any resolve that walked
+/// across the offending version.
 fn string_list_lenient<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
 where
     D: Deserializer<'de>,
 {
-    let raw = <Vec<Value>>::deserialize(deserializer)?;
-    let mut out: Vec<String> = Vec::with_capacity(raw.len());
-    for item in raw {
+    let items = match Value::deserialize(deserializer)? {
+        // `(array) "MIT"` in Composer → `["MIT"]`.
+        Value::String(s) => return Ok(vec![s]),
+        Value::Array(items) => items,
+        // null / any other scalar → empty, rather than hard-failing
+        // the whole package the way a strict `Vec<String>` would.
+        _ => return Ok(Vec::new()),
+    };
+    let mut out: Vec<String> = Vec::with_capacity(items.len());
+    for item in items {
         match item {
             Value::String(s) => out.push(s),
             Value::Object(map) => {
@@ -758,6 +772,20 @@ pub struct LockDist {
     /// wrapping-directory name inside Packagist zipballs.
     #[serde(default)]
     pub reference: Option<String>,
+    /// Alternate download locations, carried through from the
+    /// repository's root `packages.json` `mirrors` key (Private
+    /// Packagist, satis with dist mirroring). Each entry is a URL
+    /// *template* with `%package%` / `%version%` / `%reference%` /
+    /// `%type%` placeholders — substitution happens at download time
+    /// via [`LockPackage::dist_urls`], exactly like Composer's
+    /// `ComposerMirror::processUrl`. Composer dumps these into the
+    /// lock (`ArrayDumper`), which is what lets `composer install`
+    /// reach a private repo's mirrored dists without credentials for
+    /// the origin VCS host; bougie does the same. Empty for packages
+    /// from repos that declare no mirrors (all of public Packagist),
+    /// and suppressed from output so those lockfiles stay byte-stable.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mirrors: Vec<DistMirror>,
     /// Legacy field: some lockfiles carry `transport-options` nested
     /// inside `dist`. Composer itself writes them at the *package*
     /// level (see [`LockPackage::transport_options`]); this is kept
@@ -765,6 +793,18 @@ pub struct LockDist {
     /// Suppressed from output when empty so normal dists stay clean.
     #[serde(rename = "transport-options", default, skip_serializing_if = "Value::is_null")]
     pub transport_options: Value,
+}
+
+/// One mirror entry on a [`LockDist`] (or [`LockSource`]): a URL
+/// template plus Composer's `preferred` flag. A preferred mirror is
+/// tried *before* the dist's own `url`; a non-preferred one after it.
+/// Shape matches what Composer's `ArrayDumper` writes into the lock:
+/// `{"url": "...", "preferred": true}`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct DistMirror {
+    pub url: String,
+    #[serde(default)]
+    pub preferred: bool,
 }
 
 /// `source` block — VCS coordinates. Phase D will use this when we
@@ -776,6 +816,12 @@ pub struct LockSource {
     pub kind: String,
     pub url: String,
     pub reference: String,
+    /// Source-mirror entries (same `{url, preferred}` shape as dist
+    /// mirrors). Bougie never installs from source, but a
+    /// Composer-written lock may carry them — kept so a read → write
+    /// round-trip doesn't silently drop the key.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mirrors: Vec<DistMirror>,
 }
 
 /// `autoload` block — passed through to `bougie-autoloader` at install
@@ -855,6 +901,109 @@ impl LockPackage {
     pub fn is_metapackage(&self) -> bool {
         self.package_type.as_deref() == Some("metapackage")
     }
+
+    /// Download URL candidates for this package's dist, in the order
+    /// the downloader should try them. Composer's `Package::getUrls`:
+    /// the dist's own `url` comes first, then each mirror's
+    /// substituted URL — except `preferred` mirrors, which are moved
+    /// to the *front* of the list. Duplicates are dropped. Empty when
+    /// the package has no dist.
+    ///
+    /// This ordering is what lets a Private-Packagist project install
+    /// without credentials for the origin VCS host: the preferred
+    /// mirror on the (authenticated) Packagist host is tried before
+    /// the raw `gitlab.example.com` archive URL.
+    ///
+    /// `%version%` substitution wants Composer's *normalized* version
+    /// (`1.2.0.0`, not `1.2.0`) — bougie-written locks always carry
+    /// `version_normalized`, Composer-written locks strip it, so we
+    /// re-normalize the pretty version as the fallback (exactly what
+    /// Composer's `ArrayLoader` does on lock read).
+    pub fn dist_urls(&self) -> Vec<String> {
+        let Some(dist) = &self.dist else {
+            return Vec::new();
+        };
+        let name = self.name.to_ascii_lowercase();
+        let version: Cow<'_, str> = match &self.version_normalized {
+            Some(v) => Cow::Borrowed(v.as_str()),
+            None => match composer_semver::version::Version::parse(&self.version) {
+                Ok(v) => Cow::Owned(v.normalized),
+                Err(_) => Cow::Borrowed(self.version.as_str()),
+            },
+        };
+        let process = |template: &str| {
+            process_mirror_url(
+                template,
+                &name,
+                &version,
+                &self.version,
+                dist.reference.as_deref(),
+                &dist.kind,
+            )
+        };
+        // Composer only runs the dist's own URL through placeholder
+        // substitution when it actually contains one — mirrors always.
+        let first = if dist.url.contains('%') { process(&dist.url) } else { dist.url.clone() };
+        let mut urls = vec![first];
+        for mirror in &dist.mirrors {
+            let url = process(&mirror.url);
+            if urls.contains(&url) {
+                continue;
+            }
+            if mirror.preferred {
+                urls.insert(0, url);
+            } else {
+                urls.push(url);
+            }
+        }
+        urls
+    }
+}
+
+/// Substitute Composer's mirror-URL placeholders — a port of
+/// `ComposerMirror::processUrl`:
+///
+/// - `%package%` → the (lowercase) package name
+/// - `%version%` → the normalized version, md5-hashed when it contains
+///   a `/` (branch names like `dev-feature/x` would break the URL path)
+/// - `%reference%` → the dist reference, kept verbatim only when it is
+///   lowercase hex (a git sha); anything else is md5-hashed
+/// - `%type%` → the dist type (`zip`, `tar`)
+/// - `%prettyVersion%` → the version exactly as the lock spells it
+pub fn process_mirror_url(
+    template: &str,
+    package_name: &str,
+    version: &str,
+    pretty_version: &str,
+    reference: Option<&str>,
+    dist_type: &str,
+) -> String {
+    let reference = reference.unwrap_or("");
+    let is_hex = reference
+        .chars()
+        .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c));
+    let reference: Cow<'_, str> = if is_hex || reference == "%reference%" {
+        Cow::Borrowed(reference)
+    } else {
+        Cow::Owned(md5_hex(reference))
+    };
+    let version: Cow<'_, str> = if version.contains('/') {
+        Cow::Owned(md5_hex(version))
+    } else {
+        Cow::Borrowed(version)
+    };
+    template
+        .replace("%package%", package_name)
+        .replace("%version%", &version)
+        .replace("%reference%", &reference)
+        .replace("%type%", dist_type)
+        .replace("%prettyVersion%", pretty_version)
+}
+
+fn md5_hex(s: &str) -> String {
+    let mut hasher = Md5::new();
+    hasher.update(s.as_bytes());
+    hex_lower(&hasher.finalize())
 }
 
 #[cfg(test)]
@@ -912,6 +1061,38 @@ mod tests {
     fn fixture_hash_matches_real_php() {
         let actual = content_hash(FIXTURE_COMPOSER_JSON.as_bytes()).unwrap();
         assert_eq!(actual, FIXTURE_EXPECTED_HASH);
+    }
+
+    #[test]
+    fn license_accepts_string_array_and_null() {
+        // Composer's schema allows `license` to be a bare string; a
+        // strict `Vec<String>` deserialize used to fail the whole
+        // package with "invalid type: string, expected a sequence".
+        let string_form: LockPackage = serde_json::from_str(
+            r#"{"name": "acme/lib", "version": "1.0.0", "license": "MIT"}"#,
+        )
+        .expect("string license must parse");
+        assert_eq!(string_form.license, vec!["MIT".to_string()]);
+
+        let array_form: LockPackage = serde_json::from_str(
+            r#"{"name": "acme/lib", "version": "1.0.0", "license": ["GPL-2.0-or-later", "MIT"]}"#,
+        )
+        .expect("array license must parse");
+        assert_eq!(
+            array_form.license,
+            vec!["GPL-2.0-or-later".to_string(), "MIT".to_string()]
+        );
+
+        // null and absent both normalize to empty rather than failing.
+        let null_form: LockPackage = serde_json::from_str(
+            r#"{"name": "acme/lib", "version": "1.0.0", "license": null}"#,
+        )
+        .expect("null license must parse");
+        assert!(null_form.license.is_empty());
+
+        let absent: LockPackage =
+            serde_json::from_str(r#"{"name": "acme/lib", "version": "1.0.0"}"#).unwrap();
+        assert!(absent.license.is_empty());
     }
 
     #[test]
@@ -1675,6 +1856,7 @@ mod tests {
                         "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
                     ),
                     reference: Some("abc1234".into()),
+                    mirrors: Vec::new(),
                     transport_options: serde_json::Value::default(),
                 }),
                 source: None,
@@ -1845,5 +2027,144 @@ mod tests {
         assert_eq!(entry.autoload.files, vec!["bootstrap.php", "init.php"]);
         assert_eq!(entry.autoload.exclude_from_classmap, vec!["legacy/"]);
         assert_eq!(entry.bin, vec!["bin/run", "bin/other"]);
+    }
+
+    /// A LockPackage shaped like a Private-Packagist entry: the dist
+    /// URL points at the customer's origin VCS host, the mirror
+    /// template at the Packagist host.
+    fn mirrored_package(preferred: bool) -> LockPackage {
+        serde_json::from_value(serde_json::json!({
+            "name": "hyva-themes/commerce-module-cms",
+            "version": "1.2.0",
+            "version_normalized": "1.2.0.0",
+            "dist": {
+                "type": "zip",
+                "url": "https://gitlab.example.io/api/v4/projects/x%2Fy/repository/archive.zip?sha=54423c75",
+                "reference": "54423c75ea9ee3601042882dc089fac99933cdbd",
+                "shasum": "",
+                "mirrors": [
+                    {
+                        "url": "https://repo.example.com/dists/%package%/%version%/r%reference%.%type%",
+                        "preferred": preferred
+                    }
+                ]
+            }
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn dist_urls_puts_preferred_mirror_first() {
+        // Composer's `Package::getUrls`: preferred mirrors are
+        // unshifted ahead of the dist's own URL, so the downloader
+        // hits the (authenticated) mirror host before the origin VCS
+        // host — that ordering is what makes Private Packagist
+        // installs work without VCS credentials.
+        let urls = mirrored_package(true).dist_urls();
+        assert_eq!(
+            urls,
+            vec![
+                "https://repo.example.com/dists/hyva-themes/commerce-module-cms/1.2.0.0/r54423c75ea9ee3601042882dc089fac99933cdbd.zip",
+                "https://gitlab.example.io/api/v4/projects/x%2Fy/repository/archive.zip?sha=54423c75",
+            ],
+        );
+    }
+
+    #[test]
+    fn dist_urls_appends_non_preferred_mirror() {
+        let urls = mirrored_package(false).dist_urls();
+        assert_eq!(
+            urls[0],
+            "https://gitlab.example.io/api/v4/projects/x%2Fy/repository/archive.zip?sha=54423c75",
+        );
+        assert!(urls[1].starts_with("https://repo.example.com/dists/"));
+    }
+
+    #[test]
+    fn dist_urls_renormalizes_version_when_lock_lacks_version_normalized() {
+        // Composer's own Locker strips `version_normalized` from the
+        // lock, so a Composer-written lock exercises the fallback:
+        // re-normalize the pretty version. `%version%` must come out
+        // as the 4-segment form (`1.2.0.0`), not `1.2.0` — Private
+        // Packagist's dist paths 403 on the pretty form.
+        let mut pkg = mirrored_package(true);
+        pkg.version_normalized = None;
+        let urls = pkg.dist_urls();
+        assert!(
+            urls[0].contains("/1.2.0.0/"),
+            "expected normalized version in mirror URL, got {}",
+            urls[0],
+        );
+    }
+
+    #[test]
+    fn dist_urls_without_mirrors_is_the_dist_url_verbatim() {
+        let mut pkg = mirrored_package(true);
+        pkg.dist.as_mut().unwrap().mirrors.clear();
+        // The origin URL's `%2F` escape contains a literal `%` but no
+        // placeholder token — it must pass through untouched.
+        assert_eq!(
+            pkg.dist_urls(),
+            vec!["https://gitlab.example.io/api/v4/projects/x%2Fy/repository/archive.zip?sha=54423c75"],
+        );
+    }
+
+    #[test]
+    fn process_mirror_url_hashes_non_hex_reference_and_slashed_version() {
+        // ComposerMirror::processUrl: a reference that isn't lowercase
+        // hex (e.g. a path-repo config hash label) and a version
+        // containing `/` (branch `dev-feature/x`) are md5'd so they
+        // can't break the URL path.
+        let url = process_mirror_url(
+            "https://m.test/%package%/%version%/%reference%.%type%",
+            "acme/foo",
+            "dev-feature/x",
+            "dev-feature/x",
+            Some("not-hex!"),
+            "zip",
+        );
+        assert_eq!(
+            url,
+            format!(
+                "https://m.test/acme/foo/{}/{}.zip",
+                md5_hex("dev-feature/x"),
+                md5_hex("not-hex!"),
+            ),
+        );
+        // ...while a real git sha and a plain version pass through.
+        let url = process_mirror_url(
+            "https://m.test/%package%/%version%/r%reference%.%type%",
+            "acme/foo",
+            "1.0.0.0",
+            "1.0.0",
+            Some("abc123"),
+            "zip",
+        );
+        assert_eq!(url, "https://m.test/acme/foo/1.0.0.0/rabc123.zip");
+    }
+
+    #[test]
+    fn dist_mirrors_round_trip_through_lock_serialization() {
+        // `mirrors` must survive a write → read cycle (that's how the
+        // install command learns them without re-probing the repo)
+        // and must NOT appear on dists that have none, keeping
+        // mirror-less lockfiles byte-identical to before.
+        let pkg = mirrored_package(true);
+        let json = serde_json::to_value(&pkg).unwrap();
+        assert_eq!(
+            json["dist"]["mirrors"][0]["url"],
+            "https://repo.example.com/dists/%package%/%version%/r%reference%.%type%",
+        );
+        assert_eq!(json["dist"]["mirrors"][0]["preferred"], true);
+        let back: LockPackage = serde_json::from_value(json).unwrap();
+        assert_eq!(back.dist.unwrap().mirrors, pkg.dist.unwrap().mirrors);
+
+        let mut plain = mirrored_package(true);
+        plain.dist.as_mut().unwrap().mirrors.clear();
+        let json = serde_json::to_value(&plain).unwrap();
+        assert!(
+            json["dist"].get("mirrors").is_none(),
+            "empty mirrors must be suppressed from lock output",
+        );
     }
 }

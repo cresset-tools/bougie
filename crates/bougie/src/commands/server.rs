@@ -197,6 +197,7 @@ fn serve(format: OutputFormat, args: &ServeArgs) -> Result<ExitCode> {
     // implicit sync `bougie run` / `bougie make` perform.
     if !args.no_sync {
         crate::commands::sync::run(
+            &project_root,
             format,
             false,
             false,
@@ -204,6 +205,7 @@ fn serve(format: OutputFormat, args: &ServeArgs) -> Result<ExitCode> {
             None,
             bougie_cli::PhpPrefArgs::default(),
             bougie_composer_resolver::ResolutionStrategy::Highest,
+            bougie_composer_resolver::PlatformIgnore::default(),
         )?;
     }
 
@@ -371,6 +373,7 @@ fn serve_standalone(format: OutputFormat, args: &ServeArgs) -> Result<ExitCode> 
 
     if !args.no_sync {
         crate::commands::sync::run(
+            &project_root,
             format,
             false,
             false,
@@ -378,6 +381,7 @@ fn serve_standalone(format: OutputFormat, args: &ServeArgs) -> Result<ExitCode> 
             None,
             bougie_cli::PhpPrefArgs::default(),
             bougie_composer_resolver::ResolutionStrategy::Highest,
+            bougie_composer_resolver::PlatformIgnore::default(),
         )?;
     }
 

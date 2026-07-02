@@ -3055,6 +3055,166 @@ fn analyze_resolution_problems_detects_transitive_conflict() {
 }
 
 #[test]
+fn analyze_resolution_problems_does_not_spuriously_flag_satisfied_php() {
+    let tmp = TempDir::new().unwrap();
+    let paths = paths_in(tmp.path());
+
+    // acme/bar only exists at 1.0.0; the root asks for ^2.0 → real conflict.
+    let bar_body = p2_body("acme/bar", &[("1.0.0", json!({}))]);
+
+    let rt = rt();
+    let (uri, _server) = rt.block_on(async {
+        let server = MockServer::start().await;
+        mount_p2(&server, "acme/bar", bar_body).await;
+        (server.uri(), server)
+    });
+
+    // php is pinned to 8.4.5, which DOES satisfy the root constraint.
+    let composer_json = json!({
+        "require": {
+            "php": "~8.4.0||~8.5.0",
+            "acme/bar": "^2.0",
+        },
+    });
+    let client = crate::metadata::build_client().unwrap();
+    let auth = crate::update::read_auth_from_composer_json(&composer_json).unwrap();
+    let provider = ResolveProvider::build_with_auth(
+        client,
+        paths,
+        crate::metadata::Repo::from_url(uri),
+        &composer_json,
+        true,
+        auth,
+        crate::platform::PlatformEnv::new(Some(Version::parse("8.4.5").unwrap())),
+    )
+    .unwrap();
+    provider.pre_fetch_closure().unwrap();
+    let root = provider.root_version();
+
+    let err = resolve(&provider, PubGrubPackage::Root, root).unwrap_err();
+    assert!(matches!(err, pubgrub::PubGrubError::NoSolution(_)));
+
+    let report = provider
+        .analyze_resolution_problems()
+        .expect("real conflict on acme/bar");
+    // The real problem is acme/bar.
+    assert!(report.contains("acme/bar"), "report:\n{report}");
+    // php (8.4.5) satisfies ~8.4.0||~8.5.0, so it must NOT be reported as
+    // missing from a repository.
+    assert!(
+        !report.contains("but the package was not found in any configured repository"),
+        "php is satisfied and must not be flagged as missing from a repo:\n{report}"
+    );
+}
+
+#[test]
+fn ignore_platform_req_php_drops_the_edge_and_resolves() {
+    let tmp = TempDir::new().unwrap();
+    let paths = paths_in(tmp.path());
+
+    let bar_body = p2_body("acme/bar", &[("1.0.0", json!({}))]);
+
+    let rt = rt();
+    let (uri, _server) = rt.block_on(async {
+        let server = MockServer::start().await;
+        mount_p2(&server, "acme/bar", bar_body).await;
+        (server.uri(), server)
+    });
+
+    // php is pinned to 8.3.31, which does NOT satisfy ~8.4.0||~8.5.0 —
+    // without ignoring it the solve fails (see the mismatch test below).
+    let composer_json = json!({
+        "require": {
+            "php": "~8.4.0||~8.5.0",
+            "acme/bar": "^1.0",
+        },
+    });
+    let client = crate::metadata::build_client().unwrap();
+    let auth = crate::update::read_auth_from_composer_json(&composer_json).unwrap();
+    let provider = ResolveProvider::build_with_auth(
+        client,
+        paths,
+        crate::metadata::Repo::from_url(uri),
+        &composer_json,
+        true,
+        auth,
+        crate::platform::PlatformEnv::new(Some(Version::parse("8.3.31").unwrap()))
+            .ignoring(crate::platform::PlatformIgnore::new(false, &["php".to_string()])),
+    )
+    .unwrap();
+    provider.pre_fetch_closure().unwrap();
+    let root = provider.root_version();
+
+    // With `php` ignored, the unsatisfiable php edge is dropped and the
+    // rest of the graph resolves cleanly.
+    let solution = resolve(&provider, PubGrubPackage::Root, root)
+        .expect("ignoring php should let the solve succeed");
+    assert!(solution
+        .get(&PubGrubPackage::Package("acme/bar".into()))
+        .is_some());
+    // `php` must not appear as a resolved package — it was dropped.
+    assert!(solution
+        .get(&PubGrubPackage::Package("php".into()))
+        .is_none());
+}
+
+#[test]
+fn analyze_resolution_problems_reports_php_version_mismatch_clearly() {
+    let tmp = TempDir::new().unwrap();
+    let paths = paths_in(tmp.path());
+
+    // acme/bar is available and would resolve fine on its own.
+    let bar_body = p2_body("acme/bar", &[("1.0.0", json!({}))]);
+
+    let rt = rt();
+    let (uri, _server) = rt.block_on(async {
+        let server = MockServer::start().await;
+        mount_p2(&server, "acme/bar", bar_body).await;
+        (server.uri(), server)
+    });
+
+    // php is pinned to 8.3.31, which does NOT satisfy ~8.4.0||~8.5.0.
+    let composer_json = json!({
+        "require": {
+            "php": "~8.4.0||~8.5.0",
+            "acme/bar": "^1.0",
+        },
+    });
+    let client = crate::metadata::build_client().unwrap();
+    let auth = crate::update::read_auth_from_composer_json(&composer_json).unwrap();
+    let provider = ResolveProvider::build_with_auth(
+        client,
+        paths,
+        crate::metadata::Repo::from_url(uri),
+        &composer_json,
+        true,
+        auth,
+        crate::platform::PlatformEnv::new(Some(Version::parse("8.3.31").unwrap())),
+    )
+    .unwrap();
+    provider.pre_fetch_closure().unwrap();
+    let root = provider.root_version();
+
+    let err = resolve(&provider, PubGrubPackage::Root, root).unwrap_err();
+    assert!(matches!(err, pubgrub::PubGrubError::NoSolution(_)));
+
+    let report = provider
+        .analyze_resolution_problems()
+        .expect("php version mismatch");
+    // Clear, accurate message naming the real PHP version — not the
+    // misleading "not found in any configured repository".
+    assert!(
+        report.contains("php ~8.4.0||~8.5.0")
+            && report.contains("does not satisfy that requirement"),
+        "report:\n{report}"
+    );
+    assert!(
+        !report.contains("not found in any configured repository"),
+        "report:\n{report}"
+    );
+}
+
+#[test]
 fn repo_host_extracts_origin_for_per_host_throttle() {
     // Same host across different paths/ports → same limiter key.
     assert_eq!(super::repo_host("https://repo.mage-os.org"), "repo.mage-os.org");

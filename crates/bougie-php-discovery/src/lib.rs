@@ -24,7 +24,7 @@
 
 pub mod select;
 
-pub use select::{select, PhpPreference, Requirement, Selection};
+pub use select::{select, PhpPreference, Requirement, Selection, SelectionContext};
 
 use bougie_version::request::Flavor;
 use bougie_version::version::Version;
@@ -50,9 +50,10 @@ pub struct SystemPhp {
     /// the `[PHP Modules]` and `[Zend Modules]` sections.
     pub extensions: Vec<String>,
     /// Whether a `php-fpm` binary lives alongside this `php` (in its
-    /// `bin/` or the sibling `sbin/`). The dev server needs fpm; a
-    /// CLI-only build (no fpm) is still fine for `bougie run`, so this is
-    /// a *soft* preference in selection rather than a hard filter.
+    /// `bin/` or the sibling `sbin/`). Not a selection criterion — a
+    /// system PHP is only picked for one-off runs or under the explicit
+    /// only-system opt-in — but recorded so the shim and the server pool
+    /// can resolve (or clearly refuse) the fpm role later.
     pub has_fpm: bool,
 }
 

@@ -600,7 +600,16 @@ async fn dispatch_logs_single(
     loop {
         match f.read(&mut buf).await {
             Ok(0) => {
-                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                // EOF — but this may be a rotation rather than idleness:
+                // LogWriter renames the file and opens a fresh one, leaving
+                // our fd pinned to the now-idle old inode (endless EOF).
+                // Reopen the new file from its start when the path's inode
+                // changed; otherwise sleep and retry.
+                if let Some(reopened) = reopen_if_rotated(log_path, &f).await {
+                    f = reopened;
+                } else {
+                    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                }
             }
             Ok(n) => {
                 // Unfiltered: raw chunk passthrough (byte-identical to the
@@ -619,6 +628,30 @@ async fn dispatch_logs_single(
             Err(_) => return,
         }
     }
+}
+
+/// Reopen a followed log file if it was rotated out from under us.
+///
+/// `LogWriter` rotates by renaming `svc.log` → `svc.log.1` and opening a
+/// fresh `svc.log`, so a follower's fd stays pinned to the renamed inode
+/// — which never grows again, yielding endless `Ok(0)` (EOF), *not* an
+/// error. On EOF we therefore compare the open file's `(dev, inode)`
+/// against the path's; if they differ the file was rotated (or replaced),
+/// so reopen the new file positioned at its start (no seek-to-end) to
+/// resume following without dropping the rotated-in lines. Returns `None`
+/// when nothing changed (ordinary idle EOF) or the path can't be
+/// stat'd/opened yet.
+async fn reopen_if_rotated(
+    path: &std::path::Path,
+    current: &tokio::fs::File,
+) -> Option<tokio::fs::File> {
+    use std::os::unix::fs::MetadataExt;
+    let cur = current.metadata().await.ok()?;
+    let on_disk = tokio::fs::metadata(path).await.ok()?;
+    if (cur.dev(), cur.ino()) == (on_disk.dev(), on_disk.ino()) {
+        return None;
+    }
+    tokio::fs::OpenOptions::new().read(true).open(path).await.ok()
 }
 
 /// ANSI 16-color foreground codes cycled across services in the
@@ -717,7 +750,16 @@ async fn dispatch_logs_multi(
             }
             let Some(f) = t.file.as_mut() else { continue };
             match f.read(&mut buf).await {
-                Ok(0) => {}
+                Ok(0) => {
+                    // EOF. A rotation (rename + fresh reopen) yields endless
+                    // EOF, not an error, so the `Err` arm below never fires
+                    // for it — reopen the new file from its start when the
+                    // path's inode changed.
+                    if let Some(reopened) = reopen_if_rotated(&t.path, f).await {
+                        t.file = Some(reopened);
+                        any_progress = true;
+                    }
+                }
                 Ok(n) => {
                     any_progress = true;
                     t.partial.extend_from_slice(&buf[..n]);
@@ -731,8 +773,8 @@ async fn dispatch_logs_multi(
                         return;
                     }
                 }
-                // A rotation (rename + reopen) can yield a read error;
-                // drop the handle so we reopen the fresh `.log` next tick.
+                // Rotation is handled on EOF above; a genuine read error
+                // is the fallback — drop the handle so we reopen next tick.
                 Err(_) => t.file = None,
             }
         }
@@ -1746,5 +1788,32 @@ mod tests {
         prefix_line(&mut out, "redis", 7, Some(36), "ready\n");
         // Cyan (36) opens, resets before the log text, which stays plain.
         assert_eq!(out, "\x1b[36mredis   |\x1b[0m ready\n");
+    }
+
+    #[tokio::test]
+    async fn reopen_if_rotated_follows_across_rotation() {
+        // Reproduces the `logs --follow` silence: after LogWriter renames
+        // svc.log → svc.log.1 and opens a fresh svc.log, the follower's fd
+        // stays on the renamed inode (endless EOF). reopen_if_rotated must
+        // detect the inode change and hand back the fresh file so following
+        // resumes from the rotated-in content.
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("svc.log");
+        std::fs::write(&path, b"one\n").unwrap();
+        let f = tokio::fs::OpenOptions::new().read(true).open(&path).await.unwrap();
+
+        // Same inode, just idle → no reopen.
+        assert!(reopen_if_rotated(&path, &f).await.is_none());
+
+        // Rotate: rename the current file away, create a fresh one.
+        std::fs::rename(&path, dir.path().join("svc.log.1")).unwrap();
+        std::fs::write(&path, b"two\n").unwrap();
+
+        // Inode changed → reopen, and the new handle reads from the start.
+        let reopened = reopen_if_rotated(&path, &f).await;
+        let mut nf = reopened.expect("rotation must trigger a reopen");
+        let mut s = String::new();
+        nf.read_to_string(&mut s).await.unwrap();
+        assert_eq!(s, "two\n", "the reopened handle follows the new file");
     }
 }

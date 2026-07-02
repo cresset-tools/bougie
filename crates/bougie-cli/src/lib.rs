@@ -62,8 +62,11 @@ pub struct Cli {
 /// Shared PHP-source preference flags (uv's system-Python model adapted
 /// to PHP). Flattened into `sync` / `run`; `--managed-php` and
 /// `--no-managed-php` are mutually exclusive. With none set, bougie's
-/// default applies: prefer an installed managed PHP, then a qualifying
-/// system PHP, then download a managed one.
+/// default applies: prefer an installed managed PHP, then download one.
+/// Only a one-off `bougie run` also reaches for a qualifying system PHP
+/// (before downloading) — used for that invocation only, never pinned;
+/// configuring a *project* against a system PHP always requires the
+/// explicit `--no-managed-php` / `[php] managed = false` opt-in.
 #[derive(Args, Debug, Clone, Copy, Default)]
 pub struct PhpPrefArgs {
     /// Only use a bougie-managed PHP; never a system PHP
@@ -72,8 +75,8 @@ pub struct PhpPrefArgs {
     /// Only use a system PHP already on this machine; never a managed one
     #[arg(long)]
     pub no_managed_php: bool,
-    /// Never download a managed PHP — use an installed managed PHP or a
-    /// system one. Errors if neither is present
+    /// Never download a managed PHP — use an installed one (or, for a
+    /// one-off `bougie run`, a system PHP). Errors otherwise
     #[arg(long)]
     pub no_php_downloads: bool,
 }
@@ -191,6 +194,13 @@ pub enum Command {
         /// Resolve and report what would change without writing anything
         #[arg(long = "dry-run")]
         dry_run: bool,
+        /// Ignore all platform requirements (php, ext-*, lib-*) when resolving
+        #[arg(long = "ignore-platform-reqs")]
+        ignore_platform_reqs: bool,
+        /// Ignore a specific platform requirement (`php`, `ext-gd`, …);
+        /// repeatable, `*` wildcards allowed
+        #[arg(long = "ignore-platform-req", value_name = "REQ")]
+        ignore_platform_req: Vec<String>,
     },
 
     /// Remove dependencies from the project
@@ -214,6 +224,13 @@ pub enum Command {
         /// Resolve and report what would change without writing anything
         #[arg(long = "dry-run")]
         dry_run: bool,
+        /// Ignore all platform requirements (php, ext-*, lib-*) when resolving
+        #[arg(long = "ignore-platform-reqs")]
+        ignore_platform_reqs: bool,
+        /// Ignore a specific platform requirement (`php`, `ext-gd`, …);
+        /// repeatable, `*` wildcards allowed
+        #[arg(long = "ignore-platform-req", value_name = "REQ")]
+        ignore_platform_req: Vec<String>,
     },
 
     /// Update the project's lockfile
@@ -228,6 +245,13 @@ pub enum Command {
         /// Resolve and report what would change without writing the lock
         #[arg(long = "dry-run")]
         dry_run: bool,
+        /// Ignore all platform requirements (php, ext-*, lib-*) when resolving
+        #[arg(long = "ignore-platform-reqs")]
+        ignore_platform_reqs: bool,
+        /// Ignore a specific platform requirement (`php`, `ext-gd`, …);
+        /// repeatable, `*` wildcards allowed
+        #[arg(long = "ignore-platform-req", value_name = "REQ")]
+        ignore_platform_req: Vec<String>,
     },
 
     /// Display the project's dependency tree
@@ -301,6 +325,14 @@ pub enum Command {
         /// Skip native patch application for this sync
         #[arg(long = "no-patches")]
         no_patches: bool,
+        /// Ignore all platform requirements (php, ext-*, lib-*) when a fresh
+        /// lock must be resolved
+        #[arg(long = "ignore-platform-reqs")]
+        ignore_platform_reqs: bool,
+        /// Ignore a specific platform requirement (`php`, `ext-gd`, …);
+        /// repeatable, `*` wildcards allowed
+        #[arg(long = "ignore-platform-req", value_name = "REQ")]
+        ignore_platform_req: Vec<String>,
         #[command(flatten)]
         php: PhpPrefArgs,
     },
@@ -765,6 +797,22 @@ pub enum PatchesCommand {
         /// Don't run `bougie sync` afterward
         #[arg(long = "no-sync")]
         no_sync: bool,
+    },
+    /// Author a patch from hand-edited `vendor/` files: diff an installed
+    /// package against its originally-installed (pristine) contents and write
+    /// a clean patch into the `patches/` directory, where bougie
+    /// auto-discovers and re-applies it on the next `sync`
+    Create {
+        /// The installed package to diff (`vendor/package`)
+        #[arg(value_name = "VENDOR/PACKAGE")]
+        package: String,
+        /// Where to write the patch (default:
+        /// `<patches-dir>/<vendor>-<pkg>.patch`)
+        #[arg(long, value_name = "PATH")]
+        output: Option<String>,
+        /// Print the diff to stdout instead of writing a file
+        #[arg(long)]
+        stdout: bool,
     },
     /// Show the resolved patch set, plus any unadopted dependency-declared
     /// patches (which bougie never applies automatically)

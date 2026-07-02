@@ -103,7 +103,18 @@ fn apply_landlock(policy: &SandboxPolicy) -> Result<(), SandboxError> {
         | AccessFs::MakeSym
         | AccessFs::Truncate;
     let exec_access = AccessFs::Execute;
-    let all_fs_access = read_access | write_access | exec_access;
+    // `Refer` (cross-directory rename/link) is ABI v2+ (kernel ≥5.19).
+    // Landlock denies *all* reparenting by default whenever a ruleset is
+    // in force, unless the ruleset both handles `Refer` and grants it on
+    // the source and destination directories. Without it, every
+    // `rename(2)`/`link(2)` that crosses a directory fails inside a
+    // sandboxed service — even entirely within its own writable tree
+    // (e.g. mariadb `RENAME TABLE` across per-database subdirs, or any
+    // tmp-dir→final-dir atomic-move pattern). Granting it alongside the
+    // write rights fixes that; `BestEffort` compatibility (the
+    // `Ruleset::default()` level) silently drops it on pre-5.19 kernels,
+    // where cross-directory reparenting isn't restricted anyway.
+    let all_fs_access = read_access | write_access | exec_access | AccessFs::Refer;
 
     // Build ruleset
     let mut ruleset_builder = Ruleset::default().handle_access(all_fs_access)?;

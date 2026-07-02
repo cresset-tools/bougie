@@ -10,10 +10,14 @@
 //!   `bougie install xdebug` (via `ensure_debug_extension`) so users
 //!   don't have to `bougie ext add xdebug` manually.
 //! - `FCGI_GET_VALUES` health probe before the pool is dispatchable.
-//! - Stderr captured + line-prefixed with `[fpm:<project>:<variant>]`.
+//! - Stderr captured + line-prefixed with `[fpm:<host>:<variant>]` —
+//!   the *vhost*, so the lines survive `bougie server`'s host-scoped
+//!   log attach. Forwarding starts before the readiness wait, and a
+//!   rolling stderr tail is embedded in spawn errors so a failed
+//!   startup reports why php-fpm died, not just that it did.
 
 use eyre::{Result, WrapErr};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -33,10 +37,30 @@ use bougie_fs::state::read_project_resolved;
 #[cfg(unix)]
 use bougie_fs::state::{read_project_resolved_php_path, system_fpm_for_php};
 
+/// How long a spawn waits for php-fpm to bind the pool socket. The
+/// master process runs all of its startup — including compiling the
+/// whole `opcache.preload` script — *before* binding, so projects with
+/// a large preload (a Magento `generated/` tree is thousands of files)
+/// legitimately need many seconds here. The poll loop returns the
+/// moment the socket appears, so a generous default only delays the
+/// genuinely-hung case; a crashed master is caught immediately via
+/// `try_wait`. Override via `BOUGIE_SERVER_POOL_READY_TIMEOUT_MS`.
 #[cfg(unix)]
-const POOL_READY_TIMEOUT: Duration = Duration::from_secs(2);
+const DEFAULT_POOL_READY_TIMEOUT: Duration = Duration::from_secs(30);
 #[cfg(unix)]
 const POOL_READY_POLL: Duration = Duration::from_millis(25);
+
+/// How long to wait for php-fpm to bind its listen socket. The master
+/// only binds after parsing config *and* running `opcache.preload`, so
+/// a heavy preload script can legitimately need many seconds — the
+/// default is generous and `BOUGIE_SERVER_POOL_READY_TIMEOUT_MS` overrides it.
+#[cfg(unix)]
+fn pool_ready_timeout() -> Duration {
+    std::env::var("BOUGIE_SERVER_POOL_READY_TIMEOUT_MS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .map_or(DEFAULT_POOL_READY_TIMEOUT, Duration::from_millis)
+}
 /// How often the idle reaper scans the pool map. The plan calls for
 /// ~10s — finer-grained doesn't help when idle timeouts are minutes.
 /// Tests can shorten via `BOUGIE_SERVER_REAPER_PERIOD_MS` so the
@@ -49,6 +73,12 @@ fn reaper_period() -> Duration {
         .and_then(|s| s.parse::<u64>().ok())
         .map_or(DEFAULT_REAPER_PERIOD, Duration::from_millis)
 }
+
+/// How long [`Pool::terminate`] waits for the SIGTERM'd master to exit
+/// before escalating to SIGKILL. php-fpm's immediate shutdown normally
+/// completes in well under a second.
+#[cfg(unix)]
+const TERMINATE_GRACE: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct PoolKey {
@@ -100,6 +130,12 @@ pub struct Pool {
     /// (or was first marked dispatchable). The reaper compares this
     /// against `idle_pool_timeout` to decide what to terminate.
     last_served_at: AtomicU64,
+    /// Vhost whose request spawned this pool. Log decoration only:
+    /// `bougie server` scopes the shared log to one project by
+    /// filtering for its vhost substring, so lifecycle lines must
+    /// carry it to stay visible. Aliases of the same project reuse
+    /// the pool under the spawning host's label.
+    host: String,
     child: Mutex<Child>,
 }
 
@@ -130,13 +166,37 @@ impl Pool {
         Duration::from_millis(now.saturating_sub(then))
     }
 
-    /// Send SIGTERM to the pool master. Phase 4 hangs the LRU eviction
-    /// and idle-out paths off this; shutdown still calls it on every
-    /// pool. `kill_on_drop(true)` on the child is the belt; this is
-    /// the braces (so we don't wait until the Arc<Pool> drops to start
-    /// reaping the process).
+    /// Take the pool master down without orphaning its workers. Unix:
+    /// the master runs in its own process group (see `spawn_runtime`),
+    /// so SIGTERM the *group* — master and workers get it atomically;
+    /// a bare SIGKILL on the master alone re-parents live workers to
+    /// pid 1, where they linger. Reap the master, escalating to a
+    /// group SIGKILL after [`TERMINATE_GRACE`]. Phase 4 hangs the LRU
+    /// eviction and idle-out paths off this; shutdown still calls it
+    /// on every pool. `kill_on_drop(true)` on the child remains the
+    /// backstop for paths that drop a `Pool` without calling this.
     pub async fn terminate(&self) {
         let mut guard = self.child.lock().await;
+        #[cfg(unix)]
+        {
+            // Already exited and reaped: `self.pid` may have been
+            // recycled by an unrelated process — don't signal it.
+            if matches!(guard.try_wait(), Ok(Some(_))) {
+                return;
+            }
+            let pid = i32::try_from(self.pid)
+                .ok()
+                .and_then(rustix::process::Pid::from_raw);
+            if let Some(pid) = pid
+                && rustix::process::kill_process_group(pid, rustix::process::Signal::TERM).is_ok()
+            {
+                if tokio::time::timeout(TERMINATE_GRACE, guard.wait()).await.is_err() {
+                    let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
+                    let _ = guard.wait().await;
+                }
+                return;
+            }
+        }
         let _ = guard.start_kill();
     }
 
@@ -192,6 +252,32 @@ impl Pool {
             Err(eyre::eyre!(
                 "pool reload is not yet implemented on Windows — restart `bougie server` to pick up conf.d changes"
             ))
+        }
+    }
+}
+
+/// Backstop for pools dropped without [`Pool::terminate`] (e.g. a
+/// detached eviction task cancelled at runtime teardown). The
+/// `kill_on_drop(true)` on the child only SIGKILLs the *master*, which
+/// re-parents any live workers to pid 1 where they linger — so
+/// group-kill here while the master (and thus its pgid) is provably
+/// still ours to signal.
+impl Drop for Pool {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        {
+            let child = self.child.get_mut();
+            // Already reaped (clean terminate, or a crash observed by
+            // `is_alive`): the pgid may have been recycled — hands off.
+            if matches!(child.try_wait(), Ok(Some(_))) {
+                return;
+            }
+            if let Some(pid) = i32::try_from(self.pid)
+                .ok()
+                .and_then(rustix::process::Pid::from_raw)
+            {
+                let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
+            }
         }
     }
 }
@@ -255,8 +341,9 @@ impl PoolManager {
     /// Return an existing healthy pool or spawn a new one. Enforces
     /// the LRU cap: if the map already holds `max_concurrent_pools`
     /// entries, the oldest-idle pool is evicted before the new spawn
-    /// (SERVER.md §7.2 "Concurrency cap").
-    pub async fn get_or_spawn(&self, project: &Path, variant: &str) -> Result<Arc<Pool>> {
+    /// (SERVER.md §7.2 "Concurrency cap"). `host` is the requesting
+    /// vhost, used purely to label the pool's log output.
+    pub async fn get_or_spawn(&self, project: &Path, variant: &str, host: &str) -> Result<Arc<Pool>> {
         let (version, flavor) = read_project_resolved(project).wrap_err_with(|| {
             format!(
                 "reading vendor/bougie/state/resolved in {}",
@@ -280,7 +367,8 @@ impl PoolManager {
             // until a full `bougie services restart server`.
             self.evict(&pool).await;
             eprintln!(
-                "[pool_dead] project={} variant={} pid={} reason=respawn",
+                "[pool_dead] host={} project={} variant={} pid={} reason=respawn",
+                pool.host,
                 pool.key.project.display(),
                 pool.key.variant,
                 pool.pid(),
@@ -290,7 +378,7 @@ impl PoolManager {
         // Spawn outside the map lock — php-fpm takes ~tens of ms to
         // boot and we don't want every concurrent request blocking on
         // a sister-pool's spawn.
-        let pool = Arc::new(self.spawn(key.clone()).await?);
+        let pool = Arc::new(self.spawn(key.clone(), host).await?);
 
         let mut map = self.pools.lock().await;
         // Re-check: another task may have raced us and won.
@@ -405,7 +493,8 @@ impl PoolManager {
         for (k, pool) in &victims {
             map.remove(k);
             eprintln!(
-                "[pool_idle_out] project={} variant={} pid={} idle={:?}",
+                "[pool_idle_out] host={} project={} variant={} pid={} idle={:?}",
+                pool.host,
                 pool.key.project.display(),
                 pool.key.variant,
                 pool.pid(),
@@ -452,7 +541,7 @@ impl PoolManager {
             .collect()
     }
 
-    async fn spawn(&self, key: PoolKey) -> Result<Pool> {
+    async fn spawn(&self, key: PoolKey, host: &str) -> Result<Pool> {
         let project = &key.project;
         let php_install = self
             .bougie_paths
@@ -550,30 +639,43 @@ impl PoolManager {
         )
         .await?;
 
-        // Capture stderr in a side task, line-prefix with
-        // `[fpm:<project>:<variant>]`. Drains until the child exits.
+        // Capture stderr/stdout in side tasks, line-prefixed with
+        // `[fpm:<host>:<variant>]`; drains until the child exits.
+        // Wired *before* the readiness wait so php-fpm's own startup
+        // errors reach the server log even when the spawn fails. The
+        // stderr side also feeds a rolling tail that the readiness /
+        // probe errors embed, so a failed spawn reports php-fpm's
+        // actual complaint instead of a bare timeout.
+        let stderr_tail = StderrTail::default();
         if let Some(stderr) = child.stderr.take() {
-            let prefix = format!(
-                "[fpm:{}:{}]",
-                project_label(project),
-                key.variant,
-            );
-            tokio::spawn(forward_lines(stderr, prefix));
+            let prefix = format!("[fpm:{host}:{}]", key.variant);
+            tokio::spawn(forward_lines(stderr, prefix, Some(stderr_tail.clone())));
         }
         if let Some(stdout) = child.stdout.take() {
-            let prefix = format!(
-                "[fpm:{}:{}:stdout]",
-                project_label(project),
-                key.variant,
-            );
-            tokio::spawn(forward_lines(stdout, prefix));
+            let prefix = format!("[fpm:{host}:{}:stdout]", key.variant);
+            tokio::spawn(forward_lines(stdout, prefix, None));
+        }
+
+        // Readiness: wait for the listen socket, failing fast (with
+        // the captured stderr) when the master exits instead of
+        // burning the whole timeout on a corpse. Windows readiness is
+        // handled inside `spawn_runtime`'s bind-retry loop.
+        #[cfg(unix)]
+        if let Transport::UnixSocket(socket) = &transport {
+            wait_for_socket(socket, &mut child, &stderr_tail).await?;
         }
 
         // Health probe: SERVER.md §7.6, 2s timeout. Probe failures
         // surface as 502 to the client.
         fastcgi::probe(&transport)
             .await
-            .wrap_err_with(|| format!("FastCGI health probe failed for pool {}", key.variant))?;
+            .wrap_err_with(|| {
+                format!(
+                    "FastCGI health probe failed for pool {}{}",
+                    key.variant,
+                    stderr_tail.render(),
+                )
+            })?;
 
         let pid = child
             .id()
@@ -585,18 +687,23 @@ impl PoolManager {
             started_at: Instant::now(),
             pid,
             last_served_at: AtomicU64::new(now_millis()),
+            host: host.to_owned(),
             child: Mutex::new(child),
         })
     }
 }
 
-/// Platform-specific runtime spawn. Unix: write a php-fpm pool conf,
-/// launch php-fpm, wait for the unix socket. Windows: pick a random
+/// Platform-specific runtime spawn. Unix: write a php-fpm pool conf and
+/// launch php-fpm — the caller wires log forwarding, then waits for the
+/// unix socket via [`wait_for_socket`]. Windows: pick a random
 /// port in the dynamic range, launch php-cgi.exe with `-b 127.0.0.1:<port>`,
 /// retry on bind collision (php-cgi.exe rejects port 0, so we can't ask
 /// the kernel to pick one). The probe in the caller is the real
 /// "dispatchable" signal in both cases.
 #[cfg(unix)]
+// async only to mirror the Windows twin (whose bind-retry loop awaits);
+// the caller `.await`s both uniformly.
+#[allow(clippy::unused_async)]
 async fn spawn_runtime(
     binary: &Path,
     project_dir: &Path,
@@ -638,13 +745,17 @@ async fn spawn_runtime(
     cmd.stderr(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stdin(std::process::Stdio::null())
+        // Own process group (pgid == master pid) so `Pool::terminate`
+        // can signal master + workers atomically — signalling only the
+        // master risks orphaning workers to pid 1 (and a SIGKILL
+        // escalation guarantees it).
+        .process_group(0)
         .kill_on_drop(true);
 
     let child = cmd
         .spawn()
         .wrap_err_with(|| format!("spawning {}", binary.display()))?;
 
-    wait_for_socket(&socket).await?;
     Ok((Transport::UnixSocket(socket), child))
 }
 
@@ -761,7 +872,8 @@ fn evict_lru(map: &mut HashMap<PoolKey, Arc<Pool>>) {
     };
     if let Some(pool) = map.remove(&oldest_key) {
         eprintln!(
-            "[pool_evicted] project={} variant={} pid={} reason=lru-cap",
+            "[pool_evicted] host={} project={} variant={} pid={} reason=lru-cap",
+            pool.host,
             pool.key.project.display(),
             pool.key.variant,
             pool.pid(),
@@ -775,34 +887,98 @@ fn evict_lru(map: &mut HashMap<PoolKey, Arc<Pool>>) {
     }
 }
 
-/// Wait up to [`POOL_READY_TIMEOUT`] for `socket` to appear on disk
-/// (php-fpm creates it during startup). The follow-on `FCGI_GET_VALUES`
+/// Wait up to [`pool_ready_timeout`] for `socket` to appear on disk
+/// (php-fpm creates it during startup). Fails fast when the master
+/// exits before binding — a pool-conf parse error, an unloadable
+/// `extension=`, an unwritable socket dir — embedding the stderr tail
+/// so the error says why php-fpm died. The follow-on `FCGI_GET_VALUES`
 /// probe then validates that the responder is actually accepting
-/// requests.
+/// requests. Bails early with the master's stderr if it exits before
+/// binding — a bad ini or a fatal in the `opcache.preload` script
+/// shouldn't sit out the full timeout.
 #[cfg(unix)]
-async fn wait_for_socket(socket: &Path) -> Result<()> {
-    let deadline = Instant::now() + POOL_READY_TIMEOUT;
+async fn wait_for_socket(
+    socket: &Path,
+    child: &mut Child,
+    stderr_tail: &StderrTail,
+) -> Result<()> {
+    let timeout = pool_ready_timeout();
+    let deadline = Instant::now() + timeout;
     loop {
         if socket.exists() {
             return Ok(());
         }
+        if let Some(status) = child
+            .try_wait()
+            .wrap_err("polling php-fpm during startup")?
+        {
+            // Give the forwarding task a beat to drain the pipe so the
+            // tail includes php-fpm's parting words.
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            return Err(eyre::eyre!(
+                "php-fpm exited during startup ({status}){}",
+                stderr_tail.render()
+            ));
+        }
         if Instant::now() >= deadline {
             return Err(eyre::eyre!(
-                "php-fpm pool socket {} didn't appear within {:?}",
+                "php-fpm didn't create its listen socket {} within {:?} (a heavy \
+                 opcache.preload can legitimately need longer — set \
+                 BOUGIE_SERVER_POOL_READY_TIMEOUT_MS to extend){}",
                 socket.display(),
-                POOL_READY_TIMEOUT
+                timeout,
+                stderr_tail.render()
             ));
         }
         tokio::time::sleep(POOL_READY_POLL).await;
     }
 }
 
-async fn forward_lines<R>(stream: R, prefix: String)
+/// Rolling tail of a pool's most recent stderr lines, capped at
+/// [`STDERR_TAIL_LINES`]. Written by the forwarding task, read by the
+/// spawn path to embed php-fpm's own words in startup errors (which
+/// reach both the 502 body and the server log).
+#[derive(Debug, Clone, Default)]
+struct StderrTail(Arc<std::sync::Mutex<VecDeque<String>>>);
+
+/// php-fpm startup failures are short — a config complaint plus a
+/// fatal line — so a small window captures the whole story.
+const STDERR_TAIL_LINES: usize = 20;
+
+impl StderrTail {
+    fn push(&self, line: &str) {
+        let mut buf = self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if buf.len() == STDERR_TAIL_LINES {
+            buf.pop_front();
+        }
+        buf.push_back(line.to_owned());
+    }
+
+    /// Render as an error-message suffix: an indented block of the
+    /// captured lines, or a "no output" note when php-fpm was silent.
+    fn render(&self) -> String {
+        let buf = self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if buf.is_empty() {
+            return " — php-fpm produced no output".to_owned();
+        }
+        let mut out = String::from(" — recent php-fpm output:");
+        for line in buf.iter() {
+            out.push_str("\n  ");
+            out.push_str(line);
+        }
+        out
+    }
+}
+
+async fn forward_lines<R>(stream: R, prefix: String, tail: Option<StderrTail>)
 where
     R: tokio::io::AsyncRead + Unpin,
 {
     let mut reader = BufReader::new(stream).lines();
     while let Ok(Some(line)) = reader.next_line().await {
+        if let Some(tail) = &tail {
+            tail.push(&line);
+        }
         eprintln!("{prefix} {line}");
     }
 }
@@ -862,17 +1038,6 @@ async fn ensure_debug_extension(
     Ok(())
 }
 
-/// Short label for a project to embed in `[fpm:<label>:<variant>]`.
-/// Trailing path component is the typical project name; falls back to
-/// the full path string when the basename is empty (root, weird mount
-/// points).
-fn project_label(project: &Path) -> String {
-    project
-        .file_name()
-        .and_then(|s| s.to_str())
-        .map_or_else(|| project.display().to_string(), str::to_owned)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -889,9 +1054,18 @@ mod tests {
     }
 
     #[test]
-    fn project_label_uses_basename() {
-        assert_eq!(project_label(Path::new("/home/jelle/projects/myapp")), "myapp");
-        assert_eq!(project_label(Path::new("/")), "/");
+    fn stderr_tail_renders_block_and_caps() {
+        let tail = StderrTail::default();
+        assert!(tail.render().contains("no output"));
+        for i in 0..(STDERR_TAIL_LINES + 5) {
+            tail.push(&format!("line{i}"));
+        }
+        // 25 pushed, 20 kept: line0..line4 rolled off, line5..line24 remain.
+        let rendered = tail.render();
+        assert!(rendered.contains("recent php-fpm output"));
+        assert!(!rendered.contains("\n  line4\n"), "oldest lines roll off: {rendered}");
+        assert!(rendered.contains("\n  line5\n"));
+        assert!(rendered.contains(&format!("line{}", STDERR_TAIL_LINES + 4)));
     }
 
     // Build a Pool wrapping an arbitrary child + socket path so the
@@ -906,6 +1080,7 @@ mod tests {
             started_at: Instant::now(),
             pid,
             last_served_at: AtomicU64::new(now_millis()),
+            host: "test.bougie.run".to_owned(),
             child: Mutex::new(child),
         }
     }
@@ -937,6 +1112,54 @@ mod tests {
         assert!(!pool.is_alive().await, "missing socket => not alive");
 
         pool.terminate().await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // A master that dies before binding fails the readiness wait fast —
+    // with the exit status and the captured stderr in the message —
+    // instead of burning the whole POOL_READY_TIMEOUT on a corpse.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn wait_for_socket_fails_fast_when_master_exits() {
+        let dir = std::env::temp_dir().join(format!("bougie-pool-exit-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let socket = dir.join("never-appears.sock");
+
+        let mut child = tokio::process::Command::new("sh")
+            .args(["-c", "exit 70"])
+            .kill_on_drop(true)
+            .spawn()
+            .expect("spawn sh");
+        let tail = StderrTail::default();
+        tail.push("ERROR: unknown entry 'boom'");
+
+        let started = Instant::now();
+        let err = wait_for_socket(&socket, &mut child, &tail).await.unwrap_err();
+        assert!(
+            started.elapsed() < DEFAULT_POOL_READY_TIMEOUT,
+            "child exit should short-circuit the timeout"
+        );
+        let msg = format!("{err:#}");
+        assert!(msg.contains("exited during startup"), "{msg}");
+        assert!(msg.contains("unknown entry 'boom'"), "{msg}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // A socket that's already on disk resolves the wait immediately,
+    // whatever the child is doing.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn wait_for_socket_ok_when_socket_present() {
+        let dir = std::env::temp_dir().join(format!("bougie-pool-ready-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let socket = dir.join("present.sock");
+        std::fs::write(&socket, b"").unwrap();
+
+        let mut child = spawn_sleeper();
+        let tail = StderrTail::default();
+        assert!(wait_for_socket(&socket, &mut child, &tail).await.is_ok());
+
+        let _ = child.start_kill();
         let _ = std::fs::remove_dir_all(&dir);
     }
 

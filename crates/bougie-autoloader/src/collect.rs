@@ -37,9 +37,23 @@ fn path_code(install_path: &str, sub: &str) -> String {
         format!("{install_path}/{sub}")
     };
     match full.strip_prefix("vendor/") {
-        Some(rest) => format!("$vendorDir . '/{rest}'"),
-        None => format!("$baseDir . '/{full}'"),
+        Some(rest) => anchored_path_expr("$vendorDir", rest),
+        None => anchored_path_expr("$baseDir", &full),
     }
+}
+
+/// Build the PHP path expression `<anchor> . '/<path>'`, escaping the
+/// path literal exactly as Composer's `var_export` does (backslashes
+/// and single quotes). `anchor` is the PHP variable (`$vendorDir` or
+/// `$baseDir`); `path` is an already-normalized, slash-separated
+/// relative path emitted with a leading `/`. Without this a path
+/// containing a `'` or `\` (e.g. a `o'brien/` classmap dir) would emit
+/// a syntactically invalid single-quoted literal and break the whole
+/// generated autoloader. For paths with no special characters the
+/// output is byte-identical to a raw `'/…'` interpolation, so existing
+/// fixtures are unaffected.
+fn anchored_path_expr(anchor: &str, path: &str) -> String {
+    format!("{anchor} . {}", crate::emit::php_single_quoted(&format!("/{path}")))
 }
 
 /// One PSR-4 or PSR-0 prefix and its install-path-prefixed dirs.
@@ -124,7 +138,7 @@ where
             push(
                 &mut out,
                 prefix,
-                format!("$baseDir . '/{}'", normalize_emit_dir(d)),
+                anchored_path_expr("$baseDir", normalize_emit_dir(d)),
             );
         }
     }
@@ -139,7 +153,7 @@ where
                 push(
                     &mut out,
                     prefix,
-                    format!("$baseDir . '/{}'", normalize_emit_dir(d)),
+                    anchored_path_expr("$baseDir", normalize_emit_dir(d)),
                 );
             }
         }
@@ -201,7 +215,7 @@ pub(crate) fn files(
     for f in &root.autoload.files {
         out.push(FileEntry {
             identifier: file_identifier("__root__", f),
-            path_expr: format!("$baseDir . '/{}'", strip_leading_slash(f)),
+            path_expr: anchored_path_expr("$baseDir", strip_leading_slash(f)),
         });
     }
     // Root dev `files` — included with the root block unless `--no-dev`.
@@ -209,7 +223,7 @@ pub(crate) fn files(
         for f in &root.autoload_dev.files {
             out.push(FileEntry {
                 identifier: file_identifier("__root__", f),
-                path_expr: format!("$baseDir . '/{}'", strip_leading_slash(f)),
+                path_expr: anchored_path_expr("$baseDir", strip_leading_slash(f)),
             });
         }
     }
@@ -548,7 +562,7 @@ pub(crate) fn task_path_expr(task: &Task, rel: &Path) -> String {
     let rel_str = rel.to_string_lossy().replace('\\', "/");
     match &task.origin {
         Origin::Package { install_path } => path_code(install_path, &rel_str),
-        Origin::Root => format!("$baseDir . '/{rel_str}'"),
+        Origin::Root => anchored_path_expr("$baseDir", &rel_str),
     }
 }
 
@@ -624,6 +638,34 @@ mod tests {
         assert_eq!(
             file_identifier("acme/helpers", "functions.php"),
             "15a74e8c7f50af51efa9794609612b23"
+        );
+    }
+
+    #[test]
+    fn path_code_leaves_ordinary_paths_byte_identical() {
+        // The common case must be unchanged so golden fixtures still match.
+        assert_eq!(
+            path_code("vendor/monolog/monolog", "src"),
+            "$vendorDir . '/monolog/monolog/src'"
+        );
+        assert_eq!(
+            path_code("wp-content/plugins/akismet", ""),
+            "$baseDir . '/wp-content/plugins/akismet'"
+        );
+    }
+
+    #[test]
+    fn path_code_escapes_quotes_and_backslashes() {
+        // A dir with a single quote must be escaped like Composer's
+        // `var_export`, or the emitted single-quoted literal is invalid
+        // PHP and breaks the entire autoloader.
+        assert_eq!(
+            path_code("vendor/acme/pkg", "o'brien"),
+            r"$vendorDir . '/acme/pkg/o\'brien'"
+        );
+        assert_eq!(
+            path_code("acme/pkg", r"we\ird"),
+            r"$baseDir . '/acme/pkg/we\\ird'"
         );
     }
 }

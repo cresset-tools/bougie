@@ -126,10 +126,18 @@ pub fn run(paths: Paths) -> Result<ExitCode> {
 
     let exit = rt.block_on(serve(paths.clone()))?;
 
-    // Best-effort cleanup. Either path is fine on next start —
-    // the open-then-flock pattern survives stale pid/sock files.
+    // Best-effort socket cleanup; `serve` also removes a stale socket on
+    // the next start, so either way is fine.
     let _ = std::fs::remove_file(paths.bougied_sock());
-    let _ = std::fs::remove_file(&pid_path);
+    // Deliberately do NOT unlink the pidfile. The flock singleton is keyed
+    // on the pidfile's *inode*: unlinking it here opens a race where a
+    // contender that already `open`ed the old inode flocks it (succeeding
+    // once we drop our fd) while a third `open` on the same path creates a
+    // *fresh* inode and flocks that independently — leaving two daemons
+    // live at once. Leaving the pidfile in place means every contender
+    // opens and flocks the same inode; dropping our fd releases the lock
+    // for the next one, which truncates and rewrites the stale PID on
+    // start (see the open-then-flock above).
     drop(pid_file); // release flock
 
     Ok(exit)

@@ -55,21 +55,19 @@ pub fn run(
     }
     let cwd = std::env::current_dir()?;
     let project_root = resolve_project_root(&cwd);
-    if let Some(req) = php_request {
-        // Explicit `--php`: force a sync to the requested interpreter,
-        // overriding whatever the project would otherwise infer (and
-        // re-syncing even when the env is already present, since it may
-        // point at a different PHP). `--no-sync` is rejected at the CLI
-        // layer, so reaching here always means a sync is wanted.
-        let request = bougie_version::request::parse_request(req)
-            .wrap_err_with(|| format!("parsing --php {req:?}"))?;
-        sync::run_with_php_request(format, false, php_pref, &request)?;
-    } else if !no_sync && !is_environment_present(&project_root)? {
-        // uv-parity: `bougie run` outside a project (no `require.php`,
-        // no `[php]version`) falls back to the highest already-installed
-        // PHP, or the latest publishable >=8.0 — instead of erroring the
-        // way `bougie sync` does.
-        sync::run_with_default_fallback(format, false, php_pref)?;
+    let ephemeral_php = implicit_sync(&project_root, format, no_sync, php_pref, php_request)?;
+
+    // The xdebug overlay loads a bougie-managed `xdebug.so`, which a
+    // foreign system build can't take — and the overlay rides on
+    // `PHP_INI_SCAN_DIR`, which is skipped for an ephemeral system PHP.
+    // Refuse loudly rather than silently running without xdebug.
+    if xdebug_flag && let Some(php) = &ephemeral_php {
+        return Err(eyre!(
+            "`--xdebug` needs a managed PHP, but this run resolved to the system PHP at {} \
+             (used for this run only); pass `--managed-php`, or run `bougie sync` first to \
+             pin a managed PHP",
+            php.display()
+        ));
     }
 
     // composer.json `scripts.<name>` lookup. Skipped when the user
@@ -92,6 +90,7 @@ pub fn run(
                 &steps,
                 &argv[1..],
                 xdebug_flag,
+                ephemeral_php.as_deref(),
             );
         }
 
@@ -158,8 +157,19 @@ pub fn run(
     let mut cmd = std::process::Command::new(program);
     cmd.args(rest)
         .env("PATH", new_path)
-        .env("PHP_INI_SCAN_DIR", &scan_dir)
         .env("BOUGIE_PROJECT_ROOT", &project_root);
+    match &ephemeral_php {
+        // One-off system PHP: hand the interpreter to the shim via env
+        // (nothing is pinned in project state), and leave
+        // PHP_INI_SCAN_DIR unset — the project's conf.d fragments load
+        // bougie-managed `.so`s a foreign build can't take.
+        Some(php) => {
+            cmd.env("BOUGIE_RUN_SYSTEM_PHP", php);
+        }
+        None => {
+            cmd.env("PHP_INI_SCAN_DIR", &scan_dir);
+        }
+    }
     if xdebug_flag && !env_session_set {
         cmd.env("XDEBUG_SESSION", "1");
     }
@@ -201,6 +211,43 @@ pub fn run(
         let code = u8::try_from(code).unwrap_or(1);
         Ok(ExitCode::from(code))
     }
+}
+
+/// The implicit-sync step of `bougie run`. An explicit `--php` request
+/// forces a re-sync to the requested interpreter, overriding whatever
+/// the project would otherwise infer (`--no-sync` with `--php` is
+/// rejected at the CLI layer); otherwise sync only when the resolved
+/// environment isn't already present — uv-parity: `bougie run` outside
+/// a project (no `require.php`, no `[php]version`) falls back to the
+/// highest already-installed PHP, or the latest publishable >=8.0,
+/// instead of erroring the way `bougie sync` does.
+///
+/// Returns the system PHP selected for this invocation only (default
+/// preference, nothing pinned into project state), if any — the caller
+/// hands it to the shims via the `BOUGIE_RUN_SYSTEM_PHP` env var
+/// instead of relying on the `resolved*` markers.
+fn implicit_sync(
+    project_root: &Path,
+    format: OutputFormat,
+    no_sync: bool,
+    php_pref: bougie_cli::PhpPrefArgs,
+    php_request: Option<&str>,
+) -> Result<Option<std::path::PathBuf>> {
+    if let Some(req) = php_request {
+        let request = bougie_version::request::parse_request(req)
+            .wrap_err_with(|| format!("parsing --php {req:?}"))?;
+        return Ok(
+            sync::run_with_php_request(project_root, format, false, php_pref, &request)?
+                .ephemeral_system_php,
+        );
+    }
+    if !no_sync && !is_environment_present(project_root)? {
+        return Ok(
+            sync::run_with_default_fallback(project_root, format, false, php_pref)?
+                .ephemeral_system_php,
+        );
+    }
+    Ok(None)
 }
 
 fn install_xdebug_into_overlay(project_root: &Path) -> Result<()> {
@@ -292,6 +339,11 @@ fn lookup_composer_script(project_root: &Path, name: &str) -> Result<Option<Vec<
 /// `/bin/sh -e -c <body>` with the script name as `$0` and any
 /// trailing `bougie run <name> <extras…>` args available as
 /// `$1`/`$2`/`$@`. Stops on the first non-zero step.
+///
+/// `ephemeral_php` is the one-off system PHP selected by the implicit
+/// sync, if any — handed to the steps via `BOUGIE_RUN_SYSTEM_PHP` (in
+/// place of `PHP_INI_SCAN_DIR`) so a step invoking `php` hits the same
+/// interpreter as the direct-exec path.
 #[cfg(unix)]
 fn run_composer_script(
     project_root: &Path,
@@ -299,6 +351,7 @@ fn run_composer_script(
     steps: &[String],
     extras: &[String],
     xdebug_flag: bool,
+    ephemeral_php: Option<&Path>,
 ) -> Result<ExitCode> {
     let bougie_bin = bougie_paths::project::bin_dir(project_root);
     let prev_path = std::env::var("PATH").unwrap_or_default();
@@ -348,8 +401,16 @@ fn run_composer_script(
         }
         cmd.current_dir(project_root)
             .env("PATH", &new_path)
-            .env("PHP_INI_SCAN_DIR", &scan_dir)
             .env("BOUGIE_PROJECT_ROOT", project_root);
+        match ephemeral_php {
+            // Same handoff as the direct-exec path — see `run`.
+            Some(php) => {
+                cmd.env("BOUGIE_RUN_SYSTEM_PHP", php);
+            }
+            None => {
+                cmd.env("PHP_INI_SCAN_DIR", &scan_dir);
+            }
+        }
         if xdebug_flag && !env_session_set {
             cmd.env("XDEBUG_SESSION", "1");
         }
@@ -373,10 +434,15 @@ fn run_composer_script(
 /// for `bougie run python` invoked outside any project, where
 /// [`sync::run_with_default_fallback`] still does the right thing.
 ///
-/// Mirrors `services::config_mut::locate_project_root` but with a
-/// fallback instead of an error; `bougie run` must remain usable
-/// outside a project, while `services::*` requires a real project.
-fn resolve_project_root(cwd: &Path) -> std::path::PathBuf {
+/// Shared by the forgiving entry points `bougie run` (here) and
+/// `bougie sync` (dispatched from `lib.rs`): both thread the resolved
+/// root into `sync::*` so the toolchain materializes at the real root,
+/// not wherever the cwd happens to be (e.g. a Hyvä theme's
+/// `web/tailwind/`). Mirrors `services::config_mut::locate_project_root`
+/// but with a fallback instead of an error; `bougie run`/`bougie sync`
+/// must remain usable outside a project, while `services::*` requires a
+/// real project.
+pub(crate) fn resolve_project_root(cwd: &Path) -> std::path::PathBuf {
     for anc in cwd.ancestors() {
         if anc.join("bougie.toml").is_file()
             || anc.join("composer.json").is_file()
@@ -432,6 +498,23 @@ mod tests {
         // verbatim — preserves uv-parity for `bougie run python` outside
         // any project.
         assert_eq!(resolve_project_root(&sub), sub);
+    }
+
+    #[test]
+    fn walks_up_past_hyva_tailwind_subdir() {
+        // Regression: running `bougie run`/`bougie sync` from a Hyvä
+        // theme's `web/tailwind/` folder (has package.json, no
+        // composer.json) must resolve to the Magento project root, so the
+        // toolchain materializes there — not as a stray `vendor/bougie/`
+        // inside the theme. The resolved root is threaded into `sync::*`,
+        // which no longer falls back to the cwd.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        fs::write(root.join("composer.json"), "{}").unwrap();
+        let tailwind = root.join("app/design/frontend/Acme/theme/web/tailwind");
+        fs::create_dir_all(&tailwind).unwrap();
+        fs::write(tailwind.join("package.json"), "{}").unwrap();
+        assert_eq!(resolve_project_root(&tailwind), root);
     }
 
     #[test]

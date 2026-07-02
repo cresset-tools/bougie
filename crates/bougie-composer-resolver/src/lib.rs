@@ -32,7 +32,7 @@ pub use install::{
     DistRequest, InstallOptions, InstallSummary, ScriptHooks,
 };
 pub use audit::{fetch_advisories, Advisory};
-pub use platform::PlatformEnv;
+pub use platform::{PlatformEnv, PlatformIgnore};
 pub use query::{
     funding, latest_versions, licenses, DependencyGraph, Edge, Node, RootNode, Section,
 };

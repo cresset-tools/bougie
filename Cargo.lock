@@ -374,7 +374,7 @@ dependencies = [
 
 [[package]]
 name = "bougie"
-version = "0.34.0"
+version = "0.38.1"
 dependencies = [
  "assert_cmd",
  "base64 0.22.1",
@@ -434,10 +434,10 @@ dependencies = [
 
 [[package]]
 name = "bougie-autoloader"
-version = "0.34.0"
+version = "0.38.1"
 dependencies = [
  "bougie-installers",
- "bougie-php-json",
+ "composer-php-json",
  "composer-semver",
  "criterion",
  "md-5",
@@ -452,7 +452,7 @@ dependencies = [
 
 [[package]]
 name = "bougie-babysit"
-version = "0.34.0"
+version = "0.38.1"
 dependencies = [
  "eyre",
  "rustix",
@@ -461,7 +461,7 @@ dependencies = [
 
 [[package]]
 name = "bougie-backend"
-version = "0.34.0"
+version = "0.38.1"
 dependencies = [
  "bougie-errors",
  "bougie-fetch",
@@ -480,16 +480,18 @@ dependencies = [
 
 [[package]]
 name = "bougie-cli"
-version = "0.34.0"
+version = "0.38.1"
 dependencies = [
  "clap",
 ]
 
 [[package]]
 name = "bougie-composer"
-version = "0.34.0"
+version = "0.38.1"
 dependencies = [
- "bougie-php-json",
+ "composer-php-json",
+ "composer-semver",
+ "composer-wire",
  "eyre",
  "md-5",
  "serde",
@@ -499,7 +501,7 @@ dependencies = [
 
 [[package]]
 name = "bougie-composer-resolver"
-version = "0.34.0"
+version = "0.38.1"
 dependencies = [
  "arcstr",
  "base64 0.22.1",
@@ -534,7 +536,7 @@ dependencies = [
 
 [[package]]
 name = "bougie-config"
-version = "0.34.0"
+version = "0.38.1"
 dependencies = [
  "eyre",
  "serde",
@@ -544,7 +546,7 @@ dependencies = [
 
 [[package]]
 name = "bougie-daemon"
-version = "0.34.0"
+version = "0.38.1"
 dependencies = [
  "bougie-backend",
  "bougie-config",
@@ -572,7 +574,7 @@ dependencies = [
 
 [[package]]
 name = "bougie-errors"
-version = "0.34.0"
+version = "0.38.1"
 dependencies = [
  "eyre",
  "thiserror 2.0.18",
@@ -580,7 +582,7 @@ dependencies = [
 
 [[package]]
 name = "bougie-fetch"
-version = "0.34.0"
+version = "0.38.1"
 dependencies = [
  "bougie-errors",
  "bougie-output",
@@ -599,7 +601,7 @@ dependencies = [
 
 [[package]]
 name = "bougie-fs"
-version = "0.34.0"
+version = "0.38.1"
 dependencies = [
  "bougie-errors",
  "bougie-paths",
@@ -612,7 +614,7 @@ dependencies = [
 
 [[package]]
 name = "bougie-index"
-version = "0.34.0"
+version = "0.38.1"
 dependencies = [
  "base64 0.22.1",
  "bougie-errors",
@@ -627,7 +629,7 @@ dependencies = [
 
 [[package]]
 name = "bougie-installer"
-version = "0.34.0"
+version = "0.38.1"
 dependencies = [
  "bougie-backend",
  "bougie-errors",
@@ -649,7 +651,7 @@ dependencies = [
 
 [[package]]
 name = "bougie-installers"
-version = "0.34.0"
+version = "0.38.1"
 dependencies = [
  "eyre",
  "serde_json",
@@ -658,7 +660,7 @@ dependencies = [
 
 [[package]]
 name = "bougie-output"
-version = "0.34.0"
+version = "0.38.1"
 dependencies = [
  "anstream",
  "anstyle",
@@ -670,19 +672,20 @@ dependencies = [
 
 [[package]]
 name = "bougie-patches"
-version = "0.34.0"
+version = "0.38.1"
 dependencies = [
  "eyre",
  "flickzeug",
  "serde",
  "serde_json",
  "sha2 0.11.0",
+ "similar",
  "tempfile",
 ]
 
 [[package]]
 name = "bougie-paths"
-version = "0.34.0"
+version = "0.38.1"
 dependencies = [
  "etcetera",
  "eyre",
@@ -691,7 +694,7 @@ dependencies = [
 
 [[package]]
 name = "bougie-php-discovery"
-version = "0.34.0"
+version = "0.38.1"
 dependencies = [
  "bougie-fs",
  "bougie-version",
@@ -700,15 +703,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "bougie-php-json"
-version = "0.34.0"
-dependencies = [
- "serde_json",
-]
-
-[[package]]
 name = "bougie-platform"
-version = "0.34.0"
+version = "0.38.1"
 dependencies = [
  "bougie-errors",
  "eyre",
@@ -716,7 +712,7 @@ dependencies = [
 
 [[package]]
 name = "bougie-recipe"
-version = "0.34.0"
+version = "0.38.1"
 dependencies = [
  "bougie-paths",
  "eyre",
@@ -731,7 +727,7 @@ dependencies = [
 
 [[package]]
 name = "bougie-resolver"
-version = "0.34.0"
+version = "0.38.1"
 dependencies = [
  "bougie-errors",
  "bougie-index",
@@ -742,7 +738,7 @@ dependencies = [
 
 [[package]]
 name = "bougie-scripts"
-version = "0.34.0"
+version = "0.38.1"
 dependencies = [
  "eyre",
  "nix",
@@ -753,7 +749,7 @@ dependencies = [
 
 [[package]]
 name = "bougie-server"
-version = "0.34.0"
+version = "0.38.1"
 dependencies = [
  "anstream",
  "anstyle",
@@ -788,7 +784,7 @@ dependencies = [
 
 [[package]]
 name = "bougie-tool"
-version = "0.34.0"
+version = "0.38.1"
 dependencies = [
  "bougie-composer-resolver",
  "bougie-errors",
@@ -807,7 +803,7 @@ dependencies = [
 
 [[package]]
 name = "bougie-version"
-version = "0.34.0"
+version = "0.38.1"
 dependencies = [
  "composer-semver",
  "eyre",
@@ -1067,12 +1063,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "composer-php-json"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "42bd2f3650870b0552fe7d88b6b309141beaa724aacf889e5fd6a4049cff31f9"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
 name = "composer-semver"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "19468a4e1f2390fef462b7f723b1625f052b9a0dbf67d00b6494d496cd338b4a"
 dependencies = [
  "regex",
+]
+
+[[package]]
+name = "composer-wire"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fc3c59104a94b76561a4f44a4bc48d18770d6b265c75b447ff56079de9b5f9a7"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -2682,7 +2697,7 @@ checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
 
 [[package]]
 name = "macos-sandbox-sys"
-version = "0.34.0"
+version = "0.38.1"
 
 [[package]]
 name = "matchers"
@@ -3932,7 +3947,7 @@ dependencies = [
 
 [[package]]
 name = "sandbox-run"
-version = "0.34.0"
+version = "0.38.1"
 dependencies = [
  "landlock",
  "libc",

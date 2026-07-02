@@ -32,7 +32,7 @@ use bougie_cli::OutputFormat;
 use bougie_composer::lockfile::{apply_require_change, Lock, RequireChange};
 use bougie_composer_resolver::latest_versions;
 use bougie_composer_resolver::verify::is_platform;
-use bougie_composer_resolver::{InstallOptions, PartialUpdate, ResolutionStrategy};
+use bougie_composer_resolver::{InstallOptions, PartialUpdate, PlatformIgnore, ResolutionStrategy};
 use bougie_output::output::{emit, Render};
 use bougie_paths::Paths;
 use composer_semver::stability::Stability;
@@ -275,6 +275,7 @@ pub fn require(
     prefer_lowest: bool,
     working_dir: Option<PathBuf>,
     dry_run: bool,
+    ignore_platform: PlatformIgnore,
 ) -> Result<ExitCode> {
     // Composer's `--prefer-lowest` maps onto the `lowest` resolution policy.
     let resolution = if prefer_lowest {
@@ -298,6 +299,7 @@ pub fn require(
         working_dir,
         dry_run,
         resolution,
+        ignore_platform,
     )
 }
 
@@ -323,6 +325,7 @@ pub fn add(
     working_dir: Option<PathBuf>,
     dry_run: bool,
     resolution: ResolutionStrategy,
+    ignore_platform: PlatformIgnore,
 ) -> Result<ExitCode> {
     let pairs = parse_at_pairs(&packages)?;
     run_add(
@@ -338,6 +341,7 @@ pub fn add(
         working_dir,
         dry_run,
         resolution,
+        ignore_platform,
     )
 }
 
@@ -364,6 +368,7 @@ fn run_add(
     working_dir: Option<PathBuf>,
     dry_run: bool,
     resolution: ResolutionStrategy,
+    ignore_platform: PlatformIgnore,
 ) -> Result<ExitCode> {
     let project_root = resolve_root(working_dir)?;
     let paths = Paths::from_env()?;
@@ -449,6 +454,7 @@ fn run_add(
             with_dependencies,
             with_all_dependencies,
             resolution,
+            &ignore_platform,
         )?;
         if !no_install {
             let project = bougie_config::load_project(&project_root)?;
@@ -494,6 +500,7 @@ pub fn remove(
     no_dev: bool,
     working_dir: Option<PathBuf>,
     dry_run: bool,
+    ignore_platform: PlatformIgnore,
 ) -> Result<ExitCode> {
     let project_root = resolve_root(working_dir)?;
     let paths = Paths::from_env()?;
@@ -535,6 +542,7 @@ pub fn remove(
             false,
             false,
             ResolutionStrategy::Highest,
+            &ignore_platform,
         )?;
         if !no_install {
             let project = bougie_config::load_project(&project_root)?;
@@ -567,6 +575,7 @@ fn relock(
     with_dependencies: bool,
     with_all_dependencies: bool,
     resolution: ResolutionStrategy,
+    ignore_platform: &PlatformIgnore,
 ) -> Result<PathBuf> {
     let lock_path = project_root.join("composer.lock");
     if lock_path.is_file() {
@@ -585,11 +594,17 @@ fn relock(
             project_root,
             Some(&partial),
             resolution,
+            ignore_platform,
         )?;
         Ok(path)
     } else {
-        let (path, _outcome) =
-            super::composer_update::resolve_and_write_lock(paths, project_root, resolution)?;
+        let (path, _outcome) = super::composer_update::resolve_and_write_lock_partial(
+            paths,
+            project_root,
+            None,
+            resolution,
+            ignore_platform,
+        )?;
         Ok(path)
     }
 }
