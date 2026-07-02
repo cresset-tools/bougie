@@ -171,7 +171,7 @@ fn now_rfc3339() -> String {
         .duration_since(SystemTime::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
     let (year, month, day, hour, minute, second) = unix_to_ymdhms(secs);
-    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}-{second:02}Z")
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z")
 }
 
 /// Strip-down UTC calendar arithmetic. `time` / `chrono` would do
