@@ -132,6 +132,19 @@ pub fn exec(role: Role) -> Result<ExitCode> {
         return run_composer_native(args);
     }
 
+    // One-off system PHP: `bougie run` selected a system interpreter
+    // for this invocation only (default preference; nothing pinned in
+    // project state) and handed it over via env — see
+    // `commands::sync::ensure_synced_system_ephemeral`. Env rather than
+    // state keeps nested spawns (a composer script running `php`) on
+    // the same interpreter, and takes precedence over any pin a prior
+    // sync may have written.
+    if let Some(path) = std::env::var_os("BOUGIE_RUN_SYSTEM_PHP")
+        && !path.is_empty()
+    {
+        return exec_system_php(role, Path::new(&path), args);
+    }
+
     let project_root = locate_project_root(&argv0)?;
 
     // System PHP: a `resolved-php-path` marker means sync selected a

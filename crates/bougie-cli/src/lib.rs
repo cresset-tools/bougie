@@ -62,8 +62,11 @@ pub struct Cli {
 /// Shared PHP-source preference flags (uv's system-Python model adapted
 /// to PHP). Flattened into `sync` / `run`; `--managed-php` and
 /// `--no-managed-php` are mutually exclusive. With none set, bougie's
-/// default applies: prefer an installed managed PHP, then a qualifying
-/// system PHP, then download a managed one.
+/// default applies: prefer an installed managed PHP, then download one.
+/// Only a one-off `bougie run` also reaches for a qualifying system PHP
+/// (before downloading) — used for that invocation only, never pinned;
+/// configuring a *project* against a system PHP always requires the
+/// explicit `--no-managed-php` / `[php] managed = false` opt-in.
 #[derive(Args, Debug, Clone, Copy, Default)]
 pub struct PhpPrefArgs {
     /// Only use a bougie-managed PHP; never a system PHP
@@ -72,8 +75,8 @@ pub struct PhpPrefArgs {
     /// Only use a system PHP already on this machine; never a managed one
     #[arg(long)]
     pub no_managed_php: bool,
-    /// Never download a managed PHP — use an installed managed PHP or a
-    /// system one. Errors if neither is present
+    /// Never download a managed PHP — use an installed one (or, for a
+    /// one-off `bougie run`, a system PHP). Errors otherwise
     #[arg(long)]
     pub no_php_downloads: bool,
 }

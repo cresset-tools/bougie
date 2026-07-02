@@ -3,11 +3,12 @@
 //!
 //! This is uv's system-Python model adapted to PHP. The policy here is
 //! **pure**: it takes already-gathered candidate sets (installed
-//! managed builds + probed system PHPs) and a [`PhpPreference`], and
-//! returns a [`Selection`]. Gathering the candidates (scanning
-//! `installs/`, running [`crate::discover`] + [`crate::probe`]) and
-//! acting on a [`Selection::Download`] live one layer up, in the sync
-//! command — keeping this layer trivially unit-testable.
+//! managed builds + probed system PHPs), a [`PhpPreference`], and the
+//! [`SelectionContext`] of the invocation, and returns a [`Selection`].
+//! Gathering the candidates (scanning `installs/`, running
+//! [`crate::discover`] + [`crate::probe`]) and acting on a
+//! [`Selection::Download`] live one layer up, in the sync command —
+//! keeping this layer trivially unit-testable.
 
 use crate::SystemPhp;
 use bougie_version::matches::version_satisfies;
@@ -25,8 +26,11 @@ pub enum PhpPreference {
     /// Only ever use a bougie-managed PHP (installed or downloaded);
     /// never a system PHP. `--managed-php` / `[php] managed = true`.
     OnlyManaged,
-    /// uv's default: prefer an already-installed managed PHP, then an
-    /// adequate system PHP, then download a managed PHP.
+    /// The default. What it means depends on the [`SelectionContext`]:
+    /// a project-configuring sync prefers an already-installed managed
+    /// PHP and otherwise downloads one — it never silently pins a
+    /// system PHP; a one-off run additionally reaches for an adequate
+    /// system PHP before downloading.
     #[default]
     Managed,
     /// Only ever use a system PHP; never managed. `--no-managed-php` /
@@ -62,6 +66,27 @@ impl PhpPreference {
     }
 }
 
+/// What the selected PHP is *for* — whether the choice gets pinned
+/// into project state or used for a single invocation.
+///
+/// This only changes the default ([`PhpPreference::Managed`]) policy;
+/// the explicit `OnlyManaged` / `OnlySystem` preferences behave the
+/// same in both contexts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelectionContext {
+    /// A project-configuring sync (`bougie sync`, `bougie server`,
+    /// `bougie php pin`, …): the selection is written to
+    /// `vendor/bougie/state/` and replayed by the shims, so the default
+    /// preference never picks a system PHP — configuring a project
+    /// against one requires the explicit `--no-managed-php` /
+    /// `[php] managed = false` opt-in.
+    Project,
+    /// A one-off run (`bougie run`): the selection is used for this
+    /// invocation only and never pinned, so an adequate system PHP may
+    /// be used before falling back to a download.
+    OneOff,
+}
+
 /// What the project requires of a PHP.
 #[derive(Debug, Clone, Copy)]
 pub struct Requirement<'a> {
@@ -95,41 +120,38 @@ pub enum Selection {
 ///   (`--no-php-downloads` ⇒ `false`).
 ///
 /// Ordering per [`PhpPreference`]:
-/// - `Managed` (default): managed-installed → fpm-capable system →
-///   download → any qualifying system (fpm-less, last resort).
+/// - `Managed` (default) in a [`SelectionContext::Project`]:
+///   managed-installed → download. Never a system PHP — see
+///   [`SelectionContext`].
+/// - `Managed` in a [`SelectionContext::OneOff`]: managed-installed →
+///   any qualifying system PHP → download.
 /// - `OnlyManaged`: managed-installed → download.
-/// - `OnlySystem`: system only (fpm-agnostic).
-///
-/// The default path prefers a system PHP that ships `php-fpm` over one
-/// that doesn't, falling through to a managed *download* when the only
-/// qualifying system PHP is CLI-only — so `bougie server` (which needs
-/// fpm) works out of the box. The fpm-less system PHP is still chosen as
-/// a last resort when downloads are disabled (`--no-php-downloads`),
-/// since it remains usable for CLI (`bougie run`).
+/// - `OnlySystem`: system only.
 pub fn select(
     pref: PhpPreference,
     downloads: bool,
+    ctx: SelectionContext,
     req: Requirement<'_>,
     managed_installed: &[(Version, Flavor)],
     system: &[SystemPhp],
 ) -> Result<Selection> {
-    let managed = || best_managed(req, managed_installed);
-    let sys = || best_system(req, system);
-    let sys_with_fpm = || best_system_matching(req, system, true);
+    let managed = || {
+        best_managed(req, managed_installed)
+            .map(|(version, flavor)| Selection::ManagedInstalled { version, flavor })
+    };
+    let sys = || best_system(req, system).cloned().map(Selection::System);
 
-    let selection = match pref {
-        PhpPreference::OnlyManaged => managed()
-            .map(|(version, flavor)| Selection::ManagedInstalled { version, flavor })
+    let selection = match (pref, ctx) {
+        (PhpPreference::OnlyManaged, _) | (PhpPreference::Managed, SelectionContext::Project) => {
+            managed().or_else(|| downloads.then_some(Selection::Download))
+        }
+        (PhpPreference::Managed, SelectionContext::OneOff) => managed()
+            .or_else(sys)
             .or_else(|| downloads.then_some(Selection::Download)),
-        PhpPreference::Managed => managed()
-            .map(|(version, flavor)| Selection::ManagedInstalled { version, flavor })
-            .or_else(|| sys_with_fpm().cloned().map(Selection::System))
-            .or_else(|| downloads.then_some(Selection::Download))
-            .or_else(|| sys().cloned().map(Selection::System)),
-        PhpPreference::OnlySystem => sys().cloned().map(Selection::System),
+        (PhpPreference::OnlySystem, _) => sys(),
     };
 
-    selection.ok_or_else(|| no_candidate_error(pref, downloads, req, system))
+    selection.ok_or_else(|| no_candidate_error(pref, downloads, ctx, req, system))
 }
 
 /// Highest-versioned installed managed build matching flavor + spec.
@@ -143,27 +165,16 @@ fn best_managed(req: Requirement<'_>, installed: &[(Version, Flavor)]) -> Option
 }
 
 /// Highest-versioned system PHP matching flavor + spec **and** loading
-/// every required extension.
+/// every required extension. Whether the build ships `php-fpm` is not a
+/// selection criterion: a system PHP is only ever selected for a
+/// one-off run or under the explicit only-system opt-in — the server
+/// checks for a usable fpm itself when it actually needs one.
 fn best_system<'a>(req: Requirement<'_>, system: &'a [SystemPhp]) -> Option<&'a SystemPhp> {
-    best_system_matching(req, system, false)
-}
-
-/// As [`best_system`], but optionally also require a `php-fpm` alongside
-/// the interpreter (`require_fpm`). Applying fpm as a candidate filter —
-/// rather than filtering the single best match after the fact — lets a
-/// lower-versioned fpm-capable PHP win over a higher-versioned CLI-only
-/// one when fpm is required.
-fn best_system_matching<'a>(
-    req: Requirement<'_>,
-    system: &'a [SystemPhp],
-    require_fpm: bool,
-) -> Option<&'a SystemPhp> {
     system
         .iter()
         .filter(|php| php.flavor == req.flavor)
         .filter(|php| req.spec.is_none_or(|spec| version_satisfies(&php.version, spec)))
         .filter(|php| req.required_exts.iter().all(|ext| php.has_extension(ext)))
-        .filter(|php| !require_fpm || php.has_fpm)
         .max_by(|a, b| a.version.cmp(&b.version))
 }
 
@@ -171,6 +182,7 @@ fn best_system_matching<'a>(
 fn no_candidate_error(
     pref: PhpPreference,
     downloads: bool,
+    ctx: SelectionContext,
     req: Requirement<'_>,
     system: &[SystemPhp],
 ) -> eyre::Report {
@@ -209,11 +221,22 @@ fn no_candidate_error(
              (`--no-php-downloads`)",
             req.flavor
         ),
-        PhpPreference::Managed if !downloads => eyre!(
-            "no installed managed or qualifying system PHP matching {spec} ({}), and downloads \
-             are disabled (`--no-php-downloads`)",
-            req.flavor
-        ),
+        PhpPreference::Managed if !downloads => match ctx {
+            // A project sync never falls back to a system PHP, so point
+            // at the two ways out: install a managed PHP, or opt into a
+            // system one explicitly.
+            SelectionContext::Project => eyre!(
+                "no installed managed PHP matching {spec} ({}), and downloads are disabled \
+                 (`--no-php-downloads`); install one with `bougie php install`, or pass \
+                 `--no-managed-php` to use a system PHP",
+                req.flavor
+            ),
+            SelectionContext::OneOff => eyre!(
+                "no installed managed or qualifying system PHP matching {spec} ({}), and \
+                 downloads are disabled (`--no-php-downloads`)",
+                req.flavor
+            ),
+        },
         // With downloads on, the managed tiers always yield `Download`,
         // so this is unreachable in practice.
         _ => eyre!("no PHP matching {spec} ({})", req.flavor),
@@ -239,7 +262,7 @@ mod tests {
             path: PathBuf::from(format!("/usr/bin/php-{version}")),
             version,
             flavor,
-            extensions: exts.iter().map(|e| e.to_string()).collect(),
+            extensions: exts.iter().map(ToString::to_string).collect(),
             has_fpm,
         }
     }
@@ -247,6 +270,8 @@ mod tests {
     fn req<'a>(s: &'a VersionLike, exts: &'a [String]) -> Requirement<'a> {
         Requirement { spec: Some(s), flavor: Flavor::Nts, required_exts: exts }
     }
+
+    use SelectionContext::{OneOff, Project};
 
     #[test]
     fn resolve_from_flags_and_config() {
@@ -271,16 +296,50 @@ mod tests {
         let exts: Vec<String> = vec![];
         let installed = [(Version::new(8, 3, 12), Flavor::Nts)];
         let system = [sys(Version::new(8, 3, 20), Flavor::Nts, &[])];
-        let got = select(PhpPreference::Managed, true, req(&s, &exts), &installed, &system).unwrap();
-        assert_eq!(got, Selection::ManagedInstalled { version: Version::new(8, 3, 12), flavor: Flavor::Nts });
+        for ctx in [Project, OneOff] {
+            let got =
+                select(PhpPreference::Managed, true, ctx, req(&s, &exts), &installed, &system)
+                    .unwrap();
+            assert_eq!(
+                got,
+                Selection::ManagedInstalled { version: Version::new(8, 3, 12), flavor: Flavor::Nts }
+            );
+        }
     }
 
     #[test]
-    fn default_uses_system_before_download() {
+    fn project_downloads_instead_of_using_system() {
+        // A project-configuring sync under the default preference never
+        // selects a system PHP, even a fully-qualifying one: it
+        // downloads a managed PHP instead.
         let s = spec(8, Some(3));
         let exts: Vec<String> = vec![];
         let system = [sys(Version::new(8, 3, 12), Flavor::Nts, &[])];
-        let got = select(PhpPreference::Managed, true, req(&s, &exts), &[], &system).unwrap();
+        let got = select(PhpPreference::Managed, true, Project, req(&s, &exts), &[], &system).unwrap();
+        assert_eq!(got, Selection::Download);
+    }
+
+    #[test]
+    fn project_errors_with_guidance_instead_of_using_system() {
+        // …and with downloads disabled it errors — pointing at
+        // `bougie php install` and the `--no-managed-php` opt-in —
+        // rather than silently pinning the system PHP.
+        let s = spec(8, Some(3));
+        let exts: Vec<String> = vec![];
+        let system = [sys(Version::new(8, 3, 12), Flavor::Nts, &[])];
+        let err =
+            select(PhpPreference::Managed, false, Project, req(&s, &exts), &[], &system).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("bougie php install"), "{msg}");
+        assert!(msg.contains("--no-managed-php"), "{msg}");
+    }
+
+    #[test]
+    fn oneoff_uses_system_before_download() {
+        let s = spec(8, Some(3));
+        let exts: Vec<String> = vec![];
+        let system = [sys(Version::new(8, 3, 12), Flavor::Nts, &[])];
+        let got = select(PhpPreference::Managed, true, OneOff, req(&s, &exts), &[], &system).unwrap();
         assert_eq!(got, Selection::System(system[0].clone()));
     }
 
@@ -288,63 +347,43 @@ mod tests {
     fn default_downloads_when_nothing_present() {
         let s = spec(8, Some(3));
         let exts: Vec<String> = vec![];
-        let got = select(PhpPreference::Managed, true, req(&s, &exts), &[], &[]).unwrap();
-        assert_eq!(got, Selection::Download);
+        for ctx in [Project, OneOff] {
+            let got = select(PhpPreference::Managed, true, ctx, req(&s, &exts), &[], &[]).unwrap();
+            assert_eq!(got, Selection::Download);
+        }
     }
 
     #[test]
-    fn system_disqualified_by_missing_ext_falls_to_download() {
+    fn oneoff_system_disqualified_by_missing_ext_falls_to_download() {
         let s = spec(8, Some(3));
         let exts = vec!["redis".to_string()];
         let system = [sys(Version::new(8, 3, 12), Flavor::Nts, &["curl"])];
-        let got = select(PhpPreference::Managed, true, req(&s, &exts), &[], &system).unwrap();
+        let got = select(PhpPreference::Managed, true, OneOff, req(&s, &exts), &[], &system).unwrap();
         assert_eq!(got, Selection::Download);
     }
 
     #[test]
-    fn system_qualifies_when_ext_present() {
+    fn oneoff_system_qualifies_when_ext_present() {
         let s = spec(8, Some(3));
         let exts = vec!["redis".to_string()];
         let system = [sys(Version::new(8, 3, 12), Flavor::Nts, &["curl", "redis"])];
-        let got = select(PhpPreference::Managed, true, req(&s, &exts), &[], &system).unwrap();
+        let got = select(PhpPreference::Managed, true, OneOff, req(&s, &exts), &[], &system).unwrap();
         assert_eq!(got, Selection::System(system[0].clone()));
     }
 
     #[test]
-    fn default_skips_fpmless_system_for_download() {
-        // The only qualifying system PHP is CLI-only (no fpm). With
-        // downloads on, the server-needing default prefers a managed
-        // download over the fpm-less system PHP.
-        let s = spec(8, Some(3));
-        let exts: Vec<String> = vec![];
-        let system = [sys_fpm(Version::new(8, 3, 12), Flavor::Nts, &[], false)];
-        let got = select(PhpPreference::Managed, true, req(&s, &exts), &[], &system).unwrap();
-        assert_eq!(got, Selection::Download);
-    }
-
-    #[test]
-    fn default_uses_fpmless_system_when_downloads_disabled() {
-        // No download escape hatch → the fpm-less system PHP is still
-        // chosen (usable for CLI) rather than failing outright.
-        let s = spec(8, Some(3));
-        let exts: Vec<String> = vec![];
-        let system = [sys_fpm(Version::new(8, 3, 12), Flavor::Nts, &[], false)];
-        let got = select(PhpPreference::Managed, false, req(&s, &exts), &[], &system).unwrap();
-        assert_eq!(got, Selection::System(system[0].clone()));
-    }
-
-    #[test]
-    fn default_prefers_lower_fpm_system_over_higher_cli_only() {
-        // A lower-versioned fpm-capable PHP beats a higher-versioned
-        // CLI-only one when fpm is the deciding factor.
+    fn oneoff_ignores_fpm_when_picking_a_system_php() {
+        // A one-off run is CLI-only, so fpm is not a selection
+        // criterion: the higher-versioned CLI-only build wins over a
+        // lower fpm-capable one, and a fpm-less PHP beats a download.
         let s = spec(8, None);
         let exts: Vec<String> = vec![];
         let system = [
             sys_fpm(Version::new(8, 4, 1), Flavor::Nts, &[], false),
             sys_fpm(Version::new(8, 3, 12), Flavor::Nts, &[], true),
         ];
-        let got = select(PhpPreference::Managed, true, req(&s, &exts), &[], &system).unwrap();
-        assert_eq!(got, Selection::System(system[1].clone()));
+        let got = select(PhpPreference::Managed, true, OneOff, req(&s, &exts), &[], &system).unwrap();
+        assert_eq!(got, Selection::System(system[0].clone()));
     }
 
     #[test]
@@ -354,7 +393,8 @@ mod tests {
         let s = spec(8, Some(3));
         let exts: Vec<String> = vec![];
         let system = [sys_fpm(Version::new(8, 3, 12), Flavor::Nts, &[], false)];
-        let got = select(PhpPreference::OnlySystem, true, req(&s, &exts), &[], &system).unwrap();
+        let got =
+            select(PhpPreference::OnlySystem, true, Project, req(&s, &exts), &[], &system).unwrap();
         assert_eq!(got, Selection::System(system[0].clone()));
     }
 
@@ -363,8 +403,11 @@ mod tests {
         let s = spec(8, Some(3));
         let exts: Vec<String> = vec![];
         let system = [sys(Version::new(8, 3, 12), Flavor::Nts, &[])];
-        let got = select(PhpPreference::OnlyManaged, true, req(&s, &exts), &[], &system).unwrap();
-        assert_eq!(got, Selection::Download);
+        for ctx in [Project, OneOff] {
+            let got =
+                select(PhpPreference::OnlyManaged, true, ctx, req(&s, &exts), &[], &system).unwrap();
+            assert_eq!(got, Selection::Download);
+        }
     }
 
     #[test]
@@ -372,7 +415,8 @@ mod tests {
         let s = spec(8, Some(3));
         let exts = vec!["redis".to_string()];
         let system = [sys(Version::new(8, 3, 12), Flavor::Nts, &["curl"])];
-        let err = select(PhpPreference::OnlySystem, true, req(&s, &exts), &[], &system).unwrap_err();
+        let err =
+            select(PhpPreference::OnlySystem, true, Project, req(&s, &exts), &[], &system).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("ext-redis"), "{msg}");
     }
@@ -381,17 +425,19 @@ mod tests {
     fn no_downloads_errors_instead_of_downloading() {
         let s = spec(8, Some(3));
         let exts: Vec<String> = vec![];
-        let err = select(PhpPreference::Managed, false, req(&s, &exts), &[], &[]).unwrap_err();
-        assert!(err.to_string().contains("downloads are disabled"), "{err}");
+        for ctx in [Project, OneOff] {
+            let err = select(PhpPreference::Managed, false, ctx, req(&s, &exts), &[], &[]).unwrap_err();
+            assert!(err.to_string().contains("downloads are disabled"), "{err}");
+        }
     }
 
     #[test]
-    fn flavor_mismatch_disqualifies_system() {
+    fn oneoff_flavor_mismatch_disqualifies_system() {
         let s = spec(8, Some(3));
         let exts: Vec<String> = vec![];
         // ZTS system PHP can't satisfy an NTS requirement.
         let system = [sys(Version::new(8, 3, 12), Flavor::Zts, &[])];
-        let got = select(PhpPreference::Managed, true, req(&s, &exts), &[], &system).unwrap();
+        let got = select(PhpPreference::Managed, true, OneOff, req(&s, &exts), &[], &system).unwrap();
         assert_eq!(got, Selection::Download);
     }
 }

@@ -243,7 +243,11 @@ pub fn remove(
         // Removing an extension doesn't need a managed PHP, so honor the
         // project's natural preference (config-derived) rather than
         // forcing managed — a system-PHP project stays on its system PHP.
-        let resolution = PhpResolution::from_args(PhpPrefArgs::default(), &project)?;
+        let resolution = PhpResolution::from_args(
+            PhpPrefArgs::default(),
+            &project,
+            bougie_php_discovery::SelectionContext::Project,
+        )?;
         ensure_synced_with(&paths, &project_root, &project, spec, flavor, resolution)?;
     }
 

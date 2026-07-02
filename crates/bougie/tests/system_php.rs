@@ -1,6 +1,12 @@
-//! End-to-end: `bougie sync --no-managed-php` selects a discovered
-//! system PHP, writes the `resolved-php-path` marker, and the `php`
-//! shim execs that interpreter.
+//! End-to-end system-PHP behavior:
+//! - `bougie sync --no-managed-php` (explicit opt-in) selects a
+//!   discovered system PHP, writes the `resolved-php-path` marker, and
+//!   the `php` shim execs that interpreter;
+//! - a default-preference `bougie sync` never does — it errors (with
+//!   downloads disabled) rather than pin a system PHP;
+//! - a default-preference one-off `bougie run` may *use* a qualifying
+//!   system PHP, ephemerally: handed to the shim via
+//!   `BOUGIE_RUN_SYSTEM_PHP`, nothing written to project state.
 
 #![cfg(unix)]
 
@@ -91,6 +97,112 @@ fn sync_no_managed_php_uses_system_interpreter() {
         .assert()
         .success()
         .stdout(predicates::str::contains("STUB-PHP-RAN"));
+}
+
+#[test]
+fn sync_default_never_pins_system_php() {
+    let home = TempDir::new().unwrap();
+    let cache = TempDir::new().unwrap();
+    let proj = TempDir::new().unwrap();
+    let stub_dir = TempDir::new().unwrap();
+
+    // A fully-qualifying system PHP is on PATH…
+    write_php_stub(stub_dir.path(), "8.3.99", "STUB-PHP-RAN");
+
+    std::fs::write(
+        proj.path().join("composer.json"),
+        r#"{"name":"acme/blog","require":{"php":"8.3.99","ext-curl":"*"}}"#,
+    )
+    .unwrap();
+
+    // …but a project-configuring sync under the *default* preference
+    // must not pin it. With downloads disabled it errors with guidance
+    // instead.
+    bougie(&home, &cache)
+        .current_dir(proj.path())
+        .env("PATH", path_with(stub_dir.path()))
+        .args(["sync", "--no-php-downloads", "--offline"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("bougie php install"))
+        .stderr(predicates::str::contains("--no-managed-php"));
+
+    assert!(
+        !proj.path().join("vendor/bougie/state/resolved-php-path").exists(),
+        "default sync must not write the system-PHP marker"
+    );
+    assert!(
+        !proj.path().join("vendor/bougie/state/resolved").exists(),
+        "default sync must not resolve against the system PHP"
+    );
+}
+
+#[test]
+fn run_uses_system_php_without_pinning() {
+    let home = TempDir::new().unwrap();
+    let cache = TempDir::new().unwrap();
+    let proj = TempDir::new().unwrap();
+    let stub_dir = TempDir::new().unwrap();
+
+    write_php_stub(stub_dir.path(), "8.3.99", "STUB-PHP-RAN");
+
+    std::fs::write(
+        proj.path().join("composer.json"),
+        r#"{"name":"acme/blog","require":{"php":"8.3.99","ext-curl":"*"}}"#,
+    )
+    .unwrap();
+
+    // One-off `bougie run` under the default preference: the qualifying
+    // system PHP is used for this invocation (handed to the shim via
+    // BOUGIE_RUN_SYSTEM_PHP)…
+    bougie(&home, &cache)
+        .current_dir(proj.path())
+        .env("PATH", path_with(stub_dir.path()))
+        .args(["run", "--no-php-downloads", "--", "php", "-r", "noop"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("STUB-PHP-RAN"));
+
+    // …and nothing is pinned into project state.
+    assert!(
+        !proj.path().join("vendor/bougie/state/resolved-php-path").exists(),
+        "one-off run must not write the system-PHP marker"
+    );
+    assert!(
+        !proj.path().join("vendor/bougie/state/resolved").exists(),
+        "one-off run must not write the resolved marker"
+    );
+}
+
+#[test]
+fn run_php_version_request_uses_system_without_pinning() {
+    let home = TempDir::new().unwrap();
+    let cache = TempDir::new().unwrap();
+    let proj = TempDir::new().unwrap();
+    let stub_dir = TempDir::new().unwrap();
+
+    write_php_stub(stub_dir.path(), "8.3.99", "STUB-PHP-RAN");
+
+    std::fs::write(
+        proj.path().join("composer.json"),
+        r#"{"name":"acme/blog","require":{"php":"8.3.99"}}"#,
+    )
+    .unwrap();
+
+    // `--php <version>` (not a path) is a one-off too: it may resolve to
+    // a system PHP, used ephemerally. Only `--php <path>` pins.
+    bougie(&home, &cache)
+        .current_dir(proj.path())
+        .env("PATH", path_with(stub_dir.path()))
+        .args(["run", "--php", "8.3.99", "--no-php-downloads", "--", "php", "-r", "noop"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("STUB-PHP-RAN"));
+
+    assert!(
+        !proj.path().join("vendor/bougie/state/resolved-php-path").exists(),
+        "`run --php <version>` must not write the system-PHP marker"
+    );
 }
 
 #[test]
