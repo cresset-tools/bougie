@@ -34,7 +34,9 @@ use serde_json::Value;
 use crate::metadata::AuthCredentials;
 use crate::update::read_all_auth;
 
-use super::downloader::{fetch_and_extract_dists_with_progress, DistOutcome, DistRequest};
+use super::downloader::{
+    fetch_and_extract_dists_with_progress, DistCandidate, DistOutcome, DistRequest,
+};
 
 /// Caller-supplied install options. Mirrors the subset of Composer's
 /// `install` flags we honor in Phase A.
@@ -319,36 +321,58 @@ pub fn install_from_lock_with_patches(
             project_root.join(rel)
         })
         .collect();
-    // Pre-render each dist's `Authorization` header (when its host
-    // matches the auth map). String storage lives in a sibling vec so
-    // `DistRequest` can carry a borrowed `&str` — no per-request
-    // clones, no lifetime gymnastics inside `par_iter`.
-    let auth_entries: Vec<Option<(String, &'static str)>> = install_set
+    // Expand each dist into its ordered candidate URL list —
+    // `LockPackage::dist_urls()` puts a `preferred` mirror ahead of
+    // the dist's own URL (Composer's mirror semantics; how a Private
+    // Packagist dist downloads from the authenticated repo host
+    // instead of the origin VCS host) — and pre-render each
+    // candidate's `Authorization` header when its host matches the
+    // auth map. Mirrors can sit on a different host than the dist
+    // URL, so auth is resolved per candidate, not per package.
+    // String storage lives in a sibling vec so `DistRequest` can
+    // carry borrowed data — no per-request clones, no lifetime
+    // gymnastics inside `par_iter`.
+    let candidate_sets: Vec<Vec<DistCandidate>> = install_set
         .iter()
         .map(|p| {
-            let dist = p.dist.as_ref().unwrap();
-            auth_origin_from_url(&dist.url)
-                .and_then(|origin| auth.get(origin))
-                .map(|creds| (creds.header_value(), creds.header_name()))
+            p.dist_urls()
+                .into_iter()
+                .map(|url| {
+                    let auth_entry = auth_origin_from_url(&url)
+                        .and_then(|origin| auth.get(origin))
+                        .map(|creds| (creds.header_value(), creds.header_name()));
+                    DistCandidate {
+                        url,
+                        auth_header: auth_entry.as_ref().map(|(v, _)| v.clone()),
+                        auth_header_name: auth_entry.as_ref().map(|(_, n)| *n),
+                    }
+                })
+                .collect()
         })
         .collect();
     let dists: Vec<DistRequest<'_>> = install_set
         .iter()
         .zip(vendor_dirs.iter())
-        .zip(auth_entries.iter())
-        .map(|((p, dest), auth_entry)| {
+        .zip(candidate_sets.iter())
+        .map(|((p, dest), candidates)| {
             let dist = p.dist.as_ref().unwrap();
+            // `dist_urls()` yields at least the dist's own URL for
+            // every package with a dist, and preflight filtered the
+            // rest out of the install set.
+            let (primary, fallbacks) =
+                candidates.split_first().expect("non-empty dist_urls for a dist package");
             DistRequest {
                 package_name: &p.name,
-                url: &dist.url,
+                url: &primary.url,
                 sha1: dist.shasum.as_deref().unwrap_or(""),
                 reference: dist.reference.as_deref().unwrap_or(""),
                 archive: ArchiveKind::Zip,
                 strip_prefix: None,
                 vendor_dest: dest,
-                auth_header: auth_entry.as_ref().map(|(v, _)| v.as_str()),
-                auth_header_name: auth_entry.as_ref().map(|(_, n)| *n),
+                auth_header: primary.auth_header.as_deref(),
+                auth_header_name: primary.auth_header_name,
                 project_root,
+                fallbacks,
             }
         })
         .collect();

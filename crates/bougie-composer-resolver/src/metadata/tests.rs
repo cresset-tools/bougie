@@ -304,8 +304,50 @@ fn probe_protocol_classifies_v2_repo_by_metadata_url() {
     });
 
     let client = build_client().unwrap();
-    let protocol = probe_protocol(&client, &Repo::from_url(&uri)).unwrap();
+    let (protocol, mirrors) = probe_protocol(&client, &Repo::from_url(&uri)).unwrap();
     assert!(matches!(protocol, RepoProtocol::V2), "got {protocol:?}");
+    assert!(mirrors.is_empty(), "no `mirrors` key → no dist mirrors, got {mirrors:?}");
+}
+
+#[test]
+fn probe_protocol_extracts_dist_mirrors() {
+    // Private Packagist's shape: v2 metadata plus a root `mirrors`
+    // list whose `dist-url` template redirects archive downloads to
+    // the (authenticated) repo host. A host-relative template must be
+    // canonicalized against the repo URL, Composer's
+    // `canonicalizeUrl`; `git-url` source mirrors are skipped (bougie
+    // installs dists only).
+    let rt = rt();
+    let (uri, _server) = rt.block_on(async {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(wm_path("/packages.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"{
+                    "metadata-url": "/p2/%package%.json",
+                    "mirrors": [
+                        {"dist-url": "https://mirror.test/dists/%package%/%version%/r%reference%.%type%", "preferred": true},
+                        {"dist-url": "/local-dists/%package%.%type%"},
+                        {"git-url": "https://mirror.test/git/%package%"}
+                    ]
+                }"#,
+            ))
+            .mount(&server)
+            .await;
+        (server.uri(), server)
+    });
+
+    let client = build_client().unwrap();
+    let (protocol, mirrors) = probe_protocol(&client, &Repo::from_url(&uri)).unwrap();
+    assert!(matches!(protocol, RepoProtocol::V2), "got {protocol:?}");
+    assert_eq!(mirrors.len(), 2, "dist-url entries only, got {mirrors:?}");
+    assert_eq!(
+        mirrors[0].url,
+        "https://mirror.test/dists/%package%/%version%/r%reference%.%type%",
+    );
+    assert!(mirrors[0].preferred);
+    assert_eq!(mirrors[1].url, format!("{uri}/local-dists/%package%.%type%"));
+    assert!(!mirrors[1].preferred);
 }
 
 #[test]
@@ -335,7 +377,7 @@ fn probe_protocol_classifies_v1_repo_when_metadata_url_missing() {
     });
 
     let client = build_client().unwrap();
-    let protocol = probe_protocol(&client, &Repo::from_url(&uri)).unwrap();
+    let (protocol, _mirrors) = probe_protocol(&client, &Repo::from_url(&uri)).unwrap();
     let RepoProtocol::V1(discovery) = protocol else {
         panic!("expected V1, got {protocol:?}");
     };

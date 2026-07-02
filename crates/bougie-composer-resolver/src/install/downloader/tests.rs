@@ -95,6 +95,7 @@ fn downloads_single_zip_and_extracts_with_strip_prefix() {
         auth_header: None,
             auth_header_name: None,
             project_root: tmp.path(),
+            fallbacks: &[],
     }];
 
     fetch_and_extract_dists(&client, &paths, &dists, &bar).unwrap();
@@ -104,6 +105,122 @@ fn downloads_single_zip_and_extracts_with_strip_prefix() {
     assert!(!vendor_dest.join("acme-foo-abc1234").exists());
     let cached = paths.cache_composer_dist().join(format!("{hash}.zip"));
     assert!(cached.is_file(), "cache file should be retained for reuse");
+}
+
+#[test]
+fn falls_back_to_next_candidate_when_primary_url_fails() {
+    // Composer's dist-mirror semantics: the orchestrator puts a
+    // preferred mirror in `url` and the remaining candidates in
+    // `fallbacks`. A 404 from the first candidate must not fail the
+    // install — the downloader moves on, and each candidate carries
+    // its *own* pre-rendered auth (mirror and origin usually live on
+    // different hosts with different credentials).
+    let tmp = TempDir::new().unwrap();
+    let paths = paths_in(tmp.path());
+    let vendor_dest = tmp.path().join("vendor").join("acme").join("foo");
+
+    let body = build_fixture_zip("acme-foo-abc1234");
+    let hash = sha1_hex(&body);
+
+    let rt = rt();
+    let (uri, _server) = rt.block_on(async {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(wm_path("/mirror/acme-foo.zip"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+        // "token:hunter2" — the fallback requires its own credentials.
+        Mock::given(method("GET"))
+            .and(wm_path("/origin/acme-foo.zip"))
+            .and(header("authorization", "Basic dG9rZW46aHVudGVyMg=="))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(body.clone()))
+            .mount(&server)
+            .await;
+        let uri = server.uri();
+        (uri, server)
+    });
+
+    let primary = format!("{uri}/mirror/acme-foo.zip");
+    let fallbacks = [DistCandidate {
+        url: format!("{uri}/origin/acme-foo.zip"),
+        auth_header: Some("Basic dG9rZW46aHVudGVyMg==".to_owned()),
+        auth_header_name: Some("authorization"),
+    }];
+    let client = reqwest::blocking::Client::new();
+    let bar = DownloadBar::hidden();
+    let dists = [DistRequest {
+        package_name: "acme/foo",
+        url: &primary,
+        sha1: &hash,
+        reference: "",
+        archive: ArchiveKind::Zip,
+        strip_prefix: Some("acme-foo-abc1234"),
+        vendor_dest: &vendor_dest,
+        auth_header: None,
+        auth_header_name: None,
+        project_root: tmp.path(),
+        fallbacks: &fallbacks,
+    }];
+
+    let outcomes = fetch_and_extract_dists(&client, &paths, &dists, &bar).unwrap();
+    assert_eq!(outcomes, vec![DistOutcome::Downloaded]);
+    assert!(vendor_dest.join("composer.json").is_file());
+}
+
+#[test]
+fn all_candidates_failing_surfaces_candidate_count() {
+    // When every candidate URL fails, the error must say so — the
+    // per-URL context alone would name only the *last* URL tried,
+    // hiding that a mirror was attempted first.
+    let tmp = TempDir::new().unwrap();
+    let paths = paths_in(tmp.path());
+    let vendor_dest = tmp.path().join("vendor").join("acme").join("foo");
+
+    let rt = rt();
+    let (uri, _server) = rt.block_on(async {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+        let uri = server.uri();
+        (uri, server)
+    });
+
+    let primary = format!("{uri}/mirror/acme-foo.zip");
+    let fallbacks = [DistCandidate {
+        url: format!("{uri}/origin/acme-foo.zip"),
+        auth_header: None,
+        auth_header_name: None,
+    }];
+    let client = reqwest::blocking::Client::new();
+    let bar = DownloadBar::hidden();
+    let dists = [DistRequest {
+        package_name: "acme/foo",
+        url: &primary,
+        sha1: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        reference: "",
+        archive: ArchiveKind::Zip,
+        strip_prefix: None,
+        vendor_dest: &vendor_dest,
+        auth_header: None,
+        auth_header_name: None,
+        project_root: tmp.path(),
+        fallbacks: &fallbacks,
+    }];
+
+    let err = fetch_and_extract_dists(&client, &paths, &dists, &bar)
+        .expect_err("every candidate 404s");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("all 2 candidate URLs failed"),
+        "expected candidate-count context in error, got: {msg}"
+    );
+    assert!(
+        msg.contains("/origin/acme-foo.zip"),
+        "expected last-tried URL in error chain, got: {msg}"
+    );
 }
 
 #[test]
@@ -146,6 +263,7 @@ fn cache_hit_short_circuits_network() {
         auth_header: None,
             auth_header_name: None,
             project_root: tmp.path(),
+            fallbacks: &[],
     }];
 
     let outcomes = fetch_and_extract_dists(&client, &paths, &dists, &bar).unwrap();
@@ -190,6 +308,7 @@ fn hash_mismatch_aborts_install_cleanly() {
         auth_header: None,
             auth_header_name: None,
             project_root: tmp.path(),
+            fallbacks: &[],
     }];
 
     let err = fetch_and_extract_dists(&client, &paths, &dists, &bar)
@@ -259,6 +378,7 @@ fn parallel_four_dists_share_one_bar() {
             auth_header: None,
             auth_header_name: None,
             project_root: tmp.path(),
+            fallbacks: &[],
         })
         .collect();
 
@@ -312,6 +432,7 @@ fn extract_strips_top_level_directory_via_auto_detect() {
         auth_header: None,
             auth_header_name: None,
             project_root: tmp.path(),
+            fallbacks: &[],
     }];
     let outcomes = fetch_and_extract_dists(&client, &paths, &dists, &bar).unwrap();
     assert_eq!(outcomes, vec![DistOutcome::Downloaded]);
@@ -380,6 +501,7 @@ fn dist_request_auth_header_is_sent_on_get() {
         auth_header: Some(auth),
         auth_header_name: None,
             project_root: tmp.path(),
+            fallbacks: &[],
     }];
 
     fetch_and_extract_dists(&client, &paths, &dists, &bar)
@@ -430,6 +552,7 @@ fn dist_request_without_auth_fails_when_server_requires_it() {
         auth_header: None,
             auth_header_name: None,
             project_root: tmp.path(),
+            fallbacks: &[],
     }];
 
     let err = fetch_and_extract_dists(&client, &paths, &dists, &bar)
@@ -506,6 +629,7 @@ fn local_artifact_dist_is_copied_and_extracted() {
         auth_header: None,
         auth_header_name: None,
         project_root: tmp.path(),
+        fallbacks: &[],
     }];
 
     fetch_and_extract_dists(&client, &paths, &dists, &bar).unwrap();
@@ -535,6 +659,7 @@ fn local_artifact_dist_missing_file_errors_clearly() {
         auth_header: None,
         auth_header_name: None,
         project_root: tmp.path(),
+        fallbacks: &[],
     }];
 
     let err = fetch_and_extract_dists(&client, &paths, &dists, &bar)
@@ -569,6 +694,7 @@ fn local_artifact_dist_sha1_mismatch_errors() {
         auth_header: None,
         auth_header_name: None,
         project_root: tmp.path(),
+        fallbacks: &[],
     }];
 
     let err = fetch_and_extract_dists(&client, &paths, &dists, &bar)

@@ -24,7 +24,7 @@
 //! downstream packages while pubgrub works on the current one) lands
 //! in a follow-up PR. This module is the sync substrate it'll wrap.
 
-use bougie_composer::lockfile::LockPackage;
+use bougie_composer::lockfile::{DistMirror, LockPackage};
 use bougie_composer::metadata::PackageMetadata;
 use bougie_errors::{error_chain, BougieError};
 use bougie_paths::Paths;
@@ -80,6 +80,14 @@ pub struct Repo {
     /// for any composer-type repo whose packages.json couldn't be
     /// reached.
     pub protocol: Option<RepoProtocol>,
+    /// Dist-mirror URL templates from the repo's root `packages.json`
+    /// `mirrors` key (Private Packagist, satis with archive
+    /// mirroring). Discovered by [`probe_protocol`] alongside the
+    /// protocol; stamped onto every fetched package's `dist.mirrors`
+    /// so they flow through resolution into the lockfile, matching
+    /// Composer's `ComposerRepository::setDistMirrors` behavior.
+    /// Empty for public Packagist and unprobed repos.
+    pub dist_mirrors: Vec<DistMirror>,
 }
 
 /// What flavor of repository a [`Repo`] is.
@@ -215,7 +223,14 @@ impl Repo {
     pub fn from_url(raw: impl Into<String>) -> Self {
         let url = raw.into().trim_end_matches('/').to_owned();
         let cache_namespace = extract_cache_namespace(&url);
-        Self { kind: RepoKind::Composer, url, cache_namespace, auth: None, protocol: None }
+        Self {
+            kind: RepoKind::Composer,
+            url,
+            cache_namespace,
+            auth: None,
+            protocol: None,
+            dist_mirrors: Vec::new(),
+        }
     }
 
     /// Build a `path` repository from its parsed config. The repo's
@@ -226,7 +241,14 @@ impl Repo {
     pub fn path(config: PathRepoConfig) -> Self {
         let url = config.url.clone();
         let cache_namespace = format!("path-{:016x}", fnv1a(&url));
-        Self { kind: RepoKind::Path(config), url, cache_namespace, auth: None, protocol: None }
+        Self {
+            kind: RepoKind::Path(config),
+            url,
+            cache_namespace,
+            auth: None,
+            protocol: None,
+            dist_mirrors: Vec::new(),
+        }
     }
 
     /// Whether this is a `type: path` repository.
@@ -246,6 +268,13 @@ impl Repo {
     /// provider-lookup path.
     pub fn with_protocol(mut self, protocol: Option<RepoProtocol>) -> Self {
         self.protocol = protocol;
+        self
+    }
+
+    /// Attach the dist-mirror templates discovered by
+    /// [`probe_protocol`]. Chainable, set alongside `with_protocol`.
+    pub fn with_dist_mirrors(mut self, dist_mirrors: Vec<DistMirror>) -> Self {
+        self.dist_mirrors = dist_mirrors;
         self
     }
 
@@ -393,6 +422,13 @@ pub struct ProviderInclude {
 /// For v1, parse the `providers-url` and `provider-includes` fields
 /// into a [`V1Discovery`] for the caller to drive the lookup with.
 ///
+/// Also extracts the root-level `mirrors` dist-url templates (second
+/// tuple element) — Private Packagist and mirroring satis builds
+/// declare them so dists download from the repo host (where the
+/// project has credentials) instead of the origin VCS host (where it
+/// usually doesn't; GitLab answers those unauthenticated archive GETs
+/// with 404). Both protocol versions can carry the key.
+///
 /// Returns `Err` on transport failure, non-success HTTP status, or
 /// malformed JSON — the caller decides whether a probe failure
 /// should disqualify the repo or leave it in place. (Today: leave
@@ -401,7 +437,7 @@ pub struct ProviderInclude {
 pub fn probe_protocol(
     client: &reqwest::blocking::Client,
     repo: &Repo,
-) -> Result<RepoProtocol> {
+) -> Result<(RepoProtocol, Vec<DistMirror>)> {
     let url = format!("{}/packages.json", repo.url);
     let mut req = client.get(&url);
     if let Some(auth) = &repo.auth {
@@ -432,12 +468,13 @@ pub fn probe_protocol(
     })?;
     let root: serde_json::Value = serde_json::from_slice(&bytes)
         .wrap_err_with(|| format!("parsing packages.json from {url}"))?;
+    let dist_mirrors = parse_dist_mirrors(&root, &repo.url);
     if root
         .get("metadata-url")
         .and_then(serde_json::Value::as_str)
         .is_some()
     {
-        return Ok(RepoProtocol::V2);
+        return Ok((RepoProtocol::V2, dist_mirrors));
     }
     // No metadata-url → v1. Pull the providers-url + provider-includes
     // we'll need for the lookup. A v1 repo without providers-url is
@@ -471,10 +508,55 @@ pub fn probe_protocol(
             });
         }
     }
-    Ok(RepoProtocol::V1(V1Discovery {
-        providers_url,
-        provider_includes,
-    }))
+    Ok((
+        RepoProtocol::V1(V1Discovery {
+            providers_url,
+            provider_includes,
+        }),
+        dist_mirrors,
+    ))
+}
+
+/// Extract the dist-url mirror templates from a `packages.json` root.
+/// Composer's `ComposerRepository::loadRootServerFile`: each `mirrors`
+/// entry with a `dist-url` becomes `{url, preferred}`; `git-url` /
+/// `hg-url` entries are source mirrors, which bougie (dist-only)
+/// skips. Missing or malformed entries are dropped rather than
+/// erroring — a bad mirror declaration shouldn't sink the repo.
+fn parse_dist_mirrors(root: &serde_json::Value, repo_url: &str) -> Vec<DistMirror> {
+    let Some(list) = root.get("mirrors").and_then(serde_json::Value::as_array) else {
+        return Vec::new();
+    };
+    list.iter()
+        .filter_map(|entry| {
+            let url = entry.get("dist-url")?.as_str()?;
+            // PHP-truthy check, like Composer's `!empty($mirror['preferred'])`:
+            // JSON true, or a nonzero number.
+            let preferred = match entry.get("preferred") {
+                Some(serde_json::Value::Bool(b)) => *b,
+                Some(serde_json::Value::Number(n)) => n.as_f64().is_some_and(|f| f != 0.0),
+                _ => false,
+            };
+            Some(DistMirror { url: canonicalize_mirror_url(repo_url, url), preferred })
+        })
+        .collect()
+}
+
+/// Composer's `ComposerRepository::canonicalizeUrl` for mirror
+/// templates: a URL starting with `/` is host-relative — prepend the
+/// repo's `scheme://host`. Anything else (already absolute, or a
+/// shape we don't recognize) passes through verbatim.
+fn canonicalize_mirror_url(repo_url: &str, url: &str) -> String {
+    if !url.starts_with('/') {
+        return url.to_owned();
+    }
+    if let Some((scheme, rest)) = repo_url.split_once("://") {
+        let host = rest.split('/').next().unwrap_or("");
+        if !host.is_empty() {
+            return format!("{scheme}://{host}{url}");
+        }
+    }
+    url.to_owned()
 }
 
 /// Which of the two `/p2/` documents to fetch for a package.
@@ -548,7 +630,7 @@ pub fn fetch_package_metadata(
     );
 
     if resp.status() == reqwest::StatusCode::NOT_MODIFIED {
-        return read_cached(&json_path);
+        return read_cached(&json_path).map(|md| apply_dist_mirrors(md, repo));
     }
     if !resp.status().is_success() {
         return Err(BougieError::Network {
@@ -575,6 +657,7 @@ pub fn fetch_package_metadata(
 
     PackageMetadata::parse(&bytes)
         .wrap_err_with(|| format!("parsing metadata for {package_name}"))
+        .map(|md| apply_dist_mirrors(md, repo))
 }
 
 /// Like [`fetch_package_metadata`] but returns `Ok(None)` when the
@@ -642,7 +725,7 @@ pub fn fetch_package_metadata_optional(
     );
 
     if resp.status() == reqwest::StatusCode::NOT_MODIFIED {
-        return read_cached(&json_path).map(Some);
+        return read_cached(&json_path).map(|md| Some(apply_dist_mirrors(md, repo)));
     }
     if resp.status() == reqwest::StatusCode::NOT_FOUND {
         return Ok(None);
@@ -684,7 +767,7 @@ pub fn fetch_package_metadata_optional(
 
     PackageMetadata::parse(&bytes)
         .wrap_err_with(|| format!("parsing metadata for {package_name}"))
-        .map(Some)
+        .map(|md| Some(apply_dist_mirrors(md, repo)))
 }
 
 /// True when a response's `Content-Type` advertises HTML — the
@@ -712,6 +795,29 @@ fn read_cached(json_path: &Path) -> Result<PackageMetadata> {
     PackageMetadata::parse(&bytes).wrap_err_with(|| {
         format!("re-parsing cached metadata at {}", json_path.display())
     })
+}
+
+/// Stamp the repo's discovered dist-mirror templates onto every
+/// fetched package version — Composer's
+/// `ComposerRepository::createPackages`, which calls `setDistMirrors`
+/// on each package it loads. The templates ride the package through
+/// resolution and get dumped into the lock (`dist.mirrors`), so
+/// install-from-lock can build its mirror-first URL list without
+/// re-probing the repo. Applied at every fetch return path (fresh
+/// body and disk-cache hit alike — the on-disk cache stores the raw
+/// wire bytes, which don't carry the root-level mirrors).
+fn apply_dist_mirrors(mut md: PackageMetadata, repo: &Repo) -> PackageMetadata {
+    if repo.dist_mirrors.is_empty() {
+        return md;
+    }
+    for versions in md.packages.values_mut() {
+        for pkg in versions.iter_mut() {
+            if let Some(dist) = pkg.dist.as_mut() {
+                dist.mirrors.clone_from(&repo.dist_mirrors);
+            }
+        }
+    }
+    md
 }
 
 /// Compute the on-disk cache locations for a package's metadata
@@ -919,7 +1025,7 @@ pub fn fetch_package_metadata_v1_optional(
         write_atomic(&cache_path, &body)?;
         body.to_vec()
     };
-    parse_v1_per_package(&bytes, package_name).map(Some)
+    parse_v1_per_package(&bytes, package_name).map(|md| Some(apply_dist_mirrors(md, repo)))
 }
 
 /// Convert a v1 per-package response body
@@ -1048,7 +1154,7 @@ pub async fn fetch_package_metadata_optional_async(
     );
 
     if resp.status() == reqwest::StatusCode::NOT_MODIFIED {
-        return read_cached(&json_path).map(Some);
+        return read_cached(&json_path).map(|md| Some(apply_dist_mirrors(md, repo)));
     }
     if resp.status() == reqwest::StatusCode::NOT_FOUND {
         return Ok(None);
@@ -1082,7 +1188,7 @@ pub async fn fetch_package_metadata_optional_async(
 
     PackageMetadata::parse(&bytes)
         .wrap_err_with(|| format!("parsing metadata for {package_name}"))
-        .map(Some)
+        .map(|md| Some(apply_dist_mirrors(md, repo)))
 }
 
 /// True when an async response advertises HTML — same content-type
@@ -1219,7 +1325,7 @@ pub async fn fetch_package_metadata_v1_optional_async(
         write_atomic(&cache_path, &body)?;
         body.to_vec()
     };
-    parse_v1_per_package(&bytes, package_name).map(Some)
+    parse_v1_per_package(&bytes, package_name).map(|md| Some(apply_dist_mirrors(md, repo)))
 }
 
 #[cfg(test)]

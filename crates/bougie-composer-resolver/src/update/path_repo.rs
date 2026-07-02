@@ -301,6 +301,7 @@ fn build_path_dist(
         url,
         shasum: None,
         reference,
+        mirrors: Vec::new(),
         transport_options: Value::Null,
     }
 }

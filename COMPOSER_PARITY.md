@@ -83,6 +83,7 @@ Each project contributes a frozen Packagist snapshot
 | `packages` / `packages-dev` ordering | `S` | Sorted by name (Composer's convention); assert sorted | Composer sorts alphabetically; bougie does the same |
 | Per-package field set in lock entries | `S` | Layer 3: assert all Composer fields preserved on round-trip | |
 | `dist.shasum` — empty string accepted | `S` | Regression test: GitHub zipballs have `""` shasum | Fixed in #161 |
+| `dist.mirrors` / `source.mirrors` carried in lock | `S` | Round-trip test + probe test: repo root `mirrors` templates stamped onto fetched packages (`ComposerRepository::setDistMirrors`), dumped like `ArrayDumper` | Install expands templates via `Package::getUrls` port; preferred mirror tried before origin URL (Private Packagist / gitlab.hyva.io shape) |
 | Lockfile write (from resolver) | `S` | `bougie composer update` writes `composer.lock` atomically; `--dry-run` previews | |
 | Empty `require`/`require-dev` as `[]` vs `{}` | `S` | Accept both on read; emit `{}` on write | Matches Composer's leniency |
 
