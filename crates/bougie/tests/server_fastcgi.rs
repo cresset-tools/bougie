@@ -362,6 +362,156 @@ fn seed_single_host(xdg: &Path, hostname: &str, project: &Path) -> PathBuf {
     )
 }
 
+/// How this install loads opcache. Dists through 8.4 ship it as a
+/// shared zend_extension wired up by a baseline conf.d fragment (which
+/// `bougie sync` copies into the project conf.d — reuse it verbatim);
+/// 8.5+ compiles it in statically, needing no fragment. `None` (skip)
+/// if the install has neither.
+fn opcache_baseline(bougie_home: &Path, resolved: &str) -> Option<String> {
+    let install = bougie_home.join("installs").join(resolved);
+    if let Ok(fragment) = std::fs::read_to_string(install.join("etc/php/conf.d/20-opcache.ini")) {
+        return Some(fragment);
+    }
+    let statically_built = StdCommand::new(install.join("bin/php"))
+        .args(["-n", "-m"])
+        .output()
+        .is_ok_and(|out| String::from_utf8_lossy(&out.stdout).contains("Zend OPcache"));
+    statically_built.then(String::new)
+}
+
+/// Regression: php-fpm runs `opcache.preload` in the master process
+/// *before* binding the pool socket. A preload that outlives the old
+/// hard-coded 2s ready timeout (a large Magento `generated/` tree
+/// takes that long to compile) made every spawn 502. The 2.5s sleep
+/// here sits just past that old deadline.
+#[test]
+fn slow_opcache_preload_pool_still_starts() {
+    let Some((resolved, bougie_home)) = discover_installed_php() else {
+        eprintln!("(skipped: no bougie-installed php-fpm found on this system)");
+        return;
+    };
+    let Some(baseline) = opcache_baseline(&bougie_home, &resolved) else {
+        eprintln!("(skipped: install has no opcache baseline fragment)");
+        return;
+    };
+
+    let env = TestEnv::new();
+    let xdg = TempDir::new().unwrap();
+    let proj = make_php_project(&resolved);
+    std::fs::write(proj.path().join("preload.php"), "<?php usleep(2500000);").unwrap();
+    std::fs::write(
+        proj.path().join("vendor/bougie/conf.d/50-opcache.ini"),
+        format!(
+            "{}\nopcache.enable=1\nopcache.preload={}/preload.php\n",
+            baseline.trim_end(),
+            proj.path().display()
+        ),
+    )
+    .unwrap();
+
+    let cfg = seed_single_host(xdg.path(), "preload.bougie.run", proj.path());
+    let server = ServerHandle::spawn(&env, &cfg, &bougie_home);
+
+    let (s, _, body) = http("GET", &server.url("/index.php"), "preload.bougie.run", None);
+    assert_eq!(s, 200, "body: {}", String::from_utf8_lossy(&body));
+
+    let _ = server.shutdown();
+}
+
+/// A fatal during `opcache.preload` exits the master before the pool
+/// socket ever appears. The spawn path should notice the exit and fail
+/// immediately with php-fpm's stderr, not sit out the full ready
+/// timeout.
+#[test]
+fn preload_fatal_fails_fast_with_fpm_stderr() {
+    let Some((resolved, bougie_home)) = discover_installed_php() else {
+        eprintln!("(skipped: no bougie-installed php-fpm found on this system)");
+        return;
+    };
+    let Some(baseline) = opcache_baseline(&bougie_home, &resolved) else {
+        eprintln!("(skipped: install has no opcache baseline fragment)");
+        return;
+    };
+
+    let env = TestEnv::new();
+    let xdg = TempDir::new().unwrap();
+    let proj = make_php_project(&resolved);
+    std::fs::write(
+        proj.path().join("preload.php"),
+        "<?php throw new RuntimeException('preload boom');",
+    )
+    .unwrap();
+    std::fs::write(
+        proj.path().join("vendor/bougie/conf.d/50-opcache.ini"),
+        format!(
+            "{}\nopcache.enable=1\nopcache.preload={}/preload.php\n",
+            baseline.trim_end(),
+            proj.path().display()
+        ),
+    )
+    .unwrap();
+
+    let cfg = seed_single_host(xdg.path(), "preload-boom.bougie.run", proj.path());
+    let server = ServerHandle::spawn(&env, &cfg, &bougie_home);
+
+    let start = Instant::now();
+    let (s, _, body) = http("GET", &server.url("/index.php"), "preload-boom.bougie.run", None);
+    let elapsed = start.elapsed();
+    let body_str = String::from_utf8_lossy(&body);
+    assert_eq!(s, 502, "body: {body_str}");
+    assert!(
+        elapsed < Duration::from_secs(10),
+        "expected fast failure via master-exit detection, got 502 after {elapsed:?}"
+    );
+    assert!(
+        body_str.contains("php-fpm exited during startup"),
+        "502 body should carry the exit diagnosis, got: {body_str}"
+    );
+    assert!(
+        body_str.contains("preload boom"),
+        "502 body should carry php-fpm's stderr, got: {body_str}"
+    );
+
+    let _ = server.shutdown();
+}
+
+/// The ready timeout is env-tunable. Zero it out and even a healthy
+/// pool spawn must report the deadline error (with the knob's name)
+/// in the 502 body.
+#[test]
+fn pool_ready_timeout_env_is_honored() {
+    let Some((resolved, bougie_home)) = discover_installed_php() else {
+        eprintln!("(skipped: no bougie-installed php-fpm found on this system)");
+        return;
+    };
+
+    let env = TestEnv::new();
+    let xdg = TempDir::new().unwrap();
+    let proj = make_php_project(&resolved);
+
+    let cfg = seed_single_host(xdg.path(), "impatient.bougie.run", proj.path());
+    let server = ServerHandle::spawn_with_extra_env(
+        &env,
+        &cfg,
+        &bougie_home,
+        &[("BOUGIE_SERVER_POOL_READY_TIMEOUT_MS", "0")],
+    );
+
+    let (s, _, body) = http("GET", &server.url("/index.php"), "impatient.bougie.run", None);
+    let body_str = String::from_utf8_lossy(&body);
+    assert_eq!(s, 502, "body: {body_str}");
+    assert!(
+        body_str.contains("didn't create its listen socket"),
+        "502 body should carry the ready-timeout error, got: {body_str}"
+    );
+    assert!(
+        body_str.contains("BOUGIE_SERVER_POOL_READY_TIMEOUT_MS"),
+        "timeout error should name the env knob, got: {body_str}"
+    );
+
+    let _ = server.shutdown();
+}
+
 #[test]
 fn lru_evicts_oldest_when_cap_hit() {
     let Some((resolved, bougie_home)) = discover_installed_php() else {

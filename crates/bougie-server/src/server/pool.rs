@@ -37,15 +37,23 @@ use bougie_fs::state::read_project_resolved;
 #[cfg(unix)]
 use bougie_fs::state::{read_project_resolved_php_path, system_fpm_for_php};
 
+/// How long a spawn waits for php-fpm to bind the pool socket. The
+/// master process runs all of its startup — including compiling the
+/// whole `opcache.preload` script — *before* binding, so projects with
+/// a large preload (a Magento `generated/` tree is thousands of files)
+/// legitimately need many seconds here. The poll loop returns the
+/// moment the socket appears, so a generous default only delays the
+/// genuinely-hung case; a crashed master is caught immediately via
+/// `try_wait`. Override via `BOUGIE_SERVER_POOL_READY_TIMEOUT_MS`.
 #[cfg(unix)]
-const DEFAULT_POOL_READY_TIMEOUT: Duration = Duration::from_secs(2);
+const DEFAULT_POOL_READY_TIMEOUT: Duration = Duration::from_secs(30);
 #[cfg(unix)]
 const POOL_READY_POLL: Duration = Duration::from_millis(25);
 
 /// How long to wait for php-fpm to bind its listen socket. The master
 /// only binds after parsing config *and* running `opcache.preload`, so
-/// a heavy preload script can legitimately need more than the 2s
-/// default — `BOUGIE_SERVER_POOL_READY_TIMEOUT_MS` extends it.
+/// a heavy preload script can legitimately need many seconds — the
+/// default is generous and `BOUGIE_SERVER_POOL_READY_TIMEOUT_MS` overrides it.
 #[cfg(unix)]
 fn pool_ready_timeout() -> Duration {
     std::env::var("BOUGIE_SERVER_POOL_READY_TIMEOUT_MS")
@@ -885,7 +893,9 @@ fn evict_lru(map: &mut HashMap<PoolKey, Arc<Pool>>) {
 /// `extension=`, an unwritable socket dir — embedding the stderr tail
 /// so the error says why php-fpm died. The follow-on `FCGI_GET_VALUES`
 /// probe then validates that the responder is actually accepting
-/// requests.
+/// requests. Bails early with the master's stderr if it exits before
+/// binding — a bad ini or a fatal in the `opcache.preload` script
+/// shouldn't sit out the full timeout.
 #[cfg(unix)]
 async fn wait_for_socket(
     socket: &Path,
