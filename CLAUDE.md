@@ -27,10 +27,10 @@ contract for index format, server behavior, and service tarballs).
 - `.github/workflows/ci.yml` — Linux/macOS/Windows matrix. Windows builds
   only `-p bougie` (sandbox-run is Unix-only and `compile_error!`s elsewhere).
 - `.github/workflows/release-please.yml` — Opens release PRs from
-  conventional commits, refreshes `Cargo.lock` on the PR branch, and
-  on PR merge pushes the `bougie-v<version>` tag. release-please
-  itself runs with `skip-github-release: true` so dist
-  (`bougie-release.yml`) owns the GitHub Release.
+  conventional commits and refreshes `Cargo.lock` on the PR branch. On
+  PR merge, release-please publishes the `bougie-v<version>` GitHub
+  Release itself (creating the tag); dist (`bougie-release.yml`) runs
+  with `create-release = false` and only uploads binaries onto it.
 - `.cargo/config.toml` — Defines `cargo t` / `cargo test-all` aliases
   (both run `test --features test-fixtures`).
 - `scripts/` — Fixture generators (Composer 2.8.12 phar driven). Run under
@@ -236,13 +236,14 @@ Merging the PR tags `bougie-v<version>`, which triggers
   inheritance for that one dep. It carries its own annotated version
   literal.
 - **Cargo.lock is refreshed in-workflow.** release-please doesn't
-  understand `Cargo.lock`; the workflow runs `cargo update --workspace
-  --offline` on the PR branch and pushes the result so CI builds aren't
+  understand `Cargo.lock`; the workflow runs `cargo update --workspace`
+  on the PR branch and pushes the result so CI builds aren't
   broken by a stale lockfile.
 - **Published to crates.io.** All 28 crates publish on the
-  `bougie-v<version>` tag via `.github/workflows/crates-publish.yml`
-  (`cargo ws publish --publish-as-is`, topo-ordered, idempotent re-run).
-  Needs a `CARGO_REGISTRY_TOKEN` repo secret. cargo-dist
+  `bougie-v<version>` release via `.github/workflows/crates-publish.yml`
+  (`cargo ws publish --publish-as-is`, topo-ordered, idempotent, and
+  self-retrying past crates.io index-propagation lag). Auth is crates.io
+  Trusted Publishing (OIDC) — no long-lived registry secret. cargo-dist
   (`bougie-release.yml`) independently owns the GitHub Release binaries
   on the same tag. Test fixtures are `exclude`d from the heavier crates
   (bougie-autoloader, bougie-composer-resolver, the `bougie` bin) to
