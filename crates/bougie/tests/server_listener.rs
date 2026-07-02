@@ -238,6 +238,118 @@ fn php_request_without_resolved_php_returns_502() {
     let _ = server.shutdown();
 }
 
+#[cfg(unix)]
+#[test]
+fn php_fpm_startup_failure_surfaces_stderr() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let env = TestEnv::new();
+    let cfg_dir = TempDir::new().unwrap();
+    let proj = TempDir::new().unwrap();
+    write_fixture(proj.path());
+
+    // Resolve the project against a fake install whose php-fpm prints
+    // a complaint and dies — the shape of a real master failing on a
+    // broken pool conf or an unloadable extension.
+    let state_dir = proj.path().join("vendor/bougie/state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    std::fs::write(state_dir.join("resolved"), "9.9.9-nts\n").unwrap();
+    let bin_dir = env.home_path().join("installs").join("9.9.9-nts").join("bin");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    let fpm = bin_dir.join("php-fpm");
+    std::fs::write(
+        &fpm,
+        "#!/bin/sh\necho \"ERROR: simulated fpm startup failure\" >&2\nexit 78\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&fpm, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let cfg = seed_server_toml(cfg_dir.path(), "myapp.bougie.run", proj.path(), Some("public"));
+    let server = ServerHandle::spawn(&env, &cfg);
+
+    // The 502 body carries php-fpm's own words, not a bare timeout.
+    let (status, _, body) = http_get(&server.url("/script.php"), "myapp.bougie.run");
+    assert_eq!(status, 502);
+    let body_str = String::from_utf8_lossy(&body);
+    assert!(body_str.contains("exited during startup"), "got: {body_str}");
+    assert!(body_str.contains("simulated fpm startup failure"), "got: {body_str}");
+
+    let stderr = server.shutdown();
+    let joined = stderr.join("\n");
+    // Both the forwarded fpm stderr and the failure summary are
+    // prefixed with the *vhost*, so `bougie server`'s host-scoped log
+    // attach (a per-line substring filter) shows them.
+    assert!(
+        joined.contains("[fpm:myapp.bougie.run:normal] ERROR: simulated fpm startup failure"),
+        "{joined}"
+    );
+    assert!(
+        joined.contains("[fpm:myapp.bougie.run:normal] php-fpm failed to start"),
+        "{joined}"
+    );
+}
+
+// Regression: php-fpm's stdout/stderr pipes must be drained from the
+// moment it spawns. The master only binds its socket after config
+// parse + opcache.preload, so a chatty preload (Magento emits ~860KB
+// of unlinked-class warnings) used to fill the 64KB pipe buffer and
+// block php-fpm mid-startup — every spawn then died as a bare 2s
+// timeout with its output lost. With the drain wired before the
+// readiness wait, the writer finishes and the failure is reported
+// fast, with php-fpm's own words.
+#[cfg(unix)]
+#[test]
+fn chatty_fpm_startup_does_not_deadlock_on_full_pipe() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let env = TestEnv::new();
+    let cfg_dir = TempDir::new().unwrap();
+    let proj = TempDir::new().unwrap();
+    write_fixture(proj.path());
+
+    let state_dir = proj.path().join("vendor/bougie/state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    std::fs::write(state_dir.join("resolved"), "9.9.9-nts\n").unwrap();
+    let bin_dir = env.home_path().join("installs").join("9.9.9-nts").join("bin");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    let fpm = bin_dir.join("php-fpm");
+    // ~1.1MB of warnings >> the 64KB pipe buffer, then a fatal line.
+    std::fs::write(
+        &fpm,
+        "#!/bin/sh\n\
+         i=0\n\
+         while [ $i -lt 20000 ]; do\n\
+         echo \"Warning: Cannot link class Some\\\\Generated\\\\Proxy $i in preload\"\n\
+         i=$((i+1))\n\
+         done >&2\n\
+         echo \"FATAL: preload emitted too much noise\" >&2\n\
+         exit 78\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&fpm, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let cfg = seed_server_toml(cfg_dir.path(), "myapp.bougie.run", proj.path(), Some("public"));
+    let server = ServerHandle::spawn(&env, &cfg);
+
+    let (status, _, body) = http_get(&server.url("/script.php"), "myapp.bougie.run");
+    assert_eq!(status, 502);
+    let body_str = String::from_utf8_lossy(&body);
+    // The old code deadlocked here and reported "didn't create its
+    // listen socket ... within 2s" with no output at all.
+    assert!(body_str.contains("exited during startup"), "got: {body_str}");
+    assert!(
+        body_str.contains("FATAL: preload emitted too much noise"),
+        "got: {body_str}"
+    );
+
+    let stderr = server.shutdown();
+    let joined = stderr.join("\n");
+    assert!(
+        joined.contains("[fpm:myapp.bougie.run:normal] FATAL: preload emitted too much noise"),
+        "fpm stderr should be forwarded to the server log"
+    );
+}
+
 #[test]
 fn sigint_drains_and_exits_cleanly() {
     let env = TestEnv::new();
