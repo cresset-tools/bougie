@@ -60,6 +60,22 @@ pub async fn load_all(path: &Path) -> Result<Vec<Tenant>> {
     };
     let text = std::str::from_utf8(&bytes)
         .map_err(|e| eyre!("decoding {} as UTF-8: {e}", path.display()))?;
+    parse_ledger(text, path)
+}
+
+/// Synchronous twin of [`load_all`] for the daemon-less CLI paths
+/// (`bougie projects list`, the service-client exec wiring) that read
+/// the ledger without a tokio runtime.
+pub fn load_all_sync(path: &Path) -> Result<Vec<Tenant>> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(eyre!("opening {}: {e}", path.display())),
+    };
+    parse_ledger(&text, path)
+}
+
+fn parse_ledger(text: &str, path: &Path) -> Result<Vec<Tenant>> {
     let mut out = Vec::new();
     for (i, line) in text.lines().enumerate() {
         if line.trim().is_empty() {

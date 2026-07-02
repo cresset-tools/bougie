@@ -534,6 +534,22 @@ pub enum ServicesCommand {
     },
     /// Print the built-in service catalog (no daemon required)
     Catalog,
+    /// Run a service client tool (mariadb, mysqldump, redis-cli,
+    /// rabbitmqctl, …) wired to this project's tenant. Curated tools
+    /// are also linked into `vendor/bougie/bin/`, so inside `bougie run`
+    /// they resolve by bare name; this verb additionally reaches any
+    /// uncurated binary in a declared service's bin/ or sbin/
+    Exec {
+        /// Restrict resolution to one service (needed when the tool
+        /// name exists in several, or isn't in the curated list)
+        #[arg(long)]
+        service: Option<String>,
+        /// Tool name (e.g. mysqldump, redis-cli, opensearch-plugin)
+        tool: String,
+        /// Arguments forwarded to the tool verbatim
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, value_name = "ARGS")]
+        args: Vec<std::ffi::OsString>,
+    },
     /// Restart the named services (or every declared service). Stops
     /// then starts the underlying global process; the tenant ledger
     /// is preserved, so generated passwords / DB numbers survive.

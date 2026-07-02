@@ -30,6 +30,15 @@ pub enum Role {
     Bougied,
     #[cfg(unix)]
     Babysit,
+    /// A service client tool (mariadb, mysqldump, redis-cli,
+    /// rabbitmqctl, …) from the catalog's per-service client table.
+    /// Carries catalog *names* (both `'static`, resolved back through
+    /// `catalog::find` at exec time) so the enum stays `Copy + Eq`.
+    #[cfg(unix)]
+    ServiceClient {
+        service: &'static str,
+        tool: &'static str,
+    },
 }
 
 impl Role {
@@ -43,6 +52,8 @@ impl Role {
             Self::Bougied => "bougied",
             #[cfg(unix)]
             Self::Babysit => "bougie-babysit",
+            #[cfg(unix)]
+            Self::ServiceClient { tool, .. } => tool,
         }
     }
 }
@@ -71,6 +82,18 @@ pub fn role_from_argv0(argv0: &OsStr) -> Option<Role> {
         "bougied" => Some(Role::Bougied),
         #[cfg(unix)]
         "bougie-babysit" => Some(Role::Babysit),
+        // Service client tools (mariadb, mysqldump, redis-cli, …):
+        // sync links each declared service's clients into
+        // `vendor/bougie/bin/`, so a PATH-resolved `mysqldump` re-enters
+        // here and gets wired to the project's tenant. Unix-only, like
+        // the services stack itself.
+        #[cfg(unix)]
+        other => bougie_daemon::daemon::catalog::find_client(other)
+            .map(|(entry, tool)| Role::ServiceClient {
+                service: entry.name,
+                tool: tool.name,
+            }),
+        #[cfg(not(unix))]
         _ => None,
     }
 }
@@ -130,6 +153,18 @@ pub fn exec(role: Role) -> Result<ExitCode> {
     // "must be synced" resolution below.
     if role == Role::Composer {
         return run_composer_native(args);
+    }
+
+    // Service client tools resolve the project (for its tenant) but
+    // not the pinned PHP — they exec a binary out of the service's
+    // store tarball, wired to the project's tenant. Must be handled
+    // before the BOUGIE_RUN_SYSTEM_PHP branch below: inside a
+    // `bougie run` env that selected a one-off system PHP, a
+    // `mysqldump` invocation is still a service client, not a PHP.
+    #[cfg(unix)]
+    if let Role::ServiceClient { service, tool } = role {
+        let project_root = locate_project_root(&argv0)?;
+        return crate::commands::services::exec::run_shim(service, tool, &project_root, &args);
     }
 
     // One-off system PHP: `bougie run` selected a system interpreter
@@ -206,6 +241,8 @@ pub fn exec(role: Role) -> Result<ExitCode> {
         Role::Bougied => unreachable!("bougied role handled above"),
         #[cfg(unix)]
         Role::Babysit => unreachable!("babysit role handled above"),
+        #[cfg(unix)]
+        Role::ServiceClient { .. } => unreachable!("service client role handled above"),
     }
 }
 
@@ -436,6 +473,26 @@ mod tests {
             role_from_argv0(&OsString::from("/usr/local/bin/bougied")),
             Some(Role::Bougied)
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn detects_service_client_roles() {
+        assert_eq!(
+            role_from_argv0(&OsString::from("/proj/vendor/bougie/bin/mysqldump")),
+            Some(Role::ServiceClient { service: "mariadb", tool: "mysqldump" })
+        );
+        assert_eq!(
+            role_from_argv0(&OsString::from("redis-cli")),
+            Some(Role::ServiceClient { service: "redis", tool: "redis-cli" })
+        );
+        assert_eq!(
+            role_from_argv0(&OsString::from("rabbitmqctl")),
+            Some(Role::ServiceClient { service: "rabbitmq", tool: "rabbitmqctl" })
+        );
+        // Server binaries are not client tools — a `mariadbd` argv[0]
+        // must not resolve to a role.
+        assert_eq!(role_from_argv0(&OsString::from("mariadbd")), None);
     }
 
     #[cfg(unix)]

@@ -69,6 +69,29 @@ pub struct CatalogEntry {
     /// allow-list-only and can't compose a permissive baseline with
     /// fine-grained denies.
     pub sandbox: SandboxKind,
+    /// Client-side companion tools shipped in the same tarball
+    /// (mariadb/mysqldump, redis-cli, rabbitmqctl, …). Exposed to
+    /// users as `vendor/bougie/bin/` shims and via
+    /// `bougie services exec`; the CLI wires each invocation to the
+    /// project's tenant. Names must be unique across the whole
+    /// catalog — the shim dispatches on argv[0] basename alone.
+    pub clients: &'static [ClientTool],
+}
+
+/// One user-facing client binary inside a service tarball.
+///
+/// `name` is what users type (and the shim link name); `path` is the
+/// binary's location relative to the tarball root. Several names may
+/// map to the same path (`mysqldump` and `mariadb-dump` both resolve
+/// to `bin/mariadb-dump` — the tarball's own `mysql*` compat symlinks
+/// aren't guaranteed to survive repacking, so aliases point at the
+/// canonical binary).
+#[derive(Debug, Clone, Serialize)]
+pub struct ClientTool {
+    /// Basename users invoke.
+    pub name: &'static str,
+    /// Path inside the extracted tarball (e.g. `bin/mariadb`).
+    pub path: &'static str,
 }
 
 /// Sandbox stance for a catalog entry. See `CatalogEntry::sandbox`.
@@ -146,6 +169,7 @@ pub const CATALOG: &[CatalogEntry] = &[
         user_facing: true,
         summary: "Redis in-memory data store; one tenant per logical DB (0..15).",
         sandbox: SandboxKind::Strict,
+        clients: &[ClientTool { name: "redis-cli", path: "bin/redis-cli" }],
     },
     CatalogEntry {
         name: "mariadb",
@@ -162,6 +186,19 @@ pub const CATALOG: &[CatalogEntry] = &[
         user_facing: true,
         summary: "MariaDB 11.4 LTS; one database + user per project tenant.",
         sandbox: SandboxKind::Strict,
+        // Aliases target the mariadb-native binaries directly: the
+        // tarball's own `mysql* → mariadb-*` compat symlinks aren't
+        // guaranteed to survive repacking. The curated set is the
+        // day-to-day trio; everything else in `bin/` stays reachable
+        // via `bougie services exec`.
+        clients: &[
+            ClientTool { name: "mariadb", path: "bin/mariadb" },
+            ClientTool { name: "mysql", path: "bin/mariadb" },
+            ClientTool { name: "mariadb-dump", path: "bin/mariadb-dump" },
+            ClientTool { name: "mysqldump", path: "bin/mariadb-dump" },
+            ClientTool { name: "mariadb-admin", path: "bin/mariadb-admin" },
+            ClientTool { name: "mysqladmin", path: "bin/mariadb-admin" },
+        ],
     },
     CatalogEntry {
         name: "opensearch",
@@ -184,6 +221,10 @@ pub const CATALOG: &[CatalogEntry] = &[
         user_facing: true,
         summary: "OpenSearch 2.x search engine; per-tenant index template.",
         sandbox: SandboxKind::Strict,
+        // No curated clients: opensearch has no interactive CLI; the
+        // maintenance tools (opensearch-plugin, …) stay reachable via
+        // `bougie services exec`.
+        clients: &[],
     },
     CatalogEntry {
         name: "rabbitmq",
@@ -198,6 +239,11 @@ pub const CATALOG: &[CatalogEntry] = &[
         user_facing: true,
         summary: "RabbitMQ 4.x AMQP broker; per-tenant vhost + user.",
         sandbox: SandboxKind::Strict,
+        clients: &[
+            ClientTool { name: "rabbitmqctl", path: "sbin/rabbitmqctl" },
+            ClientTool { name: "rabbitmq-diagnostics", path: "sbin/rabbitmq-diagnostics" },
+            ClientTool { name: "rabbitmq-plugins", path: "sbin/rabbitmq-plugins" },
+        ],
     },
     CatalogEntry {
         name: "mailpit",
@@ -216,6 +262,7 @@ pub const CATALOG: &[CatalogEntry] = &[
         user_facing: true,
         summary: "Mailpit SMTP test server; shared mail sink with a web UI on :8025.",
         sandbox: SandboxKind::Strict,
+        clients: &[],
     },
     CatalogEntry {
         name: "server",
@@ -239,6 +286,7 @@ pub const CATALOG: &[CatalogEntry] = &[
         // the loose stance with sensitive home subdirs denied
         // (macOS-only effect today; see `SandboxKind` docs).
         sandbox: SandboxKind::LightHome,
+        clients: &[],
     },
     // ---------- Runtime-only deps ----------
     CatalogEntry {
@@ -254,6 +302,7 @@ pub const CATALOG: &[CatalogEntry] = &[
         user_facing: false,
         summary: "Eclipse Temurin JDK 21 (runtime dep of opensearch).",
         sandbox: SandboxKind::Strict,
+        clients: &[],
     },
     CatalogEntry {
         name: "erlang",
@@ -268,6 +317,7 @@ pub const CATALOG: &[CatalogEntry] = &[
         user_facing: false,
         summary: "Erlang/OTP 27 runtime (runtime dep of rabbitmq).",
         sandbox: SandboxKind::Strict,
+        clients: &[],
     },
 ];
 
@@ -276,6 +326,19 @@ pub const CATALOG: &[CatalogEntry] = &[
 /// Look up an entry by name. `None` if unknown.
 pub fn find(name: &str) -> Option<&'static CatalogEntry> {
     CATALOG.iter().find(|e| e.name == name)
+}
+
+/// Look up a client tool by its user-facing name across the whole
+/// catalog. `None` if no service ships a client under that name.
+/// Client names are unique catalog-wide (asserted in tests) — the
+/// argv[0] shim dispatches on the bare basename.
+pub fn find_client(name: &str) -> Option<(&'static CatalogEntry, &'static ClientTool)> {
+    CATALOG.iter().find_map(|e| {
+        e.clients
+            .iter()
+            .find(|c| c.name == name)
+            .map(|c| (e, c))
+    })
 }
 
 /// Subset of the catalog `bougie services add` will accept. Excludes
@@ -395,6 +458,66 @@ mod tests {
     fn rabbitmq_runtime_deps_include_erlang() {
         let rmq = find("rabbitmq").unwrap();
         assert!(rmq.runtime_deps.contains(&"erlang"));
+    }
+
+    #[test]
+    fn client_names_are_unique_catalog_wide() {
+        // The argv[0] shim dispatches on the bare basename, so two
+        // services shipping a client under the same name would be
+        // ambiguous.
+        let mut names: Vec<_> = CATALOG
+            .iter()
+            .flat_map(|e| e.clients.iter().map(|c| c.name))
+            .collect();
+        let before = names.len();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(before, names.len(), "duplicate client tool names");
+    }
+
+    #[test]
+    fn client_names_do_not_shadow_shim_roles() {
+        // vendor/bougie/bin/ already carries the php/composer/unzip
+        // shims; a client under one of those names would fight the
+        // existing argv[0] roles.
+        for reserved in ["php", "php-fpm", "composer", "unzip", "bougied", "bougie-babysit"] {
+            assert!(
+                find_client(reserved).is_none(),
+                "client name `{reserved}` shadows a shim role"
+            );
+        }
+    }
+
+    #[test]
+    fn find_client_resolves_curated_tools() {
+        let (svc, tool) = find_client("mysqldump").unwrap();
+        assert_eq!(svc.name, "mariadb");
+        assert_eq!(tool.path, "bin/mariadb-dump");
+
+        let (svc, tool) = find_client("redis-cli").unwrap();
+        assert_eq!(svc.name, "redis");
+        assert_eq!(tool.path, "bin/redis-cli");
+
+        let (svc, _) = find_client("rabbitmqctl").unwrap();
+        assert_eq!(svc.name, "rabbitmq");
+
+        assert!(find_client("psql").is_none());
+        assert!(find_client("").is_none());
+    }
+
+    #[test]
+    fn mariadb_aliases_share_canonical_paths() {
+        // `mysql`/`mysqldump`/`mysqladmin` are aliases of the
+        // mariadb-native binaries, not separate tarball paths.
+        for (alias, canonical) in [
+            ("mysql", "mariadb"),
+            ("mysqldump", "mariadb-dump"),
+            ("mysqladmin", "mariadb-admin"),
+        ] {
+            let (_, a) = find_client(alias).unwrap();
+            let (_, c) = find_client(canonical).unwrap();
+            assert_eq!(a.path, c.path, "{alias} should target {canonical}'s path");
+        }
     }
 
     #[test]

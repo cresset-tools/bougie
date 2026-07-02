@@ -1581,21 +1581,27 @@ fn seed_global_composer_shim(paths: &Paths) {
 #[cfg(not(unix))]
 fn seed_global_composer_shim(_paths: &Paths) {}
 
+/// True when `link` is a symlink bougie itself placed — one whose
+/// target's file stem is `bougie`. Regular files, missing paths, and
+/// foreign symlinks all return false, so callers can safely remove
+/// only what bougie owns.
+#[cfg(unix)]
+fn is_bougie_owned_link(link: &std::path::Path) -> bool {
+    link.symlink_metadata()
+        .is_ok_and(|m| m.file_type().is_symlink())
+        && std::fs::read_link(link).is_ok_and(|target| {
+            target
+                .file_stem()
+                .is_some_and(|stem| stem.eq_ignore_ascii_case("bougie"))
+        })
+}
+
 #[cfg(unix)]
 fn try_seed_global_composer_shim(paths: &Paths) -> Result<()> {
     let bin_dir = paths.tool_bin_dir();
     let link = bin_dir.join("composer");
-    if let Ok(meta) = link.symlink_metadata() {
-        let owned = meta.file_type().is_symlink()
-            && std::fs::read_link(&link)
-                .ok()
-                .and_then(|target| {
-                    target
-                        .file_stem()
-                        .map(|stem| stem.eq_ignore_ascii_case("bougie"))
-                })
-                .unwrap_or(false);
-        if !owned {
+    if link.symlink_metadata().is_ok() {
+        if !is_bougie_owned_link(&link) {
             // A recurring, benign condition (the user has their own
             // `composer` on PATH) — keep it out of the steady-state
             // summary; surface it only under `--verbose`.
@@ -1696,7 +1702,68 @@ fn write_shims(project_root: &std::path::Path) -> Result<PathBuf> {
         }
         link_shim(&bougie_bin, &link)?;
     }
+    // Client tools of the project's declared services (mysqldump,
+    // redis-cli, rabbitmqctl, …) ride alongside, so everything that
+    // front-loads this dir on PATH — `bougie run`, composer scripts,
+    // recipes — resolves the version-matched, tenant-wired client by
+    // bare name. Unix-only, like the services stack itself.
+    #[cfg(unix)]
+    {
+        let declared: BTreeSet<String> = bougie_config::load_project(project_root)
+            .map(|p| p.bougie.services.keys().cloned().collect())
+            .unwrap_or_default();
+        write_client_shims(&bin_dir, &bougie_bin, &declared)?;
+    }
     Ok(bin_dir)
+}
+
+/// Link every declared service's client tools into `bin_dir`; garbage-
+/// collect links for services no longer declared. Removal only ever
+/// touches bougie-owned symlinks (see [`is_bougie_owned_link`]);
+/// creation replaces unconditionally, matching the php/composer shims
+/// above — `vendor/bougie/` is bougie's own disposable tree.
+#[cfg(unix)]
+fn write_client_shims(
+    bin_dir: &std::path::Path,
+    bougie_bin: &std::path::Path,
+    declared: &BTreeSet<String>,
+) -> Result<()> {
+    for entry in bougie_daemon::daemon::catalog::CATALOG {
+        let wanted = declared.contains(entry.name);
+        for client in entry.clients {
+            let link = bin_dir.join(client.name);
+            if wanted {
+                if link.symlink_metadata().is_ok() {
+                    std::fs::remove_file(&link)?;
+                }
+                link_shim(bougie_bin, &link)?;
+            } else if is_bougie_owned_link(&link) {
+                std::fs::remove_file(&link)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Refresh the client shims after a `bougie services add/remove`
+/// edits the declarations, so the tools appear (or vanish) without
+/// waiting for the next sync. Best-effort: a shim hiccup must never
+/// fail the config edit that already happened.
+#[cfg(unix)]
+pub(crate) fn refresh_service_client_shims(project_root: &std::path::Path) {
+    let inner = || -> Result<()> {
+        let bin_dir = bougie_paths::project::bin_dir(project_root);
+        std::fs::create_dir_all(&bin_dir)?;
+        let bougie_bin = std::env::current_exe()
+            .map_err(|e| eyre!("locating current executable: {e}"))?;
+        let declared: BTreeSet<String> = bougie_config::load_project(project_root)
+            .map(|p| p.bougie.services.keys().cloned().collect())
+            .unwrap_or_default();
+        write_client_shims(&bin_dir, &bougie_bin, &declared)
+    };
+    if let Err(e) = inner() {
+        eprintln!("warning: could not refresh service client shims: {e}");
+    }
 }
 
 /// Copy `bougie.exe` into `<bin_dir>/_bougie-shim.exe` so the four
@@ -1776,6 +1843,47 @@ mod tests {
     use bougie_config::BougieConfig;
     use std::collections::BTreeMap;
     use tempfile::TempDir;
+
+    #[cfg(unix)]
+    #[test]
+    fn client_shims_follow_service_declarations() {
+        let td = TempDir::new().unwrap();
+        let bin_dir = td.path().join("bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        // The stem must be `bougie` for the owned-link check.
+        let bougie_bin = td.path().join("bougie");
+        std::fs::write(&bougie_bin, "fake").unwrap();
+
+        let is_link = |name: &str| {
+            bin_dir
+                .join(name)
+                .symlink_metadata()
+                .is_ok_and(|m| m.file_type().is_symlink())
+        };
+
+        // mariadb declared → its clients (and only its clients) appear.
+        let declared: BTreeSet<String> = ["mariadb".to_string()].into();
+        write_client_shims(&bin_dir, &bougie_bin, &declared).unwrap();
+        assert!(is_link("mysqldump"));
+        assert!(is_link("mariadb"));
+        assert!(!is_link("redis-cli"));
+
+        // Swap declarations → old links are garbage-collected, new
+        // ones appear.
+        let declared: BTreeSet<String> = ["redis".to_string()].into();
+        write_client_shims(&bin_dir, &bougie_bin, &declared).unwrap();
+        assert!(!is_link("mysqldump"));
+        assert!(is_link("redis-cli"));
+
+        // A foreign regular file squatting on a client name is never
+        // garbage-collected.
+        std::fs::write(bin_dir.join("mysqladmin"), "user file").unwrap();
+        write_client_shims(&bin_dir, &bougie_bin, &declared).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(bin_dir.join("mysqladmin")).unwrap(),
+            "user file"
+        );
+    }
 
     #[test]
     fn fragment_name_parsed_only_for_baseline_extensions() {

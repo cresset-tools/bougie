@@ -618,6 +618,10 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
         #[cfg(unix)]
         Command::Services(ServicesCommand::Catalog) => commands::services::catalog::run(format),
         #[cfg(unix)]
+        Command::Services(ServicesCommand::Exec { service, tool, args }) => {
+            commands::services::exec::run(service, tool, args)
+        }
+        #[cfg(unix)]
         Command::Services(ServicesCommand::Restart { names }) => {
             commands::services::restart::run(format, names)
         }
