@@ -725,3 +725,48 @@ fn walkdir(root: &Path) -> Vec<PathBuf> {
     }
     out
 }
+
+#[test]
+fn cache_key_distinguishes_dists_without_shasum_or_reference() {
+    // A Composer `type: package` repo entry can carry only `dist.url` +
+    // `dist.type` — no shasum, no reference. Hashing the (empty)
+    // reference alone collapsed every such dist onto one cache file, so
+    // the first package's archive got reused for all the others. The key
+    // must fold in the package name + URL so distinct packages differ.
+    let tmp = TempDir::new().unwrap();
+    let cache_root = tmp.path();
+    let vendor = tmp.path().join("vendor");
+    let proj = tmp.path();
+
+    let js = DistRequest {
+        package_name: "acme/js-widget",
+        url: "https://example.test/js-widget.zip",
+        sha1: "",
+        reference: "",
+        archive: ArchiveKind::Zip,
+        strip_prefix: None,
+        vendor_dest: &vendor,
+        auth_header: None,
+        auth_header_name: None,
+        project_root: proj,
+    };
+    let css = DistRequest {
+        package_name: "acme/css-kit",
+        url: "https://example.test/css-kit.zip",
+        ..js
+    };
+
+    let js_path = cache_path_for(cache_root, &js);
+    let css_path = cache_path_for(cache_root, &css);
+    assert_ne!(
+        js_path, css_path,
+        "distinct no-shasum/no-reference dists must not share a cache file"
+    );
+
+    // A shasum still content-addresses (and wins over the url fallback).
+    let hashed = DistRequest { sha1: "abc123def456", ..js };
+    assert_eq!(
+        cache_path_for(cache_root, &hashed),
+        cache_root.join("abc123def456.zip")
+    );
+}

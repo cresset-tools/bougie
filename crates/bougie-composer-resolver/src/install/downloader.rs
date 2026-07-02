@@ -402,16 +402,33 @@ fn cache_path_for(cache_root: &Path, dist: &DistRequest<'_>) -> PathBuf {
         ArchiveKind::TarZst => "tar.zst",
         ArchiveKind::TarGz => "tar.gz",
     };
-    let key = if dist.sha1.is_empty() {
+    let key = if !dist.sha1.is_empty() {
+        // A sha1 shasum is already a safe hex string and content-addresses
+        // the archive, so use it verbatim.
+        dist.sha1.to_string()
+    } else if !dist.reference.is_empty() {
         // The git reference can contain `/` (branch names) or even `..`,
         // which would land in an uncreated subdir (ENOENT) or escape the
-        // cache root. Hash it into a flat, traversal-safe token. A sha1
-        // shasum is already a safe hex string, so leave that path as-is.
+        // cache root. Hash it into a flat, traversal-safe token.
         use sha1::Digest as _;
         let digest = sha1::Sha1::digest(dist.reference.as_bytes());
         format!("ref-{digest:x}")
     } else {
-        dist.sha1.to_string()
+        // Neither a content hash nor an upstream reference — the shape a
+        // Composer `type: package` repository entry takes (just `dist.url`
+        // + `dist.type`). Hashing the empty reference here would collapse
+        // *every* such dist onto `ref-<sha1("")>`, so the first package's
+        // archive gets silently reused for all the others. Fold in the
+        // package name and URL instead, mirroring Composer's `getCacheKey`
+        // (which appends `md5($url)` under the package name when a dist
+        // has no reference) so distinct packages never collide.
+        use sha1::Digest as _;
+        let mut hasher = sha1::Sha1::new();
+        hasher.update(dist.package_name.as_bytes());
+        hasher.update([0]);
+        hasher.update(dist.url.as_bytes());
+        let digest = hasher.finalize();
+        format!("url-{digest:x}")
     };
     cache_root.join(format!("{key}.{ext}"))
 }

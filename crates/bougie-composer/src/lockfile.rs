@@ -67,7 +67,12 @@ where
 /// `(array) $paths` on each list item and then iterates the
 /// resulting array's *values*. The practical effect is:
 ///
-/// - Strings pass through verbatim.
+/// - A bare string normalizes to a one-element vec. Composer's schema
+///   allows several of these fields to be either a string or an array
+///   (`license` is the common one — `ArrayLoader` does
+///   `(array) $config['license']`), and PHP's `(array)"MIT"` yields
+///   `["MIT"]`. Accepting the string here mirrors that.
+/// - Strings inside an array pass through verbatim.
 /// - Objects (a real-world quirk: `amphp/process` v0.1.3 ships
 ///   `classmap: [{"Amp\\Process": "Process.php"}]`, almost certainly
 ///   a `psr-4` declaration that landed in `classmap`) contribute
@@ -78,15 +83,23 @@ where
 ///   dropped silently rather than failing the whole entry.
 ///
 /// Bougie's pre-fix strict `Vec<String>` deserialize rejected the
-/// whole `LockPackage` over the object item, which broke any
-/// resolve that walked across the offending version.
+/// whole `LockPackage` over the object item — and, before this, over a
+/// scalar `"license": "MIT"` — which broke any resolve that walked
+/// across the offending version.
 fn string_list_lenient<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
 where
     D: Deserializer<'de>,
 {
-    let raw = <Vec<Value>>::deserialize(deserializer)?;
-    let mut out: Vec<String> = Vec::with_capacity(raw.len());
-    for item in raw {
+    let items = match Value::deserialize(deserializer)? {
+        // `(array) "MIT"` in Composer → `["MIT"]`.
+        Value::String(s) => return Ok(vec![s]),
+        Value::Array(items) => items,
+        // null / any other scalar → empty, rather than hard-failing
+        // the whole package the way a strict `Vec<String>` would.
+        _ => return Ok(Vec::new()),
+    };
+    let mut out: Vec<String> = Vec::with_capacity(items.len());
+    for item in items {
         match item {
             Value::String(s) => out.push(s),
             Value::Object(map) => {
@@ -1048,6 +1061,38 @@ mod tests {
     fn fixture_hash_matches_real_php() {
         let actual = content_hash(FIXTURE_COMPOSER_JSON.as_bytes()).unwrap();
         assert_eq!(actual, FIXTURE_EXPECTED_HASH);
+    }
+
+    #[test]
+    fn license_accepts_string_array_and_null() {
+        // Composer's schema allows `license` to be a bare string; a
+        // strict `Vec<String>` deserialize used to fail the whole
+        // package with "invalid type: string, expected a sequence".
+        let string_form: LockPackage = serde_json::from_str(
+            r#"{"name": "acme/lib", "version": "1.0.0", "license": "MIT"}"#,
+        )
+        .expect("string license must parse");
+        assert_eq!(string_form.license, vec!["MIT".to_string()]);
+
+        let array_form: LockPackage = serde_json::from_str(
+            r#"{"name": "acme/lib", "version": "1.0.0", "license": ["GPL-2.0-or-later", "MIT"]}"#,
+        )
+        .expect("array license must parse");
+        assert_eq!(
+            array_form.license,
+            vec!["GPL-2.0-or-later".to_string(), "MIT".to_string()]
+        );
+
+        // null and absent both normalize to empty rather than failing.
+        let null_form: LockPackage = serde_json::from_str(
+            r#"{"name": "acme/lib", "version": "1.0.0", "license": null}"#,
+        )
+        .expect("null license must parse");
+        assert!(null_form.license.is_empty());
+
+        let absent: LockPackage =
+            serde_json::from_str(r#"{"name": "acme/lib", "version": "1.0.0"}"#).unwrap();
+        assert!(absent.license.is_empty());
     }
 
     #[test]
