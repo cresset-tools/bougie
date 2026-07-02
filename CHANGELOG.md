@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.38.1](https://github.com/cresset-tools/bougie/compare/bougie-v0.38.0...bougie-v0.38.1) (2026-07-02)
+
+
+### Bug Fixes
+
+* four tier-1 correctness/safety bugs (extraction, autoloader, cache key, license) ([#432](https://github.com/cresset-tools/bougie/issues/432)) ([9a7c619](https://github.com/cresset-tools/bougie/commit/9a7c619209b1a200f3738e4d9c75c0ab15a8fffa))
+* **server:** surface php-fpm startup errors and stop orphaning workers ([#438](https://github.com/cresset-tools/bougie/issues/438)) ([6bd9701](https://github.com/cresset-tools/bougie/commit/6bd9701a991cd3dea301bf97faeaf87c8a43c8ba))
+* tier-2 service-supervision correctness (grace window, restart, rotation, sandbox, flock) ([#436](https://github.com/cresset-tools/bougie/issues/436)) ([d1b2abe](https://github.com/cresset-tools/bougie/commit/d1b2abecb43f33cc48ffda01530b69f2c77d4bff))
+
 ## [0.38.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.37.0...bougie-v0.38.0) (2026-07-02)
 
 
