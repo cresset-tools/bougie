@@ -650,8 +650,16 @@ impl Supervisor {
     }
 
     /// Stop a running service. SIGTERM, wait up to `STOP_GRACE`, then
-    /// SIGKILL. Returns `true` if this call stopped the service;
-    /// `false` if it wasn't running.
+    /// SIGKILL. Returns `true` if this call stopped the service (or
+    /// disarmed a pending auto-restart); `false` if there was nothing to
+    /// stop.
+    ///
+    /// `Failed` counts as stoppable: a crashed service holds an armed
+    /// `restart_at` that `check_all` would otherwise honor, resurrecting
+    /// a service the user explicitly took down; and a probe-timeout can
+    /// leave a *live* child parked under `Failed` (see `finalize_start`)
+    /// that only this path can kill. Both are handled by running the full
+    /// teardown below and clearing the crash-backoff bookkeeping.
     pub async fn stop(&mut self, name: &str) -> Result<bool> {
         let entry = catalog::find(name)
             .ok_or_else(|| eyre!("unknown service `{name}`"))?;
@@ -659,7 +667,13 @@ impl Supervisor {
             .services
             .get_mut(entry.name)
             .ok_or_else(|| eyre!("BUG: service `{}` missing from supervisor map", entry.name))?;
-        if !matches!(svc.state, ServiceState::Running | ServiceState::HealthChecking | ServiceState::Starting) {
+        if !matches!(
+            svc.state,
+            ServiceState::Running
+                | ServiceState::HealthChecking
+                | ServiceState::Starting
+                | ServiceState::Failed
+        ) {
             return Ok(false);
         }
         let (child, pid, control_sock, service_pgid, service_pgid_starttime) = {
@@ -674,6 +688,7 @@ impl Supervisor {
         };
         // `svc` goes out of scope here; re-borrow below.
 
+        let had_child = child.is_some();
         if let Some(mut child) = child {
             // SIGTERM goes to the babysit, which proxies to the
             // service's pgrp and waits its own grace window. The
@@ -685,6 +700,21 @@ impl Supervisor {
         // with the SIGTERM path above. Dropping after is a no-op for
         // the now-dead babysit.
         drop(control_sock);
+
+        // When we had no babysit handle to SIGTERM + await — the service
+        // was mid-`HealthChecking`, so its handle is off with the off-lock
+        // probe (`PendingHealth`) and the map's `child` slot is `None` —
+        // the control-socket EOF just above is what triggers the babysit's
+        // graceful `killpg` teardown. Give that its grace window (poll the
+        // service group until it drains) before the hard backstop below
+        // SIGKILLs the group out from under it. Without this a service
+        // stopped during its first-boot probe (e.g. mariadb initializing
+        // its datadir) is killed with ~no grace, risking corruption.
+        if !had_child
+            && let Some(pgid) = service_pgid
+        {
+            wait_for_group_drain(pgid, STOP_GRACE).await;
+        }
 
         // cgroup backstop: the babysit's graceful killpg above handles
         // the well-behaved process group, but daemonized escapees (e.g.
@@ -719,6 +749,12 @@ impl Supervisor {
             svc.service_pgid = None;
             svc.service_pgid_starttime = None;
             svc.started_at = None;
+            // An explicit stop resets crash-backoff state: clear any armed
+            // restart deadline so `check_all` won't resurrect the service,
+            // and reset the failure count so a later manual start gets a
+            // fresh backoff budget.
+            svc.restart_at = None;
+            svc.failure_count = 0;
         }
         Ok(true)
     }
@@ -1344,6 +1380,25 @@ async fn stop_child(child: &mut Child, pid: Option<u32>) {
     }
 }
 
+/// Poll a service's process group until it is empty or `budget` elapses.
+/// Used when `stop` has no babysit `Child` handle to await (the service
+/// was mid-`HealthChecking`): the babysit tears the group down on
+/// control-socket EOF, and this lets that graceful `killpg` run before
+/// the hard backstop. `test_kill_process_group` is `kill(-pgid, 0)`:
+/// `Ok` while members remain, `Err(ESRCH)` once the group is empty.
+async fn wait_for_group_drain(pgid: i32, budget: Duration) {
+    let Some(pgrp) = rustix::process::Pid::from_raw(pgid) else {
+        return;
+    };
+    let deadline = Instant::now() + budget;
+    while rustix::process::test_kill_process_group(pgrp).is_ok() {
+        if Instant::now() >= deadline {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
 // -------------------- topological sort --------------------
 
 /// Kahn's algorithm over catalog `requires` + `after`. Returns the
@@ -1714,5 +1769,51 @@ mod tests {
         // deadline must not be double-counted.
         assert_eq!(svc.failure_count, 3);
         assert_eq!(svc.restart_at, Some(deadline));
+    }
+
+    #[tokio::test]
+    async fn stop_disarms_failed_service_and_prevents_resurrection() {
+        // A crashed service sits in Failed with an armed restart deadline.
+        // Taking it down (e.g. the last tenant deprovisioned) must stop it,
+        // not no-op — otherwise check_all resurrects it from the deadline.
+        let mut sup = test_supervisor();
+        {
+            let svc = sup.services.get_mut("redis").unwrap();
+            svc.state = ServiceState::Failed;
+            svc.failure_count = 3;
+            svc.restart_at = Some(Instant::now()); // due now
+            svc.child = None; // crashed-and-already-reaped
+        }
+        let stopped = sup.stop("redis").await.unwrap();
+        assert!(stopped, "stop() must act on a Failed service");
+        let svc = sup.services.get("redis").unwrap();
+        assert_eq!(svc.state, ServiceState::Stopped);
+        assert!(svc.restart_at.is_none(), "armed restart deadline cleared");
+        assert_eq!(svc.failure_count, 0, "backoff budget reset");
+
+        // The restart pass must not bring it back — its state is Stopped now.
+        let due = sup.check_all().await;
+        assert!(!due.contains(&"redis"), "an explicitly stopped service is not restarted");
+    }
+
+    #[tokio::test]
+    async fn stop_kills_live_child_parked_under_failed() {
+        // A probe timeout leaves the service running while state is Failed
+        // (finalize_start stashes the still-live child). Before this fix
+        // stop() refused Failed, so the service was unstoppable. It must now
+        // take and kill the child.
+        let mut sup = test_supervisor();
+        let child = spawn_dummy_child();
+        {
+            let svc = sup.services.get_mut("redis").unwrap();
+            svc.state = ServiceState::Failed;
+            svc.child = Some(child);
+            svc.restart_at = None;
+        }
+        let stopped = sup.stop("redis").await.unwrap();
+        assert!(stopped);
+        let svc = sup.services.get("redis").unwrap();
+        assert_eq!(svc.state, ServiceState::Stopped);
+        assert!(svc.child.is_none(), "the live child was taken and killed");
     }
 }
