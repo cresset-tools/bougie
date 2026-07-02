@@ -263,9 +263,25 @@ async fn serve_php(
     variant: Variant,
     req: Request<Body>,
 ) -> Response {
-    let pool = match state.pools.get_or_spawn(&host.project, variant.as_str()).await {
+    let pool = match state
+        .pools
+        .get_or_spawn(&host.project, variant.as_str(), host_header)
+        .await
+    {
         Ok(p) => p,
-        Err(e) => return bad_gateway(&format!("php-fpm failed to start: {e:#}")),
+        Err(e) => {
+            // Land the failure in the server log too — the 502 body
+            // alone is invisible to `bougie server`'s attached log.
+            // One prefixed line per message line: the attach filters
+            // the shared log by vhost substring, so an unprefixed
+            // multi-line block would be dropped.
+            let msg = format!("php-fpm failed to start: {e:#}");
+            let prefix = format!("[fpm:{host_header}:{}]", variant.as_str());
+            for line in msg.lines() {
+                eprintln!("{prefix} {line}");
+            }
+            return bad_gateway(&msg);
+        }
     };
     // Touch up front so a long dispatch can't be reaped underneath us.
     pool.touch();
