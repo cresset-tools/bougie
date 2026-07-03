@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.40.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.39.0...bougie-v0.40.0) (2026-07-03)
+
+
+### Features
+
+* **services:** protocol-aware health checks, at startup and continuously ([#415](https://github.com/cresset-tools/bougie/issues/415)) ([23e26fd](https://github.com/cresset-tools/bougie/commit/23e26fd8858a99af1de1ab080e48661a6fa43074))
+
 ## [0.39.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.38.1...bougie-v0.39.0) (2026-07-03)
 
 
