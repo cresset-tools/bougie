@@ -29,6 +29,14 @@ fn main() {
     let sha = git(&["rev-parse", "--short=9", "HEAD"]);
     let date = git(&["log", "-1", "--date=short", "--format=%cd"]);
 
+    // Also exposed on its own (`bougie_cli::BUILD_SHA`) for telemetry
+    // and the daemon version report — `option_env!` resolves per
+    // consuming crate, so the SHA has to flow through this crate's
+    // build env rather than each consumer's.
+    if let Some(sha) = &sha {
+        println!("cargo:rustc-env=BOUGIE_BUILD_SHA={sha}");
+    }
+
     let long = match (sha, date) {
         (Some(sha), Some(date)) => format!("{version} ({sha} {date} {target})"),
         _ => version,

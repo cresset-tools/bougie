@@ -54,5 +54,6 @@ pub mod services;
 pub mod server;
 pub mod starter;
 pub mod sync;
+pub mod telemetry;
 pub mod tenant;
 pub mod unzip;

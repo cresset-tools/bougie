@@ -98,6 +98,7 @@ fn command_name(cmd: &Command) -> &'static str {
         Command::ToolExec { .. } => "tool-exec",
         Command::Cache(_) => "cache",
         Command::SelfCmd(_) => "self",
+        Command::Telemetry { .. } => "telemetry",
         Command::Server(_) => "server",
         Command::Services(_) => "services",
         Command::Projects(_) => "projects",
@@ -108,16 +109,13 @@ fn command_name(cmd: &Command) -> &'static str {
     }
 }
 
-#[allow(clippy::too_many_lines, reason = "top-level command dispatch is one big match")]
 pub fn run(cli: Cli) -> Result<ExitCode> {
-    let format = cli.format;
-
     // Progress bars (rendered by `bougie_fetch`) only make sense for an
     // interactive text-mode invocation: a JSON consumer would otherwise
     // see ANSI escapes mixed into stderr alongside the §9.2 event stream,
     // and `--quiet` users opted out of all non-error stderr noise.
     let progress_visible = !cli.quiet
-        && matches!(format, OutputFormat::Text)
+        && matches!(cli.format, OutputFormat::Text)
         && std::io::stderr().is_terminal();
     bougie_output::output::set_progress_visible(progress_visible);
     bougie_output::output::set_verbose(cli.verbose);
@@ -125,8 +123,44 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
     // Top-level span for the whole invocation. Entered on the main
     // thread for the entire dispatch, so a Ctrl-\ activity dump always
     // shows which verb is running even before a deeper phase span opens.
-    let _cmd_span = tracing::info_span!("command", name = command_name(&cli.command)).entered();
+    let command = command_name(&cli.command);
+    let _cmd_span = tracing::info_span!("command", name = command).entered();
 
+    // Telemetry wraps dispatch at this single choke point: one
+    // `command` event per invocation (duration, outcome category, exit
+    // code), appended to the local spool per the consent mode. Init is
+    // a no-op when telemetry is off, and recording swallows every
+    // failure — telemetry must never fail a command. The telemetry
+    // verb itself is meta and never recorded (`reset` would re-spool
+    // its own event right after purging).
+    let recorder = if command == "telemetry" {
+        bougie_telemetry::Recorder::disabled()
+    } else {
+        bougie_telemetry::Recorder::init(
+            command,
+            bougie_telemetry::BinInfo {
+                version: env!("CARGO_PKG_VERSION"),
+                build_sha: bougie_cli::BUILD_SHA,
+            },
+        )
+    };
+    let started = std::time::Instant::now();
+    let result = dispatch(cli);
+    let (outcome, exit_code) = match &result {
+        // `ExitCode` exposes no getter; a command that *returns* a
+        // nonzero code (rather than erroring) records as ok/0. The
+        // taxonomy tracks errors, not verb-specific soft-failure codes
+        // like `composer audit`'s advisory exit.
+        Ok(_) => (bougie_telemetry::OUTCOME_OK, 0),
+        Err(err) => (bougie_telemetry::outcome_for_error(err), exit_code_for(err)),
+    };
+    recorder.record_command(started.elapsed(), outcome, exit_code);
+    result
+}
+
+#[allow(clippy::too_many_lines, reason = "top-level command dispatch is one big match")]
+fn dispatch(cli: Cli) -> Result<ExitCode> {
+    let format = cli.format;
     match cli.command {
         Command::Init { toml, name, starter, start } => {
             commands::init::run(format, toml, name, starter, start)
@@ -729,5 +763,6 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
             commands::tool_dir::run(format, package)
         }
         Command::ToolExec { wrapper, args } => commands::tool_exec::run(&wrapper, args),
+        Command::Telemetry { command } => commands::telemetry::run(format, command),
     }
 }

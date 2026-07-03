@@ -9,6 +9,11 @@ use std::ffi::OsString;
 /// `bougie 0.6.4 (...)`.
 pub const LONG_VERSION: &str = env!("BOUGIE_LONG_VERSION");
 
+/// Short (9-char) git SHA of this build, when git metadata was
+/// available at build time. `None` for crates.io tarball builds —
+/// telemetry treats absence as the `cargo` install channel.
+pub const BUILD_SHA: Option<&str> = option_env!("BOUGIE_BUILD_SHA");
+
 const HELP_STYLES: Styles = Styles::styled()
     .header(AnsiColor::Blue.on_default().effects(Effects::BOLD))
     .usage(AnsiColor::Magenta.on_default().effects(Effects::BOLD))
@@ -400,6 +405,13 @@ pub enum Command {
     #[command(subcommand)]
     #[command(name = "self", display_order = 41)]
     SelfCmd(SelfCommand),
+
+    /// Manage anonymous usage telemetry (opt-in; see TELEMETRY.md)
+    #[command(display_order = 42)]
+    Telemetry {
+        #[command(subcommand)]
+        command: Option<TelemetryCommand>,
+    },
 
     /// Run the bougie development HTTP server
     #[command(display_order = 30)]
@@ -1397,6 +1409,26 @@ pub enum CacheCommand {
     Dir,
     /// Show the cache size
     Size,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum TelemetryCommand {
+    /// Show the telemetry mode, where it came from, and what's spooled
+    Status,
+    /// Enable telemetry: record consent and mint the anonymous install id
+    On,
+    /// Disable telemetry entirely (no local recording, nothing sent)
+    Off,
+    /// Record events locally but never upload them
+    Local,
+    /// Print locally spooled events — exactly what would be uploaded
+    Log {
+        /// Show at most the last N events (0 = all)
+        #[arg(short = 'n', long = "lines", default_value_t = 20)]
+        lines: usize,
+    },
+    /// Rotate the anonymous install id and purge all spooled events
+    Reset,
 }
 
 #[derive(Subcommand, Debug)]
