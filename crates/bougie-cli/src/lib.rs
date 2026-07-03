@@ -413,6 +413,11 @@ pub enum Command {
         command: Option<TelemetryCommand>,
     },
 
+    /// Internal: upload spooled telemetry. Spawned detached by bougie
+    /// itself; hidden from help and not for direct use
+    #[command(hide = true, name = "__telemetry-flush")]
+    TelemetryFlush,
+
     /// Run the bougie development HTTP server
     #[command(display_order = 30)]
     Server(ServerArgs),

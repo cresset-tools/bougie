@@ -788,8 +788,12 @@ name = "bougie-telemetry"
 version = "0.40.0"
 dependencies = [
  "bougie-errors",
+ "bougie-fs",
  "bougie-paths",
  "eyre",
+ "flate2",
+ "reqwest",
+ "rustix",
  "serde",
  "serde_json",
  "tempfile",

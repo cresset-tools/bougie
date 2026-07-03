@@ -14,9 +14,11 @@
 
 pub mod clock;
 pub mod event;
+pub mod flush;
 pub mod ids;
 pub mod mode;
 pub mod recorder;
+pub mod spawn;
 pub mod spool;
 
 pub use event::{outcome_for_error, OUTCOME_OK};

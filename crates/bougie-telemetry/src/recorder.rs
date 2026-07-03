@@ -30,6 +30,7 @@ pub struct Recorder {
 struct Inner {
     mode: Mode,
     spool: Spool,
+    cache_root: PathBuf,
     command: &'static str,
     info: BinInfo,
     install_id: String,
@@ -72,6 +73,7 @@ impl Recorder {
             inner: Some(Inner {
                 mode: state.mode,
                 spool: Spool::new(paths.cache()),
+                cache_root: paths.cache().to_path_buf(),
                 command,
                 info,
                 install_id,
@@ -116,6 +118,16 @@ impl Recorder {
             Ok(line) => inner.spool.append(&now.date(), &line),
             Err(err) => tracing::debug!("telemetry event serialization failed: {err}"),
         }
+    }
+
+    /// After recording, trigger a detached flush when one is due.
+    /// Mode `on` only — `local` never uploads. Best-effort.
+    pub fn maybe_spawn_flush(&self) {
+        let Some(inner) = &self.inner else { return };
+        if inner.mode != Mode::On {
+            return;
+        }
+        crate::spawn::maybe_spawn_flush(&inner.cache_root, &UtcHour::now().date());
     }
 }
 

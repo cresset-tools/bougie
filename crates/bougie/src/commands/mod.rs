@@ -55,5 +55,6 @@ pub mod server;
 pub mod starter;
 pub mod sync;
 pub mod telemetry;
+pub mod telemetry_flush;
 pub mod tenant;
 pub mod unzip;

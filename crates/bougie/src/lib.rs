@@ -99,6 +99,7 @@ fn command_name(cmd: &Command) -> &'static str {
         Command::Cache(_) => "cache",
         Command::SelfCmd(_) => "self",
         Command::Telemetry { .. } => "telemetry",
+        Command::TelemetryFlush => "__telemetry-flush",
         Command::Server(_) => "server",
         Command::Services(_) => "services",
         Command::Projects(_) => "projects",
@@ -131,9 +132,10 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
     // code), appended to the local spool per the consent mode. Init is
     // a no-op when telemetry is off, and recording swallows every
     // failure — telemetry must never fail a command. The telemetry
-    // verb itself is meta and never recorded (`reset` would re-spool
-    // its own event right after purging).
-    let recorder = if command == "telemetry" {
+    // verbs themselves are meta and never recorded (`reset` would
+    // re-spool its own event right after purging; the flush child
+    // recording itself would self-perpetuate).
+    let recorder = if matches!(command, "telemetry" | "__telemetry-flush") {
         bougie_telemetry::Recorder::disabled()
     } else {
         bougie_telemetry::Recorder::init(
@@ -155,6 +157,9 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
         Err(err) => (bougie_telemetry::outcome_for_error(err), exit_code_for(err)),
     };
     recorder.record_command(started.elapsed(), outcome, exit_code);
+    // With the user's event spooled and their prompt about to return,
+    // hand any due upload to a detached, deprioritized child.
+    recorder.maybe_spawn_flush();
     result
 }
 
@@ -764,5 +769,6 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
         }
         Command::ToolExec { wrapper, args } => commands::tool_exec::run(&wrapper, args),
         Command::Telemetry { command } => commands::telemetry::run(format, command),
+        Command::TelemetryFlush => commands::telemetry_flush::run(),
     }
 }
