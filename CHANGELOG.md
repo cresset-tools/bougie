@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.39.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.38.1...bougie-v0.39.0) (2026-07-03)
+
+
+### Features
+
+* **services:** tenant-wired client tools (mysqldump, redis-cli, rabbitmqctl, …) ([#444](https://github.com/cresset-tools/bougie/issues/444)) ([9a7f260](https://github.com/cresset-tools/bougie/commit/9a7f260813a61d0504e5cc340e75847e05df0554))
+
+
+### Bug Fixes
+
+* **server:** tolerate slow opcache.preload at pool spawn ([#437](https://github.com/cresset-tools/bougie/issues/437)) ([61cc936](https://github.com/cresset-tools/bougie/commit/61cc936fd825a722cc0a528c8be26b4a8475010d))
+
 ## [0.38.1](https://github.com/cresset-tools/bougie/compare/bougie-v0.38.0...bougie-v0.38.1) (2026-07-02)
 
 
