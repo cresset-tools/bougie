@@ -17,6 +17,7 @@ pub mod event;
 pub mod flush;
 pub mod ids;
 pub mod mode;
+pub mod probe;
 pub mod prompt;
 pub mod recorder;
 pub mod spawn;

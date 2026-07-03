@@ -44,6 +44,55 @@ pub struct CommandEvent {
     /// `"ok"` or an error category from the `bougie-errors` taxonomy.
     pub outcome: &'static str,
     pub exit_code: u8,
+    #[serde(flatten)]
+    pub enrich: Enrichment,
+}
+
+/// Optional perf + ecosystem fields (TELEMETRY.md), attached by
+/// commands via [`crate::probe`]; absent fields are omitted from the
+/// wire entirely. Ecosystem fields (`php_*`, `extensions`, `services`,
+/// `*_deps`) are additionally throttled to once per project per week.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct Enrichment {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolve_ms: Option<u64>,
+    /// Vendor materialize/audit phase wall-clock.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vendor_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub packages_installed: Option<u32>,
+    /// Minor only (`8.4`), never the patch level.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub php_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub php_flavor: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub php_source: Option<&'static str>,
+    /// Closed vocabulary ([`crate::probe::EXTENSION_VOCAB`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extensions: Option<Vec<String>>,
+    /// Closed vocabulary ([`crate::probe::SERVICE_VOCAB`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub services: Option<Vec<String>>,
+    /// Bucketed ([`crate::probe::bucket`]), never a raw count.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub direct_deps: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_deps: Option<&'static str>,
+}
+
+impl Enrichment {
+    /// Drop the per-project ecosystem fields (throttle hit), keeping
+    /// the perf fields, which carry no project shape.
+    pub fn strip_ecosystem(&mut self) {
+        self.php_version = None;
+        self.php_flavor = None;
+        self.php_source = None;
+        self.extensions = None;
+        self.services = None;
+        self.direct_deps = None;
+        self.total_deps = None;
+    }
 }
 
 /// Map a failed command's error to its telemetry category — the
@@ -132,6 +181,11 @@ mod tests {
             duration_ms: 1234,
             outcome: OUTCOME_OK,
             exit_code: 0,
+            enrich: Enrichment {
+                resolve_ms: Some(88),
+                php_version: Some("8.4".into()),
+                ..Enrichment::default()
+            },
         };
         let json: serde_json::Value =
             serde_json::from_str(&serde_json::to_string(&ev).unwrap()).unwrap();
@@ -139,7 +193,11 @@ mod tests {
         assert_eq!(json["schema"], 1);
         assert_eq!(json["event"], "command");
         assert_eq!(json["name"], "sync");
-        // Absent build_sha is omitted, not null.
+        // Absent optionals are omitted, not null.
         assert!(json.get("build_sha").is_none());
+        assert!(json.get("vendor_ms").is_none());
+        // Set enrichment flattens to the top level.
+        assert_eq!(json["resolve_ms"], 88);
+        assert_eq!(json["php_version"], "8.4");
     }
 }

@@ -93,6 +93,17 @@ impl Recorder {
     /// must never fail a command (the §9.2 event-sink contract).
     pub fn record_command(&self, duration: Duration, outcome: &'static str, exit_code: u8) {
         let Some(inner) = &self.inner else { return };
+        // Drain whatever enrichment the command pushed; ecosystem
+        // fields honor the per-project weekly throttle marker.
+        let probe = crate::probe::take();
+        let mut enrich = probe.enrich;
+        if let Some(marker) = &probe.ecosystem_marker {
+            if crate::probe::ecosystem_fresh(marker) {
+                enrich.strip_ecosystem();
+            } else {
+                crate::probe::touch_marker(marker);
+            }
+        }
         let now = UtcHour::now();
         let event = CommandEvent {
             common: Common {
@@ -113,6 +124,7 @@ impl Recorder {
             duration_ms: u64::try_from(duration.as_millis()).unwrap_or(u64::MAX),
             outcome,
             exit_code,
+            enrich,
         };
         match serde_json::to_string(&event) {
             Ok(line) => inner.spool.append(&now.date(), &line),

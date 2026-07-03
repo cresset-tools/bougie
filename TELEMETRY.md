@@ -83,6 +83,25 @@ One NDJSON line per event. Envelope fields on every event:
 The category label and exit code are the *entire* error payload — no
 error messages, no offending package, no URL, no path.
 
+Commands that materialize a project (`sync` and the verbs built on
+it) may additionally attach:
+
+| field | values | notes |
+| --- | --- | --- |
+| `resolve_ms` / `vendor_ms` | integer | phase wall-clock |
+| `packages_installed` | integer | freshly installed this run |
+| `php_version` | `8.4`-style minor | never the patch level |
+| `php_flavor` | lowercase token | closed set defined by the bougie index |
+| `php_source` | `managed` \| `system` | |
+| `extensions` | names from a fixed list in `bougie-telemetry/src/probe.rs` | anything else (private/local extensions) is dropped, not sent |
+| `services` | subset of the service catalog (`mariadb`, `redis`, `opensearch`, `rabbitmq`, `mailpit`, `mkcert`, `server`) | |
+| `direct_deps` / `total_deps` | bucket: `0`, `1-5`, `6-15`, `16-40`, `41-100`, `100+` | never a raw dependency count |
+
+The `php_*`, `extensions`, `services`, and `*_deps` fields describe a
+project's shape, so they ship **at most once per project per week**
+(tracked by a local marker file; no project identifier is uploaded to
+do this).
+
 ## What is never collected
 
 Project names, directory paths, Composer package names, git remotes,
