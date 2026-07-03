@@ -135,6 +135,16 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
     // verbs themselves are meta and never recorded (`reset` would
     // re-spool its own event right after purging; the flush child
     // recording itself would self-perpetuate).
+    // First-run consent prompt (fallback surface for installs that
+    // bypassed the installer consent block: cargo install, docker,
+    // Windows irm|iex). Self-gating: only when the mode is undecided,
+    // interactive text-mode on a real tty, outside CI and run-shims.
+    if !matches!(command, "telemetry" | "__telemetry-flush" | "tool-exec") {
+        bougie_telemetry::prompt::maybe_prompt(
+            matches!(cli.format, OutputFormat::Text) && !cli.quiet,
+        );
+    }
+
     let recorder = if matches!(command, "telemetry" | "__telemetry-flush") {
         bougie_telemetry::Recorder::disabled()
     } else {

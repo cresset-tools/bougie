@@ -105,9 +105,12 @@ impl Render for SetResult {
     fn render_text(&self, w: &mut dyn Write) -> io::Result<()> {
         match self.mode {
             "on" => {
+                // Same wording as the consent prompts: one disclosure
+                // everywhere.
+                writeln!(w, "{}", bougie_telemetry::prompt::DISCLOSURE)?;
+                writeln!(w)?;
                 writeln!(w, "telemetry is on — anonymous usage events upload in batches.")?;
                 writeln!(w, "  inspect anytime:  bougie telemetry log")?;
-                writeln!(w, "  full field list:  https://bougie.tools/telemetry")?;
             }
             "local" => {
                 writeln!(

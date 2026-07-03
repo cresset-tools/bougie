@@ -66,6 +66,16 @@ jobs:
           path: artifacts
           merge-multiple: true
 
+      # Only for scripts/install-consent.{sh,ps1}, appended to the
+      # `latest/` installers below. The mirrored release artifacts
+      # themselves never come from the checkout.
+      - name: "Check out consent snippets"
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts
+          path: repo
+
       - name: "Set up SSH"
         # SSH agent + pinned known_hosts. Strict host-key checking is
         # on by default in OpenSSH; we just need to tell it which key
@@ -132,11 +142,19 @@ jobs:
             staging/ \
             "${RELEASES_USER}@${RELEASES_HOST}:${VERSIONED_BASE}/${VERSION}/"
 
-      - name: "Promote installers to latest"
+      - name: "Promote installers to latest (+ telemetry consent block)"
         # Skip the rolling pointer for prereleases — `curl ... | sh`
         # should land on a stable release. The shell `[ ]` test
         # below maps GH Actions' boolean "true"/"false" strings to
         # exit codes.
+        #
+        # Only this `latest/` channel carries the appended consent
+        # block (TELEMETRY_PLAN.md); the versioned mirror artifacts
+        # uploaded above stay byte-identical to the GitHub release
+        # assets. The tail guards turn a dist-template reshape into a
+        # loud release failure instead of a consent prompt that
+        # silently never runs — re-check them after every
+        # cargo-dist-version bump.
         if: ${{ !fromJson(inputs.plan).announcement_is_prerelease }}
         run: |
           set -euo pipefail
@@ -145,7 +163,26 @@ jobs:
               echo "Missing ${installer} in staging — dist didn't emit it?" >&2
               exit 1
             fi
+          done
+          expected_sh_tail='download_binary_and_run_installer "$@" || exit 1'
+          if [ "$(tail -n1 staging/bougie-installer.sh)" != "$expected_sh_tail" ]; then
+            echo "bougie-installer.sh no longer ends with the expected dist entrypoint;" >&2
+            echo "refusing to append the consent block (see TELEMETRY_PLAN.md tail guard)" >&2
+            exit 1
+          fi
+          if ! grep -qF 'Install-Binary "$Args"' staging/bougie-installer.ps1; then
+            echo "bougie-installer.ps1 lost its Install-Binary entrypoint;" >&2
+            echo "refusing to append the consent block (see TELEMETRY_PLAN.md tail guard)" >&2
+            exit 1
+          fi
+          mkdir -p latest
+          cat staging/bougie-installer.sh repo/scripts/install-consent.sh \
+            > latest/bougie-installer.sh
+          cat staging/bougie-installer.ps1 repo/scripts/install-consent.ps1 \
+            > latest/bougie-installer.ps1
+          sh -n latest/bougie-installer.sh
+          for installer in bougie-installer.sh bougie-installer.ps1; do
             scp -o BatchMode=yes \
-              "staging/${installer}" \
+              "latest/${installer}" \
               "${RELEASES_USER}@${RELEASES_HOST}:${INSTALLERS_BASE}/${installer}"
           done
