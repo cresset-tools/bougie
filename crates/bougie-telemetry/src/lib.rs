@@ -13,6 +13,7 @@
 //! `bougie telemetry log` shows exactly what would be sent.
 
 pub mod clock;
+pub mod crash;
 pub mod event;
 pub mod flush;
 pub mod ids;
@@ -20,6 +21,7 @@ pub mod mode;
 pub mod probe;
 pub mod prompt;
 pub mod recorder;
+pub mod scrub;
 pub mod spawn;
 pub mod spool;
 

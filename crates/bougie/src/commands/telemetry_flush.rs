@@ -10,6 +10,13 @@ use eyre::Result;
 use std::process::ExitCode;
 
 pub fn run() -> Result<ExitCode> {
+    // Test hook for the crash lane: a deterministic panic inside a
+    // hidden command, compiled only into test-fixtures builds.
+    #[cfg(feature = "test-fixtures")]
+    if std::env::var_os("BOUGIE_TEST_PANIC").is_some() {
+        panic!("test panic at /secret/home/project/file.php with \"very-secret-quoted-value\"");
+    }
+
     bougie_telemetry::flush::deprioritize();
     let paths = Paths::from_env()?;
     let stats = bougie_telemetry::flush::run_flush(&paths, env!("CARGO_PKG_VERSION"))?;

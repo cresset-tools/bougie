@@ -59,7 +59,7 @@ One NDJSON line per event. Envelope fields on every event:
 | field | values | notes |
 | --- | --- | --- |
 | `schema` | `1` | wire-schema version |
-| `event` | `command` | (crash reports planned; will be listed here before they ship) |
+| `event` | `command` \| `crash` | |
 | `ts` | RFC 3339 UTC, **truncated to the hour** | sub-hour timing is never recorded |
 | `install_id` | UUIDv4, or `"unset"` | minted only at consent; `telemetry reset` rotates it |
 | `invocation` | UUIDv4 | per-process, never stored, correlates one run's events |
@@ -101,6 +101,16 @@ The `php_*`, `extensions`, `services`, and `*_deps` fields describe a
 project's shape, so they ship **at most once per project per week**
 (tracked by a local marker file; no project identifier is uploaded to
 do this).
+
+`crash` event fields (release builds only; one per crash signature
+per day):
+
+| field | values | notes |
+| --- | --- | --- |
+| `command` | same closed verb set as `command.name` | |
+| `fingerprint` | 16 hex chars | `sha256` of the frame list — groups identical crashes |
+| `frames` | ≤ 40 entries | symbol names kept **only** for bougie/Rust-runtime code (`bougie…`, `std::…`, `core::…`, `alloc::…`); everything else collapses to `[external]`. Stripped release binaries yield `+0x…` module-relative offsets instead — meaningless without the matching build artifact |
+| `message` | ≤ 200 chars, scrubbed | anything path-shaped, anything containing your home directory, and quoted spans longer than 12 chars are replaced with `[redacted]` before the message leaves the process. Standard Rust panic messages ("index out of bounds: …") survive |
 
 ## What is never collected
 

@@ -126,6 +126,8 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
     // shows which verb is running even before a deeper phase span opens.
     let command = command_name(&cli.command);
     let _cmd_span = tracing::info_span!("command", name = command).entered();
+    // Let a potential crash event name the verb that was running.
+    bougie_telemetry::crash::set_command(command);
 
     // Telemetry wraps dispatch at this single choke point: one
     // `command` event per invocation (duration, outcome category, exit

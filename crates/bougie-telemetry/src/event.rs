@@ -81,6 +81,22 @@ pub struct Enrichment {
     pub total_deps: Option<&'static str>,
 }
 
+/// A scrubbed panic report (see `scrub.rs` for the guarantees: frames
+/// are allowlisted symbols or build-relative offsets; the message has
+/// paths, home-dir fragments, and long quoted spans redacted).
+#[derive(Debug, Clone, Serialize)]
+pub struct CrashEvent {
+    #[serde(flatten)]
+    pub common: Common,
+    /// The verb that was running (same closed set as `command.name`).
+    pub command: &'static str,
+    /// 16-hex crash identity: `sha256(frames)` truncated.
+    pub fingerprint: String,
+    pub frames: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
 impl Enrichment {
     /// Drop the per-project ecosystem fields (throttle hit), keeping
     /// the perf fields, which carry no project shape.
