@@ -14,7 +14,9 @@ use bougie_platform::target::Triple;
 use bougie_resolver::ResolveOptions;
 use bougie_tool::classify::ExtensionClassifier;
 use bougie_tool::install::ExtInstaller;
-use bougie_tool::resolve::{BaselineEnsurer, PhpChoice, PhpInstaller, RequiredPhpFetcher};
+use bougie_tool::resolve::{
+    BaselineEnsurer, PhpChoice, PhpInstaller, ToolRequires, ToolRequiresFetcher,
+};
 use bougie_version::request::Flavor;
 use bougie_version::request::parse_request as parse_php_request;
 use bougie_version::version::PartialVersion;
@@ -26,16 +28,28 @@ use std::path::PathBuf;
 /// call site because that helper lives in `super::composer_update`.
 pub use bougie_tool::install::LockResolver;
 
-/// Build the `RequiredPhpFetcher` callback. Hits Packagist v2
+/// True when a derived extension name is worth carrying into a tool's
+/// effective extension set: not compiled into the interpreter
+/// (builtins) and not part of the baseline every tool PHP gets
+/// anyway. Re-enabling either kind via a tool conf.d fragment would
+/// at best be a no-op and at worst emit "module already loaded"
+/// warnings on every PHP startup.
+pub fn ext_needs_install(name: &str) -> bool {
+    !bougie_installer::baseline::is_builtin(name)
+        && !bougie_installer::baseline::is_baseline(name)
+}
+
+/// Build the `ToolRequiresFetcher` callback. Hits Packagist v2
 /// metadata for `package`, picks the highest stable version matching
 /// the user's `@<constraint>` (or `*` if unspecified), and returns
-/// that version's `require.php` verbatim. `None` when the package
-/// doesn't pin PHP; `Err` on network / parse failure (the install
-/// flow surfaces those as a warning and falls back to the legacy
-/// default).
-pub fn required_php_fetcher() -> Box<RequiredPhpFetcher> {
+/// that version's platform requirements: `require.php` verbatim plus
+/// every `require.ext-*` short name that isn't trivially satisfied
+/// (builtin / baseline). Empty default when the package or a matching
+/// version isn't found; `Err` on network / parse failure (the install
+/// flow surfaces those as a warning and falls back).
+pub fn tool_requires_fetcher() -> Box<ToolRequiresFetcher> {
     Box::new(
-        |paths: &Paths, package: &str, user_constraint: &str| -> Result<Option<String>> {
+        |paths: &Paths, package: &str, user_constraint: &str| -> Result<ToolRequires> {
             use bougie_composer_resolver::metadata::{
                 Repo, Variant, fetch_package_metadata,
             };
@@ -44,7 +58,7 @@ pub fn required_php_fetcher() -> Box<RequiredPhpFetcher> {
             let metadata = fetch_package_metadata(&client, paths, &repo, package, Variant::Stable)
                 .wrap_err_with(|| format!("fetching Packagist metadata for `{package}`"))?;
             let Some(versions) = metadata.packages.get(package) else {
-                return Ok(None);
+                return Ok(ToolRequires::default());
             };
             let parsed_constraint = composer_semver::Constraint::parse(user_constraint)
                 .map_err(|e| eyre::eyre!("parsing user constraint `{user_constraint}`: {e}"))?;
@@ -55,10 +69,20 @@ pub fn required_php_fetcher() -> Box<RequiredPhpFetcher> {
                     continue;
                 };
                 if parsed_constraint.matches(&ver) {
-                    return Ok(v.require.get("php").cloned());
+                    let extensions = v
+                        .require
+                        .keys()
+                        .filter_map(|k| k.strip_prefix("ext-"))
+                        .map(str::to_ascii_lowercase)
+                        .filter(|n| ext_needs_install(n))
+                        .collect();
+                    return Ok(ToolRequires {
+                        php: v.require.get("php").cloned(),
+                        extensions,
+                    });
                 }
             }
-            Ok(None)
+            Ok(ToolRequires::default())
         },
     )
 }

@@ -1535,6 +1535,11 @@ pub struct ToolRunArgs {
     /// `tool install --with`. Repeatable
     #[arg(long, value_name = "PKG_OR_EXT")]
     pub with: Vec<String>,
+    /// Ignore the surrounding PHP project. By default a project's
+    /// PHP version and required extensions are applied to the run
+    /// (tool requirements win on conflict)
+    #[arg(long)]
+    pub no_project: bool,
     /// The tool's Composer package (optionally `@<constraint>`) followed
     /// by the arguments to forward to it. bougie's own options must come
     /// *before* the package; everything from the package onward is passed

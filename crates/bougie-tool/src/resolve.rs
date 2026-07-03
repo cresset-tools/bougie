@@ -42,18 +42,86 @@ pub struct PhpChoice {
 /// crate boundary.
 pub type PhpInstaller = dyn Fn(&Paths, &str) -> Result<PhpChoice> + Send + Sync;
 
-/// Callback that fetches a tool package's `require.php` constraint
-/// from Packagist (cached). Returns `None` when the package doesn't
-/// pin PHP. Hosted by the bougie binary so this crate stays free of
-/// reqwest + the resolver's metadata machinery.
+/// What a tool package's own metadata (`require`) asks of the
+/// platform. Fetched once per install/run and consumed twice: `php`
+/// drives interpreter selection, `extensions` joins the effective
+/// extension set alongside `--with` and any project-derived names.
+#[derive(Debug, Clone, Default)]
+pub struct ToolRequires {
+    /// `require.php` verbatim (a composer-style constraint like
+    /// `^7.2 || ^8.0`), or `None` when the tool doesn't pin PHP.
+    pub php: Option<String>,
+    /// `require.ext-*` short names (`ext-` stripped, lowercased).
+    /// The callback pre-filters names that are always satisfied
+    /// (builtins, baseline) so everything left is a real install
+    /// candidate.
+    pub extensions: Vec<String>,
+}
+
+/// Callback that fetches a tool package's platform requirements from
+/// Packagist (cached). Hosted by the bougie binary so this crate
+/// stays free of reqwest + the resolver's metadata machinery.
 ///
 /// Arguments: `paths`, `package` (`vendor/name`), `user_constraint`
 /// (the `@<constraint>` segment of the install request, or `*` when
 /// unspecified). The fetcher picks the highest stable version
-/// matching `user_constraint` and returns its `require.php` verbatim
-/// (a composer-style constraint like `^7.2 || ^8.0`).
-pub type RequiredPhpFetcher =
-    dyn Fn(&Paths, &str, &str) -> Result<Option<String>> + Send + Sync;
+/// matching `user_constraint` and returns that version's
+/// requirements. An unknown package yields the empty default; `Err`
+/// is reserved for network / parse failures (callers warn and fall
+/// back).
+pub type ToolRequiresFetcher =
+    dyn Fn(&Paths, &str, &str) -> Result<ToolRequires> + Send + Sync;
+
+/// PHP-selection inputs derived from the project the user is standing
+/// in. Assembled by the bougie binary (this crate stays
+/// project-blind); consumed by [`select_php`].
+#[derive(Debug, Clone, Default)]
+pub struct ProjectPhp {
+    /// Exact `(version, flavor)` a synced bougie project resolved to
+    /// (`vendor/bougie/state/resolved`). Strongest signal: when it
+    /// satisfies the tool's `require.php`, the tool runs the very
+    /// interpreter the project runs.
+    pub resolved: Option<(String, String)>,
+    /// The project's PHP constraint (composer.json `require.php`,
+    /// `bougie.toml [php]version`, or inferred), pre-parsed for
+    /// matching.
+    pub constraint: Option<composer_semver::Constraint>,
+    /// Raw string form of `constraint` for the installer fallback
+    /// (install specs travel as strings). `None` when the constraint
+    /// was synthesized without a single written form (e.g. a
+    /// lockfile-wide intersection).
+    pub constraint_raw: Option<String>,
+    /// Human-readable origin for notices ("./composer.json",
+    /// "magento/product-community-edition 2.4.7", …).
+    pub source: String,
+}
+
+/// Everything the project contributes to a tool run: PHP-selection
+/// inputs plus the derived extension set (already filtered of
+/// builtins/baseline by the binary side).
+#[derive(Debug, Clone, Default)]
+pub struct ProjectContext {
+    pub php: ProjectPhp,
+    pub extensions: Vec<String>,
+}
+
+/// Which lane [`select_php`] settled on — drives the one-line notice
+/// the run path prints.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PhpSource {
+    /// `--php` explicit spec.
+    Spec,
+    /// A synced bougie project's exact resolved interpreter.
+    ProjectResolved,
+    /// Highest version satisfying both the project constraint and
+    /// the tool's `require.php`.
+    ProjectIntersection,
+    /// The tool's own `require.php` (no project signal, or the
+    /// project turned out incompatible).
+    ToolRequire,
+    /// Highest installed NTS — no signal at all.
+    DefaultHighest,
+}
 
 /// Callback that ensures the chosen PHP install has its baseline
 /// extensions (phar, mbstring, tokenizer, dom, …) installed and
@@ -80,33 +148,163 @@ pub fn pick_php_for_constraint(
 ) -> Result<PhpChoice> {
     let parsed = composer_semver::Constraint::parse(php_constraint)
         .map_err(|e| eyre::eyre!("parsing tool's require.php `{php_constraint}`: {e}"))?;
+    if let Some(choice) = best_installed_nts(paths, &[&parsed])? {
+        return Ok(choice);
+    }
+    installer(paths, php_constraint).wrap_err_with(|| {
+        format!("auto-installing PHP for tool require.php `{php_constraint}`")
+    })
+}
+
+/// Highest installed NTS PHP matching *every* constraint in `preds`,
+/// or `None` when nothing on disk qualifies.
+fn best_installed_nts(
+    paths: &Paths,
+    preds: &[&composer_semver::Constraint],
+) -> Result<Option<PhpChoice>> {
     let on_disk = store::list_installed(paths)
         .map_err(|e| eyre::eyre!("listing installed PHPs: {e}"))?;
-    let mut candidates: Vec<(Version, String)> = on_disk
+    let best = on_disk
         .into_iter()
         .filter(|(_, flavor)| flavor == "nts")
         .filter_map(|(v, f)| v.parse::<Version>().ok().map(|p| (p, f)))
         .filter(|(v, _)| {
             composer_semver::Version::parse(&v.to_string())
-                .is_ok_and(|lifted| parsed.matches(&lifted))
+                .is_ok_and(|lifted| preds.iter().all(|p| p.matches(&lifted)))
         })
-        .collect();
-    if let Some((version, flavor)) = candidates.drain(..).max_by(|a, b| a.0.cmp(&b.0)) {
+        .max_by(|a, b| a.0.cmp(&b.0));
+    Ok(best.map(|(version, flavor)| {
         let version_str = version.to_string();
         let bin = paths
             .installs()
             .join(format!("{version_str}-{flavor}"))
             .join("bin")
             .join("php");
-        return Ok(PhpChoice {
+        PhpChoice {
             version: version_str,
             flavor,
             bin,
-        });
+        }
+    }))
+}
+
+/// True when the tool's constraint (if any) admits `version`.
+/// Unparseable versions count as a mismatch — better to fall to a
+/// lane that re-resolves than to exec a PHP the tool may reject.
+fn tool_accepts(tool: Option<&composer_semver::Constraint>, version: &str) -> bool {
+    match tool {
+        None => true,
+        Some(c) => composer_semver::Version::parse(version).is_ok_and(|v| c.matches(&v)),
     }
-    installer(paths, php_constraint).wrap_err_with(|| {
-        format!("auto-installing PHP for tool require.php `{php_constraint}`")
-    })
+}
+
+/// Full PHP-selection ladder for tool installs and runs:
+///
+/// 1. `--php <spec>` — explicit, wins unconditionally.
+/// 2. A synced bougie project's exact resolved interpreter, when it
+///    satisfies the tool's `require.php` and is still on disk.
+/// 3. The project constraint ∩ the tool constraint: highest installed
+///    NTS matching both, else auto-install by the project's written
+///    constraint and keep the result only if the tool accepts it.
+/// 4. The tool's `require.php` alone (today's behaviour) — with a
+///    warning when a project constraint had to be abandoned, since
+///    the tool may then be unable to boot the project's code.
+/// 5. Highest installed NTS.
+///
+/// The project side is best-effort by design: the tool must at
+/// minimum be able to execute itself, so on any project/tool
+/// incompatibility the tool's own requirement is authoritative and
+/// the project's `platform_check.php` gets to report the mismatch in
+/// its own words at runtime.
+pub fn select_php(
+    paths: &Paths,
+    package: &str,
+    php_spec: Option<&str>,
+    tool_php: Option<&str>,
+    project: Option<&ProjectPhp>,
+    installer: &PhpInstaller,
+) -> Result<(PhpChoice, PhpSource)> {
+    if let Some(spec) = php_spec {
+        return Ok((pick_php(paths, Some(spec), installer)?, PhpSource::Spec));
+    }
+
+    let tool_parsed = tool_php
+        .map(|raw| {
+            composer_semver::Constraint::parse(raw)
+                .map_err(|e| eyre::eyre!("parsing tool's require.php `{raw}`: {e}"))
+        })
+        .transpose()?;
+
+    let mut project_abandoned: Option<&str> = None;
+    if let Some(p) = project {
+        // Lane 2: exact resolved interpreter of a synced project.
+        if let Some((version, flavor)) = &p.resolved
+            && tool_accepts(tool_parsed.as_ref(), version)
+        {
+            let bin = paths
+                .installs()
+                .join(format!("{version}-{flavor}"))
+                .join("bin")
+                .join("php");
+            if bin.is_file() {
+                return Ok((
+                    PhpChoice {
+                        version: version.clone(),
+                        flavor: flavor.clone(),
+                        bin,
+                    },
+                    PhpSource::ProjectResolved,
+                ));
+            }
+            // Stale marker (install pruned) — fall through to the
+            // constraint lanes rather than exec a missing binary.
+        }
+
+        // Lane 3: intersection of project and tool constraints.
+        if let Some(pc) = &p.constraint {
+            let mut preds: Vec<&composer_semver::Constraint> = vec![pc];
+            if let Some(tc) = &tool_parsed {
+                preds.push(tc);
+            }
+            if let Some(choice) = best_installed_nts(paths, &preds)? {
+                return Ok((choice, PhpSource::ProjectIntersection));
+            }
+            if let Some(raw) = &p.constraint_raw {
+                match installer(paths, raw) {
+                    Ok(choice) if tool_accepts(tool_parsed.as_ref(), &choice.version) => {
+                        return Ok((choice, PhpSource::ProjectIntersection));
+                    }
+                    Ok(_) | Err(_) => {
+                        // Either the freshly resolved project PHP
+                        // violates the tool's constraint, or nothing
+                        // resolvable satisfies the project. Tool wins.
+                        project_abandoned = Some(p.source.as_str());
+                    }
+                }
+            } else {
+                project_abandoned = Some(p.source.as_str());
+            }
+        }
+    }
+
+    if let Some(source) = project_abandoned {
+        eprintln!(
+            "warning: couldn't select a PHP satisfying both the project ({source}) and \
+             `{package}`'s require.php ({tool}); using the tool's requirement — it may not \
+             be able to boot this project. Pass `--php <ver>` to pin, or `--no-project` \
+             to ignore the project.",
+            tool = tool_php.unwrap_or("*"),
+        );
+    }
+
+    // Lanes 4 + 5: tool's own requirement, then the bare default.
+    match tool_php {
+        Some(tc) => Ok((
+            pick_php_for_constraint(paths, tc, installer)?,
+            PhpSource::ToolRequire,
+        )),
+        None => Ok((pick_php(paths, None, installer)?, PhpSource::DefaultHighest)),
+    }
 }
 
 /// Pick a PHP for a new tool install. `spec` is the user's
@@ -297,5 +495,176 @@ mod tests {
         // the constraint verbatim.
         let choice = pick_php_for_constraint(&p, "^7.2", inst.as_ref()).unwrap();
         assert_eq!(choice.version, "7.4.33");
+    }
+
+    fn install_fake_with_bin(paths: &Paths, version: &str, flavor: &str) {
+        let bin = paths
+            .installs()
+            .join(format!("{version}-{flavor}"))
+            .join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("php"), "").unwrap();
+    }
+
+    fn project_php(
+        resolved: Option<(&str, &str)>,
+        constraint: Option<&str>,
+    ) -> ProjectPhp {
+        ProjectPhp {
+            resolved: resolved.map(|(v, f)| (v.to_string(), f.to_string())),
+            constraint: constraint
+                .map(|c| composer_semver::Constraint::parse(c).unwrap()),
+            constraint_raw: constraint.map(str::to_string),
+            source: "./composer.json".into(),
+        }
+    }
+
+    #[test]
+    fn select_spec_wins_over_project_and_tool() {
+        let td = tempfile::TempDir::new().unwrap();
+        let p = paths(td.path());
+        install_fake(&p, "8.3.12", "nts");
+        install_fake(&p, "8.4.0", "nts");
+        let inst = fail_installer();
+        let proj = project_php(Some(("8.4.0", "nts")), Some("~8.4.0"));
+        let (choice, source) = select_php(
+            &p, "v/p", Some("8.3"), Some(">=8.0"), Some(&proj), inst.as_ref(),
+        )
+        .unwrap();
+        assert_eq!(choice.version, "8.3.12");
+        assert_eq!(source, PhpSource::Spec);
+    }
+
+    #[test]
+    fn select_uses_project_resolved_when_tool_accepts() {
+        let td = tempfile::TempDir::new().unwrap();
+        let p = paths(td.path());
+        install_fake_with_bin(&p, "8.4.2", "nts");
+        install_fake_with_bin(&p, "8.5.0", "nts");
+        let inst = fail_installer();
+        let proj = project_php(Some(("8.4.2", "nts")), Some("~8.4.0"));
+        let (choice, source) = select_php(
+            &p, "v/p", None, Some(">=8.0.0"), Some(&proj), inst.as_ref(),
+        )
+        .unwrap();
+        // Exact project interpreter, not the higher installed 8.5.
+        assert_eq!(choice.version, "8.4.2");
+        assert_eq!(source, PhpSource::ProjectResolved);
+    }
+
+    #[test]
+    fn select_project_resolved_zts_flavor_is_honoured() {
+        let td = tempfile::TempDir::new().unwrap();
+        let p = paths(td.path());
+        install_fake_with_bin(&p, "8.4.2", "zts");
+        let inst = fail_installer();
+        let proj = project_php(Some(("8.4.2", "zts")), None);
+        let (choice, source) =
+            select_php(&p, "v/p", None, None, Some(&proj), inst.as_ref()).unwrap();
+        assert_eq!((choice.version.as_str(), choice.flavor.as_str()), ("8.4.2", "zts"));
+        assert_eq!(source, PhpSource::ProjectResolved);
+    }
+
+    #[test]
+    fn select_intersects_project_constraint_with_tool() {
+        let td = tempfile::TempDir::new().unwrap();
+        let p = paths(td.path());
+        install_fake(&p, "8.3.12", "nts");
+        install_fake(&p, "8.4.0", "nts");
+        install_fake(&p, "8.5.1", "nts");
+        let inst = fail_installer();
+        // Project allows 8.3/8.4; tool wants >=8.4 — intersection is 8.4.
+        let proj = project_php(None, Some("~8.3.0 || ~8.4.0"));
+        let (choice, source) = select_php(
+            &p, "v/p", None, Some(">=8.4"), Some(&proj), inst.as_ref(),
+        )
+        .unwrap();
+        assert_eq!(choice.version, "8.4.0");
+        assert_eq!(source, PhpSource::ProjectIntersection);
+    }
+
+    #[test]
+    fn select_skips_incompatible_resolved_but_keeps_constraint_lane() {
+        let td = tempfile::TempDir::new().unwrap();
+        let p = paths(td.path());
+        install_fake_with_bin(&p, "8.1.30", "nts");
+        install_fake(&p, "8.3.12", "nts");
+        let inst = fail_installer();
+        // Resolved 8.1 violates the tool's ^8.2; the broader project
+        // constraint still intersects at 8.3.
+        let proj = project_php(Some(("8.1.30", "nts")), Some(">=8.1"));
+        let (choice, source) = select_php(
+            &p, "v/p", None, Some("^8.2"), Some(&proj), inst.as_ref(),
+        )
+        .unwrap();
+        assert_eq!(choice.version, "8.3.12");
+        assert_eq!(source, PhpSource::ProjectIntersection);
+    }
+
+    #[test]
+    fn select_empty_intersection_defaults_to_tool() {
+        let td = tempfile::TempDir::new().unwrap();
+        let p = paths(td.path());
+        install_fake(&p, "8.1.30", "nts");
+        install_fake(&p, "8.4.0", "nts");
+        // Project pinned to the 8.1 series, tool needs >=8.3: the
+        // intersection is empty. The installer is consulted for the
+        // project constraint ("~8.1.0") and hands back an 8.1 — which
+        // the tool rejects — so selection falls to the tool lane.
+        let inst = dummy_installer("8.1.32", "nts");
+        let proj = project_php(None, Some("~8.1.0"));
+        let (choice, source) = select_php(
+            &p, "v/p", None, Some(">=8.3"), Some(&proj), inst.as_ref(),
+        )
+        .unwrap();
+        assert_eq!(choice.version, "8.4.0");
+        assert_eq!(source, PhpSource::ToolRequire);
+    }
+
+    #[test]
+    fn select_installer_error_on_project_constraint_falls_to_tool() {
+        let td = tempfile::TempDir::new().unwrap();
+        let p = paths(td.path());
+        install_fake(&p, "8.4.0", "nts");
+        // Nothing installed matches the project's 7.4 pin and the
+        // installer can't provide one either → tool lane.
+        let inst = fail_installer();
+        let proj = project_php(None, Some("~7.4.0"));
+        let (choice, source) = select_php(
+            &p, "v/p", None, Some(">=8.0"), Some(&proj), inst.as_ref(),
+        )
+        .unwrap();
+        assert_eq!(choice.version, "8.4.0");
+        assert_eq!(source, PhpSource::ToolRequire);
+    }
+
+    #[test]
+    fn select_without_project_or_tool_is_default_highest() {
+        let td = tempfile::TempDir::new().unwrap();
+        let p = paths(td.path());
+        install_fake(&p, "8.3.12", "nts");
+        install_fake(&p, "8.4.0", "nts");
+        let inst = fail_installer();
+        let (choice, source) =
+            select_php(&p, "v/p", None, None, None, inst.as_ref()).unwrap();
+        assert_eq!(choice.version, "8.4.0");
+        assert_eq!(source, PhpSource::DefaultHighest);
+    }
+
+    #[test]
+    fn select_stale_resolved_marker_falls_to_constraint_lane() {
+        let td = tempfile::TempDir::new().unwrap();
+        let p = paths(td.path());
+        // Marker points at 8.4.1 but only 8.4.3 is actually installed
+        // (e.g. `bougie php upgrade` pruned the old patch release).
+        install_fake(&p, "8.4.3", "nts");
+        let inst = fail_installer();
+        let proj = project_php(Some(("8.4.1", "nts")), Some("~8.4.0"));
+        let (choice, source) = select_php(
+            &p, "v/p", None, Some(">=8.0"), Some(&proj), inst.as_ref(),
+        )
+        .unwrap();
+        assert_eq!(choice.version, "8.4.3");
+        assert_eq!(source, PhpSource::ProjectIntersection);
     }
 }

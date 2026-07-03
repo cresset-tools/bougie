@@ -319,7 +319,7 @@ fn run_installer_starter(package: &str, root: &Path, format: OutputFormat) -> Re
     let php_installer = super::tool_callbacks::php_installer();
     let classifier = super::tool_callbacks::extension_classifier();
     let ext_installer = super::tool_callbacks::extension_installer();
-    let php_requirement = super::tool_callbacks::required_php_fetcher();
+    let tool_requires = super::tool_callbacks::tool_requires_fetcher();
     let php_baseline = super::tool_callbacks::baseline_ensurer();
     let ctx = InstallContext {
         paths: &paths,
@@ -327,13 +327,15 @@ fn run_installer_starter(package: &str, root: &Path, format: OutputFormat) -> Re
         php_installer: php_installer.as_ref(),
         classifier: classifier.as_ref(),
         ext_installer: ext_installer.as_ref(),
-        php_requirement: php_requirement.as_ref(),
+        tool_requires: tool_requires.as_ref(),
         php_baseline: php_baseline.as_ref(),
     };
 
     eprintln!("note: scaffolding with `{package}` via bougie tool run…");
 
-    let plan = run::prepare(&ctx, &req, None, &[])?;
+    // No project context: we're scaffolding the project right now, so
+    // there's nothing meaningful to derive from the (half-written) cwd.
+    let plan = run::prepare(&ctx, &req, None, &[], None)?;
     let receipt = receipt::read(&plan.tool_dir.join("receipt.toml"))?;
     let entry = run::pick_bin(&receipt.entrypoints, &plan.package)?;
     let wrapper = plan.tool_dir.join("bin").join(&entry.name);

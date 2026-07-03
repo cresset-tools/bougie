@@ -192,6 +192,18 @@ impl Paths {
         self.local.join("exec-shims")
     }
 
+    /// `$BOUGIE_LOCAL/cli-defaults/` — bougie-managed ini fragments
+    /// layered into `PHP_INI_SCAN_DIR` for **CLI** tool execution
+    /// (between the install's bundled conf.d and the tool's own
+    /// conf.d, so per-tool fragments still win). Holds the CLI
+    /// memory-limit lift; because the scan dir travels via the
+    /// environment, child PHP processes a tool spawns (`PHP_BINARY`
+    /// via Symfony Process, `bin/magento`, …) inherit it too — which
+    /// argv-level `-d` overrides can't do.
+    pub fn cli_defaults(&self) -> PathBuf {
+        self.local.join("cli-defaults")
+    }
+
     /// User-facing bin directory where tool launcher symlinks land.
     /// Resolves `BOUGIE_TOOL_BIN_DIR`, then `XDG_BIN_HOME`, then
     /// `~/.local/bin`. On Windows the default is
