@@ -10,6 +10,7 @@ pub mod client;
 pub mod config_mut;
 pub mod daemon;
 pub mod down;
+pub mod exec;
 pub mod ide;
 pub mod list;
 pub mod logs;

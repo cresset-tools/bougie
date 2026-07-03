@@ -106,5 +106,10 @@ pub fn run(
         deprovisioned,
     };
     emit(format, &result)?;
+
+    // Garbage-collect the removed services' client-tool shims from
+    // vendor/bougie/bin/. Best-effort — the declaration edit above is
+    // the command's contract.
+    crate::commands::sync::refresh_service_client_shims(&project_root);
     Ok(ExitCode::SUCCESS)
 }

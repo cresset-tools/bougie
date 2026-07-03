@@ -892,6 +892,7 @@ mod tests {
             user_facing: true,
             summary: "test",
             sandbox: SandboxKind::Strict,
+            clients: &[],
         }
     }
 

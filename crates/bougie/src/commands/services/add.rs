@@ -88,6 +88,12 @@ pub fn run(format: OutputFormat, names: Vec<String>) -> Result<ExitCode> {
 
     let result = ServicesAddResult { schema_version: 1, items, target: target_label };
     emit(format, &result)?;
+
+    // Materialize the new services' client-tool shims (mysqldump,
+    // redis-cli, …) in vendor/bougie/bin/ right away rather than waiting
+    // for the next sync. Best-effort — the declaration edit above is
+    // the command's contract.
+    crate::commands::sync::refresh_service_client_shims(&project_root);
     Ok(ExitCode::SUCCESS)
 }
 

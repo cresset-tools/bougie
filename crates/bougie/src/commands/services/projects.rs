@@ -170,26 +170,11 @@ fn format_alloc(alloc: &BTreeMap<String, Value>) -> String {
         .join(" ")
 }
 
-/// Read one service's tenant ledger synchronously. Mirrors
-/// `bougie_daemon::daemon::tenants::load_all` (which is async); a
-/// missing file means the service was never provisioned for any
-/// project and yields an empty list.
+/// Read one service's tenant ledger synchronously. A missing file
+/// means the service was never provisioned for any project and yields
+/// an empty list.
 fn load_ledger(path: &Path) -> Result<Vec<Tenant>> {
-    let text = match std::fs::read_to_string(path) {
-        Ok(t) => t,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(e) => return Err(eyre!("reading {}: {e}", path.display())),
-    };
-    let mut out = Vec::new();
-    for (i, line) in text.lines().enumerate() {
-        if line.trim().is_empty() {
-            continue;
-        }
-        let t: Tenant = serde_json::from_str(line)
-            .map_err(|e| eyre!("parsing line {} of {}: {e}", i + 1, path.display()))?;
-        out.push(t);
-    }
-    Ok(out)
+    bougie_daemon::daemon::tenants::load_all_sync(path)
 }
 
 pub fn run(format: OutputFormat, show_alloc: bool) -> Result<ExitCode> {
