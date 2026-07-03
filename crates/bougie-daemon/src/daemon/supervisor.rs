@@ -42,6 +42,17 @@ const FAILURE_RESET_THRESHOLD: Duration = Duration::from_mins(1);
 /// services up <name>` to retry manually.
 const MAX_RESTART_ATTEMPTS: u32 = 10;
 
+/// How often a `Running`/`Unhealthy` service is re-probed by the
+/// continuous health loop (driven off-lock by the daemon ticker).
+const HEALTH_INTERVAL: Duration = Duration::from_secs(5);
+
+/// Consecutive failed health probes before a `Running` service is
+/// declared broken, torn down, and restarted. At [`HEALTH_INTERVAL`]
+/// this is ~15s of sustained failure — long enough that a single
+/// transient blip (a probe timing out under load) won't flap a healthy
+/// service, short enough to catch a genuinely wedged one quickly.
+const HEALTH_FAILURE_THRESHOLD: u32 = 3;
+
 /// Per-service health-probe deadline. JVM-based services (opensearch
 /// today, rabbitmq via erlang/JIT later) need a longer window because
 /// JIT compilation + cluster bootstrap dominate cold-start time.
@@ -85,6 +96,13 @@ pub enum ServiceState {
     Starting,
     HealthChecking,
     Running,
+    /// A live process (has a child, started successfully) that is now
+    /// *failing* its continuous health probe. Behaves like `Running`
+    /// for stop/teardown purposes — it's a real process — but signals
+    /// the service isn't actually serving. After
+    /// [`HEALTH_FAILURE_THRESHOLD`] consecutive misses the supervisor
+    /// tears it down and restarts it (see [`Supervisor::fail_unhealthy`]).
+    Unhealthy,
     Stopping,
     Failed,
 }
@@ -131,6 +149,19 @@ pub struct ManagedService {
     /// state == Failed and `failure_count <= MAX_RESTART_ATTEMPTS`.
     /// The 1s ticker checks this and calls `start` when due.
     pub restart_at: Option<Instant>,
+    /// Consecutive failed continuous-health probes. Reset to 0 on any
+    /// passing probe. At `HEALTH_FAILURE_THRESHOLD` the service is torn
+    /// down + restarted. Surfaced in `bougie services status`.
+    pub health_misses: u32,
+    /// When the next continuous health probe is due. `Some` only for a
+    /// live, probe-able service (`Running`/`Unhealthy`); the ticker's
+    /// `health_due` checks it. `None` clears it from the rotation.
+    pub next_health_at: Option<Instant>,
+    /// True while an off-lock probe for this service is in flight, so the
+    /// ticker doesn't stack a second probe on top of a slow one.
+    pub health_inflight: bool,
+    /// When the most recent probe last passed. Diagnostic only.
+    pub last_health_ok: Option<Instant>,
 }
 
 impl ManagedService {
@@ -147,6 +178,10 @@ impl ManagedService {
             failure_count: 0,
             last_failure_at: None,
             restart_at: None,
+            health_misses: 0,
+            next_health_at: None,
+            health_inflight: false,
+            last_health_ok: None,
         }
     }
 }
@@ -170,6 +205,16 @@ pub struct ServiceStatus {
     /// (i.e. `failure_count` <= `MAX_RESTART_ATTEMPTS`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_restart_ms: Option<u64>,
+    /// Consecutive failed continuous-health probes. `0` for a healthy
+    /// service; non-zero means it's failing its probe and counting down
+    /// to a teardown-and-restart at `HEALTH_FAILURE_THRESHOLD`.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub health_misses: u32,
+    /// Consecutive-miss threshold at which an `Unhealthy` service is
+    /// restarted. Surfaced so the CLI can render `2/3` without baking the
+    /// constant into the client.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub health_threshold: u32,
 }
 
 fn is_zero_u32(n: &u32) -> bool {
@@ -188,16 +233,15 @@ fn is_zero_u32(n: &u32) -> bool {
 #[derive(Debug)]
 pub struct PendingHealth {
     name: &'static str,
-    binding: Binding,
     paths: Paths,
     child: Child,
 }
 
 impl PendingHealth {
-    /// Probe until the service accepts connections, exits early, or its
+    /// Probe until the service is healthy, exits early, or its
     /// per-service deadline elapses. Runs without the supervisor lock.
     async fn wait_healthy(&mut self) -> Result<()> {
-        wait_for_health(&self.binding, self.name, &self.paths, &mut self.child).await
+        wait_for_health(self.name, &self.paths, &mut self.child).await
     }
 }
 
@@ -227,6 +271,25 @@ pub enum StartFinalize {
     /// racing `stop`/drain. We did not resurrect it; the now-stale babysit
     /// [`Child`] is handed back for the caller to reap off-lock.
     Superseded(Child),
+}
+
+/// Outcome of [`Supervisor::record_health`] — how a continuous-health
+/// probe result moved the service's state.
+#[derive(Debug, PartialEq, Eq)]
+pub enum HealthOutcome {
+    /// Probe passed (or recovered an `Unhealthy` service to `Running`).
+    Healthy,
+    /// Probe failed but the consecutive-miss count is still under
+    /// [`HEALTH_FAILURE_THRESHOLD`]; the service is now `Unhealthy`.
+    Degraded,
+    /// The consecutive-miss threshold was hit — the caller (the ticker)
+    /// must tear the wedged service down and reschedule it via
+    /// [`Supervisor::fail_unhealthy`].
+    Breach,
+    /// The service moved out of a probe-able state (`Running`/`Unhealthy`)
+    /// while the probe ran off-lock — stopped, crashed, or restarted.
+    /// The stale result is discarded.
+    Gone,
 }
 
 #[derive(Debug)]
@@ -303,6 +366,14 @@ impl Supervisor {
                     binding: entry.binding,
                     failure_count: svc.failure_count,
                     next_restart_ms,
+                    health_misses: svc.health_misses,
+                    // Only meaningful while actively missing probes; keep
+                    // the snapshot quiet otherwise (skip_serializing_if).
+                    health_threshold: if svc.health_misses > 0 {
+                        HEALTH_FAILURE_THRESHOLD
+                    } else {
+                        0
+                    },
                 })
             })
             .collect();
@@ -344,7 +415,10 @@ impl Supervisor {
                 .ok_or_else(|| eyre!("BUG: service `{}` missing from supervisor map", entry.name))?;
             if matches!(
                 svc.state,
-                ServiceState::Running | ServiceState::HealthChecking | ServiceState::Starting
+                ServiceState::Running
+                    | ServiceState::Unhealthy
+                    | ServiceState::HealthChecking
+                    | ServiceState::Starting
             ) {
                 return Ok(SpawnOutcome::AlreadyRunning);
             }
@@ -601,7 +675,6 @@ impl Supervisor {
             .expect("BUG: child was just set above");
         Ok(SpawnOutcome::Spawned(Box::new(PendingHealth {
             name: entry.name,
-            binding: entry.binding,
             paths: self.paths.clone(),
             child,
         })))
@@ -640,10 +713,18 @@ impl Supervisor {
         match probe {
             Ok(()) => {
                 svc.state = ServiceState::Running;
+                // Arm the continuous-health clock now that it's serving.
+                let now = Instant::now();
+                svc.health_misses = 0;
+                svc.last_health_ok = Some(now);
+                svc.next_health_at = Some(now + HEALTH_INTERVAL);
+                svc.health_inflight = false;
                 StartFinalize::Started
             }
             Err(e) => {
                 svc.state = ServiceState::Failed;
+                svc.next_health_at = None;
+                svc.health_inflight = false;
                 StartFinalize::Failed(e)
             }
         }
@@ -670,6 +751,7 @@ impl Supervisor {
         if !matches!(
             svc.state,
             ServiceState::Running
+                | ServiceState::Unhealthy
                 | ServiceState::HealthChecking
                 | ServiceState::Starting
                 | ServiceState::Failed
@@ -749,6 +831,10 @@ impl Supervisor {
             svc.service_pgid = None;
             svc.service_pgid_starttime = None;
             svc.started_at = None;
+            // A stopped service leaves the health rotation.
+            svc.next_health_at = None;
+            svc.health_inflight = false;
+            svc.health_misses = 0;
             // An explicit stop resets crash-backoff state: clear any armed
             // restart deadline so `check_all` won't resurrect the service,
             // and reset the failure count so a later manual start gets a
@@ -817,6 +903,10 @@ impl Supervisor {
                     svc.service_pgid_starttime = None;
                     svc.control_sock = None;
                     svc.started_at = None;
+                    // Out of the health rotation until it's Running again.
+                    svc.next_health_at = None;
+                    svc.health_inflight = false;
+                    svc.health_misses = 0;
                     // Schedule a respawn unless we've hit the
                     // attempt cap. Past the cap, leave restart_at
                     // None — the service stays Failed until the
@@ -901,6 +991,140 @@ impl Supervisor {
             None
         };
         svc.state = ServiceState::Failed;
+    }
+
+    /// Collect `Running`/`Unhealthy` services whose continuous-health
+    /// probe is due, marking each in-flight so the next tick won't stack a
+    /// second probe on a slow one. The ticker runs each probe *off* the
+    /// lock (a probe can take seconds) and reports back via
+    /// [`Supervisor::record_health`] — same off-lock discipline as the
+    /// start-time probe. Services with no real binding (runtime-only deps)
+    /// are never probed.
+    pub fn health_due(&mut self) -> Vec<&'static str> {
+        let now = Instant::now();
+        let mut due = Vec::new();
+        for svc in self.services.values_mut() {
+            if !matches!(svc.state, ServiceState::Running | ServiceState::Unhealthy) {
+                continue;
+            }
+            if svc.health_inflight {
+                continue;
+            }
+            if catalog::find(svc.name).is_some_and(|e| matches!(e.binding, Binding::None)) {
+                continue;
+            }
+            if svc.next_health_at.is_some_and(|t| t <= now) {
+                svc.health_inflight = true;
+                due.push(svc.name);
+            }
+        }
+        due
+    }
+
+    /// Record a continuous-health probe result and advance the service's
+    /// health state. Fast + under the lock — the probe itself already ran
+    /// off-lock. Reschedules the next probe and returns what the caller
+    /// must do next (see [`HealthOutcome`]).
+    pub fn record_health(&mut self, name: &str, ok: bool) -> HealthOutcome {
+        let now = Instant::now();
+        let Some(svc) = self.services.get_mut(name) else {
+            return HealthOutcome::Gone;
+        };
+        // A racing stop/crash/restart moved it out of a probe-able state
+        // while the probe ran off-lock — discard the stale result.
+        if !matches!(svc.state, ServiceState::Running | ServiceState::Unhealthy) {
+            svc.health_inflight = false;
+            return HealthOutcome::Gone;
+        }
+        svc.health_inflight = false;
+        svc.next_health_at = Some(now + HEALTH_INTERVAL);
+        if ok {
+            svc.health_misses = 0;
+            svc.last_health_ok = Some(now);
+            if svc.state == ServiceState::Unhealthy {
+                svc.state = ServiceState::Running;
+                tracing::info!(service = name, "service recovered; health checks passing again");
+            }
+            return HealthOutcome::Healthy;
+        }
+        svc.health_misses = svc.health_misses.saturating_add(1);
+        if svc.health_misses >= HEALTH_FAILURE_THRESHOLD {
+            // Out of the rotation; `fail_unhealthy` re-arms on restart.
+            // Leave it `Unhealthy` so that method's guard fires.
+            svc.next_health_at = None;
+            svc.state = ServiceState::Unhealthy;
+            return HealthOutcome::Breach;
+        }
+        if svc.state == ServiceState::Running {
+            svc.state = ServiceState::Unhealthy;
+            tracing::warn!(
+                service = name,
+                misses = svc.health_misses,
+                threshold = HEALTH_FAILURE_THRESHOLD,
+                "service failing health checks"
+            );
+        }
+        HealthOutcome::Degraded
+    }
+
+    /// Tear down a service that failed its health probe past the
+    /// threshold (a [`HealthOutcome::Breach`]) and schedule a backoff
+    /// respawn. The process is alive-but-wedged, so we graceful-stop it
+    /// (reusing [`Supervisor::stop`]'s SIGTERM→grace→cgroup teardown) and
+    /// then re-stamp it as a crash-equivalent failure — bumping
+    /// `failure_count` with the same `FAILURE_RESET_THRESHOLD` rule and
+    /// scheduling (or giving up on) a restart exactly like the crash arm
+    /// of [`Supervisor::check_all`]. The next `check_all` tick's `due`
+    /// collection then performs the respawn off-lock.
+    ///
+    /// Held under the lock across the teardown — the same brief grace
+    /// window `bougie down`/`restart` already hold it for. Breaches are
+    /// rare, so the cost to the 1s reaper is bounded and infrequent.
+    pub async fn fail_unhealthy(&mut self, name: &'static str) {
+        // Capture the prior Running window AND failure count before `stop`
+        // clears them (`stop` zeroes `failure_count` + `started_at`), so
+        // the escalation/reset rule matches the crash path — otherwise a
+        // health breach could never advance past failure #1.
+        let (prev_run, prev_count) = self
+            .services
+            .get(name)
+            .map(|s| (s.started_at.map(|t| t.elapsed()), s.failure_count))
+            .unwrap_or((None, 0));
+        // Only act if it's still the `Unhealthy` service we flagged — a
+        // racing stop/restart may have moved it on.
+        if !matches!(
+            self.services.get(name).map(|s| s.state),
+            Some(ServiceState::Unhealthy)
+        ) {
+            return;
+        }
+        // Graceful teardown of the wedged group (sets state Stopped).
+        let _ = self.stop(name).await;
+        // Re-stamp as a crash-equivalent failure so the existing
+        // backoff/give-up machinery respawns it.
+        let now = Instant::now();
+        let Some(svc) = self.services.get_mut(name) else {
+            return;
+        };
+        let next_count = match prev_run {
+            Some(d) if d >= FAILURE_RESET_THRESHOLD => 1,
+            _ => prev_count.saturating_add(1),
+        };
+        svc.failure_count = next_count;
+        svc.last_failure_at = Some(now);
+        svc.state = ServiceState::Failed;
+        svc.health_misses = 0;
+        svc.restart_at = if next_count <= MAX_RESTART_ATTEMPTS {
+            Some(now + compute_backoff(next_count))
+        } else {
+            None
+        };
+        tracing::warn!(
+            service = name,
+            failure_count = next_count,
+            gave_up = svc.restart_at.is_none(),
+            "service failed continuous health checks; torn down, respawn scheduled"
+        );
     }
 }
 
@@ -1194,42 +1418,31 @@ where
 }
 
 #[tracing::instrument(skip_all, fields(service = name))]
-async fn wait_for_health(
-    binding: &Binding,
-    name: &str,
-    paths: &Paths,
-    child: &mut Child,
-) -> Result<()> {
+async fn wait_for_health(name: &str, paths: &Paths, child: &mut Child) -> Result<()> {
     let timeout = health_timeout_for(name);
     let deadline = Instant::now() + timeout;
     loop {
-        // Short-circuit on early child exit BEFORE the TCP/socket
-        // probe — otherwise a port-collision (opensearch can't bind
-        // 9200 because someone else is on it) would look "Running"
-        // to us simply because *some* server answers on 9200.
+        // Short-circuit on early child exit BEFORE the protocol probe —
+        // otherwise a port-collision (opensearch can't bind 9200 because
+        // someone else is on it) could look "Running" to us simply
+        // because *some* server answers on 9200.
         if let Ok(Some(status)) = child.try_wait() {
             return Err(eyre!(
                 "service `{name}` exited during startup (status {status}); \
                  check `bougie services logs {name}` for the reason"
             ));
         }
-        let ok = match binding {
-            Binding::UnixSocket { sockname } => {
-                let path = paths.service_run(name).join(sockname);
-                tokio::net::UnixStream::connect(&path).await.is_ok()
-            }
-            Binding::Tcp { port } => {
-                let addr = ("127.0.0.1", *port);
-                tokio::net::TcpStream::connect(addr).await.is_ok()
-            }
-            Binding::None => true, // runtime-only deps never get probed
+        // Protocol-aware readiness (see `health::probe`): a service is
+        // only healthy once it can actually answer, not merely once its
+        // port is bound.
+        let last_err = match super::health::probe(name, paths).await {
+            Ok(()) => return Ok(()),
+            Err(e) => e,
         };
-        if ok {
-            return Ok(());
-        }
         if Instant::now() >= deadline {
             return Err(eyre!(
-                "service `{name}` did not start accepting connections within {timeout:?}"
+                "service `{name}` did not become healthy within {timeout:?} \
+                 (last probe: {last_err:#}); check `bougie services logs {name}`"
             ));
         }
         tokio::time::sleep(HEALTH_POLL).await;
@@ -1769,6 +1982,181 @@ mod tests {
         // deadline must not be double-counted.
         assert_eq!(svc.failure_count, 3);
         assert_eq!(svc.restart_at, Some(deadline));
+    }
+
+    // -------------------- continuous health --------------------
+
+    /// Put a service into a live, probe-able state for the health tests.
+    fn mark_running(sup: &mut Supervisor, name: &'static str) {
+        let svc = sup.services.get_mut(name).unwrap();
+        svc.state = ServiceState::Running;
+        svc.started_at = Some(Instant::now());
+        svc.next_health_at = Some(Instant::now());
+        svc.health_inflight = false;
+        svc.health_misses = 0;
+    }
+
+    #[test]
+    fn record_health_pass_resets_misses() {
+        let mut sup = test_supervisor();
+        mark_running(&mut sup, "redis");
+        sup.services.get_mut("redis").unwrap().health_misses = 2;
+        let out = sup.record_health("redis", true);
+        assert_eq!(out, HealthOutcome::Healthy);
+        let svc = sup.services.get("redis").unwrap();
+        assert_eq!(svc.health_misses, 0);
+        assert_eq!(svc.state, ServiceState::Running);
+        assert!(!svc.health_inflight);
+        assert!(svc.next_health_at.is_some(), "next probe rescheduled");
+    }
+
+    #[test]
+    fn record_health_first_miss_marks_unhealthy_but_not_breach() {
+        let mut sup = test_supervisor();
+        mark_running(&mut sup, "redis");
+        let out = sup.record_health("redis", false);
+        assert_eq!(out, HealthOutcome::Degraded);
+        let svc = sup.services.get("redis").unwrap();
+        assert_eq!(svc.health_misses, 1);
+        assert_eq!(svc.state, ServiceState::Unhealthy);
+    }
+
+    #[test]
+    fn record_health_recovers_unhealthy_to_running() {
+        let mut sup = test_supervisor();
+        mark_running(&mut sup, "redis");
+        {
+            let svc = sup.services.get_mut("redis").unwrap();
+            svc.state = ServiceState::Unhealthy;
+            svc.health_misses = 2;
+        }
+        let out = sup.record_health("redis", true);
+        assert_eq!(out, HealthOutcome::Healthy);
+        let svc = sup.services.get("redis").unwrap();
+        assert_eq!(svc.state, ServiceState::Running);
+        assert_eq!(svc.health_misses, 0);
+    }
+
+    #[test]
+    fn record_health_breaches_at_threshold() {
+        let mut sup = test_supervisor();
+        mark_running(&mut sup, "redis");
+        sup.services.get_mut("redis").unwrap().health_misses = HEALTH_FAILURE_THRESHOLD - 1;
+        let out = sup.record_health("redis", false);
+        assert_eq!(out, HealthOutcome::Breach);
+        let svc = sup.services.get("redis").unwrap();
+        assert_eq!(svc.health_misses, HEALTH_FAILURE_THRESHOLD);
+        assert_eq!(svc.state, ServiceState::Unhealthy);
+        // Out of the rotation until fail_unhealthy/restart re-arms it.
+        assert!(svc.next_health_at.is_none());
+    }
+
+    #[test]
+    fn record_health_discards_stale_result_when_not_probeable() {
+        // The probe ran off-lock and the service was stopped meanwhile.
+        let mut sup = test_supervisor();
+        sup.services.get_mut("redis").unwrap().state = ServiceState::Stopped;
+        let out = sup.record_health("redis", false);
+        assert_eq!(out, HealthOutcome::Gone);
+        assert_eq!(sup.services.get("redis").unwrap().state, ServiceState::Stopped);
+    }
+
+    #[test]
+    fn health_due_picks_running_and_marks_inflight() {
+        let mut sup = test_supervisor();
+        mark_running(&mut sup, "redis");
+        let due = sup.health_due();
+        assert!(due.contains(&"redis"));
+        assert!(sup.services.get("redis").unwrap().health_inflight);
+        // A second pass must not re-issue while the first is in flight.
+        assert!(!sup.health_due().contains(&"redis"));
+    }
+
+    #[test]
+    fn health_due_skips_stopped_and_unprobeable() {
+        let mut sup = test_supervisor();
+        // Stopped redis: not due.
+        // jdk has Binding::None — never probed even if somehow "Running".
+        {
+            let jdk = sup.services.get_mut("jdk").unwrap();
+            jdk.state = ServiceState::Running;
+            jdk.next_health_at = Some(Instant::now());
+        }
+        let due = sup.health_due();
+        assert!(!due.contains(&"redis"), "stopped service not probed");
+        assert!(!due.contains(&"jdk"), "Binding::None never probed");
+    }
+
+    #[tokio::test]
+    async fn fail_unhealthy_is_noop_unless_unhealthy() {
+        let mut sup = test_supervisor();
+        mark_running(&mut sup, "redis"); // Running, not Unhealthy
+        sup.fail_unhealthy("redis").await;
+        // Untouched: still Running, no restart scheduled.
+        let svc = sup.services.get("redis").unwrap();
+        assert_eq!(svc.state, ServiceState::Running);
+        assert!(svc.restart_at.is_none());
+    }
+
+    #[tokio::test]
+    async fn fail_unhealthy_tears_down_and_schedules_restart() {
+        let mut sup = test_supervisor();
+        let child = spawn_dummy_child();
+        {
+            let svc = sup.services.get_mut("redis").unwrap();
+            svc.state = ServiceState::Unhealthy;
+            svc.pid = Some(child.id().unwrap());
+            svc.child = Some(child);
+            // Short prior run → no failure-count reset; this is failure #3.
+            svc.started_at = Some(Instant::now());
+            svc.failure_count = 2;
+            svc.health_misses = HEALTH_FAILURE_THRESHOLD;
+        }
+        sup.fail_unhealthy("redis").await;
+        let svc = sup.services.get("redis").unwrap();
+        assert_eq!(svc.state, ServiceState::Failed);
+        assert_eq!(svc.failure_count, 3, "breach counts as a fresh failure");
+        assert_eq!(svc.health_misses, 0);
+        assert!(svc.restart_at.is_some(), "backoff respawn scheduled");
+        assert!(svc.child.is_none(), "wedged process torn down");
+    }
+
+    #[tokio::test]
+    async fn fail_unhealthy_gives_up_past_the_attempt_cap() {
+        let mut sup = test_supervisor();
+        let child = spawn_dummy_child();
+        {
+            let svc = sup.services.get_mut("redis").unwrap();
+            svc.state = ServiceState::Unhealthy;
+            svc.pid = Some(child.id().unwrap());
+            svc.child = Some(child);
+            svc.started_at = Some(Instant::now());
+            // Already at the cap → the next failure exceeds it.
+            svc.failure_count = MAX_RESTART_ATTEMPTS;
+        }
+        sup.fail_unhealthy("redis").await;
+        let svc = sup.services.get("redis").unwrap();
+        assert_eq!(svc.state, ServiceState::Failed);
+        assert!(
+            svc.restart_at.is_none(),
+            "past MAX_RESTART_ATTEMPTS the supervisor stops respawning"
+        );
+    }
+
+    #[test]
+    fn snapshot_surfaces_health_misses_and_threshold() {
+        let mut sup = test_supervisor();
+        mark_running(&mut sup, "redis");
+        {
+            let svc = sup.services.get_mut("redis").unwrap();
+            svc.state = ServiceState::Unhealthy;
+            svc.health_misses = 2;
+        }
+        let snap = sup.snapshot();
+        let redis = snap.iter().find(|s| s.name == "redis").unwrap();
+        assert_eq!(redis.state, ServiceState::Unhealthy);
+        assert_eq!(redis.health_misses, 2);
+        assert_eq!(redis.health_threshold, HEALTH_FAILURE_THRESHOLD);
     }
 
     #[tokio::test]

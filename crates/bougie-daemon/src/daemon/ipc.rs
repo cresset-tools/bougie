@@ -1132,6 +1132,7 @@ async fn dispatch_shutdown_streaming(
                 matches!(
                     s.state,
                     ServiceState::Running
+                        | ServiceState::Unhealthy
                         | ServiceState::HealthChecking
                         | ServiceState::Starting
                 )

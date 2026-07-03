@@ -2,7 +2,10 @@
 //! integration tests. Parses `--unixsocket <path>`, opens a listener
 //! on that path, and waits for SIGTERM. Speaks just enough of the
 //! RESP protocol to acknowledge a SELECT+FLUSHDB sequence from
-//! `provisioners::redis::deprovision --purge`.
+//! `provisioners::redis::deprovision --purge`, and to answer the
+//! supervisor's `PING` health probe with `+PONG` (see
+//! `bougie-daemon::daemon::health` / `provisioners::redis::health`) —
+//! without it, `wait_for_health` never goes healthy and `up` hangs.
 //!
 //! Unix-only — the supervisor tests it backs don't run on Windows in
 //! Phase 1 (no Unix domain sockets, no SIGTERM). On Windows this
@@ -59,10 +62,18 @@ fn handle(stream: &mut UnixStream) {
         if n == 0 {
             return;
         }
-        // For every \r\n-terminated line, send back "+OK\r\n". Crude
-        // but enough to satisfy any RESP-style client that doesn't
-        // care about the payload.
         let recv = &buf[..n];
+        // The health probe (`redis::health`) sends a lone `PING` on a
+        // fresh connection and expects `+PONG`. Real redis replies that
+        // way; answer it here so the supervisor's readiness + continuous
+        // probes pass. The probe only ever sends PING by itself, so a
+        // substring check is enough.
+        if recv.windows(4).any(|w| w.eq_ignore_ascii_case(b"PING")) {
+            let _ = stream.write_all(b"+PONG\r\n");
+            continue;
+        }
+        // Otherwise, for every \r\n-terminated line send back "+OK\r\n".
+        // Crude but enough for the SELECT+FLUSHDB deprovision exercise.
         let lines = recv.iter().filter(|&&b| b == b'\n').count();
         for _ in 0..lines.max(1) {
             if stream.write_all(b"+OK\r\n").is_err() {
