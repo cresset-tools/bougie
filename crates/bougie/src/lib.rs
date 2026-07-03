@@ -3,6 +3,7 @@
 //! else lives in a `bougie-*` workspace crate.
 
 pub mod commands;
+pub mod failure;
 pub mod shim;
 
 // Re-exports kept so `main.rs` and integration tests can write
@@ -100,6 +101,7 @@ fn command_name(cmd: &Command) -> &'static str {
         Command::SelfCmd(_) => "self",
         Command::Telemetry { .. } => "telemetry",
         Command::TelemetryFlush => "__telemetry-flush",
+        Command::Diagnose { .. } => "diagnose",
         Command::Server(_) => "server",
         Command::Services(_) => "services",
         Command::Projects(_) => "projects",
@@ -141,7 +143,7 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
     // bypassed the installer consent block: cargo install, docker,
     // Windows irm|iex). Self-gating: only when the mode is undecided,
     // interactive text-mode on a real tty, outside CI and run-shims.
-    if !matches!(command, "telemetry" | "__telemetry-flush" | "tool-exec") {
+    if !matches!(command, "telemetry" | "__telemetry-flush" | "tool-exec" | "diagnose") {
         bougie_telemetry::prompt::maybe_prompt(
             matches!(cli.format, OutputFormat::Text) && !cli.quiet,
         );
@@ -782,5 +784,8 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
         Command::ToolExec { wrapper, args } => commands::tool_exec::run(&wrapper, args),
         Command::Telemetry { command } => commands::telemetry::run(format, command),
         Command::TelemetryFlush => commands::telemetry_flush::run(),
+        Command::Diagnose { issue, yes, args } => {
+            commands::diagnose::run(format, issue, yes, &args)
+        }
     }
 }

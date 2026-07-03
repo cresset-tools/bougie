@@ -14,6 +14,7 @@ pub mod composer_status;
 pub mod composer_update;
 pub mod composer_validate;
 pub mod composer_why;
+pub mod diagnose;
 pub mod env;
 pub mod ext_add_remove;
 pub mod ext_list;

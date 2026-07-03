@@ -156,6 +156,16 @@ configured Composer repositories) for package metadata and dists, the
 bougie index for PHP builds, and the release mirror for self-updates.
 Those requests carry a `bougie/<version>` User-Agent and nothing
 else. Composer's `notify-batch` download ping is **not** sent.
-`bougie diagnose`-style bug reports (planned) will be their own
-explicitly-confirmed, per-incident channel, independent of the
-telemetry mode.
+
+`bougie diagnose` is also not telemetry: it assembles a rich
+diagnostic report (full error chain, message content included) from
+the last failure, **shows you the entire payload**, and sends it only
+on an explicit per-report confirmation (`[y/N]` defaulting to no, or
+`--yes`). It works with telemetry off and ignores `DO_NOT_TRACK` —
+deliberately, because you are the one mailing it. `--issue` skips the
+upload entirely and prepares a GitHub issue instead. Diagnostic
+reports are retained for 180 days and deleted on request by report
+id. The failure context it reads
+(`<cache>/telemetry/last-failure.json`) is a local file of the same
+class as a log, written on any command error and overwritten by the
+next one.

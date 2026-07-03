@@ -144,4 +144,9 @@ fn report_error(err: &eyre::Report) {
             eprintln!("             {rest}");
         }
     }
+    // Capture the full context locally (single slot, never uploaded on
+    // its own) and point at the zero-effort reporting path. Local-only
+    // by design — see `bougie::failure`.
+    bougie::failure::record(err);
+    eprintln!("hint: run `bougie diagnose` to assemble a shareable report");
 }

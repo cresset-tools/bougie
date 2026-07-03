@@ -418,6 +418,22 @@ pub enum Command {
     #[command(hide = true, name = "__telemetry-flush")]
     TelemetryFlush,
 
+    /// Assemble a shareable diagnostic report from the last failure
+    /// (shown in full for review; nothing is sent without confirmation)
+    #[command(display_order = 43)]
+    Diagnose {
+        /// Render a prefilled GitHub issue instead of uploading
+        #[arg(long)]
+        issue: bool,
+        /// Upload without the interactive confirmation
+        #[arg(short = 'y', long)]
+        yes: bool,
+        /// Re-run a bougie command with debug logging captured:
+        /// `bougie diagnose -- sync --offline`
+        #[arg(allow_hyphen_values = true, last = true)]
+        args: Vec<OsString>,
+    },
+
     /// Run the bougie development HTTP server
     #[command(display_order = 30)]
     Server(ServerArgs),
