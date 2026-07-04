@@ -176,10 +176,13 @@ fn telemetry_log_prints_spooled_events() {
 fn failed_command_records_outcome_category() {
     let env = Env::new();
     env.bougie().args(["telemetry", "local"]).assert().success();
-    // `bougie run` outside a project fails without touching the network.
+    // `bougie tree` outside a project fails deterministically and
+    // offline. (`run` is NOT a safe trigger here: outside a project it
+    // falls back to an ephemeral system PHP, so it *succeeds* on CI
+    // runners with php preinstalled.)
     let out = env
         .bougie()
-        .args(["run", "--no-sync", "--", "php", "-v"])
+        .arg("tree")
         .current_dir(empty_dir(&env))
         .output()
         .unwrap();
@@ -188,7 +191,7 @@ fn failed_command_records_outcome_category() {
     let lines = env.spooled_lines();
     assert_eq!(lines.len(), 1, "{lines:?}");
     let event: serde_json::Value = serde_json::from_str(&lines[0]).unwrap();
-    assert_eq!(event["name"], "run");
+    assert_eq!(event["name"], "tree");
     assert_ne!(event["outcome"], "ok");
     assert_ne!(event["exit_code"], 0);
 }
