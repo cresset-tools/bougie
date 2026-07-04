@@ -5,9 +5,9 @@
 //!
 //! - **Reuse persistent install**: walk
 //!   `paths.tools()/*/receipt.toml`. If any receipt matches the
-//!   request exactly (same package, constraint, resolved PHP and
-//!   sorted `with` list), exec that install's wrapper directly. No
-//!   cache write.
+//!   request exactly (same package, constraint, resolved PHP, sorted
+//!   composer extras, and sorted extension set), exec that install's
+//!   wrapper directly. No cache write.
 //! - **Materialise in cache**: hash the request into a stable
 //!   cache key, install into
 //!   `paths.cache_tool_run_dir(<key>)`, then exec the cached
@@ -15,16 +15,22 @@
 //!   circuits to the existing cache slot (mtime gets refreshed so
 //!   `bougie cache prune` doesn't GC active tools).
 //!
-//! The cache materialisation reuses `install::install_into` with
+//! The cache materialisation reuses `install::install_prepared` with
 //! `InstallTarget::Ephemeral { dir }` — same composer.json /
 //! lock / vendor / wrapper / receipt write as a persistent install,
 //! minus the PATH symlink step.
+//!
+//! The ephemeral lane is also where project context applies: when the
+//! bougie binary detected a surrounding PHP project (and `--no-project`
+//! wasn't passed), the derived PHP + extension set flows in through
+//! [`ProjectContext`] and lands in the cache key, so the same tool run
+//! from two differently-shaped projects gets two slots.
 
-use crate::install::{InstallContext, InstallTarget, install_into};
+use crate::install::{InstallContext, InstallPlan, InstallTarget, install_prepared, plan_install};
 use crate::list::{ListedTool, ToolStatus, list};
 use crate::receipt::{ToolEntrypoint, ToolReceipt};
 use crate::request::ToolRequest;
-use crate::resolve::PhpChoice;
+use crate::resolve::{PhpChoice, PhpSource, ProjectContext};
 use crate::exec;
 use bougie_paths::Paths;
 use eyre::{Result, bail};
@@ -52,9 +58,10 @@ pub fn run(
     request: &ToolRequest,
     php_spec: Option<&str>,
     with: &[String],
+    project: Option<&ProjectContext>,
     user_args: Vec<OsString>,
 ) -> Result<std::convert::Infallible> {
-    let plan = prepare(ctx, request, php_spec, with)?;
+    let plan = prepare(ctx, request, php_spec, with, project)?;
 
     let receipt = crate::receipt::read(&plan.tool_dir.join("receipt.toml"))?;
     let entry = pick_bin(&receipt.entrypoints, &plan.package)?;
@@ -82,37 +89,33 @@ pub fn prepare(
     request: &ToolRequest,
     php_spec: Option<&str>,
     with: &[String],
+    project: Option<&ProjectContext>,
 ) -> Result<RunPlan> {
-    let constraint = request
-        .constraint
-        .clone()
-        .unwrap_or_else(|| crate::install::DEFAULT_CONSTRAINT.to_string());
-    let package = request.package();
-    // Drive PHP off the tool's `require.php` so the cache key reflects
-    // what the tool actually needs (and matches what `tool install`
-    // would write into a persistent receipt). Resolve only — the
-    // baseline ensure runs inside `install_into` when we materialise, so
-    // a cache hit doesn't pay for (or fail on) it.
-    let php = crate::install::resolve_php_choice(
-        ctx.paths,
-        &package,
-        &constraint,
-        php_spec,
-        ctx.php_installer,
-        ctx.php_requirement,
-    )?;
+    // Resolve only — the baseline ensure runs inside
+    // `install_prepared` when we materialise, so a cache hit doesn't
+    // pay for (or fail on) it.
+    let plan = plan_install(ctx, request, php_spec, with, project)?;
+    announce_project_context(&plan, project);
 
-    if let Some(dir) = find_persistent_match(ctx.paths, &package, &constraint, &php, with)? {
+    if let Some(dir) = find_persistent_match(ctx.paths, &plan)? {
         return Ok(RunPlan {
-            package,
-            php,
+            package: plan.package,
+            php: plan.php,
             tool_dir: dir,
             from_cache: false,
             materialised: false,
         });
     }
 
-    let key = cache_key(&package, &constraint, &php.version, &php.flavor, with);
+    let ext_names = plan.extension_names();
+    let key = cache_key(
+        &plan.package,
+        &plan.constraint,
+        &plan.php.version,
+        &plan.php.flavor,
+        &plan.composer_extras,
+        &ext_names,
+    );
     let cache_dir = ctx.paths.cache_tool_run_dir(&key);
     let materialised = !cache_dir.join("receipt.toml").is_file();
     if materialised {
@@ -121,11 +124,9 @@ pub fn prepare(
         // receipt.toml) is identical to a persistent install.
         std::fs::create_dir_all(&cache_dir)
             .map_err(|e| eyre::eyre!("creating {}: {e}", cache_dir.display()))?;
-        install_into(
+        install_prepared(
             ctx,
-            request,
-            php_spec,
-            with,
+            &plan,
             true,
             &InstallTarget::Ephemeral {
                 dir: cache_dir.clone(),
@@ -133,23 +134,50 @@ pub fn prepare(
         )?;
     }
     Ok(RunPlan {
-        package,
-        php,
+        package: plan.package,
+        php: plan.php,
         tool_dir: cache_dir,
         from_cache: true,
         materialised,
     })
 }
 
-/// Stable cache key for a `(package, constraint, php, with)` request.
-/// Order-invariant on `with` so `--with A --with B` collides with
-/// `--with B --with A`.
+/// One-line stderr notice when the surrounding project actually
+/// shaped the run — the user typed no flags, so say what was chosen
+/// on their behalf and how to turn it off. Quiet when the project
+/// contributed nothing (no constraint hit, no extensions).
+fn announce_project_context(plan: &InstallPlan, project: Option<&ProjectContext>) {
+    let Some(p) = project else { return };
+    let php_from_project = matches!(
+        plan.php_source,
+        PhpSource::ProjectResolved | PhpSource::ProjectIntersection
+    );
+    let parts = match (php_from_project, p.extensions.is_empty()) {
+        (true, false) => format!(
+            "PHP {}; extensions: {}",
+            plan.php.version,
+            p.extensions.join(", ")
+        ),
+        (true, true) => format!("PHP {}", plan.php.version),
+        (false, false) => format!("extensions: {}", p.extensions.join(", ")),
+        (false, true) => return,
+    };
+    eprintln!(
+        "bougie: project context ({source}): {parts} (disable with --no-project)",
+        source = p.php.source,
+    );
+}
+
+/// Stable cache key for a `(package, constraint, php, composer
+/// extras, extension set)` request. Order-invariant on both lists so
+/// `--with A --with B` collides with `--with B --with A`.
 pub fn cache_key(
     package: &str,
     constraint: &str,
     php_version: &str,
     php_flavor: &str,
-    with: &[String],
+    composer_extras: &[String],
+    extensions: &[String],
 ) -> String {
     let mut hasher = Sha256::new();
     hasher.update(package.as_bytes());
@@ -160,33 +188,37 @@ pub fn cache_key(
     hasher.update(b"\0");
     hasher.update(php_flavor.as_bytes());
     hasher.update(b"\0");
-    let mut sorted = with.to_vec();
+    let mut sorted = composer_extras.to_vec();
     sorted.sort();
     for w in &sorted {
         hasher.update(w.as_bytes());
+        hasher.update(b"\0");
+    }
+    // Divider so ["a"], [] can't collide with [], ["a"].
+    hasher.update(b"\x01");
+    let mut sorted_ext = extensions.to_vec();
+    sorted_ext.sort();
+    for e in &sorted_ext {
+        hasher.update(e.as_bytes());
         hasher.update(b"\0");
     }
     let digest = hasher.finalize();
     hex::encode(&digest[..8]) // 16 hex chars; ~64 bits, plenty for cache slots
 }
 
-/// Walk persistent installs for an exact match against the supplied
-/// request. Skips broken / stale receipts.
-fn find_persistent_match(
-    paths: &Paths,
-    package: &str,
-    constraint: &str,
-    php: &PhpChoice,
-    with: &[String],
-) -> Result<Option<PathBuf>> {
-    let mut sorted_with = with.to_vec();
+/// Walk persistent installs for an exact match against the resolved
+/// plan. Skips broken / stale receipts.
+fn find_persistent_match(paths: &Paths, plan: &InstallPlan) -> Result<Option<PathBuf>> {
+    let mut sorted_with = plan.composer_extras.clone();
     sorted_with.sort();
+    let mut sorted_ext = plan.extension_names();
+    sorted_ext.sort();
     for tool in list(paths)? {
         let ListedTool { status, tool_dir, .. } = tool;
         let ToolStatus::Healthy(receipt) = status else {
             continue;
         };
-        if receipt_matches(&receipt, package, constraint, php, &sorted_with) {
+        if receipt_matches(&receipt, plan, &sorted_with, &sorted_ext) {
             return Ok(Some(tool_dir));
         }
     }
@@ -195,21 +227,26 @@ fn find_persistent_match(
 
 fn receipt_matches(
     receipt: &ToolReceipt,
-    package: &str,
-    constraint: &str,
-    php: &PhpChoice,
+    plan: &InstallPlan,
     sorted_with: &[String],
+    sorted_ext: &[String],
 ) -> bool {
-    if receipt.package != package
-        || receipt.constraint != constraint
-        || receipt.php_version != php.version
-        || receipt.php_flavor != php.flavor
+    if receipt.package != plan.package
+        || receipt.constraint != plan.constraint
+        || receipt.php_version != plan.php.version
+        || receipt.php_flavor != plan.php.flavor
     {
         return false;
     }
     let mut their_with = receipt.with.clone();
     their_with.sort();
-    their_with.as_slice() == sorted_with
+    if their_with.as_slice() != sorted_with {
+        return false;
+    }
+    let mut their_ext: Vec<String> =
+        receipt.extensions.iter().map(|e| e.name.clone()).collect();
+    their_ext.sort();
+    their_ext.as_slice() == sorted_ext
 }
 
 /// Pick the bin to run for a `tool run <pkg>` request: prefer one
@@ -277,19 +314,20 @@ mod tests {
 
     #[test]
     fn cache_key_is_deterministic() {
-        let a = cache_key("phpstan/phpstan", "^1.10", "8.3.12", "nts", &[]);
-        let b = cache_key("phpstan/phpstan", "^1.10", "8.3.12", "nts", &[]);
+        let a = cache_key("phpstan/phpstan", "^1.10", "8.3.12", "nts", &[], &[]);
+        let b = cache_key("phpstan/phpstan", "^1.10", "8.3.12", "nts", &[], &[]);
         assert_eq!(a, b);
     }
 
     #[test]
-    fn cache_key_order_independent_on_with() {
+    fn cache_key_order_independent_on_lists() {
         let one = cache_key(
             "v/p",
             "*",
             "8.3.12",
             "nts",
             &["a/b".into(), "c/d".into()],
+            &["intl".into(), "zip".into()],
         );
         let two = cache_key(
             "v/p",
@@ -297,14 +335,31 @@ mod tests {
             "8.3.12",
             "nts",
             &["c/d".into(), "a/b".into()],
+            &["zip".into(), "intl".into()],
         );
         assert_eq!(one, two);
     }
 
     #[test]
     fn cache_key_changes_with_php_version() {
-        let a = cache_key("v/p", "*", "8.3.12", "nts", &[]);
-        let b = cache_key("v/p", "*", "8.3.13", "nts", &[]);
+        let a = cache_key("v/p", "*", "8.3.12", "nts", &[], &[]);
+        let b = cache_key("v/p", "*", "8.3.13", "nts", &[], &[]);
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn cache_key_changes_with_extension_set() {
+        let a = cache_key("v/p", "*", "8.3.12", "nts", &[], &[]);
+        let b = cache_key("v/p", "*", "8.3.12", "nts", &[], &["intl".into()]);
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn cache_key_lists_do_not_bleed_into_each_other() {
+        // A name moving between the composer list and the extension
+        // list must produce a different slot.
+        let a = cache_key("v/p", "*", "8.3.12", "nts", &["x".into()], &[]);
+        let b = cache_key("v/p", "*", "8.3.12", "nts", &[], &["x".into()]);
         assert_ne!(a, b);
     }
 
@@ -336,6 +391,35 @@ mod tests {
         assert!(err.contains("no bin entries"), "{err}");
     }
 
+    fn plan_for(
+        constraint: &str,
+        composer_extras: &[&str],
+        with_extensions: &[&str],
+        derived_extensions: &[&str],
+    ) -> InstallPlan {
+        InstallPlan {
+            package: "v/p".into(),
+            constraint: constraint.into(),
+            php: PhpChoice {
+                version: "8.3.12".into(),
+                flavor: "nts".into(),
+                bin: PathBuf::from("/x"),
+            },
+            php_source: PhpSource::ToolRequire,
+            composer_extras: composer_extras.iter().map(|s| (*s).into()).collect(),
+            with_extensions: with_extensions.iter().map(|s| (*s).into()).collect(),
+            derived_extensions: derived_extensions.iter().map(|s| (*s).into()).collect(),
+        }
+    }
+
+    fn sorted(plan: &InstallPlan) -> (Vec<String>, Vec<String>) {
+        let mut w = plan.composer_extras.clone();
+        w.sort();
+        let mut e = plan.extension_names();
+        e.sort();
+        (w, e)
+    }
+
     #[test]
     fn receipt_matches_full_tuple() {
         let receipt = ToolReceipt {
@@ -349,13 +433,56 @@ mod tests {
             entrypoints: vec![],
             extensions: vec![],
         };
-        let php = PhpChoice {
-            version: "8.3.12".into(),
-            flavor: "nts".into(),
-            bin: PathBuf::from("/x"),
+        let plan = plan_for("^1", &["a/b"], &[], &[]);
+        let (w, e) = sorted(&plan);
+        assert!(receipt_matches(&receipt, &plan, &w, &e));
+
+        let wrong_constraint = plan_for("^2", &["a/b"], &[], &[]);
+        let (w, e) = sorted(&wrong_constraint);
+        assert!(!receipt_matches(&receipt, &wrong_constraint, &w, &e));
+
+        let missing_with = plan_for("^1", &[], &[], &[]);
+        let (w, e) = sorted(&missing_with);
+        assert!(!receipt_matches(&receipt, &missing_with, &w, &e));
+    }
+
+    #[test]
+    fn receipt_matches_compares_extension_sets() {
+        let receipt = ToolReceipt {
+            package: "v/p".into(),
+            constraint: "^1".into(),
+            php_version: "8.3.12".into(),
+            php_flavor: "nts".into(),
+            composer_version: "2.8.12".into(),
+            with: vec![],
+            php_resolved_path: PathBuf::from("/x"),
+            entrypoints: vec![],
+            extensions: vec![
+                crate::receipt::ToolExtension {
+                    name: "intl".into(),
+                    ini_path: PathBuf::from("/c/20-intl.ini"),
+                },
+                crate::receipt::ToolExtension {
+                    name: "zip".into(),
+                    ini_path: PathBuf::from("/c/20-zip.ini"),
+                },
+            ],
         };
-        assert!(receipt_matches(&receipt, "v/p", "^1", &php, &["a/b".into()]));
-        assert!(!receipt_matches(&receipt, "v/p", "^2", &php, &["a/b".into()]));
-        assert!(!receipt_matches(&receipt, "v/p", "^1", &php, &[]));
+        // A run asking for the same set — via --with or derived,
+        // in any mix — matches this persistent install.
+        let plan = plan_for("^1", &[], &["zip"], &["intl"]);
+        let (w, e) = sorted(&plan);
+        assert!(receipt_matches(&receipt, &plan, &w, &e));
+
+        // A run asking for fewer extensions does not.
+        let narrower = plan_for("^1", &[], &["zip"], &[]);
+        let (w, e) = sorted(&narrower);
+        assert!(!receipt_matches(&receipt, &narrower, &w, &e));
+    }
+
+    #[test]
+    fn extension_names_dedupes_explicit_and_derived() {
+        let plan = plan_for("^1", &[], &["intl", "zip"], &["intl", "bcmath"]);
+        assert_eq!(plan.extension_names(), vec!["intl", "zip", "bcmath"]);
     }
 }

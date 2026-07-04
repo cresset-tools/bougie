@@ -42,6 +42,7 @@ pub mod tool_exec;
 pub mod tool_inject;
 pub mod tool_install;
 pub mod tool_list;
+pub mod tool_project;
 pub mod tool_run;
 pub mod tool_uninject;
 pub mod tool_uninstall;

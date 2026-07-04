@@ -87,12 +87,13 @@ pub struct InstallContext<'a> {
     pub php_installer: &'a resolve::PhpInstaller,
     pub classifier: &'a ExtensionClassifier,
     pub ext_installer: &'a ExtInstaller,
-    /// Fetcher for the tool's `require.php`. When no `--php` is
-    /// passed, install/run consult this to drive PHP selection — so
-    /// `bougie tool install phpstan/phpstan` picks whatever PHP
-    /// phpstan's own `require.php` constraint actually wants, rather
-    /// than blindly grabbing the highest installed NTS.
-    pub php_requirement: &'a resolve::RequiredPhpFetcher,
+    /// Fetcher for the tool's platform requirements. `require.php`
+    /// drives PHP selection when no `--php` is passed — so `bougie
+    /// tool install phpstan/phpstan` picks whatever PHP phpstan's own
+    /// constraint actually wants rather than blindly grabbing the
+    /// highest installed NTS — and `require.ext-*` names join the
+    /// effective extension set as if passed via `--with`.
+    pub tool_requires: &'a resolve::ToolRequiresFetcher,
     /// Ensures the chosen PHP has its baseline extensions installed
     /// before the tool's composer install runs. Required because
     /// modern PHP builds in bougie's index ship without baseline —
@@ -131,40 +132,194 @@ pub fn install_into(
     force: bool,
     target: &InstallTarget,
 ) -> Result<InstallOutcome> {
-    let paths = ctx.paths;
-    ensure_stable_bougie_symlink(paths)
-        .wrap_err("setting up stable bougie symlink")?;
+    // Persistent installs are project-blind by design (a global tool
+    // must behave the same from any cwd); only the ephemeral `tool
+    // run` lane threads a project context through `plan_install`.
+    let plan = plan_install(ctx, request, php_spec, with, None)?;
+    install_prepared(ctx, &plan, force, target)
+}
 
+/// Fully resolved inputs for materialising a tool dir. Split from the
+/// materialisation itself so `tool run` can compute cache keys and
+/// probe for persistent matches without touching the network-heavy
+/// install path (and without re-resolving when it does materialise).
+#[derive(Debug, Clone)]
+pub struct InstallPlan {
+    pub package: String,
+    pub constraint: String,
+    pub php: PhpChoice,
+    pub php_source: resolve::PhpSource,
+    /// `--with vendor/name[@constraint]` entries, verbatim.
+    pub composer_extras: Vec<String>,
+    /// Bare `--with <ext>` names. Validated *hard* at materialise
+    /// time — the user asked for them by name.
+    pub with_extensions: Vec<String>,
+    /// Extension names derived from the tool's `require.ext-*` and
+    /// the project context. Validated *soft* (warn + skip) at
+    /// materialise time — they're a convenience, and a name bougie's
+    /// index can't satisfy shouldn't sink the run.
+    pub derived_extensions: Vec<String>,
+}
+
+impl InstallPlan {
+    /// The effective extension set: explicit names first, derived
+    /// after, deduped. This is what cache keys and receipt matching
+    /// hash — deliberately the *pre-validation* set, so the key is
+    /// computable offline and cache hits skip classification
+    /// entirely.
+    pub fn extension_names(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::with_capacity(
+            self.with_extensions.len() + self.derived_extensions.len(),
+        );
+        for name in self.with_extensions.iter().chain(&self.derived_extensions) {
+            if !out.iter().any(|n| n == name) {
+                out.push(name.clone());
+            }
+        }
+        out
+    }
+}
+
+/// Resolve a request into an [`InstallPlan`]: fetch the tool's own
+/// platform requirements, run the PHP-selection ladder, split `--with`
+/// extras by shape, and union the derived extension set
+/// (`--with` ∪ tool `require.ext-*` ∪ project). Deliberately does NOT
+/// hit the extension index — `--with` names are split on `/` only
+/// (Composer package identifiers always contain one) so the hot
+/// cache-hit path of `tool run` stays free of per-name lookups; real
+/// classification happens in [`install_prepared`].
+pub fn plan_install(
+    ctx: &InstallContext<'_>,
+    request: &ToolRequest,
+    php_spec: Option<&str>,
+    with: &[String],
+    project: Option<&resolve::ProjectContext>,
+) -> Result<InstallPlan> {
     let constraint = request
         .constraint
         .clone()
         .unwrap_or_else(|| DEFAULT_CONSTRAINT.to_string());
     let package = request.package();
-    let php = pick_php_for_install(
-        paths,
+
+    let requires = fetch_tool_requires(ctx, &package, &constraint);
+    let (php, php_source) = resolve::select_php(
+        ctx.paths,
         &package,
-        &constraint,
         php_spec,
+        requires.php.as_deref(),
+        project.map(|p| &p.php),
         ctx.php_installer,
-        ctx.php_requirement,
-        ctx.php_baseline,
     )?;
+
+    let mut composer_extras: Vec<String> = Vec::new();
+    let mut with_extensions: Vec<String> = Vec::new();
+    for name in with {
+        if name.is_empty() {
+            bail!("--with value is empty");
+        }
+        if name.contains('/') {
+            composer_extras.push(name.clone());
+        } else {
+            with_extensions.push(name.clone());
+        }
+    }
+
+    let mut derived_extensions: Vec<String> = Vec::new();
+    let project_exts = project.map(|p| p.extensions.as_slice()).unwrap_or_default();
+    for name in requires.extensions.iter().chain(project_exts) {
+        if !with_extensions.iter().any(|n| n == name)
+            && !derived_extensions.iter().any(|n| n == name)
+        {
+            derived_extensions.push(name.clone());
+        }
+    }
+
+    Ok(InstallPlan {
+        package,
+        constraint,
+        php,
+        php_source,
+        composer_extras,
+        with_extensions,
+        derived_extensions,
+    })
+}
+
+/// Look up the tool's platform requirements, degrading gracefully:
+/// a fetch failure (offline, Packagist blip) warns and returns the
+/// empty default so PHP selection falls back down the ladder — same
+/// posture the pre-`ToolRequires` code took for `require.php`.
+fn fetch_tool_requires(
+    ctx: &InstallContext<'_>,
+    package: &str,
+    constraint: &str,
+) -> resolve::ToolRequires {
+    match (ctx.tool_requires)(ctx.paths, package, constraint) {
+        Ok(requires) => requires,
+        Err(e) => {
+            eprintln!(
+                "warning: couldn't look up `{package}`'s platform requirements ({e:#}); \
+                 selecting PHP without them. Pass `--php <ver>` to bypass this lookup.",
+            );
+            resolve::ToolRequires::default()
+        }
+    }
+}
+
+/// Materialise a plan into a tool dir: baseline, composer resolve +
+/// install, extension fragments, wrappers, receipt.
+pub fn install_prepared(
+    ctx: &InstallContext<'_>,
+    plan: &InstallPlan,
+    force: bool,
+    target: &InstallTarget,
+) -> Result<InstallOutcome> {
+    let paths = ctx.paths;
+    ensure_stable_bougie_symlink(paths)
+        .wrap_err("setting up stable bougie symlink")?;
+
+    (ctx.php_baseline)(paths, &plan.php).wrap_err_with(|| {
+        format!("ensuring baseline extensions for PHP {}", plan.php.version)
+    })?;
+
+    // Validate extension names up front so a bad one fails before we
+    // touch the tool dir. Explicit `--with` names go through
+    // `classify` for its "did you mean vendor/name?" error; derived
+    // names are best-effort and warn-skip on anything the classifier
+    // doesn't recognise (or can't check).
+    let mut extension_names: Vec<String> = Vec::new();
+    for name in &plan.with_extensions {
+        match classify(name, &plan.php, ctx.classifier)? {
+            Classified::Extension(e) => extension_names.push(e),
+            // Unreachable: plan_install routed every `/`-name into
+            // composer_extras, and classify only returns
+            // ComposerPackage for names containing `/`.
+            Classified::ComposerPackage(p) => composer_unreachable(&p),
+        }
+    }
+    for name in &plan.derived_extensions {
+        if extension_names.iter().any(|n| n == name) {
+            continue;
+        }
+        match (ctx.classifier)(name, &plan.php) {
+            Ok(true) => extension_names.push(name.clone()),
+            Ok(false) => eprintln!(
+                "warning: skipping derived extension `{name}` — bougie's index has no \
+                 such extension for PHP {}",
+                plan.php.version,
+            ),
+            Err(e) => eprintln!(
+                "warning: skipping derived extension `{name}` — couldn't check it \
+                 against bougie's index ({e:#})",
+            ),
+        }
+    }
+
     let tool_dir = match target {
-        InstallTarget::Persistent => paths.tool_dir(&package),
+        InstallTarget::Persistent => paths.tool_dir(&plan.package),
         InstallTarget::Ephemeral { dir } => dir.clone(),
     };
     let expose_on_path = matches!(target, InstallTarget::Persistent);
-
-    // Classify every --with up front so a bad name fails before we
-    // touch the tool dir.
-    let mut composer_extras: Vec<String> = Vec::new();
-    let mut extension_extras: Vec<String> = Vec::new();
-    for name in with {
-        match classify(name, &php, ctx.classifier)? {
-            Classified::ComposerPackage(p) => composer_extras.push(p),
-            Classified::Extension(e) => extension_extras.push(e),
-        }
-    }
 
     std::fs::create_dir_all(&tool_dir)
         .wrap_err_with(|| format!("creating {}", tool_dir.display()))?;
@@ -177,7 +332,7 @@ pub fn install_into(
             )
         })?;
 
-    write_composer_json(&tool_dir, &package, &constraint, &composer_extras)?;
+    write_composer_json(&tool_dir, &plan.package, &plan.constraint, &plan.composer_extras)?;
     (ctx.resolve_lock)(paths, &tool_dir).wrap_err("resolving composer.lock for tool")?;
     install_from_lock(paths, &tool_dir, InstallOptions { no_dev: true }, None)
         .wrap_err("installing tool dependencies")?;
@@ -186,13 +341,13 @@ pub fn install_into(
     std::fs::create_dir_all(&conf_d)
         .wrap_err_with(|| format!("creating {}", conf_d.display()))?;
 
-    // Install + enable extension extras BEFORE emitting PATH symlinks.
+    // Install + enable extensions BEFORE emitting PATH symlinks.
     // A failing extension install must not leave a live on-PATH bin that
     // execs `bougie tool-exec` against a tool dir with no receipt yet —
     // every invocation would then bail "receipt.toml missing".
-    let mut tool_extensions: Vec<ToolExtension> = Vec::with_capacity(extension_extras.len());
-    for ext in &extension_extras {
-        let ini_path = (ctx.ext_installer)(paths, ext, &php, &conf_d)
+    let mut tool_extensions: Vec<ToolExtension> = Vec::with_capacity(extension_names.len());
+    for ext in &extension_names {
+        let ini_path = (ctx.ext_installer)(paths, ext, &plan.php, &conf_d)
             .wrap_err_with(|| format!("installing extension `{ext}` for tool"))?;
         tool_extensions.push(ToolExtension {
             name: ext.clone(),
@@ -201,28 +356,35 @@ pub fn install_into(
     }
 
     let (entrypoints, installed_bins) =
-        emit_bins(paths, &tool_dir, &package, force, expose_on_path)?;
+        emit_bins(paths, &tool_dir, &plan.package, force, expose_on_path)?;
 
     let receipt = ToolReceipt {
-        package: package.clone(),
-        constraint,
-        php_version: php.version.clone(),
-        php_flavor: php.flavor.clone(),
+        package: plan.package.clone(),
+        constraint: plan.constraint.clone(),
+        php_version: plan.php.version.clone(),
+        php_flavor: plan.php.flavor.clone(),
         composer_version: RECORDED_COMPOSER_VERSION.into(),
-        with: composer_extras,
-        php_resolved_path: php.bin.clone(),
+        with: plan.composer_extras.clone(),
+        php_resolved_path: plan.php.bin.clone(),
         entrypoints,
         extensions: tool_extensions,
     };
     crate::receipt::write(&tool_dir.join("receipt.toml"), &receipt)?;
 
     Ok(InstallOutcome {
-        package,
-        php_version: php.version,
+        package: plan.package.clone(),
+        php_version: plan.php.version.clone(),
         tool_dir,
         installed_bins,
-        installed_extensions: extension_extras,
+        installed_extensions: extension_names,
     })
+}
+
+/// See the call site: `classify` structurally cannot return
+/// [`Classified::ComposerPackage`] for a slash-free name. Isolated so
+/// the `unreachable!` carries context if the invariant ever breaks.
+fn composer_unreachable(name: &str) -> ! {
+    unreachable!("slash-free --with `{name}` classified as a composer package")
 }
 
 /// Read bin entries for `package` from the just-installed vendor
@@ -293,67 +455,6 @@ pub fn emit_bins(
         installed_bins.push(install_path);
     }
     Ok((entrypoints, installed_bins))
-}
-
-/// PHP selection for install / run.
-///
-/// - If `php_spec` is `Some(_)`, the user pinned PHP via `--php`;
-///   honour it and call `pick_php` with the spec.
-/// - Otherwise look up the tool's `require.php` via the supplied
-///   fetcher; on a hit, drive selection by that constraint.
-/// - When the tool doesn't pin PHP, or the fetcher can't reach
-///   Packagist, fall through to "highest installed NTS" — same
-///   behaviour as Phase 1.
-pub fn pick_php_for_install(
-    paths: &Paths,
-    package: &str,
-    constraint: &str,
-    php_spec: Option<&str>,
-    installer: &resolve::PhpInstaller,
-    requirement: &resolve::RequiredPhpFetcher,
-    baseline: &resolve::BaselineEnsurer,
-) -> Result<resolve::PhpChoice> {
-    let php = resolve_php_choice(paths, package, constraint, php_spec, installer, requirement)?;
-    baseline(paths, &php)
-        .wrap_err_with(|| format!("ensuring baseline extensions for PHP {}", php.version))?;
-    Ok(php)
-}
-
-/// Resolve which PHP a tool should use, *without* ensuring its baseline
-/// extensions are installed. `tool run` uses this to compute the cache
-/// key / find a persistent match: on a cache hit nothing is installed,
-/// so running the baseline ensurer (real install logic that can stall
-/// or fail offline) would be wasted work. The materialise path goes
-/// through `pick_php_for_install`, which still ensures baseline.
-pub fn resolve_php_choice(
-    paths: &Paths,
-    package: &str,
-    constraint: &str,
-    php_spec: Option<&str>,
-    installer: &resolve::PhpInstaller,
-    requirement: &resolve::RequiredPhpFetcher,
-) -> Result<resolve::PhpChoice> {
-    if let Some(spec) = php_spec {
-        return resolve::pick_php(paths, Some(spec), installer);
-    }
-    match requirement(paths, package, constraint) {
-        Ok(Some(php_constraint)) => {
-            resolve::pick_php_for_constraint(paths, &php_constraint, installer)
-        }
-        Ok(None) => resolve::pick_php(paths, None, installer),
-        Err(e) => {
-            // Network blip / cache miss / etc. Don't block the
-            // install — fall back to the legacy default. A
-            // warning surfaces so the user can opt into `--php`
-            // for a deterministic answer.
-            eprintln!(
-                "warning: couldn't look up `{package}`'s require.php ({e:#}); \
-                 picking highest installed NTS PHP. \
-                 Pass `--php <ver>` to bypass this lookup.",
-            );
-            resolve::pick_php(paths, None, installer)
-        }
-    }
 }
 
 /// Regenerate `composer.json` from a receipt's current state. Used by

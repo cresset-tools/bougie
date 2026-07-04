@@ -29,6 +29,17 @@ use std::path::Path;
 /// `Usage: phpstan …`, not `Usage: /tool/dir/bin/phpstan …`).
 /// `vendor_relative_bin` is the package's `composer.json` `bin` entry,
 /// already vendor-prefixed (`phpstan/phpstan/bin/phpstan`).
+///
+/// The wrapper declares itself a Composer-style bin proxy by setting
+/// `$GLOBALS['_composer_autoload_path']` (the composer-runtime-api
+/// convention Composer ≥2.2's own `vendor/bin` proxies establish
+/// before including the real bin). Guard-using entry points decide
+/// "was I invoked or merely embedded?" from a `debug_backtrace()`,
+/// and tolerate exactly one include frame *when that global is set* —
+/// psysh's `Psy\Shell::isIncluded` is the canonical example, and
+/// without the global it silently bails under any require-style
+/// launcher. The value is also truthful: it points at the tool's own
+/// vendor autoloader, which is what convention-aware bins use it for.
 pub fn render_unix(
     bougie_stable_bin: &Path,
     bin_name: &str,
@@ -44,6 +55,7 @@ pub fn render_unix(
          // `bougie tool upgrade --reinstall {bin_name}`.\n\
          \n\
          $argv[0] = $_SERVER['argv'][0] = {name_lit};\n\
+         $GLOBALS['_composer_autoload_path'] = __DIR__ . '/../vendor/autoload.php';\n\
          require __DIR__ . '/../vendor/{vendor_bin}';\n",
         bougie = bougie_stable_bin.display(),
         bin_name = bin_name,
@@ -97,6 +109,7 @@ mod tests {
 // `bougie tool upgrade --reinstall phpstan`.
 
 $argv[0] = $_SERVER['argv'][0] = 'phpstan';
+$GLOBALS['_composer_autoload_path'] = __DIR__ . '/../vendor/autoload.php';
 require __DIR__ . '/../vendor/phpstan/phpstan/bin/phpstan';
 ";
         assert_eq!(out, expected);

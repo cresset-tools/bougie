@@ -24,15 +24,46 @@ use std::path::Path;
 /// Try to infer a PHP constraint from on-disk project files. Returns
 /// `(constraint, source_label)` or `None`.
 pub fn infer(project_root: &Path) -> Option<(Constraint, String)> {
+    infer_raw(project_root).map(|i| (i.constraint, i.source))
+}
+
+/// An inferred PHP constraint plus, when one exists, its written
+/// string form. The recipe lane reads a matrix row (`"~8.3.0 ||
+/// ~8.4.0"`) so it has a raw form; a `composer.lock` intersection is
+/// synthesized from many requires and has none.
+#[derive(Debug, Clone)]
+pub struct InferredPhp {
+    pub constraint: Constraint,
+    /// Written form of `constraint`, for callers that need to hand it
+    /// to string-typed APIs (the PHP auto-installer takes specs as
+    /// strings — `bgx`'s project context uses this for its installer
+    /// fallback).
+    pub raw: Option<String>,
+    /// Human-readable label for the notice ("magento/... 2.4.7",
+    /// "composer.lock").
+    pub source: String,
+}
+
+/// [`infer`], keeping the raw constraint string when the signal has
+/// one.
+pub fn infer_raw(project_root: &Path) -> Option<InferredPhp> {
     if let Ok(text) = fs::read_to_string(project_root.join("composer.json"))
-        && let Some(found) = magento_default(&text)
+        && let Some((constraint, raw, source)) = magento_default(&text)
     {
-        return Some(found);
+        return Some(InferredPhp {
+            constraint,
+            raw: Some(raw.to_string()),
+            source,
+        });
     }
     if let Ok(text) = fs::read_to_string(project_root.join("composer.lock"))
-        && let Some(found) = lockfile_intersection(&text)
+        && let Some((constraint, source)) = lockfile_intersection(&text)
     {
-        return Some(found);
+        return Some(InferredPhp {
+            constraint,
+            raw: None,
+            source,
+        });
     }
     None
 }
@@ -45,7 +76,7 @@ pub fn infer(project_root: &Path) -> Option<(Constraint, String)> {
 /// and look up the matrix row. Magento constraints are always pinned
 /// tight (`^2.4.7`, `~2.4.6`, `2.4.5-p1`), so the first version
 /// mention is the deciding lower bound for the matrix.
-fn magento_default(composer_json: &str) -> Option<(Constraint, String)> {
+fn magento_default(composer_json: &str) -> Option<(Constraint, &'static str, String)> {
     let v: Value = serde_json::from_str(composer_json).ok()?;
     let require = v.get("require").and_then(Value::as_object)?;
 
@@ -62,7 +93,7 @@ fn magento_default(composer_json: &str) -> Option<(Constraint, String)> {
             Some(p) => format!("{major}.{minor}.{p}"),
             None => format!("{major}.{minor}"),
         };
-        return Some((c, format!("{pkg} {pv}")));
+        return Some((c, php, format!("{pkg} {pv}")));
     }
 
     // Fall through to Mage-OS fork names.
@@ -79,7 +110,7 @@ fn magento_default(composer_json: &str) -> Option<(Constraint, String)> {
             Some((maj, min, None)) => format!("{maj}.{min}"),
             None => format!("{major}.{minor}"),
         };
-        return Some((c, format!("{pkg} {pv}")));
+        return Some((c, php, format!("{pkg} {pv}")));
     }
 
     None
@@ -316,7 +347,7 @@ mod tests {
     #[test]
     fn magento_247_picks_82_or_83() {
         let composer = r#"{"require":{"magento/product-community-edition":"2.4.7-p3"}}"#;
-        let (c, src) = magento_default(composer).unwrap();
+        let (c, _raw, src) = magento_default(composer).unwrap();
         assert!(src.contains("2.4.7"));
         assert!(c.matches(&parses("8.2.20")));
         assert!(c.matches(&parses("8.3.10")));
@@ -327,7 +358,7 @@ mod tests {
     #[test]
     fn magento_246_caret_range() {
         let composer = r#"{"require":{"magento/product-community-edition":"^2.4.6"}}"#;
-        let (c, _) = magento_default(composer).unwrap();
+        let (c, _raw, _) = magento_default(composer).unwrap();
         assert!(c.matches(&parses("8.1.20")));
         assert!(c.matches(&parses("8.2.20")));
         assert!(c.matches(&parses("8.3.10")));
@@ -338,7 +369,7 @@ mod tests {
     #[test]
     fn magento_base_alias_works() {
         let composer = r#"{"require":{"magento/magento2-base":"~2.4.5"}}"#;
-        let (c, src) = magento_default(composer).unwrap();
+        let (c, _raw, src) = magento_default(composer).unwrap();
         assert!(src.contains("magento2-base"));
         assert!(c.matches(&parses("8.1.20")));
     }
@@ -447,7 +478,7 @@ mod tests {
     fn mageos_1x_picks_81_to_83() {
         let composer =
             r#"{"require":{"mage-os/product-community-edition":"1.0.0"}}"#;
-        let (c, src) = magento_default(composer).unwrap();
+        let (c, _raw, src) = magento_default(composer).unwrap();
         assert!(src.contains("mage-os/product-community-edition"));
         assert!(c.matches(&parses("8.1.10")));
         assert!(c.matches(&parses("8.2.10")));
@@ -460,7 +491,7 @@ mod tests {
     fn mageos_2x_picks_82_to_84() {
         let composer =
             r#"{"require":{"mage-os/product-community-edition":"2.0.0"}}"#;
-        let (c, src) = magento_default(composer).unwrap();
+        let (c, _raw, src) = magento_default(composer).unwrap();
         assert!(src.contains("2.0"));
         assert!(c.matches(&parses("8.2.10")));
         assert!(c.matches(&parses("8.3.5")));
@@ -473,7 +504,7 @@ mod tests {
     fn mageos_3x_picks_83_to_85() {
         let composer =
             r#"{"require":{"mage-os/product-community-edition":"3.0.0"}}"#;
-        let (c, src) = magento_default(composer).unwrap();
+        let (c, _raw, src) = magento_default(composer).unwrap();
         assert!(src.contains("3.0"));
         assert!(c.matches(&parses("8.3.5")));
         assert!(c.matches(&parses("8.4.1")));
@@ -485,7 +516,7 @@ mod tests {
     fn mageos_base_alias_works() {
         let composer =
             r#"{"require":{"mage-os/magento2-base":"~1.0.0"}}"#;
-        let (c, src) = magento_default(composer).unwrap();
+        let (c, _raw, src) = magento_default(composer).unwrap();
         assert!(src.contains("mage-os/magento2-base"));
         assert!(c.matches(&parses("8.1.20")));
     }

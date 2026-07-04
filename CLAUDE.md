@@ -174,6 +174,14 @@ Top-level subcommands (from `bougie-cli`):
   `projects purge` deprovisions tenants (orphaned-by-default, or `--project`/
   `--all`) — destructive, so it lists the targeted tenants and confirms
   unless `--yes`/`--dry-run`.
+- `tool {install,run,list,upgrade,uninstall,inject,uninject,dir}` —
+  uv-tool-style global PHP CLI tools (`crates/bougie-tool/`), each with
+  its own vendor tree + pinned PHP under `$BOUGIE_LOCAL/tools/`. `tool
+  run` (alias: the `bgx` binary, uvx-style) is the ephemeral lane; it
+  derives PHP + extensions from the surrounding project (tool ∩
+  project, tool wins; `--no-project` opts out) and layers a
+  `cli-defaults/` `memory_limit=-1` ini into `PHP_INI_SCAN_DIR` so
+  spawned child PHPs inherit it. See `TOOL_PLAN.md`.
 - `make [task]` — Recipe DAG walker (`start` alias for `make start`).
 - `format [ARGS...]` — Format the project's PHP, the way `uv format` runs
   ruff. bougie bundles no formatter: `commands/format.rs` downloads a
@@ -273,7 +281,10 @@ change up. Examples in `git log`: `feat(composer-resolver): ...`,
   (Windows path compile-verified, runtime pending CI); delete once CI
   confirms the Windows build.
 - `TOOL_PLAN.md` — `bougie tool` (uv-tool-style globally-installed
-  isolated PHP CLI tools). Design only; no implementation yet.
+  isolated PHP CLI tools). Phases 1–3 shipped (Unix
+  install/uninstall/list, `--with`/inject, ephemeral `tool run` +
+  `bgx`, project context for runs, CLI ini defaults); Windows +
+  PATH-ergonomics phases pending.
 
 When a plan ships, **delete** the file rather than archiving it. The repo
 root is for current work; shipped plans live in git history.

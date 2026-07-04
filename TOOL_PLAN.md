@@ -37,7 +37,7 @@ bougie tool install <vendor/name>[@<constraint>] [--with <vendor/name>...]
                                                  [--php <ver>]
                                                  [--composer <ver>]
                                                  [--force]
-bougie tool run <vendor/name>[@<constraint>] [args...]   # also: bgx <vendor/name> [args...]
+bougie tool run [--no-project] <vendor/name>[@<constraint>] [args...]   # also: bgx <vendor/name> [args...]
 bougie tool list [--installed | --available]
 bougie tool upgrade <vendor/name> | --all [--reinstall]
 bougie tool uninstall <vendor/name>
@@ -180,6 +180,7 @@ The wrapper is a PHP file with a bougie-binary shebang:
 // `bougie tool upgrade --reinstall phpstan/phpstan`.
 
 $argv[0] = $_SERVER['argv'][0] = 'phpstan';
+$GLOBALS['_composer_autoload_path'] = __DIR__ . '/../vendor/autoload.php';
 require __DIR__ . '/../vendor/phpstan/phpstan/bin/phpstan';
 ```
 
@@ -191,6 +192,14 @@ What each piece does:
   derives the tool dir from it.
 - `$argv[0]` fix-up gives clean error messages (tools that print
   "Usage: phpstan …" rather than "Usage: /full/path/to/script").
+- `$GLOBALS['_composer_autoload_path']` declares the wrapper a
+  Composer-style bin proxy (the composer-runtime-api convention that
+  Composer ≥2.2's own `vendor/bin` proxies set before including the
+  real bin). Entry points with "was I included or invoked?" guards —
+  psysh's `Psy\Shell::isIncluded` is the canonical case — tolerate
+  exactly one include frame when the global is set; without it they
+  silently bail under any require-style launcher. The value is
+  truthful: it points at the tool's vendor autoloader.
 - `__DIR__`-relative `require` — no `$TOOL_DIR` baked into the
   wrapper, so the wrapper survives a future `$BOUGIE_HOME` move.
 
@@ -210,6 +219,7 @@ No shebangs, unreliable symlinks. Two files:
 // `bougie tool upgrade --reinstall phpstan/phpstan`.
 
 $argv[0] = $_SERVER['argv'][0] = 'phpstan';
+$GLOBALS['_composer_autoload_path'] = __DIR__ . '/../vendor/autoload.php';
 require __DIR__ . '/../vendor/phpstan/phpstan/bin/phpstan';
 ```
 
@@ -303,13 +313,74 @@ anyway.
 ## Ephemeral runs (`bougie tool run`, `bgx`)
 
 One-shots without persisting an install. Cache key:
-`(package, constraint, php_version, with...)`. Cache root:
-`paths.cache().join("tool-run").join(<hash>)`.
+`(package, constraint, php_version, composer extras, extension set)`.
+Cache root: `paths.cache().join("tool-run").join(<hash>)`.
 
-If a persistent install matches the request exactly, reuse it.
-Otherwise materialize into the cache and run. GC: existing `bougie
-cache prune` walks tool-run entries by mtime, drops anything older
-than the configured TTL.
+If a persistent install matches the request exactly (including the
+extension set), reuse it. Otherwise materialize into the cache and
+run. GC: existing `bougie cache prune` walks tool-run entries by
+mtime, drops anything older than the configured TTL.
+
+### Requirement-derived extensions (shipped)
+
+The tool's own `require.ext-*` (from the same Packagist metadata fetch
+that supplies `require.php`) joins the effective extension set as
+implicit `--with`s, minus names that are builtin or baseline.
+Derived names are *soft*: one bougie's index can't satisfy warn-skips
+instead of failing the run. Explicit `--with` names stay hard errors.
+
+### Project context (shipped; ephemeral lane only)
+
+Tools like n98-magerun2 and deployer are project *clients* — they boot
+the surrounding application but can't live in its `composer.json`
+(dependency conflicts are why `-dist` repacks exist). So `tool run` /
+`bgx`, unless `--no-project` is passed, derives context from the
+nearest ancestor with `composer.json` / `bougie.toml` /
+`vendor/bougie/` (`commands/tool_project.rs`):
+
+- **PHP** (`resolve::select_php` ladder): `--php` wins; else a synced
+  bougie project's exact resolved interpreter when it satisfies the
+  tool's `require.php`; else the highest install matching project ∩
+  tool constraints (auto-install by the project's written constraint,
+  kept only if the tool accepts the result); else the tool's own
+  `require.php` with a warning — the tool must at minimum run itself,
+  and the project's `platform_check.php` reports any residual
+  mismatch in its own words. Project constraint mirrors sync's
+  precedence: `bougie.toml [php]version` ∩ `composer.json
+  require.php`, falling back to `infer_php` (Magento matrix, then
+  lockfile intersection).
+- **Extensions**: `composer.json require.ext-*` ∪ inferred
+  (framework recommended set + lockfile `ext-*`), minus
+  builtin/baseline, minus `[extensions] name = false` opt-outs.
+  Same soft warn-skip policy as requirement-derived names.
+- A one-line stderr notice states what was applied and points at
+  `--no-project`.
+
+The derived set is part of the cache key, so the same tool run from
+two differently-shaped projects gets two slots. `tool install` stays
+project-blind — a global tool behaves identically from any cwd.
+
+### CLI ini defaults (shipped)
+
+`tool-exec` layers `$BOUGIE_LOCAL/cli-defaults/` (lazily written,
+currently just `memory_limit = -1`) into `PHP_INI_SCAN_DIR` between
+the install's conf.d and the tool's conf.d, so a per-tool fragment
+still wins. An ini fragment rather than a `-d` argv flag because the
+scan dir travels via the environment: child PHP processes a tool
+spawns (n98-magerun2 running `PHP_BINARY bin/magento`) inherit it,
+which argv flags never reach. Mirrors the project-side `php` shim's
+`-d memory_limit=-1` stance; FPM is unaffected.
+
+### Guarded bins (`isIncluded` et al.) — handled
+
+Require-style wrappers trip "am I the main script?" guards; psysh's
+`bin/psysh` (`Psy\Shell::isIncluded(debug_backtrace())`) silently
+no-ops under a bare `require`. Solved by speaking Composer's bin-proxy
+convention: the wrapper sets `$GLOBALS['_composer_autoload_path']`
+before the require (see "Wrappers — Unix"), which convention-aware
+guards accept as one legitimate include frame. Wrappers regenerate on
+install / upgrade / reinstall; a pre-fix wrapper in an old cache slot
+regenerates when the slot is pruned or its cache key changes.
 
 ### `bgx` — short alias binary
 
@@ -514,6 +585,9 @@ need clean messages:
 - A `bougiew.exe` Windows-GUI-subsystem variant (the equivalent of
   uv's `uvw.exe`). PHP CLI tools we target are strictly console; revisit
   if a GUI use case emerges.
-- Project-overlaid tool execution (`PHP_INI_SCAN_DIR` chain that adds
-  project conf.d on top of tool conf.d). Hurts reproducibility;
-  `bougie run` is the right tool when project context is needed.
+- Project-overlaid `PHP_INI_SCAN_DIR` chains that layer the project's
+  own conf.d verbatim onto a tool run. Superseded by the shipped
+  project-context design (see "Project context" above), which derives
+  the extension *set* from the project and materialises fragments in
+  the tool slot for the tool's PHP — reproducible per cache key, no
+  cross-interpreter `.so` reuse.
