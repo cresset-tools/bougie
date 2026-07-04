@@ -242,6 +242,14 @@ pub fn run(
         packages_installed: install.as_ref().map(|s| s.packages_installed),
         packages_already_present: install.as_ref().map(|s| s.packages_already_present),
     };
+    // Telemetry enrichment (TELEMETRY.md): bucketed totals + counts,
+    // never names.
+    bougie_telemetry::probe::record(|p| {
+        p.enrich.packages_installed = result.packages_installed;
+        p.enrich.total_deps = Some(bougie_telemetry::probe::bucket(
+            result.packages.len() + result.packages_dev.len(),
+        ));
+    });
     emit(format, &result)?;
     Ok(ExitCode::SUCCESS)
 }

@@ -148,6 +148,18 @@ To have uploaded data deleted, open an issue on
 `install_id` — that id is only on your machine, so only you can make
 that request.
 
+## Changing the schema
+
+Any new field or accepted value ships in three moves, ideally in one
+reviewable PR: the event structs + vocab consts in
+`crates/bougie-telemetry` (`COMMAND_VOCAB`, `OUTCOME_VOCAB`,
+`EXTENSION_VOCAB`, `SERVICE_VOCAB`), the tables in this document
+(`crates/bougie/tests/telemetry_schema.rs` fails CI when structs and
+doc diverge), and the collector's allowlist
+(cresset-tools/infra, `hosts/telemetry/bougie-collector`). Anything
+that *expands* what is collected bumps the consent version, so every
+existing opt-in is asked again; narrowing never re-asks.
+
 ## Network calls that are not telemetry
 
 For transparency, bougie also talks to the network for its actual

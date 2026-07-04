@@ -471,12 +471,14 @@ fn finish_with_vendor(
         }
         extensions.extend(result.installed_extensions.iter().cloned());
         let services: Vec<String> = project.bougie.services.keys().cloned().collect();
+        let direct_requires = project.composer.as_ref().map(|c| c.direct_requires);
         let marker = paths.project_state_dir(project_root).join("telemetry-last-snapshot");
         probe::record(|p| {
             p.enrich.resolve_ms = Some(probe::ms(result.resolve_ms));
             p.enrich.vendor_ms = Some(probe::ms(result.audit_ms));
             p.enrich.packages_installed = result.vendor_packages_installed;
             p.enrich.total_deps = Some(probe::bucket(result.resolved_packages));
+            p.enrich.direct_deps = direct_requires.map(probe::bucket);
             p.enrich.php_version = probe::minor(&result.php_version);
             p.enrich.php_flavor = probe::vocab_token(&result.php_flavor);
             p.enrich.php_source = Some(match result.php_source {
@@ -2131,6 +2133,7 @@ mod tests {
                 composer: Some(ComposerJson {
                     require_php: Some(require_php.to_string()),
                     require_extensions: BTreeSet::new(),
+                    direct_requires: 0,
                     extra_bougie: None,
                     scripts: BTreeMap::new(),
                 }),
