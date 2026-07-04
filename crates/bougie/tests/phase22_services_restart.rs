@@ -1,4 +1,4 @@
-//! Phase 22: `bougie services restart` end-to-end.
+//! Phase 22: `bougie service restart` end-to-end.
 //!
 //! Restart should:
 //!   - replace the live service process (new PID),
@@ -33,7 +33,7 @@ fn install_fake_redis(env: &TestEnv) {
 fn stop_daemon(env: &TestEnv) {
     let _ = env
         .bougie()
-        .args(["services", "daemon", "stop"])
+        .args(["service", "daemon", "stop"])
         .timeout(STEP_TIMEOUT)
         .assert();
 }
@@ -41,7 +41,7 @@ fn stop_daemon(env: &TestEnv) {
 fn read_pid(env: &TestEnv, proj: &std::path::Path, service: &str) -> Option<u64> {
     let out = env
         .bougie()
-        .args(["services", "status", "--format", "json-v1"])
+        .args(["service", "status", "--format", "json-v1"])
         .current_dir(proj)
         .timeout(STEP_TIMEOUT)
         .assert()
@@ -64,13 +64,13 @@ fn restart_replaces_the_process_and_preserves_the_tenant() {
     let proj = project_with_composer("acme/blog");
 
     env.bougie()
-        .args(["services", "add", "redis"])
+        .args(["service", "add", "redis"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
         .success();
     env.bougie()
-        .args(["services", "up"])
+        .args(["service", "up"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
@@ -82,7 +82,7 @@ fn restart_replaces_the_process_and_preserves_the_tenant() {
 
     let output = env
         .bougie()
-        .args(["services", "restart", "--format", "json-v1"])
+        .args(["service", "restart", "--format", "json-v1"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
@@ -129,7 +129,7 @@ fn restart_of_stopped_service_is_a_noop() {
     install_fake_redis(&env);
     let proj = project_with_composer("acme/blog");
     env.bougie()
-        .args(["services", "add", "redis"])
+        .args(["service", "add", "redis"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
@@ -139,7 +139,7 @@ fn restart_of_stopped_service_is_a_noop() {
     // nothing restarted, exit 0.
     let out = env
         .bougie()
-        .args(["services", "restart", "--format", "json-v1"])
+        .args(["service", "restart", "--format", "json-v1"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
@@ -162,11 +162,11 @@ fn restart_of_undeclared_service_errors() {
     let env = TestEnv::new();
     install_fake_redis(&env);
     let proj = project_with_composer("acme/blog");
-    // Don't `services add` redis. Asking to restart it should fail
+    // Don't `service add` redis. Asking to restart it should fail
     // before any IPC fires.
     let assertion = env
         .bougie()
-        .args(["services", "restart", "redis"])
+        .args(["service", "restart", "redis"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()

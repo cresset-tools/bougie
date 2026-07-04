@@ -25,7 +25,7 @@ fn install_fake_redis(env: &TestEnv) {
 fn stop_daemon(env: &TestEnv) {
     let _ = env
         .bougie()
-        .args(["services", "daemon", "stop"])
+        .args(["service", "daemon", "stop"])
         .timeout(STEP_TIMEOUT)
         .assert();
 }
@@ -36,13 +36,13 @@ fn run_exports_service_env_after_services_up() {
     install_fake_redis(&env);
     let proj = project_with_composer("acme/blog");
     env.bougie()
-        .args(["services", "add", "redis"])
+        .args(["service", "add", "redis"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
         .success();
     env.bougie()
-        .args(["services", "up"])
+        .args(["service", "up"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
@@ -73,7 +73,7 @@ fn run_exports_service_env_after_services_up() {
 
 #[test]
 fn run_without_daemon_running_skips_service_env_silently() {
-    // No `services up` — the daemon was never spawned and the socket
+    // No `service up` — the daemon was never spawned and the socket
     // doesn't exist. `bougie run` must succeed and emit no
     // `BOUGIE_SERVICE_*` vars.
     let env = TestEnv::new();
@@ -104,19 +104,19 @@ fn run_after_services_down_no_longer_exports_redis_vars() {
     install_fake_redis(&env);
     let proj = project_with_composer("acme/blog");
     env.bougie()
-        .args(["services", "add", "redis"])
+        .args(["service", "add", "redis"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
         .success();
     env.bougie()
-        .args(["services", "up"])
+        .args(["service", "up"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
         .success();
     env.bougie()
-        .args(["services", "down"])
+        .args(["service", "down"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
@@ -135,7 +135,7 @@ fn run_after_services_down_no_longer_exports_redis_vars() {
     let s = String::from_utf8(out).unwrap();
     assert!(
         !s.lines().any(|l| l.starts_with("BOUGIE_SERVICE_REDIS")),
-        "expected no BOUGIE_SERVICE_REDIS_* after `services down`: {s}"
+        "expected no BOUGIE_SERVICE_REDIS_* after `service down`: {s}"
     );
     stop_daemon(&env);
 }
@@ -148,13 +148,13 @@ fn two_projects_get_distinct_redis_db_numbers_in_env() {
     let b = project_with_composer("acme/store");
     for p in [&a, &b] {
         env.bougie()
-            .args(["services", "add", "redis"])
+            .args(["service", "add", "redis"])
             .current_dir(p.path())
             .timeout(STEP_TIMEOUT)
             .assert()
             .success();
         env.bougie()
-            .args(["services", "up"])
+            .args(["service", "up"])
             .current_dir(p.path())
             .timeout(STEP_TIMEOUT)
             .assert()

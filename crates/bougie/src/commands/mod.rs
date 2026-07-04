@@ -51,7 +51,7 @@ pub mod make;
 #[cfg(unix)]
 pub mod start;
 #[cfg(unix)]
-pub mod services;
+pub mod service;
 pub mod server;
 pub mod starter;
 pub mod sync;

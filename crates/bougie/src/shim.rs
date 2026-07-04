@@ -7,7 +7,7 @@
 //! `bougied` is also a role on the same binary: when invoked under
 //! `argv[0] == "bougied"`, the process becomes the long-lived service
 //! supervisor daemon. The CLI auto-spawns it on first
-//! `bougie services …` invocation by exec'ing `current_exe()` with the
+//! `bougie service …` invocation by exec'ing `current_exe()` with the
 //! `bougied` argv[0] override.
 
 use crate::commands::unzip;
@@ -164,7 +164,7 @@ pub fn exec(role: Role) -> Result<ExitCode> {
     #[cfg(unix)]
     if let Role::ServiceClient { service, tool } = role {
         let project_root = locate_project_root(&argv0)?;
-        return crate::commands::services::exec::run_shim(service, tool, &project_root, &args);
+        return crate::commands::service::exec::run_shim(service, tool, &project_root, &args);
     }
 
     // One-off system PHP: `bougie run` selected a system interpreter

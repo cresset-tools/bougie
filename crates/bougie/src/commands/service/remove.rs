@@ -1,9 +1,9 @@
-//! `bougie services remove <name>… [--purge]`. CLI.md §3.8.2.
+//! `bougie service remove <name>… [--purge]`. CLI.md §3.8.2.
 //!
 //! Without `--purge` this removes the config entry only and leaves any
 //! provisioned tenant data in place (re-adding restores it). With
 //! `--purge` it first runs the same deprovision-and-destroy path as
-//! `bougie services down --purge` for the named services, then removes
+//! `bougie service down --purge` for the named services, then removes
 //! their declarations.
 
 use super::client;

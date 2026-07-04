@@ -33,7 +33,7 @@ fn status_autospawns_daemon_and_reports_every_catalog_entry_as_stopped() {
     // First call: daemon isn't running yet. The client must spawn it.
     let out = env
         .bougie()
-        .args(["services", "daemon", "status", "--format", "json-v1"])
+        .args(["service", "daemon", "status", "--format", "json-v1"])
         .timeout(STEP_TIMEOUT)
         .assert()
         .success()
@@ -65,7 +65,7 @@ fn status_autospawns_daemon_and_reports_every_catalog_entry_as_stopped() {
 
     // Clean up so we don't leak a daemon for the next test.
     env.bougie()
-        .args(["services", "daemon", "stop"])
+        .args(["service", "daemon", "stop"])
         .timeout(STEP_TIMEOUT)
         .assert()
         .success();
@@ -77,7 +77,7 @@ fn version_returns_cargo_pkg_version() {
     let env = TestEnv::new();
     let out = env
         .bougie()
-        .args(["services", "daemon", "version", "--format", "json-v1"])
+        .args(["service", "daemon", "version", "--format", "json-v1"])
         .timeout(STEP_TIMEOUT)
         .assert()
         .success()
@@ -89,7 +89,7 @@ fn version_returns_cargo_pkg_version() {
     assert_eq!(v["daemon"]["version"], env!("CARGO_PKG_VERSION"));
 
     env.bougie()
-        .args(["services", "daemon", "stop"])
+        .args(["service", "daemon", "stop"])
         .timeout(STEP_TIMEOUT)
         .assert()
         .success();
@@ -102,7 +102,7 @@ fn stop_removes_socket_and_next_status_respawns() {
 
     // First status: spawns daemon, socket exists after the call.
     env.bougie()
-        .args(["services", "daemon", "status"])
+        .args(["service", "daemon", "status"])
         .timeout(STEP_TIMEOUT)
         .assert()
         .success();
@@ -111,7 +111,7 @@ fn stop_removes_socket_and_next_status_respawns() {
 
     // Stop: daemon drains, socket goes away.
     env.bougie()
-        .args(["services", "daemon", "stop"])
+        .args(["service", "daemon", "stop"])
         .timeout(STEP_TIMEOUT)
         .assert()
         .success();
@@ -119,7 +119,7 @@ fn stop_removes_socket_and_next_status_respawns() {
 
     // Second status: re-spawns a new daemon.
     env.bougie()
-        .args(["services", "daemon", "status"])
+        .args(["service", "daemon", "status"])
         .timeout(STEP_TIMEOUT)
         .assert()
         .success();
@@ -127,7 +127,7 @@ fn stop_removes_socket_and_next_status_respawns() {
 
     // Final cleanup.
     env.bougie()
-        .args(["services", "daemon", "stop"])
+        .args(["service", "daemon", "stop"])
         .timeout(STEP_TIMEOUT)
         .assert()
         .success();
@@ -140,7 +140,7 @@ fn stop_when_daemon_not_running_is_idempotent() {
     // No daemon was ever started; stop should still succeed and say so.
     let out = env
         .bougie()
-        .args(["services", "daemon", "stop", "--format", "json-v1"])
+        .args(["service", "daemon", "stop", "--format", "json-v1"])
         .timeout(STEP_TIMEOUT)
         .assert()
         .success()
@@ -163,7 +163,7 @@ fn stop_blocks_until_daemon_is_fully_gone() {
     // returns, with no polling grace period.
     let env = TestEnv::new();
     env.bougie()
-        .args(["services", "daemon", "status"])
+        .args(["service", "daemon", "status"])
         .timeout(STEP_TIMEOUT)
         .assert()
         .success();
@@ -172,7 +172,7 @@ fn stop_blocks_until_daemon_is_fully_gone() {
 
     let out = env
         .bougie()
-        .args(["services", "daemon", "stop", "--format", "json-v1"])
+        .args(["service", "daemon", "stop", "--format", "json-v1"])
         .timeout(STEP_TIMEOUT)
         .assert()
         .success()
@@ -196,7 +196,7 @@ fn second_bougied_fails_to_acquire_singleton_lock() {
 
     // First, bring up a daemon via the auto-spawn path.
     env.bougie()
-        .args(["services", "daemon", "status"])
+        .args(["service", "daemon", "status"])
         .timeout(STEP_TIMEOUT)
         .assert()
         .success();
@@ -228,7 +228,7 @@ fn second_bougied_fails_to_acquire_singleton_lock() {
 
     // Clean up.
     env.bougie()
-        .args(["services", "daemon", "stop"])
+        .args(["service", "daemon", "stop"])
         .timeout(STEP_TIMEOUT)
         .assert()
         .success();

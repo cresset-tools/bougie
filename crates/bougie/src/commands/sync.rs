@@ -1781,7 +1781,7 @@ fn write_client_shims(
     Ok(())
 }
 
-/// Refresh the client shims after a `bougie services add/remove`
+/// Refresh the client shims after a `bougie service add/remove`
 /// edits the declarations, so the tools appear (or vanish) without
 /// waiting for the next sync. Best-effort: a shim hiccup must never
 /// fail the config edit that already happened.

@@ -1,4 +1,4 @@
-//! `bougie services status [<name>]`. CLI.md §3.8.7.
+//! `bougie service status [<name>]`. CLI.md §3.8.7.
 //!
 //! Walks the supervisor's `status` IPC reply and renders the project's
 //! services. Cross-project view (`--all`-equivalent) is reserved for
@@ -124,11 +124,11 @@ fn status_note(row: &ServiceRow) -> String {
                 )
             } else if row.failure_count > 0 {
                 format!(
-                    "  ✗ gave up after {} restart attempts — see `bougie services logs {}`",
+                    "  ✗ gave up after {} restart attempts — see `bougie service logs {}`",
                     row.failure_count, row.name
                 )
             } else {
-                format!("  ✗ failed to start — see `bougie services logs {}`", row.name)
+                format!("  ✗ failed to start — see `bougie service logs {}`", row.name)
             }
         }
         _ => String::new(),
@@ -307,7 +307,7 @@ mod tests {
         r.next_restart_ms = None; // past the attempt cap → no respawn
         let note = status_note(&r);
         assert!(note.contains("gave up"), "{note}");
-        assert!(note.contains("bougie services logs mariadb"), "{note}");
+        assert!(note.contains("bougie service logs mariadb"), "{note}");
     }
 
     #[test]
@@ -317,7 +317,7 @@ mod tests {
         let note = status_note(&row("opensearch", "failed"));
         assert!(note.contains("failed to start"), "{note}");
         assert!(!note.contains("gave up"), "{note}");
-        assert!(note.contains("bougie services logs opensearch"), "{note}");
+        assert!(note.contains("bougie service logs opensearch"), "{note}");
     }
 
     #[test]

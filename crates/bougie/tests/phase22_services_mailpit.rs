@@ -1,4 +1,4 @@
-//! Phase 22: end-to-end `bougie services up mailpit` against a real
+//! Phase 22: end-to-end `bougie service up mailpit` against a real
 //! Mailpit 1.30.2 binary from the upstream GitHub release.
 //!
 //! Coverage:
@@ -9,7 +9,7 @@
 //!   - mail delivered over SMTP is caught and visible via the REST API,
 //!   - `bougie run` env injection exports BOUGIE_SERVICE_MAILPIT_HOST /
 //!     _PORT / _DSN / _DASHBOARD_URL,
-//!   - `services down` removes the tenant and stops the shared instance
+//!   - `service down` removes the tenant and stops the shared instance
 //!     once the last tenant goes away.
 //!
 //! Skipped under `BOUGIE_SKIP_REAL_MAILPIT=1` for CI environments where
@@ -50,7 +50,7 @@ fn should_skip() -> bool {
 fn stop_daemon(env: &TestEnv) {
     let _ = env
         .bougie()
-        .args(["services", "daemon", "stop"])
+        .args(["service", "daemon", "stop"])
         .timeout(STEP_TIMEOUT)
         .assert();
     // Give mailpit a moment to release 1025/8025 before the next test.
@@ -59,13 +59,13 @@ fn stop_daemon(env: &TestEnv) {
 
 fn add_and_up(env: &TestEnv, proj_path: &Path) {
     env.bougie()
-        .args(["services", "add", "mailpit"])
+        .args(["service", "add", "mailpit"])
         .current_dir(proj_path)
         .timeout(STEP_TIMEOUT)
         .assert()
         .success();
     env.bougie()
-        .args(["services", "up"])
+        .args(["service", "up"])
         .current_dir(proj_path)
         .timeout(STEP_TIMEOUT)
         .assert()
@@ -314,7 +314,7 @@ fn down_drops_tenant_and_stops_when_last_goes_away() {
 
     // First project goes down — the shared instance must stay up for b.
     env.bougie()
-        .args(["services", "down"])
+        .args(["service", "down"])
         .current_dir(a.path())
         .timeout(STEP_TIMEOUT)
         .assert()
@@ -326,7 +326,7 @@ fn down_drops_tenant_and_stops_when_last_goes_away() {
 
     // Last project goes down — now mailpit should stop.
     env.bougie()
-        .args(["services", "down"])
+        .args(["service", "down"])
         .current_dir(b.path())
         .timeout(STEP_TIMEOUT)
         .assert()
@@ -334,7 +334,7 @@ fn down_drops_tenant_and_stops_when_last_goes_away() {
 
     let out = env
         .bougie()
-        .args(["services", "daemon", "status", "--format", "json-v1"])
+        .args(["service", "daemon", "status", "--format", "json-v1"])
         .timeout(STEP_TIMEOUT)
         .assert()
         .success()

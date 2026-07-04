@@ -48,7 +48,7 @@ fn read_pid(env: &TestEnv) -> String {
 fn read_daemon_version(env: &TestEnv) -> String {
     let out = env
         .bougie()
-        .args(["services", "daemon", "version", "--format", "json-v1"])
+        .args(["service", "daemon", "version", "--format", "json-v1"])
         .timeout(STEP_TIMEOUT)
         .assert()
         .success()
@@ -70,7 +70,7 @@ fn cli_restarts_daemon_when_version_mismatches() {
     // override matches (so no immediate restart), and the autospawned
     // daemon inherits the env, so it also reports the fake version.
     env.bougie()
-        .args(["services", "daemon", "status"])
+        .args(["service", "daemon", "status"])
         .env("BOUGIE_VERSION_OVERRIDE", "0.0.1-old")
         .timeout(STEP_TIMEOUT)
         .assert()
@@ -82,7 +82,7 @@ fn cli_restarts_daemon_when_version_mismatches() {
     let staged_pid = read_pid(&env);
     let out = env
         .bougie()
-        .args(["services", "daemon", "version", "--format", "json-v1"])
+        .args(["service", "daemon", "version", "--format", "json-v1"])
         .env("BOUGIE_VERSION_OVERRIDE", "0.0.1-old")
         .timeout(STEP_TIMEOUT)
         .assert()
@@ -100,7 +100,7 @@ fn cli_restarts_daemon_when_version_mismatches() {
     // no override, which reports the real version.
     let assertion = env
         .bougie()
-        .args(["services", "daemon", "status"])
+        .args(["service", "daemon", "status"])
         .timeout(STEP_TIMEOUT)
         .assert()
         .success();
@@ -121,7 +121,7 @@ fn cli_restarts_daemon_when_version_mismatches() {
 
     // Cleanup.
     env.bougie()
-        .args(["services", "daemon", "stop"])
+        .args(["service", "daemon", "stop"])
         .timeout(STEP_TIMEOUT)
         .assert()
         .success();
@@ -134,7 +134,7 @@ fn cli_does_not_restart_when_versions_match() {
 
     // First call autospawns the daemon at the real CARGO_PKG_VERSION.
     env.bougie()
-        .args(["services", "daemon", "status"])
+        .args(["service", "daemon", "status"])
         .timeout(STEP_TIMEOUT)
         .assert()
         .success();
@@ -143,7 +143,7 @@ fn cli_does_not_restart_when_versions_match() {
     // Subsequent calls should not respawn; PID stays put.
     for _ in 0..3 {
         env.bougie()
-            .args(["services", "daemon", "status"])
+            .args(["service", "daemon", "status"])
             .timeout(STEP_TIMEOUT)
             .assert()
             .success();
@@ -152,7 +152,7 @@ fn cli_does_not_restart_when_versions_match() {
     assert_eq!(pid1, pid2, "daemon must not respawn when versions match");
 
     env.bougie()
-        .args(["services", "daemon", "stop"])
+        .args(["service", "daemon", "stop"])
         .timeout(STEP_TIMEOUT)
         .assert()
         .success();
@@ -161,13 +161,13 @@ fn cli_does_not_restart_when_versions_match() {
 
 #[test]
 fn daemon_version_subcommand_skips_the_upgrade_check() {
-    // Running `services daemon version` against a fake-old daemon
+    // Running `service daemon version` against a fake-old daemon
     // should report the daemon's reported version verbatim — never
     // restart it. (That subcommand is the operator's tool for seeing
     // what's actually running, so it must bypass the auto-upgrade.)
     let env = TestEnv::new();
     env.bougie()
-        .args(["services", "daemon", "status"])
+        .args(["service", "daemon", "status"])
         .env("BOUGIE_VERSION_OVERRIDE", "0.0.1-old")
         .timeout(STEP_TIMEOUT)
         .assert()
@@ -176,7 +176,7 @@ fn daemon_version_subcommand_skips_the_upgrade_check() {
 
     let out = env
         .bougie()
-        .args(["services", "daemon", "version", "--format", "json-v1"])
+        .args(["service", "daemon", "version", "--format", "json-v1"])
         .timeout(STEP_TIMEOUT)
         .assert()
         .success()
@@ -195,7 +195,7 @@ fn daemon_version_subcommand_skips_the_upgrade_check() {
     );
 
     env.bougie()
-        .args(["services", "daemon", "stop"])
+        .args(["service", "daemon", "stop"])
         .timeout(STEP_TIMEOUT)
         .assert()
         .success();

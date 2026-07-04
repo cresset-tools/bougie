@@ -1,8 +1,8 @@
 # Builtin Magento recipe. Mirrors RECIPES.md §6.
 #
-# Assumes `server` is declared in the project (via `bougie services
+# Assumes `server` is declared in the project (via `bougie service
 # add server` or `extra.bougie.services.server`); otherwise `bougie
-# services up server` errors per SERVICES.md §3.2.
+# service up server` errors per SERVICES.md §3.2.
 
 [task.services]
 # `server` is added *and* up'd here so the recipe is self-contained
@@ -13,11 +13,11 @@
 # which only get populated once the server's tenant has been
 # allocated by the `up` path. Starting the listener this early is
 # harmless — Magento isn't installed yet, but nothing makes HTTP
-# requests until [task.start] anyway, and `bougie services up server` is
+# requests until [task.start] anyway, and `bougie service up server` is
 # idempotent so re-running it there is a no-op.
 run = """
-bougie services add mariadb redis opensearch rabbitmq server
-bougie services up --detach mariadb redis opensearch rabbitmq server
+bougie service add mariadb redis opensearch rabbitmq server
+bougie service up --detach mariadb redis opensearch rabbitmq server
 """
 
 [task.vendor]
@@ -135,4 +135,4 @@ run = "bougie run -- bin/magento indexer:reindex"
 
 [task.start]
 deps = ["reindex"]
-run = "bougie services up --detach server"
+run = "bougie service up --detach server"

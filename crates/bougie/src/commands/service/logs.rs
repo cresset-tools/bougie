@@ -1,4 +1,4 @@
-//! `bougie services logs [-f] [-n N] [<name>]`. CLI.md §3.8.8.
+//! `bougie service logs [-f] [-n N] [<name>]`. CLI.md §3.8.8.
 //!
 //! With a name, tails (and optionally follows) that one service. With no
 //! name, tails the combined ("multilog") stream of every service the
@@ -37,7 +37,7 @@ pub fn run(
             let services: Vec<String> = project.bougie.services.keys().cloned().collect();
             if services.is_empty() {
                 return Err(eyre!(
-                    "no services declared in this project (try `bougie services add <name>` first)"
+                    "no services declared in this project (try `bougie service add <name>` first)"
                 ));
             }
             json!({

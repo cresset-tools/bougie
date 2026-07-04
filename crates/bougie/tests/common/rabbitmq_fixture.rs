@@ -7,7 +7,7 @@
 //! The tarball ships with its bundled Erlang/OTP at `install/erlang/`,
 //! so the test fixture is self-contained — no separate erlang
 //! tarball needed at the supervisor layer. (The catalog still lists
-//! `erlang` as a `runtime_deps` entry so `bougie services add erlang`
+//! `erlang` as a `runtime_deps` entry so `bougie service add erlang`
 //! works for users who want a standalone Erlang install.)
 //!
 //! Like every other tool tarball under cresset-tools, contents live

@@ -1,4 +1,4 @@
-//! `bougie services add <name>[@<version>]…`. CLI.md §3.8.1.
+//! `bougie service add <name>[@<version>]…`. CLI.md §3.8.1.
 
 use super::config_mut::{add_service, choose_config_target, locate_project_root, ConfigTarget};
 use bougie_cli::OutputFormat;

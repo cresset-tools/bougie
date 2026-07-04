@@ -2,8 +2,8 @@
 //!
 //! A "tenant" is a project's slot inside the shared dev services — the
 //! mariadb database, rabbitmq vhost, opensearch index prefix, redis db,
-//! and the `<tenant>.bougie.run` server hostname. Both the `services up`
-//! provisioning path (`services::up`) and the `bougie server` project
+//! and the `<tenant>.bougie.run` server hostname. Both the `service up`
+//! provisioning path (`service::up`) and the `bougie server` project
 //! verb (`commands::server`) derive it, and they must agree: `server
 //! open` / `server logs` re-derive the name to find an already-running
 //! project, so the function has to be stable and consistent.

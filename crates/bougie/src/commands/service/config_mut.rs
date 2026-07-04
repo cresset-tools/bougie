@@ -1,4 +1,4 @@
-//! Shared helpers for the offline `bougie services {add,remove}`
+//! Shared helpers for the offline `bougie service {add,remove}`
 //! mutations on `composer.json` / `bougie.toml`.
 
 use bougie_composer::lockfile::{content_hash, read_json_file, write_json_file};

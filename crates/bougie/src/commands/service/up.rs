@@ -1,6 +1,6 @@
 //! `bougie up [<name>…]` — promoted to a top-level verb from its
-//! original home as `bougie services up`. The module path keeps the
-//! `services::up` name because the handler still belongs to the
+//! original home as `bougie service up`. The module path keeps the
+//! `service::up` name because the handler still belongs to the
 //! services subsystem semantically; only the user-facing CLI surface
 //! moved. See CLI.md §3.8.4.
 
@@ -85,7 +85,7 @@ pub fn run(format: OutputFormat, names: Vec<String>, detach: bool) -> Result<Exi
                 out.push((name.clone(), *pin));
             } else {
                 return Err(eyre!(
-                    "service `{n}` isn't declared in this project (try `bougie services add {n}` first)"
+                    "service `{n}` isn't declared in this project (try `bougie service add {n}` first)"
                 ));
             }
         }

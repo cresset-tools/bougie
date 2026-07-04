@@ -1,4 +1,4 @@
-//! `bougie services list [--all]`. CLI.md §3.8.3.
+//! `bougie service list [--all]`. CLI.md §3.8.3.
 //!
 //! Phase 2 lists the services declared in the project's config.
 //! `--all` is parsed but degrades to project-scoped output until

@@ -21,8 +21,11 @@ pub const OUTCOME_OK: &str = "ok";
 pub const COMMAND_VOCAB: &[&str] = &[
     "init", "new", "ext", "add", "remove", "lock", "tree", "outdated", "sync", "run",
     "php", "node", "patches", "composer", "tool", "tool-exec", "cache", "self",
-    "telemetry", "__telemetry-flush", "diagnose", "server", "services", "projects",
+    "telemetry", "__telemetry-flush", "diagnose", "server", "service", "projects",
     "make", "format", "start", "stop", "unknown",
+    // Retired spellings older clients still emit; the collector must
+    // keep accepting them. `services` was renamed to `service`.
+    "services",
 ];
 
 /// Every outcome label [`outcome_for_error`] (plus `ok`) can produce,

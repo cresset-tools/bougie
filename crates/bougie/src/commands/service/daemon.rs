@@ -1,4 +1,4 @@
-//! `bougie services daemon {status,stop,version}` — inspect and
+//! `bougie service daemon {status,stop,version}` — inspect and
 //! control the `bougied` background daemon.
 //!
 //! All three subcommands are pure IPC calls. The client auto-spawns

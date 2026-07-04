@@ -1,12 +1,12 @@
 //! Phase 14: end-to-end services-up/down/status with a fake-redis
-//! fixture. Covers the contract `bougie services up redis` promises:
+//! fixture. Covers the contract `bougie service up redis` promises:
 //!
 //! - the daemon spawns the binary at the catalog tarball path,
 //! - the unix socket the supervisor health-probes ends up bound,
 //! - a tenant record lands in tenants.json with a redis DB number,
 //! - a second project gets a distinct DB number,
 //! - hitting the 16-tenant cap surfaces a `redis_db_exhausted` error,
-//! - `services down` removes the tenant and stops the service when
+//! - `service down` removes the tenant and stops the service when
 //!   the last tenant goes away.
 //!
 //! Sandbox confinement isn't exercised here — that needs an actual
@@ -53,7 +53,7 @@ fn wait_for(path: &Path, timeout: Duration) -> bool {
 fn stop_daemon(env: &TestEnv) {
     let _ = env
         .bougie()
-        .args(["services", "daemon", "stop"])
+        .args(["service", "daemon", "stop"])
         .timeout(STEP_TIMEOUT)
         .assert();
 }
@@ -67,14 +67,14 @@ fn up_starts_fake_redis_and_provisions_a_tenant() {
     let proj = project_with_composer("acme/blog");
 
     env.bougie()
-        .args(["services", "add", "redis"])
+        .args(["service", "add", "redis"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
         .success();
 
     env.bougie()
-        .args(["services", "up", "--format", "json-v1"])
+        .args(["service", "up", "--format", "json-v1"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
@@ -113,13 +113,13 @@ fn daemon_stop_streams_per_service_drain_progress() {
     let proj = project_with_composer("acme/blog");
 
     env.bougie()
-        .args(["services", "add", "redis"])
+        .args(["service", "add", "redis"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
         .success();
     env.bougie()
-        .args(["services", "up"])
+        .args(["service", "up"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
@@ -127,7 +127,7 @@ fn daemon_stop_streams_per_service_drain_progress() {
 
     let assertion = env
         .bougie()
-        .args(["services", "daemon", "stop", "--format", "json-v1"])
+        .args(["service", "daemon", "stop", "--format", "json-v1"])
         .timeout(STEP_TIMEOUT)
         .assert()
         .success();
@@ -156,20 +156,20 @@ fn status_after_up_reports_redis_running() {
     install_fake_redis(&env);
     let proj = project_with_composer("acme/blog");
     env.bougie()
-        .args(["services", "add", "redis"])
+        .args(["service", "add", "redis"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
         .success();
     env.bougie()
-        .args(["services", "up"])
+        .args(["service", "up"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
         .success();
     let out = env
         .bougie()
-        .args(["services", "status", "--format", "json-v1"])
+        .args(["service", "status", "--format", "json-v1"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
@@ -196,13 +196,13 @@ fn two_projects_share_one_redis_with_distinct_db_numbers() {
     let b = project_with_composer("acme/store");
     for p in [&a, &b] {
         env.bougie()
-            .args(["services", "add", "redis"])
+            .args(["service", "add", "redis"])
             .current_dir(p.path())
             .timeout(STEP_TIMEOUT)
             .assert()
             .success();
         env.bougie()
-            .args(["services", "up"])
+            .args(["service", "up"])
             .current_dir(p.path())
             .timeout(STEP_TIMEOUT)
             .assert()
@@ -232,20 +232,20 @@ fn down_in_one_project_keeps_redis_running_for_the_other() {
     let b = project_with_composer("acme/store");
     for p in [&a, &b] {
         env.bougie()
-            .args(["services", "add", "redis"])
+            .args(["service", "add", "redis"])
             .current_dir(p.path())
             .timeout(STEP_TIMEOUT)
             .assert()
             .success();
         env.bougie()
-            .args(["services", "up"])
+            .args(["service", "up"])
             .current_dir(p.path())
             .timeout(STEP_TIMEOUT)
             .assert()
             .success();
     }
     env.bougie()
-        .args(["services", "down"])
+        .args(["service", "down"])
         .current_dir(a.path())
         .timeout(STEP_TIMEOUT)
         .assert()
@@ -259,7 +259,7 @@ fn down_in_one_project_keeps_redis_running_for_the_other() {
 
     // Now drop b too; redis should stop.
     env.bougie()
-        .args(["services", "down"])
+        .args(["service", "down"])
         .current_dir(b.path())
         .timeout(STEP_TIMEOUT)
         .assert()
@@ -270,7 +270,7 @@ fn down_in_one_project_keeps_redis_running_for_the_other() {
     // cleans up). What matters is that the daemon reports stopped.
     let out = env
         .bougie()
-        .args(["services", "daemon", "status", "--format", "json-v1"])
+        .args(["service", "daemon", "status", "--format", "json-v1"])
         .timeout(STEP_TIMEOUT)
         .assert()
         .success()
@@ -298,13 +298,13 @@ fn seventeenth_project_hits_redis_db_exhausted() {
     for i in 0..16 {
         let p = project_with_composer(&format!("acme/p{i}"));
         env.bougie()
-            .args(["services", "add", "redis"])
+            .args(["service", "add", "redis"])
             .current_dir(p.path())
             .timeout(STEP_TIMEOUT)
             .assert()
             .success();
         env.bougie()
-            .args(["services", "up"])
+            .args(["service", "up"])
             .current_dir(p.path())
             .timeout(STEP_TIMEOUT)
             .assert()
@@ -313,14 +313,14 @@ fn seventeenth_project_hits_redis_db_exhausted() {
     }
     let last = project_with_composer("acme/overflow");
     env.bougie()
-        .args(["services", "add", "redis"])
+        .args(["service", "add", "redis"])
         .current_dir(last.path())
         .timeout(STEP_TIMEOUT)
         .assert()
         .success();
     let out = env
         .bougie()
-        .args(["services", "up"])
+        .args(["service", "up"])
         .current_dir(last.path())
         .timeout(STEP_TIMEOUT)
         .assert()
@@ -342,14 +342,14 @@ fn up_is_idempotent_for_the_same_project() {
     install_fake_redis(&env);
     let proj = project_with_composer("acme/blog");
     env.bougie()
-        .args(["services", "add", "redis"])
+        .args(["service", "add", "redis"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
         .success();
     for _ in 0..3 {
         env.bougie()
-            .args(["services", "up"])
+            .args(["service", "up"])
             .current_dir(proj.path())
             .timeout(STEP_TIMEOUT)
             .assert()
@@ -381,7 +381,7 @@ fn up_with_no_tarball_falls_back_to_index_fetch() {
     let env = TestEnv::new();
     let proj = project_with_composer("acme/blog");
     env.bougie()
-        .args(["services", "add", "redis"])
+        .args(["service", "add", "redis"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
@@ -391,7 +391,7 @@ fn up_with_no_tarball_falls_back_to_index_fetch() {
         // Loopback :1 is unbound on Linux runners; the connect
         // returns ECONNREFUSED in milliseconds.
         .env("BOUGIE_INDEX_URL", "http://127.0.0.1:1")
-        .args(["services", "up"])
+        .args(["service", "up"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
@@ -422,13 +422,13 @@ fn projects_purge_removes_orphaned_redis_tenant() {
     let proj_path = proj.path().to_path_buf();
 
     env.bougie()
-        .args(["services", "add", "redis"])
+        .args(["service", "add", "redis"])
         .current_dir(&proj_path)
         .timeout(STEP_TIMEOUT)
         .assert()
         .success();
     env.bougie()
-        .args(["services", "up"])
+        .args(["service", "up"])
         .current_dir(&proj_path)
         .timeout(STEP_TIMEOUT)
         .assert()
@@ -470,13 +470,13 @@ fn projects_purge_refuses_noninteractive_without_yes() {
     install_fake_redis(&env);
     let proj = project_with_composer("acme/blog");
     env.bougie()
-        .args(["services", "add", "redis"])
+        .args(["service", "add", "redis"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
         .success();
     env.bougie()
-        .args(["services", "up"])
+        .args(["service", "up"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()

@@ -1,4 +1,4 @@
-//! Phase 17: end-to-end `bougie services up mariadb` against a *real*
+//! Phase 17: end-to-end `bougie service up mariadb` against a *real*
 //! mariadb 11.4.4 binary pulled from the bougie index.
 //!
 //! Coverage:
@@ -8,7 +8,7 @@
 //!     them in the `tenants.json` ledger,
 //!   - the per-tenant user can authenticate over the socket,
 //!   - cross-tenant isolation: tenant A cannot reach tenant B's database,
-//!   - `services down --purge` drops the DB + user, leaving the data
+//!   - `service down --purge` drops the DB + user, leaving the data
 //!     directory but removing the tenant record,
 //!   - `bougie run` env injection surfaces `BOUGIE_SERVICE_MARIADB_*`.
 //!
@@ -53,7 +53,7 @@ fn should_skip() -> bool {
 fn stop_daemon(env: &TestEnv) {
     let _ = env
         .bougie()
-        .args(["services", "daemon", "stop"])
+        .args(["service", "daemon", "stop"])
         .timeout(STEP_TIMEOUT)
         .assert();
     // Give the daemon a beat to release the mariadbd child it owns —
@@ -106,14 +106,14 @@ fn up_bootstraps_mariadb_and_provisions_a_tenant() {
     let proj = project_with_composer("acme/blog");
 
     env.bougie()
-        .args(["services", "add", "mariadb"])
+        .args(["service", "add", "mariadb"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
         .success();
 
     env.bougie()
-        .args(["services", "up", "--format", "json-v1"])
+        .args(["service", "up", "--format", "json-v1"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
@@ -176,19 +176,19 @@ fn second_up_is_idempotent_no_duplicate_tenant() {
     mariadb_fixture::install_into(env.home_path());
     let proj = project_with_composer("acme/blog");
     env.bougie()
-        .args(["services", "add", "mariadb"])
+        .args(["service", "add", "mariadb"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
         .success();
     env.bougie()
-        .args(["services", "up"])
+        .args(["service", "up"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
         .success();
     env.bougie()
-        .args(["services", "up"])
+        .args(["service", "up"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
@@ -217,13 +217,13 @@ fn two_projects_get_isolated_databases() {
 
     for p in [pa.path(), pb.path()] {
         env.bougie()
-            .args(["services", "add", "mariadb"])
+            .args(["service", "add", "mariadb"])
             .current_dir(p)
             .timeout(STEP_TIMEOUT)
             .assert()
             .success();
         env.bougie()
-            .args(["services", "up"])
+            .args(["service", "up"])
             .current_dir(p)
             .timeout(STEP_TIMEOUT)
             .assert()
@@ -283,13 +283,13 @@ fn down_purge_drops_database_and_user() {
     mariadb_fixture::install_into(env.home_path());
     let proj = project_with_composer("acme/blog");
     env.bougie()
-        .args(["services", "add", "mariadb"])
+        .args(["service", "add", "mariadb"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
         .success();
     env.bougie()
-        .args(["services", "up"])
+        .args(["service", "up"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
@@ -314,7 +314,7 @@ fn down_purge_drops_database_and_user() {
     assert!(out.status.success(), "create+insert: {}", String::from_utf8_lossy(&out.stderr));
 
     env.bougie()
-        .args(["services", "down", "--purge"])
+        .args(["service", "down", "--purge"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
@@ -331,13 +331,13 @@ fn down_purge_drops_database_and_user() {
     // Bring mariadb back up to confirm root can no longer see the DB.
     let proj2 = project_with_composer("acme/other");
     env.bougie()
-        .args(["services", "add", "mariadb"])
+        .args(["service", "add", "mariadb"])
         .current_dir(proj2.path())
         .timeout(STEP_TIMEOUT)
         .assert()
         .success();
     env.bougie()
-        .args(["services", "up"])
+        .args(["service", "up"])
         .current_dir(proj2.path())
         .timeout(STEP_TIMEOUT)
         .assert()
@@ -380,13 +380,13 @@ fn bougie_run_exports_mariadb_env_vars() {
     mariadb_fixture::install_into(env.home_path());
     let proj = project_with_composer("acme/blog");
     env.bougie()
-        .args(["services", "add", "mariadb"])
+        .args(["service", "add", "mariadb"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
         .success();
     env.bougie()
-        .args(["services", "up"])
+        .args(["service", "up"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()

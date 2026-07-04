@@ -1,7 +1,7 @@
 //! Built-in service catalog. See SERVICES.md §2.
 //!
 //! Phase 2 ships the data layer: entries, lookup, and shape needed by
-//! `bougie services {add,remove,list,catalog}`. The full
+//! `bougie service {add,remove,list,catalog}`. The full
 //! exec/sandbox/provisioner machinery lands in Phase 3 (redis) and
 //! later phases (mariadb, opensearch, rabbitmq, bougie server).
 
@@ -54,10 +54,10 @@ pub struct CatalogEntry {
     /// run, but which are NOT themselves supervised processes (e.g.
     /// `jdk` for opensearch, `erlang` for rabbitmq).
     pub runtime_deps: &'static [&'static str],
-    /// Whether `bougie services add <name>` accepts this entry.
+    /// Whether `bougie service add <name>` accepts this entry.
     /// `false` for runtime-only deps that ride along transitively.
     pub user_facing: bool,
-    /// One-line summary used by `bougie services catalog` (text form).
+    /// One-line summary used by `bougie service catalog` (text form).
     pub summary: &'static str,
     /// Sandbox stance. Default `Strict`: full Landlock/SBPL allowlist
     /// confinement. `LightHome` is the loose mode used by services
@@ -72,7 +72,7 @@ pub struct CatalogEntry {
     /// Client-side companion tools shipped in the same tarball
     /// (mariadb/mysqldump, redis-cli, rabbitmqctl, …). Exposed to
     /// users as `vendor/bougie/bin/` shims and via
-    /// `bougie services exec`; the CLI wires each invocation to the
+    /// `bougie service exec`; the CLI wires each invocation to the
     /// project's tenant. Names must be unique across the whole
     /// catalog — the shim dispatches on argv[0] basename alone.
     pub clients: &'static [ClientTool],
@@ -190,7 +190,7 @@ pub const CATALOG: &[CatalogEntry] = &[
         // tarball's own `mysql* → mariadb-*` compat symlinks aren't
         // guaranteed to survive repacking. The curated set is the
         // day-to-day trio; everything else in `bin/` stays reachable
-        // via `bougie services exec`.
+        // via `bougie service exec`.
         clients: &[
             ClientTool { name: "mariadb", path: "bin/mariadb" },
             ClientTool { name: "mysql", path: "bin/mariadb" },
@@ -223,7 +223,7 @@ pub const CATALOG: &[CatalogEntry] = &[
         sandbox: SandboxKind::Strict,
         // No curated clients: opensearch has no interactive CLI; the
         // maintenance tools (opensearch-plugin, …) stay reachable via
-        // `bougie services exec`.
+        // `bougie service exec`.
         clients: &[],
     },
     CatalogEntry {
@@ -268,7 +268,7 @@ pub const CATALOG: &[CatalogEntry] = &[
         name: "server",
         // Bougie's own version isn't pinned here — `binary` resolves
         // to the running bougie executable via `current_exe()` at
-        // spawn time. The version string surfaces in `bougie services
+        // spawn time. The version string surfaces in `bougie service
         // catalog` output for completeness.
         version: env!("CARGO_PKG_VERSION"),
         tarball: "",
@@ -341,7 +341,7 @@ pub fn find_client(name: &str) -> Option<(&'static CatalogEntry, &'static Client
     })
 }
 
-/// Subset of the catalog `bougie services add` will accept. Excludes
+/// Subset of the catalog `bougie service add` will accept. Excludes
 /// runtime-only deps.
 pub fn user_facing() -> impl Iterator<Item = &'static CatalogEntry> {
     CATALOG.iter().filter(|e| e.user_facing)

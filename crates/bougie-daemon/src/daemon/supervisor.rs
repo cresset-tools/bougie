@@ -151,7 +151,7 @@ pub struct ManagedService {
     pub restart_at: Option<Instant>,
     /// Consecutive failed continuous-health probes. Reset to 0 on any
     /// passing probe. At `HEALTH_FAILURE_THRESHOLD` the service is torn
-    /// down + restarted. Surfaced in `bougie services status`.
+    /// down + restarted. Surfaced in `bougie service status`.
     pub health_misses: u32,
     /// When the next continuous health probe is due. `Some` only for a
     /// live, probe-able service (`Running`/`Unhealthy`); the ticker's
@@ -196,7 +196,7 @@ pub struct ServiceStatus {
     pub uptime_ms: Option<u64>,
     pub binding: Binding,
     /// Consecutive failure count. `0` when the service hasn't
-    /// crashed recently. Inspected by `bougie services daemon
+    /// crashed recently. Inspected by `bougie service daemon
     /// status` so users can see backoff state.
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub failure_count: u32,
@@ -910,7 +910,7 @@ impl Supervisor {
                     // Schedule a respawn unless we've hit the
                     // attempt cap. Past the cap, leave restart_at
                     // None — the service stays Failed until the
-                    // operator manually `services up`s it.
+                    // operator manually `service up`s it.
                     svc.restart_at = if next_count <= MAX_RESTART_ATTEMPTS {
                         Some(now + compute_backoff(next_count))
                     } else {
@@ -1283,7 +1283,7 @@ fn render_exec_args(entry: &CatalogEntry, paths: &Paths) -> Vec<String> {
         "server" => {
             // bougied keeps the per-service server.toml under the
             // service's conf/ dir rather than relying on the user's
-            // XDG default — that way `bougie services add server` is
+            // XDG default — that way `bougie service add server` is
             // a self-contained subsystem that doesn't fight a hand-
             // authored ~/.config/bougie/server.toml. The provisioner
             // (`provisioners::bougie_server`) writes hosts to the
@@ -1308,7 +1308,7 @@ fn render_exec_args(entry: &CatalogEntry, paths: &Paths) -> Vec<String> {
             vec![
                 format!("-Epath.data={data}"),
                 format!("-Epath.logs={log}"),
-                // Loopback only — bougie services never bind public
+                // Loopback only — bougie service never bind public
                 // addresses (SERVICES.md §6).
                 "-Enetwork.host=127.0.0.1".into(),
                 // Catalog binding pins :9200. Keep the two in lockstep.
@@ -1429,7 +1429,7 @@ async fn wait_for_health(name: &str, paths: &Paths, child: &mut Child) -> Result
         if let Ok(Some(status)) = child.try_wait() {
             return Err(eyre!(
                 "service `{name}` exited during startup (status {status}); \
-                 check `bougie services logs {name}` for the reason"
+                 check `bougie service logs {name}` for the reason"
             ));
         }
         // Protocol-aware readiness (see `health::probe`): a service is
@@ -1442,7 +1442,7 @@ async fn wait_for_health(name: &str, paths: &Paths, child: &mut Child) -> Result
         if Instant::now() >= deadline {
             return Err(eyre!(
                 "service `{name}` did not become healthy within {timeout:?} \
-                 (last probe: {last_err:#}); check `bougie services logs {name}`"
+                 (last probe: {last_err:#}); check `bougie service logs {name}`"
             ));
         }
         tokio::time::sleep(HEALTH_POLL).await;

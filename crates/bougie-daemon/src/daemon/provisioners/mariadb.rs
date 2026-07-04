@@ -127,7 +127,7 @@ pub async fn provision(
     if !is_safe_identifier(tenant_name) {
         return Err(eyre!(
             "mariadb: tenant name `{tenant_name}` contains characters outside [A-Za-z0-9_]; \
-             rename via `bougie services add mariadb --tenant=...`"
+             rename via `bougie service add mariadb --tenant=...`"
         ));
     }
 
@@ -163,8 +163,8 @@ pub async fn provision(
 }
 
 /// Release a tenant. With `purge`, also `DROP DATABASE` + `DROP USER`.
-/// Without `purge`, the data survives a `services down` so a later
-/// `services up` reuses it (matches redis's behaviour).
+/// Without `purge`, the data survives a `service down` so a later
+/// `service up` reuses it (matches redis's behaviour).
 pub async fn deprovision(
     paths: &Paths,
     tenants_path: &Path,
