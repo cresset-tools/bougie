@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.43.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.42.0...bougie-v0.43.0) (2026-07-04)
+
+
+### Features
+
+* **cli:** rename 'bougie services' to 'bougie service' ([#453](https://github.com/cresset-tools/bougie/issues/453)) ([0d7e5d6](https://github.com/cresset-tools/bougie/commit/0d7e5d62928c51a0022f6f7d4e2474b1e199da3b))
+
 ## [0.42.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.41.0...bougie-v0.42.0) (2026-07-04)
 
 
