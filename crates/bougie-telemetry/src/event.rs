@@ -80,8 +80,18 @@ pub struct Enrichment {
     /// Vendor materialize/audit phase wall-clock.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vendor_ms: Option<u64>,
+    /// Autoload-dump wall-clock (0 = freshness marker skipped it).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub autoload_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub packages_installed: Option<u32>,
+    /// On-disk bytes of dist archives fetched this run.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub download_bytes: Option<u64>,
+    /// Dist-cache hit share of this run's fetches, 0–100. Absent when
+    /// nothing needed fetching.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_hit_pct: Option<u8>,
     /// Minor only (`8.4`), never the patch level.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub php_version: Option<String>,

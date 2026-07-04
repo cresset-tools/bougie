@@ -235,12 +235,17 @@ pub fn run(
         hooks.as_ref().map(|h| h as &dyn bougie_composer_resolver::ScriptHooks),
         patch_plan.as_ref(),
     )?;
-    let result = InstallResult::from(summary);
-    // Telemetry enrichment (TELEMETRY.md): counts only, no names.
+    // Telemetry enrichment (TELEMETRY.md): counts + perf, no names.
     bougie_telemetry::probe::record(|p| {
-        p.enrich.packages_installed = Some(result.packages_installed);
+        p.enrich.packages_installed = Some(summary.packages_installed);
+        p.enrich.download_bytes = Some(summary.download_bytes);
+        p.enrich.autoload_ms = Some(summary.autoload_ms);
+        p.enrich.cache_hit_pct = bougie_telemetry::probe::cache_hit_pct(
+            u64::from(summary.packages_already_present),
+            u64::from(summary.packages_installed),
+        );
     });
-    emit(format, &result)?;
+    emit(format, &InstallResult::from(summary))?;
     Ok(ExitCode::SUCCESS)
 }
 

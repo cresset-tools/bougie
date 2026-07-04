@@ -88,8 +88,10 @@ it) may additionally attach:
 
 | field | values | notes |
 | --- | --- | --- |
-| `resolve_ms` / `vendor_ms` | integer | phase wall-clock |
+| `resolve_ms` / `vendor_ms` / `autoload_ms` | integer | phase wall-clock (autoload is 0 when the freshness marker skipped the dump) |
 | `packages_installed` | integer | freshly installed this run |
+| `download_bytes` | integer | on-disk size of dist archives fetched this run |
+| `cache_hit_pct` | 0–100 | dist-cache hit share of this run's fetches; absent when nothing needed fetching |
 | `php_version` | `8.4`-style minor | never the patch level |
 | `php_flavor` | lowercase token | closed set defined by the bougie index |
 | `php_source` | `managed` \| `system` | |

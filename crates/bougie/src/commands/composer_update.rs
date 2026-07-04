@@ -242,13 +242,21 @@ pub fn run(
         packages_installed: install.as_ref().map(|s| s.packages_installed),
         packages_already_present: install.as_ref().map(|s| s.packages_already_present),
     };
-    // Telemetry enrichment (TELEMETRY.md): bucketed totals + counts,
-    // never names.
+    // Telemetry enrichment (TELEMETRY.md): bucketed totals + counts +
+    // perf, never names.
     bougie_telemetry::probe::record(|p| {
         p.enrich.packages_installed = result.packages_installed;
         p.enrich.total_deps = Some(bougie_telemetry::probe::bucket(
             result.packages.len() + result.packages_dev.len(),
         ));
+        if let Some(s) = &install {
+            p.enrich.download_bytes = Some(s.download_bytes);
+            p.enrich.autoload_ms = Some(s.autoload_ms);
+            p.enrich.cache_hit_pct = bougie_telemetry::probe::cache_hit_pct(
+                u64::from(s.packages_already_present),
+                u64::from(s.packages_installed),
+            );
+        }
     });
     emit(format, &result)?;
     Ok(ExitCode::SUCCESS)

@@ -95,6 +95,12 @@ pub struct InstallSummary {
     /// for non-Magento projects.
     pub files_deployed: u64,
     pub no_dev: bool,
+    /// On-disk bytes of the dist archives fetched this run (cache hits
+    /// contribute nothing). Telemetry's `download_bytes`.
+    pub download_bytes: u64,
+    /// Wall-clock of the autoload dump, in milliseconds. `0` when the
+    /// freshness marker let the dump be skipped entirely.
+    pub autoload_ms: u64,
     /// Soft preflight findings — one entry per Composer plugin and one
     /// entry for a non-empty `scripts` section, plus any Magento deploy
     /// warnings. The CLI prints these as `warning: …` lines to stderr.
@@ -474,6 +480,7 @@ pub fn install_from_lock_with_patches(
             .map(str::trim)
             == Some(fingerprint.as_str());
 
+    let autoload_started = std::time::Instant::now();
     if !autoload_fresh {
         dump_autoload(&DumpRequest {
             project_root,
@@ -495,6 +502,8 @@ pub fn install_from_lock_with_patches(
             ));
         }
     }
+    let autoload_ms =
+        u64::try_from(autoload_started.elapsed().as_millis()).unwrap_or(u64::MAX);
 
     match hooks {
         // Scripts ON: run the project's real `post-autoload-dump` entries.
@@ -527,10 +536,17 @@ pub fn install_from_lock_with_patches(
     let packages_installed = u32::try_from(
         outcomes
             .iter()
-            .filter(|o| **o == DistOutcome::Downloaded)
+            .filter(|o| matches!(o, DistOutcome::Downloaded { .. }))
             .count(),
     )
     .unwrap_or(u32::MAX);
+    let download_bytes: u64 = outcomes
+        .iter()
+        .map(|o| match o {
+            DistOutcome::Downloaded { bytes } => *bytes,
+            DistOutcome::CacheHit => 0,
+        })
+        .sum();
     let packages_already_present = u32::try_from(
         outcomes
             .iter()
@@ -553,6 +569,8 @@ pub fn install_from_lock_with_patches(
         bins_installed: bin_summary.bins_installed,
         files_deployed: deploy_summary.files_deployed,
         no_dev: opts.no_dev,
+        download_bytes,
+        autoload_ms,
         warnings,
     })
 }

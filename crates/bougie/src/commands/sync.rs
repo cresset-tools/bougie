@@ -440,6 +440,9 @@ fn finish_with_vendor(
     result.audit_ms = elapsed_ms(audit_started);
     result.resolved_packages = resolved_packages;
     result.resolve_ms = resolve_ms;
+    let mut perf_download_bytes = None;
+    let mut perf_cache_hit_pct = None;
+    let mut perf_autoload_ms = None;
     if let Some(s) = vendor_summary {
         // Soft preflight findings (skipped Composer plugins, a non-empty
         // `scripts` section, …) recur on every sync for a given project,
@@ -450,6 +453,12 @@ fn finish_with_vendor(
                 eprintln!("warning: {warning}");
             }
         }
+        perf_download_bytes = Some(s.download_bytes);
+        perf_autoload_ms = Some(s.autoload_ms);
+        perf_cache_hit_pct = bougie_telemetry::probe::cache_hit_pct(
+            u64::from(s.packages_already_present),
+            u64::from(s.packages_installed),
+        );
         result.vendor_packages_installed =
             Some(s.packages_installed + s.packages_already_present);
         result.vendor_packages_up_to_date = Some(s.packages_up_to_date);
@@ -476,6 +485,9 @@ fn finish_with_vendor(
         probe::record(|p| {
             p.enrich.resolve_ms = Some(probe::ms(result.resolve_ms));
             p.enrich.vendor_ms = Some(probe::ms(result.audit_ms));
+            p.enrich.autoload_ms = perf_autoload_ms;
+            p.enrich.download_bytes = perf_download_bytes;
+            p.enrich.cache_hit_pct = perf_cache_hit_pct;
             p.enrich.packages_installed = result.vendor_packages_installed;
             p.enrich.total_deps = Some(probe::bucket(result.resolved_packages));
             p.enrich.direct_deps = direct_requires.map(probe::bucket);
