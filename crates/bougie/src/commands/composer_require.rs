@@ -39,6 +39,7 @@ use composer_semver::stability::Stability;
 use composer_semver::version::Version;
 use eyre::{eyre, Context, Result};
 use serde::Serialize;
+use std::collections::HashMap;
 
 /// Default constraint to write when the user supplies a bare package
 /// name (no version). The two front-ends differ only in this policy
@@ -373,42 +374,27 @@ fn run_add(
     let project_root = resolve_root(working_dir)?;
     let paths = Paths::from_env()?;
 
-    // Resolve a constraint for every bare (no-version) real package via
-    // the latest published stable; platform packages default to `*`.
-    let needs_lookup: Vec<String> = pairs
+    // Resolve a default constraint for every bare (no-version) package
+    // via its latest published stable — `>=X.Y` for `bougie add`, `^X.Y`
+    // for `composer require`; platform packages default to `*`. Shared
+    // with `bougie add --script` (see [`default_constraints_for`]) so both
+    // front-ends write identical bounds.
+    let bare: Vec<String> = pairs
         .iter()
-        .filter(|p| p.version.is_none() && !is_platform(&p.name))
+        .filter(|p| p.version.is_none())
         .map(|p| p.name.clone())
         .collect();
-    let mut latest: std::collections::HashMap<String, Vec<String>> =
-        std::collections::HashMap::new();
-    if !needs_lookup.is_empty() {
-        latest = latest_versions(&paths, &project_root, &needs_lookup, false)
-            .wrap_err("looking up latest versions for the requested packages")?
-            .into_iter()
-            .collect();
-    }
+    let defaults = default_constraints_for(&paths, &project_root, &bare, policy)?;
 
     let mut items = Vec::with_capacity(pairs.len());
     let mut changes = Vec::with_capacity(pairs.len());
     for p in &pairs {
         let constraint = match &p.version {
             Some(v) => v.clone(),
-            None if is_platform(&p.name) => "*".to_string(),
-            None => {
-                let versions = latest
-                    .get(&p.name.to_ascii_lowercase())
-                    .ok_or_else(|| {
-                        eyre!(
-                            "could not find package {} in any configured repository",
-                            p.name
-                        )
-                    })?;
-                let best = best_stable(versions).ok_or_else(|| {
-                    eyre!("no stable version of {} found to {label}", p.name)
-                })?;
-                derive_constraint(&best, policy)
-            }
+            None => defaults
+                .get(&p.name)
+                .cloned()
+                .ok_or_else(|| eyre!("no default constraint resolved for {}", p.name))?,
         };
         // Validate the constraint grammar (don't reparse — just check).
         composer_semver::constraint::Constraint::parse(&constraint)
@@ -622,6 +608,53 @@ fn best_stable(versions: &[String]) -> Option<String> {
         .map(|(_, pretty)| pretty)
 }
 
+/// Resolve the default constraint to write for each bare (no-`@`) package
+/// name: `>=X.Y` under [`DefaultConstraint::LowerBound`] (`bougie add`),
+/// `^X.Y` under [`DefaultConstraint::Caret`] (`composer require`), based
+/// on the package's latest published stable. Platform packages
+/// (`php` / `ext-*` / …) map to `*`. Keyed by the input name (original
+/// case), so a caller can look up by the name it passed in.
+///
+/// Shared by [`run_add`] and `bougie add --script`, so both write
+/// identical bounds. `project_root` supplies the repository + stability
+/// config for the version lookup — the real project for `bougie add`, or
+/// a temp dir holding the script's inline `composer.json` for `--script`.
+pub fn default_constraints_for(
+    paths: &Paths,
+    project_root: &Path,
+    bare_names: &[String],
+    policy: DefaultConstraint,
+) -> Result<HashMap<String, String>> {
+    let real: Vec<String> = bare_names
+        .iter()
+        .filter(|n| !is_platform(n))
+        .cloned()
+        .collect();
+    let latest: HashMap<String, Vec<String>> = if real.is_empty() {
+        HashMap::new()
+    } else {
+        latest_versions(paths, project_root, &real, false)
+            .wrap_err("looking up latest versions for the requested packages")?
+            .into_iter()
+            .collect()
+    };
+    let mut out = HashMap::with_capacity(bare_names.len());
+    for name in bare_names {
+        let constraint = if is_platform(name) {
+            "*".to_string()
+        } else {
+            let versions = latest.get(&name.to_ascii_lowercase()).ok_or_else(|| {
+                eyre!("could not find package {name} in any configured repository")
+            })?;
+            let best = best_stable(versions)
+                .ok_or_else(|| eyre!("no stable version of {name} found"))?;
+            derive_constraint(&best, policy)
+        };
+        out.insert(name.clone(), constraint);
+    }
+    Ok(out)
+}
+
 /// Collect the project's root requirement names (keys of `require` +
 /// `require-dev`). Mirrors `composer_update::read_root_require_names`.
 fn read_root_require_names(project_root: &Path) -> Vec<String> {
@@ -684,6 +717,20 @@ mod tests {
             name: name.to_string(),
             version: version.map(str::to_string),
         }
+    }
+
+    #[test]
+    fn default_constraints_platform_names_map_to_star_offline() {
+        // Platform packages (`php`, `ext-*`) never hit the network — the
+        // real-package lookup set is empty, so this resolves offline.
+        let td = tempfile::TempDir::new().unwrap();
+        let paths = Paths::new(td.path().to_path_buf(), td.path().join("cache"));
+        let names = vec!["php".to_string(), "ext-gd".to_string()];
+        let map =
+            default_constraints_for(&paths, td.path(), &names, DefaultConstraint::LowerBound)
+                .unwrap();
+        assert_eq!(map.get("php").map(String::as_str), Some("*"));
+        assert_eq!(map.get("ext-gd").map(String::as_str), Some("*"));
     }
 
     #[test]

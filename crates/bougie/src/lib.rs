@@ -181,14 +181,19 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
 fn dispatch(cli: Cli) -> Result<ExitCode> {
     let format = cli.format;
     match cli.command {
-        Command::Init { toml, name, starter, start } => {
-            commands::init::run(format, toml, name, starter, start)
+        Command::Init { script, toml, name, starter, start } => {
+            if let Some(file) = script {
+                commands::script::init(format, &file)
+            } else {
+                commands::init::run(format, toml, name, starter, start)
+            }
         }
         Command::New { directory, toml, name, starter, start } => {
             commands::init::run_new(format, &directory, toml, name, starter, start)
         }
         Command::Add {
             packages,
+            script,
             dev,
             with_dependencies,
             with_all_dependencies,
@@ -199,19 +204,31 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
             dry_run,
             ignore_platform_reqs,
             ignore_platform_req,
-        } => commands::composer_require::add(
-            format,
-            packages,
-            dev,
-            no_sync,
-            frozen,
-            with_dependencies,
-            with_all_dependencies,
-            working_dir,
-            dry_run,
-            resolution_strategy(resolution),
-            platform_ignore(ignore_platform_reqs, &ignore_platform_req),
-        ),
+        } => {
+            if let Some(file) = script {
+                commands::script::add(
+                    format,
+                    &file,
+                    &packages,
+                    dry_run,
+                    resolution_strategy(resolution),
+                )
+            } else {
+                commands::composer_require::add(
+                    format,
+                    packages,
+                    dev,
+                    no_sync,
+                    frozen,
+                    with_dependencies,
+                    with_all_dependencies,
+                    working_dir,
+                    dry_run,
+                    resolution_strategy(resolution),
+                    platform_ignore(ignore_platform_reqs, &ignore_platform_req),
+                )
+            }
+        }
         Command::Remove {
             packages,
             dev,
@@ -232,14 +249,18 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
             dry_run,
             platform_ignore(ignore_platform_reqs, &ignore_platform_req),
         ),
-        Command::Lock { resolution, working_dir, dry_run, ignore_platform_reqs, ignore_platform_req } => {
-            commands::lock::run(
-                format,
-                working_dir,
-                dry_run,
-                resolution_strategy(resolution),
-                platform_ignore(ignore_platform_reqs, &ignore_platform_req),
-            )
+        Command::Lock { script, resolution, working_dir, dry_run, ignore_platform_reqs, ignore_platform_req } => {
+            if let Some(file) = script {
+                commands::script::lock(format, &file, dry_run, resolution_strategy(resolution))
+            } else {
+                commands::lock::run(
+                    format,
+                    working_dir,
+                    dry_run,
+                    resolution_strategy(resolution),
+                    platform_ignore(ignore_platform_reqs, &ignore_platform_req),
+                )
+            }
         }
         Command::Tree { package, no_dev, working_dir } => commands::composer_show::run(
             format,
@@ -307,8 +328,20 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
                 platform_ignore(ignore_platform_reqs, &ignore_platform_req),
             )
         }
-        Command::Run { with, no_sync, xdebug, php_request, php, argv } => {
-            commands::run::run(&with, &argv, format, no_sync, xdebug, php, php_request.as_deref())
+        Command::Run { script, with, no_sync, xdebug, php_request, php, argv } => {
+            if script {
+                commands::script::run(&argv, format, php_request.as_deref(), &with, xdebug, php)
+            } else {
+                commands::run::run(
+                    &with,
+                    &argv,
+                    format,
+                    no_sync,
+                    xdebug,
+                    php,
+                    php_request.as_deref(),
+                )
+            }
         }
         Command::Patches(cmd) => commands::patches_cmd::run(format, cmd),
         Command::Ext(ExtCommand::Add { args, no_sync, php }) => {
