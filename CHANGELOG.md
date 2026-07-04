@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.42.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.41.0...bougie-v0.42.0) (2026-07-04)
+
+
+### Features
+
+* **script:** uv-style single-file PHP scripts with inline dependencies ([#429](https://github.com/cresset-tools/bougie/issues/429)) ([b8ea30a](https://github.com/cresset-tools/bougie/commit/b8ea30a289f897d50812279e988ac4fb9e94b71b))
+* **tool:** project-aware bgx runs, derived extensions, CLI memory-limit lift ([#446](https://github.com/cresset-tools/bougie/issues/446)) ([a8fd293](https://github.com/cresset-tools/bougie/commit/a8fd2935c92f100aa230c5949f6c895fea0da90f))
+
 ## [0.41.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.40.0...bougie-v0.41.0) (2026-07-04)
 
 
