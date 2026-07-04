@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.41.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.40.0...bougie-v0.41.0) (2026-07-04)
+
+
+### Features
+
+* **telemetry:** close the plan's schema gaps; retire TELEMETRY_PLAN.md ([#449](https://github.com/cresset-tools/bougie/issues/449)) ([bb0ead3](https://github.com/cresset-tools/bougie/commit/bb0ead38841df03d94d0919ed8ed07242fe508ad))
+* **telemetry:** docker images default BOUGIE_TELEMETRY=off (overridable) + Windows flush smoke ([#450](https://github.com/cresset-tools/bougie/issues/450)) ([6e2665b](https://github.com/cresset-tools/bougie/commit/6e2665bcb1a51c66e869ed6e9f98e7fb0cc50d4b))
+* **telemetry:** opt-in anonymous telemetry, crash reports, and bougie diagnose ([#447](https://github.com/cresset-tools/bougie/issues/447)) ([8d094f1](https://github.com/cresset-tools/bougie/commit/8d094f19d4a23d2479708099df0081a4ccb84d00))
+* **telemetry:** wire the perf fields — download_bytes, cache_hit_pct, autoload_ms ([#451](https://github.com/cresset-tools/bougie/issues/451)) ([acf2d23](https://github.com/cresset-tools/bougie/commit/acf2d23d0d1b59c9bb6ae5e4e22e21a37ddbe7be))
+
 ## [0.40.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.39.0...bougie-v0.40.0) (2026-07-03)
 
 
