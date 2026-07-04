@@ -13,6 +13,10 @@ pub struct ComposerJson {
     pub require_php: Option<String>,
     /// Extension names with the `ext-` prefix stripped.
     pub require_extensions: BTreeSet<String>,
+    /// Count of non-platform `require` entries (real vendor/package
+    /// deps — `php*`, `ext-*`, `lib-*`, `composer-*-api` excluded).
+    /// Telemetry buckets this; names never leave the machine.
+    pub direct_requires: usize,
     pub extra_bougie: Option<BougieConfig>,
     /// `scripts` block, normalised: every entry is a non-empty list of
     /// shell-command strings. composer.json allows either a bare
@@ -41,6 +45,10 @@ pub fn read_composer_json(text: &str) -> Result<ComposerJson> {
         })
         .unwrap_or_default();
 
+    let direct_requires = require
+        .map(|r| r.keys().filter(|k| !is_platform_package(k)).count())
+        .unwrap_or_default();
+
     let extra_bougie = v
         .get("extra")
         .and_then(|e| e.get("bougie"))
@@ -61,9 +69,23 @@ pub fn read_composer_json(text: &str) -> Result<ComposerJson> {
     Ok(ComposerJson {
         require_php,
         require_extensions,
+        direct_requires,
         extra_bougie,
         scripts,
     })
+}
+
+/// Composer's platform-package name rules: `php` (+ suffixed
+/// variants), `ext-*`, `lib-*`, `hhvm`, and the `composer-*-api`
+/// virtual packages.
+fn is_platform_package(name: &str) -> bool {
+    name == "php"
+        || name.starts_with("php-")
+        || name.starts_with("ext-")
+        || name.starts_with("lib-")
+        || name == "hhvm"
+        || name == "composer-plugin-api"
+        || name == "composer-runtime-api"
 }
 
 /// Collapse a composer.json `scripts.<name>` value to a `Vec<String>`

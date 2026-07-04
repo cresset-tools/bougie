@@ -13,6 +13,27 @@ pub const SCHEMA: u32 = 1;
 
 pub const OUTCOME_OK: &str = "ok";
 
+/// Every subcommand name the dispatcher may record — the collector
+/// validates `command.name` / `crash.command` against exactly this
+/// list. A unit test in the `bougie` bin asserts `command_name()`
+/// stays a subset; the collector consumes this const once it can
+/// depend on this crate from crates.io.
+pub const COMMAND_VOCAB: &[&str] = &[
+    "init", "new", "ext", "add", "remove", "lock", "tree", "outdated", "sync", "run",
+    "php", "node", "patches", "composer", "tool", "tool-exec", "cache", "self",
+    "telemetry", "__telemetry-flush", "diagnose", "server", "services", "projects",
+    "make", "format", "start", "stop", "unknown",
+];
+
+/// Every outcome label [`outcome_for_error`] (plus `ok`) can produce,
+/// with the reserved `usage`/`panic` codes. Same collector contract as
+/// [`COMMAND_VOCAB`].
+pub const OUTCOME_VOCAB: &[&str] = &[
+    "ok", "network", "index-signature", "manifest-hash", "blob-hash", "resolution",
+    "unknown-target", "yanked", "lock-held", "filesystem", "self-update", "usage",
+    "panic", "other",
+];
+
 /// Envelope fields shared by every event, flattened into each line.
 #[derive(Debug, Clone, Serialize)]
 pub struct Common {

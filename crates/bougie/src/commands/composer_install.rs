@@ -235,7 +235,12 @@ pub fn run(
         hooks.as_ref().map(|h| h as &dyn bougie_composer_resolver::ScriptHooks),
         patch_plan.as_ref(),
     )?;
-    emit(format, &InstallResult::from(summary))?;
+    let result = InstallResult::from(summary);
+    // Telemetry enrichment (TELEMETRY.md): counts only, no names.
+    bougie_telemetry::probe::record(|p| {
+        p.enrich.packages_installed = Some(result.packages_installed);
+    });
+    emit(format, &result)?;
     Ok(ExitCode::SUCCESS)
 }
 

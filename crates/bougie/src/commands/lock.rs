@@ -247,6 +247,13 @@ fn read_root_require_names(composer_json: &serde_json::Value) -> Vec<String> {
 }
 
 fn finish(format: OutputFormat, result: &LockResult) -> Result<ExitCode> {
+    // Telemetry enrichment (TELEMETRY.md): the lock's package total,
+    // bucketed — no names.
+    bougie_telemetry::probe::record(|p| {
+        if let Some(n) = result.packages {
+            p.enrich.total_deps = Some(bougie_telemetry::probe::bucket(n));
+        }
+    });
     emit(format, result)?;
     Ok(ExitCode::SUCCESS)
 }
