@@ -89,6 +89,14 @@ pub fn minor(version: &str) -> Option<String> {
     Some(format!("{major}.{minor}"))
 }
 
+/// Dist-cache hit share of a run's fetches, 0–100; `None` when
+/// nothing needed fetching (an all-up-to-date sync says nothing about
+/// the cache).
+pub fn cache_hit_pct(hits: u64, downloads: u64) -> Option<u8> {
+    let total = hits + downloads;
+    (total > 0).then(|| u8::try_from(hits * 100 / total).unwrap_or(100))
+}
+
 /// Dependency-count bucket (TELEMETRY.md): raw counts are precise
 /// enough to fingerprint a project, buckets aren't.
 pub fn bucket(n: usize) -> &'static str {
@@ -153,6 +161,14 @@ mod tests {
         assert_eq!(minor("dev-main"), None);
         assert_eq!(minor("8.x"), None);
         assert_eq!(minor(""), None);
+    }
+
+    #[test]
+    fn cache_hit_percentage() {
+        assert_eq!(cache_hit_pct(0, 0), None, "nothing fetched, nothing to say");
+        assert_eq!(cache_hit_pct(10, 0), Some(100));
+        assert_eq!(cache_hit_pct(0, 10), Some(0));
+        assert_eq!(cache_hit_pct(1, 2), Some(33));
     }
 
     #[test]

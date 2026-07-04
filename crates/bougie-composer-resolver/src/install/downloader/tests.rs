@@ -164,7 +164,11 @@ fn falls_back_to_next_candidate_when_primary_url_fails() {
     }];
 
     let outcomes = fetch_and_extract_dists(&client, &paths, &dists, &bar).unwrap();
-    assert_eq!(outcomes, vec![DistOutcome::Downloaded]);
+    assert_eq!(outcomes.len(), 1);
+    assert!(
+        matches!(outcomes[0], DistOutcome::Downloaded { bytes } if bytes > 0),
+        "{outcomes:?}"
+    );
     assert!(vendor_dest.join("composer.json").is_file());
 }
 
@@ -435,7 +439,11 @@ fn extract_strips_top_level_directory_via_auto_detect() {
             fallbacks: &[],
     }];
     let outcomes = fetch_and_extract_dists(&client, &paths, &dists, &bar).unwrap();
-    assert_eq!(outcomes, vec![DistOutcome::Downloaded]);
+    assert_eq!(outcomes.len(), 1);
+    assert!(
+        matches!(outcomes[0], DistOutcome::Downloaded { bytes } if bytes > 0),
+        "{outcomes:?}"
+    );
 
     // Walk vendor_dest; assert no path component equals the stripped
     // top-level name.

@@ -117,7 +117,10 @@ fn every_serialized_field_is_documented_in_telemetry_md() {
         enrich: Enrichment {
             resolve_ms: Some(1),
             vendor_ms: Some(1),
+            autoload_ms: Some(1),
             packages_installed: Some(1),
+            download_bytes: Some(1),
+            cache_hit_pct: Some(50),
             php_version: Some("8.4".into()),
             php_flavor: Some("standard".into()),
             php_source: Some("managed"),

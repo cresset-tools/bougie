@@ -110,11 +110,14 @@ pub struct DistCandidate {
 
 /// Per-dist outcome reported back to the caller so the install
 /// summary can distinguish cache hits ("already had this package's
-/// bytes locally") from fresh downloads.
+/// bytes locally") from fresh downloads. `Downloaded` carries the
+/// archive size on disk — the telemetry `download_bytes` counter and
+/// nothing else; it is not a transfer-accurate byte count (compression
+/// and resume both make that a different number).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DistOutcome {
     CacheHit,
-    Downloaded,
+    Downloaded { bytes: u64 },
 }
 
 /// Download every dist in `dists` in parallel into the bougie cache,
@@ -214,7 +217,9 @@ fn download_to_cache(
             auth_header_name,
         };
         match bougie_fetch::fetch_file(client, &spec, bar) {
-            Ok(_) => return Ok(DistOutcome::Downloaded),
+            Ok(_) => {
+                return Ok(DistOutcome::Downloaded { bytes: file_size(&cache_path) });
+            }
             Err(err) => {
                 if idx + 1 < total {
                     tracing::warn!(
@@ -285,7 +290,12 @@ fn copy_local_dist(dist: &DistRequest<'_>, cache_path: &Path) -> Result<DistOutc
             cache_path.display(),
         )
     })?;
-    Ok(DistOutcome::Downloaded)
+    Ok(DistOutcome::Downloaded { bytes: file_size(cache_path) })
+}
+
+/// Best-effort on-disk size for the telemetry byte counter.
+fn file_size(path: &Path) -> u64 {
+    std::fs::metadata(path).map_or(0, |m| m.len())
 }
 
 fn verify_local_sha1(path: &Path, expected_hex: &str) -> Result<()> {
