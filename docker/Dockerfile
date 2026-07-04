@@ -52,4 +52,12 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
 FROM scratch
 COPY --from=build /bougie /bgx /
 WORKDIR /io
+# Telemetry consent hygiene (TELEMETRY.md): default the published image
+# to off so an interactive `docker run -it` can't first-run-prompt and
+# bake a consent file into a layer someone else inherits. Plain ENV =
+# default-but-overridable: `docker run -e BOUGIE_TELEMETRY=on` (or a
+# GitHub Actions `env:` block) wins. Note the env outranks the mode
+# file, so `bougie telemetry on` *inside* a container won't stick —
+# `telemetry status` names the source; override the env instead.
+ENV BOUGIE_TELEMETRY=off
 ENTRYPOINT ["/bougie"]

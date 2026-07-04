@@ -48,6 +48,11 @@ The first-run prompt appears at most three times (only on a real
 terminal, in text mode, outside CI); after the third non-answer,
 `off` is recorded and the question never returns.
 
+Published docker images bake `BOUGIE_TELEMETRY=off` so a consent file can
+never end up committed into an image layer; override it at run time
+(`docker run -e BOUGIE_TELEMETRY=on`, an Actions `env:` block) per the
+precedence above.
+
 If the *scope* of collection ever expands, the consent version bumps:
 a recorded `on` under an older version stops uploading and you are
 asked again. Reductions in scope never re-ask.

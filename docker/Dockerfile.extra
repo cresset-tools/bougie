@@ -25,4 +25,9 @@ FROM ${BASE_IMAGE}
 ARG CERTS_INSTALL="apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*"
 RUN sh -c "${CERTS_INSTALL}"
 COPY --from=bougie /bougie /bgx /usr/local/bin/
+# Same telemetry default as the base image (ENV does not propagate
+# through `FROM ${BASE_IMAGE}`, so it's set in both files): published
+# images never prompt and never send unless the runner opts in with
+# e.g. `docker run -e BOUGIE_TELEMETRY=on` / an Actions `env:` block.
+ENV BOUGIE_TELEMETRY=off
 ENTRYPOINT ["/usr/local/bin/bougie"]
