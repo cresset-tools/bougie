@@ -92,19 +92,15 @@ fn no_controlling_tty_leaves_mode_unset() {
     // `setsid` detaches from the controlling terminal, so the
     // `/dev/tty` probe fails and the snippet leaves the mode unset for
     // bougie's own first-run prompt.
-    let mut cmd = run.sh();
-    let inner: Vec<_> = std::iter::once(std::ffi::OsString::from("-u"))
-        .chain(std::iter::once(snippet().into_os_string()))
-        .collect();
     let out = Command::new("setsid")
         .arg("sh")
-        .args(&inner)
+        .arg("-u")
+        .arg(snippet())
         .env_clear()
         .env("PATH", std::env::var_os("PATH").unwrap_or_default())
         .env("HOME", run.home.path())
         .env("XDG_CONFIG_HOME", run.home.path().join("config"))
         .output();
-    drop(cmd);
     let Ok(out) = out else {
         // setsid unavailable: nothing to assert.
         return;
