@@ -92,3 +92,51 @@ fn install_ext_add_run_shows_extension() {
         .success()
         .stdout(contains("xdebug").or(contains("Xdebug")));
 }
+
+/// The telemetry flush lane on Windows: the hidden subcommand is a
+/// clean, fast no-op below mode `on` (also exercises the Windows
+/// branch of `deprioritize()`, which is a no-op — priority is set by
+/// the spawner's creation_flags instead).
+#[test]
+fn telemetry_flush_noop_below_on() {
+    let env = TestEnv::new();
+    env.bougie()
+        .arg("__telemetry-flush")
+        .env("BOUGIE_TELEMETRY", "local")
+        .assert()
+        .success();
+}
+
+/// The detached flush spawn (first `creation_flags` use in the repo:
+/// CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP |
+/// BELOW_NORMAL_PRIORITY_CLASS) must never delay the parent — even
+/// with a heavy spool and a dead collector, the triggering command
+/// returns immediately because the parent never waits on the child.
+#[test]
+fn telemetry_flush_spawn_does_not_delay_the_command() {
+    let env = TestEnv::new();
+    // Seed a spool heavy enough to trip the size trigger (>64 KiB),
+    // dated yesterday-agnostic (size alone is sufficient).
+    let spool = env.cache.path().join("telemetry").join("spool");
+    std::fs::create_dir_all(&spool).expect("spool dir");
+    let line = format!("{{\"schema\":1,\"pad\":\"{}\"}}\n", "x".repeat(1024));
+    std::fs::write(spool.join("2026-01-01.ndjson"), line.repeat(80)).expect("seed spool");
+
+    let started = std::time::Instant::now();
+    env.bougie()
+        .args(["cache", "dir"])
+        // Explicit env opt-in (wins over CI detection by design); the
+        // endpoint is a dead local port so the child fails silently.
+        .env("BOUGIE_TELEMETRY", "on")
+        .env("BOUGIE_TELEMETRY_URL", "http://127.0.0.1:9/v1/batch")
+        .assert()
+        .success();
+    // The flush child has a 5s network timeout; the parent must not
+    // inherit any of it. A generous bound keeps slow CI runners from
+    // flaking while still proving "prompt returns immediately".
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(10),
+        "spawn must be fire-and-forget, took {:?}",
+        started.elapsed()
+    );
+}

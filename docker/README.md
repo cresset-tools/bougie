@@ -17,6 +17,18 @@ Both `linux/amd64` and `linux/arm64` are published as a single multi-arch
 manifest, so `docker pull` / `FROM` / `COPY --from` resolve the right arch
 automatically.
 
+## Telemetry
+
+Published images set `BOUGIE_TELEMETRY=off`: containers never prompt and
+never send, and no consent file can end up baked into an image layer. The
+default is overridable wherever you run the image — `docker run -e
+BOUGIE_TELEMETRY=on …`, a compose `environment:` entry, or a GitHub Actions
+`env:` block (an explicit `on` deliberately wins over CI detection; events
+carry `ci: true`). Because the env var outranks the on-disk mode file, use
+the env override rather than `bougie telemetry on` inside the container —
+`bougie telemetry status` names which source decided. Full policy:
+[TELEMETRY.md](../TELEMETRY.md).
+
 ## Platform support for `php install`
 
 The `bougie` binary runs on every published image/arch. Fetching a **PHP
