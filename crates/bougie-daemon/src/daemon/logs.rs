@@ -74,7 +74,7 @@ impl LogWriter {
     }
 
     /// Rotate now even if we're under the threshold. Used by tests +
-    /// any future `services logs rotate` CLI subcommand.
+    /// any future `service logs rotate` CLI subcommand.
     pub fn rotate(&mut self) -> Result<()> {
         // Close current handle so the rename is portable (Windows
         // would require this; Linux/macOS don't strictly, but

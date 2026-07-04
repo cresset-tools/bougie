@@ -1,4 +1,4 @@
-//! Phase 21: end-to-end `bougie services up rabbitmq` against a real
+//! Phase 21: end-to-end `bougie service up rabbitmq` against a real
 //! rabbitmq 4.2.6 binary (with bundled Erlang/OTP 27.3.4.11) from
 //! the bougie index.
 //!
@@ -8,7 +8,7 @@
 //!   - per-tenant vhost + user + permissions land via `rabbitmqctl`,
 //!   - tenants.json records the tenant, vhost, username, and the
 //!     generated password (under `secrets.password`),
-//!   - `services down --purge` removes the vhost + user from the
+//!   - `service down --purge` removes the vhost + user from the
 //!     live broker,
 //!   - `bougie run` env injection exports
 //!     `BOUGIE_SERVICE_RABBITMQ_URL` as a fully-formed AMQP DSN.
@@ -50,7 +50,7 @@ fn should_skip() -> bool {
 fn stop_daemon(env: &TestEnv) {
     let _ = env
         .bougie()
-        .args(["services", "daemon", "stop"])
+        .args(["service", "daemon", "stop"])
         .timeout(STEP_TIMEOUT)
         .assert();
     // Give the Erlang VM a moment to release 5672 + 4369 (epmd)
@@ -59,7 +59,7 @@ fn stop_daemon(env: &TestEnv) {
 }
 
 fn services_up_or_dump(env: &TestEnv, proj_path: &Path, extra_args: &[&str]) {
-    let mut args = vec!["services", "up"];
+    let mut args = vec!["service", "up"];
     args.extend_from_slice(extra_args);
     let res = env
         .bougie()
@@ -67,7 +67,7 @@ fn services_up_or_dump(env: &TestEnv, proj_path: &Path, extra_args: &[&str]) {
         .current_dir(proj_path)
         .timeout(STEP_TIMEOUT)
         .output()
-        .expect("running bougie services up");
+        .expect("running bougie service up");
     if !res.status.success() {
         dump_rabbitmq_log(env, "services up failure");
         panic!(
@@ -176,7 +176,7 @@ fn up_starts_rabbitmq_and_provisions_vhost_user() {
     let proj = project_with_composer("acme/blog");
 
     env.bougie()
-        .args(["services", "add", "rabbitmq"])
+        .args(["service", "add", "rabbitmq"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
@@ -233,7 +233,7 @@ fn down_purge_drops_vhost_and_user() {
     rabbitmq_fixture::install_into(env.home_path());
     let proj = project_with_composer("acme/blog");
     env.bougie()
-        .args(["services", "add", "rabbitmq"])
+        .args(["service", "add", "rabbitmq"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
@@ -245,7 +245,7 @@ fn down_purge_drops_vhost_and_user() {
     }
 
     env.bougie()
-        .args(["services", "down", "--purge"])
+        .args(["service", "down", "--purge"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
@@ -275,7 +275,7 @@ fn bougie_run_exports_rabbitmq_env_vars() {
     rabbitmq_fixture::install_into(env.home_path());
     let proj = project_with_composer("acme/blog");
     env.bougie()
-        .args(["services", "add", "rabbitmq"])
+        .args(["service", "add", "rabbitmq"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
@@ -346,7 +346,7 @@ fn re_up_after_plain_down_resyncs_password_to_broker() {
     let proj = project_with_composer("acme/blog");
 
     env.bougie()
-        .args(["services", "add", "rabbitmq"])
+        .args(["service", "add", "rabbitmq"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
@@ -377,7 +377,7 @@ fn re_up_after_plain_down_resyncs_password_to_broker() {
     // implicitly via the duplicate `add_user` failure path that the
     // re-up below exercises.
     env.bougie()
-        .args(["services", "down"])
+        .args(["service", "down"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()

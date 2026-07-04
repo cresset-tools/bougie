@@ -364,7 +364,7 @@ impl PoolManager {
             // concurrent respawn that already replaced the entry) and
             // fall through to spawn a fresh one — this is what makes the
             // server self-heal after a crashed worker instead of wedging
-            // until a full `bougie services restart server`.
+            // until a full `bougie service restart server`.
             self.evict(&pool).await;
             eprintln!(
                 "[pool_dead] host={} project={} variant={} pid={} reason=respawn",

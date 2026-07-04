@@ -1,7 +1,7 @@
 //! Implementations of the user-facing `bougie server` subcommands.
 //!
 //! Host registration (`add`/`remove`) was retired in favour of the
-//! bougied-managed path: `bougie services up server` provisions a
+//! bougied-managed path: `bougie service up server` provisions a
 //! `[[host]]` block per project tenant under
 //! `$BOUGIE_HOME/state/services/server/conf/server.toml`. Users who
 //! want to run the server by hand author their own `server.toml` and

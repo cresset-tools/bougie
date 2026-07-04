@@ -1536,7 +1536,7 @@ mod tests {
     fn extract_rewrites_hardlink_targets_with_strip_prefix() {
         use std::os::unix::fs::MetadataExt;
         // Mirrors the rabbitmq tarball shape that previously broke
-        // `services up`: a regular file at `install/escript/rabbitmq-
+        // `service up`: a regular file at `install/escript/rabbitmq-
         // diagnostics` followed by several hardlinks whose tar header
         // records the link target with the `install/` prefix.
         // Without rewriting, the link target dangled because we only

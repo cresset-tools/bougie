@@ -32,7 +32,7 @@ fn install_fake_redis(env: &TestEnv) {
 fn stop_daemon(env: &TestEnv) {
     let _ = env
         .bougie()
-        .args(["services", "daemon", "stop"])
+        .args(["service", "daemon", "stop"])
         .timeout(STEP_TIMEOUT)
         .assert();
 }
@@ -40,7 +40,7 @@ fn stop_daemon(env: &TestEnv) {
 fn status_snapshot(env: &TestEnv, proj: &std::path::Path) -> serde_json::Value {
     let out = env
         .bougie()
-        .args(["services", "status", "--format", "json-v1"])
+        .args(["service", "status", "--format", "json-v1"])
         .current_dir(proj)
         .timeout(STEP_TIMEOUT)
         .assert()
@@ -96,13 +96,13 @@ fn crashed_service_is_auto_restarted_with_new_pid() {
     install_fake_redis(&env);
     let proj = project_with_composer("acme/blog");
     env.bougie()
-        .args(["services", "add", "redis"])
+        .args(["service", "add", "redis"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
         .success();
     env.bougie()
-        .args(["services", "up"])
+        .args(["service", "up"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
@@ -153,13 +153,13 @@ fn repeated_crashes_increment_failure_count_and_grow_backoff() {
     install_fake_redis(&env);
     let proj = project_with_composer("acme/blog");
     env.bougie()
-        .args(["services", "add", "redis"])
+        .args(["service", "add", "redis"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
         .success();
     env.bougie()
-        .args(["services", "up"])
+        .args(["service", "up"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()

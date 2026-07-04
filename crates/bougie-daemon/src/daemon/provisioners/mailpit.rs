@@ -21,7 +21,7 @@ use std::path::Path;
 
 /// Record this project's use of the shared Mailpit instance. Idempotent
 /// — a project that's already in the ledger gets its existing row back,
-/// so repeated `bougie services up` calls don't duplicate it.
+/// so repeated `bougie service up` calls don't duplicate it.
 pub async fn provision(tenants_path: &Path, tenant_name: &str, project: &Path) -> Result<Tenant> {
     let existing = tenants::load_all(tenants_path).await?;
     if let Some(existing_t) = existing.iter().find(|t| t.project == project) {

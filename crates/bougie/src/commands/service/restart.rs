@@ -1,4 +1,4 @@
-//! `bougie services restart [<name>…]`. SERVICES.md §7.2.
+//! `bougie service restart [<name>…]`. SERVICES.md §7.2.
 //!
 //! Restarts the underlying global service process. The tenant ledger
 //! is **not** touched: generated passwords + DB numbers survive, so
@@ -71,7 +71,7 @@ pub fn run(format: OutputFormat, names: Vec<String>) -> Result<ExitCode> {
                 out.push(n.clone());
             } else {
                 return Err(eyre!(
-                    "service `{n}` isn't declared in this project (try `bougie services add {n}` first)"
+                    "service `{n}` isn't declared in this project (try `bougie service add {n}` first)"
                 ));
             }
         }

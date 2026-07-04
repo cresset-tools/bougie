@@ -1,4 +1,4 @@
-//! Phase 18: end-to-end `bougie services up opensearch` against a real
+//! Phase 18: end-to-end `bougie service up opensearch` against a real
 //! opensearch 2.19.5 binary from the bougie index.
 //!
 //! Coverage:
@@ -8,7 +8,7 @@
 //!   - tenants.json records the tenant + reserved index prefix,
 //!   - tenant-prefix isolation: project A's indices don't appear when
 //!     project B searches across its prefix,
-//!   - `services down --purge` drops both the index template and any
+//!   - `service down --purge` drops both the index template and any
 //!     indices the tenant created,
 //!   - `bougie run` env injection exports `BOUGIE_SERVICE_OPENSEARCH_*`.
 //!
@@ -48,7 +48,7 @@ fn should_skip() -> bool {
 fn stop_daemon(env: &TestEnv) {
     let _ = env
         .bougie()
-        .args(["services", "daemon", "stop"])
+        .args(["service", "daemon", "stop"])
         .timeout(STEP_TIMEOUT)
         .assert();
     // Give opensearch a chance to wind down before the next test's
@@ -56,12 +56,12 @@ fn stop_daemon(env: &TestEnv) {
     std::thread::sleep(Duration::from_millis(1500));
 }
 
-/// Run `bougie services up` for the project and panic on failure
+/// Run `bougie service up` for the project and panic on failure
 /// AFTER dumping opensearch.log + the bougied call's stderr — so a
 /// CI failure surfaces the real JVM/sandbox error instead of just
 /// the supervisor's "TCP-connect never won" rollup.
 fn services_up_or_dump(env: &TestEnv, proj_path: &Path, extra_args: &[&str]) {
-    let mut args = vec!["services", "up"];
+    let mut args = vec!["service", "up"];
     args.extend_from_slice(extra_args);
     let res = env
         .bougie()
@@ -69,7 +69,7 @@ fn services_up_or_dump(env: &TestEnv, proj_path: &Path, extra_args: &[&str]) {
         .current_dir(proj_path)
         .timeout(STEP_TIMEOUT)
         .output()
-        .expect("running bougie services up");
+        .expect("running bougie service up");
     if !res.status.success() {
         dump_opensearch_log(env, "services up failure");
         panic!(
@@ -159,7 +159,7 @@ fn up_starts_opensearch_and_provisions_index_template() {
     let proj = project_with_composer("acme/blog");
 
     env.bougie()
-        .args(["services", "add", "opensearch"])
+        .args(["service", "add", "opensearch"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
@@ -206,7 +206,7 @@ fn second_up_is_idempotent() {
     opensearch_fixture::install_into(env.home_path());
     let proj = project_with_composer("acme/blog");
     env.bougie()
-        .args(["services", "add", "opensearch"])
+        .args(["service", "add", "opensearch"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
@@ -238,7 +238,7 @@ fn two_projects_have_separate_index_prefixes() {
 
     for p in [pa.path(), pb.path()] {
         env.bougie()
-            .args(["services", "add", "opensearch"])
+            .args(["service", "add", "opensearch"])
             .current_dir(p)
             .timeout(STEP_TIMEOUT)
             .assert()
@@ -287,7 +287,7 @@ fn down_purge_drops_template_and_indices() {
     opensearch_fixture::install_into(env.home_path());
     let proj = project_with_composer("acme/blog");
     env.bougie()
-        .args(["services", "add", "opensearch"])
+        .args(["service", "add", "opensearch"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
@@ -308,7 +308,7 @@ fn down_purge_drops_template_and_indices() {
     assert_eq!(s, 200, "sentinel index should exist before purge");
 
     env.bougie()
-        .args(["services", "down", "--purge"])
+        .args(["service", "down", "--purge"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
@@ -326,7 +326,7 @@ fn down_purge_drops_template_and_indices() {
     // dropped index + template are really gone.
     let proj2 = project_with_composer("acme/other");
     env.bougie()
-        .args(["services", "add", "opensearch"])
+        .args(["service", "add", "opensearch"])
         .current_dir(proj2.path())
         .timeout(STEP_TIMEOUT)
         .assert()
@@ -356,7 +356,7 @@ fn bougie_run_exports_opensearch_env_vars() {
     opensearch_fixture::install_into(env.home_path());
     let proj = project_with_composer("acme/blog");
     env.bougie()
-        .args(["services", "add", "opensearch"])
+        .args(["service", "add", "opensearch"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()

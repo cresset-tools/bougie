@@ -66,7 +66,7 @@ pub async fn provision(
         return Err(eyre!(
             "rabbitmq: tenant name `{tenant_name}` contains characters that aren't \
              safe in a vhost/username (must match `[a-z0-9_]+`); rename via \
-             `bougie services add rabbitmq --tenant=...`"
+             `bougie service add rabbitmq --tenant=...`"
         ));
     }
 

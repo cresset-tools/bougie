@@ -33,7 +33,7 @@ Command groups:
   Project      init, new, start, stop, run, sync, make, format
   Dependencies add, remove, lock, tree, outdated, ext, composer
   Toolchain    php, node, tool
-  Services     server, services, projects
+  Services     server, service, projects
   Admin        cache, self
 
 Run `bougie help <command>` for details on any command";
@@ -465,9 +465,10 @@ pub enum Command {
     #[command(display_order = 30)]
     Server(ServerArgs),
 
-    /// Manage project-scoped dev services
-    #[command(subcommand, display_order = 31)]
-    Services(ServicesCommand),
+    /// Manage project-scoped dev services (formerly `services`, which
+    /// remains as a hidden alias)
+    #[command(subcommand, display_order = 31, alias = "services")]
+    Service(ServiceCommand),
 
     /// Inspect and manage provisioned tenants
     #[command(subcommand, display_order = 32)]
@@ -543,7 +544,7 @@ pub enum Command {
 }
 
 #[derive(Subcommand, Debug)]
-pub enum ServicesCommand {
+pub enum ServiceCommand {
     /// Start the project's declared services (or every service in
     /// `names`) and provision the project's tenant in each. For the
     /// whole-project bring-up use `bougie start`
@@ -569,7 +570,7 @@ pub enum ServicesCommand {
         purge: bool,
     },
     /// Declare a service in the project. Errors if the name isn't in
-    /// the catalog. Use `bougie services catalog` to discover names
+    /// the catalog. Use `bougie service catalog` to discover names
     Add {
         /// One or more service names, each optionally `@<version>`
         names: Vec<String>,
@@ -581,7 +582,7 @@ pub enum ServicesCommand {
         /// Service names to remove
         names: Vec<String>,
         /// Also destroy the project's tenant data for each service
-        /// (same as `bougie services down --purge`) before undeclaring
+        /// (same as `bougie service down --purge`) before undeclaring
         #[arg(long)]
         purge: bool,
     },
@@ -625,7 +626,7 @@ pub enum ServicesCommand {
     /// Tail (and optionally follow) service logs. With no name, shows
     /// the combined ("multilog") stream of every service declared in the
     /// project, each line prefixed with its (colorized) service name —
-    /// the same view `bougie services up` attaches to
+    /// the same view `bougie service up` attaches to
     Logs {
         /// Service name. Omit to tail every declared service at once
         name: Option<String>,
@@ -638,7 +639,7 @@ pub enum ServicesCommand {
     },
     /// Inspect and control the `bougied` daemon
     #[command(subcommand)]
-    Daemon(ServicesDaemonCommand),
+    Daemon(ServiceDaemonCommand),
 }
 
 #[derive(Subcommand, Debug)]
@@ -675,7 +676,7 @@ pub enum ProjectsCommand {
 }
 
 #[derive(Subcommand, Debug)]
-pub enum ServicesDaemonCommand {
+pub enum ServiceDaemonCommand {
     /// Print daemon PID, socket path, and managed-service count. The
     /// daemon is auto-spawned if not already running
     Status,
@@ -716,7 +717,7 @@ pub struct ServeArgs {
     #[arg(long)]
     pub tls: bool,
     /// Print the URL and return immediately instead of attaching to the
-    /// log stream. Matches `services up`'s `-d`
+    /// log stream. Matches `service up`'s `-d`
     #[arg(short = 'd', long = "detach")]
     pub detach: bool,
     /// Skip the implicit `bougie sync` before serving
@@ -730,7 +731,7 @@ pub enum ServerCommand {
     /// multi-host `server.toml`, foreground, with no daemon. This is
     /// what `bougied` spawns and what CI / power users invoke directly;
     /// `--config` is required because a multi-host server has no single
-    /// project to default to. The bougied-managed path (`bougie services
+    /// project to default to. The bougied-managed path (`bougie service
     /// up server`) supplies its own service-scoped `server.toml`
     Run {
         /// `server.toml` path. Required
@@ -760,7 +761,7 @@ pub enum ServerCommand {
         #[arg(value_name = "NAME")]
         name: Option<String>,
     },
-    /// Stop the shared dev server. Equivalent to `bougie services down
+    /// Stop the shared dev server. Equivalent to `bougie service down
     /// server`; stops hosting for every project, since the server is shared
     Stop,
     /// Tail the dev server's request log. In a project, defaults to
@@ -1670,21 +1671,34 @@ mod tests {
     }
 
     #[test]
-    fn up_down_live_under_services() {
+    fn up_down_live_under_service() {
         assert!(matches!(
-            cmd(&["bougie", "services", "up", "redis", "-d"]),
-            Command::Services(ServicesCommand::Up { detach: true, .. })
+            cmd(&["bougie", "service", "up", "redis", "-d"]),
+            Command::Service(ServiceCommand::Up { detach: true, .. })
         ));
         assert!(matches!(
-            cmd(&["bougie", "services", "down", "--purge"]),
-            Command::Services(ServicesCommand::Down { purge: true, .. })
+            cmd(&["bougie", "service", "down", "--purge"]),
+            Command::Service(ServiceCommand::Down { purge: true, .. })
+        ));
+    }
+
+    #[test]
+    fn services_is_an_alias_for_service() {
+        // The pre-rename spelling must keep parsing to the same command.
+        assert!(matches!(
+            cmd(&["bougie", "services", "up", "redis", "-d"]),
+            Command::Service(ServiceCommand::Up { detach: true, .. })
+        ));
+        assert!(matches!(
+            cmd(&["bougie", "services", "catalog"]),
+            Command::Service(ServiceCommand::Catalog)
         ));
     }
 
     #[test]
     fn top_level_up_down_are_gone() {
         // The deprecated top-level aliases were removed; `up`/`down` only
-        // exist under `services` now.
+        // exist under `service` now.
         assert!(Cli::try_parse_from(["bougie", "up"]).is_err());
         assert!(Cli::try_parse_from(["bougie", "down"]).is_err());
     }

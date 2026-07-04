@@ -1,6 +1,6 @@
 //! Auto-fetch service tarballs into the content-addressed store.
 //!
-//! Backstop for `bougie services up` when the catalog tarball isn't
+//! Backstop for `bougie service up` when the catalog tarball isn't
 //! yet on disk. Mirrors the extension fetch path
 //! (`install::install_extension`): index root → tool section →
 //! manifest → blob, sha-verified at every step.
@@ -116,7 +116,7 @@ fn fetch_blocking(
 
     let _guard = ExclusiveGuard::acquire(&paths.global_lock(), LOCK_TIMEOUT)?;
 
-    // Re-check under the lock: a concurrent `bougie services up`
+    // Re-check under the lock: a concurrent `bougie service up`
     // could have populated the store while we were queued behind
     // it, in which case there's nothing left to do and skipping the
     // network round-trip is the polite choice.
@@ -311,7 +311,7 @@ fn install_into(
 ///
 /// 1. If `$BOUGIE_HOME/store/<name>-<version>/` already exists, return
 ///    it. The inner tool is already installed (either from a prior
-///    `bougie services up` or from an earlier sibling in the same
+///    `bougie service up` or from an earlier sibling in the same
 ///    recursive walk — the diamond case).
 /// 2. Otherwise mark the (name, version) as in-progress in `visited`,
 ///    fetch the inner tool's section to resolve the manifest sha256
@@ -713,7 +713,7 @@ mod tests {
     #[test]
     fn install_required_tool_short_circuits_when_inner_root_exists() {
         // Diamond happy path: the inner tool is already on disk from a
-        // sibling install (or a previous `bougie services up`). The
+        // sibling install (or a previous `bougie service up`). The
         // function must early-return without touching the network — we
         // verify this by passing a `FetchedRoot` whose targets map is
         // empty, so any attempted section lookup would fail loudly.

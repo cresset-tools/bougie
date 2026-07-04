@@ -1,4 +1,4 @@
-//! `bougie services exec` + the service-client argv[0] shims.
+//! `bougie service exec` + the service-client argv[0] shims.
 //!
 //! Runs a service's *client* tool (mariadb, mysqldump, redis-cli,
 //! rabbitmqctl, …) wired to the current project's tenant. Two entry
@@ -10,7 +10,7 @@
 //!   scripts, and recipes all front-load that dir on PATH, anything
 //!   that shells out to `mysqldump` by name gets the version-matched,
 //!   tenant-wired client for free.
-//! - [`run`] — `bougie services exec <tool> [args…]`, the generic
+//! - [`run`] — `bougie service exec <tool> [args…]`, the generic
 //!   escape hatch that also reaches uncurated binaries in a declared
 //!   service's `bin/`/`sbin/` (mariadb-check, opensearch-plugin, …).
 //!
@@ -33,7 +33,7 @@ use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
-/// `bougie services exec [--service NAME] TOOL [ARGS…]`.
+/// `bougie service exec [--service NAME] TOOL [ARGS…]`.
 #[allow(
     clippy::needless_pass_by_value,
     reason = "owned strings from clap-parsed CLI"
@@ -94,7 +94,7 @@ fn resolve_tool(
         if !declared.contains(&hint) {
             return Err(eyre!(
                 "service `{hint}` isn't declared in this project \
-                 (try `bougie services add {hint}` first)"
+                 (try `bougie service add {hint}` first)"
             ));
         }
         let binary = if let Some(c) = entry.clients.iter().find(|c| c.name == tool) {
@@ -117,7 +117,7 @@ fn resolve_tool(
         if !declared.contains(&entry.name) {
             return Err(eyre!(
                 "`{tool}` belongs to service `{name}`, which isn't declared in this \
-                 project — run `bougie services add {name}` first",
+                 project — run `bougie service add {name}` first",
                 name = entry.name
             ));
         }
@@ -567,7 +567,7 @@ mod tests {
         let paths = Paths::new(td.path().into(), td.path().join("cache"));
         let err = resolve_tool(&paths, &["redis"], None, "mysqldump").unwrap_err();
         let msg = format!("{err:#}");
-        assert!(msg.contains("services add mariadb"), "{msg}");
+        assert!(msg.contains("service add mariadb"), "{msg}");
     }
 
     #[test]

@@ -183,7 +183,7 @@ pub fn run(
     // Layer in any per-tenant `BOUGIE_SERVICE_*` env vars the daemon
     // knows about. Only when `bougied` is already running — `bougie
     // run` deliberately does NOT auto-spawn the daemon (the user
-    // explicitly chose `bougie services up` for that). When the
+    // explicitly chose `bougie service up` for that). When the
     // daemon isn't there the vars are absent; PHP code that depends
     // on them gets a connection error, which is the right surface.
     //
@@ -483,9 +483,9 @@ fn run_composer_script(
 /// `bougie sync` (dispatched from `lib.rs`): both thread the resolved
 /// root into `sync::*` so the toolchain materializes at the real root,
 /// not wherever the cwd happens to be (e.g. a Hyvä theme's
-/// `web/tailwind/`). Mirrors `services::config_mut::locate_project_root`
+/// `web/tailwind/`). Mirrors `service::config_mut::locate_project_root`
 /// but with a fallback instead of an error; `bougie run`/`bougie sync`
-/// must remain usable outside a project, while `services::*` requires a
+/// must remain usable outside a project, while `service::*` requires a
 /// real project.
 pub(crate) fn resolve_project_root(cwd: &Path) -> std::path::PathBuf {
     for anc in cwd.ancestors() {

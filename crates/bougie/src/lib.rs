@@ -18,7 +18,7 @@ use bougie_cli::{
     CacheCommand, ComposerCommand, ExtCommand, NodeCommand, PhpCommand, SelfCommand, ToolCommand,
 };
 #[cfg(unix)]
-use bougie_cli::{ProjectsCommand, ServicesCommand, ServicesDaemonCommand};
+use bougie_cli::{ProjectsCommand, ServiceCommand, ServiceDaemonCommand};
 use eyre::Result;
 use std::io::IsTerminal;
 use std::process::ExitCode;
@@ -103,7 +103,7 @@ fn command_name(cmd: &Command) -> &'static str {
         Command::TelemetryFlush => "__telemetry-flush",
         Command::Diagnose { .. } => "diagnose",
         Command::Server(_) => "server",
-        Command::Services(_) => "services",
+        Command::Service(_) => "service",
         Command::Projects(_) => "projects",
         Command::Make { .. } => "make",
         Command::Format { .. } => "format",
@@ -682,64 +682,64 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
         }
         Command::Server(args) => commands::server::dispatch(format, args),
         #[cfg(unix)]
-        Command::Services(ServicesCommand::Up { names, detach }) => {
-            commands::services::up::run(format, names, detach)
+        Command::Service(ServiceCommand::Up { names, detach }) => {
+            commands::service::up::run(format, names, detach)
         }
         #[cfg(unix)]
-        Command::Services(ServicesCommand::Down { names, purge }) => {
-            commands::services::down::run(format, names, purge)
+        Command::Service(ServiceCommand::Down { names, purge }) => {
+            commands::service::down::run(format, names, purge)
         }
         #[cfg(unix)]
-        Command::Services(ServicesCommand::Add { names }) => {
-            commands::services::add::run(format, names)
+        Command::Service(ServiceCommand::Add { names }) => {
+            commands::service::add::run(format, names)
         }
         #[cfg(unix)]
-        Command::Services(ServicesCommand::Remove { names, purge }) => {
-            commands::services::remove::run(format, names, purge)
+        Command::Service(ServiceCommand::Remove { names, purge }) => {
+            commands::service::remove::run(format, names, purge)
         }
         #[cfg(unix)]
-        Command::Services(ServicesCommand::List { all }) => {
-            commands::services::list::run(format, all)
+        Command::Service(ServiceCommand::List { all }) => {
+            commands::service::list::run(format, all)
         }
         #[cfg(unix)]
-        Command::Services(ServicesCommand::Catalog) => commands::services::catalog::run(format),
+        Command::Service(ServiceCommand::Catalog) => commands::service::catalog::run(format),
         #[cfg(unix)]
-        Command::Services(ServicesCommand::Exec { service, tool, args }) => {
-            commands::services::exec::run(service, tool, args)
+        Command::Service(ServiceCommand::Exec { service, tool, args }) => {
+            commands::service::exec::run(service, tool, args)
         }
         #[cfg(unix)]
-        Command::Services(ServicesCommand::Restart { names }) => {
-            commands::services::restart::run(format, names)
+        Command::Service(ServiceCommand::Restart { names }) => {
+            commands::service::restart::run(format, names)
         }
         #[cfg(unix)]
-        Command::Services(ServicesCommand::Status { name }) => {
-            commands::services::status::run(format, name)
+        Command::Service(ServiceCommand::Status { name }) => {
+            commands::service::status::run(format, name)
         }
         #[cfg(unix)]
-        Command::Services(ServicesCommand::Logs { name, follow, lines }) => {
-            commands::services::logs::run(format, name, follow, lines)
+        Command::Service(ServiceCommand::Logs { name, follow, lines }) => {
+            commands::service::logs::run(format, name, follow, lines)
         }
         #[cfg(unix)]
-        Command::Services(ServicesCommand::Daemon(ServicesDaemonCommand::Status)) => {
-            commands::services::daemon::status(format)
+        Command::Service(ServiceCommand::Daemon(ServiceDaemonCommand::Status)) => {
+            commands::service::daemon::status(format)
         }
         #[cfg(unix)]
-        Command::Services(ServicesCommand::Daemon(ServicesDaemonCommand::Stop)) => {
-            commands::services::daemon::stop(format)
+        Command::Service(ServiceCommand::Daemon(ServiceDaemonCommand::Stop)) => {
+            commands::service::daemon::stop(format)
         }
         #[cfg(unix)]
-        Command::Services(ServicesCommand::Daemon(ServicesDaemonCommand::Version)) => {
-            commands::services::daemon::version(format)
+        Command::Service(ServiceCommand::Daemon(ServiceDaemonCommand::Version)) => {
+            commands::service::daemon::version(format)
         }
         #[cfg(not(unix))]
-        Command::Services(_) => unsupported_on_windows("bougie services"),
+        Command::Service(_) => unsupported_on_windows("bougie service"),
         #[cfg(unix)]
         Command::Projects(ProjectsCommand::List { alloc }) => {
-            commands::services::projects::run(format, alloc)
+            commands::service::projects::run(format, alloc)
         }
         #[cfg(unix)]
         Command::Projects(ProjectsCommand::Purge { project, all, dry_run, yes }) => {
-            commands::services::projects::purge(format, project, all, dry_run, yes)
+            commands::service::projects::purge(format, project, all, dry_run, yes)
         }
         #[cfg(not(unix))]
         Command::Projects(_) => unsupported_on_windows("bougie projects"),
@@ -783,7 +783,7 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
         // global `server stop` is deliberately *not* run — it would tear
         // down hosting for every other project sharing the daemon.
         #[cfg(unix)]
-        Command::Stop { names, purge } => commands::services::down::run(format, names, purge),
+        Command::Stop { names, purge } => commands::service::down::run(format, names, purge),
         #[cfg(not(unix))]
         Command::Stop { .. } => unsupported_on_windows("bougie stop"),
         Command::Tool(ToolCommand::Install { package, php, with, force }) => {

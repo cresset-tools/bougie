@@ -240,7 +240,7 @@ pub fn run(format: OutputFormat, opts: MakeOptions) -> Result<ExitCode> {
 /// the server tenant hasn't been provisioned.
 fn print_start_hints(recipe_name: &str, project_root: &std::path::Path) {
     let env: std::collections::BTreeMap<String, String> =
-        crate::commands::services::recipe_env_for_project(project_root)
+        crate::commands::service::recipe_env_for_project(project_root)
             .into_iter()
             .collect();
     let hostname = env.get("BOUGIE_SERVICE_SERVER_HOSTNAME").cloned();

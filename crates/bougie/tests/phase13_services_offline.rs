@@ -1,4 +1,4 @@
-//! Phase 13: offline `bougie services {catalog,add,remove,list}` —
+//! Phase 13: offline `bougie service {catalog,add,remove,list}` —
 //! the subcommands that don't need a running `bougied`.
 
 mod common;
@@ -23,7 +23,7 @@ fn catalog_text_lists_user_facing_only() {
     let env = TestEnv::new();
     let out = env
         .bougie()
-        .args(["services", "catalog"])
+        .args(["service", "catalog"])
         .timeout(STEP_TIMEOUT)
         .assert()
         .success()
@@ -46,7 +46,7 @@ fn catalog_json_v1_contains_every_entry() {
     let env = TestEnv::new();
     let out = env
         .bougie()
-        .args(["services", "catalog", "--format", "json-v1"])
+        .args(["service", "catalog", "--format", "json-v1"])
         .timeout(STEP_TIMEOUT)
         .assert()
         .success()
@@ -72,7 +72,7 @@ fn add_bare_name_writes_star_pin_to_composer_json() {
     let env = TestEnv::new();
     let proj = empty_project();
     env.bougie()
-        .args(["services", "add", "redis"])
+        .args(["service", "add", "redis"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
@@ -88,7 +88,7 @@ fn add_with_version_pin_writes_exact_version() {
     let env = TestEnv::new();
     let proj = empty_project();
     env.bougie()
-        .args(["services", "add", "mariadb@11.4"])
+        .args(["service", "add", "mariadb@11.4"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
@@ -104,14 +104,14 @@ fn add_is_idempotent_at_same_pin() {
     let env = TestEnv::new();
     let proj = empty_project();
     env.bougie()
-        .args(["services", "add", "redis@8.6"])
+        .args(["service", "add", "redis@8.6"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
         .success();
     let out = env
         .bougie()
-        .args(["services", "add", "redis@8.6", "--format", "json-v1"])
+        .args(["service", "add", "redis@8.6", "--format", "json-v1"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
@@ -129,7 +129,7 @@ fn add_unknown_service_errors_with_known_list() {
     let proj = empty_project();
     let out = env
         .bougie()
-        .args(["services", "add", "postgres"])
+        .args(["service", "add", "postgres"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
@@ -149,7 +149,7 @@ fn add_runtime_dep_is_rejected() {
     let proj = empty_project();
     let out = env
         .bougie()
-        .args(["services", "add", "jdk"])
+        .args(["service", "add", "jdk"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
@@ -166,7 +166,7 @@ fn add_targets_bougie_toml_when_it_exists() {
     let proj = empty_project();
     fs::write(proj.path().join("bougie.toml"), "[php]\n").unwrap();
     env.bougie()
-        .args(["services", "add", "redis"])
+        .args(["service", "add", "redis"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
@@ -189,13 +189,13 @@ fn remove_drops_entry_from_composer_json() {
     let env = TestEnv::new();
     let proj = empty_project();
     env.bougie()
-        .args(["services", "add", "redis", "mariadb"])
+        .args(["service", "add", "redis", "mariadb"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
         .success();
     env.bougie()
-        .args(["services", "remove", "redis"])
+        .args(["service", "remove", "redis"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
@@ -214,7 +214,7 @@ fn remove_absent_service_reports_not_declared_but_succeeds() {
     let proj = empty_project();
     let out = env
         .bougie()
-        .args(["services", "remove", "redis", "--format", "json-v1"])
+        .args(["service", "remove", "redis", "--format", "json-v1"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
@@ -234,7 +234,7 @@ fn list_empty_project_reports_nothing_declared() {
     let proj = empty_project();
     let out = env
         .bougie()
-        .args(["services", "list"])
+        .args(["service", "list"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
@@ -251,14 +251,14 @@ fn list_after_add_shows_declared_services_alphabetised() {
     let env = TestEnv::new();
     let proj = empty_project();
     env.bougie()
-        .args(["services", "add", "redis", "mariadb@11.4"])
+        .args(["service", "add", "redis", "mariadb@11.4"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
         .success();
     let out = env
         .bougie()
-        .args(["services", "list", "--format", "json-v1"])
+        .args(["service", "list", "--format", "json-v1"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
@@ -292,7 +292,7 @@ fn list_reads_both_composer_json_and_bougie_toml_merged() {
     .unwrap();
     let out = env
         .bougie()
-        .args(["services", "list", "--format", "json-v1"])
+        .args(["service", "list", "--format", "json-v1"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()

@@ -82,7 +82,7 @@ pub enum Request {
     /// Tail (and optionally follow) a service's log.
     ServiceLogs(ServiceLogsArgs),
     /// Read-only: returns the in-binary catalog as JSON. Mirrors what
-    /// `bougie services catalog` shows locally; exposed via IPC for
+    /// `bougie service catalog` shows locally; exposed via IPC for
     /// external tooling.
     Catalog,
 }
@@ -118,7 +118,7 @@ pub struct ServiceEnvArgs {
 
 #[derive(Debug, Deserialize)]
 pub struct ServiceLogsArgs {
-    /// Single-service form (`bougie services logs <name>`). Mutually
+    /// Single-service form (`bougie service logs <name>`). Mutually
     /// exclusive with `services`; if both are present `services` wins.
     #[serde(default)]
     pub service: Option<String>,
@@ -399,7 +399,7 @@ async fn dispatch(req: Request, state: &Arc<DaemonState>) -> ResultFrame {
 
 /// Render the in-binary catalog as a JSON value.
 ///
-/// The CLI's `bougie services catalog` reads `catalog::CATALOG`
+/// The CLI's `bougie service catalog` reads `catalog::CATALOG`
 /// directly (it's a `const`) — auto-spawning bougied just to print
 /// a static list would be terrible UX. This method exists for
 /// external tooling consumers and SERVICES.md §7.2 spec compliance.
@@ -550,7 +550,7 @@ fn drain_matching_lines(partial: &mut Vec<u8>, host: Option<&str>) -> String {
     out
 }
 
-/// Single-service tail/follow — the original `services logs <name>`
+/// Single-service tail/follow — the original `service logs <name>`
 /// behaviour: raw byte chunks, no per-line prefix.
 async fn dispatch_logs_single(
     write_half: &mut tokio::net::unix::OwnedWriteHalf,

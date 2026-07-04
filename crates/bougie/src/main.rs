@@ -25,7 +25,7 @@ fn main() -> ExitCode {
     // bridge both live behind cfg(unix); on Windows the recipe crate is
     // an empty lib and there's nothing to register.
     #[cfg(unix)]
-    bougie_recipe::set_service_env_provider(bougie::commands::services::recipe_env_for_project);
+    bougie_recipe::set_service_env_provider(bougie::commands::service::recipe_env_for_project);
 
     // Crash lane (TELEMETRY.md): chain a panic hook that spools a
     // scrubbed crash event before the default hook prints. Normal CLI

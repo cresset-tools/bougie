@@ -18,7 +18,7 @@ const REDIS_DB_COUNT: u8 = 16;
 
 /// Reserve the next free DB number for `tenant_name`. If the project
 /// already has a tenant for this service, re-uses its allocation
-/// (idempotent `services up`).
+/// (idempotent `service up`).
 pub async fn provision(tenants_path: &Path, tenant_name: &str, project: &Path) -> Result<Tenant> {
     let existing = tenants::load_all(tenants_path).await?;
 

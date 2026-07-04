@@ -25,7 +25,7 @@ use tokio::net::UnixStream;
 const HOSTNAME_SUFFIX: &str = ".bougie.run";
 
 /// Read/write timeout against the server's control socket. The
-/// daemon hands these back via `services up` output, so keep the
+/// daemon hands these back via `service up` output, so keep the
 /// budget tight enough that a wedged server doesn't strand the CLI.
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -135,7 +135,7 @@ pub fn server_toml_path(paths: &Paths) -> PathBuf {
     paths.service_conf("server").join("server.toml")
 }
 
-/// `bougie services add server` records the tenant name as
+/// `bougie service add server` records the tenant name as
 /// `<package>` (slashes already replaced with `_`). DNS labels
 /// don't allow underscores, so swap them for hyphens in the
 /// derived hostname — the dev server's `validate_hostname` rejects
@@ -272,7 +272,7 @@ async fn ping_reload_config(_paths: &Paths) -> Result<()> {
     let sock = control_socket_path();
     if !tokio::fs::try_exists(&sock).await.unwrap_or(false) {
         // Server isn't running. That's fine on the first
-        // `services up` — bougied will start the server child and
+        // `service up` — bougied will start the server child and
         // the server will load its config from disk at boot.
         return Ok(());
     }
@@ -359,7 +359,7 @@ fn default_server_toml() -> &'static str {
     // skeleton: a `[server]` table with defaults and an empty
     // `[[host]]` array. Comments are kept minimal so the file looks
     // intentional in an editor.
-    "# Managed by bougied — `bougie services add server` writes here.\n\
+    "# Managed by bougied — `bougie service add server` writes here.\n\
      # Edits survive bougied restarts; per-tenant hosts append below.\n\
      [server]\n\
      listen = \"127.0.0.1:7080\"\n\

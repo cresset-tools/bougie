@@ -126,7 +126,7 @@ pub fn fetch_service_env(paths: &Paths, project: &Path) -> Vec<(String, String)>
     }
     let args = serde_json::json!({ "project": project });
     let reply: eyre::Result<EnvReply> =
-        crate::commands::services::client::call(paths, "service.env", args);
+        crate::commands::service::client::call(paths, "service.env", args);
     match reply {
         Ok(r) => r
             .vars

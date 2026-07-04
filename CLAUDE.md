@@ -161,10 +161,11 @@ Top-level subcommands (from `bougie-cli`):
   bougied spawns), `status` (live host/pool table via control socket,
   `list` alias), `open`, `stop`, `logs`, `tls`, `hosts`. See
   `SERVER_CLI_PLAN.md`.
-- `services {add,remove,list,catalog,exec,restart,status,logs,daemon}` —
-  Dev services. `exec` runs a service *client* tool (mariadb, mysqldump,
-  redis-cli, rabbitmqctl, …) wired to the project's tenant; the curated
-  clients are also linked into `vendor/bougie/bin/` at sync/`services
+- `service {add,remove,list,catalog,exec,restart,status,logs,daemon}` —
+  Dev services (`services` remains as a hidden alias). `exec` runs a
+  service *client* tool (mariadb, mysqldump, redis-cli, rabbitmqctl, …)
+  wired to the project's tenant; the curated
+  clients are also linked into `vendor/bougie/bin/` at sync/`service
   add` time, so inside `bougie run` / recipes they resolve by bare name
   (argv[0] shim, connection injected from the tenant ledger — no daemon
   round-trip).

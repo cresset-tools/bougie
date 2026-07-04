@@ -277,7 +277,7 @@ fn send_shutdown(sock: &Path) -> Result<()> {
 ///
 /// `daemon.shutdown` streams its drain progress and returns a terminal
 /// frame once every service is stopped, but the process still has to
-/// exit and unlink its socket afterward. `services daemon stop` calls
+/// exit and unlink its socket afterward. `service daemon stop` calls
 /// this so it only returns once bougied is genuinely gone, not merely
 /// signalled. Bounded by [`SHUTDOWN_TIMEOUT`].
 pub fn wait_for_shutdown(paths: &Paths) -> Result<()> {

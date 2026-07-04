@@ -69,7 +69,7 @@ fn derive_hostname(tenant: &str) -> String {
     format!("{}.bougie.run", tenant.replace('_', "-"))
 }
 
-// Tenant derivation is shared with the `services up` path so both agree
+// Tenant derivation is shared with the `service up` path so both agree
 // on a project's identity (DB name, vhost, `<tenant>.bougie.run`) — and
 // so `server open`/`logs` re-derive the same name `up` provisioned. See
 // `crate::commands::tenant`.
@@ -142,7 +142,7 @@ use bougie_output::output::emit;
 
 /// Walk up from cwd for a project root (`bougie.toml` / `composer.json`
 /// / `vendor/bougie/`). Cross-platform mirror of
-/// `services::config_mut::locate_project_root`, which lives in the
+/// `service::config_mut::locate_project_root`, which lives in the
 /// Unix-only services module.
 fn locate_project_root() -> Result<PathBuf> {
     let cwd = std::env::current_dir()?;
@@ -181,7 +181,7 @@ impl bougie_output::output::Render for ServeResult {
 /// attach that detaches (leaving the server running) on Ctrl-C.
 #[cfg(unix)]
 fn serve(format: OutputFormat, args: &ServeArgs) -> Result<ExitCode> {
-    use crate::commands::services::client;
+    use crate::commands::service::client;
     use bougie_config::load_project;
     use bougie_paths::Paths;
     use serde_json::{json, Value};
@@ -299,7 +299,7 @@ impl bougie_output::output::Render for OpenResult {
 #[cfg(unix)]
 fn stop(format: OutputFormat) -> Result<ExitCode> {
     // Stopping the shared server == taking the `server` service down.
-    super::services::down::run(format, vec!["server".to_string()], false)
+    super::service::down::run(format, vec!["server".to_string()], false)
 }
 
 /// The current project's dev-server vhost, or `None` when not in a
@@ -314,7 +314,7 @@ fn current_project_host() -> Option<String> {
 
 #[cfg(unix)]
 fn logs(_format: OutputFormat, follow: bool, lines: usize) -> Result<ExitCode> {
-    use crate::commands::services::client;
+    use crate::commands::service::client;
     use bougie_paths::Paths;
     use serde_json::json;
 

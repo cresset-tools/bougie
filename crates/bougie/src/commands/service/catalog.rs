@@ -1,4 +1,4 @@
-//! `bougie services catalog` — print the built-in catalog. No daemon
+//! `bougie service catalog` — print the built-in catalog. No daemon
 //! involvement. See SERVICES.md §2.
 
 use bougie_cli::OutputFormat;

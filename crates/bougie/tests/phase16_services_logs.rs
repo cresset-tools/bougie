@@ -1,4 +1,4 @@
-//! Phase 16: `bougie services logs [-f] [-n N]` end-to-end against the
+//! Phase 16: `bougie service logs [-f] [-n N]` end-to-end against the
 //! fake-redis fixture. Covers the tail path; follow is covered by a
 //! short timed read.
 
@@ -29,7 +29,7 @@ fn install_fake_redis(env: &TestEnv) {
 fn stop_daemon(env: &TestEnv) {
     let _ = env
         .bougie()
-        .args(["services", "daemon", "stop"])
+        .args(["service", "daemon", "stop"])
         .timeout(STEP_TIMEOUT)
         .assert();
 }
@@ -40,13 +40,13 @@ fn logs_tail_shows_lines_the_service_wrote() {
     install_fake_redis(&env);
     let proj = project_with_composer("acme/blog");
     env.bougie()
-        .args(["services", "add", "redis"])
+        .args(["service", "add", "redis"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
         .success();
     env.bougie()
-        .args(["services", "up"])
+        .args(["service", "up"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
@@ -69,7 +69,7 @@ fn logs_tail_shows_lines_the_service_wrote() {
 
     let out = env
         .bougie()
-        .args(["services", "logs", "redis"])
+        .args(["service", "logs", "redis"])
         .timeout(STEP_TIMEOUT)
         .assert()
         .success()
@@ -81,7 +81,7 @@ fn logs_tail_shows_lines_the_service_wrote() {
     stop_daemon(&env);
 }
 
-/// `bougie services logs` with no name tails every declared service as
+/// `bougie service logs` with no name tails every declared service as
 /// one combined stream, prefixing each line with the service name —
 /// the same view `bougie up` attaches to. Declare two services but only
 /// start redis (the only fixture binary); the prefix proves the
@@ -92,7 +92,7 @@ fn logs_no_arg_tails_all_declared_services_combined() {
     install_fake_redis(&env);
     let proj = project_with_composer("acme/blog");
     env.bougie()
-        .args(["services", "add", "redis", "mariadb"])
+        .args(["service", "add", "redis", "mariadb"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
@@ -100,7 +100,7 @@ fn logs_no_arg_tails_all_declared_services_combined() {
     // Only redis has a fixture binary; start just it. The mariadb
     // declaration still widens the no-arg request to the multi path.
     env.bougie()
-        .args(["services", "up", "redis"])
+        .args(["service", "up", "redis"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
@@ -121,7 +121,7 @@ fn logs_no_arg_tails_all_declared_services_combined() {
 
     let out = env
         .bougie()
-        .args(["services", "logs"])
+        .args(["service", "logs"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
@@ -145,13 +145,13 @@ fn logs_n_truncates_to_requested_lines() {
     install_fake_redis(&env);
     let proj = project_with_composer("acme/blog");
     env.bougie()
-        .args(["services", "add", "redis"])
+        .args(["service", "add", "redis"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
         .success();
     env.bougie()
-        .args(["services", "up"])
+        .args(["service", "up"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
@@ -174,7 +174,7 @@ fn logs_n_truncates_to_requested_lines() {
 
     let out = env
         .bougie()
-        .args(["services", "logs", "-n", "3", "redis"])
+        .args(["service", "logs", "-n", "3", "redis"])
         .timeout(STEP_TIMEOUT)
         .assert()
         .success()
@@ -195,7 +195,7 @@ fn logs_unknown_service_errors_cleanly() {
     let env = TestEnv::new();
     let out = env
         .bougie()
-        .args(["services", "logs", "redis"])
+        .args(["service", "logs", "redis"])
         .timeout(STEP_TIMEOUT)
         .assert();
     // The daemon returns ok with an empty tail when the log file
@@ -204,7 +204,7 @@ fn logs_unknown_service_errors_cleanly() {
     drop(out);
     let unknown = env
         .bougie()
-        .args(["services", "logs", "postgres"])
+        .args(["service", "logs", "postgres"])
         .timeout(STEP_TIMEOUT)
         .assert()
         .failure()
@@ -222,24 +222,24 @@ fn logs_follow_streams_new_bytes_then_ends_on_disconnect() {
     install_fake_redis(&env);
     let proj = project_with_composer("acme/blog");
     env.bougie()
-        .args(["services", "add", "redis"])
+        .args(["service", "add", "redis"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
         .success();
     env.bougie()
-        .args(["services", "up"])
+        .args(["service", "up"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
         .success();
 
-    // Spawn `bougie services logs -f redis` as a real child so we can
+    // Spawn `bougie service logs -f redis` as a real child so we can
     // SIGTERM it. assert_cmd's `.assert()` waits for completion,
     // which doesn't model follow-mode well.
     let bin = cargo_bin("bougie");
     let child = Command::new(&bin)
-        .args(["services", "logs", "-f", "redis"])
+        .args(["service", "logs", "-f", "redis"])
         .env("BOUGIE_HOME", env.home_path())
         .env("BOUGIE_CACHE", env.cache_path())
         .stdout(Stdio::piped())
@@ -290,13 +290,13 @@ fn multi_service_logs_prefixes_each_line_with_the_service_name() {
     install_fake_redis(&env);
     let proj = project_with_composer("acme/blog");
     env.bougie()
-        .args(["services", "add", "redis"])
+        .args(["service", "add", "redis"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
         .success();
     env.bougie()
-        .args(["services", "up"])
+        .args(["service", "up"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()

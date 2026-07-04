@@ -170,7 +170,7 @@ pub async fn provision(tenants_path: &Path, tenant_name: &str, project: &Path) -
         return Err(eyre!(
             "opensearch: tenant name `{tenant_name}` contains characters disallowed in \
              an index-template name (must match `[a-z0-9_]+`); rename via \
-             `bougie services add opensearch --tenant=...`"
+             `bougie service add opensearch --tenant=...`"
         ));
     }
 
@@ -193,7 +193,7 @@ pub async fn provision(tenants_path: &Path, tenant_name: &str, project: &Path) -
 /// Release a tenant. With `purge`, deletes both the index template
 /// and every index that matched `<tenant>-*`. Without `purge`, only
 /// the local ledger entry goes away; opensearch state survives a
-/// `services down` so a later `up` re-uses it (matches redis/mariadb).
+/// `service down` so a later `up` re-uses it (matches redis/mariadb).
 pub async fn deprovision(tenants_path: &Path, tenant_name: &str, purge: bool) -> Result<()> {
     let existing = tenants::load_all(tenants_path).await?;
     let Some(_target) = existing.iter().find(|t| t.tenant == tenant_name).cloned() else {

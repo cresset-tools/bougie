@@ -1,4 +1,4 @@
-//! Phase 19: end-to-end `bougie services up server` against the
+//! Phase 19: end-to-end `bougie service up server` against the
 //! `bougie server run` SAPI itself.
 //!
 //! Coverage:
@@ -10,7 +10,7 @@
 //!     `reload-config` (no restart),
 //!   - two projects get two distinct `[[host]]` blocks and the
 //!     server reports both via its status endpoint,
-//!   - `bougie services down --purge` drops the host block and the
+//!   - `bougie service down --purge` drops the host block and the
 //!     reload propagates,
 //!   - `bougie run` env injection exports `BOUGIE_SERVICE_SERVER_*`.
 //!
@@ -46,7 +46,7 @@ fn server_test_lock() -> MutexGuard<'static, ()> {
 fn stop_daemon(env: &TestEnv) {
     let _ = env
         .bougie()
-        .args(["services", "daemon", "stop"])
+        .args(["service", "daemon", "stop"])
         .timeout(STEP_TIMEOUT)
         .assert();
     std::thread::sleep(Duration::from_millis(500));
@@ -106,13 +106,13 @@ fn up_brings_server_online_and_registers_host() {
     let proj = project_with_composer("acme/blog");
 
     env.bougie()
-        .args(["services", "add", "server"])
+        .args(["service", "add", "server"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
         .success();
     env.bougie()
-        .args(["services", "up"])
+        .args(["service", "up"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
@@ -170,13 +170,13 @@ fn two_projects_share_one_server_with_distinct_hosts() {
 
     for p in [pa.path(), pb.path()] {
         env.bougie()
-            .args(["services", "add", "server"])
+            .args(["service", "add", "server"])
             .current_dir(p)
             .timeout(STEP_TIMEOUT)
             .assert()
             .success();
         env.bougie()
-            .args(["services", "up"])
+            .args(["service", "up"])
             .current_dir(p)
             .timeout(STEP_TIMEOUT)
             .assert()
@@ -205,13 +205,13 @@ fn down_purge_drops_host_block() {
     let env = TestEnv::new();
     let proj = project_with_composer("acme/blog");
     env.bougie()
-        .args(["services", "add", "server"])
+        .args(["service", "add", "server"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
         .success();
     env.bougie()
-        .args(["services", "up"])
+        .args(["service", "up"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
@@ -219,7 +219,7 @@ fn down_purge_drops_host_block() {
     assert!(wait_for_tcp("127.0.0.1:7080", Duration::from_secs(10)));
 
     env.bougie()
-        .args(["services", "down", "--purge"])
+        .args(["service", "down", "--purge"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
@@ -267,14 +267,14 @@ fn up_fails_with_actionable_hint_when_no_docroot() {
     // Deliberately no `public/` or `pub/` directory.
 
     env.bougie()
-        .args(["services", "add", "server"])
+        .args(["service", "add", "server"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
         .success();
     let assert = env
         .bougie()
-        .args(["services", "up"])
+        .args(["service", "up"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
@@ -313,13 +313,13 @@ fn explicit_root_in_composer_extra_overrides_autodetect() {
     fs::create_dir_all(proj.path().join("web")).unwrap();
 
     env.bougie()
-        .args(["services", "add", "server"])
+        .args(["service", "add", "server"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
         .success();
     env.bougie()
-        .args(["services", "up"])
+        .args(["service", "up"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
@@ -344,13 +344,13 @@ fn bougie_run_exports_server_env_vars() {
     let env = TestEnv::new();
     let proj = project_with_composer("acme/blog");
     env.bougie()
-        .args(["services", "add", "server"])
+        .args(["service", "add", "server"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()
         .success();
     env.bougie()
-        .args(["services", "up"])
+        .args(["service", "up"])
         .current_dir(proj.path())
         .timeout(STEP_TIMEOUT)
         .assert()

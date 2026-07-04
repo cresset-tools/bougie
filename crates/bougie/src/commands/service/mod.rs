@@ -1,4 +1,4 @@
-//! `bougie services …` — the client-side subcommands.
+//! `bougie service …` — the client-side subcommands.
 //!
 //! Most of this surface is a thin IPC client over `bougied`. The
 //! offline subcommands (`catalog`, `add`, `remove`, `list`) need no

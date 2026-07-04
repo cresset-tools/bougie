@@ -2,7 +2,7 @@
 //!
 //! Same binary as `bougie`, dispatched via `argv[0] == "bougied"`
 //! through `src/shim.rs`. The CLI auto-spawns the daemon on the first
-//! `bougie services …` invocation; subsequent commands reuse the
+//! `bougie service …` invocation; subsequent commands reuse the
 //! running daemon over the Unix socket at
 //! `$BOUGIE_HOME/state/bougied.sock` (mode 0600).
 //!
@@ -113,7 +113,7 @@ pub fn run(paths: Paths) -> Result<ExitCode> {
             e
         )
     })?;
-    // Stamp our PID so external diagnostics (`bougie services daemon
+    // Stamp our PID so external diagnostics (`bougie service daemon
     // status`, ps grep, etc.) can find us.
     pid_file.set_len(0).ok();
     writeln!(&pid_file, "{}", std::process::id()).ok();

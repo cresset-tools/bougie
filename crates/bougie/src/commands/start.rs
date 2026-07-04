@@ -6,7 +6,7 @@
 //! so `start` and `make start` can never drift.
 //!
 //! `bougie stop` is the teardown twin and lives inline in the dispatcher
-//! (it's just `services down` for the project's declared services).
+//! (it's just `service down` for the project's declared services).
 
 use crate::commands::make::{self, MakeOptions};
 use bougie_cli::OutputFormat;
