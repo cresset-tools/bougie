@@ -27,6 +27,22 @@ fn main() -> ExitCode {
     #[cfg(unix)]
     bougie_recipe::set_service_env_provider(bougie::commands::services::recipe_env_for_project);
 
+    // Crash lane (TELEMETRY.md): chain a panic hook that spools a
+    // scrubbed crash event before the default hook prints. Normal CLI
+    // path only — the shim/daemon roles above never get it — and
+    // release builds only: dev builds carry full paths in panics and
+    // aren't what users run. Tests force it via the env override
+    // (test-fixtures builds only). The default hook still runs and
+    // `join()`'s Err → 101 below is untouched.
+    let force_crash_hook = cfg!(feature = "test-fixtures")
+        && std::env::var_os("BOUGIE_TELEMETRY_FORCE_CRASH_HOOK").is_some();
+    if !cfg!(debug_assertions) || force_crash_hook {
+        bougie_telemetry::crash::install_hook(bougie_telemetry::BinInfo {
+            version: env!("CARGO_PKG_VERSION"),
+            build_sha: bougie_cli::BUILD_SHA,
+        });
+    }
+
     // Parse + dispatch on a worker thread with a generous stack.
     // clap's derived command tree for bougie's full CLI is large enough
     // that building it inside `Cli::parse()` overflows Windows' default
@@ -128,4 +144,9 @@ fn report_error(err: &eyre::Report) {
             eprintln!("             {rest}");
         }
     }
+    // Capture the full context locally (single slot, never uploaded on
+    // its own) and point at the zero-effort reporting path. Local-only
+    // by design — see `bougie::failure`.
+    bougie::failure::record(err);
+    eprintln!("hint: run `bougie diagnose` to assemble a shareable report");
 }

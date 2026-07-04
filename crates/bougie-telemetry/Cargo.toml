@@ -1,0 +1,62 @@
+[package]
+name = "bougie-telemetry"
+version.workspace = true
+edition = "2024"
+description = "Anonymous, opt-in usage telemetry for bougie: consent mode, event spool, flush client."
+license = "EUPL-1.2"
+repository = "https://github.com/cresset-tools/bougie"
+rust-version = "1.95"
+authors.workspace = true
+
+[dependencies]
+bougie-errors = { workspace = true }
+bougie-fs = { workspace = true }
+bougie-paths = { workspace = true }
+
+# Crash-lane frame capture. std's backtrace frame API is unstable;
+# this crate also yields module-relative offsets for the stripped
+# release binaries (strip = "symbols" in the release profile).
+[dependencies.backtrace]
+version = "0.3"
+
+[dependencies.flate2]
+version = "1"
+
+[dependencies.sha2]
+version = "0.11"
+
+[dependencies.eyre]
+version = "0.6"
+
+[dependencies.reqwest]
+version = "0.13"
+default-features = false
+features = ["blocking", "rustls"]
+
+[dependencies.serde]
+version = "1.0"
+features = ["derive"]
+
+[dependencies.serde_json]
+version = "1.0"
+
+[dependencies.tracing]
+version = "0.1"
+
+[dependencies.uuid]
+version = "1"
+features = ["v4"]
+
+# The flush child renices itself with safe wrappers (`nice(19)` +
+# `setsid`), keeping this crate free of `unsafe` under the workspace
+# deny policy.
+[target.'cfg(unix)'.dependencies.rustix]
+version = "1.0"
+default-features = false
+features = ["std", "process"]
+
+[dev-dependencies]
+tempfile = "3.10"
+
+[lints]
+workspace = true

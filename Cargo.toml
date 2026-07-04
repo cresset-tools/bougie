@@ -29,6 +29,7 @@ members = [
     "crates/bougie-resolver",
     "crates/bougie-scripts",
     "crates/bougie-server",
+    "crates/bougie-telemetry",
     "crates/bougie-tool",
     "crates/bougie-version",
     "crates/macos-sandbox-sys",
@@ -82,6 +83,7 @@ bougie-recipe = { path = "crates/bougie-recipe", version = "0.40.0" } # x-releas
 bougie-resolver = { path = "crates/bougie-resolver", version = "0.40.0" } # x-release-please-version
 bougie-scripts = { path = "crates/bougie-scripts", version = "0.40.0" } # x-release-please-version
 bougie-server = { path = "crates/bougie-server", version = "0.40.0" } # x-release-please-version
+bougie-telemetry = { path = "crates/bougie-telemetry", version = "0.40.0" } # x-release-please-version
 bougie-tool = { path = "crates/bougie-tool", version = "0.40.0" } # x-release-please-version
 bougie-version = { path = "crates/bougie-version", version = "0.40.0" } # x-release-please-version
 sandbox-run = { path = "crates/sandbox-run", version = "0.40.0" } # x-release-please-version

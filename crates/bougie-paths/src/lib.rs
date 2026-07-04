@@ -422,6 +422,35 @@ pub mod project {
     }
 }
 
+/// Global (non-project) config dir: `${XDG_CONFIG_HOME:-~/.config}/bougie`
+/// on Unix, `%APPDATA%\bougie` on Windows.
+///
+/// Deliberately *not* under `$BOUGIE_HOME`: this is where the dist
+/// installer drops its receipt (`bougie-receipt.json`) and where the
+/// installer consent snippets (`scripts/install-consent.{sh,ps1}`)
+/// write the telemetry mode file — plain shell must be able to compute
+/// the path without knowing bougie's `BOUGIE_HOME` rules. Keep the
+/// resolution here byte-compatible with those snippets.
+pub fn config_dir() -> Result<PathBuf> {
+    #[cfg(unix)]
+    {
+        let xdg = Xdg::new().wrap_err("could not resolve XDG base dirs")?;
+        Ok(xdg.config_dir().join("bougie"))
+    }
+    #[cfg(windows)]
+    {
+        let win = Windows::new().wrap_err("could not resolve Windows base dirs")?;
+        Ok(win.config_dir().join("bougie"))
+    }
+}
+
+/// The telemetry consent mode file (single line:
+/// `<mode> <yyyy-mm-dd> <consent-version>`), next to the install
+/// receipt so both are discoverable by installer-side shell.
+pub fn telemetry_mode_file() -> Result<PathBuf> {
+    config_dir().map(|d| d.join("telemetry"))
+}
+
 /// First 12 hex chars of `sha256(canonical_project_path)`. Used as the
 /// per-project directory name under `$BOUGIE_HOME/state/projects/` and
 /// the server's runtime root. Canonicalization keeps the hash stable

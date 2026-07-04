@@ -83,6 +83,17 @@ To add this tool to your path, run `bougie tool install`
 bougie tool install --php 8.4 laravel/pint
 ```
 
+## Telemetry
+
+Bougie can collect anonymous usage statistics and crash reports —
+strictly **opt-in**, asked once at install time or on first
+interactive run, and never enabled in CI or scripts without an
+explicit `BOUGIE_TELEMETRY=on`. It never collects project names,
+package names, paths, or IP addresses, and it honors `DO_NOT_TRACK`.
+Inspect exactly what would be sent with `bougie telemetry log`;
+switch with `bougie telemetry {on,off,local}`. The complete field
+list and policy live in [TELEMETRY.md](TELEMETRY.md).
+
 ## License
 
 Bougie is freely licensed under the EUPL.

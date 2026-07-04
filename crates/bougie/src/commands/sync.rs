@@ -456,6 +456,40 @@ fn finish_with_vendor(
         result.vendor_packages_removed = Some(s.packages_removed);
     }
 
+    // Telemetry enrichment (TELEMETRY.md): perf + ecosystem fields for
+    // this invocation's command event. Names pass a closed vocabulary,
+    // counts are bucketed, and the ecosystem set ships at most once
+    // per project per week — the throttle marker lives under the
+    // project's state dir, so the project hash never leaves the
+    // machine. No-op unless telemetry is local/on.
+    {
+        use bougie_telemetry::probe;
+        let mut extensions: Vec<String> =
+            project.bougie.extensions.keys().cloned().collect();
+        if let Some(composer) = &project.composer {
+            extensions.extend(composer.require_extensions.iter().cloned());
+        }
+        extensions.extend(result.installed_extensions.iter().cloned());
+        let services: Vec<String> = project.bougie.services.keys().cloned().collect();
+        let marker = paths.project_state_dir(project_root).join("telemetry-last-snapshot");
+        probe::record(|p| {
+            p.enrich.resolve_ms = Some(probe::ms(result.resolve_ms));
+            p.enrich.vendor_ms = Some(probe::ms(result.audit_ms));
+            p.enrich.packages_installed = result.vendor_packages_installed;
+            p.enrich.total_deps = Some(probe::bucket(result.resolved_packages));
+            p.enrich.php_version = probe::minor(&result.php_version);
+            p.enrich.php_flavor = probe::vocab_token(&result.php_flavor);
+            p.enrich.php_source = Some(match result.php_source {
+                PhpSourceKind::Managed => "managed",
+                PhpSourceKind::System => "system",
+            });
+            p.enrich.extensions =
+                Some(probe::filter_vocab(extensions, probe::EXTENSION_VOCAB));
+            p.enrich.services = Some(probe::filter_vocab(services, probe::SERVICE_VOCAB));
+            p.ecosystem_marker = Some(marker);
+        });
+    }
+
     emit(format, &result)?;
     Ok(())
 }

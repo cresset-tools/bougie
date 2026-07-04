@@ -87,6 +87,7 @@ bougie-resolver = { workspace = true }
 bougie-php-discovery = { workspace = true }
 bougie-scripts = { workspace = true }
 bougie-server = { workspace = true }
+bougie-telemetry = { workspace = true }
 bougie-tool = { workspace = true }
 bougie-version = { workspace = true }
 composer-semver = { workspace = true }
