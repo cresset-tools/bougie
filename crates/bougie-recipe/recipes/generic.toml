@@ -8,4 +8,8 @@ run = "bougie sync"
 
 [task.start]
 deps = ["vendor"]
-run = "bougie service up --detach server"
+# No explicit names: `bougie service up server` errors when `server`
+# isn't declared (SERVICES.md §3.2), and a generic project declares
+# nothing by default. The bare form ups whatever *is* declared —
+# server included — and is a no-op otherwise.
+run = "bougie service up --detach"
