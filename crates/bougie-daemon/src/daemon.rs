@@ -162,9 +162,12 @@ async fn serve(paths: Paths) -> Result<ExitCode> {
     let state = Arc::new(DaemonState::new(paths, shutdown_tx.clone()));
 
     // Reap leftover service cgroups from a previous bougied that died
-    // without cleaning up (the flock singleton guarantees we're the only
-    // live instance now). Done before `restore_services` so re-spawns
-    // start from a clean slate. No-op under the process-group backend.
+    // without cleaning up. The flock singleton guarantees we're the only
+    // live instance *for this home*, and the reap is scoped to this
+    // home's namespaced cgroup dir — concurrent daemons with other
+    // `BOUGIE_HOME`s in the same session keep theirs (#456). Done before
+    // `restore_services` so re-spawns start from a clean slate. No-op
+    // under the process-group backend.
     state.supervisor.lock().await.reap_stale_leaves().await;
 
     // SIGTERM / SIGINT flip the shutdown flag. The accept loop
@@ -261,6 +264,13 @@ async fn serve(paths: Paths) -> Result<ExitCode> {
     // bougied exits with no orphans. Best-effort — surfacing errors
     // here doesn't help anyone since we're already exiting.
     drain(&state).await;
+
+    // Drop our (now-empty) namespaced service-cgroup dir so short-lived
+    // homes don't pile empty namespaces into the session scope until
+    // logout. rmdir on a non-empty cgroup fails, which is the right
+    // outcome if any leaf survived drain — the next startup's
+    // `reap_stale_leaves` deals with it instead.
+    state.supervisor.lock().await.remove_svc_root();
 
     Ok(ExitCode::SUCCESS)
 }
