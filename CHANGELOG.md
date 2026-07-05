@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.43.1](https://github.com/cresset-tools/bougie/compare/bougie-v0.43.0...bougie-v0.43.1) (2026-07-05)
+
+
+### Bug Fixes
+
+* **daemon:** namespace service cgroups by home so concurrent daemons don't reap each other's services ([#457](https://github.com/cresset-tools/bougie/issues/457)) ([a3d18c3](https://github.com/cresset-tools/bougie/commit/a3d18c3df9ce9e8e1be0b2024bdc297caa7a1de3)), closes [#456](https://github.com/cresset-tools/bougie/issues/456)
+* **recipe:** skip rabbitmq + amqp wiring when the Amqp module is absent ([#459](https://github.com/cresset-tools/bougie/issues/459)) ([dc6ac52](https://github.com/cresset-tools/bougie/commit/dc6ac5227e2f529c194aa3b18cd413fe44d03e57))
+* **services:** capture bougied stderr to state/bougied.log ([#455](https://github.com/cresset-tools/bougie/issues/455)) ([2bef601](https://github.com/cresset-tools/bougie/commit/2bef60130672ffe2b94e153b04c45d9c700d2f91))
+
 ## [0.43.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.42.0...bougie-v0.43.0) (2026-07-04)
 
 
