@@ -237,7 +237,12 @@ fn exec_wired(
 /// The project's tenant row for `service`, matched the way
 /// `projects purge` matches: by canonical path first, raw path second
 /// (the ledger stores whatever spelling the daemon was handed).
-fn find_tenant(paths: &Paths, service: &str, project_root: &Path) -> Result<Option<Tenant>> {
+/// Shared with `credentials.rs`, which reads the same ledgers.
+pub(super) fn find_tenant(
+    paths: &Paths,
+    service: &str,
+    project_root: &Path,
+) -> Result<Option<Tenant>> {
     let rows = tenants::load_all_sync(&paths.service_tenants(service))?;
     let canon = project_root
         .canonicalize()
@@ -247,7 +252,7 @@ fn find_tenant(paths: &Paths, service: &str, project_root: &Path) -> Result<Opti
         .find(|t| t.project == canon || t.project == project_root))
 }
 
-fn no_tenant_err(service: &str) -> eyre::Report {
+pub(super) fn no_tenant_err(service: &str) -> eyre::Report {
     eyre!("no {service} tenant is provisioned for this project — run `bougie up {service}` first")
 }
 

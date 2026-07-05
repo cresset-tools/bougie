@@ -8,6 +8,7 @@ pub mod add;
 pub mod catalog;
 pub mod client;
 pub mod config_mut;
+pub mod credentials;
 pub mod daemon;
 pub mod down;
 pub mod exec;
