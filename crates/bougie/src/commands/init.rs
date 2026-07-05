@@ -297,6 +297,9 @@ fn installer_invocation(root: &Path) -> Result<(PathBuf, std::ffi::OsString)> {
 /// exactly as `bougie tool run` would, then spawned as a child (not
 /// execve'd — we still have toolchain scaffolding and `--start` to do
 /// afterwards) with `laravel new <name> --force` in the project's parent.
+/// A tool-engine `composer/composer` is materialised alongside and
+/// placed first on the child's PATH, since the installer shells out to
+/// the real Composer.
 fn run_installer_starter(package: &str, root: &Path, format: OutputFormat) -> Result<()> {
     use bougie_paths::Paths;
     use bougie_tool::install::InstallContext;
@@ -347,6 +350,22 @@ fn run_installer_starter(package: &str, root: &Path, format: OutputFormat) -> Re
         ));
     }
 
+    // The installer shells out to `composer` (`create-project` for the
+    // skeleton, `require` for Pest/Boost extras) — verbs bougie's native
+    // composer shim deliberately doesn't implement, and a pristine
+    // bougie machine has no Composer at all. Materialize the real
+    // Composer through the same tool engine and put its wrapper first
+    // on the installer's PATH; any ambient `composer` further down is
+    // shadowed, so the scaffold doesn't depend on host state.
+    let composer_plan = run::prepare(&ctx, &request::parse("composer/composer")?, None, &[], None)?;
+    let composer_bin = composer_plan.tool_dir.join("bin");
+    if !composer_bin.join("composer").is_file() {
+        return Err(eyre!(
+            "tool dir {} is missing the `composer` wrapper",
+            composer_plan.tool_dir.display()
+        ));
+    }
+
     let args: Vec<OsString> = vec![
         OsString::from("new"),
         project_name,
@@ -357,14 +376,20 @@ fn run_installer_starter(package: &str, root: &Path, format: OutputFormat) -> Re
     let mut cmd = std::process::Command::new(&prep.php_path);
     cmd.args(&prep.argv);
     // `prep.env` layers PHP_INI_SCAN_DIR (so the installer's PHP has the
-    // baseline extensions it needs) and the `unzip` shim. We deliberately
-    // do NOT inject bougie's native `composer` shim: the installer shells
-    // out to `composer create-project`, which bougie's native composer
-    // doesn't implement — so the installer must use the ambient (real)
-    // `composer` on PATH, the same one `bougie tool install composer/composer`
-    // would provide.
+    // baseline extensions it needs) and the `unzip` shim; the Composer
+    // wrapper dir goes in front of whichever PATH the prep produced.
+    let mut path_seen = false;
     for (k, v) in &prep.env {
-        cmd.env(k, v);
+        if k == "PATH" {
+            cmd.env(k, prepend_path(&composer_bin, v)?);
+            path_seen = true;
+        } else {
+            cmd.env(k, v);
+        }
+    }
+    if !path_seen {
+        let ambient = std::env::var_os("PATH").unwrap_or_default();
+        cmd.env("PATH", prepend_path(&composer_bin, &ambient)?);
     }
     cmd.current_dir(&parent);
     cmd.stdout(installer_stdout(format));
@@ -376,6 +401,13 @@ fn run_installer_starter(package: &str, root: &Path, format: OutputFormat) -> Re
         return Err(eyre!("`{package}` installer exited with {status}"));
     }
     Ok(())
+}
+
+/// `dir` in front of an existing PATH value, via the platform's PATH
+/// joining rules.
+fn prepend_path(dir: &Path, rest: &std::ffi::OsStr) -> Result<std::ffi::OsString> {
+    let parts = std::iter::once(dir.to_path_buf()).chain(std::env::split_paths(rest));
+    std::env::join_paths(parts).map_err(|e| eyre!("building installer PATH: {e}"))
 }
 
 /// Route the installer's stdout. In text mode it inherits ours so the user
