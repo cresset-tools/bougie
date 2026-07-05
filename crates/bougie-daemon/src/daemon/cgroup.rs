@@ -23,12 +23,14 @@ use std::path::{Path, PathBuf};
 /// Chosen once at startup by [`detect`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SupervisionBackend {
-    /// cgroup v2 with `cgroup.kill` (kernel ≥ 5.14). `base` is our
-    /// writable delegated cgroup; per-service leaf cgroups live under it.
-    CgroupKill { base: PathBuf },
+    /// cgroup v2 with `cgroup.kill` (kernel ≥ 5.14). `svc_root` is this
+    /// daemon's home-namespaced service dir under the writable delegated
+    /// cgroup (see [`svc_dir_name`]); per-service leaf cgroups live
+    /// directly under it.
+    CgroupKill { svc_root: PathBuf },
     /// cgroup v2 without `cgroup.kill` (kernel < 5.14): the teardown path
     /// freezes the leaf and SIGKILLs each pid in `cgroup.procs` instead.
-    CgroupFreeze { base: PathBuf },
+    CgroupFreeze { svc_root: PathBuf },
     /// No usable delegated cgroup (non-Linux, cgroup v1/hybrid, no
     /// delegation). Fall back to the process-group + `PR_SET_PDEATHSIG`
     /// floor the babysit already implements.
@@ -45,10 +47,13 @@ impl SupervisionBackend {
         }
     }
 
-    /// The delegated base cgroup, when one was found.
-    pub fn base(&self) -> Option<&Path> {
+    /// This daemon's namespaced service-cgroup root
+    /// (`<delegated base>/bougie.svc-<hash>`), when a cgroup backend is
+    /// active. Every leaf under it belongs to this daemon's home and
+    /// nothing else does — see [`svc_dir_name`].
+    pub fn svc_root(&self) -> Option<&Path> {
         match self {
-            Self::CgroupKill { base } | Self::CgroupFreeze { base } => Some(base),
+            Self::CgroupKill { svc_root } | Self::CgroupFreeze { svc_root } => Some(svc_root),
             Self::ProcessGroup => None,
         }
     }
@@ -56,7 +61,7 @@ impl SupervisionBackend {
     /// Path of the per-service leaf cgroup, when a cgroup backend is
     /// active. `None` under `ProcessGroup`.
     pub fn leaf(&self, service: &str) -> Option<PathBuf> {
-        self.base().map(|b| leaf_under(b, service))
+        self.svc_root().map(|r| leaf_under(r, service))
     }
 
     /// Whether teardown can use the atomic `cgroup.kill` (vs the
@@ -66,22 +71,40 @@ impl SupervisionBackend {
     }
 }
 
-/// Subdirectory under the delegated base that holds the per-service leaf
-/// cgroups bougied manages. Namespaced so startup-reap can recognise its
-/// own leaves and never touch a sibling's cgroups.
-const SVC_DIR: &str = "bougie.svc";
-
-/// Path of a service's leaf cgroup under a delegated `base`. Pure path
-/// join — does not touch the filesystem.
-pub fn leaf_under(base: &Path, service: &str) -> PathBuf {
-    base.join(SVC_DIR).join(service)
+/// Name of the directory, directly under the delegated base cgroup, that
+/// holds one daemon's per-service leaf cgroups:
+/// `bougie.svc-<hash-of-state-dir>`.
+///
+/// The delegated base is per *session* (bougied's own cgroup — typically
+/// a terminal or tmux scope), while the bougied singleton flock is per
+/// *home* (`state/bougied.pid`). N concurrent daemons with distinct
+/// `BOUGIE_HOME`s can therefore share one base, so the leaves must be
+/// namespaced by home identity — otherwise a starting daemon's
+/// [`reap_stale_leaves`] would SIGKILL its siblings' live services, and
+/// two daemons running the same service would share one leaf. cgroupfs
+/// forbids regular marker files inside a cgroup dir, so ownership is
+/// encoded in the directory name itself, using the same
+/// canonicalized-path hash `bougie-paths` keys per-project state with.
+///
+/// Un-hashed `bougie.svc/` dirs left behind by pre-namespacing versions
+/// are deliberately never touched: they may belong to a live old-version
+/// daemon in another home. They sit empty until session teardown.
+pub fn svc_dir_name(state_dir: &Path) -> String {
+    format!("bougie.svc-{}", bougie_paths::project_hash(state_dir))
 }
 
-/// Create the per-service leaf cgroup under `base` and return its path.
-/// Idempotent — an existing leaf (left by a prior run) is reused; the
-/// kernel auto-populates its interface files.
-pub fn create_leaf(base: &Path, service: &str) -> io::Result<PathBuf> {
-    let leaf = leaf_under(base, service);
+/// Path of a service's leaf cgroup under a daemon's namespaced
+/// `svc_root`. Pure path join — does not touch the filesystem.
+pub fn leaf_under(svc_root: &Path, service: &str) -> PathBuf {
+    svc_root.join(service)
+}
+
+/// Create the per-service leaf cgroup (and the namespaced `svc_root`
+/// above it, on first use) and return the leaf's path. Idempotent — an
+/// existing leaf (left by a prior run) is reused; the kernel
+/// auto-populates its interface files.
+pub fn create_leaf(svc_root: &Path, service: &str) -> io::Result<PathBuf> {
+    let leaf = leaf_under(svc_root, service);
     std::fs::create_dir_all(&leaf)?;
     Ok(leaf)
 }
@@ -91,8 +114,8 @@ pub fn create_leaf(base: &Path, service: &str) -> io::Result<PathBuf> {
 /// moves that child — and therefore the service it's about to exec, plus
 /// every descendant — into the leaf, so nothing can fork its way out.
 /// The caller keeps the fd alive across the spawn.
-pub fn open_leaf_procs(base: &Path, service: &str) -> io::Result<(PathBuf, OwnedFd)> {
-    let leaf = create_leaf(base, service)?;
+pub fn open_leaf_procs(svc_root: &Path, service: &str) -> io::Result<(PathBuf, OwnedFd)> {
+    let leaf = create_leaf(svc_root, service)?;
     let file = OpenOptions::new().write(true).open(leaf.join("cgroup.procs"))?;
     Ok((leaf, OwnedFd::from(file)))
 }
@@ -139,13 +162,15 @@ fn remove_leaf(leaf: &Path) {
     let _ = std::fs::remove_dir(leaf);
 }
 
-/// Kill + remove every leftover service leaf under `base/bougie.svc/`.
-/// Called once at daemon startup: the flock singleton guarantees no
-/// other bougied is live, so any leaves present are orphans from a dead
-/// previous instance. Returns the names reaped (for logging).
-pub fn reap_stale_leaves(base: &Path, kill_supported: bool) -> Vec<String> {
-    let svc_dir = base.join(SVC_DIR);
-    let Ok(entries) = std::fs::read_dir(&svc_dir) else {
+/// Kill + remove every leftover service leaf under this daemon's
+/// namespaced `svc_root`. Called once at daemon startup: the flock
+/// singleton is per home, and `svc_root` is namespaced by the same home
+/// (see [`svc_dir_name`]), so any leaves present are orphans from a dead
+/// previous instance of *this* home's daemon — never a live sibling
+/// daemon's, whose leaves sit in their own namespaced dirs. Returns the
+/// names reaped (for logging).
+pub fn reap_stale_leaves(svc_root: &Path, kill_supported: bool) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(svc_root) else {
         return Vec::new();
     };
     let mut reaped = Vec::new();
@@ -169,14 +194,17 @@ const CGROUP2_SUPER_MAGIC: u64 = 0x6367_7270;
 #[cfg(target_os = "linux")]
 const CGROUP_ROOT: &str = "/sys/fs/cgroup";
 
-/// Probe the host for a usable rootless cgroup-v2 backend.
+/// Probe the host for a usable rootless cgroup-v2 backend. `state_dir`
+/// is the daemon's state root (`$BOUGIE_HOME/state`) — the identity that
+/// namespaces this daemon's service cgroups (see [`svc_dir_name`]).
 ///
 /// Linux-only; every other target returns
 /// [`SupervisionBackend::ProcessGroup`] (macOS/Windows have no cgroups).
 #[must_use]
-pub fn detect() -> SupervisionBackend {
+pub fn detect(state_dir: &Path) -> SupervisionBackend {
     #[cfg(not(target_os = "linux"))]
     {
+        let _ = state_dir;
         SupervisionBackend::ProcessGroup
     }
     #[cfg(target_os = "linux")]
@@ -187,7 +215,7 @@ pub fn detect() -> SupervisionBackend {
         let Some(base) = self_cgroup_base() else {
             return SupervisionBackend::ProcessGroup;
         };
-        probe_at(&base, true)
+        probe_at(&base, true, &svc_dir_name(state_dir))
     }
 }
 
@@ -242,18 +270,23 @@ fn parse_self_cgroup(content: &str) -> Option<&str> {
 ///    on kernels ≥ 5.14 and `cgroup.freeze` since 5.2. `base` is a
 ///    non-root (delegated) cgroup, so its interface files report the
 ///    kernel's capability.
+///
+/// Both checks run against `base` (a live cgroup with interface files);
+/// the returned backend carries `base/<svc_dir>` — the namespaced
+/// service root, which need not exist yet ([`create_leaf`] makes it).
 //
 // Compiled everywhere (unit-tested with synthetic dirs on all targets),
 // but only *called* from `detect`'s Linux branch.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-fn probe_at(base: &Path, is_cgroup2: bool) -> SupervisionBackend {
+fn probe_at(base: &Path, is_cgroup2: bool, svc_dir: &str) -> SupervisionBackend {
     if !is_cgroup2 || !can_create_child(base) {
         return SupervisionBackend::ProcessGroup;
     }
+    let svc_root = base.join(svc_dir);
     if base.join("cgroup.kill").exists() {
-        SupervisionBackend::CgroupKill { base: base.to_path_buf() }
+        SupervisionBackend::CgroupKill { svc_root }
     } else if base.join("cgroup.freeze").exists() {
-        SupervisionBackend::CgroupFreeze { base: base.to_path_buf() }
+        SupervisionBackend::CgroupFreeze { svc_root }
     } else {
         SupervisionBackend::ProcessGroup
     }
@@ -314,13 +347,17 @@ mod tests {
         assert_eq!(parse_self_cgroup("3:cpu:/foo\n1:name=systemd:/bar\n"), None);
     }
 
+    /// Fixed namespace dir name for probe tests where the identity
+    /// doesn't matter.
+    const NS: &str = "bougie.svc-0123456789ab";
+
     #[test]
     fn not_cgroup2_is_process_group() {
         let td = TempDir::new().unwrap();
         fs::write(td.path().join("cgroup.kill"), "").unwrap();
         // Even with the kill file present, a non-cgroup2 mount is a
         // hard no.
-        assert_eq!(probe_at(td.path(), false), SupervisionBackend::ProcessGroup);
+        assert_eq!(probe_at(td.path(), false, NS), SupervisionBackend::ProcessGroup);
     }
 
     #[test]
@@ -328,8 +365,8 @@ mod tests {
         let td = TempDir::new().unwrap();
         fs::write(td.path().join("cgroup.kill"), "").unwrap();
         assert_eq!(
-            probe_at(td.path(), true),
-            SupervisionBackend::CgroupKill { base: td.path().to_path_buf() }
+            probe_at(td.path(), true, NS),
+            SupervisionBackend::CgroupKill { svc_root: td.path().join(NS) }
         );
     }
 
@@ -338,8 +375,8 @@ mod tests {
         let td = TempDir::new().unwrap();
         fs::write(td.path().join("cgroup.freeze"), "0").unwrap();
         assert_eq!(
-            probe_at(td.path(), true),
-            SupervisionBackend::CgroupFreeze { base: td.path().to_path_buf() }
+            probe_at(td.path(), true, NS),
+            SupervisionBackend::CgroupFreeze { svc_root: td.path().join(NS) }
         );
     }
 
@@ -347,7 +384,7 @@ mod tests {
     fn cgroup2_without_any_kill_primitive_is_process_group() {
         let td = TempDir::new().unwrap();
         // Writable + cgroup2 but neither interface file present.
-        assert_eq!(probe_at(td.path(), true), SupervisionBackend::ProcessGroup);
+        assert_eq!(probe_at(td.path(), true, NS), SupervisionBackend::ProcessGroup);
     }
 
     #[test]
@@ -364,7 +401,7 @@ mod tests {
         fs::write(base.join("cgroup.kill"), "").unwrap();
         fs::set_permissions(&base, fs::Permissions::from_mode(0o500)).unwrap();
 
-        let got = probe_at(&base, true);
+        let got = probe_at(&base, true, NS);
 
         // Restore write so TempDir cleanup can remove it.
         let _ = fs::set_permissions(&base, fs::Permissions::from_mode(0o700));
@@ -372,13 +409,13 @@ mod tests {
     }
 
     #[test]
-    fn backend_label_and_base_accessors() {
-        let p = PathBuf::from("/sys/fs/cgroup/x");
-        let k = SupervisionBackend::CgroupKill { base: p.clone() };
+    fn backend_label_and_svc_root_accessors() {
+        let p = PathBuf::from("/sys/fs/cgroup/x/bougie.svc-0123456789ab");
+        let k = SupervisionBackend::CgroupKill { svc_root: p.clone() };
         assert_eq!(k.label(), "cgroup-kill");
-        assert_eq!(k.base(), Some(p.as_path()));
+        assert_eq!(k.svc_root(), Some(p.as_path()));
         assert_eq!(SupervisionBackend::ProcessGroup.label(), "process-group");
-        assert_eq!(SupervisionBackend::ProcessGroup.base(), None);
+        assert_eq!(SupervisionBackend::ProcessGroup.svc_root(), None);
     }
 
     /// `detect()` must never panic and must return a real variant on any
@@ -386,27 +423,39 @@ mod tests {
     /// environment-dependent — only that it runs cleanly.
     #[test]
     fn detect_runs_without_panicking() {
-        let _ = detect();
+        let td = TempDir::new().unwrap();
+        let _ = detect(td.path());
     }
 
     #[test]
-    fn create_leaf_is_idempotent_and_under_svc_dir() {
+    fn svc_dir_name_is_stable_and_distinct_per_home() {
+        let a = svc_dir_name(Path::new("/home/a/.local/share/bougie/state"));
+        let b = svc_dir_name(Path::new("/home/b/.local/share/bougie/state"));
+        assert!(a.starts_with("bougie.svc-"), "unexpected shape: {a}");
+        // Same home → same namespace; different home → different one.
+        assert_eq!(a, svc_dir_name(Path::new("/home/a/.local/share/bougie/state")));
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn create_leaf_is_idempotent_and_under_svc_root() {
         let td = TempDir::new().unwrap();
-        let leaf = create_leaf(td.path(), "redis").unwrap();
+        let root = td.path().join(svc_dir_name(Path::new("/h/state")));
+        let leaf = create_leaf(&root, "redis").unwrap();
         assert!(leaf.is_dir());
-        assert_eq!(leaf, td.path().join("bougie.svc").join("redis"));
+        assert_eq!(leaf, root.join("redis"));
         // Second call reuses the existing leaf, no error.
-        assert_eq!(create_leaf(td.path(), "redis").unwrap(), leaf);
+        assert_eq!(create_leaf(&root, "redis").unwrap(), leaf);
     }
 
     #[test]
     fn leaf_and_kill_supported_track_the_variant() {
-        let p = PathBuf::from("/sys/fs/cgroup/x");
-        let k = SupervisionBackend::CgroupKill { base: p.clone() };
-        assert_eq!(k.leaf("redis"), Some(p.join("bougie.svc").join("redis")));
+        let p = PathBuf::from("/sys/fs/cgroup/x/bougie.svc-0123456789ab");
+        let k = SupervisionBackend::CgroupKill { svc_root: p.clone() };
+        assert_eq!(k.leaf("redis"), Some(p.join("redis")));
         assert!(k.kill_supported());
 
-        let f = SupervisionBackend::CgroupFreeze { base: p };
+        let f = SupervisionBackend::CgroupFreeze { svc_root: p };
         assert!(!f.kill_supported());
 
         assert_eq!(SupervisionBackend::ProcessGroup.leaf("redis"), None);
@@ -414,9 +463,38 @@ mod tests {
     }
 
     #[test]
-    fn reap_stale_leaves_without_svc_dir_is_empty() {
+    fn reap_stale_leaves_without_svc_root_is_empty() {
         let td = TempDir::new().unwrap();
-        assert!(reap_stale_leaves(td.path(), true).is_empty());
+        assert!(reap_stale_leaves(&td.path().join(NS), true).is_empty());
+    }
+
+    /// The #456 regression scenario: two daemons with distinct homes
+    /// share one delegated base cgroup. Reaping one home's namespace
+    /// must never see — let alone kill — the other home's leaves.
+    /// (Synthetic dirs: leaf *removal* mechanics need real cgroupfs, so
+    /// this asserts scoping, not removal.)
+    #[test]
+    fn reap_stale_leaves_is_scoped_to_its_own_namespace() {
+        let base = TempDir::new().unwrap();
+        let root_a = base.path().join(svc_dir_name(Path::new("/home/a/state")));
+        let root_b = base.path().join(svc_dir_name(Path::new("/home/b/state")));
+        create_leaf(&root_a, "redis").unwrap();
+        create_leaf(&root_b, "redis").unwrap();
+        create_leaf(&root_b, "mariadb").unwrap();
+
+        let reaped = reap_stale_leaves(&root_a, true);
+
+        assert_eq!(reaped, vec!["redis".to_string()]);
+        // B's leaves are untouched: still present, and no kill was even
+        // attempted (on a synthetic dir a kill attempt would have left a
+        // regular `cgroup.kill` file behind).
+        for leaf in ["redis", "mariadb"] {
+            assert!(root_b.join(leaf).is_dir(), "foreign leaf {leaf} was removed");
+            assert!(
+                !root_b.join(leaf).join("cgroup.kill").exists(),
+                "foreign leaf {leaf} was killed"
+            );
+        }
     }
 
     /// Real-kernel proof that `cgroup.kill` reaps a process that escaped
@@ -429,8 +507,9 @@ mod tests {
         use std::os::unix::process::CommandExt;
         use std::process::{Command, Stdio};
 
-        let backend = detect();
-        let SupervisionBackend::CgroupKill { base } = &backend else {
+        let state_dir = TempDir::new().unwrap();
+        let backend = detect(state_dir.path());
+        let SupervisionBackend::CgroupKill { svc_root } = &backend else {
             eprintln!(
                 "SKIP cgroup_kill_reaps_a_setsid_escapee: backend is {} \
                  (need a delegated cgroup-v2 subtree with cgroup.kill)",
@@ -440,7 +519,7 @@ mod tests {
         };
 
         let svc = format!("itest-escapee-{}", std::process::id());
-        let leaf = create_leaf(base, &svc).expect("create leaf");
+        let leaf = create_leaf(svc_root, &svc).expect("create leaf");
         let procs = leaf.join("cgroup.procs");
 
         // Spawn `sleep` that `setsid()`s in pre_exec → its own session
@@ -462,6 +541,7 @@ mod tests {
             Ok(c) => c,
             Err(e) => {
                 let _ = std::fs::remove_dir(&leaf);
+                let _ = std::fs::remove_dir(svc_root);
                 eprintln!("SKIP cgroup_kill_reaps_a_setsid_escapee: spawn sleep: {e}");
                 return;
             }
@@ -481,6 +561,7 @@ mod tests {
             kill_child();
             let _ = child.wait();
             let _ = std::fs::remove_dir(&leaf);
+            let _ = std::fs::remove_dir(svc_root);
             panic!("moving escapee into leaf cgroup failed: {e}");
         }
 
@@ -490,6 +571,7 @@ mod tests {
             kill_child();
             let _ = child.wait();
             let _ = std::fs::remove_dir(&leaf);
+            let _ = std::fs::remove_dir(svc_root);
             panic!("escapee pid {pid} not in leaf cgroup.procs: {members:?}");
         }
 
@@ -500,6 +582,8 @@ mod tests {
         let removed = !leaf.exists();
         kill_child(); // belt-and-suspenders if the assert is about to fail
         let _ = child.wait();
+        // Drop the (now-empty) namespaced svc root the test created.
+        let _ = std::fs::remove_dir(svc_root);
         assert!(removed, "leaf {} not removed — escapee survived cgroup.kill", leaf.display());
     }
 }

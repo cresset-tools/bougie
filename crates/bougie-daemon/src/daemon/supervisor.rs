@@ -310,10 +310,10 @@ impl Supervisor {
         for entry in catalog::CATALOG {
             services.insert(entry.name, ManagedService::new(entry.name));
         }
-        let backend = super::cgroup::detect();
+        let backend = super::cgroup::detect(&paths.state());
         tracing::info!(
             backend = backend.label(),
-            base = backend.base().map(|p| p.display().to_string()),
+            svc_root = backend.svc_root().map(|p| p.display().to_string()),
             "bougied: supervision backend"
         );
         Self { services, paths, backend }
@@ -327,21 +327,35 @@ impl Supervisor {
 
     /// Kill + remove leftover service leaf cgroups from a previous
     /// bougied that died without cleaning up. Called once at startup —
-    /// the flock singleton guarantees no other live instance, so any
-    /// leaves present are orphans safe to reap. No-op under the
-    /// process-group backend. Runs on the blocking pool.
+    /// the flock singleton guarantees no other live instance *for this
+    /// home*, and the svc root is namespaced by the same home identity
+    /// (see `cgroup::svc_dir_name`), so any leaves present are orphans
+    /// safe to reap; daemons for other `BOUGIE_HOME`s sharing this
+    /// session's delegated cgroup keep their own namespaces. No-op under
+    /// the process-group backend. Runs on the blocking pool.
     pub async fn reap_stale_leaves(&self) {
-        let Some(base) = self.backend.base().map(std::path::Path::to_path_buf) else {
+        let Some(root) = self.backend.svc_root().map(std::path::Path::to_path_buf) else {
             return;
         };
         let kill_supported = self.backend.kill_supported();
         let reaped = tokio::task::spawn_blocking(move || {
-            super::cgroup::reap_stale_leaves(&base, kill_supported)
+            super::cgroup::reap_stale_leaves(&root, kill_supported)
         })
         .await
         .unwrap_or_default();
         if !reaped.is_empty() {
             tracing::warn!(?reaped, "reaped leftover service cgroups from a dead bougied");
+        }
+    }
+
+    /// Best-effort removal of this daemon's namespaced service-cgroup
+    /// dir, for clean shutdown after the drain. A single `rmdir`: the
+    /// kernel refuses to remove a cgroup that still has members or
+    /// children, so this can never take a live leaf with it. No-op under
+    /// the process-group backend.
+    pub fn remove_svc_root(&self) {
+        if let Some(root) = self.backend.svc_root() {
+            let _ = std::fs::remove_dir(root);
         }
     }
 
@@ -506,8 +520,8 @@ impl Supervisor {
         // failure logs and falls back to process-group-only for this
         // service. `cgroup_fd_owned` is held open until after spawn so
         // the fd stays valid across the fork.
-        let cgroup_fd_owned: Option<std::os::fd::OwnedFd> = match self.backend.base() {
-            Some(base) => match super::cgroup::open_leaf_procs(base, entry.name) {
+        let cgroup_fd_owned: Option<std::os::fd::OwnedFd> = match self.backend.svc_root() {
+            Some(root) => match super::cgroup::open_leaf_procs(root, entry.name) {
                 Ok((_leaf, fd)) => Some(fd),
                 Err(e) => {
                     tracing::warn!(
@@ -859,9 +873,9 @@ impl Supervisor {
         // Pass 1: reap exited children, transition Failed, schedule
         // the next restart deadline with exponential backoff.
         let now = Instant::now();
-        // Detach the cgroup base from `self` so the loop below can
+        // Detach the cgroup svc root from `self` so the loop below can
         // mutably borrow `self.services` while we still build leaf paths.
-        let cgroup_base = self.backend.base().map(std::path::Path::to_path_buf);
+        let cgroup_root = self.backend.svc_root().map(std::path::Path::to_path_buf);
         let cgroup_kill = self.backend.kill_supported();
         let mut leaves_to_reap: Vec<std::path::PathBuf> = Vec::new();
         for svc in self.services.values_mut() {
@@ -881,8 +895,8 @@ impl Supervisor {
                     // cgroup backstop for the crash path: sweep the leaf
                     // (escapees the killpg reap above can't reach) once
                     // we're done with the `self.services` borrow.
-                    if let Some(base) = &cgroup_base {
-                        leaves_to_reap.push(super::cgroup::leaf_under(base, svc.name));
+                    if let Some(root) = &cgroup_root {
+                        leaves_to_reap.push(super::cgroup::leaf_under(root, svc.name));
                     }
                     let prev_run = svc.started_at.map(|t| now - t);
                     // Reset rule: a Running window of at least
