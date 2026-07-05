@@ -137,6 +137,94 @@ mod tests {
         assert_eq!(detect_from_text(Some("{}")), "generic");
     }
 
+    /// Execute a builtin task's `run` script the way the runner does
+    /// (`/bin/sh -e -c`, cwd = project root) with a fake `bougie` on
+    /// PATH that records every invocation's argv, plus the tenant env
+    /// the daemon would inject. Returns the recorded argv log.
+    fn run_script(script: &str, root: &std::path::Path, rabbitmq_env: bool) -> String {
+        use std::os::unix::fs::PermissionsExt;
+        let bindir = root.join(".stub-bin");
+        std::fs::create_dir_all(&bindir).unwrap();
+        let log = root.join("argv.log");
+        let _ = std::fs::remove_file(&log);
+        let fake = bindir.join("bougie");
+        // `cat` drains stdin so the install task's heredoc-fed
+        // `bougie run -- php <<'PHP'` step can't block or SIGPIPE.
+        std::fs::write(
+            &fake,
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$BOUGIE_STUB_LOG\"\ncat > /dev/null\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let path = format!(
+            "{}:{}",
+            bindir.display(),
+            std::env::var("PATH").unwrap_or_default()
+        );
+        let mut cmd = std::process::Command::new("/bin/sh");
+        cmd.arg("-e")
+            .arg("-c")
+            .arg(script)
+            .current_dir(root)
+            .env("PATH", path)
+            .env("BOUGIE_STUB_LOG", &log);
+        if rabbitmq_env {
+            cmd.env("BOUGIE_SERVICE_RABBITMQ_HOST", "127.0.0.1")
+                .env("BOUGIE_SERVICE_RABBITMQ_PORT", "5672")
+                .env("BOUGIE_SERVICE_RABBITMQ_USER", "u")
+                .env("BOUGIE_SERVICE_RABBITMQ_PASSWORD", "p")
+                .env("BOUGIE_SERVICE_RABBITMQ_VHOST", "/");
+        }
+        let status = cmd.status().unwrap();
+        assert!(status.success(), "script exited {status:?}");
+        std::fs::read_to_string(&log).unwrap_or_default()
+    }
+
+    #[test]
+    fn magento_amqp_wiring_follows_module_presence() {
+        // Additive / modular Mage-OS builds (modulargento) can omit the
+        // Amqp module, and `setup:install` only accepts `--amqp-*` for
+        // module components on disk — so the recipe must key both the
+        // rabbitmq service and the flags off the module directory.
+        let magento = load_builtin("magento").unwrap();
+        let install = magento.tasks["install"].run.clone().unwrap();
+        let services = magento.tasks["services"].run.clone().unwrap();
+
+        // Package layout with the module → flags wired, rabbitmq up'd.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("vendor/mage-os/module-amqp")).unwrap();
+        let log = run_script(&install, dir.path(), true);
+        assert!(log.contains("--amqp-host=127.0.0.1"), "log:\n{log}");
+        assert!(log.contains("--amqp-virtualhost=/"), "log:\n{log}");
+        let log = run_script(&services, dir.path(), true);
+        assert!(log.contains("service add rabbitmq"), "log:\n{log}");
+        assert!(log.contains("service up --detach rabbitmq"), "log:\n{log}");
+
+        // Module absent (the framework-amqp *library* alone doesn't
+        // register the CLI options) → no flags, no broker.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("vendor/mage-os/framework-amqp")).unwrap();
+        let log = run_script(&install, dir.path(), true);
+        assert!(!log.contains("--amqp"), "log:\n{log}");
+        assert!(log.contains("setup:install"), "install must still run:\n{log}");
+        let log = run_script(&services, dir.path(), true);
+        assert!(!log.contains("rabbitmq"), "log:\n{log}");
+        assert!(log.contains("service add mariadb"), "log:\n{log}");
+
+        // magento/magento2 monorepo layout (modules live in-tree).
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("app/code/Magento/Amqp")).unwrap();
+        let log = run_script(&install, dir.path(), true);
+        assert!(log.contains("--amqp-host=127.0.0.1"), "log:\n{log}");
+
+        // Module present but no rabbitmq tenant env (service skipped or
+        // daemon down) → flags withheld rather than passed empty.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("vendor/magento/module-amqp")).unwrap();
+        let log = run_script(&install, dir.path(), false);
+        assert!(!log.contains("--amqp"), "log:\n{log}");
+    }
+
     #[test]
     fn local_overrides_builtin_task() {
         let builtin = parse(

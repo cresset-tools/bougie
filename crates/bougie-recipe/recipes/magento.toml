@@ -15,9 +15,31 @@
 # harmless — Magento isn't installed yet, but nothing makes HTTP
 # requests until [task.start] anyway, and `bougie service up server` is
 # idempotent so re-running it there is a no-op.
+#
+# rabbitmq is conditional on the Amqp *module* being on disk. Magento's
+# ConfigOptionsListCollector registers `setup:install`'s `--amqp-*`
+# options per module component found on disk, and additive / modular
+# Mage-OS builds (modulargento) can omit `<vendor>/module-amqp`
+# entirely (the `framework-amqp` library may remain — only the module
+# wires the CLI options and consumers). On such a tree the flags would
+# be rejected as unknown options, and a broker nothing can talk to is
+# pure overhead, so both this task and the `--amqp-*` wiring in
+# [task.install] key off the same directory probe. The `vendor` dep
+# guarantees the tree is synced before the probe runs;
+# `app/code/Magento/Amqp` covers the magento/magento2 monorepo, whose
+# core modules live in-tree rather than under `vendor/`.
+deps = ["vendor"]
 run = """
-bougie service add mariadb redis opensearch rabbitmq server
-bougie service up --detach mariadb redis opensearch rabbitmq server
+bougie service add mariadb redis opensearch server
+bougie service up --detach mariadb redis opensearch server
+amqp=no
+for d in vendor/*/module-amqp app/code/Magento/Amqp; do
+  if [ -d "$d" ]; then amqp=yes; fi
+done
+if [ "$amqp" = yes ]; then
+  bougie service add rabbitmq
+  bougie service up --detach rabbitmq
+fi
 """
 
 [task.vendor]
@@ -47,8 +69,28 @@ check = "test -f app/etc/env.php"
 # backend class either. So: install with the default file cache, then
 # rewrite env.php's cache to the classic Credis backend
 # (Magento\Framework\Cache\Backend\Redis), which speaks the unix socket.
-# rabbitmq below is TCP, so the amqp wiring stays inline.
+# rabbitmq below is TCP, so the amqp wiring stays inline — but only when
+# the Amqp module is on disk (same probe as [task.services]; without the
+# module, `setup:install` rejects `--amqp-*` as unknown options) AND the
+# rabbitmq tenant env is actually populated (the service can be absent
+# even with the module present, e.g. a first `bougie make install`
+# without the services task). The flags are staged into the positional
+# params (`set --`) — POSIX sh's only array — so an empty set expands
+# to zero words in `"$@"`.
 run = """
+amqp=no
+for d in vendor/*/module-amqp app/code/Magento/Amqp; do
+  if [ -d "$d" ]; then amqp=yes; fi
+done
+set --
+if [ "$amqp" = yes ] && [ -n "$BOUGIE_SERVICE_RABBITMQ_HOST" ]; then
+  set -- \
+    --amqp-host="$BOUGIE_SERVICE_RABBITMQ_HOST" \
+    --amqp-port="$BOUGIE_SERVICE_RABBITMQ_PORT" \
+    --amqp-user="$BOUGIE_SERVICE_RABBITMQ_USER" \
+    --amqp-password="$BOUGIE_SERVICE_RABBITMQ_PASSWORD" \
+    --amqp-virtualhost="$BOUGIE_SERVICE_RABBITMQ_VHOST"
+fi
 bougie run -- php -d memory_limit=4G bin/magento setup:install \
   --base-url="http://${BOUGIE_SERVICE_SERVER_HOSTNAME}:${BOUGIE_SERVICE_SERVER_PORT}/" \
   --db-host="$BOUGIE_SERVICE_MARIADB_SOCKET" \
@@ -58,11 +100,7 @@ bougie run -- php -d memory_limit=4G bin/magento setup:install \
   --search-engine=opensearch \
   --opensearch-host="$BOUGIE_SERVICE_OPENSEARCH_HOST" \
   --opensearch-port="$BOUGIE_SERVICE_OPENSEARCH_PORT" \
-  --amqp-host="$BOUGIE_SERVICE_RABBITMQ_HOST" \
-  --amqp-port="$BOUGIE_SERVICE_RABBITMQ_PORT" \
-  --amqp-user="$BOUGIE_SERVICE_RABBITMQ_USER" \
-  --amqp-password="$BOUGIE_SERVICE_RABBITMQ_PASSWORD" \
-  --amqp-virtualhost="$BOUGIE_SERVICE_RABBITMQ_VHOST" \
+  "$@" \
   --admin-firstname=Admin --admin-lastname=Admin \
   --admin-email=admin@example.com --admin-user=admin \
   --admin-password=admin123 --language=en_US --currency=USD \
