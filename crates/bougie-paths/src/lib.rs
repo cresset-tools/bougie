@@ -328,6 +328,12 @@ impl Paths {
     pub fn bougied_pid(&self) -> PathBuf {
         self.state().join("bougied.pid")
     }
+    /// The daemon's own diagnostic log. The CLI points bougied's
+    /// stderr here at spawn time (rotating a grown file to `.1`), so
+    /// tracing output and panics survive the null-stdio detach.
+    pub fn bougied_log(&self) -> PathBuf {
+        self.state().join("bougied.log")
+    }
     /// Root for all per-service state (`$BOUGIE_HOME/state/services/`).
     pub fn services_dir(&self) -> PathBuf {
         self.state().join("services")

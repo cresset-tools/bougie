@@ -37,7 +37,8 @@ impl TestEnv {
         let mut cmd = Command::cargo_bin("bougie").expect("bougie binary");
         cmd.env("BOUGIE_HOME", self.home.path())
             .env("BOUGIE_CACHE", self.cache.path())
-            .env_remove("RUST_LOG");
+            .env_remove("RUST_LOG")
+            .env_remove("BOUGIE_LOG");
         cmd
     }
 
