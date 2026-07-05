@@ -311,21 +311,43 @@ fn spawn_daemon() -> Result<()> {
     let exe = std::env::current_exe().wrap_err("locating current bougie binary for auto-spawn")?;
     eprintln!("(starting bougied)");
     // arg0("bougied") triggers the shim role in `src/shim.rs`.
-    // Null stdio so the daemon doesn't write to the CLI's tty. We
+    // Null stdin/stdout so the daemon doesn't write to the CLI's tty;
+    // stderr goes to `state/bougied.log` so the daemon's tracing (the
+    // bougied role defaults its filter to info — see `init_tracing`)
+    // and panics survive the detach instead of vanishing. We
     // intentionally don't wait on the child — when the CLI exits,
     // init reparents and reaps. The daemon `setsid`s itself at startup
     // (see bougie_daemon::daemon::run) so it lands in its own session,
     // detached from this terminal's foreground group — a Ctrl-C here
     // (e.g. detaching from a log stream) then can't take the daemon or
     // its services down with it.
+    let stderr = daemon_log_stdio().unwrap_or_else(std::process::Stdio::null);
     let _child = std::process::Command::new(&exe)
         .arg0("bougied")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
+        .stderr(stderr)
         .spawn()
         .wrap_err_with(|| format!("spawning bougied via {}", exe.display()))?;
     Ok(())
+}
+
+/// Matches the per-service log cap in `bougie_daemon::daemon::logs`.
+const DAEMON_LOG_ROTATE_BYTES: u64 = 10 * 1024 * 1024;
+
+/// Open `state/bougied.log` (append) for the daemon child's stderr,
+/// rotating a grown log to `.1` first. Rotation only happens here —
+/// the daemon appends for its whole lifetime, so the cap is enforced
+/// per daemon generation, not continuously. `None` degrades the spawn
+/// to null stderr: losing the log must never block the daemon.
+fn daemon_log_stdio() -> Option<std::process::Stdio> {
+    let path = Paths::from_env().ok()?.bougied_log();
+    if std::fs::metadata(&path).is_ok_and(|m| m.len() > DAEMON_LOG_ROTATE_BYTES) {
+        let _ = std::fs::rename(&path, path.with_extension("log.1"));
+    }
+    std::fs::create_dir_all(path.parent()?).ok()?;
+    let file = std::fs::OpenOptions::new().create(true).append(true).open(&path).ok()?;
+    Some(file.into())
 }
 
 fn wait_for_socket(sock: &Path, timeout: Duration) -> Result<()> {

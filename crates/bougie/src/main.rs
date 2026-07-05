@@ -9,9 +9,18 @@ use std::process::ExitCode;
 mod debug_dump;
 
 fn main() -> ExitCode {
-    init_tracing();
     let argv0 = std::env::args_os().next().unwrap_or_default();
-    if let Some(role) = shim::role_from_argv0(&argv0) {
+    let role = shim::role_from_argv0(&argv0);
+    // The bougied role gets a useful default filter: its stderr is
+    // captured to `state/bougied.log` by the CLI that spawns it (see
+    // `spawn_daemon`), and an `off` default would leave that file
+    // empty exactly when a headless environment needs it.
+    #[cfg(unix)]
+    let daemon_defaults = matches!(role, Some(shim::Role::Bougied));
+    #[cfg(not(unix))]
+    let daemon_defaults = false;
+    init_tracing(daemon_defaults);
+    if let Some(role) = role {
         return match shim::exec(role) {
             Ok(code) => code,
             Err(err) => {
@@ -75,13 +84,16 @@ fn main() -> ExitCode {
 /// Reads `BOUGIE_LOG` (preferred — namespaced so it can't collide with
 /// a dependency's `RUST_LOG` use), then falls back to `RUST_LOG`. When
 /// neither is set the subscriber is still installed but its filter
-/// rejects every record, so call sites stay zero-overhead.
+/// rejects every record, so call sites stay zero-overhead — except
+/// under `daemon_defaults`, where the unset case becomes an info-level
+/// filter over the supervision crates so `state/bougied.log` records
+/// daemon diagnostics without any env setup.
 ///
 /// Output goes to stderr with timestamps and target names so the user
 /// can correlate spans across crates:
 ///   `BOUGIE_LOG=bougie_composer_resolver=debug bougie composer update`
 /// also shows per-package fetch timings via `tracing::debug_span!`.
-fn init_tracing() {
+fn init_tracing(daemon_defaults: bool) {
     use tracing_subscriber::layer::SubscriberExt as _;
     use tracing_subscriber::util::SubscriberInitExt as _;
     use tracing_subscriber::{EnvFilter, Layer as _};
@@ -90,7 +102,16 @@ fn init_tracing() {
         .or_else(|_| std::env::var("RUST_LOG"))
         .ok()
         .and_then(|s| EnvFilter::try_new(s).ok())
-        .unwrap_or_else(|| EnvFilter::new("off"));
+        .unwrap_or_else(|| {
+            if daemon_defaults {
+                EnvFilter::new(
+                    "bougie=info,bougie_daemon=info,bougie_babysit=info,\
+                     bougie_fetch=info,sandbox_run=info",
+                )
+            } else {
+                EnvFilter::new("off")
+            }
+        });
 
     // The fmt layer keeps its env filter (inert unless BOUGIE_LOG/RUST_LOG
     // is set). On Unix we stack the activity layer alongside it — it runs

@@ -24,6 +24,9 @@ pub struct StatusResult {
     /// `$BOUGIE_HOME/state/bougied.pid` (which the daemon stamps at
     /// startup; see `bougie_daemon::daemon::run`).
     pub pid: Option<u32>,
+    /// The daemon's own diagnostic log (its captured stderr; see
+    /// `client::spawn_daemon`).
+    pub log: String,
     pub services: Vec<ServiceRow>,
 }
 
@@ -46,6 +49,7 @@ impl Render for StatusResult {
             Some(pid) => writeln!(w, "bougied pid:    {pid}")?,
             None => writeln!(w, "bougied pid:    (not running)")?,
         }
+        writeln!(w, "bougied log:    {}", self.log)?;
         if self.services.is_empty() {
             writeln!(w, "managed services: 0")?;
         } else {
@@ -66,6 +70,7 @@ pub fn status(format: OutputFormat) -> Result<ExitCode> {
         schema_version: 1,
         socket: paths.bougied_sock().display().to_string(),
         pid,
+        log: paths.bougied_log().display().to_string(),
         services: reply.services,
     };
     emit(format, &result)?;

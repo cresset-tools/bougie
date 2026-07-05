@@ -234,3 +234,40 @@ fn second_bougied_fails_to_acquire_singleton_lock() {
         .success();
     wait_for_no_socket(&env);
 }
+
+#[test]
+fn daemon_stderr_is_captured_to_state_log() {
+    let env = TestEnv::new();
+
+    // Auto-spawn via status; the JSON points at the daemon log.
+    let out = env
+        .bougie()
+        .args(["service", "daemon", "status", "--format", "json-v1"])
+        .timeout(STEP_TIMEOUT)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let v: serde_json::Value = serde_json::from_slice(&out).expect("valid JSON");
+    let log_path = env.home_path().join("state").join("bougied.log");
+    assert_eq!(v["log"], log_path.to_str().unwrap());
+
+    // The spawn wired bougied's stderr to the log, and the bougied role
+    // defaults its tracing filter to info (BOUGIE_LOG unset here), so
+    // the startup line was written before the status round-trip could
+    // complete.
+    let contents = std::fs::read_to_string(&log_path).expect("bougied.log exists");
+    assert!(
+        contents.contains("bougied: listening"),
+        "expected startup line in {}: {contents:?}",
+        log_path.display()
+    );
+
+    env.bougie()
+        .args(["service", "daemon", "stop"])
+        .timeout(STEP_TIMEOUT)
+        .assert()
+        .success();
+    wait_for_no_socket(&env);
+}
