@@ -1,9 +1,14 @@
 # Builtin Laravel recipe.
 
 [task.services]
+# `server` is declared here alongside the backing services so the
+# recipe is self-contained — `bougie service up server` errors on an
+# undeclared name per SERVICES.md §3.2, and an installer-scaffolded
+# project (`bougie new --starter laravel`) declares nothing. Same
+# pattern as the Magento recipe.
 run = """
-bougie service add mariadb redis
-bougie service up --detach mariadb redis
+bougie service add mariadb redis server
+bougie service up --detach mariadb redis server
 """
 
 [task.vendor]
