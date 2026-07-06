@@ -716,6 +716,10 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
             commands::service::status::run(format, name)
         }
         #[cfg(unix)]
+        Command::Service(ServiceCommand::Credentials { name, env }) => {
+            commands::service::credentials::run(format, name, env)
+        }
+        #[cfg(unix)]
         Command::Service(ServiceCommand::Logs { name, follow, lines }) => {
             commands::service::logs::run(format, name, follow, lines)
         }

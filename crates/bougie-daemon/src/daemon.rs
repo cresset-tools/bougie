@@ -23,6 +23,7 @@ mod state;
 pub mod store_fetch;
 pub mod store_layout;
 pub mod supervisor;
+pub mod tenant_env;
 pub mod tenants;
 
 /// Saturating conversion of a `Duration` to `u64` of milliseconds.

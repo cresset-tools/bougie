@@ -623,6 +623,21 @@ pub enum ServiceCommand {
         /// Limit to a single service
         name: Option<String>,
     },
+    /// Print this project's tenant connection info — including
+    /// passwords — for wiring up external clients (GUI database
+    /// tools, API explorers, …). Reads the on-disk tenant ledgers;
+    /// no daemon required. Inside `bougie run` the same values are
+    /// already injected as `BOUGIE_SERVICE_*` env vars
+    Credentials {
+        /// Limit to a single service (works even after `bougie
+        /// service remove`, as long as the tenant is provisioned)
+        name: Option<String>,
+        /// Emit `KEY='value'` lines using the exact `BOUGIE_SERVICE_*`
+        /// names `bougie run` injects, for `eval` in a plain shell.
+        /// Takes precedence over `--format`
+        #[arg(long)]
+        env: bool,
+    },
     /// Tail (and optionally follow) service logs. With no name, shows
     /// the combined ("multilog") stream of every service declared in the
     /// project, each line prefixed with its (colorized) service name —

@@ -22,7 +22,6 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::fmt::Write as _;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
@@ -1174,34 +1173,13 @@ async fn dispatch_shutdown_streaming(
     let _ = state.shutdown_tx.send(true);
 }
 
-/// Percent-encode the AMQP-DSN-significant characters. Tenant names
-/// and passwords today are constrained to `[a-z0-9_]+` and hex
-/// respectively, so the encoder is a no-op on the happy path; it's
-/// defence-in-depth against a future widening of those validators.
-fn urlencode(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for b in s.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char);
-            }
-            _ => write!(out, "%{b:02X}").expect("writing to String"),
-        }
-    }
-    out
-}
-
 /// Build the `BOUGIE_SERVICE_*` env map for this project's tenants.
 /// Reads each catalog entry's `tenants.json` and emits per-service
-/// vars per SERVICES.md §3.4. Side-effect free.
+/// vars per SERVICES.md §3.4 (the vocabulary lives in
+/// [`tenant_env::tenant_service_env`], shared with `bougie service
+/// credentials`). Side-effect free.
 async fn dispatch_env(state: &Arc<DaemonState>, project: std::path::PathBuf) -> ResultFrame {
-    use crate::daemon::{catalog, catalog::Binding, tenants};
-
-    // Every Tcp binding in the catalog is loopback-only in v1
-    // (Binding::Tcp's doc comment). Centralising the host here keeps
-    // the URL/HOST/PORT vars in sync — recipes can splice them
-    // independently without knowing the assembly recipe.
-    const LOOPBACK: &str = "127.0.0.1";
+    use crate::daemon::{catalog, tenant_env, tenants};
 
     let mut vars: serde_json::Map<String, Value> = serde_json::Map::new();
     for entry in catalog::CATALOG {
@@ -1215,131 +1193,7 @@ async fn dispatch_env(state: &Arc<DaemonState>, project: std::path::PathBuf) -> 
         let Some(tenant) = all.into_iter().find(|t| t.project == project) else {
             continue;
         };
-        let prefix = format!("BOUGIE_SERVICE_{}_", entry.name.to_ascii_uppercase());
-
-        // For Tcp-bound services, expose HOST/PORT alongside any
-        // service-specific URL string. Recipes that need split
-        // host/port (Magento's `setup:install --opensearch-host
-        // --opensearch-port`, etc.) read these directly instead of
-        // parsing URL bytes in shell.
-        if let Binding::Tcp { port } = entry.binding {
-            vars.insert(format!("{prefix}HOST"), Value::String(LOOPBACK.into()));
-            vars.insert(format!("{prefix}PORT"), Value::String(port.to_string()));
-        }
-
-        match entry.name {
-            "redis" => {
-                let sock = state
-                    .paths
-                    .service_run("redis")
-                    .join("redis.sock")
-                    .display()
-                    .to_string();
-                vars.insert(format!("{prefix}SOCKET"), Value::String(sock));
-                if let Some(db) = tenant.alloc.get("db_number") {
-                    vars.insert(format!("{prefix}DB"), db.clone());
-                }
-            }
-            "mariadb" => {
-                let sock = state
-                    .paths
-                    .service_run("mariadb")
-                    .join("mariadb.sock")
-                    .display()
-                    .to_string();
-                vars.insert(format!("{prefix}SOCKET"), Value::String(sock));
-                vars.insert(
-                    format!("{prefix}DATABASE"),
-                    Value::String(tenant.tenant.clone()),
-                );
-                vars.insert(
-                    format!("{prefix}USER"),
-                    Value::String(tenant.tenant.clone()),
-                );
-                if let Some(pw) = tenant.secrets.get("password") {
-                    vars.insert(format!("{prefix}PASSWORD"), Value::String(pw.clone()));
-                }
-            }
-            "opensearch" => {
-                // URL composed from the catalog port (set above as
-                // _HOST/_PORT). Surface the tenant's reserved index
-                // prefix so apps build `<prefix>articles` etc.
-                if let Binding::Tcp { port } = entry.binding {
-                    vars.insert(
-                        format!("{prefix}URL"),
-                        Value::String(format!("http://{LOOPBACK}:{port}")),
-                    );
-                }
-                if let Some(p) = tenant.alloc.get("index_prefix") {
-                    vars.insert(format!("{prefix}INDEX_PREFIX"), p.clone());
-                }
-            }
-            "server" => {
-                // Root URL alongside the tenant's reserved hostname
-                // so apps can build absolute redirects without
-                // re-encoding the suffix.
-                if let Binding::Tcp { port } = entry.binding {
-                    vars.insert(
-                        format!("{prefix}URL"),
-                        Value::String(format!("http://{LOOPBACK}:{port}")),
-                    );
-                }
-                if let Some(h) = tenant.alloc.get("hostname") {
-                    vars.insert(format!("{prefix}HOSTNAME"), h.clone());
-                }
-            }
-            "rabbitmq" => {
-                // Compose the full AMQP DSN so apps don't have to
-                // assemble the pieces; vhost lives in the path
-                // component, user and password in the authority.
-                let user = tenant
-                    .alloc
-                    .get("username")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or(&tenant.tenant);
-                let vhost = tenant
-                    .alloc
-                    .get("vhost")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or(&tenant.tenant);
-                let pw = tenant.secrets.get("password").cloned().unwrap_or_default();
-                if let Binding::Tcp { port } = entry.binding {
-                    let url = format!(
-                        "amqp://{}:{}@{LOOPBACK}:{port}/{}",
-                        urlencode(user),
-                        urlencode(&pw),
-                        urlencode(vhost),
-                    );
-                    vars.insert(format!("{prefix}URL"), Value::String(url));
-                }
-                vars.insert(format!("{prefix}VHOST"), Value::String(vhost.to_string()));
-                vars.insert(format!("{prefix}USER"), Value::String(user.to_string()));
-                if !pw.is_empty() {
-                    vars.insert(format!("{prefix}PASSWORD"), Value::String(pw));
-                }
-            }
-            "mailpit" => {
-                // SMTP host/port are already emitted as _HOST/_PORT
-                // from the Tcp binding above. Compose the Symfony-Mailer
-                // style DSN from the same port so apps can splice
-                // `MAILER_DSN` directly (no auth — the dev sink accepts
-                // any/no credentials).
-                if let Binding::Tcp { port } = entry.binding {
-                    vars.insert(
-                        format!("{prefix}DSN"),
-                        Value::String(format!("smtp://{LOOPBACK}:{port}")),
-                    );
-                }
-                // The human-facing web UI / REST API lives on a second
-                // port the single-endpoint binding can't model; surface
-                // it explicitly so `bougie run` users can open it.
-                vars.insert(
-                    format!("{prefix}DASHBOARD_URL"),
-                    Value::String(format!("http://{LOOPBACK}:{}", catalog::MAILPIT_HTTP_PORT)),
-                );
-            }
-            _ => {}
-        }
+        vars.extend(tenant_env::tenant_service_env(&state.paths, entry, &tenant));
     }
     ResultFrame::ok(serde_json::json!({"vars": Value::Object(vars)}))
 }
