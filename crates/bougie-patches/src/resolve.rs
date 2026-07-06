@@ -11,7 +11,7 @@
 //!
 //! The `patches/` directory (Phase C) is unioned on top by the caller.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use eyre::{Context, Result, bail};
 use serde_json::Value;
@@ -57,21 +57,39 @@ pub fn resolve_root(composer_json: &Value, project_root: &Path) -> Result<Vec<Pa
 /// ([`target::infer_target`]).
 ///
 /// `install_paths` maps each locked package to its install directory (the host
-/// computes these from the lock). A `.patch` whose headers can't be resolved
-/// to exactly one installed package is a hard error naming the file — bougie
-/// does not silently misapply.
+/// computes these from the lock).
+///
+/// `exclude` lists patch files already covered by an explicit declaration
+/// (`extra.patches` / patches-file): the scan skips those — the declaration
+/// is authoritative for target and depth, and inferring them here anyway
+/// would apply the same patch twice (or hard-error on a package-relative
+/// file the declaration handles fine). Paths are compared canonically, so a
+/// declaration's relative path matches the scan's absolute one.
+///
+/// A remaining `.patch` whose headers can't be resolved to exactly one
+/// installed package is a hard error naming the file — bougie does not
+/// silently misapply.
 pub fn resolve_patches_dir(
     dir: &Path,
     install_paths: &[(String, String)],
+    exclude: &[PathBuf],
 ) -> Result<Vec<Patch>> {
     if !dir.is_dir() {
         return Ok(Vec::new());
     }
+    let excluded: Vec<PathBuf> = exclude
+        .iter()
+        .map(|p| std::fs::canonicalize(p).unwrap_or_else(|_| p.clone()))
+        .collect();
 
-    let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
+    let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
         .wrap_err_with(|| format!("reading patches dir `{}`", dir.display()))?
         .filter_map(|e| e.ok().map(|e| e.path()))
         .filter(|p| p.is_file() && p.extension().is_some_and(|x| x == "patch"))
+        .filter(|p| {
+            let canon = std::fs::canonicalize(p).unwrap_or_else(|_| p.clone());
+            !excluded.contains(&canon)
+        })
         .collect();
     files.sort();
 
@@ -234,7 +252,7 @@ mod tests {
         fs::write(pdir.join("orig.diff"), "ignored").unwrap();
 
         let install_paths = vec![("acme/widget".to_string(), "vendor/acme/widget".to_string())];
-        let patches = resolve_patches_dir(&pdir, &install_paths).unwrap();
+        let patches = resolve_patches_dir(&pdir, &install_paths, &[]).unwrap();
         assert_eq!(patches.len(), 1);
         assert_eq!(patches[0].target, "acme/widget");
         assert_eq!(patches[0].description, "fix.patch");
@@ -257,7 +275,7 @@ mod tests {
             ("acme/one".to_string(), "vendor/acme/one".to_string()),
             ("acme/two".to_string(), "vendor/acme/two".to_string()),
         ];
-        let patches = resolve_patches_dir(&pdir, &install_paths).unwrap();
+        let patches = resolve_patches_dir(&pdir, &install_paths, &[]).unwrap();
         assert_eq!(patches.len(), 1);
         assert_eq!(
             patches[0].scope,
@@ -279,13 +297,38 @@ mod tests {
             "--- a/Model/Foo.php\n+++ b/Model/Foo.php\n@@ -1 +1 @@\n-a\n+b\n",
         )
         .unwrap();
-        let err = resolve_patches_dir(&pdir, &[]).unwrap_err();
+        let err = resolve_patches_dir(&pdir, &[], &[]).unwrap_err();
         assert!(format!("{err:#}").contains("local.patch"), "{err:#}");
+    }
+
+    #[test]
+    fn patches_dir_skips_declared_files() {
+        let dir = tempdir().unwrap();
+        let pdir = dir.path().join("patches");
+        fs::create_dir_all(&pdir).unwrap();
+        // Package-relative headers: inference would hard-error on this file,
+        // but it is declared explicitly, so the scan must skip it entirely.
+        fs::write(
+            pdir.join("declared.patch"),
+            "--- a/Model/Foo.php\n+++ b/Model/Foo.php\n@@ -1 +1 @@\n-a\n+b\n",
+        )
+        .unwrap();
+        fs::write(
+            pdir.join("fix.patch"),
+            "--- a/vendor/acme/widget/src/W.php\n+++ b/vendor/acme/widget/src/W.php\n@@ -1 +1 @@\n-a\n+b\n",
+        )
+        .unwrap();
+        let install_paths = vec![("acme/widget".to_string(), "vendor/acme/widget".to_string())];
+        // A non-canonical exclude path must still match (canonical compare).
+        let declared = pdir.join("..").join("patches").join("declared.patch");
+        let patches = resolve_patches_dir(&pdir, &install_paths, &[declared]).unwrap();
+        assert_eq!(patches.len(), 1);
+        assert_eq!(patches[0].description, "fix.patch");
     }
 
     #[test]
     fn missing_patches_dir_is_empty() {
         let dir = tempdir().unwrap();
-        assert!(resolve_patches_dir(&dir.path().join("nope"), &[]).unwrap().is_empty());
+        assert!(resolve_patches_dir(&dir.path().join("nope"), &[], &[]).unwrap().is_empty());
     }
 }
