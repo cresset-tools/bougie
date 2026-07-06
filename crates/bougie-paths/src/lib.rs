@@ -388,6 +388,13 @@ impl Paths {
     pub fn service_log(&self, name: &str) -> PathBuf {
         self.service_dir(name).join("log")
     }
+    /// A service's live log file (`<name>.log`; rotated siblings are
+    /// `.1` … `.N`). Single source of truth for the join — the
+    /// supervisor writes it, the daemon's `service.logs` streams it,
+    /// and `bougie diagnose` tails it offline.
+    pub fn service_log_file(&self, name: &str) -> PathBuf {
+        self.service_log(name).join(format!("{name}.log"))
+    }
     /// Per-service rendered config (read-only to the service via sandbox).
     pub fn service_conf(&self, name: &str) -> PathBuf {
         self.service_dir(name).join("conf")

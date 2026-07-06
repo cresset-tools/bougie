@@ -53,8 +53,10 @@ fn stop_daemon(env: &TestEnv) {
         .args(["service", "daemon", "stop"])
         .timeout(STEP_TIMEOUT)
         .assert();
-    // Give mailpit a moment to release 1025/8025 before the next test.
-    std::thread::sleep(Duration::from_millis(500));
+    // Wait until mailpit actually released its SMTP port — the
+    // supervisor's pre-start probe hard-fails on an occupied catalog
+    // port (8025 rides along and doesn't hard-fail).
+    common::wait_for_port_free(1025, Duration::from_secs(30));
 }
 
 fn add_and_up(env: &TestEnv, proj_path: &Path) {

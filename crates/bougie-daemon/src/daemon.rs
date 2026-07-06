@@ -17,6 +17,7 @@ pub mod credentials;
 pub mod health;
 pub mod ipc;
 pub mod logs;
+pub mod ports;
 pub mod provisioners;
 pub mod sandbox;
 mod state;

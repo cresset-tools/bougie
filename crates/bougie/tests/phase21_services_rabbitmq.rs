@@ -53,9 +53,10 @@ fn stop_daemon(env: &TestEnv) {
         .args(["service", "daemon", "stop"])
         .timeout(STEP_TIMEOUT)
         .assert();
-    // Give the Erlang VM a moment to release 5672 + 4369 (epmd)
-    // before the next test's daemon comes up.
-    std::thread::sleep(Duration::from_secs(2));
+    // Wait until the Erlang VM actually released 5672 — the
+    // supervisor's pre-start probe hard-fails on an occupied catalog
+    // port. (4369/epmd doesn't hard-fail; a stale epmd is reusable.)
+    common::wait_for_port_free(5672, Duration::from_secs(30));
 }
 
 fn services_up_or_dump(env: &TestEnv, proj_path: &Path, extra_args: &[&str]) {

@@ -105,3 +105,24 @@ fn project_with_composer_inner(name: &str, with_public: bool) -> TestProject {
     }
     TestProject { _tmp: tmp, root }
 }
+
+/// Block until `127.0.0.1:<port>` can be bound again, up to `timeout`.
+/// Returns `true` when the port freed in time.
+///
+/// The service-test daemon handoffs need this: the supervisor's
+/// pre-start probe hard-fails on an occupied catalog port (so a stray
+/// listener can't masquerade as a healthy start), which means a fixed
+/// post-`daemon stop` sleep is no longer enough when a JVM or Erlang
+/// VM is slow to release its listener.
+pub fn wait_for_port_free(port: u16, timeout: std::time::Duration) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if std::net::TcpListener::bind(("127.0.0.1", port)).is_ok() {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+}
