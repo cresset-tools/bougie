@@ -260,6 +260,85 @@ fn root_patch_spans_two_packages() {
     assert!(!applied.contains_key("acme/one") && !applied.contains_key("acme/two"));
 }
 
+/// A patch to a `magento2-component`'s `extra.map`-mapped file must reach
+/// the deployed copy in the project root: patches apply before the deploy
+/// (Composer's ordering — cweagans patches run per package at install
+/// time, the magento-composer-installer deploy at the end), so the
+/// skeleton copy carries patched content, never pristine.
+#[test]
+fn patched_component_deploys_patched_content() {
+    let tmp = TempDir::new().unwrap();
+    let paths = paths_in(tmp.path());
+    let proj = tmp.path().join("p");
+    std::fs::create_dir_all(proj.join("patches")).unwrap();
+
+    let artifact = tmp.path().join("skeleton.zip");
+    make_zip(&artifact, "skeleton-1.0.0", &[("src/Db.php", PRISTINE)]);
+
+    let cj = r#"{ "name": "acme/test", "require": { "acme/skeleton": "^1.0" },
+        "extra": { "patches": { "acme/skeleton": { "Fix beta": "patches/fix.patch" } } } }"#;
+    std::fs::write(proj.join("composer.json"), cj).unwrap();
+    let hash = bougie_composer::lockfile::content_hash(cj.as_bytes()).unwrap();
+    let lock = format!(
+        r#"{{ "content-hash": "{hash}",
+            "packages": [
+                {{ "name": "acme/skeleton", "version": "1.0.0", "type": "magento2-component",
+                   "extra": {{ "map": [["src/Db.php", "dev/Db.php"]] }},
+                   "dist": {{ "type": "zip", "url": "{}", "shasum": "" }} }}
+            ], "packages-dev": [] }}"#,
+        artifact.display()
+    );
+    std::fs::write(proj.join("composer.lock"), lock).unwrap();
+
+    let patch_file = proj.join("patches/fix.patch");
+    std::fs::write(
+        &patch_file,
+        "--- a/src/Db.php\n+++ b/src/Db.php\n@@ -1,3 +1,3 @@\n alpha\n-beta\n+BETA\n gamma\n",
+    )
+    .unwrap();
+
+    let bytes = std::fs::read(&patch_file).unwrap();
+    let mut patches = BTreeMap::new();
+    patches.insert(
+        "acme/skeleton".to_string(),
+        vec![MaterializedPatch {
+            description: "Fix beta".into(),
+            origin: "patches/fix.patch".into(),
+            local_path: patch_file.clone(),
+            content_sha256: content_sha256(&bytes),
+            depth: DepthSpec::Auto,
+        }],
+    );
+    let plan = PatchPlan {
+        patches,
+        root_patches: Vec::new(),
+        applied: lock::read(&proj),
+        failure_mode: FailureMode::Abort,
+        skip_report: false,
+        write_lock: false,
+    };
+
+    let s = install_from_lock_with_patches(
+        &paths,
+        &proj,
+        InstallOptions::default(),
+        None,
+        Some(&plan),
+    )
+    .unwrap();
+    assert_eq!(s.packages_installed, 1);
+    assert_eq!(
+        std::fs::read_to_string(proj.join("vendor/acme/skeleton/src/Db.php")).unwrap(),
+        "alpha\nBETA\ngamma\n",
+        "vendor copy patched"
+    );
+    assert_eq!(
+        std::fs::read_to_string(proj.join("dev/Db.php")).unwrap(),
+        "alpha\nBETA\ngamma\n",
+        "the extra.map deploy must copy the patched content, not pristine"
+    );
+}
+
 #[test]
 fn reapplication_state_matrix() {
     let tmp = TempDir::new().unwrap();

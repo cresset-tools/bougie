@@ -421,17 +421,6 @@ pub fn install_from_lock_with_patches(
     )?;
     pkg_bar.finish_and_clear();
 
-    // Native `magento/magento-composer-installer`: for every
-    // freshly-extracted Magento 2 component, copy its `extra.map` files
-    // into the project root and apply `extra.chmod`. Driving this off
-    // `install_set` (only changed/new packages) matches Composer, which
-    // runs the deploy on package install/update — not on every `install`
-    // when nothing changed. A deploy failure is surfaced as a warning
-    // rather than aborting the whole sync (a single third-party package's
-    // unsupported map shouldn't block a Magento project).
-    let deploy_summary = deploy_components(&install_set, &vendor_dirs, project_root);
-    warnings.extend(deploy_summary.warnings);
-
     // Materialize `type: path` packages (symlink-or-copy) into their
     // vendor destinations. Done before the autoload dump so the
     // generated autoloader sees the linked trees.
@@ -444,10 +433,25 @@ pub fn install_from_lock_with_patches(
     warnings.extend(path_summary.warnings);
 
     // Native patch application. Every `install_set` member is pristine here
-    // (freshly extracted), so this is the only safe place to patch.
+    // (freshly extracted), so this is the only safe place to patch. Must
+    // run *before* the Magento deploy below so `extra.map`-copied files
+    // carry the patched content — Composer's ordering, where cweagans
+    // patches apply per package at install time and the
+    // magento-composer-installer deploy runs at the end of the command.
     if let Some(plan) = patches {
         apply_patch_plan(plan, &install_set, &vendor_dirs, project_root, &mut warnings)?;
     }
+
+    // Native `magento/magento-composer-installer`: for every
+    // freshly-extracted Magento 2 component, copy its `extra.map` files
+    // into the project root and apply `extra.chmod`. Driving this off
+    // `install_set` (only changed/new packages) matches Composer, which
+    // runs the deploy on package install/update — not on every `install`
+    // when nothing changed. A deploy failure is surfaced as a warning
+    // rather than aborting the whole sync (a single third-party package's
+    // unsupported map shouldn't block a Magento project).
+    let deploy_summary = deploy_components(&install_set, &vendor_dirs, project_root);
+    warnings.extend(deploy_summary.warnings);
 
     // `pre-autoload-dump` — before the autoloader is regenerated.
     if let Some(hooks) = hooks {
