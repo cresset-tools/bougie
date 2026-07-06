@@ -263,7 +263,11 @@ fn last_failure_records_project_dir() {
         std::fs::read_to_string(env.cache.path().join("telemetry/last-failure.json")).unwrap();
     let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
     assert_eq!(v["schema"], 2);
-    assert_eq!(v["project_dir"], proj.to_string_lossy().as_ref());
+    // The child records its cwd as the OS reports it — canonicalized.
+    // On macOS the tempdir path reaches the child via the /private
+    // symlink prefix, so compare canonical forms.
+    let canonical = std::fs::canonicalize(&proj).unwrap();
+    assert_eq!(v["project_dir"], canonical.to_string_lossy().as_ref());
 }
 
 #[test]

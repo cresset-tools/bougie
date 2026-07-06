@@ -11,7 +11,10 @@ use std::path::Path;
 
 /// Per-log tail budget: at most this many lines …
 pub const LOG_TAIL_LINES: usize = 200;
-/// … and at most this many bytes (newest lines win).
+/// … and at most this many bytes (newest lines win). Only the Unix
+/// collectors read logs, so the byte cap is gated with them (Windows
+/// builds deny unused items).
+#[cfg(unix)]
 pub const LOG_TAIL_BYTES: usize = 16 * 1024;
 
 #[derive(Debug, Serialize)]
