@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.45.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.44.0...bougie-v0.45.0) (2026-07-06)
+
+
+### Features
+
+* **run:** lift CLI memory_limit to -1 for project PHP runs ([#471](https://github.com/cresset-tools/bougie/issues/471)) ([c813ab0](https://github.com/cresset-tools/bougie/commit/c813ab0ccc34156327ae612d2fb2bfeb6abf9acc))
+
+
+### Bug Fixes
+
+* **composer-resolver:** apply patches before the magento2-base deploy ([#468](https://github.com/cresset-tools/bougie/issues/468)) ([7f3bdec](https://github.com/cresset-tools/bougie/commit/7f3bdecdc3300a4e89da6909b0ee1f5633b57fe2))
+* **patches:** declared patch files are skipped by the patches/ scan ([#470](https://github.com/cresset-tools/bougie/issues/470)) ([5e91f4f](https://github.com/cresset-tools/bougie/commit/5e91f4f2cd2b5efdca79a057a765477eb8dcc383))
+
 ## [0.44.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.43.2...bougie-v0.44.0) (2026-07-06)
 
 
