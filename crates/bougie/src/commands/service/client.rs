@@ -123,6 +123,21 @@ pub fn call_streaming(paths: &Paths, method: &str, args: Value) -> Result<()> {
     issue_streaming(stream, &request)
 }
 
+/// Non-spawning variant of [`call`] for read-only observers (`bougie
+/// diagnose`): connect only if the daemon is already up — never
+/// auto-spawn, and never run the version handshake (it can shut a
+/// mismatched daemon down, and a diagnostic tool must not mutate the
+/// system it is reporting on). `None` when the socket is absent, not
+/// accepting, or the round-trip fails; short socket timeouts keep a
+/// wedged daemon from hanging the caller.
+pub fn try_call<R: DeserializeOwned>(paths: &Paths, method: &str, args: Value) -> Option<R> {
+    let stream = UnixStream::connect(paths.bougied_sock()).ok()?;
+    stream.set_read_timeout(Some(Duration::from_millis(1500))).ok()?;
+    stream.set_write_timeout(Some(Duration::from_millis(1500))).ok()?;
+    let request = serde_json::json!({"v": 1, "method": method, "args": args});
+    issue(stream, &request).ok()
+}
+
 /// Retries on a refusing socket before concluding the daemon is dead.
 /// A live daemon whose accept backlog is momentarily full, or that is
 /// mid-restart (bound but not yet `accept()`ing), also returns

@@ -177,14 +177,29 @@ Those requests carry a `bougie/<version>` User-Agent and nothing
 else. Composer's `notify-batch` download ping is **not** sent.
 
 `bougie diagnose` is also not telemetry: it assembles a rich
-diagnostic report (full error chain, message content included) from
-the last failure, **shows you the entire payload**, and sends it only
-on an explicit per-report confirmation (`[y/N]` defaulting to no, or
-`--yes`). It works with telemetry off and ignores `DO_NOT_TRACK` —
-deliberately, because you are the one mailing it. `--issue` skips the
-upload entirely and prepares a GitHub issue instead. Diagnostic
+diagnostic report from the last failure — the full error chain, an
+optional debug re-run's stderr, and (on Unix) the declared services'
+log tails, their live states, the daemon log, and loopback-port
+occupancy for the ports bougie's services need. Collection is
+read-only: logs and ledgers are read from disk and the daemon is
+consulted only if it is already running (diagnose never starts it).
+Before you see anything, known credentials are scrubbed by exact
+value (tenant passwords from the service ledgers, composer auth
+tokens) and your home directory is folded to `~`.
+
+The report is a Markdown document and **the review is authoritative**:
+interactively it opens in `$VISUAL`/`$EDITOR` (skip with `--no-edit`,
+force with `--edit`), and whatever you save — redactions, added
+notes — is byte-for-byte the `report_md` payload that ships; nothing
+structured duplicates report content on the wire. Saving an empty
+file aborts. Sending still requires the explicit per-report
+confirmation (`[y/N]` defaulting to no, or `--yes`). It works with
+telemetry off and ignores `DO_NOT_TRACK` — deliberately, because you
+are the one mailing it. `--issue` skips the upload entirely and
+writes `./bougie-diagnose.md` for a GitHub issue instead. Diagnostic
 reports are retained for 180 days and deleted on request by report
 id. The failure context it reads
 (`<cache>/telemetry/last-failure.json`) is a local file of the same
 class as a log, written on any command error and overwritten by the
-next one.
+next one; since schema 2 it also records the project root so a later
+`diagnose` finds the right services.
