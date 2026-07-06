@@ -62,7 +62,9 @@ pub fn project_confd_debug_dir(project_root: &Path) -> PathBuf {
 /// appends `conf.d-debug/` so PHP scans all three. Shared between
 /// `bougie run` and the `php`/`composer` argv0 shim so both paths arrive
 /// at the same effective config when `XDEBUG_SESSION` is set or
-/// `--xdebug` was passed.
+/// `--xdebug` was passed. Bougie's `cli-defaults/` layer (the CLI
+/// memory-limit lift, [`Paths::ensure_cli_defaults`]) is prepended so
+/// every project fragment can override it.
 ///
 /// `conf.d-local/` lives under `$BOUGIE_HOME` (durable, machine-local —
 /// see [`Paths::project_confd_local`]), so this needs the global
@@ -75,9 +77,18 @@ pub fn php_ini_scan_dir(
     project_root: &Path,
     debug_overlay: bool,
 ) -> std::ffi::OsString {
-    let regular = project_confd_dir(project_root);
+    let mut joined = std::ffi::OsString::new();
+    // bougie's CLI ini defaults (the memory-limit lift) go first so the
+    // project's own fragments below override per-directive — PHP scans
+    // the dirs in order and the last occurrence of a setting wins.
+    // Every caller of this function is a CLI lane; the server's FPM
+    // pools assemble their own scan dir and never see this layer.
+    if let Some(defaults) = paths.ensure_cli_defaults() {
+        joined.push(&defaults);
+        joined.push(SCAN_DIR_SEP);
+    }
+    joined.push(project_confd_dir(project_root));
     let local = paths.project_confd_local(project_root);
-    let mut joined = regular.into_os_string();
     if local.exists() {
         joined.push(SCAN_DIR_SEP);
         joined.push(&local);
@@ -831,19 +842,36 @@ mod tests {
     }
 
     #[test]
-    fn php_ini_scan_dir_default_is_conf_d_only() {
+    fn php_ini_scan_dir_layers_cli_defaults_before_conf_d() {
+        let td = TempDir::new().unwrap();
+        let paths = Paths::new(td.path().join("home"), td.path().join("cache"));
         let root = Path::new("/p");
-        let s = php_ini_scan_dir(&nopaths(), root, false);
-        let expected = project_confd_dir(root);
-        assert_eq!(Path::new(&s), expected);
+        let s = php_ini_scan_dir(&paths, root, false);
+        let expected = {
+            let mut j = paths.cli_defaults().into_os_string();
+            j.push(SCAN_DIR_SEP);
+            j.push(project_confd_dir(root));
+            j
+        };
+        assert_eq!(s, expected);
+        // The lift itself must have materialized so PHP finds it.
+        let ini = paths.cli_defaults().join(bougie_paths::CLI_DEFAULTS_INI_NAME);
+        assert!(
+            std::fs::read_to_string(ini).unwrap().contains("memory_limit = -1"),
+            "cli-defaults fragment written"
+        );
     }
 
     #[test]
-    fn php_ini_scan_dir_overlay_joins_both_with_platform_separator() {
+    fn php_ini_scan_dir_overlay_appends_debug_dir_last() {
+        let td = TempDir::new().unwrap();
+        let paths = Paths::new(td.path().join("home"), td.path().join("cache"));
         let root = Path::new("/p");
-        let s = php_ini_scan_dir(&nopaths(), root, true);
+        let s = php_ini_scan_dir(&paths, root, true);
         let expected = {
-            let mut j = project_confd_dir(root).into_os_string();
+            let mut j = paths.cli_defaults().into_os_string();
+            j.push(SCAN_DIR_SEP);
+            j.push(project_confd_dir(root));
             j.push(SCAN_DIR_SEP);
             j.push(project_confd_debug_dir(root));
             j
