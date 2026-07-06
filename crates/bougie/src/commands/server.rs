@@ -143,7 +143,13 @@ fn dns_warning(hostname: &str, verdict: &DnsVerdict) -> Option<String> {
 
 #[cfg(unix)]
 fn hosts_fix_hint(_hostname: &str) -> String {
-    "pin the dev hostnames in /etc/hosts with: sudo bougie server hosts apply".to_string()
+    // Deliberately no `sudo` prefix: the command escalates itself with
+    // the absolute binary path and the user's resolved config, which a
+    // typed `sudo bougie ...` would get wrong (secure_path rarely has
+    // a user-installed bougie; root resolves a different BOUGIE_HOME).
+    "pin the dev hostnames in /etc/hosts with: bougie server hosts apply \
+     (prompts for sudo to write /etc/hosts)"
+        .to_string()
 }
 
 /// `bougie server hosts` is Unix-only, so Windows gets the manual line.
@@ -631,7 +637,13 @@ mod tests {
         assert!(w.contains("shop.bougie.run"));
         assert!(w.contains("did not resolve"));
         #[cfg(unix)]
-        assert!(w.contains("sudo bougie server hosts apply"));
+        {
+            assert!(w.contains("bougie server hosts apply"));
+            // The hint must not tell the user to type sudo themselves:
+            // secure_path and root's BOUGIE_HOME make that command
+            // unreliable; `hosts apply` escalates itself instead.
+            assert!(!w.contains("sudo bougie"));
+        }
         #[cfg(not(unix))]
         assert!(w.contains("drivers\\etc\\hosts"));
 
