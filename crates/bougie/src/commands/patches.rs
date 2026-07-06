@@ -119,8 +119,26 @@ pub fn resolve_all(
     let mut patches = resolve_root(composer_value, project_root)?;
     let dir_name = patches_dir_name(composer_value, project);
     let install_paths = lock_install_paths(project_root, composer_value);
-    let dir_patches =
-        bougie_patches::resolve_patches_dir(&project_root.join(&dir_name), &install_paths)?;
+    // Files already covered by an explicit declaration are skipped by the
+    // zero-config scan: the declaration owns target + depth, and the dedup
+    // below can't catch the pair (declared sources are relative, scanned
+    // ones absolute; descriptions differ too).
+    let declared_local: Vec<std::path::PathBuf> = patches
+        .iter()
+        .filter_map(|p| match &p.source {
+            PatchSource::Local(rel) => Some(if rel.is_absolute() {
+                rel.clone()
+            } else {
+                project_root.join(rel)
+            }),
+            PatchSource::Remote(_) => None,
+        })
+        .collect();
+    let dir_patches = bougie_patches::resolve_patches_dir(
+        &project_root.join(&dir_name),
+        &install_paths,
+        &declared_local,
+    )?;
     patches.extend(dir_patches);
     dedup_patches(&mut patches);
     Ok(patches)
@@ -226,8 +244,10 @@ pub fn lock_install_paths(project_root: &Path, composer_value: &Value) -> Vec<(S
     out
 }
 
-/// Drop exact duplicate patches — same target + same source + same description
-/// (a `patches/` file and an `extra.patches` entry pointing at the same patch).
+/// Drop exact duplicate patches — same target + same source + same
+/// description (the same entry declared twice, e.g. inline and via the
+/// external patches-file). A `patches/` file that duplicates a declaration
+/// never gets here: `resolve_all` excludes declared files from the scan.
 fn dedup_patches(patches: &mut Vec<bougie_patches::Patch>) {
     let mut seen = std::collections::HashSet::new();
     patches.retain(|p| {
@@ -438,6 +458,40 @@ mod tests {
             widget[0].depth,
             bougie_patches::model::DepthSpec::Fixed(4)
         );
+    }
+
+    #[test]
+    fn build_plan_declared_entry_wins_over_patches_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("patches")).unwrap();
+        // Declared in extra.patches AND sitting in the scanned patches/
+        // dir — package-relative headers, which the zero-config scan alone
+        // could not even infer a target for.
+        std::fs::write(
+            root.join("composer.json"),
+            r#"{ "name": "acme/app", "require": { "acme/widget": "^1.0" },
+                 "extra": { "patches": { "acme/widget": { "Fix W": "patches/widget.patch" } } } }"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("composer.lock"),
+            r#"{ "content-hash": "x", "packages": [ { "name": "acme/widget", "version": "1.0.0", "type": "library" } ], "packages-dev": [] }"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("patches/widget.patch"),
+            "--- a/src/W.php\n+++ b/src/W.php\n@@ -1 +1 @@\n-a\n+b\n",
+        )
+        .unwrap();
+
+        let paths = Paths::new(tmp.path().join("home"), tmp.path().join("cache"));
+        let plan = build_plan(&paths, root, &project(None), None)
+            .unwrap()
+            .expect("a plan with the declared patch");
+        let widget = plan.patches.get("acme/widget").expect("declared target");
+        assert_eq!(widget.len(), 1, "declared once, not doubled by the scan");
+        assert_eq!(widget[0].description, "Fix W");
     }
 
     #[test]
