@@ -37,7 +37,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.43.2" # x-release-please-version
+version = "0.44.0" # x-release-please-version
 edition = "2024"
 license = "EUPL-1.2"
 authors = ["Jelle Besseling <jelle@pingiun.com>"]
@@ -53,17 +53,17 @@ authors = ["Jelle Besseling <jelle@pingiun.com>"]
 # `[workspace.package].version` above (Cargo.toml is a release-please
 # `extra-file`), so they never drift.
 [workspace.dependencies]
-bougie-autoloader = { path = "crates/bougie-autoloader", version = "0.43.2" } # x-release-please-version
-bougie-babysit = { path = "crates/bougie-babysit", version = "0.43.2" } # x-release-please-version
-bougie-backend = { path = "crates/bougie-backend", version = "0.43.2" } # x-release-please-version
-bougie-cli = { path = "crates/bougie-cli", version = "0.43.2" } # x-release-please-version
-bougie-composer = { path = "crates/bougie-composer", version = "0.43.2" } # x-release-please-version
-bougie-composer-resolver = { path = "crates/bougie-composer-resolver", version = "0.43.2" } # x-release-please-version
-bougie-config = { path = "crates/bougie-config", version = "0.43.2" } # x-release-please-version
-bougie-daemon = { path = "crates/bougie-daemon", version = "0.43.2" } # x-release-please-version
-bougie-errors = { path = "crates/bougie-errors", version = "0.43.2" } # x-release-please-version
-bougie-fetch = { path = "crates/bougie-fetch", version = "0.43.2" } # x-release-please-version
-bougie-fs = { path = "crates/bougie-fs", version = "0.43.2" } # x-release-please-version
+bougie-autoloader = { path = "crates/bougie-autoloader", version = "0.44.0" } # x-release-please-version
+bougie-babysit = { path = "crates/bougie-babysit", version = "0.44.0" } # x-release-please-version
+bougie-backend = { path = "crates/bougie-backend", version = "0.44.0" } # x-release-please-version
+bougie-cli = { path = "crates/bougie-cli", version = "0.44.0" } # x-release-please-version
+bougie-composer = { path = "crates/bougie-composer", version = "0.44.0" } # x-release-please-version
+bougie-composer-resolver = { path = "crates/bougie-composer-resolver", version = "0.44.0" } # x-release-please-version
+bougie-config = { path = "crates/bougie-config", version = "0.44.0" } # x-release-please-version
+bougie-daemon = { path = "crates/bougie-daemon", version = "0.44.0" } # x-release-please-version
+bougie-errors = { path = "crates/bougie-errors", version = "0.44.0" } # x-release-please-version
+bougie-fetch = { path = "crates/bougie-fetch", version = "0.44.0" } # x-release-please-version
+bougie-fs = { path = "crates/bougie-fs", version = "0.44.0" } # x-release-please-version
 # The `bougie` bin needs `default-features = false` on bougie-index
 # (gates `dev-trust-root` behind its own feature flag), and cargo's
 # workspace inheritance rejects member-level `default-features`
@@ -71,23 +71,23 @@ bougie-fs = { path = "crates/bougie-fs", version = "0.43.2" } # x-release-please
 # own inline [dependencies.bougie-index] block (which carries its own
 # annotated version literal); every other consumer inherits this
 # workspace entry with defaults on.
-bougie-index = { path = "crates/bougie-index", version = "0.43.2" } # x-release-please-version
-bougie-installer = { path = "crates/bougie-installer", version = "0.43.2" } # x-release-please-version
-bougie-installers = { path = "crates/bougie-installers", version = "0.43.2" } # x-release-please-version
-bougie-output = { path = "crates/bougie-output", version = "0.43.2" } # x-release-please-version
-bougie-patches = { path = "crates/bougie-patches", version = "0.43.2" } # x-release-please-version
-bougie-paths = { path = "crates/bougie-paths", version = "0.43.2" } # x-release-please-version
-bougie-php-discovery = { path = "crates/bougie-php-discovery", version = "0.43.2" } # x-release-please-version
-bougie-platform = { path = "crates/bougie-platform", version = "0.43.2" } # x-release-please-version
-bougie-recipe = { path = "crates/bougie-recipe", version = "0.43.2" } # x-release-please-version
-bougie-resolver = { path = "crates/bougie-resolver", version = "0.43.2" } # x-release-please-version
-bougie-scripts = { path = "crates/bougie-scripts", version = "0.43.2" } # x-release-please-version
-bougie-server = { path = "crates/bougie-server", version = "0.43.2" } # x-release-please-version
-bougie-telemetry = { path = "crates/bougie-telemetry", version = "0.43.2" } # x-release-please-version
-bougie-tool = { path = "crates/bougie-tool", version = "0.43.2" } # x-release-please-version
-bougie-version = { path = "crates/bougie-version", version = "0.43.2" } # x-release-please-version
-sandbox-run = { path = "crates/sandbox-run", version = "0.43.2" } # x-release-please-version
-macos-sandbox-sys = { path = "crates/macos-sandbox-sys", version = "0.43.2" } # x-release-please-version
+bougie-index = { path = "crates/bougie-index", version = "0.44.0" } # x-release-please-version
+bougie-installer = { path = "crates/bougie-installer", version = "0.44.0" } # x-release-please-version
+bougie-installers = { path = "crates/bougie-installers", version = "0.44.0" } # x-release-please-version
+bougie-output = { path = "crates/bougie-output", version = "0.44.0" } # x-release-please-version
+bougie-patches = { path = "crates/bougie-patches", version = "0.44.0" } # x-release-please-version
+bougie-paths = { path = "crates/bougie-paths", version = "0.44.0" } # x-release-please-version
+bougie-php-discovery = { path = "crates/bougie-php-discovery", version = "0.44.0" } # x-release-please-version
+bougie-platform = { path = "crates/bougie-platform", version = "0.44.0" } # x-release-please-version
+bougie-recipe = { path = "crates/bougie-recipe", version = "0.44.0" } # x-release-please-version
+bougie-resolver = { path = "crates/bougie-resolver", version = "0.44.0" } # x-release-please-version
+bougie-scripts = { path = "crates/bougie-scripts", version = "0.44.0" } # x-release-please-version
+bougie-server = { path = "crates/bougie-server", version = "0.44.0" } # x-release-please-version
+bougie-telemetry = { path = "crates/bougie-telemetry", version = "0.44.0" } # x-release-please-version
+bougie-tool = { path = "crates/bougie-tool", version = "0.44.0" } # x-release-please-version
+bougie-version = { path = "crates/bougie-version", version = "0.44.0" } # x-release-please-version
+sandbox-run = { path = "crates/sandbox-run", version = "0.44.0" } # x-release-please-version
+macos-sandbox-sys = { path = "crates/macos-sandbox-sys", version = "0.44.0" } # x-release-please-version
 
 # External shared crate (not part of this workspace): the Composer
 # version/constraint algebra, extracted to the composer-rs workspace and
