@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.44.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.43.2...bougie-v0.44.0) (2026-07-06)
+
+
+### Features
+
+* **server:** warn when DNS blocks *.bougie.run loopback answers ([#464](https://github.com/cresset-tools/bougie/issues/464)) ([5de12e2](https://github.com/cresset-tools/bougie/commit/5de12e2408d3180be13cc4ca39f13fc336728c71))
+* **service:** credentials subcommand for tenant connection info ([#462](https://github.com/cresset-tools/bougie/issues/462)) ([b3aca75](https://github.com/cresset-tools/bougie/commit/b3aca7518764c9d3bcb4351a28b87c3104f6eb1a))
+* **tool:** prefetch + Sigstore-verify native binaries via composer extra ([#467](https://github.com/cresset-tools/bougie/issues/467)) ([5a04bfb](https://github.com/cresset-tools/bougie/commit/5a04bfb4f9a01f64fa29b422636fda5fbc2e45a2))
+
+
+### Bug Fixes
+
+* **server:** self-escalate hosts apply instead of hinting sudo bougie ([#466](https://github.com/cresset-tools/bougie/issues/466)) ([b6ef2ac](https://github.com/cresset-tools/bougie/commit/b6ef2acf1bba96acdbd10de5870193946afb5999))
+* **tool:** forward leading tool args past clap in tool-exec ([#465](https://github.com/cresset-tools/bougie/issues/465)) ([a92fca7](https://github.com/cresset-tools/bougie/commit/a92fca7fd27485564b1019015e5fcadd4c5a28be))
+
 ## [0.43.2](https://github.com/cresset-tools/bougie/compare/bougie-v0.43.1...bougie-v0.43.2) (2026-07-05)
 
 
