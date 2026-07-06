@@ -69,6 +69,103 @@ fn derive_hostname(tenant: &str) -> String {
     format!("{}.bougie.run", tenant.replace('_', "-"))
 }
 
+/// Bound on how long the resolver check may hold up the serve banner.
+/// Rebind-protecting resolvers answer fast (NXDOMAIN / SERVFAIL /
+/// empty); only a resolver that silently drops the query hits this,
+/// and then we stay quiet rather than guess.
+const DNS_CHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(1500);
+
+/// What the system resolver said about a `*.bougie.run` dev hostname.
+#[derive(Debug, PartialEq, Eq)]
+enum DnsVerdict {
+    /// At least one loopback answer — the printed URL reaches the
+    /// local server.
+    Loopback,
+    /// Answers exist but none are loopback (e.g. a captive resolver
+    /// rewriting the name); the URL points somewhere else entirely.
+    Other(std::net::IpAddr),
+    /// No answer at all — the shape DNS-rebinding protection takes,
+    /// or simply no network. Either way only /etc/hosts will work.
+    NoAnswer,
+}
+
+/// Classify a resolver result. Any loopback answer counts as working:
+/// browsers try addresses in order, and the loopback one will connect.
+fn dns_verdict<I: IntoIterator<Item = std::net::SocketAddr>>(
+    result: std::io::Result<I>,
+) -> DnsVerdict {
+    let Ok(addrs) = result else { return DnsVerdict::NoAnswer };
+    let mut first_other = None;
+    for addr in addrs {
+        if addr.ip().is_loopback() {
+            return DnsVerdict::Loopback;
+        }
+        first_other.get_or_insert(addr.ip());
+    }
+    first_other.map_or(DnsVerdict::NoAnswer, DnsVerdict::Other)
+}
+
+/// Resolve `hostname` through the system resolver — which consults
+/// /etc/hosts before DNS, so an applied `hosts apply` override passes
+/// — without letting a hung resolver stall the banner. `None` = timed
+/// out, verdict unknown.
+fn resolve_bounded(hostname: &str, port: u16) -> Option<DnsVerdict> {
+    use std::net::ToSocketAddrs;
+
+    let host = hostname.to_string();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(dns_verdict((host.as_str(), port).to_socket_addrs()));
+    });
+    rx.recv_timeout(DNS_CHECK_TIMEOUT).ok()
+}
+
+/// The warning for a hostname the resolver won't map to loopback, or
+/// `None` when it resolves fine. `*.bougie.run` publicly answers
+/// 127.0.0.1, but some resolvers (routers with "DNS rebinding
+/// protection" — Fritz!Box, dnsmasq's stop-dns-rebind, some ISPs)
+/// block loopback answers for public names, so the printed URL would
+/// never reach the local server.
+fn dns_warning(hostname: &str, verdict: &DnsVerdict) -> Option<String> {
+    let observed = match verdict {
+        DnsVerdict::Loopback => return None,
+        DnsVerdict::Other(ip) => format!("it resolved to {ip} instead"),
+        DnsVerdict::NoAnswer => "it did not resolve at all".to_string(),
+    };
+    Some(format!(
+        "{hostname} should resolve to 127.0.0.1, but {observed}. Your DNS server is \
+         probably blocking loopback answers for public names (\"DNS rebinding \
+         protection\"), so the URL above won't work.\n\
+         warning: to fix it, {}",
+        hosts_fix_hint(hostname),
+    ))
+}
+
+#[cfg(unix)]
+fn hosts_fix_hint(_hostname: &str) -> String {
+    "pin the dev hostnames in /etc/hosts with: sudo bougie server hosts apply".to_string()
+}
+
+/// `bougie server hosts` is Unix-only, so Windows gets the manual line.
+#[cfg(not(unix))]
+fn hosts_fix_hint(hostname: &str) -> String {
+    format!(
+        "add `127.0.0.1 {hostname}` to C:\\Windows\\System32\\drivers\\etc\\hosts \
+         (as Administrator)"
+    )
+}
+
+/// Warn on stderr when the system resolver won't map `hostname` to
+/// loopback. Best-effort: a resolver that answers nothing within
+/// [`DNS_CHECK_TIMEOUT`] stays silent rather than guess.
+fn warn_if_dns_blocked(hostname: &str, port: u16) {
+    if let Some(verdict) = resolve_bounded(hostname, port)
+        && let Some(warning) = dns_warning(hostname, &verdict)
+    {
+        eprintln!("warning: {warning}");
+    }
+}
+
 // Tenant derivation is shared with the `service up` path so both agree
 // on a project's identity (DB name, vhost, `<tenant>.bougie.run`) — and
 // so `server open`/`logs` re-derive the same name `up` provisioned. See
@@ -235,6 +332,7 @@ fn serve(format: OutputFormat, args: &ServeArgs) -> Result<ExitCode> {
         url: url.clone(),
         port,
     })?;
+    warn_if_dns_blocked(&hostname, port);
 
     if args.open {
         // Best-effort: a failed launch (headless, no opener) is not
@@ -411,10 +509,11 @@ fn serve_standalone(format: OutputFormat, args: &ServeArgs) -> Result<ExitCode> 
     emit(format, &ServeResult {
         schema_version: 1,
         project: project_root,
-        hostname,
+        hostname: hostname.clone(),
         url: url.clone(),
         port,
     })?;
+    warn_if_dns_blocked(&hostname, port);
     if args.open {
         let _ = open_url(&url);
     }
@@ -453,7 +552,96 @@ fn windows_unsupported(feature: &str) -> Result<ExitCode> {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_url, derive_hostname, resolve_web_root, sanitize_tenant};
+    use super::{
+        build_url, derive_hostname, dns_verdict, dns_warning, resolve_web_root, sanitize_tenant,
+        DnsVerdict,
+    };
+    use std::net::SocketAddr;
+
+    /// Classify a successful resolution of the given addresses.
+    fn verdict_of(strs: &[&str]) -> DnsVerdict {
+        let addrs: Vec<SocketAddr> = strs.iter().map(|s| s.parse().unwrap()).collect();
+        dns_verdict(std::io::Result::Ok(addrs))
+    }
+
+    #[test]
+    fn dns_verdict_loopback_v4_and_v6() {
+        assert_eq!(verdict_of(&["127.0.0.1:80"]), DnsVerdict::Loopback);
+        assert_eq!(verdict_of(&["[::1]:80"]), DnsVerdict::Loopback);
+    }
+
+    #[test]
+    fn dns_verdict_any_loopback_answer_wins() {
+        // A mixed answer set still works — the browser reaches the
+        // loopback address even if others are listed first.
+        assert_eq!(
+            verdict_of(&["93.184.216.34:80", "127.0.0.1:80"]),
+            DnsVerdict::Loopback
+        );
+    }
+
+    #[test]
+    fn dns_verdict_non_loopback_reports_first_address() {
+        assert_eq!(
+            verdict_of(&["93.184.216.34:80", "0.0.0.0:80"]),
+            DnsVerdict::Other("93.184.216.34".parse().unwrap())
+        );
+    }
+
+    #[test]
+    fn dns_verdict_failure_and_empty_are_no_answer() {
+        assert_eq!(
+            dns_verdict(Err::<Vec<SocketAddr>, _>(std::io::Error::other("nx"))),
+            DnsVerdict::NoAnswer
+        );
+        assert_eq!(verdict_of(&[]), DnsVerdict::NoAnswer);
+    }
+
+    #[test]
+    fn resolve_bounded_finds_loopback_via_hosts_file() {
+        // `localhost` comes from /etc/hosts (the `files` nsswitch
+        // source), the same path an applied `hosts apply` override
+        // takes — so this also pins "override present → no warning".
+        assert_eq!(
+            super::resolve_bounded("localhost", 80),
+            Some(DnsVerdict::Loopback)
+        );
+    }
+
+    #[test]
+    fn resolve_bounded_never_loopback_for_reserved_invalid_tld() {
+        // RFC 2606 reserves `.invalid`; honest resolvers answer
+        // NXDOMAIN (→ NoAnswer). Hijacking resolvers may substitute a
+        // search-page IP (→ Other) and dropped queries time out
+        // (→ None) — all of which must not read as working DNS.
+        assert_ne!(
+            super::resolve_bounded("no-such-host.invalid", 80),
+            Some(DnsVerdict::Loopback)
+        );
+    }
+
+    #[test]
+    fn dns_warning_silent_on_loopback() {
+        assert!(dns_warning("shop.bougie.run", &DnsVerdict::Loopback).is_none());
+    }
+
+    #[test]
+    fn dns_warning_names_host_and_fix() {
+        let w = dns_warning("shop.bougie.run", &DnsVerdict::NoAnswer).unwrap();
+        assert!(w.contains("shop.bougie.run"));
+        assert!(w.contains("did not resolve"));
+        #[cfg(unix)]
+        assert!(w.contains("sudo bougie server hosts apply"));
+        #[cfg(not(unix))]
+        assert!(w.contains("drivers\\etc\\hosts"));
+
+        let w = dns_warning(
+            "shop.bougie.run",
+            &DnsVerdict::Other("93.184.216.34".parse().unwrap()),
+        )
+        .unwrap();
+        assert!(w.contains("resolved to 93.184.216.34"));
+    }
 
     #[test]
     fn hostname_swaps_underscores_for_hyphens() {
