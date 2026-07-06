@@ -69,6 +69,21 @@ pub fn upgrade_one(
     install_from_lock(ctx.paths, &tool_dir, InstallOptions { no_dev: true }, None)
         .wrap_err("installing tool dependencies during upgrade")?;
 
+    // Same best-effort native-binary cache warming as `install_into`:
+    // an upgraded launcher package fetches a *new* binary version on
+    // first run, so warm the cache for it now.
+    if let Err(e) = crate::prefetch::prefetch_into_launcher_cache(
+        &tool_dir,
+        &receipt.package,
+        ctx.native_fetcher,
+    ) {
+        eprintln!(
+            "warning: couldn't prefetch `{}`'s native binary ({e:#}); \
+             it will be downloaded on first run",
+            receipt.package
+        );
+    }
+
     // Rebuild bin wrappers. New bin set might differ across versions:
     // names that disappeared get pruned from PATH; new names get
     // symlinked (with `force = true` so a name carried across
