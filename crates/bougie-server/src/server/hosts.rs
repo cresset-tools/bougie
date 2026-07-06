@@ -7,9 +7,13 @@
 //! splice is parameterized on the file path so unit tests can drive
 //! it against a tempfile without root.
 //!
-//! When `[server].manage_etc_hosts = true`, `bougie server add` and
-//! `bougie server remove` invoke this automatically via `sudo`. See
-//! [`spawn_sudo_apply`].
+//! Run without root, `apply` re-execs itself via `sudo` with the
+//! absolute binary path and an explicit `--config` (see [`escalate`]),
+//! so hints can just say `bougie server hosts apply` — no sudo
+//! incantation that would break on `secure_path` or root's different
+//! BOUGIE_HOME. When `[server].manage_etc_hosts = true`, `bougie
+//! server add` and `bougie server remove` invoke this automatically
+//! via [`spawn_sudo_apply`].
 
 use bougie_cli::OutputFormat;
 use bougie_output::output::{emit, Render};
@@ -70,13 +74,7 @@ impl Render for ApplyResult {
 pub fn apply(format: OutputFormat, config_path: &Path) -> Result<ExitCode> {
     let target = etc_hosts_path();
     if requires_root(&target) && !is_root() {
-        eprintln!(
-            "bougie server hosts apply: {} can only be written by root.\n\
-             Run: sudo bougie server hosts apply --config {}",
-            target.display(),
-            config_path.display(),
-        );
-        return Ok(ExitCode::from(1));
+        return escalate(config_path);
     }
     let cfg = config::load(config_path)?;
     let hostnames = hostnames_for_etc_hosts(&cfg);
@@ -92,6 +90,44 @@ pub fn apply(format: OutputFormat, config_path: &Path) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
+/// Re-run ourselves as root to write `/etc/hosts`. We never tell the
+/// user to type `sudo bougie ...` themselves: under sudo the user's
+/// PATH is replaced by `secure_path` (which rarely contains a
+/// user-installed bougie), and root's HOME resolves a different
+/// `BOUGIE_HOME`, so a defaulted `--config` would point at root's
+/// (empty) server.toml. [`spawn_sudo_apply`] sidesteps both by passing
+/// the absolute binary path and the config already resolved in the
+/// user's environment.
+fn escalate(config_path: &Path) -> Result<ExitCode> {
+    // Already running under sudo yet still not root (a sudoers
+    // `runas_default` override, or a whole shell entered via
+    // `sudo -u <user>`): print the manual command instead of looping
+    // through the password prompt forever.
+    if std::env::var_os("SUDO_UID").is_some() {
+        let self_exe = std::env::current_exe().wrap_err("locating bougie binary")?;
+        let config_path = std::path::absolute(config_path)
+            .wrap_err_with(|| format!("resolving {}", config_path.display()))?;
+        eprintln!(
+            "bougie server hosts apply: not root and already under sudo; {DEFAULT_ETC_HOSTS} was not updated.\n\
+             Run manually: sudo {} server hosts apply --config {}",
+            self_exe.display(),
+            config_path.display(),
+        );
+        return Ok(ExitCode::from(1));
+    }
+    eprintln!("bougie: {DEFAULT_ETC_HOSTS} can only be written by root — escalating with sudo");
+    if spawn_sudo_apply(config_path)? {
+        Ok(ExitCode::SUCCESS)
+    } else {
+        eprintln!(
+            "bougie: {DEFAULT_ETC_HOSTS} was NOT updated (sudo failed or was cancelled).\n\
+             To retry: bougie server hosts apply --config {}",
+            config_path.display()
+        );
+        Ok(ExitCode::from(1))
+    }
+}
+
 /// Spawn `sudo <self> server hosts apply --config <abs-path>` and wait
 /// for it. Inherits stdio so sudo can prompt for the user's password.
 ///
@@ -104,19 +140,22 @@ pub fn apply(format: OutputFormat, config_path: &Path) -> Result<ExitCode> {
 /// sudo prompt).
 pub fn spawn_sudo_apply(config_path: &Path) -> Result<bool> {
     let self_exe = std::env::current_exe().wrap_err("locating bougie binary")?;
+    // Absolute so the printed command is honest and the child doesn't
+    // depend on inheriting our cwd.
+    let config_path = std::path::absolute(config_path)
+        .wrap_err_with(|| format!("resolving {}", config_path.display()))?;
     let use_sudo = std::env::var_os("BOUGIE_ETC_HOSTS_PATH").is_none();
     let mut cmd = if use_sudo {
         eprintln!(
-            "bougie: manage_etc_hosts is on — running `sudo {} server hosts apply` to sync /etc/hosts",
-            self_exe.display()
+            "bougie: running `sudo {} server hosts apply --config {}`",
+            self_exe.display(),
+            config_path.display(),
         );
         let mut c = std::process::Command::new("sudo");
         c.arg(&self_exe);
         c
     } else {
-        eprintln!(
-            "bougie: manage_etc_hosts is on (BOUGIE_ETC_HOSTS_PATH set; skipping sudo)"
-        );
+        eprintln!("bougie: BOUGIE_ETC_HOSTS_PATH is set — applying without sudo");
         std::process::Command::new(&self_exe)
     };
     let status = cmd
@@ -124,7 +163,7 @@ pub fn spawn_sudo_apply(config_path: &Path) -> Result<bool> {
         .arg("hosts")
         .arg("apply")
         .arg("--config")
-        .arg(config_path)
+        .arg(&config_path)
         .stdin(std::process::Stdio::inherit())
         .stdout(std::process::Stdio::inherit())
         .stderr(std::process::Stdio::inherit())
@@ -139,7 +178,7 @@ pub fn spawn_sudo_apply(config_path: &Path) -> Result<bool> {
 pub fn print_sudo_failure_hint(config_path: &Path) {
     eprintln!(
         "bougie: /etc/hosts was NOT updated (sudo failed or was cancelled).\n\
-         The server.toml change is committed. To finish: sudo bougie server hosts apply --config {}",
+         The server.toml change is committed. To finish, re-run: bougie server hosts apply --config {}",
         config_path.display()
     );
 }

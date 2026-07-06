@@ -45,8 +45,8 @@ pub struct ServerSection {
     pub max_concurrent_pools: u32,
     pub debug_only_extensions: Vec<String>,
     /// When true, `bougie server add` / `remove` re-sync the bougie
-    /// sentinel block in `/etc/hosts` automatically by spawning
-    /// `sudo bougie server hosts apply` after the server.toml mutation.
+    /// sentinel block in `/etc/hosts` automatically by re-execing
+    /// `server hosts apply` under sudo after the server.toml mutation.
     /// Default `false` — opt-in for users on DNS-rebinding-protected
     /// networks (pi-hole, UniFi/OpenWRT, some corporate DNS) or fully
     /// offline machines.
