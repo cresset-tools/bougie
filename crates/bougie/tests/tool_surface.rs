@@ -460,6 +460,35 @@ fn tool_exec_rejects_wrapper_outside_tools_dir() {
         .stderr(contains("not under"));
 }
 
+/// Regression: `magequery --help` execs `bougie tool-exec <wrapper>
+/// --help` via the shebang; the leading `--help` belongs to the tool
+/// and must reach the pinned PHP untouched. clap used to claim it and
+/// print the hidden tool-exec help (`trailing_var_arg` only stops flag
+/// parsing after the first non-flag value) — hence the pre-clap
+/// intercept in `main.rs`.
+#[cfg(unix)]
+#[test]
+fn tool_exec_forwards_leading_help_flag_to_the_tool() {
+    use predicates::boolean::PredicateBooleanExt;
+    use std::os::unix::fs::PermissionsExt;
+
+    let env = TestEnv::new();
+    // Stand-in "php" that echoes its argv one-per-line; `execve_replace`
+    // hands it argv[1] = wrapper path, argv[2..] = the user's args.
+    let fake_php = env.home_path().join("fake-php");
+    std::fs::write(&fake_php, "#!/bin/sh\nprintf 'FAKEPHP:%s\\n' \"$@\"\n").unwrap();
+    std::fs::set_permissions(&fake_php, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let tool_dir = make_tool_dir(env.home_path(), "cresset/magequery", &fake_php);
+    let wrapper = tool_dir.join("bin").join("magequery");
+
+    env.bougie()
+        .args(["tool-exec".as_ref(), wrapper.as_os_str(), "--help".as_ref()])
+        .assert()
+        .success()
+        .stdout(contains("FAKEPHP:--help"))
+        .stdout(contains("Runtime shim").not());
+}
+
 #[test]
 fn tool_exec_surfaces_missing_receipt_with_recovery_hint() {
     let env = TestEnv::new();
