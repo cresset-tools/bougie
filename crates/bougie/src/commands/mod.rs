@@ -22,6 +22,7 @@ pub mod format;
 pub mod infer_php;
 pub mod init;
 pub mod lock;
+pub mod native_fetch;
 pub mod node;
 pub mod php_dir;
 pub mod php_find;

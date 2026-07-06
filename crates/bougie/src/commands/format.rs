@@ -13,19 +13,15 @@
 //! from the same mirror→GitHub pair `bougie self update` uses, and
 //! SHA-256-verified against the `.sha256` sidecar dist publishes.
 
-use std::fmt::Write as _;
 use std::fs;
-use std::io::Read as _;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Command, ExitCode};
-use std::time::Duration;
 
 use bougie_platform::target::Triple;
 use eyre::{Result, WrapErr, eyre};
-use flate2::read::GzDecoder;
-use sha2::{Digest, Sha256};
 use std::ffi::OsString;
 
+use super::native_fetch;
 use bougie_paths::Paths;
 
 /// Default pinned wick version (overridable with `BOUGIE_WICK_VERSION`).
@@ -37,9 +33,6 @@ const WICK_VERSION_ENV: &str = "BOUGIE_WICK_VERSION";
 const MIRROR_BASE: &str = "https://releases.bougie.tools/github/wick/releases/download";
 const GITHUB_BASE: &str = "https://github.com/cresset-tools/wick/releases/download";
 const TAG_PREFIX: &str = "wick-v";
-
-#[allow(clippy::duration_suboptimal_units)]
-const HTTP_TIMEOUT: Duration = Duration::from_secs(60);
 
 pub fn run(args: &[OsString]) -> Result<ExitCode> {
     let paths = Paths::from_env()?;
@@ -94,25 +87,25 @@ fn ensure_wick(paths: &Paths, version: &str) -> Result<PathBuf> {
     let extract_root = tmp.path().join("extracted");
     fs::create_dir_all(&extract_root).wrap_err("preparing extract dir")?;
 
-    download(
+    native_fetch::download(
         &client,
         &urls(&tag, &format!("{archive}.sha256")),
         &sha_path,
     )
     .wrap_err("downloading wick sha256 sidecar")?;
-    let expected = parse_sidecar(&sha_path, &archive)?;
+    let expected = native_fetch::parse_sidecar(&sha_path, &archive)?;
 
     println!("bougie format: fetching wick {version} ({target})");
-    download(&client, &urls(&tag, &archive), &archive_path).wrap_err_with(|| {
+    native_fetch::download(&client, &urls(&tag, &archive), &archive_path).wrap_err_with(|| {
         format!(
             "downloading wick {version}. If this 404s, that version may not have published \
              binaries yet — check https://github.com/cresset-tools/wick/releases or pin a \
              different version with {WICK_VERSION_ENV}."
         )
     })?;
-    verify_sha256(&archive_path, &expected)?;
+    native_fetch::verify_sha256(&archive_path, &expected)?;
 
-    extract(&archive_path, &extract_root)?;
+    native_fetch::extract(&archive_path, &extract_root, cfg!(windows))?;
 
     // dist packs archives as `wick-<target>/wick[.exe]`.
     let staged = extract_root
@@ -125,21 +118,7 @@ fn ensure_wick(paths: &Paths, version: &str) -> Result<PathBuf> {
         ));
     }
 
-    // Move into the cache atomically: stage in a sibling temp file in the
-    // final directory, then rename over the target so a concurrent run
-    // never sees a half-written binary.
-    if let Some(parent) = bin.parent() {
-        fs::create_dir_all(parent).wrap_err("creating wick cache dir")?;
-    }
-    let staging = bin.with_extension("partial");
-    fs::copy(&staged, &staging).wrap_err("staging wick binary into cache")?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&staging, fs::Permissions::from_mode(0o755))
-            .wrap_err("marking wick executable")?;
-    }
-    fs::rename(&staging, &bin).wrap_err("installing wick into cache")?;
+    native_fetch::install_file_atomic(&staged, &bin)?;
 
     Ok(bin)
 }
@@ -167,91 +146,4 @@ fn urls(tag: &str, file: &str) -> Vec<String> {
         format!("{MIRROR_BASE}/{tag}/{file}"),
         format!("{GITHUB_BASE}/{tag}/{file}"),
     ]
-}
-
-/// Try each URL in order; succeed on the first that downloads.
-fn download(client: &reqwest::blocking::Client, urls: &[String], dest: &Path) -> Result<()> {
-    let mut last_err = None;
-    for url in urls {
-        match try_download(client, url, dest) {
-            Ok(()) => return Ok(()),
-            Err(e) => last_err = Some(e),
-        }
-    }
-    Err(last_err.unwrap_or_else(|| eyre!("no download URLs provided")))
-}
-
-fn try_download(client: &reqwest::blocking::Client, url: &str, dest: &Path) -> Result<()> {
-    let resp = client
-        .get(url)
-        .timeout(HTTP_TIMEOUT)
-        .send()
-        .wrap_err_with(|| format!("requesting {url}"))?
-        .error_for_status()
-        .wrap_err_with(|| format!("fetching {url}"))?;
-    let bytes = resp
-        .bytes()
-        .wrap_err_with(|| format!("reading body of {url}"))?;
-    fs::write(dest, &bytes).wrap_err_with(|| format!("writing {}", dest.display()))?;
-    Ok(())
-}
-
-/// A `.sha256` sidecar is `<hex>  <filename>`; take the leading hex token.
-fn parse_sidecar(path: &Path, archive_name: &str) -> Result<String> {
-    let body = fs::read_to_string(path).wrap_err("reading sha256 sidecar")?;
-    let hex = body
-        .split_whitespace()
-        .next()
-        .ok_or_else(|| eyre!("empty sha256 sidecar for {archive_name}"))?;
-    if hex.len() != 64 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return Err(eyre!(
-            "malformed sha256 in sidecar for {archive_name}: {hex:?}"
-        ));
-    }
-    Ok(hex.to_ascii_lowercase())
-}
-
-fn verify_sha256(file: &Path, expected: &str) -> Result<()> {
-    let mut f = fs::File::open(file).wrap_err_with(|| format!("opening {}", file.display()))?;
-    let mut hasher = Sha256::new();
-    // sha2 0.11 dropped the `io::Write` impl, so feed it from a chunked
-    // read loop (same approach as `self_update::verify_sha256`).
-    let mut buf = [0u8; 8 * 1024];
-    loop {
-        let n = f
-            .read(&mut buf)
-            .wrap_err_with(|| format!("reading {}", file.display()))?;
-        if n == 0 {
-            break;
-        }
-        hasher.update(&buf[..n]);
-    }
-    let actual = hasher
-        .finalize()
-        .iter()
-        .fold(String::with_capacity(64), |mut acc, b| {
-            let _ = write!(acc, "{b:02x}");
-            acc
-        });
-    if actual != expected {
-        return Err(eyre!(
-            "sha256 mismatch for {}: expected {expected}, got {actual}",
-            file.display()
-        ));
-    }
-    Ok(())
-}
-
-fn extract(archive: &Path, into: &Path) -> Result<()> {
-    let file =
-        fs::File::open(archive).wrap_err_with(|| format!("opening {}", archive.display()))?;
-    if cfg!(windows) {
-        let mut zip = zip::ZipArchive::new(file).wrap_err("opening wick zip archive")?;
-        zip.extract(into).wrap_err("extracting wick zip archive")?;
-    } else {
-        let dec = GzDecoder::new(file);
-        let mut ar = tar::Archive::new(dec);
-        ar.unpack(into).wrap_err("extracting wick tar.gz archive")?;
-    }
-    Ok(())
 }

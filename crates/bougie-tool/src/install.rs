@@ -58,6 +58,10 @@ pub struct InstallOutcome {
     pub tool_dir: PathBuf,
     pub installed_bins: Vec<PathBuf>,
     pub installed_extensions: Vec<String>,
+    /// Launcher-cache path of the tool's prefetched native binary,
+    /// when the package declares `extra.bougie.native-binary` and the
+    /// prefetch succeeded (or the cache was already warm).
+    pub native_binary: Option<PathBuf>,
 }
 
 /// Inject a `resolve_and_write_lock`-shaped callback so the bougie
@@ -100,6 +104,11 @@ pub struct InstallContext<'a> {
     /// without this step, every tool that touches `Phar` /
     /// `mbstring` / `tokenizer` would crash at first use.
     pub php_baseline: &'a resolve::BaselineEnsurer,
+    /// Downloads + verifies + places a launcher package's native
+    /// binary per a [`crate::prefetch::PrefetchPlan`]. Best-effort:
+    /// install/upgrade warn on failure and continue, because the
+    /// launcher's own first-run download remains the fallback.
+    pub native_fetcher: &'a crate::prefetch::NativeFetcher,
 }
 
 /// Where the install lands and whether its bin entries are exposed
@@ -355,6 +364,28 @@ pub fn install_prepared(
         });
     }
 
+    // Best-effort: warm the launcher cache for packages that are thin
+    // wrappers around a native binary (see `crate::prefetch`), so the
+    // tool is actually usable — offline included — right after
+    // install rather than after a surprise first-run download. A
+    // failure here never fails the install; first run stays the
+    // fallback.
+    let native_binary = match crate::prefetch::prefetch_into_launcher_cache(
+        &tool_dir,
+        &plan.package,
+        ctx.native_fetcher,
+    ) {
+        Ok(path) => path,
+        Err(e) => {
+            eprintln!(
+                "warning: couldn't prefetch `{}`'s native binary ({e:#}); \
+                 it will be downloaded on first run",
+                plan.package
+            );
+            None
+        }
+    };
+
     let (entrypoints, installed_bins) =
         emit_bins(paths, &tool_dir, &plan.package, force, expose_on_path)?;
 
@@ -377,6 +408,7 @@ pub fn install_prepared(
         tool_dir,
         installed_bins,
         installed_extensions: extension_names,
+        native_binary,
     })
 }
 

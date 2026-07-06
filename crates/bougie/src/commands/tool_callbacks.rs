@@ -124,6 +124,88 @@ pub fn baseline_ensurer() -> Box<BaselineEnsurer> {
     })
 }
 
+/// Build the `NativeFetcher` callback that warms a launcher package's
+/// binary cache from its `extra.bougie.native-binary` declaration
+/// (see `bougie_tool::prefetch`). Executes a fully-derived
+/// [`PrefetchPlan`](bougie_tool::prefetch::PrefetchPlan): download the
+/// `.sha256` sidecar then the archive (mirror→GitHub order as
+/// declared), verify — including the fail-closed Sigstore bundle check
+/// when the plan carries a signing requirement — then extract and
+/// atomically place the one binary in the launcher's cache slot.
+/// Nothing downloaded is ever executed.
+pub fn native_prefetcher() -> Box<bougie_tool::prefetch::NativeFetcher> {
+    use bougie_tool::prefetch::{ArchiveKind, PrefetchPlan};
+
+    Box::new(|plan: &PrefetchPlan| -> Result<()> {
+        let client = bougie_fetch::default_client()?;
+        let tmp =
+            tempfile::TempDir::new().wrap_err("creating temp dir for native binary download")?;
+
+        let sha_path = tmp.path().join(format!("{}.sha256", plan.archive_name));
+        super::native_fetch::download(&client, &plan.sidecar_urls, &sha_path)
+            .wrap_err("downloading sha256 sidecar")?;
+        let expected = super::native_fetch::parse_sidecar(&sha_path, &plan.archive_name)?;
+
+        eprintln!(
+            "bougie tool: fetching {} {} ({})",
+            plan.name, plan.version, plan.target
+        );
+        let archive_path = tmp.path().join(&plan.archive_name);
+        super::native_fetch::download(&client, &plan.archive_urls, &archive_path)
+            .wrap_err_with(|| format!("downloading {}", plan.archive_name))?;
+        super::native_fetch::verify_sha256(&archive_path, &expected)?;
+
+        // Fail-closed Sigstore verification: when the spec pins a
+        // signing repository, a missing or invalid `{archive}.sig`
+        // bundle aborts the prefetch — no unverified fallback, so a
+        // compromised mirror can't downgrade by serving a 404.
+        if let Some(signing) = &plan.signing {
+            use bougie_index::Verifier as _;
+            let bundle_path = tmp.path().join(format!("{}.sig", plan.archive_name));
+            super::native_fetch::download(&client, &signing.bundle_urls, &bundle_path)
+                .wrap_err_with(|| {
+                    format!(
+                        "downloading the Sigstore bundle for {} (`{}` requires signed \
+                         binaries; refusing to install unverified)",
+                        plan.archive_name, signing.repository
+                    )
+                })?;
+            let bundle =
+                std::fs::read(&bundle_path).wrap_err("reading downloaded Sigstore bundle")?;
+            let archive_bytes = std::fs::read(&archive_path)
+                .wrap_err("reading downloaded archive for verification")?;
+            let label = signing
+                .bundle_urls
+                .first()
+                .map_or("(bundle)", String::as_str);
+            bougie_index::SigstoreBundleVerifier::for_repository(signing.repository.clone())?
+                .verify(label, &archive_bytes, &bundle)?;
+            eprintln!(
+                "bougie tool: Sigstore signature verified ({})",
+                signing.repository
+            );
+        }
+
+        let extract_root = tmp.path().join("extracted");
+        std::fs::create_dir_all(&extract_root).wrap_err("preparing extract dir")?;
+        super::native_fetch::extract(
+            &archive_path,
+            &extract_root,
+            matches!(plan.kind, ArchiveKind::Zip),
+        )?;
+
+        let staged = extract_root.join(&plan.staged_rel);
+        if !staged.is_file() {
+            return Err(eyre::eyre!(
+                "extracted archive is missing the binary at {}",
+                staged.display()
+            ));
+        }
+        super::native_fetch::install_file_atomic(&staged, &plan.cache_file)?;
+        Ok(())
+    })
+}
+
 /// Build the `PhpInstaller` callback. Auto-installs the requested PHP
 /// via `bougie_installer::install::install_php` when the resolved
 /// triplet isn't on disk.

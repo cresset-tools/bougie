@@ -324,6 +324,7 @@ fn run_installer_starter(package: &str, root: &Path, format: OutputFormat) -> Re
     let ext_installer = super::tool_callbacks::extension_installer();
     let tool_requires = super::tool_callbacks::tool_requires_fetcher();
     let php_baseline = super::tool_callbacks::baseline_ensurer();
+    let native_fetcher = super::tool_callbacks::native_prefetcher();
     let ctx = InstallContext {
         paths: &paths,
         resolve_lock,
@@ -332,6 +333,7 @@ fn run_installer_starter(package: &str, root: &Path, format: OutputFormat) -> Re
         ext_installer: ext_installer.as_ref(),
         tool_requires: tool_requires.as_ref(),
         php_baseline: php_baseline.as_ref(),
+        native_fetcher: native_fetcher.as_ref(),
     };
 
     eprintln!("note: scaffolding with `{package}` via bougie tool run…");

@@ -811,6 +811,7 @@ dependencies = [
  "bougie-errors",
  "bougie-fs",
  "bougie-paths",
+ "bougie-platform",
  "bougie-version",
  "composer-semver",
  "eyre",

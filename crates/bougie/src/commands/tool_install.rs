@@ -26,6 +26,10 @@ pub struct ToolInstallResult {
     pub installed_bins: Vec<PathBuf>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub installed_extensions: Vec<String>,
+    /// Launcher-cache path of the prefetched native binary, for tools
+    /// declaring `extra.bougie.native-binary` (e.g. cresset/wick).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_binary: Option<PathBuf>,
 }
 
 impl Render for ToolInstallResult {
@@ -45,7 +49,11 @@ impl Render for ToolInstallResult {
             w,
             "installed {} (php {}){exts} → {bins}",
             self.package, self.php_version
-        )
+        )?;
+        if let Some(native) = &self.native_binary {
+            writeln!(w, "native binary cached at {}", native.display())?;
+        }
+        Ok(())
     }
 }
 
@@ -71,6 +79,7 @@ pub fn run(
     let ext_installer = super::tool_callbacks::extension_installer();
     let tool_requires = super::tool_callbacks::tool_requires_fetcher();
     let php_baseline = super::tool_callbacks::baseline_ensurer();
+    let native_fetcher = super::tool_callbacks::native_prefetcher();
     let ctx = install::InstallContext {
         paths: &paths,
         resolve_lock,
@@ -79,6 +88,7 @@ pub fn run(
         ext_installer: ext_installer.as_ref(),
         tool_requires: tool_requires.as_ref(),
         php_baseline: php_baseline.as_ref(),
+        native_fetcher: native_fetcher.as_ref(),
     };
     let outcome = install::install(&ctx, &req, php_spec, with, force)?;
     emit(
@@ -90,6 +100,7 @@ pub fn run(
             tool_dir: outcome.tool_dir,
             installed_bins: outcome.installed_bins,
             installed_extensions: outcome.installed_extensions,
+            native_binary: outcome.native_binary,
         },
     )?;
     Ok(ExitCode::SUCCESS)

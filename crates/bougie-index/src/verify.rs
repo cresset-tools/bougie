@@ -94,19 +94,31 @@ pub fn describe_trust() -> TrustDescription {
 
 pub struct SigstoreBundleVerifier {
     inner: SigstoreBlockingVerifier,
+    repository: String,
 }
 
 impl std::fmt::Debug for SigstoreBundleVerifier {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SigstoreBundleVerifier")
-            .field("repo", &EXPECTED_REPOSITORY)
+            .field("repo", &self.repository)
             .field("issuer", &EXPECTED_ISSUER)
             .finish_non_exhaustive()
     }
 }
 
 impl SigstoreBundleVerifier {
+    /// Verifier for the live index: pins the php-build-standalone
+    /// build authority.
     pub fn production() -> Result<Self> {
+        Self::for_repository(EXPECTED_REPOSITORY.to_owned())
+    }
+
+    /// Verifier pinning an arbitrary GitHub `owner/name` as the
+    /// signing workflow identity (issuer stays GitHub Actions OIDC).
+    /// Used beyond the index — e.g. `bougie tool install` verifying a
+    /// launcher package's prebuilt binary against the repository its
+    /// `extra.bougie.native-binary` metadata names.
+    pub fn for_repository(repository: String) -> Result<Self> {
         let inner = SigstoreBlockingVerifier::production().map_err(|e| {
             BougieError::IndexSignature {
                 url: "(initialization)".into(),
@@ -115,7 +127,7 @@ impl SigstoreBundleVerifier {
                 hint: "check network connectivity to the Sigstore Public Good Instance, or set BOUGIE_TRUST_ROOT_PATH for a local override (requires the `dev-trust-root` feature, on by default)".into(),
             }
         })?;
-        Ok(Self { inner })
+        Ok(Self { inner, repository })
     }
 }
 
@@ -126,16 +138,17 @@ impl Verifier for SigstoreBundleVerifier {
         // (full inclusion proof + checkpoint), so no mediaType rewrite is
         // needed. The `bundle_v03_media_type_parses_natively` test guards
         // that contract against future dep bumps.
+        let repository = self.repository.as_str();
         let bundle: Bundle = serde_json::from_slice(signature).map_err(|e| {
             BougieError::IndexSignature {
                 url: url.to_owned(),
-                trust_root_fingerprint: format!("sigstore-bundle ({EXPECTED_REPOSITORY})"),
+                trust_root_fingerprint: format!("sigstore-bundle ({repository})"),
                 reason: format!("signature sidecar is not a valid Sigstore Bundle JSON: {e}"),
-                hint: "the index publisher should emit a Sigstore Bundle (mediaType=application/vnd.dev.sigstore.bundle.v0.x+json) at index.json.sig".into(),
+                hint: "the publisher should emit a Sigstore Bundle (mediaType=application/vnd.dev.sigstore.bundle.v0.x+json) as the signature sidecar".into(),
             }
         })?;
 
-        let repo_policy = GitHubWorkflowRepository(EXPECTED_REPOSITORY.into());
+        let repo_policy = GitHubWorkflowRepository(repository.into());
         let issuer_policy = OIDCIssuer(EXPECTED_ISSUER.into());
         let policy: AllOf<'_> =
             AllOf::new([&repo_policy as &dyn VerificationPolicy, &issuer_policy])
@@ -148,9 +161,9 @@ impl Verifier for SigstoreBundleVerifier {
             .map_err(|e| {
                 BougieError::IndexSignature {
                     url: url.to_owned(),
-                    trust_root_fingerprint: format!("sigstore-bundle ({EXPECTED_REPOSITORY})"),
+                    trust_root_fingerprint: format!("sigstore-bundle ({repository})"),
                     reason: format!("Sigstore bundle verification failed: {e}"),
-                    hint: format!("expected the index to be signed by GitHub Actions running in {EXPECTED_REPOSITORY} via OIDC issuer {EXPECTED_ISSUER}; either the index was tampered, the signing identity changed, or the bougie binary's pinned identity is stale"),
+                    hint: format!("expected the payload to be signed by GitHub Actions running in {repository} via OIDC issuer {EXPECTED_ISSUER}; either the payload was tampered, the signing identity changed, or the pinned identity is stale"),
                 }
                 .into()
             })
