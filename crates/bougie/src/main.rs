@@ -64,7 +64,14 @@ fn main() -> ExitCode {
         .name("bougie-main".into())
         .stack_size(16 * 1024 * 1024)
         .spawn(|| {
-            let cli = Cli::parse();
+            // Shebang-driven `tool-exec` never goes through clap: the
+            // argv after the wrapper path belongs to the *tool*, and
+            // clap would claim a leading token that matches one of its
+            // own flags (`magequery --help` printed the hidden
+            // tool-exec help instead of the tool's). See
+            // `commands::tool_exec::cli_from_argv`.
+            let cli = bougie::commands::tool_exec::cli_from_argv(std::env::args_os())
+                .unwrap_or_else(Cli::parse);
             match bougie::run(cli) {
                 Ok(code) => code,
                 Err(err) => {

@@ -414,6 +414,16 @@ pub enum Command {
 
     /// Runtime shim invoked by tool wrappers (`#!.../bougie tool-exec`).
     /// Not for direct CLI use; hidden from `--help`
+    //
+    // The real shebang path never reaches clap: `main.rs` intercepts
+    // `bougie tool-exec <wrapper> …` (see `commands::tool_exec::
+    // cli_from_argv` in the bougie crate) so the tool's args are
+    // forwarded verbatim — clap would claim a leading token matching
+    // one of its registered flags (`--help`, `-v`, `--format`, …)
+    // despite `trailing_var_arg`, which only stops flag parsing after
+    // the first non-flag value. This definition serves the hand-typed
+    // edge cases only (no wrapper, or a leading `-` token): clap's
+    // usage error and this help text.
     #[command(hide = true, name = "tool-exec")]
     ToolExec {
         /// Path to the tool wrapper script the kernel handed us as
