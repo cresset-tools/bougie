@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.46.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.45.0...bougie-v0.46.0) (2026-07-07)
+
+
+### Features
+
+* **diagnose:** service-aware reports reviewed in $EDITOR, markdown wire v2 ([#472](https://github.com/cresset-tools/bougie/issues/472)) ([68323cc](https://github.com/cresset-tools/bougie/commit/68323ccd1af802fd350610e4099d2a8839e3c5d2))
+
 ## [0.45.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.44.0...bougie-v0.45.0) (2026-07-06)
 
 
