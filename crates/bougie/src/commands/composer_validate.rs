@@ -1052,10 +1052,7 @@ fn validate_lock_requirements(
     lock: &Lock,
     errors: &mut Vec<String>,
 ) {
-    for (section, lock_packages) in [
-        ("require", &lock.packages),
-        ("require-dev", &lock.packages_dev),
-    ] {
+    for section in ["require", "require-dev"] {
         let Some(reqs) = obj.get(section).and_then(Value::as_object) else {
             continue;
         };
@@ -1070,9 +1067,10 @@ fn validate_lock_requirements(
             let Ok(constraint) = Constraint::parse(cleaned) else {
                 continue;
             };
-            let locked_pkg = lock_packages
-                .iter()
-                .find(|p| p.name == *dep_name);
+            // Composer may hoist a require-dev dependency into the prod
+            // `packages` section when a prod package also requires it, so a
+            // required package is present if it appears in either section.
+            let locked_pkg = lock.all_packages().find(|p| p.name == *dep_name);
             let Some(pkg) = locked_pkg else {
                 errors.push(format!(
                     "{section}.{dep_name}: required but not present in composer.lock",
@@ -1245,4 +1243,61 @@ fn looks_like_datetime(s: &str) -> bool {
         && bytes[..4].iter().all(u8::is_ascii_digit)
         && bytes[5..7].iter().all(u8::is_ascii_digit)
         && bytes[8..10].iter().all(u8::is_ascii_digit)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn obj_of(v: Value) -> serde_json::Map<String, Value> {
+        v.as_object().expect("object literal").clone()
+    }
+
+    fn lock_of(v: Value) -> Lock {
+        serde_json::from_value(v).expect("valid lock")
+    }
+
+    // A require-dev dependency that Composer hoisted into the prod
+    // `packages` section (because a prod package also requires it) must
+    // not be reported as missing from the lock.
+    #[test]
+    fn requiredev_hoisted_into_prod_packages_is_present() {
+        let manifest = obj_of(serde_json::json!({
+            "require": { "acme/prod": "^1.0" },
+            "require-dev": { "symfony/finder": "^7.0" },
+        }));
+        let lock = lock_of(serde_json::json!({
+            "packages": [
+                { "name": "acme/prod", "version": "1.0.0" },
+                { "name": "symfony/finder", "version": "7.0.0" },
+            ],
+            "packages-dev": [],
+        }));
+
+        let mut errors = Vec::new();
+        validate_lock_requirements(&manifest, &lock, &mut errors);
+        assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+    }
+
+    // A required package genuinely absent from both lock sections is
+    // still reported.
+    #[test]
+    fn requiredev_absent_from_lock_is_reported() {
+        let manifest = obj_of(serde_json::json!({
+            "require-dev": { "acme/missing": "^1.0" },
+        }));
+        let lock = lock_of(serde_json::json!({
+            "packages": [],
+            "packages-dev": [],
+        }));
+
+        let mut errors = Vec::new();
+        validate_lock_requirements(&manifest, &lock, &mut errors);
+        assert_eq!(errors.len(), 1);
+        assert!(
+            errors[0].contains("acme/missing")
+                && errors[0].contains("required but not present"),
+            "unexpected error: {errors:?}",
+        );
+    }
 }
