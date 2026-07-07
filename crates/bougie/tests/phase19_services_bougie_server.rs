@@ -43,13 +43,28 @@ fn server_test_lock() -> MutexGuard<'static, ()> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// Same escape hatch as the other real-service suites: a dev whose
-/// own shared server is live on 7080 can't run these (the
-/// supervisor's pre-start probe refuses the occupied catalog port —
-/// by design, so tests can't silently talk to the real instance).
+/// Skip these when we can't be sure `service up` will bind the catalog
+/// port cleanly. Two triggers:
+///   - `BOUGIE_SKIP_REAL_SERVER` set (the shared escape hatch), or
+///   - 127.0.0.1:7080 already in use.
+///
+/// The second matters because of port fallback: a foreign server on 7080
+/// (the dev's own, or a leftover instance) no longer hard-fails our
+/// `service up` — the supervisor quietly *relocates* our server to a
+/// nearby port. The suite pins 7080 (`wait_for_tcp`, the global control
+/// socket), so a relocated instance would leave the tests silently
+/// talking to the foreign server on 7080 instead of ours. Skipping when
+/// 7080 is taken keeps that from happening and keeps the hardcoded 7080
+/// valid whenever the tests do run (CI, where the port is free).
 fn should_skip() -> bool {
     if std::env::var_os("BOUGIE_SKIP_REAL_SERVER").is_some() {
         eprintln!("skipping: BOUGIE_SKIP_REAL_SERVER set");
+        return true;
+    }
+    // Bind-probe rather than connect: it detects a LISTEN on 7080 even
+    // with nothing yet accepting, and frees the port again immediately.
+    if std::net::TcpListener::bind("127.0.0.1:7080").is_err() {
+        eprintln!("skipping: 127.0.0.1:7080 already in use (a live server owns the catalog port)");
         return true;
     }
     false
@@ -61,8 +76,9 @@ fn stop_daemon(env: &TestEnv) {
         .args(["service", "daemon", "stop"])
         .timeout(STEP_TIMEOUT)
         .assert();
-    // Wait until the shared server actually released 7080 — the
-    // supervisor's pre-start probe hard-fails on an occupied port.
+    // Wait until our server released 7080 before the next test binds it.
+    // `should_skip` guaranteed 7080 was free at start, so the instance we
+    // just stopped is the one holding it.
     common::wait_for_port_free(7080, Duration::from_secs(30));
 }
 

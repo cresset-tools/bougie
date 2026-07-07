@@ -81,11 +81,11 @@ fn services_up_or_dump(env: &TestEnv, proj_path: &Path, extra_args: &[&str]) {
 }
 
 /// Best-effort dump of every log file under
-/// `state/services/rabbitmq/log/` for diagnostics. rabbitmq writes
+/// `state/services/rabbitmq/4.2.6/log/` for diagnostics. rabbitmq writes
 /// multiple files (`rabbit@127.0.0.1.log`, `*_upgrade.log`, etc.)
 /// — we glob the whole dir.
 fn dump_rabbitmq_log(env: &TestEnv, label: &str) {
-    let dir = env.home_path().join("state/services/rabbitmq/log");
+    let dir = env.home_path().join("state/services/rabbitmq/4.2.6/log");
     eprintln!("\n===== rabbitmq logs [{label}] @ {} =====", dir.display());
     let Ok(entries) = fs::read_dir(&dir) else {
         eprintln!("(no log dir yet)");
@@ -134,7 +134,7 @@ fn rabbitmqctl(env: &TestEnv, args: &[&str]) -> (i32, String, String) {
     let ctl = env
         .home_path()
         .join("store/rabbitmq-4.2.6/sbin/rabbitmqctl");
-    let home = env.home_path().join("state/services/rabbitmq/data/home");
+    let home = env.home_path().join("state/services/rabbitmq/4.2.6/data/home");
     let out = Command::new(&ctl)
         .args(args)
         // Mirror bougied's env so we hit the same node.
@@ -146,15 +146,15 @@ fn rabbitmqctl(env: &TestEnv, args: &[&str]) -> (i32, String, String) {
         .env("RABBITMQ_NODE_PORT", "5672")
         .env(
             "RABBITMQ_BASE",
-            env.home_path().join("state/services/rabbitmq/data"),
+            env.home_path().join("state/services/rabbitmq/4.2.6/data"),
         )
         .env(
             "RABBITMQ_MNESIA_BASE",
-            env.home_path().join("state/services/rabbitmq/data/mnesia"),
+            env.home_path().join("state/services/rabbitmq/4.2.6/data/mnesia"),
         )
         .env(
             "RABBITMQ_LOG_BASE",
-            env.home_path().join("state/services/rabbitmq/log"),
+            env.home_path().join("state/services/rabbitmq/4.2.6/log"),
         )
         .output()
         .expect("rabbitmqctl");
@@ -192,7 +192,7 @@ fn up_starts_rabbitmq_and_provisions_vhost_user() {
     // Tenant ledger captures the vhost + username + a hex password.
     let tenants = env
         .home_path()
-        .join("state/services/rabbitmq/tenants.json");
+        .join("state/services/rabbitmq/4.2.6/tenants.json");
     let ledger = fs::read_to_string(&tenants).expect("tenants.json");
     let line = ledger.lines().next().expect("at least one tenant line");
     let t: serde_json::Value = serde_json::from_str(line).unwrap();
@@ -255,7 +255,7 @@ fn down_purge_drops_vhost_and_user() {
     // Tenant ledger should be empty (or missing).
     let tenants = env
         .home_path()
-        .join("state/services/rabbitmq/tenants.json");
+        .join("state/services/rabbitmq/4.2.6/tenants.json");
     let ledger = fs::read_to_string(&tenants).unwrap_or_default();
     assert!(
         ledger.lines().all(|l| l.trim().is_empty()),
@@ -361,7 +361,7 @@ fn re_up_after_plain_down_resyncs_password_to_broker() {
     // Capture password A for sanity-checking the change later.
     let tenants_path = env
         .home_path()
-        .join("state/services/rabbitmq/tenants.json");
+        .join("state/services/rabbitmq/4.2.6/tenants.json");
     let first_ledger = fs::read_to_string(&tenants_path).expect("first tenants.json");
     let first_line = first_ledger.lines().next().expect("first tenant line");
     let pw_a = serde_json::from_str::<serde_json::Value>(first_line).unwrap()["secrets"]

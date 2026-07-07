@@ -73,7 +73,7 @@ fn mariadb_client(env: &TestEnv) -> std::path::PathBuf {
 
 fn mariadb_socket(env: &TestEnv) -> std::path::PathBuf {
     env.home_path()
-        .join("state/services/mariadb/run/mariadb.sock")
+        .join("state/services/mariadb/11.4.4/run/mariadb.sock")
 }
 
 fn wait_for(path: &Path, timeout: Duration) -> bool {
@@ -88,7 +88,7 @@ fn wait_for(path: &Path, timeout: Duration) -> bool {
 }
 
 fn read_tenant(env: &TestEnv) -> serde_json::Value {
-    let p = env.home_path().join("state/services/mariadb/tenants.json");
+    let p = env.home_path().join("state/services/mariadb/11.4.4/tenants.json");
     let ledger = fs::read_to_string(&p).expect("tenants.json should exist");
     let line = ledger.lines().next().expect("at least one tenant");
     serde_json::from_str(line).expect("tenant record is JSON")
@@ -195,7 +195,7 @@ fn second_up_is_idempotent_no_duplicate_tenant() {
         .success();
 
     let ledger = fs::read_to_string(
-        env.home_path().join("state/services/mariadb/tenants.json"),
+        env.home_path().join("state/services/mariadb/11.4.4/tenants.json"),
     )
     .unwrap();
     let n = ledger.lines().filter(|l| !l.trim().is_empty()).count();
@@ -231,7 +231,7 @@ fn two_projects_get_isolated_databases() {
     }
 
     let ledger = fs::read_to_string(
-        env.home_path().join("state/services/mariadb/tenants.json"),
+        env.home_path().join("state/services/mariadb/11.4.4/tenants.json"),
     )
     .unwrap();
     let lines: Vec<_> = ledger.lines().filter(|l| !l.trim().is_empty()).collect();
@@ -321,7 +321,7 @@ fn down_purge_drops_database_and_user() {
         .success();
 
     // Tenant record is gone.
-    let p = env.home_path().join("state/services/mariadb/tenants.json");
+    let p = env.home_path().join("state/services/mariadb/11.4.4/tenants.json");
     let ledger = fs::read_to_string(&p).unwrap_or_default();
     assert!(
         ledger.lines().all(|l| l.trim().is_empty()),
