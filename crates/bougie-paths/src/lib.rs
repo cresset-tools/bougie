@@ -386,7 +386,19 @@ impl Paths {
     /// The `version` segment is what lets two versions of one service
     /// (or a service beside a foreign holder of its default port) keep
     /// separate datadirs, sockets, ledgers, and endpoints.
+    ///
+    /// `server` is the one exception: a shared singleton that is never
+    /// versioned. Its state stays name-only (`.../services/server/`) so a
+    /// bougie upgrade doesn't strand every registered vhost under a stale
+    /// version dir. The `version` argument is ignored for it, and the
+    /// startup migration is likewise exempt. Special-casing here — rather
+    /// than at each call site — keeps every `server` path uniform no
+    /// matter which caller (offline reader, provisioner, supervisor) built
+    /// it.
     pub fn service_dir(&self, name: &str, version: &str) -> PathBuf {
+        if name == "server" {
+            return self.service_name_dir(name);
+        }
         self.service_name_dir(name).join(version)
     }
     /// Per-instance durable data (mariadb datadir, redis dump, …).
@@ -787,6 +799,27 @@ mod tests {
         assert_eq!(
             p.service_endpoint("redis", "8.6.3"),
             Path::new("/h/state/services/redis/8.6.3/endpoint.json")
+        );
+    }
+
+    #[test]
+    fn server_state_is_name_only_never_versioned() {
+        let p = Paths::new(PathBuf::from("/h"), PathBuf::from("/c"));
+        // The version argument is ignored for the shared singleton server —
+        // its state must survive a bougie upgrade in place.
+        assert_eq!(p.service_dir("server", "0.45.0"), Path::new("/h/state/services/server"));
+        assert_eq!(p.service_dir("server", "0.99.0"), Path::new("/h/state/services/server"));
+        assert_eq!(
+            p.service_conf("server", "0.45.0"),
+            Path::new("/h/state/services/server/conf")
+        );
+        assert_eq!(
+            p.service_tenants("server", "0.45.0"),
+            Path::new("/h/state/services/server/tenants.json")
+        );
+        assert_eq!(
+            p.service_log_file("server", "0.45.0"),
+            Path::new("/h/state/services/server/log/server.log")
         );
     }
 
