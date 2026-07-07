@@ -148,7 +148,24 @@ fn format_binding(paths: &Paths, name: &str, binding: &Value) -> String {
         Some("tcp") => binding
             .get("port")
             .and_then(Value::as_u64)
-            .map_or_else(|| "-".into(), |p| format!("tcp 127.0.0.1:{p}")),
+            .and_then(|p| u16::try_from(p).ok())
+            .map_or_else(
+                || "-".into(),
+                |default| {
+                    // Report where the instance actually landed — the
+                    // effective port from endpoint.json, which differs
+                    // from the catalog default when it was relocated off
+                    // an occupied port.
+                    let version = bougie_daemon::daemon::catalog::default_version(name);
+                    let port =
+                        bougie_daemon::daemon::endpoint::effective_primary(paths, name, version, default);
+                    if port == default {
+                        format!("tcp 127.0.0.1:{port}")
+                    } else {
+                        format!("tcp 127.0.0.1:{port} (relocated from {default})")
+                    }
+                },
+            ),
         Some("unix_socket") => binding
             .get("sockname")
             .and_then(Value::as_str)
@@ -336,6 +353,30 @@ mod tests {
         assert_eq!(format_binding(&paths, "x", &json!({"kind": "none"})), "-");
         assert_eq!(format_binding(&paths, "x", &Value::Null), "-");
         assert_eq!(format_binding(&paths, "x", &json!({"kind": "tcp"})), "-");
+    }
+
+    #[test]
+    fn format_binding_surfaces_a_relocated_port() {
+        use bougie_daemon::daemon::{catalog, endpoint::ServiceEndpoint};
+
+        let home = tempfile::TempDir::new().unwrap();
+        let paths = Paths::new(home.path().to_path_buf(), home.path().join("cache"));
+        let version = catalog::default_version("opensearch");
+
+        // The instance was relocated off a squatted 9200 and recorded 9207.
+        ServiceEndpoint::new(9207)
+            .save(&paths.service_endpoint("opensearch", version))
+            .unwrap();
+        assert_eq!(
+            format_binding(&paths, "opensearch", &json!({"kind": "tcp", "port": 9200})),
+            "tcp 127.0.0.1:9207 (relocated from 9200)"
+        );
+
+        // A service with no endpoint.json still shows the catalog default.
+        assert_eq!(
+            format_binding(&paths, "rabbitmq", &json!({"kind": "tcp", "port": 5672})),
+            "tcp 127.0.0.1:5672"
+        );
     }
 
     #[test]

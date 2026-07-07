@@ -87,6 +87,15 @@ impl Env {
         std::fs::write(log_dir.join(format!("{service}.log")), contents).unwrap();
     }
 
+    /// Plant a recorded `endpoint.json` for an instance so the offline
+    /// collectors surface its relocated port instead of the catalog default.
+    fn plant_endpoint(&self, service: &str, primary: u16) {
+        let version = bougie_daemon::daemon::catalog::default_version(service);
+        let dir = self.home.path().join("state/services").join(service).join(version);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("endpoint.json"), format!(r#"{{"primary":{primary}}}"#)).unwrap();
+    }
+
     /// A fake $EDITOR: a shell script receiving the draft path as $1.
     fn editor_script(&self, body: &str) -> PathBuf {
         use std::os::unix::fs::PermissionsExt as _;
@@ -258,6 +267,31 @@ fn report_carries_service_log_tail_and_ports_offline() {
     assert!(report.contains("bougied: not running"), "{report}");
     // Ports table probes the catalog binding + the epmd sidecar.
     assert!(report.contains("| 5672 | rabbitmq |"), "{report}");
+    assert!(report.contains("| 4369 | rabbitmq (epmd) |"), "{report}");
+
+    env.assert_no_daemon_spawned(&String::from_utf8_lossy(&out.stderr));
+}
+
+#[test]
+fn ports_section_reports_the_relocated_port_offline() {
+    let env = Env::new();
+    let proj = env.project_with_failure();
+    // rabbitmq relocated off a squatted 5672 and recorded 5673 in its
+    // endpoint.json — the offline collector must read that, not the
+    // catalog default.
+    env.plant_endpoint("rabbitmq", 5673);
+
+    let out = env.bougie().args(["diagnose", "--issue"]).current_dir(&proj).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let report = read_issue_file(&proj);
+
+    // The binding line surfaces the relocated port and names where it moved
+    // from, so a reader chasing a stale config still recognises the service.
+    assert!(report.contains("tcp 127.0.0.1:5673 (relocated from 5672)"), "{report}");
+    // The ports table probes the relocated port, not the stale default.
+    assert!(report.contains("| 5673 | rabbitmq |"), "{report}");
+    assert!(!report.contains("| 5672 | rabbitmq |"), "stale default must not appear: {report}");
+    // epmd is a fixed sidecar — it doesn't relocate with the primary.
     assert!(report.contains("| 4369 | rabbitmq (epmd) |"), "{report}");
 
     env.assert_no_daemon_spawned(&String::from_utf8_lossy(&out.stderr));
