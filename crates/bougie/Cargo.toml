@@ -35,6 +35,14 @@ name = "fake-redis"
 path = "tests/fixtures/fake_redis.rs"
 required-features = ["test-fixtures"]
 
+# A tiny loopback-TCP service (Mailpit-shaped) for the port-fallback
+# integration test — binds --smtp/--listen and answers the HTTP health
+# probe. Same test-fixtures gating as fake-redis so installs skip it.
+[[bin]]
+name = "fake-tcp-service"
+path = "tests/fixtures/fake_tcp_service.rs"
+required-features = ["test-fixtures"]
+
 # Opt this crate back into dist (workspace default in dist-workspace.toml
 # is `dist = false` because the other 24 crates are libraries that
 # shouldn't ship binaries). Only `bougie` produces the user-facing
