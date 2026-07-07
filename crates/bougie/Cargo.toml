@@ -112,6 +112,9 @@ sandbox-run = { workspace = true }
 # safe Rust — the unsafe handler registration lives inside the crate.
 signal-hook = "0.3"
 
+# statvfs for `bougie diagnose`'s disk-free line.
+rustix = { version = "1.0", default-features = false, features = ["std", "fs"] }
+
 # --- External deps still used directly by the bin (CLI dispatch,
 #     commands/ handlers, the unzip-shim role, etc.) ---
 

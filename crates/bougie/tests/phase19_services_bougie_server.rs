@@ -43,13 +43,27 @@ fn server_test_lock() -> MutexGuard<'static, ()> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+/// Same escape hatch as the other real-service suites: a dev whose
+/// own shared server is live on 7080 can't run these (the
+/// supervisor's pre-start probe refuses the occupied catalog port —
+/// by design, so tests can't silently talk to the real instance).
+fn should_skip() -> bool {
+    if std::env::var_os("BOUGIE_SKIP_REAL_SERVER").is_some() {
+        eprintln!("skipping: BOUGIE_SKIP_REAL_SERVER set");
+        return true;
+    }
+    false
+}
+
 fn stop_daemon(env: &TestEnv) {
     let _ = env
         .bougie()
         .args(["service", "daemon", "stop"])
         .timeout(STEP_TIMEOUT)
         .assert();
-    std::thread::sleep(Duration::from_millis(500));
+    // Wait until the shared server actually released 7080 — the
+    // supervisor's pre-start probe hard-fails on an occupied port.
+    common::wait_for_port_free(7080, Duration::from_secs(30));
 }
 
 fn wait_for_tcp(addr: &str, timeout: Duration) -> bool {
@@ -101,6 +115,9 @@ fn control_socket_path() -> std::path::PathBuf {
 
 #[test]
 fn up_brings_server_online_and_registers_host() {
+    if should_skip() {
+        return;
+    }
     let _guard = server_test_lock();
     let env = TestEnv::new();
     let proj = project_with_composer("acme/blog");
@@ -163,6 +180,9 @@ fn up_brings_server_online_and_registers_host() {
 
 #[test]
 fn two_projects_share_one_server_with_distinct_hosts() {
+    if should_skip() {
+        return;
+    }
     let _guard = server_test_lock();
     let env = TestEnv::new();
     let pa = project_with_composer("acme/blog");
@@ -201,6 +221,9 @@ fn two_projects_share_one_server_with_distinct_hosts() {
 
 #[test]
 fn down_purge_drops_host_block() {
+    if should_skip() {
+        return;
+    }
     let _guard = server_test_lock();
     let env = TestEnv::new();
     let proj = project_with_composer("acme/blog");
@@ -256,6 +279,9 @@ fn up_fails_with_actionable_hint_when_no_docroot() {
     // Project has neither `pub` nor `public` and no project config:
     // `bougie up` must surface a clear error pointing at the two
     // configurable escape hatches.
+    if should_skip() {
+        return;
+    }
     let _guard = server_test_lock();
     let env = TestEnv::new();
     let proj = TempDir::new().expect("project tempdir");
@@ -301,6 +327,9 @@ fn explicit_root_in_composer_extra_overrides_autodetect() {
     // candidates. Project has `pub/` (highest auto-detect priority)
     // but the config points at `web/`; the host block must take the
     // configured value.
+    if should_skip() {
+        return;
+    }
     let _guard = server_test_lock();
     let env = TestEnv::new();
     let proj = TempDir::new().expect("project tempdir");
@@ -340,6 +369,9 @@ fn explicit_root_in_composer_extra_overrides_autodetect() {
 
 #[test]
 fn bougie_run_exports_server_env_vars() {
+    if should_skip() {
+        return;
+    }
     let _guard = server_test_lock();
     let env = TestEnv::new();
     let proj = project_with_composer("acme/blog");

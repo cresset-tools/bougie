@@ -26,6 +26,12 @@ pub struct LastFailure {
     pub exit_code: u8,
     /// The eyre chain, outermost first, messages verbatim.
     pub chain: Vec<String>,
+    /// Root of the project the failing command ran in, when one was
+    /// found around the cwd (schema 2). Lets `bougie diagnose` report
+    /// on the right project's services even when invoked from another
+    /// directory. Schema-1 files simply lack the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_dir: Option<PathBuf>,
 }
 
 pub fn path(cache_root: &Path) -> PathBuf {
@@ -35,9 +41,11 @@ pub fn path(cache_root: &Path) -> PathBuf {
 /// Record the failure. Best-effort by contract — diagnostics capture
 /// must never compound the original error.
 pub fn record(err: &eyre::Report) {
-    let Ok(paths) = bougie_paths::Paths::from_env() else { return };
+    let Ok(paths) = bougie_paths::Paths::from_env() else {
+        return;
+    };
     let failure = LastFailure {
-        schema: 1,
+        schema: 2,
         ts_epoch: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_secs()),
@@ -47,6 +55,9 @@ pub fn record(err: &eyre::Report) {
         category: bougie_telemetry::outcome_for_error(err).to_owned(),
         exit_code: exit_code_for(err),
         chain: err.chain().map(ToString::to_string).collect(),
+        project_dir: std::env::current_dir()
+            .ok()
+            .and_then(|cwd| project_root_near(&cwd)),
     };
     let target = path(paths.cache());
     if let Some(parent) = target.parent() {
@@ -57,8 +68,23 @@ pub fn record(err: &eyre::Report) {
     }
 }
 
-/// Load the recorded failure, if any.
+/// Load the recorded failure, if any. Schema 1 and 2 both parse
+/// (`project_dir` defaults to absent).
 pub fn load(cache_root: &Path) -> Option<LastFailure> {
     let raw = std::fs::read_to_string(path(cache_root)).ok()?;
     serde_json::from_str(&raw).ok()
+}
+
+/// Walk from `dir` upward for a project marker. Mirrors
+/// `commands::service::config_mut::locate_project_root`, but
+/// infallible and cross-platform (that helper lives behind
+/// `cfg(unix)` with the services stack).
+pub fn project_root_near(dir: &Path) -> Option<PathBuf> {
+    dir.ancestors()
+        .find(|anc| {
+            anc.join("bougie.toml").is_file()
+                || anc.join("composer.json").is_file()
+                || bougie_paths::project::is_root(anc)
+        })
+        .map(Path::to_path_buf)
 }

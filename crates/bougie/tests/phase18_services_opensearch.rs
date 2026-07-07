@@ -51,9 +51,11 @@ fn stop_daemon(env: &TestEnv) {
         .args(["service", "daemon", "stop"])
         .timeout(STEP_TIMEOUT)
         .assert();
-    // Give opensearch a chance to wind down before the next test's
-    // BOUGIE_HOME (and its 9200 port) tries to come up.
-    std::thread::sleep(Duration::from_millis(1500));
+    // Wait until opensearch actually released 9200 — the supervisor's
+    // pre-start probe hard-fails on an occupied port, so the next
+    // test's `up` needs the listener genuinely gone, not "probably
+    // gone after a nap".
+    common::wait_for_port_free(9200, Duration::from_secs(30));
 }
 
 /// Run `bougie service up` for the project and panic on failure

@@ -516,10 +516,7 @@ async fn dispatch_logs(
             write_terminal(write_half, &frame).await;
             return;
         };
-        let log_path = state
-            .paths
-            .service_log(entry.name)
-            .join(format!("{}.log", entry.name));
+        let log_path = state.paths.service_log_file(entry.name);
         targets.push((entry.name, log_path));
     }
 
@@ -946,9 +943,11 @@ async fn tcp_port_in_use(port: u16) -> bool {
 
 /// Stream a `warning: …` stderr frame for every TCP-bound service whose
 /// port is already in use by a foreign process. Advisory only: the start
-/// still proceeds (and surfaces a hard error if the bind genuinely
-/// collides). A disconnected client just drops the warnings — we ignore
-/// the write result.
+/// still proceeds into `spawn_service`, whose pre-start bind probe then
+/// fails with the authoritative error naming the holder. This early pass
+/// exists because it covers *every* requested service (and transitive
+/// deps) up front, before the first slow tarball fetch. A disconnected
+/// client just drops the warnings — we ignore the write result.
 async fn preflight_port_warnings(
     write_half: &mut tokio::net::unix::OwnedWriteHalf,
     state: &Arc<DaemonState>,

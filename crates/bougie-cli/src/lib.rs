@@ -456,15 +456,28 @@ pub enum Command {
     TelemetryFlush,
 
     /// Assemble a shareable diagnostic report from the last failure
-    /// (shown in full for review; nothing is sent without confirmation)
+    /// (reviewed in $EDITOR; nothing is sent without confirmation)
     #[command(display_order = 43)]
     Diagnose {
-        /// Render a prefilled GitHub issue instead of uploading
+        /// Write the report to ./bougie-diagnose.md for a GitHub issue
+        /// instead of uploading
         #[arg(long)]
         issue: bool,
-        /// Upload without the interactive confirmation
+        /// Upload without the interactive confirmation (skips the
+        /// editor unless --edit is also given)
         #[arg(short = 'y', long)]
         yes: bool,
+        /// Open the report in $EDITOR before sending, even with --yes
+        #[arg(long, conflicts_with = "no_edit")]
+        edit: bool,
+        /// Skip the $EDITOR pass; print the report and confirm instead
+        #[arg(long)]
+        no_edit: bool,
+        /// Project whose services to report on (default: the project
+        /// around the current directory, or the one recorded with the
+        /// last failure)
+        #[arg(long, value_name = "DIR")]
+        project: Option<std::path::PathBuf>,
         /// Re-run a bougie command with debug logging captured:
         /// `bougie diagnose -- sync --offline`
         #[arg(allow_hyphen_values = true, last = true)]

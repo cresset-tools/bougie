@@ -446,6 +446,23 @@ impl Supervisor {
             svc.restart_at = None;
         }
 
+        // Fail fast on an occupied catalog port BEFORE spawning: the
+        // service would only crash against EADDRINUSE with a
+        // buried-in-the-log message, while this probe can name the
+        // squatter while it's still alive. Auto-restarts keep their
+        // backoff retries (the ticker treats this error like any other
+        // start failure), so a conflict that clears is recovered from.
+        if let Binding::Tcp { port } = entry.binding
+            && super::ports::port_in_use(port)
+        {
+            return Err(eyre!(
+                "port {port} is already in use by {} — `{}` cannot start; \
+                 stop whatever is listening on 127.0.0.1:{port} and retry",
+                super::ports::describe_holder(port),
+                entry.name,
+            ));
+        }
+
         // All immutable-self work first so we can later take a single
         // mutable borrow without conflicting with these reads.
         //
@@ -460,10 +477,7 @@ impl Supervisor {
             .wrap_err_with(|| format!("compiling sandbox policy for {}", entry.name))?;
         let binary = self.binary_path(entry)?;
         let args = render_exec_args(entry, &self.paths);
-        let log_path = self
-            .paths
-            .service_log(entry.name)
-            .join(format!("{}.log", entry.name));
+        let log_path = self.paths.service_log_file(entry.name);
         // Open the LogWriter eagerly — confirms the parent dir is
         // writable before we fork a child. Wrap in Arc<Mutex<…>> so
         // the two stdio forwarder tasks (stdout, stderr) can share
@@ -1441,9 +1455,13 @@ async fn wait_for_health(name: &str, paths: &Paths, child: &mut Child) -> Result
         // someone else is on it) could look "Running" to us simply
         // because *some* server answers on 9200.
         if let Ok(Some(status)) = child.try_wait() {
+            // Give the pipe forwarders a beat to drain the child's
+            // last words into the log before quoting it.
+            tokio::time::sleep(LOG_DRAIN_GRACE).await;
             return Err(eyre!(
                 "service `{name}` exited during startup (status {status}); \
-                 check `bougie service logs {name}` for the reason"
+                 check `bougie service logs {name}` for the full log{}",
+                startup_log_excerpt(name, paths),
             ));
         }
         // Protocol-aware readiness (see `health::probe`): a service is
@@ -1456,11 +1474,45 @@ async fn wait_for_health(name: &str, paths: &Paths, child: &mut Child) -> Result
         if Instant::now() >= deadline {
             return Err(eyre!(
                 "service `{name}` did not become healthy within {timeout:?} \
-                 (last probe: {last_err:#}); check `bougie service logs {name}`"
+                 (last probe: {last_err:#}); check `bougie service logs {name}`{}",
+                startup_log_excerpt(name, paths),
             ));
         }
         tokio::time::sleep(HEALTH_POLL).await;
     }
+}
+
+/// Pause between noticing a startup exit and quoting the service log,
+/// so the stdio forwarder tasks have flushed the child's final output.
+const LOG_DRAIN_GRACE: Duration = Duration::from_millis(250);
+
+/// Lines quoted from a failing service's log into the start error.
+const STARTUP_LOG_EXCERPT_LINES: usize = 15;
+/// Byte cap on the quoted excerpt — a service spewing one enormous
+/// line must not balloon the error chain.
+const STARTUP_LOG_EXCERPT_BYTES: usize = 4 * 1024;
+
+/// The last few service-log lines, formatted for embedding in a start
+/// error (so the *cause* — an EADDRINUSE, a bad config line — travels
+/// with the failure into `status`, `bougied.log`, and `bougie
+/// diagnose` instead of staying buried on the daemon host). Empty
+/// string when there is no log to quote.
+fn startup_log_excerpt(name: &str, paths: &Paths) -> String {
+    let lines = super::logs::tail_lines(&paths.service_log_file(name), STARTUP_LOG_EXCERPT_LINES)
+        .unwrap_or_default();
+    let mut excerpt = String::new();
+    for line in &lines {
+        let line = line.trim_end_matches(['\n', '\r']);
+        if excerpt.len() + line.len() > STARTUP_LOG_EXCERPT_BYTES {
+            break;
+        }
+        excerpt.push_str("\n  ");
+        excerpt.push_str(line);
+    }
+    if excerpt.is_empty() {
+        return excerpt;
+    }
+    format!("; last log lines:{excerpt}")
 }
 
 /// Read one `pgid=<n>\n` line from the babysit's control socket. Used
@@ -1745,6 +1797,7 @@ pub async fn start_service(sup: &Shared, name: &str) -> Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fmt::Write as _;
 
     #[test]
     fn start_order_solo_service() {
@@ -1863,6 +1916,77 @@ mod tests {
         // lifetime without threading the guard through every assertion.
         let path: std::path::PathBuf = tmp.keep();
         Supervisor::new(Paths::new(path.clone(), path))
+    }
+
+    #[tokio::test]
+    async fn spawn_refuses_when_catalog_port_is_squatted() {
+        let mut sup = test_supervisor();
+        // Squat rabbitmq's AMQP port. If something else already holds
+        // it the probe below still reads "in use" and the assertion is
+        // unaffected; only a sandbox that forbids loopback binds
+        // entirely makes the scenario unbuildable — skip then.
+        let _squat = std::net::TcpListener::bind("127.0.0.1:5672").ok();
+        if !crate::daemon::ports::port_in_use(5672) {
+            return;
+        }
+        let err = sup.spawn_service("rabbitmq").await.unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("port 5672 is already in use"), "{msg}");
+        assert!(msg.contains("rabbitmq"), "{msg}");
+        // Fails before any tarball/store work — the whole point is a
+        // crisp pre-spawn error, not an EADDRINUSE crash loop.
+        assert!(!msg.contains("tarball"), "{msg}");
+    }
+
+    #[test]
+    fn startup_log_excerpt_is_empty_without_a_log() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path: std::path::PathBuf = tmp.keep();
+        let paths = Paths::new(path.clone(), path);
+        assert_eq!(startup_log_excerpt("redis", &paths), "");
+    }
+
+    #[test]
+    fn startup_log_excerpt_quotes_last_lines() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path: std::path::PathBuf = tmp.keep();
+        let paths = Paths::new(path.clone(), path);
+        let log = paths.service_log_file("redis");
+        std::fs::create_dir_all(log.parent().unwrap()).unwrap();
+        let mut contents = String::new();
+        for i in 0..40 {
+            let _ = writeln!(contents, "line {i}");
+        }
+        contents.push_str("Address already in use: 127.0.0.1:6379\n");
+        std::fs::write(&log, contents).unwrap();
+        let excerpt = startup_log_excerpt("redis", &paths);
+        assert!(excerpt.starts_with("; last log lines:"), "{excerpt}");
+        assert!(excerpt.contains("Address already in use"), "{excerpt}");
+        // Only the tail is quoted.
+        assert!(!excerpt.contains("line 0\n"), "{excerpt}");
+    }
+
+    #[tokio::test]
+    async fn startup_exit_error_quotes_the_service_log() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path: std::path::PathBuf = tmp.keep();
+        let paths = Paths::new(path.clone(), path);
+        let log = paths.service_log_file("redis");
+        std::fs::create_dir_all(log.parent().unwrap()).unwrap();
+        std::fs::write(&log, "BOOT FAILED: Address already in use\n").unwrap();
+        // Stand-in for a babysit whose service died at startup.
+        let mut child = tokio::process::Command::new("sh")
+            .args(["-c", "exit 3"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn sh");
+        let err = wait_for_health("redis", &paths, &mut child).await.unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("exited during startup"), "{msg}");
+        assert!(msg.contains("BOOT FAILED: Address already in use"), "{msg}");
+        assert!(msg.contains("bougie service logs redis"), "{msg}");
     }
 
     /// A live child handle to stand in for a babysit in finalize tests.
