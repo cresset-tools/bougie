@@ -57,12 +57,25 @@ async fn probe_inner(name: &str, paths: &Paths) -> Result<()> {
             let sock = socket_path(entry, paths)?;
             super::provisioners::mariadb::health(paths, &sock).await
         }
-        "opensearch" => super::provisioners::opensearch::health().await,
+        "opensearch" => {
+            let port =
+                super::endpoint::effective_primary(paths, "opensearch", &entry.version, 9200);
+            super::provisioners::opensearch::health(port).await
+        }
         "rabbitmq" => super::provisioners::rabbitmq::health(paths).await,
         // Mailpit's binding is the SMTP port, which has no cheap protocol
         // ping; probe the web UI instead (it comes up alongside SMTP) and
-        // accept any 2xx.
-        "mailpit" => http_get(catalog::MAILPIT_HTTP_PORT, "/").await,
+        // accept any 2xx. The web UI rides on the effective `http` port.
+        "mailpit" => {
+            let http = super::endpoint::effective_extra(
+                paths,
+                "mailpit",
+                &entry.version,
+                "http",
+                catalog::MAILPIT_HTTP_PORT,
+            );
+            http_get(http, "/").await
+        }
         // The dev server is deliberately left on the binding connect (see
         // the fallback below): its readiness is "the listener is bound +
         // control socket up", which happens *before* any project host is
@@ -95,10 +108,13 @@ async fn connect(entry: &CatalogEntry, paths: &Paths) -> Result<()> {
                     )
                 })
         }
-        Binding::Tcp { port } => tokio::net::TcpStream::connect(("127.0.0.1", port))
-            .await
-            .map(drop)
-            .map_err(|e| eyre!("connecting to {} on 127.0.0.1:{port}: {e}", entry.name)),
+        Binding::Tcp { port } => {
+            let port = super::endpoint::effective_primary(paths, entry.name, &entry.version, port);
+            tokio::net::TcpStream::connect(("127.0.0.1", port))
+                .await
+                .map(drop)
+                .map_err(|e| eyre!("connecting to {} on 127.0.0.1:{port}: {e}", entry.name))
+        }
         // Runtime-only deps (jdk, erlang) are never reachable as services.
         Binding::None => Ok(()),
     }

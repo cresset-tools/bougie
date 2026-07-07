@@ -47,7 +47,16 @@ pub fn tenant_service_env(
     // host/port (Magento's `setup:install --opensearch-host
     // --opensearch-port`, etc.) read these directly instead of
     // parsing URL bytes in shell.
-    if let Binding::Tcp { port } = entry.binding {
+    // Effective primary TCP port — relocated when the catalog default was
+    // taken, read from the instance's endpoint.json; falls back to the
+    // catalog default when unrecorded (works offline, no daemon needed).
+    let tcp_port = match entry.binding {
+        Binding::Tcp { port } => {
+            Some(crate::daemon::endpoint::effective_primary(paths, entry.name, &entry.version, port))
+        }
+        Binding::UnixSocket { .. } | Binding::None => None,
+    };
+    if let Some(port) = tcp_port {
         vars.insert(format!("{prefix}HOST"), Value::String(LOOPBACK.into()));
         vars.insert(format!("{prefix}PORT"), Value::String(port.to_string()));
     }
@@ -87,7 +96,7 @@ pub fn tenant_service_env(
             // URL composed from the catalog port (set above as
             // _HOST/_PORT). Surface the tenant's reserved index
             // prefix so apps build `<prefix>articles` etc.
-            if let Binding::Tcp { port } = entry.binding {
+            if let Some(port) = tcp_port {
                 vars.insert(
                     format!("{prefix}URL"),
                     Value::String(format!("http://{LOOPBACK}:{port}")),
@@ -101,7 +110,7 @@ pub fn tenant_service_env(
             // Root URL alongside the tenant's reserved hostname
             // so apps can build absolute redirects without
             // re-encoding the suffix.
-            if let Binding::Tcp { port } = entry.binding {
+            if let Some(port) = tcp_port {
                 vars.insert(
                     format!("{prefix}URL"),
                     Value::String(format!("http://{LOOPBACK}:{port}")),
@@ -126,7 +135,7 @@ pub fn tenant_service_env(
                 .and_then(|v| v.as_str())
                 .unwrap_or(&tenant.tenant);
             let pw = tenant.secrets.get("password").cloned().unwrap_or_default();
-            if let Binding::Tcp { port } = entry.binding {
+            if let Some(port) = tcp_port {
                 let url = format!(
                     "amqp://{}:{}@{LOOPBACK}:{port}/{}",
                     urlencode(user),
@@ -147,7 +156,7 @@ pub fn tenant_service_env(
             // style DSN from the same port so apps can splice
             // `MAILER_DSN` directly (no auth — the dev sink accepts
             // any/no credentials).
-            if let Binding::Tcp { port } = entry.binding {
+            if let Some(port) = tcp_port {
                 vars.insert(
                     format!("{prefix}DSN"),
                     Value::String(format!("smtp://{LOOPBACK}:{port}")),
@@ -158,7 +167,7 @@ pub fn tenant_service_env(
             // it explicitly so `bougie run` users can open it.
             vars.insert(
                 format!("{prefix}DASHBOARD_URL"),
-                Value::String(format!("http://{LOOPBACK}:{}", catalog::MAILPIT_HTTP_PORT)),
+                Value::String(format!("http://{LOOPBACK}:{}", crate::daemon::endpoint::effective_extra(paths, "mailpit", &entry.version, "http", catalog::MAILPIT_HTTP_PORT))),
             );
         }
         _ => {}

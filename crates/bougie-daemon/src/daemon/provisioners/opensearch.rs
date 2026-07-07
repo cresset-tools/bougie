@@ -22,7 +22,6 @@ use tokio::time::Instant;
 /// Loopback URL the supervisor binds opensearch to. The catalog pins
 /// the port at 9200 (`Binding::Tcp { port: 9200 }`); keep this in
 /// lockstep if it ever moves.
-const OPENSEARCH_BASE_URL: &str = "http://127.0.0.1:9200";
 
 /// HTTP timeout for every provisioning call. Index-template PUT is
 /// usually <100ms on local; the generous cap covers cluster-state
@@ -160,7 +159,7 @@ async fn rewrite_jvm_options(path: &Path, data_dir: &Path) -> Result<()> {
 
 /// Provision a tenant. Idempotent — repeated calls for the same
 /// project re-use the existing index template.
-pub async fn provision(tenants_path: &Path, tenant_name: &str, project: &Path) -> Result<Tenant> {
+pub async fn provision(port: u16, tenants_path: &Path, tenant_name: &str, project: &Path) -> Result<Tenant> {
     let existing = tenants::load_all(tenants_path).await?;
     if let Some(existing_t) = existing.iter().find(|t| t.project == project) {
         return Ok(existing_t.clone());
@@ -174,11 +173,11 @@ pub async fn provision(tenants_path: &Path, tenant_name: &str, project: &Path) -
         ));
     }
 
-    wait_for_cluster(PROVISION_READY_TIMEOUT)
+    wait_for_cluster(port, PROVISION_READY_TIMEOUT)
         .await
         .wrap_err("opensearch cluster never became HTTP-ready")?;
 
-    put_index_template(tenant_name)
+    put_index_template(port, tenant_name)
         .await
         .wrap_err_with(|| format!("provisioning opensearch tenant `{tenant_name}`"))?;
 
@@ -194,7 +193,7 @@ pub async fn provision(tenants_path: &Path, tenant_name: &str, project: &Path) -
 /// and every index that matched `<tenant>-*`. Without `purge`, only
 /// the local ledger entry goes away; opensearch state survives a
 /// `service down` so a later `up` re-uses it (matches redis/mariadb).
-pub async fn deprovision(tenants_path: &Path, tenant_name: &str, purge: bool) -> Result<()> {
+pub async fn deprovision(port: u16, tenants_path: &Path, tenant_name: &str, purge: bool) -> Result<()> {
     let existing = tenants::load_all(tenants_path).await?;
     let Some(_target) = existing.iter().find(|t| t.tenant == tenant_name).cloned() else {
         return Ok(());
@@ -208,8 +207,8 @@ pub async fn deprovision(tenants_path: &Path, tenant_name: &str, purge: bool) ->
         // Best-effort: the live cluster might be down (e.g. `down`
         // races against the supervisor stop), in which case the user
         // intends to discard the ledger entry regardless.
-        let _ = delete_indices(tenant_name).await;
-        let _ = delete_index_template(tenant_name).await;
+        let _ = delete_indices(port, tenant_name).await;
+        let _ = delete_index_template(port, tenant_name).await;
     }
     tenants::rewrite(tenants_path, |t| t.tenant != tenant_name).await?;
     Ok(())
@@ -236,8 +235,8 @@ fn http_client() -> &'static reqwest::Client {
 /// still accepting connections, so the app sees failures we'd report as
 /// "Running". `yellow` is healthy here: replicas are unassigned on a
 /// one-node dev cluster by design (see `put_index_template`).
-pub(crate) async fn health() -> Result<()> {
-    let url = format!("{OPENSEARCH_BASE_URL}/_cluster/health");
+pub(crate) async fn health(port: u16) -> Result<()> {
+    let url = format!("http://127.0.0.1:{port}/_cluster/health");
     let resp = http_client()
         .get(&url)
         .send()
@@ -261,7 +260,7 @@ pub(crate) async fn health() -> Result<()> {
     }
 }
 
-async fn put_index_template(tenant: &str) -> Result<()> {
+async fn put_index_template(port: u16, tenant: &str) -> Result<()> {
     let body = serde_json::json!({
         "index_patterns": [format!("{tenant}-*")],
         // `priority` ensures user-specified templates with the
@@ -283,7 +282,7 @@ async fn put_index_template(tenant: &str) -> Result<()> {
             "tenant": tenant,
         }
     });
-    let url = format!("{OPENSEARCH_BASE_URL}/_index_template/{tenant}");
+    let url = format!("http://127.0.0.1:{port}/_index_template/{tenant}");
     let resp = http_client()
         .put(&url)
         .header("Content-Type", "application/json")
@@ -299,8 +298,8 @@ async fn put_index_template(tenant: &str) -> Result<()> {
     Ok(())
 }
 
-async fn delete_index_template(tenant: &str) -> Result<()> {
-    let url = format!("{OPENSEARCH_BASE_URL}/_index_template/{tenant}");
+async fn delete_index_template(port: u16, tenant: &str) -> Result<()> {
+    let url = format!("http://127.0.0.1:{port}/_index_template/{tenant}");
     let resp = http_client()
         .delete(&url)
         .send()
@@ -319,8 +318,8 @@ async fn delete_index_template(tenant: &str) -> Result<()> {
 /// Opensearch refuses the wildcard unless the URL itself is allowed-
 /// to-be-destructive — we send `?expand_wildcards=open,closed`
 /// explicitly.
-async fn delete_indices(tenant: &str) -> Result<()> {
-    let url = format!("{OPENSEARCH_BASE_URL}/{tenant}-*?expand_wildcards=open,closed");
+async fn delete_indices(port: u16, tenant: &str) -> Result<()> {
+    let url = format!("http://127.0.0.1:{port}/{tenant}-*?expand_wildcards=open,closed");
     let resp = http_client()
         .delete(&url)
         .send()
@@ -338,10 +337,10 @@ async fn delete_indices(tenant: &str) -> Result<()> {
 /// probe is satisfied the moment Netty binds, but cluster bootstrap
 /// keeps the HTTP layer rejecting requests for another second or two
 /// while it initialises the cluster state.
-async fn wait_for_cluster(timeout: Duration) -> Result<()> {
+async fn wait_for_cluster(port: u16, timeout: Duration) -> Result<()> {
     let client = http_client();
     let deadline = Instant::now() + timeout;
-    let url = format!("{OPENSEARCH_BASE_URL}/");
+    let url = format!("http://127.0.0.1:{port}/");
     loop {
         if let Ok(r) = client.get(&url).send().await
             && r.status().is_success() {

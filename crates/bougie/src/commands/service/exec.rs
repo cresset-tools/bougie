@@ -413,8 +413,12 @@ fn apply_rabbitmq_env(cmd: &mut Command, paths: &Paths) {
             cmd.env_remove(&k);
         }
     }
-    cmd.env("HOME", paths.service_data("rabbitmq", bougie_daemon::daemon::catalog::default_version("rabbitmq")).join("home"));
-    cmd.envs(rabbitmq_env(paths));
+    let version = bougie_daemon::daemon::catalog::default_version("rabbitmq");
+    cmd.env("HOME", paths.service_data("rabbitmq", version).join("home"));
+    // ctl reaches the node via nodename, not the AMQP port; pass the
+    // broker's effective port anyway so the two never disagree.
+    let node_port = bougie_daemon::daemon::endpoint::effective_primary(paths, "rabbitmq", version, 5672);
+    cmd.envs(rabbitmq_env(paths, node_port));
 }
 
 #[cfg(test)]

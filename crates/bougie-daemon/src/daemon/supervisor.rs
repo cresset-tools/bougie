@@ -6,6 +6,7 @@
 //! dispatch land in subsequent phases (5–10).
 
 use super::catalog::{self, Binding, CatalogEntry};
+use super::endpoint;
 use super::logs::LogWriter;
 use super::sandbox;
 use super::store_layout;
@@ -418,6 +419,72 @@ impl Supervisor {
     /// calls assume `name` is in the map, which `Supervisor::new`
     /// populates from the catalog. A panic here means the catalog
     /// shifted under us mid-call.
+    /// Resolve (and persist) the effective TCP endpoint for an instance:
+    /// reuse a recorded endpoint's ports where still bindable (sticky),
+    /// else the catalog defaults, else scan upward for free ports. Writes
+    /// `endpoint.json`. Returns `None` for socket-only / `Binding::None`
+    /// services — they can't collide on a port, and their coexistence
+    /// comes from the version-keyed socket path, not a port.
+    fn resolve_endpoint(&self, entry: &CatalogEntry) -> Result<Option<endpoint::ServiceEndpoint>> {
+        let Binding::Tcp { port: default_primary } = entry.binding else {
+            return Ok(None);
+        };
+        let ep_path = self.paths.service_endpoint(entry.name, &entry.version);
+        let recorded = endpoint::ServiceEndpoint::load(&ep_path)?;
+
+        // Ports claimed in this pass, so a multi-port service can't pick
+        // the same number twice. Each `allocate_port` gets a fresh closure
+        // (dropped before the following `push`), so `claimed` can grow
+        // between calls.
+        let mut claimed: Vec<u16> = Vec::new();
+
+        let primary = super::ports::allocate_port(
+            default_primary,
+            recorded.as_ref().map(|e| e.primary),
+            |p| !claimed.contains(&p) && !super::ports::port_in_use(p),
+        )
+        .ok_or_else(|| {
+            eyre!(
+                "no free port near {default_primary} for `{}` (scanned {} above the default)",
+                entry.name,
+                super::ports::PORT_SCAN_SPAN,
+            )
+        })?;
+        claimed.push(primary);
+        if primary != default_primary {
+            tracing::warn!(
+                service = entry.name,
+                default = default_primary,
+                chosen = primary,
+                holder = %super::ports::describe_holder(default_primary),
+                "catalog port taken; relocating to a free port",
+            );
+        }
+
+        let mut ep = endpoint::ServiceEndpoint::new(primary);
+        for &(label, default) in secondary_ports(entry.name) {
+            let recorded_extra = recorded.as_ref().and_then(|e| e.extra_port(label));
+            let chosen = super::ports::allocate_port(default, recorded_extra, |p| {
+                !claimed.contains(&p) && !super::ports::port_in_use(p)
+            })
+            .ok_or_else(|| eyre!("no free {label} port near {default} for `{}`", entry.name))?;
+            claimed.push(chosen);
+            if chosen != default {
+                tracing::warn!(
+                    service = entry.name,
+                    port = label,
+                    default,
+                    chosen,
+                    "secondary port taken; relocating",
+                );
+            }
+            ep.extra.insert(label.to_owned(), chosen);
+        }
+
+        ep.save(&ep_path)?;
+        Ok(Some(ep))
+    }
+
     pub async fn spawn_service(&mut self, name: &str) -> Result<SpawnOutcome> {
         let entry = catalog::find(name)
             .ok_or_else(|| eyre!("unknown service `{name}`"))?;
@@ -446,22 +513,19 @@ impl Supervisor {
             svc.restart_at = None;
         }
 
-        // Fail fast on an occupied catalog port BEFORE spawning: the
-        // service would only crash against EADDRINUSE with a
-        // buried-in-the-log message, while this probe can name the
-        // squatter while it's still alive. Auto-restarts keep their
-        // backoff retries (the ticker treats this error like any other
-        // start failure), so a conflict that clears is recovered from.
-        if let Binding::Tcp { port } = entry.binding
-            && super::ports::port_in_use(port)
-        {
-            return Err(eyre!(
-                "port {port} is already in use by {} — `{}` cannot start; \
-                 stop whatever is listening on 127.0.0.1:{port} and retry",
-                super::ports::describe_holder(port),
-                entry.name,
-            ));
-        }
+        // Resolve the effective TCP endpoint BEFORE spawning: allocate a
+        // free port when the catalog default is already taken — by the
+        // developer's own service or by a sibling instance (two search
+        // engines both want 9200) — reusing a previously-recorded port
+        // stickily. Persisted to endpoint.json so the exec args, the
+        // health probe, and offline consumers (`bougie run` env,
+        // `credentials`) all agree on where the service actually landed.
+        //
+        // This replaces the old hard-fail-on-occupied-port: rather than
+        // refuse, we bind our *own* free port, which also closes the
+        // masquerade hazard the hard-fail guarded against — we can never
+        // health-probe onto someone else's live service.
+        let endpoint = self.resolve_endpoint(entry)?;
 
         // All immutable-self work first so we can later take a single
         // mutable borrow without conflicting with these reads.
@@ -476,7 +540,7 @@ impl Supervisor {
         let policy = sandbox::build_policy(entry, &self.paths, &bougie_bin)
             .wrap_err_with(|| format!("compiling sandbox policy for {}", entry.name))?;
         let binary = self.binary_path(entry)?;
-        let args = render_exec_args(entry, &self.paths);
+        let args = render_exec_args(entry, &self.paths, endpoint.as_ref());
         let log_path = self.paths.service_log_file(entry.name, &entry.version);
         // Open the LogWriter eagerly — confirms the parent dir is
         // writable before we fork a child. Wrap in Arc<Mutex<…>> so
@@ -487,7 +551,7 @@ impl Supervisor {
             .wrap_err_with(|| format!("opening log writer for {}", entry.name))?;
         let log_writer = Arc::new(Mutex::new(log_writer));
 
-        let env = render_exec_env(entry, &self.paths);
+        let env = render_exec_env(entry, &self.paths, endpoint.as_ref());
         let cwd = render_exec_cwd(entry, &self.paths);
 
         // bougied does not exec the service directly: it spawns a
@@ -1219,13 +1283,41 @@ fn sidecar_for(entry: &CatalogEntry, paths: &Paths) -> Option<(std::path::PathBu
     epmd.is_file().then_some((epmd, 4369))
 }
 
-fn render_exec_env(entry: &CatalogEntry, paths: &Paths) -> Vec<(String, String)> {
+/// OpenSearch's default transport/cluster port (9300). Not modelled by
+/// the catalog `Binding` (which holds one port), so it rides in
+/// `endpoint.json` under the `transport` label — and, like the HTTP
+/// port, gets relocated when a sibling instance or a foreign process
+/// already holds it.
+const OPENSEARCH_TRANSPORT_PORT: u16 = 9300;
+
+/// Named secondary TCP ports a service binds alongside its primary
+/// `Binding::Tcp` port. Each is allocated (and relocated on conflict)
+/// independently by [`Supervisor::resolve_endpoint`] and recorded in
+/// `endpoint.json` under its label.
+fn secondary_ports(name: &str) -> &'static [(&'static str, u16)] {
+    match name {
+        // Web UI / REST API; SMTP is the primary binding.
+        "mailpit" => &[("http", catalog::MAILPIT_HTTP_PORT)],
+        // Transport port, bound even in single-node mode.
+        "opensearch" => &[("transport", OPENSEARCH_TRANSPORT_PORT)],
+        _ => &[],
+    }
+}
+
+fn render_exec_env(
+    entry: &CatalogEntry,
+    paths: &Paths,
+    endpoint: Option<&endpoint::ServiceEndpoint>,
+) -> Vec<(String, String)> {
     match entry.name {
         "rabbitmq" => {
             // Reuse the provisioner's env-builder so rabbitmqctl and
             // rabbitmq-server agree on RABBITMQ_NODENAME etc. Plus
-            // HOME so the Erlang VM can write its `.erlang.cookie`.
-            let mut env = super::provisioners::rabbitmq::rabbitmq_env(paths);
+            // HOME so the Erlang VM can write its `.erlang.cookie`. The
+            // AMQP listener binds the effective (possibly relocated)
+            // port.
+            let node_port = endpoint.map_or(5672, |e| e.primary);
+            let mut env = super::provisioners::rabbitmq::rabbitmq_env(paths, node_port);
             env.push((
                 "HOME".into(),
                 paths.service_data("rabbitmq", &entry.version).join("home").display().to_string(),
@@ -1280,7 +1372,11 @@ fn render_exec_env(entry: &CatalogEntry, paths: &Paths) -> Vec<(String, String)>
 /// here rather than templated — services have idiosyncratic flags
 /// (mariadb's `--skip-networking`, redis's `--unixsocketperm`, etc.)
 /// and the table is short. Fallback `[]` runs the binary with no args.
-fn render_exec_args(entry: &CatalogEntry, paths: &Paths) -> Vec<String> {
+fn render_exec_args(
+    entry: &CatalogEntry,
+    paths: &Paths,
+    endpoint: Option<&endpoint::ServiceEndpoint>,
+) -> Vec<String> {
     match entry.name {
         "redis" => {
             let sock = paths.service_run("redis", &entry.version).join("redis.sock").display().to_string();
@@ -1317,13 +1413,14 @@ fn render_exec_args(entry: &CatalogEntry, paths: &Paths) -> Vec<String> {
             // (`provisioners::bougie_server`) writes hosts to the
             // same path.
             let cfg = paths.service_conf("server", &entry.version).join("server.toml");
+            let port = endpoint.map_or(7080, |e| e.primary);
             vec![
                 "server".into(),
                 "run".into(),
                 "--config".into(),
                 cfg.display().to_string(),
                 "--listen".into(),
-                "127.0.0.1:7080".into(),
+                format!("127.0.0.1:{port}"),
             ]
         }
         "opensearch" => {
@@ -1333,14 +1430,24 @@ fn render_exec_args(entry: &CatalogEntry, paths: &Paths) -> Vec<String> {
             // temporaries under `OPENSEARCH_TMPDIR`. The sandbox hides
             // /tmp (ProtectSystem::Strict), so pin it under the data
             // dir which is already RW. Created by `pre_start`.
+            // Effective ports from endpoint.json (catalog defaults 9200 /
+            // 9300 when nothing recorded). Both are relocated when taken,
+            // so two search engines — or opensearch beside elasticsearch —
+            // coexist.
+            let http_port = endpoint.map_or(9200, |e| e.primary);
+            let transport_port =
+                endpoint.and_then(|e| e.extra_port("transport")).unwrap_or(OPENSEARCH_TRANSPORT_PORT);
             vec![
                 format!("-Epath.data={data}"),
                 format!("-Epath.logs={log}"),
                 // Loopback only — bougie service never bind public
                 // addresses (SERVICES.md §6).
                 "-Enetwork.host=127.0.0.1".into(),
-                // Catalog binding pins :9200. Keep the two in lockstep.
-                "-Ehttp.port=9200".into(),
+                format!("-Ehttp.port={http_port}"),
+                // Transport port is bound even in single-node mode; pin it
+                // to the allocated value so a sibling instance doesn't
+                // collide on the default 9300.
+                format!("-Etransport.port={transport_port}"),
                 // No cluster bootstrap — single-node dev mode skips
                 // discovery + initial_cluster_manager_nodes ceremony.
                 "-Ediscovery.type=single-node".into(),
@@ -1394,8 +1501,13 @@ fn render_exec_args(entry: &CatalogEntry, paths: &Paths) -> Vec<String> {
             // service data dir so it survives restarts — the dir is
             // created (and made RW) by the sandbox before spawn, and
             // Mailpit creates the SQLite file + its WAL siblings there.
-            let smtp = format!("127.0.0.1:{}", catalog::MAILPIT_SMTP_PORT);
-            let http = format!("127.0.0.1:{}", catalog::MAILPIT_HTTP_PORT);
+            let smtp = format!("127.0.0.1:{}", endpoint.map_or(catalog::MAILPIT_SMTP_PORT, |e| e.primary));
+            let http = format!(
+                "127.0.0.1:{}",
+                endpoint
+                    .and_then(|e| e.extra_port("http"))
+                    .unwrap_or(catalog::MAILPIT_HTTP_PORT)
+            );
             let db = paths
                 .service_data("mailpit", &entry.version)
                 .join("mailpit.db")
@@ -1815,7 +1927,7 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let paths = Paths::new(tmp.path().into(), tmp.path().into());
         let entry = catalog::find("redis").unwrap();
-        let args = render_exec_args(entry, &paths);
+        let args = render_exec_args(entry, &paths, None);
         assert!(args.iter().any(|a| a == "--unixsocket"));
         assert!(args.iter().any(|a| a == "--port"));
         // Must include "0" right after "--port"
@@ -1918,24 +2030,49 @@ mod tests {
         Supervisor::new(Paths::new(path.clone(), path))
     }
 
-    #[tokio::test]
-    async fn spawn_refuses_when_catalog_port_is_squatted() {
-        let mut sup = test_supervisor();
-        // Squat rabbitmq's AMQP port. If something else already holds
-        // it the probe below still reads "in use" and the assertion is
-        // unaffected; only a sandbox that forbids loopback binds
-        // entirely makes the scenario unbuildable — skip then.
+    #[test]
+    fn resolve_endpoint_relocates_off_a_squatted_catalog_port() {
+        let sup = test_supervisor();
+        let entry = catalog::find("rabbitmq").unwrap();
+        // Squat rabbitmq's AMQP port. Only a sandbox forbidding loopback
+        // binds makes the scenario unbuildable — skip then.
         let _squat = std::net::TcpListener::bind("127.0.0.1:5672").ok();
         if !crate::daemon::ports::port_in_use(5672) {
             return;
         }
-        let err = sup.spawn_service("rabbitmq").await.unwrap_err();
-        let msg = format!("{err:#}");
-        assert!(msg.contains("port 5672 is already in use"), "{msg}");
-        assert!(msg.contains("rabbitmq"), "{msg}");
-        // Fails before any tarball/store work — the whole point is a
-        // crisp pre-spawn error, not an EADDRINUSE crash loop.
-        assert!(!msg.contains("tarball"), "{msg}");
+        // No hard-fail any more: it relocates and records the new port.
+        let ep = sup
+            .resolve_endpoint(entry)
+            .unwrap()
+            .expect("a tcp service has an endpoint");
+        assert_ne!(ep.primary, 5672, "must relocate off the squatted port");
+        assert!(ep.primary > 5672, "scans upward from the default: {}", ep.primary);
+        // Persisted so exec args / health / offline consumers agree.
+        let back = endpoint::ServiceEndpoint::load(&sup.paths.service_endpoint("rabbitmq", &entry.version))
+            .unwrap()
+            .unwrap();
+        assert_eq!(back, ep);
+    }
+
+    #[test]
+    fn resolve_endpoint_uses_defaults_when_free_and_is_sticky() {
+        let sup = test_supervisor();
+        let entry = catalog::find("mailpit").unwrap(); // 1025 SMTP + 8025 http
+        if crate::daemon::ports::port_in_use(1025) || crate::daemon::ports::port_in_use(8025) {
+            return; // something already holds a default here — skip
+        }
+        let ep = sup.resolve_endpoint(entry).unwrap().unwrap();
+        assert_eq!(ep.primary, 1025);
+        assert_eq!(ep.extra_port("http"), Some(8025));
+        // Sticky: a second resolve reuses the recorded ports verbatim.
+        assert_eq!(sup.resolve_endpoint(entry).unwrap().unwrap(), ep);
+    }
+
+    #[test]
+    fn resolve_endpoint_is_none_for_socket_services() {
+        let sup = test_supervisor();
+        let entry = catalog::find("redis").unwrap();
+        assert!(sup.resolve_endpoint(entry).unwrap().is_none());
     }
 
     #[test]

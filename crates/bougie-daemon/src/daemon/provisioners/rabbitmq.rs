@@ -268,7 +268,10 @@ fn build_ctl_env(cmd: &mut Command, paths: &Paths) {
         // via `render_exec_cwd` already guards against. The data dir is
         // created in `pre_start`, owned by us, and stable.
         .current_dir(paths.service_data("rabbitmq", svc_version()))
-        .envs(rabbitmq_env(paths));
+        // rabbitmqctl reaches the node via RABBITMQ_NODENAME (epmd), not
+        // the AMQP port, so this value is immaterial to ctl — but keep it
+        // consistent with the running broker's effective port.
+        .envs(rabbitmq_env(paths, crate::daemon::endpoint::effective_primary(paths, "rabbitmq", svc_version(), 5672)));
 }
 
 /// Block until `rabbitmqctl status` returns 0. The TCP probe was
@@ -299,7 +302,7 @@ async fn wait_for_ctl_ready(ctl: &Path, paths: &Paths, timeout: Duration) -> Res
 /// and bougie's own out-of-band rabbitmqctl calls. Kept in one place
 /// so an off-by-one between the two would surface as "node not
 /// running" against ourselves rather than a silent split-brain.
-pub fn rabbitmq_env(paths: &Paths) -> Vec<(String, String)> {
+pub fn rabbitmq_env(paths: &Paths, node_port: u16) -> Vec<(String, String)> {
     let data = paths.service_data("rabbitmq", svc_version());
     let log = paths.service_log("rabbitmq", svc_version());
     let run = paths.service_run("rabbitmq", svc_version());
@@ -315,7 +318,7 @@ pub fn rabbitmq_env(paths: &Paths) -> Vec<(String, String)> {
         // `RABBITMQ_USE_LONGNAME=true`).
         ("RABBITMQ_NODENAME".into(), "rabbit@localhost".into()),
         ("RABBITMQ_NODE_IP_ADDRESS".into(), "127.0.0.1".into()),
-        ("RABBITMQ_NODE_PORT".into(), "5672".into()),
+        ("RABBITMQ_NODE_PORT".into(), node_port.to_string()),
         // RabbitMQ's `rabbitmq-defaults` script reads $RABBITMQ_BASE
         // for everything that doesn't have a more specific knob.
         ("RABBITMQ_BASE".into(), data.display().to_string()),
@@ -378,7 +381,7 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let paths = Paths::new(tmp.path().into(), tmp.path().into());
         let env: std::collections::HashMap<_, _> =
-            rabbitmq_env(&paths).into_iter().collect();
+            rabbitmq_env(&paths, 5672).into_iter().collect();
         assert_eq!(env.get("RABBITMQ_NODENAME").map(std::string::String::as_str), Some("rabbit@localhost"));
         assert_eq!(env.get("RABBITMQ_NODE_IP_ADDRESS").map(std::string::String::as_str), Some("127.0.0.1"));
         assert_eq!(env.get("RABBITMQ_NODE_PORT").map(std::string::String::as_str), Some("5672"));

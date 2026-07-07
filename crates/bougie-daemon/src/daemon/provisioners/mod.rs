@@ -60,7 +60,11 @@ pub async fn provision(
             let socket = paths.service_run("mariadb", &entry.version).join("mariadb.sock");
             mariadb::provision(paths, tenants_path, tenant_name, project, &socket).await
         }
-        Tenancy::Opensearch => opensearch::provision(tenants_path, tenant_name, project).await,
+        Tenancy::Opensearch => {
+            let port =
+                crate::daemon::endpoint::effective_primary(paths, "opensearch", &entry.version, 9200);
+            opensearch::provision(port, tenants_path, tenant_name, project).await
+        }
         Tenancy::BougieServer => {
             bougie_server::provision(paths, tenants_path, tenant_name, project).await
         }
@@ -86,7 +90,11 @@ pub async fn deprovision(
         Tenancy::Mariadb => {
             mariadb::deprovision(paths, tenants_path, tenant_name, socket_path, purge).await
         }
-        Tenancy::Opensearch => opensearch::deprovision(tenants_path, tenant_name, purge).await,
+        Tenancy::Opensearch => {
+            let port =
+                crate::daemon::endpoint::effective_primary(paths, "opensearch", &entry.version, 9200);
+            opensearch::deprovision(port, tenants_path, tenant_name, purge).await
+        }
         Tenancy::BougieServer => {
             bougie_server::deprovision(paths, tenants_path, tenant_name, purge).await
         }

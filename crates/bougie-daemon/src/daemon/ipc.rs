@@ -984,8 +984,8 @@ async fn preflight_port_warnings(
     for (name, port) in ports_to_preflight(&order, &active) {
         if tcp_port_in_use(port).await {
             let msg = format!(
-                "warning: 127.0.0.1:{port} is already in use; starting `{name}` may fail \
-                 until you free that port\n"
+                "note: 127.0.0.1:{port} is already in use; `{name}` will start on a \
+                 nearby free port instead (see `bougie service status` for its address)\n"
             );
             let _ = write_progress(write_half, "stderr", &msg).await;
         }

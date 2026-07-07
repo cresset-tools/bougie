@@ -14,10 +14,41 @@
 //! have no endpoint file — their coexistence comes from the
 //! version-keyed socket path, not a port.
 
+use bougie_paths::Paths;
 use eyre::{Result, WrapErr};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::Path;
+
+/// Load the recorded endpoint for an instance (`(name, version)`), or
+/// `None` when none was ever written (never provisioned, or a
+/// socket-only service). Errors are swallowed to `None` — a consumer
+/// deriving a connection port falls back to the catalog default, which
+/// is the right degradation for a corrupt/absent file. Use
+/// [`ServiceEndpoint::load`] directly when a parse error must surface.
+#[must_use]
+pub fn load_for(paths: &Paths, name: &str, version: &str) -> Option<ServiceEndpoint> {
+    ServiceEndpoint::load(&paths.service_endpoint(name, version))
+        .ok()
+        .flatten()
+}
+
+/// The effective primary port for an instance: the recorded endpoint's
+/// primary, or `default` (the catalog `Binding::Tcp` port) when none is
+/// recorded.
+#[must_use]
+pub fn effective_primary(paths: &Paths, name: &str, version: &str, default: u16) -> u16 {
+    load_for(paths, name, version).map_or(default, |e| e.primary)
+}
+
+/// The effective value of a named secondary port for an instance, or
+/// `default` when unrecorded.
+#[must_use]
+pub fn effective_extra(paths: &Paths, name: &str, version: &str, label: &str, default: u16) -> u16 {
+    load_for(paths, name, version)
+        .and_then(|e| e.extra_port(label))
+        .unwrap_or(default)
+}
 
 /// The ports one instance actually bound.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
