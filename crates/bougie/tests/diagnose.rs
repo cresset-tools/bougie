@@ -72,9 +72,17 @@ impl Env {
         proj
     }
 
-    /// Plant a service log under the daemon's on-disk layout.
+    /// Plant a service log under the daemon's on-disk layout
+    /// (version-keyed: `state/services/<name>/<version>/log/<name>.log`).
     fn plant_service_log(&self, service: &str, contents: &str) {
-        let log_dir = self.home.path().join("state/services").join(service).join("log");
+        let version = bougie_daemon::daemon::catalog::default_version(service);
+        let log_dir = self
+            .home
+            .path()
+            .join("state/services")
+            .join(service)
+            .join(version)
+            .join("log");
         std::fs::create_dir_all(&log_dir).unwrap();
         std::fs::write(log_dir.join(format!("{service}.log")), contents).unwrap();
     }
@@ -290,7 +298,11 @@ fn diagnose_finds_project_from_last_failure_when_run_elsewhere() {
 fn tenant_secrets_are_scrubbed_from_log_tails() {
     let env = Env::new();
     let proj = env.project_with_failure();
-    let ledger_dir = env.home.path().join("state/services/rabbitmq");
+    let ledger_dir = env
+        .home
+        .path()
+        .join("state/services/rabbitmq")
+        .join(bougie_daemon::daemon::catalog::default_version("rabbitmq"));
     std::fs::create_dir_all(&ledger_dir).unwrap();
     std::fs::write(
         ledger_dir.join("tenants.json"),

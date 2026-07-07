@@ -64,10 +64,10 @@ fn warn_once_if_landlock_unavailable() {
 fn warn_once_if_landlock_unavailable() {}
 
 fn build_strict(entry: &CatalogEntry, paths: &Paths, babysit_bin: &Path) -> Result<SandboxPolicy> {
-    let data = paths.service_data(entry.name);
-    let run = paths.service_run(entry.name);
-    let log = paths.service_log(entry.name);
-    let conf = paths.service_conf(entry.name);
+    let data = paths.service_data(entry.name, &entry.version);
+    let run = paths.service_run(entry.name, &entry.version);
+    let log = paths.service_log(entry.name, &entry.version);
+    let conf = paths.service_conf(entry.name, &entry.version);
     for p in [&data, &run, &log, &conf] {
         std::fs::create_dir_all(p)
             .wrap_err_with(|| format!("creating {}", p.display()))?;
@@ -170,10 +170,10 @@ fn build_light_home(entry: &CatalogEntry, paths: &Paths) -> Result<Option<Sandbo
     // Still create the per-service dirs so paths the supervisor
     // assumes (data/run/log/conf) are present.
     for p in [
-        paths.service_data(entry.name),
-        paths.service_run(entry.name),
-        paths.service_log(entry.name),
-        paths.service_conf(entry.name),
+        paths.service_data(entry.name, &entry.version),
+        paths.service_run(entry.name, &entry.version),
+        paths.service_log(entry.name, &entry.version),
+        paths.service_conf(entry.name, &entry.version),
     ] {
         std::fs::create_dir_all(&p)
             .wrap_err_with(|| format!("creating {}", p.display()))?;
@@ -184,10 +184,10 @@ fn build_light_home(entry: &CatalogEntry, paths: &Paths) -> Result<Option<Sandbo
 #[cfg(target_os = "macos")]
 fn build_light_home(entry: &CatalogEntry, paths: &Paths) -> Result<Option<SandboxPolicy>> {
     for p in [
-        paths.service_data(entry.name),
-        paths.service_run(entry.name),
-        paths.service_log(entry.name),
-        paths.service_conf(entry.name),
+        paths.service_data(entry.name, &entry.version),
+        paths.service_run(entry.name, &entry.version),
+        paths.service_log(entry.name, &entry.version),
+        paths.service_conf(entry.name, &entry.version),
     ] {
         std::fs::create_dir_all(&p)
             .wrap_err_with(|| format!("creating {}", p.display()))?;
@@ -247,10 +247,10 @@ mod tests {
         let entry = catalog::find("redis").unwrap();
         let babysit_bin = std::env::current_exe().unwrap();
         let _policy = build_policy(entry, &paths, &babysit_bin).expect("policy build");
-        assert!(paths.service_data("redis").is_dir());
-        assert!(paths.service_run("redis").is_dir());
-        assert!(paths.service_log("redis").is_dir());
-        assert!(paths.service_conf("redis").is_dir());
+        assert!(paths.service_data("redis", crate::daemon::catalog::default_version("redis")).is_dir());
+        assert!(paths.service_run("redis", crate::daemon::catalog::default_version("redis")).is_dir());
+        assert!(paths.service_log("redis", crate::daemon::catalog::default_version("redis")).is_dir());
+        assert!(paths.service_conf("redis", crate::daemon::catalog::default_version("redis")).is_dir());
     }
 
     #[test]

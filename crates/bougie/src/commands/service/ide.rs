@@ -55,7 +55,7 @@ pub fn write_phpstorm_datasources(
     let password =
         bougie_daemon::daemon::credentials::derive_password(paths, SERVICE, project_root)
             .wrap_err("deriving the mariadb password for the PhpStorm data source")?;
-    let socket = paths.service_run(SERVICE).join("mariadb.sock");
+    let socket = paths.service_run(SERVICE, bougie_daemon::daemon::catalog::default_version(SERVICE)).join("mariadb.sock");
 
     let ds = datasource_block(tenant, &socket.to_string_lossy(), &password, project_root);
 

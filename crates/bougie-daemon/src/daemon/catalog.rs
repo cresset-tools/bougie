@@ -328,6 +328,18 @@ pub fn find(name: &str) -> Option<&'static CatalogEntry> {
     CATALOG.iter().find(|e| e.name == name)
 }
 
+/// The catalog default version for a service name, or `""` if unknown.
+///
+/// The single-instance stand-in used while the runtime state tree is
+/// version-keyed but the request/IPC layer doesn't yet carry a resolved
+/// version (Phase 1a). Once instances are threaded end-to-end the
+/// resolved version comes from the caller and this is only a fallback
+/// for name-only paths (offline consumers before the ledger-scan lands).
+#[must_use]
+pub fn default_version(name: &str) -> &'static str {
+    find(name).map_or("", |e| e.version)
+}
+
 /// Look up a client tool by its user-facing name across the whole
 /// catalog. `None` if no service ships a client under that name.
 /// Client names are unique catalog-wide (asserted in tests) — the

@@ -36,7 +36,7 @@ const PROVISION_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 pub async fn pre_start(paths: &Paths) -> Result<()> {
     let entry = crate::daemon::catalog::find("mariadb")
         .ok_or_else(|| eyre!("BUG: mariadb missing from catalog"))?;
-    let datadir = paths.service_data("mariadb");
+    let datadir = paths.service_data("mariadb", crate::daemon::catalog::default_version("mariadb"));
     tokio::fs::create_dir_all(&datadir)
         .await
         .wrap_err_with(|| format!("creating {}", datadir.display()))?;

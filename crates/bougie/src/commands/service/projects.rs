@@ -208,7 +208,7 @@ fn load_rows(paths: &Paths) -> Result<Vec<TenantRow>> {
         if matches!(entry.tenancy, Tenancy::None) {
             continue;
         }
-        for t in load_ledger(&paths.service_tenants(entry.name))? {
+        for t in load_ledger(&paths.service_tenants(entry.name, &entry.version))? {
             let mut alloc = t.alloc;
             // mariadb's database + user are just the tenant name and so
             // aren't recorded in the ledger's `alloc`; synthesize them so

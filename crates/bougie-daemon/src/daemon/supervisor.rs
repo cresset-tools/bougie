@@ -477,7 +477,7 @@ impl Supervisor {
             .wrap_err_with(|| format!("compiling sandbox policy for {}", entry.name))?;
         let binary = self.binary_path(entry)?;
         let args = render_exec_args(entry, &self.paths);
-        let log_path = self.paths.service_log_file(entry.name);
+        let log_path = self.paths.service_log_file(entry.name, &entry.version);
         // Open the LogWriter eagerly — confirms the parent dir is
         // writable before we fork a child. Wrap in Arc<Mutex<…>> so
         // the two stdio forwarder tasks (stdout, stderr) can share
@@ -1191,8 +1191,8 @@ fn compute_backoff(failure_count: u32) -> Duration {
 ///   Anchor CWD to the service data dir, which is in the RW set.
 fn render_exec_cwd(entry: &CatalogEntry, paths: &Paths) -> Option<std::path::PathBuf> {
     match entry.name {
-        "opensearch" => Some(paths.service_data("opensearch")),
-        "rabbitmq" => Some(paths.service_data("rabbitmq")),
+        "opensearch" => Some(paths.service_data("opensearch", &entry.version)),
+        "rabbitmq" => Some(paths.service_data("rabbitmq", &entry.version)),
         _ => None,
     }
 }
@@ -1228,13 +1228,13 @@ fn render_exec_env(entry: &CatalogEntry, paths: &Paths) -> Vec<(String, String)>
             let mut env = super::provisioners::rabbitmq::rabbitmq_env(paths);
             env.push((
                 "HOME".into(),
-                paths.service_data("rabbitmq").join("home").display().to_string(),
+                paths.service_data("rabbitmq", &entry.version).join("home").display().to_string(),
             ));
             env
         }
         "opensearch" => {
-            let tmp = paths.service_data("opensearch").join("tmp");
-            let conf = paths.service_conf("opensearch");
+            let tmp = paths.service_data("opensearch", &entry.version).join("tmp");
+            let conf = paths.service_conf("opensearch", &entry.version);
             // Explicit `OPENSEARCH_JAVA_HOME` short-circuits the
             // platform sniff in `bin/opensearch-env`. Without it,
             // the launcher's `darwin` branch hard-codes
@@ -1283,8 +1283,8 @@ fn render_exec_env(entry: &CatalogEntry, paths: &Paths) -> Vec<(String, String)>
 fn render_exec_args(entry: &CatalogEntry, paths: &Paths) -> Vec<String> {
     match entry.name {
         "redis" => {
-            let sock = paths.service_run("redis").join("redis.sock").display().to_string();
-            let dir = paths.service_data("redis").display().to_string();
+            let sock = paths.service_run("redis", &entry.version).join("redis.sock").display().to_string();
+            let dir = paths.service_data("redis", &entry.version).display().to_string();
             vec![
                 "--port".into(),
                 "0".into(),
@@ -1316,7 +1316,7 @@ fn render_exec_args(entry: &CatalogEntry, paths: &Paths) -> Vec<String> {
             // authored ~/.config/bougie/server.toml. The provisioner
             // (`provisioners::bougie_server`) writes hosts to the
             // same path.
-            let cfg = paths.service_conf("server").join("server.toml");
+            let cfg = paths.service_conf("server", &entry.version).join("server.toml");
             vec![
                 "server".into(),
                 "run".into(),
@@ -1327,8 +1327,8 @@ fn render_exec_args(entry: &CatalogEntry, paths: &Paths) -> Vec<String> {
             ]
         }
         "opensearch" => {
-            let data = paths.service_data("opensearch").display().to_string();
-            let log = paths.service_log("opensearch").display().to_string();
+            let data = paths.service_data("opensearch", &entry.version).display().to_string();
+            let log = paths.service_log("opensearch", &entry.version).display().to_string();
             // OpenSearch writes JNA-extracted native libs + assorted
             // temporaries under `OPENSEARCH_TMPDIR`. The sandbox hides
             // /tmp (ProtectSystem::Strict), so pin it under the data
@@ -1347,9 +1347,9 @@ fn render_exec_args(entry: &CatalogEntry, paths: &Paths) -> Vec<String> {
             ]
         }
         "mariadb" => {
-            let data_path = paths.service_data("mariadb");
+            let data_path = paths.service_data("mariadb", &entry.version);
             let datadir = data_path.display().to_string();
-            let sock = paths.service_run("mariadb").join("mariadb.sock").display().to_string();
+            let sock = paths.service_run("mariadb", &entry.version).join("mariadb.sock").display().to_string();
             // InnoDB writes temporaries during startup. The sandbox
             // hides /tmp (default systemd-style ProtectSystem), so
             // pin them under the already-RW datadir. Best-effort
@@ -1397,7 +1397,7 @@ fn render_exec_args(entry: &CatalogEntry, paths: &Paths) -> Vec<String> {
             let smtp = format!("127.0.0.1:{}", catalog::MAILPIT_SMTP_PORT);
             let http = format!("127.0.0.1:{}", catalog::MAILPIT_HTTP_PORT);
             let db = paths
-                .service_data("mailpit")
+                .service_data("mailpit", &entry.version)
                 .join("mailpit.db")
                 .display()
                 .to_string();
@@ -1498,7 +1498,7 @@ const STARTUP_LOG_EXCERPT_BYTES: usize = 4 * 1024;
 /// diagnose` instead of staying buried on the daemon host). Empty
 /// string when there is no log to quote.
 fn startup_log_excerpt(name: &str, paths: &Paths) -> String {
-    let lines = super::logs::tail_lines(&paths.service_log_file(name), STARTUP_LOG_EXCERPT_LINES)
+    let lines = super::logs::tail_lines(&paths.service_log_file(name, crate::daemon::catalog::default_version(name)), STARTUP_LOG_EXCERPT_LINES)
         .unwrap_or_default();
     let mut excerpt = String::new();
     for line in &lines {
@@ -1951,7 +1951,7 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let path: std::path::PathBuf = tmp.keep();
         let paths = Paths::new(path.clone(), path);
-        let log = paths.service_log_file("redis");
+        let log = paths.service_log_file("redis", crate::daemon::catalog::default_version("redis"));
         std::fs::create_dir_all(log.parent().unwrap()).unwrap();
         let mut contents = String::new();
         for i in 0..40 {
@@ -1971,7 +1971,7 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let path: std::path::PathBuf = tmp.keep();
         let paths = Paths::new(path.clone(), path);
-        let log = paths.service_log_file("redis");
+        let log = paths.service_log_file("redis", crate::daemon::catalog::default_version("redis"));
         std::fs::create_dir_all(log.parent().unwrap()).unwrap();
         std::fs::write(&log, "BOOT FAILED: Address already in use\n").unwrap();
         // Stand-in for a babysit whose service died at startup.

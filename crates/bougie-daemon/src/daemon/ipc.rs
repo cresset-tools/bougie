@@ -516,7 +516,7 @@ async fn dispatch_logs(
             write_terminal(write_half, &frame).await;
             return;
         };
-        let log_path = state.paths.service_log_file(entry.name);
+        let log_path = state.paths.service_log_file(entry.name, &entry.version);
         targets.push((entry.name, log_path));
     }
 
@@ -1185,7 +1185,7 @@ async fn dispatch_env(state: &Arc<DaemonState>, project: std::path::PathBuf) -> 
         if !entry.user_facing {
             continue;
         }
-        let tenants_path = state.paths.service_tenants(entry.name);
+        let tenants_path = state.paths.service_tenants(entry.name, &entry.version);
         let Ok(all) = tenants::load_all(&tenants_path).await else {
             continue;
         };
@@ -1273,7 +1273,7 @@ async fn dispatch_up(
                 Some(s) => s.tenant.clone(),
                 None => continue, // dep ordered in but not in the request
             };
-            let tenants_path = state.paths.service_tenants(name);
+            let tenants_path = state.paths.service_tenants(name, crate::daemon::catalog::default_version(name));
             let prov_res = provisioners::provision(
                 entry,
                 &state.paths,
@@ -1318,14 +1318,14 @@ async fn dispatch_down(
             return ResultFrame::err("unknown_service", format!("`{name}` not in catalog"));
         };
         if entry.user_facing {
-            let tenants_path = state.paths.service_tenants(entry.name);
+            let tenants_path = state.paths.service_tenants(entry.name, &entry.version);
             // Find this project's tenant; if any, deprovision it.
             let project_tenant = tenants::load_all(&tenants_path)
                 .await
                 .ok()
                 .and_then(|all| all.into_iter().find(|t| t.project == project));
             if let Some(t) = project_tenant {
-                let sock_default = state.paths.service_run(entry.name).join(format!("{}.sock", entry.name));
+                let sock_default = state.paths.service_run(entry.name, &entry.version).join(format!("{}.sock", entry.name));
                 let sock_opt = sock_default.exists().then_some(sock_default);
                 let deprov_res = provisioners::deprovision(
                     entry,

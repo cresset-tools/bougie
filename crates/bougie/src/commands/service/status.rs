@@ -154,7 +154,7 @@ fn format_binding(paths: &Paths, name: &str, binding: &Value) -> String {
             .and_then(Value::as_str)
             .map_or_else(
                 || "-".into(),
-                |s| format!("socket {}", paths.service_run(name).join(s).display()),
+                |s| format!("socket {}", paths.service_run(name, bougie_daemon::daemon::catalog::default_version(name)).join(s).display()),
             ),
         _ => "-".into(),
     }
@@ -330,7 +330,7 @@ mod tests {
         // Unix sockets resolve to the absolute per-service run path.
         assert_eq!(
             format_binding(&paths, "redis", &json!({"kind": "unix_socket", "sockname": "redis.sock"})),
-            "socket /h/state/services/redis/run/redis.sock"
+            "socket /h/state/services/redis/8.6.3/run/redis.sock"
         );
         // `none`, a bare null, and unknown shapes all degrade to `-`.
         assert_eq!(format_binding(&paths, "x", &json!({"kind": "none"})), "-");
@@ -353,7 +353,7 @@ mod tests {
         result.render_text(&mut buf).unwrap();
         let text = String::from_utf8(buf).unwrap();
         assert!(
-            text.contains("socket /h/state/services/mariadb/run/mariadb.sock"),
+            text.contains("socket /h/state/services/mariadb/11.4.4/run/mariadb.sock"),
             "text: {text}"
         );
         assert!(text.contains("tcp 127.0.0.1:9200"), "text: {text}");

@@ -147,6 +147,60 @@ pub fn run(paths: Paths) -> Result<ExitCode> {
     Ok(exit)
 }
 
+/// Migrate pre-multi-instance service state into the version-keyed
+/// layout: `state/services/<name>/{data,tenants.json,…}` becomes
+/// `state/services/<name>/<default-version>/…`.
+///
+/// Idempotent — a service already in the new layout (its contents live
+/// under a `<version>/` subdir, so no `data/`/`conf/`/`tenants.json`
+/// directly under `<name>/`) is skipped. Best-effort + logged: a
+/// migration hiccup must never wedge daemon startup, but it's loud so an
+/// operator can intervene. `server` is exempt — it keeps name-only state
+/// (it's a shared singleton, not versioned).
+fn migrate_legacy_service_state(paths: &Paths) {
+    for entry in catalog::CATALOG {
+        if entry.name == "server" {
+            continue;
+        }
+        let name_dir = paths.service_name_dir(entry.name);
+        // Legacy marker: instance contents sit directly under the name
+        // dir. The new layout has none of these directly under <name>/.
+        let legacy = name_dir.join("tenants.json").is_file()
+            || name_dir.join("data").is_dir()
+            || name_dir.join("conf").is_dir();
+        if !legacy {
+            continue;
+        }
+        let target = name_dir.join(entry.version);
+        if target.exists() {
+            continue; // already migrated (or a version dir coexists)
+        }
+        // Whole-dir shuffle: <name> -> <name>.migrating, recreate empty
+        // <name>, then <name>.migrating -> <name>/<version>. Rename is
+        // atomic within one parent and avoids moving each child.
+        let staging = paths.services_dir().join(format!("{}.migrating", entry.name));
+        let _ = std::fs::remove_dir_all(&staging); // clear a prior half-run
+        if let Err(e) = std::fs::rename(&name_dir, &staging) {
+            tracing::warn!(service = entry.name, error = %e, "migrate: staging rename failed");
+            continue;
+        }
+        if let Err(e) = std::fs::create_dir_all(&name_dir) {
+            tracing::warn!(service = entry.name, error = %e, "migrate: recreate name dir failed");
+            let _ = std::fs::rename(&staging, &name_dir); // rollback
+            continue;
+        }
+        if let Err(e) = std::fs::rename(&staging, &target) {
+            tracing::warn!(service = entry.name, error = %e, "migrate: final rename failed");
+            continue;
+        }
+        tracing::info!(
+            service = entry.name,
+            version = entry.version,
+            "migrated legacy service state into version-keyed layout"
+        );
+    }
+}
+
 async fn serve(paths: Paths) -> Result<ExitCode> {
     let sock_path = paths.bougied_sock();
     // Remove any stale socket from a previous run that exited
@@ -161,6 +215,10 @@ async fn serve(paths: Paths) -> Result<ExitCode> {
     std::fs::set_permissions(&sock_path, perms)
         .wrap_err_with(|| format!("chmod 0600 on {}", sock_path.display()))?;
     tracing::info!(socket = %sock_path.display(), "bougied: listening");
+
+    // One-time migration of pre-multi-instance service state into the
+    // version-keyed layout. Idempotent; runs before any service work.
+    migrate_legacy_service_state(&paths);
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let state = Arc::new(DaemonState::new(paths, shutdown_tx.clone()));
@@ -339,7 +397,7 @@ async fn wanted_services(paths: &Paths) -> Vec<&'static str> {
         if !entry.user_facing {
             continue;
         }
-        let tenants_path = paths.service_tenants(entry.name);
+        let tenants_path = paths.service_tenants(entry.name, &entry.version);
         let n = tenants::load_all(&tenants_path).await.map_or(0, |v| v.len());
         if n > 0 {
             wanted.push(entry.name);
@@ -446,7 +504,7 @@ mod tests {
             .find(|e| e.user_facing)
             .expect("a user-facing service in the catalog")
             .name;
-        let tenants_path = paths.service_tenants(svc);
+        let tenants_path = paths.service_tenants(svc, crate::daemon::catalog::default_version(svc));
         std::fs::create_dir_all(tenants_path.parent().unwrap()).unwrap();
         tenants::append(&tenants_path, &Tenant::new("acme", "/tmp/acme"))
             .await
@@ -454,5 +512,50 @@ mod tests {
 
         let wanted = wanted_services(&paths).await;
         assert!(wanted.contains(&svc), "expected {svc} in {wanted:?}");
+    }
+
+    #[test]
+    fn migration_moves_legacy_state_into_version_dir_and_is_idempotent() {
+        let home = tempfile::tempdir().unwrap();
+        let paths = Paths::new(home.path().to_path_buf(), home.path().join("cache"));
+        // Legacy layout: instance contents directly under services/redis/.
+        let legacy = paths.service_name_dir("redis");
+        std::fs::create_dir_all(legacy.join("data")).unwrap();
+        std::fs::write(legacy.join("tenants.json"), "{}\n").unwrap();
+
+        migrate_legacy_service_state(&paths);
+
+        let v = catalog::default_version("redis");
+        assert!(
+            paths.service_tenants("redis", v).is_file(),
+            "ledger moved under the version dir"
+        );
+        assert!(paths.service_data("redis", v).is_dir(), "data moved too");
+        assert!(
+            !legacy.join("tenants.json").exists(),
+            "nothing left at the legacy depth"
+        );
+
+        // Idempotent — a second run is a no-op (target already exists).
+        migrate_legacy_service_state(&paths);
+        assert!(paths.service_tenants("redis", v).is_file());
+    }
+
+    #[test]
+    fn migration_leaves_a_versioned_layout_untouched() {
+        let home = tempfile::tempdir().unwrap();
+        let paths = Paths::new(home.path().to_path_buf(), home.path().join("cache"));
+        let v = catalog::default_version("mariadb");
+        // Already version-keyed — no legacy marker directly under <name>/.
+        std::fs::create_dir_all(paths.service_data("mariadb", v)).unwrap();
+        std::fs::write(paths.service_tenants("mariadb", v), "{}\n").unwrap();
+
+        migrate_legacy_service_state(&paths);
+
+        assert!(paths.service_tenants("mariadb", v).is_file());
+        assert!(
+            !paths.service_name_dir("mariadb").join("tenants.json").exists(),
+            "no ledger conjured at the legacy depth"
+        );
     }
 }

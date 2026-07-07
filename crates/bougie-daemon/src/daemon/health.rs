@@ -83,7 +83,7 @@ async fn probe_inner(name: &str, paths: &Paths) -> Result<()> {
 async fn connect(entry: &CatalogEntry, paths: &Paths) -> Result<()> {
     match entry.binding {
         Binding::UnixSocket { sockname } => {
-            let path = paths.service_run(entry.name).join(sockname);
+            let path = paths.service_run(entry.name, &entry.version).join(sockname);
             tokio::net::UnixStream::connect(&path)
                 .await
                 .map(drop)
@@ -106,7 +106,7 @@ async fn connect(entry: &CatalogEntry, paths: &Paths) -> Result<()> {
 
 fn socket_path(entry: &CatalogEntry, paths: &Paths) -> Result<PathBuf> {
     match entry.binding {
-        Binding::UnixSocket { sockname } => Ok(paths.service_run(entry.name).join(sockname)),
+        Binding::UnixSocket { sockname } => Ok(paths.service_run(entry.name, &entry.version).join(sockname)),
         _ => Err(eyre!("{} is not a unix-socket service", entry.name)),
     }
 }
@@ -168,7 +168,7 @@ mod tests {
         // Drive the binding-connect fallback (used for any service without
         // a richer probe) against a real listener at redis's socket path.
         let paths = test_paths();
-        let sock = paths.service_run("redis").join("redis.sock");
+        let sock = paths.service_run("redis", crate::daemon::catalog::default_version("redis")).join("redis.sock");
         std::fs::create_dir_all(sock.parent().unwrap()).unwrap();
         let listener = tokio::net::UnixListener::bind(&sock).unwrap();
         let entry = catalog::find("redis").unwrap();

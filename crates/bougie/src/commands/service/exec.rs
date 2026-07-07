@@ -243,7 +243,7 @@ pub(super) fn find_tenant(
     service: &str,
     project_root: &Path,
 ) -> Result<Option<Tenant>> {
-    let rows = tenants::load_all_sync(&paths.service_tenants(service))?;
+    let rows = tenants::load_all_sync(&paths.service_tenants(service, bougie_daemon::daemon::catalog::default_version(service)))?;
     let canon = project_root
         .canonicalize()
         .unwrap_or_else(|_| project_root.to_path_buf());
@@ -259,7 +259,7 @@ pub(super) fn no_tenant_err(service: &str) -> eyre::Report {
 /// The service's Unix socket path, when its catalog binding is one.
 fn socket_path(paths: &Paths, entry: &CatalogEntry) -> Option<PathBuf> {
     match entry.binding {
-        Binding::UnixSocket { sockname } => Some(paths.service_run(entry.name).join(sockname)),
+        Binding::UnixSocket { sockname } => Some(paths.service_run(entry.name, &entry.version).join(sockname)),
         Binding::Tcp { .. } | Binding::None => None,
     }
 }
@@ -316,7 +316,7 @@ fn manages_own_defaults(args: &[OsString]) -> bool {
 /// so it can never go stale against the ledger, and works for tenants
 /// provisioned before this feature existed.
 fn write_client_cnf(paths: &Paths, tenant: &str, socket: &Path, password: &str) -> Result<PathBuf> {
-    let dir = paths.service_conf("mariadb").join("clients");
+    let dir = paths.service_conf("mariadb", bougie_daemon::daemon::catalog::default_version("mariadb")).join("clients");
     std::fs::create_dir_all(&dir).wrap_err_with(|| format!("creating {}", dir.display()))?;
     let path = dir.join(format!("{tenant}.cnf"));
     let content = client_cnf_content(socket, tenant, password);
@@ -413,7 +413,7 @@ fn apply_rabbitmq_env(cmd: &mut Command, paths: &Paths) {
             cmd.env_remove(&k);
         }
     }
-    cmd.env("HOME", paths.service_data("rabbitmq").join("home"));
+    cmd.env("HOME", paths.service_data("rabbitmq", bougie_daemon::daemon::catalog::default_version("rabbitmq")).join("home"));
     cmd.envs(rabbitmq_env(paths));
 }
 
@@ -525,7 +525,7 @@ mod tests {
         let proj = td.path().join("proj");
         std::fs::create_dir_all(&proj).unwrap();
 
-        let ledger = paths.service_tenants("redis");
+        let ledger = paths.service_tenants("redis", bougie_daemon::daemon::catalog::default_version("redis"));
         std::fs::create_dir_all(ledger.parent().unwrap()).unwrap();
         let row = format!(
             "{}\n",

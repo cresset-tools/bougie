@@ -54,8 +54,8 @@ const PROVISION_READY_TIMEOUT: Duration = Duration::from_secs(30);
 /// 3. **`<datadir>/data`** — for `path.data` and the JVM's
 ///    `-XX:HeapDumpPath=data` (also relative).
 pub async fn pre_start(paths: &Paths) -> Result<()> {
-    let data = paths.service_data("opensearch");
-    let conf = paths.service_conf("opensearch");
+    let data = paths.service_data("opensearch", crate::daemon::catalog::default_version("opensearch"));
+    let conf = paths.service_conf("opensearch", crate::daemon::catalog::default_version("opensearch"));
     for sub in ["tmp", "logs", "data"] {
         let p = data.join(sub);
         tokio::fs::create_dir_all(&p)

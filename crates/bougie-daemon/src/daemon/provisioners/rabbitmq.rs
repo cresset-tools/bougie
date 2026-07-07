@@ -30,17 +30,25 @@ use tokio::time::Instant;
 /// works.
 const RABBITMQCTL_READY_TIMEOUT: Duration = Duration::from_mins(1);
 
+/// rabbitmq's catalog default version — the `<version>` segment in its
+/// state paths. Phase 1a runs a single instance at the default version;
+/// once the request layer carries a resolved version this becomes the
+/// threaded instance version.
+fn svc_version() -> &'static str {
+    crate::daemon::catalog::default_version("rabbitmq")
+}
+
 /// rabbitmq pre-start hook. Creates the directories rabbitmq writes
 /// to under our RW allowlist. No bootstrap step — rabbitmq creates
 /// its own mnesia + log files on first start.
 pub async fn pre_start(paths: &Paths) -> Result<()> {
     for p in [
-        paths.service_data("rabbitmq"),
-        paths.service_data("rabbitmq").join("mnesia"),
-        paths.service_data("rabbitmq").join("home"),
-        paths.service_log("rabbitmq"),
-        paths.service_run("rabbitmq"),
-        paths.service_conf("rabbitmq"),
+        paths.service_data("rabbitmq", svc_version()),
+        paths.service_data("rabbitmq", svc_version()).join("mnesia"),
+        paths.service_data("rabbitmq", svc_version()).join("home"),
+        paths.service_log("rabbitmq", svc_version()),
+        paths.service_run("rabbitmq", svc_version()),
+        paths.service_conf("rabbitmq", svc_version()),
     ] {
         tokio::fs::create_dir_all(&p)
             .await
@@ -249,7 +257,7 @@ async fn run_ctl(ctl: &Path, paths: &Paths, args: &[&str]) -> Result<()> {
 /// than a silent split-brain.
 fn build_ctl_env(cmd: &mut Command, paths: &Paths) {
     cmd.env_clear()
-        .env("HOME", paths.service_data("rabbitmq").join("home"))
+        .env("HOME", paths.service_data("rabbitmq", svc_version()).join("home"))
         .env("PATH", "/usr/bin:/bin")
         // Belt-and-suspenders against a dangling cwd: bougied anchors
         // its own cwd to the state root, but pin these out-of-band ctl
@@ -259,7 +267,7 @@ fn build_ctl_env(cmd: &mut Command, paths: &Paths) {
         // unlinked — exactly the failure mode that anchoring the server
         // via `render_exec_cwd` already guards against. The data dir is
         // created in `pre_start`, owned by us, and stable.
-        .current_dir(paths.service_data("rabbitmq"))
+        .current_dir(paths.service_data("rabbitmq", svc_version()))
         .envs(rabbitmq_env(paths));
 }
 
@@ -292,10 +300,10 @@ async fn wait_for_ctl_ready(ctl: &Path, paths: &Paths, timeout: Duration) -> Res
 /// so an off-by-one between the two would surface as "node not
 /// running" against ourselves rather than a silent split-brain.
 pub fn rabbitmq_env(paths: &Paths) -> Vec<(String, String)> {
-    let data = paths.service_data("rabbitmq");
-    let log = paths.service_log("rabbitmq");
-    let run = paths.service_run("rabbitmq");
-    let conf = paths.service_conf("rabbitmq");
+    let data = paths.service_data("rabbitmq", svc_version());
+    let log = paths.service_log("rabbitmq", svc_version());
+    let run = paths.service_run("rabbitmq", svc_version());
+    let conf = paths.service_conf("rabbitmq", svc_version());
     vec![
         // Pin the node to a stable shortname. Default is
         // `rabbit@$(hostname)`, which couples the dev broker to the

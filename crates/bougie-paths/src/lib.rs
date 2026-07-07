@@ -372,36 +372,55 @@ impl Paths {
     pub fn services_dir(&self) -> PathBuf {
         self.state().join("services")
     }
-    /// Per-service root: `$BOUGIE_HOME/state/services/<name>/`.
-    pub fn service_dir(&self, name: &str) -> PathBuf {
+    /// Per-service-name root: `$BOUGIE_HOME/state/services/<name>/`.
+    /// Groups every version of a service; each concrete instance lives in
+    /// a `<version>/` subdir below this (see [`service_dir`]). Callers
+    /// that need to enumerate a service's instances (offline ledger-scan,
+    /// migration) walk this dir.
+    ///
+    /// [`service_dir`]: Self::service_dir
+    pub fn service_name_dir(&self, name: &str) -> PathBuf {
         self.services_dir().join(name)
     }
-    /// Per-service durable data (mariadb datadir, redis dump, …).
-    pub fn service_data(&self, name: &str) -> PathBuf {
-        self.service_dir(name).join("data")
+    /// Per-instance root: `$BOUGIE_HOME/state/services/<name>/<version>/`.
+    /// The `version` segment is what lets two versions of one service
+    /// (or a service beside a foreign holder of its default port) keep
+    /// separate datadirs, sockets, ledgers, and endpoints.
+    pub fn service_dir(&self, name: &str, version: &str) -> PathBuf {
+        self.service_name_dir(name).join(version)
     }
-    /// Per-service runtime dir (unix socket, pid file).
-    pub fn service_run(&self, name: &str) -> PathBuf {
-        self.service_dir(name).join("run")
+    /// Per-instance durable data (mariadb datadir, redis dump, …).
+    pub fn service_data(&self, name: &str, version: &str) -> PathBuf {
+        self.service_dir(name, version).join("data")
     }
-    /// Per-service log dir (rotated logs land here).
-    pub fn service_log(&self, name: &str) -> PathBuf {
-        self.service_dir(name).join("log")
+    /// Per-instance runtime dir (unix socket, pid file).
+    pub fn service_run(&self, name: &str, version: &str) -> PathBuf {
+        self.service_dir(name, version).join("run")
     }
-    /// A service's live log file (`<name>.log`; rotated siblings are
+    /// Per-instance log dir (rotated logs land here).
+    pub fn service_log(&self, name: &str, version: &str) -> PathBuf {
+        self.service_dir(name, version).join("log")
+    }
+    /// An instance's live log file (`<name>.log`; rotated siblings are
     /// `.1` … `.N`). Single source of truth for the join — the
     /// supervisor writes it, the daemon's `service.logs` streams it,
     /// and `bougie diagnose` tails it offline.
-    pub fn service_log_file(&self, name: &str) -> PathBuf {
-        self.service_log(name).join(format!("{name}.log"))
+    pub fn service_log_file(&self, name: &str, version: &str) -> PathBuf {
+        self.service_log(name, version).join(format!("{name}.log"))
     }
-    /// Per-service rendered config (read-only to the service via sandbox).
-    pub fn service_conf(&self, name: &str) -> PathBuf {
-        self.service_dir(name).join("conf")
+    /// Per-instance rendered config (read-only to the service via sandbox).
+    pub fn service_conf(&self, name: &str, version: &str) -> PathBuf {
+        self.service_dir(name, version).join("conf")
     }
-    /// Per-service tenant ledger (JSON Lines, see SERVICES.md §3.3).
-    pub fn service_tenants(&self, name: &str) -> PathBuf {
-        self.service_dir(name).join("tenants.json")
+    /// Per-instance tenant ledger (JSON Lines, see SERVICES.md §3.3).
+    pub fn service_tenants(&self, name: &str, version: &str) -> PathBuf {
+        self.service_dir(name, version).join("tenants.json")
+    }
+    /// Per-instance resolved endpoint (`endpoint.json`) — the actual
+    /// bound TCP ports, which may differ from the catalog default when
+    /// it was taken. Absent for socket-only services.
+    pub fn service_endpoint(&self, name: &str, version: &str) -> PathBuf {
+        self.service_dir(name, version).join("endpoint.json")
     }
 
     // ---------- durable per-project state (under `home`) ----------
@@ -743,14 +762,31 @@ mod tests {
         assert_eq!(p.bougied_sock(), Path::new("/h/state/bougied.sock"));
         assert_eq!(p.bougied_pid(), Path::new("/h/state/bougied.pid"));
         assert_eq!(p.services_dir(), Path::new("/h/state/services"));
-        assert_eq!(p.service_dir("redis"), Path::new("/h/state/services/redis"));
-        assert_eq!(p.service_data("redis"), Path::new("/h/state/services/redis/data"));
-        assert_eq!(p.service_run("redis"), Path::new("/h/state/services/redis/run"));
-        assert_eq!(p.service_log("redis"), Path::new("/h/state/services/redis/log"));
-        assert_eq!(p.service_conf("redis"), Path::new("/h/state/services/redis/conf"));
+        assert_eq!(p.service_name_dir("redis"), Path::new("/h/state/services/redis"));
+        assert_eq!(p.service_dir("redis", "8.6.3"), Path::new("/h/state/services/redis/8.6.3"));
         assert_eq!(
-            p.service_tenants("redis"),
-            Path::new("/h/state/services/redis/tenants.json")
+            p.service_data("redis", "8.6.3"),
+            Path::new("/h/state/services/redis/8.6.3/data")
+        );
+        assert_eq!(
+            p.service_run("redis", "8.6.3"),
+            Path::new("/h/state/services/redis/8.6.3/run")
+        );
+        assert_eq!(
+            p.service_log("redis", "8.6.3"),
+            Path::new("/h/state/services/redis/8.6.3/log")
+        );
+        assert_eq!(
+            p.service_conf("redis", "8.6.3"),
+            Path::new("/h/state/services/redis/8.6.3/conf")
+        );
+        assert_eq!(
+            p.service_tenants("redis", "8.6.3"),
+            Path::new("/h/state/services/redis/8.6.3/tenants.json")
+        );
+        assert_eq!(
+            p.service_endpoint("redis", "8.6.3"),
+            Path::new("/h/state/services/redis/8.6.3/endpoint.json")
         );
     }
 

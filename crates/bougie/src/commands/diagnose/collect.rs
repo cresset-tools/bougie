@@ -297,7 +297,7 @@ fn unix_sections(
             status_note: live_svc.and_then(live_note),
             state,
             binding,
-            log_tail: tail_file(&paths.service_log_file(name), scrub),
+            log_tail: tail_file(&paths.service_log_file(name, bougie_daemon::daemon::catalog::default_version(name)), scrub),
         });
     }
 
@@ -360,7 +360,7 @@ fn binding_line(
             format!("tcp 127.0.0.1:{port} — **in use by {holder}**, not this service")
         }
         Binding::UnixSocket { sockname } => {
-            let path = paths.service_run(name).join(sockname);
+            let path = paths.service_run(name, bougie_daemon::daemon::catalog::default_version(name)).join(sockname);
             let exists = if path.exists() { "present" } else { "absent" };
             format!("unix socket {} — {exists}", path.display())
         }
@@ -400,7 +400,7 @@ fn live_note(v: &serde_json::Value) -> Option<String> {
 /// host-filtered tail of the (shared, host-prefixed) server log.
 #[cfg(unix)]
 fn server_info(paths: &Paths, project_root: &Path, scrub: &Scrubber) -> Option<ServerInfo> {
-    let conf = paths.service_conf("server").join("server.toml");
+    let conf = paths.service_conf("server", bougie_daemon::daemon::catalog::default_version("server")).join("server.toml");
     let config = bougie_server::server::config::load(&conf).ok()?;
     let canonical = std::fs::canonicalize(project_root).unwrap_or_else(|_| project_root.into());
     let host = config
@@ -409,7 +409,7 @@ fn server_info(paths: &Paths, project_root: &Path, scrub: &Scrubber) -> Option<S
         .find(|h| h.project == project_root || h.project == canonical)?
         .hostname
         .clone();
-    let lines = bougie_daemon::daemon::logs::tail_lines(&paths.service_log_file("server"), 1000)
+    let lines = bougie_daemon::daemon::logs::tail_lines(&paths.service_log_file("server", bougie_daemon::daemon::catalog::default_version("server")), 1000)
         .unwrap_or_default()
         .into_iter()
         .filter(|l| l.contains(&host))

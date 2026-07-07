@@ -41,7 +41,7 @@ fn resolve_config(config: Option<PathBuf>) -> Result<PathBuf> {
         return Ok(path);
     }
     let paths = bougie_paths::Paths::from_env()?;
-    Ok(paths.service_conf("server").join("server.toml"))
+    Ok(paths.service_conf("server", bougie_daemon::daemon::catalog::default_version("server")).join("server.toml"))
 }
 
 /// `bougie server status` — host + pool view. Phase 1 reads the
@@ -209,7 +209,7 @@ fn resolve_web_root(project_root: &std::path::Path, explicit: Option<&str>) -> R
 /// Read the shared server's listen port from the bougied-managed
 /// `server.toml`; falls back to the engine default when unreadable.
 fn server_listen_port(paths: &bougie_paths::Paths) -> u16 {
-    let cfg_path = paths.service_conf("server").join("server.toml");
+    let cfg_path = paths.service_conf("server", bougie_daemon::daemon::catalog::default_version("server")).join("server.toml");
     bougie_server::server::config::load(&cfg_path)
         .ok()
         .and_then(|cfg| cfg.server.listen.rsplit(':').next().and_then(|p| p.parse().ok()))
@@ -497,7 +497,7 @@ fn serve_standalone(format: OutputFormat, args: &ServeArgs) -> Result<ExitCode> 
     let hostname = derive_hostname(&tenant);
     let root = resolve_web_root(&project_root, project.bougie.server.root.as_deref())?;
 
-    let cfg_path = paths.service_conf("server").join("server.toml");
+    let cfg_path = paths.service_conf("server", bougie_daemon::daemon::catalog::default_version("server")).join("server.toml");
     if let Some(parent) = cfg_path.parent() {
         std::fs::create_dir_all(parent)?;
     }

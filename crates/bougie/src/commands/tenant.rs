@@ -81,7 +81,7 @@ pub fn load_all_tenants(paths: &Paths) -> Vec<(String, Tenant)> {
         if matches!(entry.tenancy, Tenancy::None) {
             continue;
         }
-        let Ok(text) = std::fs::read_to_string(paths.service_tenants(entry.name)) else {
+        let Ok(text) = std::fs::read_to_string(paths.service_tenants(entry.name, &entry.version)) else {
             continue;
         };
         for line in text.lines() {

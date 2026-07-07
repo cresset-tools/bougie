@@ -55,7 +55,7 @@ pub fn tenant_service_env(
     match entry.name {
         "redis" => {
             let sock = paths
-                .service_run("redis")
+                .service_run("redis", &entry.version)
                 .join("redis.sock")
                 .display()
                 .to_string();
@@ -66,7 +66,7 @@ pub fn tenant_service_env(
         }
         "mariadb" => {
             let sock = paths
-                .service_run("mariadb")
+                .service_run("mariadb", &entry.version)
                 .join("mariadb.sock")
                 .display()
                 .to_string();
