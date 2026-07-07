@@ -14,7 +14,9 @@
 pub mod catalog;
 pub mod cgroup;
 pub mod credentials;
+pub mod endpoint;
 pub mod health;
+pub mod instance;
 pub mod ipc;
 pub mod logs;
 pub mod ports;

@@ -25,6 +25,42 @@ pub fn port_in_use(port: u16) -> bool {
     TcpListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, port)).is_err()
 }
 
+/// How far above a service's default port the allocator scans for a free
+/// one when the default is taken. 64 leaves room for a handful of
+/// coexisting instances / foreign squatters without wandering far into
+/// unrelated services' territory.
+pub const PORT_SCAN_SPAN: u16 = 64;
+
+/// Choose the effective port for a service that prefers `default`.
+///
+/// Policy (see `INSTANCES_PLAN.md`):
+/// 1. **Sticky** — if `recorded` is set and still bindable, reuse it, so
+///    a restart doesn't strand config that cached the port (even once
+///    the original default has freed up).
+/// 2. Else the `default`, if it's free.
+/// 3. Else scan `default+1 ..= default+PORT_SCAN_SPAN` for the first free
+///    port.
+///
+/// `is_free` is injected rather than hardwired to [`port_in_use`] so a
+/// caller allocating several ports for one instance can exclude the ones
+/// it already picked this round, and so the policy is unit-testable
+/// without binding real sockets. Returns `None` when nothing in the scan
+/// window is free.
+pub fn allocate_port(default: u16, recorded: Option<u16>, is_free: impl Fn(u16) -> bool) -> Option<u16> {
+    if let Some(r) = recorded
+        && r != 0
+        && is_free(r)
+    {
+        return Some(r);
+    }
+    if is_free(default) {
+        return Some(default);
+    }
+    let start = default.saturating_add(1);
+    let end = default.saturating_add(PORT_SCAN_SPAN);
+    (start..=end).find(|&p| p != 0 && is_free(p))
+}
+
 /// Human fragment naming whoever holds `port`, for error messages:
 /// `beam.smp (pid 4321)`, or `another process` when attribution is
 /// unavailable (non-Linux, or a different user's process).
@@ -146,5 +182,79 @@ mod tests {
         drop(sock);
         assert!(holder_of(port).is_none());
         assert_eq!(describe_holder(port), "another process");
+    }
+
+    // ---------- allocate_port ----------
+
+    /// A `is_free` closure that treats the listed ports as occupied.
+    fn taken(ports: &[u16]) -> impl Fn(u16) -> bool + '_ {
+        move |p| !ports.contains(&p)
+    }
+
+    #[test]
+    fn allocate_uses_default_when_free() {
+        assert_eq!(allocate_port(9200, None, taken(&[])), Some(9200));
+    }
+
+    #[test]
+    fn allocate_scans_upward_when_default_taken() {
+        // 9200 and 9201 held → lands on 9202.
+        assert_eq!(allocate_port(9200, None, taken(&[9200, 9201])), Some(9202));
+    }
+
+    #[test]
+    fn allocate_reuses_recorded_port_even_when_default_is_free() {
+        // Sticky: keep the relocated port so cached config stays valid.
+        assert_eq!(allocate_port(9200, Some(9205), taken(&[])), Some(9205));
+    }
+
+    #[test]
+    fn allocate_falls_back_when_recorded_port_now_taken() {
+        // Recorded 9205 is occupied; default 9200 is free → default.
+        assert_eq!(allocate_port(9200, Some(9205), taken(&[9205])), Some(9200));
+    }
+
+    #[test]
+    fn allocate_rescans_when_recorded_and_default_both_taken() {
+        assert_eq!(
+            allocate_port(9200, Some(9205), taken(&[9205, 9200])),
+            Some(9201)
+        );
+    }
+
+    #[test]
+    fn allocate_returns_none_when_whole_window_is_taken() {
+        let window: Vec<u16> = (9200..=9200 + PORT_SCAN_SPAN).collect();
+        assert_eq!(allocate_port(9200, None, taken(&window)), None);
+    }
+
+    #[test]
+    fn allocate_multi_port_avoids_intra_instance_collision() {
+        // Two ports for one instance, both defaulting to the same number
+        // (contrived), with 9200 externally held: the caller threads a
+        // `claimed` set so the second pick skips the first. Each call
+        // gets a fresh closure so `claimed` can grow between them.
+        let external = [9200u16];
+        let mut claimed: Vec<u16> = Vec::new();
+        let first =
+            allocate_port(9200, None, |p| !external.contains(&p) && !claimed.contains(&p)).unwrap();
+        claimed.push(first);
+        let second =
+            allocate_port(9200, None, |p| !external.contains(&p) && !claimed.contains(&p)).unwrap();
+        assert_ne!(first, second);
+        assert_eq!((first, second), (9201, 9202));
+    }
+
+    #[test]
+    fn allocate_honours_a_real_probe() {
+        // Bind :0 to hold a real port, then prove the allocator relocates
+        // off it via the real `port_in_use` probe.
+        let sock = TcpListener::bind("127.0.0.1:0").unwrap();
+        let held = sock.local_addr().unwrap().port();
+        // `is_free` is the negation of `port_in_use` — the polarity every
+        // real caller must get right.
+        let got = allocate_port(held, None, |p| !port_in_use(p));
+        assert!(got.is_some());
+        assert_ne!(got, Some(held));
     }
 }
