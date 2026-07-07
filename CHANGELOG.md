@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.46.1](https://github.com/cresset-tools/bougie/compare/bougie-v0.46.0...bougie-v0.46.1) (2026-07-07)
+
+
+### Bug Fixes
+
+* **composer:** validate finds require-dev deps hoisted into prod lock section ([#474](https://github.com/cresset-tools/bougie/issues/474)) ([6983608](https://github.com/cresset-tools/bougie/commit/69836082da3ffad938305dcc68355947c5f63bfe))
+
 ## [0.46.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.45.0...bougie-v0.46.0) (2026-07-07)
 
 
