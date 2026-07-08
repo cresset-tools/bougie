@@ -81,15 +81,23 @@ pub fn load_all_tenants(paths: &Paths) -> Vec<(String, Tenant)> {
         if matches!(entry.tenancy, Tenancy::None) {
             continue;
         }
-        let Ok(text) = std::fs::read_to_string(paths.service_tenants(entry.name, &entry.version)) else {
-            continue;
-        };
-        for line in text.lines() {
-            if line.trim().is_empty() {
+        // Scan every instance ledger so a project on a non-default
+        // version (mysql 8.0) still counts toward default-tenant
+        // uniqueness (INSTANCES_PLAN §6).
+        for version in bougie_daemon::daemon::tenants::instance_versions(
+            &paths.service_name_dir(entry.name),
+        ) {
+            let Ok(text) = std::fs::read_to_string(paths.service_tenants(entry.name, &version))
+            else {
                 continue;
-            }
-            if let Ok(t) = serde_json::from_str::<Tenant>(line) {
-                out.push((entry.name.to_string(), t));
+            };
+            for line in text.lines() {
+                if line.trim().is_empty() {
+                    continue;
+                }
+                if let Ok(t) = serde_json::from_str::<Tenant>(line) {
+                    out.push((entry.name.to_string(), t));
+                }
             }
         }
     }

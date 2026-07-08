@@ -884,6 +884,7 @@ mod tests {
         CatalogEntry {
             name,
             version: "1.0.0",
+            versions: &["1.0.0"],
             tarball: name,
             binary: "bin/x",
             binding: Binding::None,

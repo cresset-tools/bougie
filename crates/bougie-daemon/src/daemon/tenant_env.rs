@@ -32,11 +32,20 @@ const LOOPBACK: &str = "127.0.0.1";
 /// Alloc values keep their ledger JSON type (redis `db_number` stays a
 /// number) so the IPC reply is byte-stable; env-file consumers
 /// stringify at the edge.
+///
+/// `version` is the resolved instance version this tenant belongs to —
+/// which version-keyed state dir holds its socket / endpoint. For a
+/// single-version service it's the catalog default; for a multi-version
+/// one (`mysql` 8.0 beside 8.4) it's the concrete version the offline
+/// resolver ([`crate::daemon::tenants::instance_versions`]) found the
+/// project's ledger row under, so an 8.0 project gets its own 8.0 socket
+/// rather than the default 8.4 one.
 #[must_use]
 #[allow(clippy::too_many_lines, reason = "one arm per catalog service")]
 pub fn tenant_service_env(
     paths: &Paths,
     entry: &CatalogEntry,
+    version: &str,
     tenant: &Tenant,
 ) -> serde_json::Map<String, Value> {
     let mut vars = serde_json::Map::new();
@@ -52,7 +61,7 @@ pub fn tenant_service_env(
     // catalog default when unrecorded (works offline, no daemon needed).
     let tcp_port = match entry.binding {
         Binding::Tcp { port } => {
-            Some(crate::daemon::endpoint::effective_primary(paths, entry.name, &entry.version, port))
+            Some(crate::daemon::endpoint::effective_primary(paths, entry.name, version, port))
         }
         Binding::UnixSocket { .. } | Binding::None => None,
     };
@@ -64,7 +73,7 @@ pub fn tenant_service_env(
     match entry.name {
         "redis" => {
             let sock = paths
-                .service_run("redis", &entry.version)
+                .service_run("redis", version)
                 .join("redis.sock")
                 .display()
                 .to_string();
@@ -73,10 +82,18 @@ pub fn tenant_service_env(
                 vars.insert(format!("{prefix}DB"), db.clone());
             }
         }
-        "mariadb" => {
+        // mariadb and mysql share the database+user+password vocabulary;
+        // they differ only in the socket file name (and, upstream, the
+        // provisioner). Fold them into one arm keyed off the catalog
+        // socket name so the two never drift.
+        "mariadb" | "mysql" => {
+            let sockname = match entry.binding {
+                Binding::UnixSocket { sockname } => sockname,
+                _ => "mysql.sock",
+            };
             let sock = paths
-                .service_run("mariadb", &entry.version)
-                .join("mariadb.sock")
+                .service_run(entry.name, version)
+                .join(sockname)
                 .display()
                 .to_string();
             vars.insert(format!("{prefix}SOCKET"), Value::String(sock));
@@ -167,7 +184,7 @@ pub fn tenant_service_env(
             // it explicitly so `bougie run` users can open it.
             vars.insert(
                 format!("{prefix}DASHBOARD_URL"),
-                Value::String(format!("http://{LOOPBACK}:{}", crate::daemon::endpoint::effective_extra(paths, "mailpit", &entry.version, "http", catalog::MAILPIT_HTTP_PORT))),
+                Value::String(format!("http://{LOOPBACK}:{}", crate::daemon::endpoint::effective_extra(paths, "mailpit", version, "http", catalog::MAILPIT_HTTP_PORT))),
             );
         }
         _ => {}
@@ -213,7 +230,7 @@ mod tests {
         let mut t = tenant("acme");
         t.secrets.insert("password".into(), "deadbeef".into());
 
-        let vars = tenant_service_env(&paths, entry, &t);
+        let vars = tenant_service_env(&paths, entry, entry.version, &t);
         assert_eq!(
             vars["BOUGIE_SERVICE_MARIADB_DATABASE"],
             Value::String("acme".into())
@@ -237,8 +254,37 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let paths = paths_in(&dir);
         let entry = catalog::find("mariadb").unwrap();
-        let vars = tenant_service_env(&paths, entry, &tenant("acme"));
+        let vars = tenant_service_env(&paths, entry, entry.version, &tenant("acme"));
         assert!(!vars.contains_key("BOUGIE_SERVICE_MARIADB_PASSWORD"));
+    }
+
+    #[test]
+    fn mysql_socket_is_keyed_by_the_resolved_version() {
+        // The whole point of multi-instance: a project on the non-default
+        // 8.0 must get an 8.0-keyed socket, not the catalog default's.
+        let dir = TempDir::new().unwrap();
+        let paths = paths_in(&dir);
+        let entry = catalog::find("mysql").unwrap();
+        let mut t = tenant("acme");
+        t.secrets.insert("password".into(), "deadbeef".into());
+
+        let vars = tenant_service_env(&paths, entry, "8.0.46", &t);
+        let sock = vars["BOUGIE_SERVICE_MYSQL_SOCKET"].as_str().unwrap();
+        assert!(sock.ends_with("mysql.sock"), "{sock}");
+        assert!(
+            sock.contains("/mysql/8.0.46/"),
+            "socket must live under the resolved version dir: {sock}"
+        );
+        assert_eq!(
+            vars["BOUGIE_SERVICE_MYSQL_DATABASE"],
+            Value::String("acme".into())
+        );
+        assert_eq!(
+            vars["BOUGIE_SERVICE_MYSQL_PASSWORD"],
+            Value::String("deadbeef".into())
+        );
+        // Unix-socket service — no HOST/PORT.
+        assert!(!vars.contains_key("BOUGIE_SERVICE_MYSQL_HOST"));
     }
 
     #[test]
@@ -249,7 +295,7 @@ mod tests {
         let mut t = tenant("acme");
         t.alloc.insert("db_number".into(), Value::from(3));
 
-        let vars = tenant_service_env(&paths, entry, &t);
+        let vars = tenant_service_env(&paths, entry, entry.version, &t);
         assert_eq!(vars["BOUGIE_SERVICE_REDIS_DB"], Value::from(3));
         assert!(
             vars["BOUGIE_SERVICE_REDIS_SOCKET"]
@@ -270,7 +316,7 @@ mod tests {
             .insert("username".into(), Value::String("acme".into()));
         t.secrets.insert("password".into(), "p@ss/word".into());
 
-        let vars = tenant_service_env(&paths, entry, &t);
+        let vars = tenant_service_env(&paths, entry, entry.version, &t);
         assert_eq!(
             vars["BOUGIE_SERVICE_RABBITMQ_URL"],
             Value::String("amqp://acme:p%40ss%2Fword@127.0.0.1:5672/acme".into())
@@ -290,7 +336,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let paths = paths_in(&dir);
         let entry = catalog::find("mailpit").unwrap();
-        let vars = tenant_service_env(&paths, entry, &tenant("acme"));
+        let vars = tenant_service_env(&paths, entry, entry.version, &tenant("acme"));
         assert_eq!(
             vars["BOUGIE_SERVICE_MAILPIT_DSN"],
             Value::String("smtp://127.0.0.1:1025".into())
@@ -310,7 +356,7 @@ mod tests {
         let mut t = tenant("acme");
         t.alloc
             .insert("index_prefix".into(), Value::String("acme_".into()));
-        let vars = tenant_service_env(&paths, os, &t);
+        let vars = tenant_service_env(&paths, os, os.version, &t);
         assert_eq!(
             vars["BOUGIE_SERVICE_OPENSEARCH_URL"],
             Value::String("http://127.0.0.1:9200".into())
@@ -324,7 +370,7 @@ mod tests {
         let mut t = tenant("acme");
         t.alloc
             .insert("hostname".into(), Value::String("acme.bougie.run".into()));
-        let vars = tenant_service_env(&paths, srv, &t);
+        let vars = tenant_service_env(&paths, srv, srv.version, &t);
         assert_eq!(
             vars["BOUGIE_SERVICE_SERVER_HOSTNAME"],
             Value::String("acme.bougie.run".into())

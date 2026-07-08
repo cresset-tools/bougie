@@ -108,13 +108,13 @@ pub fn run(format: OutputFormat, names: Vec<String>, detach: bool) -> Result<Exi
 
     let services_payload: Vec<Value> = selected
         .iter()
-        .map(|(name, pin)| {
+        .map(|(name, pin)| -> Result<Value> {
             let tenant = pin
                 .tenant().map_or_else(|| default_tenant.clone(), str::to_owned);
-            let version = resolve_service_version(name, pin);
-            json!({"name": name, "version": version, "tenant": tenant})
+            let version = resolve_service_version(name, pin)?;
+            Ok(json!({"name": name, "version": version, "tenant": tenant}))
         })
-        .collect();
+        .collect::<Result<Vec<_>>>()?;
     let args = json!({
         "project": project_root,
         "services": services_payload,
@@ -198,36 +198,81 @@ pub fn run(format: OutputFormat, names: Vec<String>, detach: bool) -> Result<Exi
 /// Resolve a project's `[services]` pin to the concrete version the
 /// daemon should run this service at.
 ///
-/// This is the seam where a pin (`redis = "8.6"`, `redis = "*"`, or a
-/// `[services.redis] version = "…"` table) becomes one exact version.
-/// While the catalog is single-version (Phase 1b) there's only ever one
-/// choice, so every pin — set, unset, or `"*"` — resolves to the catalog
-/// default. When the catalog carries multiple versions of a service
-/// (Phase 4: e.g. `mysql` beside `mariadb`, or two elasticsearch majors)
-/// this is where the pin gets intersected against the available versions
-/// and the highest match is selected, mirroring `bougie-resolver`'s PHP +
-/// extension resolution. Keeping it a named function now means that change
-/// lands in one place without touching the wire or the daemon.
-fn resolve_service_version(name: &str, pin: &ServicePin) -> String {
-    // Phase 1b interim: honor an exact-version pin (`mysql = "8.4.0"`) so
-    // two projects can select two versions of one service. A range or `*`
-    // still resolves to the catalog default until Phase 4's index-backed
-    // resolver maps the constraint to a concrete published version.
-    match pin.version() {
-        Some(v) if is_exact_version(v) => v.to_owned(),
-        _ => bougie_daemon::daemon::catalog::default_version(name).to_owned(),
+/// This is the seam where a pin (`mysql = "8.0"`, `redis = "*"`, or a
+/// `[services.mysql] version = "…"` table) becomes one exact version. The
+/// pin is treated as a Composer constraint and intersected with the
+/// service's compiled-in known set ([`CatalogEntry::versions`]); the
+/// highest match wins, mirroring `bougie-resolver`'s PHP + extension
+/// resolution:
+///
+/// - `*` / unset → the catalog default.
+/// - `8.0` → highest known `8.0.*` (`mysql` → `8.0.46`); `8.4` → `8.4.10`.
+/// - `^8.0`, `8` → highest known match across the range.
+/// - an exact `X.Y.Z` the catalog doesn't list → passed through verbatim,
+///   so the index (authoritative at fetch time) can still serve a patch
+///   newer than the one bougie shipped.
+/// - anything with no match and not a concrete version → a clear error.
+///
+/// [`CatalogEntry::versions`]: bougie_daemon::daemon::catalog::CatalogEntry::versions
+fn resolve_service_version(name: &str, pin: &ServicePin) -> Result<String> {
+    use bougie_daemon::daemon::catalog;
+    use composer_semver::constraint::Constraint;
+    use composer_semver::version::Version;
+
+    let entry = catalog::find(name);
+    let default = entry.map_or("", |e| e.version);
+    let known: &[&str] = entry.map_or(&[], |e| e.versions);
+
+    let Some(raw) = pin.version() else {
+        return Ok(default.to_owned());
+    };
+    let p = raw.trim();
+    if p.is_empty() || p == "*" {
+        return Ok(default.to_owned());
     }
+
+    // Intersect the pin with the known versions and take the highest
+    // match. Handles exact hits, partials (`8.0` → 8.0.46), and ranges.
+    if let Ok(constraint) = Constraint::parse(p) {
+        let best = known
+            .iter()
+            .filter_map(|v| Version::parse(v).ok().map(|parsed| (*v, parsed)))
+            .filter(|(_, parsed)| constraint.matches(parsed))
+            .max_by(|(_, a), (_, b)| a.cmp(b))
+            .map(|(v, _)| v.to_owned());
+        if let Some(best) = best {
+            return Ok(best);
+        }
+    }
+
+    // No known version matched. If the pin names a concrete `X.Y.Z`,
+    // trust it and let the daemon's index fetch validate/serve it — this
+    // is how a project pins a published patch the compiled catalog omits.
+    if is_full_exact(p) {
+        return Ok(p.to_owned());
+    }
+
+    Err(eyre!(
+        "service `{name}`: no known version satisfies pin `{p}` (bougie ships: {}). \
+         Pin `*`, one of those versions, or an exact published patch.",
+        if known.is_empty() {
+            "(none)".to_owned()
+        } else {
+            known.join(", ")
+        }
+    ))
 }
 
-/// A pin naming one concrete version (`8.4.0`) rather than a range
-/// (`^8.4`, `>=8`, `1.x`, `*`). Conservative heuristic — digits and dots
-/// only — so anything the least bit fancy falls through to the catalog
-/// default, which is always safe. Phase 4 replaces this with real
-/// constraint resolution against the index.
-fn is_exact_version(v: &str) -> bool {
-    !v.is_empty()
-        && v.bytes().all(|b| b.is_ascii_digit() || b == b'.')
-        && v.bytes().next().is_some_and(|b| b.is_ascii_digit())
+/// A pin naming one concrete version — at least three dotted numeric
+/// components (`8.4.10`, `1.30.2`). Such a pin is trusted verbatim when
+/// it doesn't match the compiled catalog set, deferring to the index.
+/// `8` and `8.4` are partials (constraints), not exact.
+fn is_full_exact(v: &str) -> bool {
+    let comps: Vec<&str> = v.split('.').collect();
+    comps.len() >= 3
+        && comps
+            .iter()
+            .all(|c| !c.is_empty() && c.bytes().all(|b| b.is_ascii_digit()))
 }
 
 /// Best-effort read of the default DB connection's `username` from
@@ -261,17 +306,64 @@ fn parse_db_username(env_php: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_exact_version, parse_db_username};
+    use super::{is_full_exact, parse_db_username, resolve_service_version};
+    use bougie_config::ServicePin;
+
+    fn pin(v: &str) -> ServicePin {
+        ServicePin::Version(v.to_owned())
+    }
 
     #[test]
-    fn exact_versions_pass_ranges_and_wildcards_fall_through() {
-        assert!(is_exact_version("1.30.2"));
-        assert!(is_exact_version("8"));
-        assert!(is_exact_version("8.4"));
-        // Ranges, wildcards, operators, prereleases → not exact.
-        for spec in ["*", "^8.4", "~1.0", ">=8", "8.x", "8.0.0-rc1", "", "v8.4"] {
-            assert!(!is_exact_version(spec), "{spec} should not be exact");
+    fn is_full_exact_needs_three_numeric_components() {
+        assert!(is_full_exact("1.30.2"));
+        assert!(is_full_exact("8.4.10"));
+        assert!(is_full_exact("11.4.4"));
+        for spec in ["8", "8.4", "*", "^8.4", "~1.0", ">=8", "8.x", "8.0.0-rc1", "", "v8.4"] {
+            assert!(!is_full_exact(spec), "{spec} should not be full-exact");
         }
+    }
+
+    #[test]
+    fn multi_version_service_resolves_partials_to_highest_match() {
+        // mysql ships 8.4.10 (default) + 8.0.46.
+        assert_eq!(resolve_service_version("mysql", &pin("8.0")).unwrap(), "8.0.46");
+        assert_eq!(resolve_service_version("mysql", &pin("8.4")).unwrap(), "8.4.10");
+        // Bare major and caret both span the two → highest.
+        assert_eq!(resolve_service_version("mysql", &pin("8")).unwrap(), "8.4.10");
+        assert_eq!(resolve_service_version("mysql", &pin("^8.0")).unwrap(), "8.4.10");
+        // Exact published version passes through as itself.
+        assert_eq!(resolve_service_version("mysql", &pin("8.0.46")).unwrap(), "8.0.46");
+    }
+
+    #[test]
+    fn wildcard_and_unset_resolve_to_default() {
+        assert_eq!(resolve_service_version("mysql", &pin("*")).unwrap(), "8.4.10");
+        // Detail table with no version set → default.
+        let detail = ServicePin::Detail(Default::default());
+        assert_eq!(resolve_service_version("mysql", &detail).unwrap(), "8.4.10");
+    }
+
+    #[test]
+    fn single_version_service_resolves_compatible_pins() {
+        // redis ships only 8.6.3; a compatible partial resolves to it.
+        assert_eq!(resolve_service_version("redis", &pin("8.6")).unwrap(), "8.6.3");
+        assert_eq!(resolve_service_version("redis", &pin("*")).unwrap(), "8.6.3");
+        // An exact patch the catalog doesn't list is trusted (the index
+        // is authoritative) — e.g. a newer mariadb than bougie shipped.
+        assert_eq!(
+            resolve_service_version("mariadb", &pin("11.4.12")).unwrap(),
+            "11.4.12"
+        );
+    }
+
+    #[test]
+    fn unsatisfiable_pin_is_an_error() {
+        // mysql doesn't ship a 9.x, and `9.0` isn't a concrete patch to
+        // pass through → clear error rather than a silent default.
+        assert!(resolve_service_version("mysql", &pin("9.0")).is_err());
+        // A partial with no matching known version on a single-version
+        // service also errors.
+        assert!(resolve_service_version("redis", &pin("7")).is_err());
     }
 
     const ENV_PHP: &str = r"<?php

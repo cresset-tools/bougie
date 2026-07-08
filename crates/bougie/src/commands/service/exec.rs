@@ -237,32 +237,46 @@ fn exec_wired(
     Err(err).wrap_err_with(|| format!("exec {}", binary.display()))
 }
 
-/// The project's tenant row for `service`, matched the way
-/// `projects purge` matches: by canonical path first, raw path second
-/// (the ledger stores whatever spelling the daemon was handed).
-/// Shared with `credentials.rs`, which reads the same ledgers.
+/// The project's tenant row for `service`, plus the instance version its
+/// ledger lives under. Matched the way `projects purge` matches: by
+/// canonical path first, raw path second (the ledger stores whatever
+/// spelling the daemon was handed). Shared with `credentials.rs`, which
+/// reads the same ledgers.
+///
+/// Scans every on-disk instance ledger rather than assuming the catalog
+/// default, so a project running the non-default version of a
+/// multi-version service (mysql 8.0 beside another project's 8.4) is
+/// found under — and wired to — its own version dir (`INSTANCES_PLAN` §6).
 pub(super) fn find_tenant(
     paths: &Paths,
     service: &str,
     project_root: &Path,
-) -> Result<Option<Tenant>> {
-    let rows = tenants::load_all_sync(&paths.service_tenants(service, bougie_daemon::daemon::catalog::default_version(service)))?;
+) -> Result<Option<(String, Tenant)>> {
     let canon = project_root
         .canonicalize()
         .unwrap_or_else(|_| project_root.to_path_buf());
-    Ok(rows
-        .into_iter()
-        .find(|t| t.project == canon || t.project == project_root))
+    for version in tenants::instance_versions(&paths.service_name_dir(service)) {
+        let rows = tenants::load_all_sync(&paths.service_tenants(service, &version))?;
+        if let Some(t) = rows
+            .into_iter()
+            .find(|t| t.project == canon || t.project == project_root)
+        {
+            return Ok(Some((version, t)));
+        }
+    }
+    Ok(None)
 }
 
 pub(super) fn no_tenant_err(service: &str) -> eyre::Report {
     eyre!("no {service} tenant is provisioned for this project — run `bougie up {service}` first")
 }
 
-/// The service's Unix socket path, when its catalog binding is one.
-fn socket_path(paths: &Paths, entry: &CatalogEntry) -> Option<PathBuf> {
+/// The service's Unix socket path for a given instance `version`, when
+/// its catalog binding is one. The version keys the run dir so a
+/// non-default instance (mysql 8.0) resolves to its own socket.
+fn socket_path(paths: &Paths, entry: &CatalogEntry, version: &str) -> Option<PathBuf> {
     match entry.binding {
-        Binding::UnixSocket { sockname } => Some(paths.service_run(entry.name, &entry.version).join(sockname)),
+        Binding::UnixSocket { sockname } => Some(paths.service_run(entry.name, version).join(sockname)),
         Binding::Tcp { .. } | Binding::None => None,
     }
 }
@@ -285,9 +299,9 @@ fn mariadb_wiring(
     if manages_own_defaults(args) {
         return Ok(args.to_vec());
     }
-    let tenant =
+    let (version, tenant) =
         find_tenant(paths, entry.name, project_root)?.ok_or_else(|| no_tenant_err(entry.name))?;
-    let socket = socket_path(paths, entry)
+    let socket = socket_path(paths, entry, &version)
         .ok_or_else(|| eyre!("BUG: mariadb catalog entry lost its socket binding"))?;
     // Prefer the ledger's recorded password; fall back to deriving it
     // (same function the provisioner used, so they agree).
@@ -369,10 +383,10 @@ fn redis_wiring(
     entry: &'static CatalogEntry,
     args: &[OsString],
 ) -> Result<Vec<OsString>> {
-    let socket = socket_path(paths, entry)
-        .ok_or_else(|| eyre!("BUG: redis catalog entry lost its socket binding"))?;
-    let tenant =
+    let (version, tenant) =
         find_tenant(paths, entry.name, project_root)?.ok_or_else(|| no_tenant_err(entry.name))?;
+    let socket = socket_path(paths, entry, &version)
+        .ok_or_else(|| eyre!("BUG: redis catalog entry lost its socket binding"))?;
     let db = tenant
         .alloc
         .get("db_number")
@@ -546,7 +560,8 @@ mod tests {
         );
         std::fs::write(&ledger, row).unwrap();
 
-        let t = find_tenant(&paths, "redis", &proj).unwrap().unwrap();
+        let (version, t) = find_tenant(&paths, "redis", &proj).unwrap().unwrap();
+        assert_eq!(version, bougie_daemon::daemon::catalog::default_version("redis"));
         assert_eq!(t.tenant, "proj");
         assert_eq!(t.alloc["db_number"], 5);
         // A different project resolves to no tenant.

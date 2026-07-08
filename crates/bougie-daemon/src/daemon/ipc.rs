@@ -1203,14 +1203,27 @@ async fn dispatch_env(state: &Arc<DaemonState>, project: std::path::PathBuf) -> 
         if !entry.user_facing {
             continue;
         }
-        let tenants_path = state.paths.service_tenants(entry.name, &entry.version);
-        let Ok(all) = tenants::load_all(&tenants_path).await else {
-            continue;
-        };
-        let Some(tenant) = all.into_iter().find(|t| t.project == project) else {
-            continue;
-        };
-        vars.extend(tenant_env::tenant_service_env(&state.paths, entry, &tenant));
+        // Multi-instance: a project may run any published version of a
+        // service (mysql 8.0 while a sibling project runs 8.4). Scan every
+        // on-disk instance ledger for this project's row and emit the env
+        // keyed to the version it actually landed in, so the socket / port
+        // vars point at the right instance rather than the catalog default.
+        let name_dir = state.paths.service_name_dir(entry.name);
+        for version in tenants::instance_versions(&name_dir) {
+            let ledger = state.paths.service_tenants(entry.name, &version);
+            let Ok(all) = tenants::load_all(&ledger).await else {
+                continue;
+            };
+            if let Some(tenant) = all.into_iter().find(|t| t.project == project) {
+                vars.extend(tenant_env::tenant_service_env(
+                    &state.paths,
+                    entry,
+                    &version,
+                    &tenant,
+                ));
+                break; // one version per project per service
+            }
+        }
     }
     ResultFrame::ok(serde_json::json!({"vars": Value::Object(vars)}))
 }
@@ -1278,7 +1291,7 @@ async fn dispatch_up(
         // The dispatcher owns the sync/async bridge: mariadb and the
         // other sync provisioners run on the blocking pool internally;
         // opensearch is natively async.
-        let pre_res = provisioners::pre_start(entry, &state.paths).await;
+        let pre_res = provisioners::pre_start(entry, &state.paths, &version).await;
         if let Err(e) = pre_res {
             return ResultFrame::err(
                 "pre_start_failed",
@@ -1351,11 +1364,23 @@ async fn dispatch_down(
         let Some(entry) = catalog::find(&name) else {
             return ResultFrame::err("unknown_service", format!("`{name}` not in catalog"));
         };
-        // Phase 1b: the CLI's `down` wire still names services, not
-        // instances, so the daemon resolves each to its default-version
-        // instance. When a project pins a concrete version (Phase 4) the
-        // pin ledger will select the instance to tear down.
-        let version = entry.version;
+        // The `down` wire names services, not instances. Resolve which
+        // instance *this project* is running by scanning every version's
+        // ledger for the project's row — a multi-version service (mysql
+        // 8.0 beside 8.4) may have both up at once, and we must tear down
+        // the one this project owns. Fall back to the catalog default when
+        // the project has no tenant (nothing to tear down either way).
+        let mut resolved = entry.version.to_string();
+        for v in tenants::instance_versions(&state.paths.service_name_dir(entry.name)) {
+            let lp = state.paths.service_tenants(entry.name, &v);
+            if let Ok(all) = tenants::load_all(&lp).await
+                && all.iter().any(|t| t.project == project)
+            {
+                resolved = v;
+                break;
+            }
+        }
+        let version = resolved.as_str();
         if entry.user_facing {
             let tenants_path = state.paths.service_tenants(entry.name, version);
             // Find this project's tenant; if any, deprovision it.

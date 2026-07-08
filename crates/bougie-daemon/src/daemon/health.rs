@@ -57,6 +57,10 @@ async fn probe_inner(name: &str, version: &str, paths: &Paths) -> Result<()> {
             let sock = socket_path(entry, version, paths)?;
             super::provisioners::mariadb::health(paths, &sock).await
         }
+        "mysql" => {
+            let sock = socket_path(entry, version, paths)?;
+            super::provisioners::mysql::health(paths, version, &sock).await
+        }
         "opensearch" => {
             let port =
                 super::endpoint::effective_primary(paths, "opensearch", version, 9200);

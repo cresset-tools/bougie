@@ -75,6 +75,48 @@ pub fn load_all_sync(path: &Path) -> Result<Vec<Tenant>> {
     parse_ledger(&text, path)
 }
 
+/// The instance versions of a service that carry a tenant ledger on
+/// disk, discovered by walking `name_dir` (`service_name_dir(name)` =
+/// `state/services/<name>/`). Returns the `<version>` segment of every
+/// child dir that holds a `tenants.json`.
+///
+/// This is the offline resolution seam (`INSTANCES_PLAN` §6): a service
+/// that runs as two versions at once (`mysql` 8.0 beside 8.4) keeps a
+/// separate ledger per version dir, so the daemon-less consumers
+/// (`bougie run` env, `service credentials`, the client-exec wiring)
+/// find *this* project's instance by scanning every version's ledger
+/// rather than assuming the catalog default. Encodes "one version per
+/// project per service": callers stop at the first version whose ledger
+/// owns the project.
+///
+/// The `server` singleton keeps its ledger name-only
+/// (`state/services/server/tenants.json`, no version segment — see
+/// [`Paths::service_dir`]); that layout surfaces here as an empty-string
+/// version, which round-trips back through `service_tenants(name, "")`
+/// to the same name-only path. Order is unspecified; a missing dir
+/// yields an empty vec.
+///
+/// [`Paths::service_dir`]: bougie_paths::Paths::service_dir
+#[must_use]
+pub fn instance_versions(name_dir: &Path) -> Vec<String> {
+    let mut out = Vec::new();
+    // Name-only ledger sitting directly under the service dir (server).
+    if name_dir.join("tenants.json").is_file() {
+        out.push(String::new());
+    }
+    let Ok(entries) = std::fs::read_dir(name_dir) else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        if entry.path().join("tenants.json").is_file()
+            && let Some(v) = entry.file_name().to_str()
+        {
+            out.push(v.to_owned());
+        }
+    }
+    out
+}
+
 fn parse_ledger(text: &str, path: &Path) -> Result<Vec<Tenant>> {
     let mut out = Vec::new();
     for (i, line) in text.lines().enumerate() {

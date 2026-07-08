@@ -362,7 +362,16 @@ async fn restore_services(state: &Arc<DaemonState>) {
     if wanted.is_empty() {
         return;
     }
-    let order = match supervisor::compute_start_order(&wanted) {
+    // Dependency ordering is by service name; a service that's up at two
+    // versions (mysql 8.0 + 8.4) shares one ordering slot and both
+    // instances spawn under it.
+    let mut names: Vec<&'static str> = Vec::new();
+    for (name, _) in &wanted {
+        if !names.contains(name) {
+            names.push(name);
+        }
+    }
+    let order = match supervisor::compute_start_order(&names) {
         Ok(o) => o,
         Err(e) => {
             tracing::warn!(error = %e, "restore: cannot order services; skipping");
@@ -372,32 +381,34 @@ async fn restore_services(state: &Arc<DaemonState>) {
     tracing::info!(?wanted, "restore: re-spawning services after daemon (re)start");
     for name in order {
         let Some(entry) = catalog::find(name) else { continue };
-        // Phase 1b: the catalog is single-version, so the restored
-        // instance always runs at the entry's default version. When the
-        // pin ledger records a concrete version per project (Phase 4),
-        // `wanted_services` will surface the (name, version) pairs directly.
-        let inst = Instance::new(entry.name, entry.version);
-        if let Err(e) =
-            store_fetch::ensure_tarball(&state.paths, entry, entry.version.to_string(), None).await
-        {
-            tracing::warn!(service = name, error = format!("{e:#}"), "restore: tarball fetch");
-            continue;
-        }
-        if let Err(e) = provisioners::pre_start(entry, &state.paths).await {
-            tracing::warn!(service = name, error = %e, "restore: pre_start");
-            continue;
-        }
-        match supervisor::start_service(&state.supervisor, &inst).await {
-            Ok(true) => tracing::info!(service = name, "restore: re-spawned"),
-            Ok(false) => {}
-            Err(e) => tracing::warn!(service = name, error = %e, "restore: start"),
+        // Re-spawn every wanted instance of this service (usually one; two
+        // for a multi-version service with tenants on both).
+        for (_, version) in wanted.iter().filter(|(n, _)| *n == name) {
+            let inst = Instance::new(entry.name, version);
+            if let Err(e) =
+                store_fetch::ensure_tarball(&state.paths, entry, version.clone(), None).await
+            {
+                tracing::warn!(service = name, version = %version, error = format!("{e:#}"), "restore: tarball fetch");
+                continue;
+            }
+            if let Err(e) = provisioners::pre_start(entry, &state.paths, version).await {
+                tracing::warn!(service = name, version = %version, error = %e, "restore: pre_start");
+                continue;
+            }
+            match supervisor::start_service(&state.supervisor, &inst).await {
+                Ok(true) => tracing::info!(service = name, version = %version, "restore: re-spawned"),
+                Ok(false) => {}
+                Err(e) => tracing::warn!(service = name, version = %version, error = %e, "restore: start"),
+            }
         }
     }
 }
 
-/// User-facing catalog services that still have ≥1 provisioned tenant —
-/// the set the user has `up` and not `down`. See [`restore_services`].
-async fn wanted_services(paths: &Paths) -> Vec<&'static str> {
+/// User-facing catalog instances that still have ≥1 provisioned tenant —
+/// the set the user has `up` and not `down`, as `(name, version)` pairs.
+/// Scans every version's ledger so a multi-version service resurfaces all
+/// its live instances after a daemon restart. See [`restore_services`].
+async fn wanted_services(paths: &Paths) -> Vec<(&'static str, String)> {
     use crate::daemon::{catalog, tenants};
 
     let mut wanted = Vec::new();
@@ -405,10 +416,12 @@ async fn wanted_services(paths: &Paths) -> Vec<&'static str> {
         if !entry.user_facing {
             continue;
         }
-        let tenants_path = paths.service_tenants(entry.name, &entry.version);
-        let n = tenants::load_all(&tenants_path).await.map_or(0, |v| v.len());
-        if n > 0 {
-            wanted.push(entry.name);
+        for version in tenants::instance_versions(&paths.service_name_dir(entry.name)) {
+            let tenants_path = paths.service_tenants(entry.name, &version);
+            let n = tenants::load_all(&tenants_path).await.map_or(0, |v| v.len());
+            if n > 0 {
+                wanted.push((entry.name, version));
+            }
         }
     }
     wanted
@@ -516,7 +529,13 @@ mod tests {
             .unwrap();
 
         let wanted = wanted_services(&paths).await;
-        assert!(wanted.contains(&svc), "expected {svc} in {wanted:?}");
+        assert!(
+            wanted
+                .iter()
+                .any(|(n, v)| *n == svc && v == catalog::default_version(svc)),
+            "expected {svc}@{} in {wanted:?}",
+            catalog::default_version(svc)
+        );
     }
 
     #[test]

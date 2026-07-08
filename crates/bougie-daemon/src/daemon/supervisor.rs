@@ -566,7 +566,7 @@ impl Supervisor {
         // without the carve-in the child can't even `execve` babysit.
         let bougie_bin = std::env::current_exe()
             .wrap_err("locating current_exe for bougie-babysit")?;
-        let policy = sandbox::build_policy(entry, &self.paths, &bougie_bin)
+        let policy = sandbox::build_policy(entry, version, &self.paths, &bougie_bin)
             .wrap_err_with(|| format!("compiling sandbox policy for {}", entry.name))?;
         let binary = self.binary_path(entry, version)?;
         let args = render_exec_args(entry, version, &self.paths, endpoint.as_ref());
@@ -1527,6 +1527,34 @@ fn render_exec_args(
                 // into the data dir by default; the dev workflow
                 // doesn't need either, and skipping them keeps the
                 // datadir small.
+                "--general-log=0".into(),
+                "--slow-query-log=0".into(),
+            ]
+        }
+        "mysql" => {
+            let data_path = paths.service_data("mysql", version);
+            let datadir = data_path.display().to_string();
+            let sock = paths.service_run("mysql", version).join("mysql.sock").display().to_string();
+            // InnoDB temporaries, same reasoning as mariadb: the sandbox
+            // hides /tmp, so pin them under the already-RW datadir.
+            let tmpdir = data_path.join("tmp");
+            let _ = std::fs::create_dir_all(&tmpdir);
+            let basedir = store_layout::basedir(paths, entry, version)
+                .map(|p| p.display().to_string())
+                .unwrap_or_default();
+            vec![
+                // `--no-defaults` first — ignore a host /etc/my.cnf whose
+                // options our bundled mysqld may reject.
+                "--no-defaults".into(),
+                format!("--basedir={basedir}"),
+                format!("--datadir={datadir}"),
+                format!("--socket={sock}"),
+                format!("--tmpdir={}", tmpdir.display()),
+                // Bougie services bind unix sockets only (SERVICES.md §6);
+                // keep mysqld off 0.0.0.0:3306.
+                "--skip-networking".into(),
+                // No query logs — the dev workflow needs neither and it
+                // keeps the datadir small.
                 "--general-log=0".into(),
                 "--slow-query-log=0".into(),
             ]
