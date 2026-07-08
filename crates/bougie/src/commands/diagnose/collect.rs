@@ -366,6 +366,7 @@ fn resolve_project_version(paths: &Paths, name: &str, project_root: Option<&Path
         .unwrap_or_else(|| catalog::default_version(name).to_owned())
 }
 
+#[cfg(unix)]
 fn binding_line(
     paths: &Paths,
     name: &str,
