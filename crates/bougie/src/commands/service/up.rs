@@ -208,8 +208,26 @@ pub fn run(format: OutputFormat, names: Vec<String>, detach: bool) -> Result<Exi
 /// and the highest match is selected, mirroring `bougie-resolver`'s PHP +
 /// extension resolution. Keeping it a named function now means that change
 /// lands in one place without touching the wire or the daemon.
-fn resolve_service_version(name: &str, _pin: &ServicePin) -> String {
-    bougie_daemon::daemon::catalog::default_version(name).to_string()
+fn resolve_service_version(name: &str, pin: &ServicePin) -> String {
+    // Phase 1b interim: honor an exact-version pin (`mysql = "8.4.0"`) so
+    // two projects can select two versions of one service. A range or `*`
+    // still resolves to the catalog default until Phase 4's index-backed
+    // resolver maps the constraint to a concrete published version.
+    match pin.version() {
+        Some(v) if is_exact_version(v) => v.to_owned(),
+        _ => bougie_daemon::daemon::catalog::default_version(name).to_owned(),
+    }
+}
+
+/// A pin naming one concrete version (`8.4.0`) rather than a range
+/// (`^8.4`, `>=8`, `1.x`, `*`). Conservative heuristic — digits and dots
+/// only — so anything the least bit fancy falls through to the catalog
+/// default, which is always safe. Phase 4 replaces this with real
+/// constraint resolution against the index.
+fn is_exact_version(v: &str) -> bool {
+    !v.is_empty()
+        && v.bytes().all(|b| b.is_ascii_digit() || b == b'.')
+        && v.bytes().next().is_some_and(|b| b.is_ascii_digit())
 }
 
 /// Best-effort read of the default DB connection's `username` from
@@ -243,7 +261,18 @@ fn parse_db_username(env_php: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_db_username;
+    use super::{is_exact_version, parse_db_username};
+
+    #[test]
+    fn exact_versions_pass_ranges_and_wildcards_fall_through() {
+        assert!(is_exact_version("1.30.2"));
+        assert!(is_exact_version("8"));
+        assert!(is_exact_version("8.4"));
+        // Ranges, wildcards, operators, prereleases → not exact.
+        for spec in ["*", "^8.4", "~1.0", ">=8", "8.x", "8.0.0-rc1", "", "v8.4"] {
+            assert!(!is_exact_version(spec), "{spec} should not be exact");
+        }
+    }
 
     const ENV_PHP: &str = r"<?php
 return array (
