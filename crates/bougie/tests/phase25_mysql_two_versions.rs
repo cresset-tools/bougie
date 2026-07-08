@@ -22,7 +22,6 @@
 
 mod common;
 
-use common::mysql_fixture::{self, MYSQL_8_0, MYSQL_8_4};
 use common::TestEnv;
 use serde_json::Value;
 use std::fs;
@@ -30,6 +29,11 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
+
+/// Catalog versions the two pins resolve to (must match `daemon::catalog`'s
+/// mysql entry). `8.4` → default 8.4.10, `8.0` → 8.0.46.
+const MYSQL_8_4: &str = "8.4.10";
+const MYSQL_8_0: &str = "8.0.46";
 
 /// Serialise the (heavy) mysql integration test the way phase17 does —
 /// two cold-starting mysqlds are enough CPU+IO to matter on a loaded box.
@@ -40,7 +44,12 @@ fn mysql_test_lock() -> MutexGuard<'static, ()> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-const STEP_TIMEOUT: Duration = Duration::from_mins(2);
+/// Generous: each `up` fetches a ~50 MB mysql tarball **and its closure**
+/// (zlib/openssl/ncurses/libedit — the client needs libedit at runtime,
+/// which is exactly why the real fetch path, not a bare-tarball fixture,
+/// is exercised here) from the index, then cold-starts + initialises
+/// mysqld.
+const STEP_TIMEOUT: Duration = Duration::from_mins(4);
 
 fn should_skip() -> bool {
     std::env::var_os("BOUGIE_SKIP_REAL_MYSQL").is_some()
@@ -145,8 +154,9 @@ fn two_mysql_versions_run_as_distinct_instances() {
     }
     let _guard = mysql_test_lock();
     let env = TestEnv::new();
-    mysql_fixture::install_into(env.home_path(), MYSQL_8_4);
-    mysql_fixture::install_into(env.home_path(), MYSQL_8_0);
+    // No pre-staging: `bougie up` fetches each tarball *and its closure*
+    // from the index, which is the whole point — the mysql client links
+    // libedit, a non-system lib that only lands via `install_closure_peers`.
 
     let root = env.home_path().join("projects");
     // Project A pins the older major; project B takes the default (8.4).

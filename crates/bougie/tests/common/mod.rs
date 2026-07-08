@@ -4,7 +4,6 @@
 
 pub mod mailpit_fixture;
 pub mod mariadb_fixture;
-pub mod mysql_fixture;
 pub mod opensearch_fixture;
 pub mod rabbitmq_fixture;
 
