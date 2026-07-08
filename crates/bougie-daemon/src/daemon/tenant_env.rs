@@ -271,9 +271,15 @@ mod tests {
         let vars = tenant_service_env(&paths, entry, "8.0.46", &t);
         let sock = vars["BOUGIE_SERVICE_MYSQL_SOCKET"].as_str().unwrap();
         assert!(sock.ends_with("mysql.sock"), "{sock}");
+        // The run dir is a short hashed `state/run/<token>/` (macOS
+        // `sun_path` headroom); the version keys the *token*, so the 8.0
+        // socket lands in a different dir than the catalog default (8.4).
+        let tok_80 = bougie_paths::instance_run_token("mysql", "8.0.46");
+        let tok_default = bougie_paths::instance_run_token("mysql", entry.version);
+        assert_ne!(tok_80, tok_default, "8.0 must key a different run dir than the default");
         assert!(
-            sock.contains("/mysql/8.0.46/"),
-            "socket must live under the resolved version dir: {sock}"
+            sock.contains(&tok_80) && !sock.contains(&tok_default),
+            "socket must use the resolved-8.0 run token {tok_80}, not the default {tok_default}: {sock}"
         );
         assert_eq!(
             vars["BOUGIE_SERVICE_MYSQL_DATABASE"],

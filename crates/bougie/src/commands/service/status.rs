@@ -358,10 +358,11 @@ mod tests {
             format_binding(&paths, "opensearch", dv("opensearch"), &json!({"kind": "tcp", "port": 9200})),
             "tcp 127.0.0.1:9200"
         );
-        // Unix sockets resolve to the absolute per-service run path.
+        // Unix sockets resolve to the absolute per-instance run path
+        // (short, flat `state/run/<token>/` — macOS `sun_path` headroom).
         assert_eq!(
             format_binding(&paths, "redis", dv("redis"), &json!({"kind": "unix_socket", "sockname": "redis.sock"})),
-            "socket /h/state/services/redis/8.6.3/run/redis.sock"
+            format!("socket {}", paths.service_run("redis", dv("redis")).join("redis.sock").display())
         );
         // `none`, a bare null, and unknown shapes all degrade to `-`.
         assert_eq!(format_binding(&paths, "x", "1.0", &json!({"kind": "none"})), "-");
@@ -407,9 +408,13 @@ mod tests {
         let mut buf = Vec::new();
         result.render_text(&mut buf).unwrap();
         let text = String::from_utf8(buf).unwrap();
+        let mariadb_sock = paths
+            .service_run("mariadb", bougie_daemon::daemon::catalog::default_version("mariadb"))
+            .join("mariadb.sock");
         assert!(
-            text.contains("socket /h/state/services/mariadb/11.4.4/run/mariadb.sock"),
-            "text: {text}"
+            text.contains(&format!("socket {}", mariadb_sock.display())),
+            "text: {text}\nexpected socket: {}",
+            mariadb_sock.display()
         );
         assert!(text.contains("tcp 127.0.0.1:9200"), "text: {text}");
         // Existing columns survive alongside the new one.

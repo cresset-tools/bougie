@@ -405,9 +405,20 @@ impl Paths {
     pub fn service_data(&self, name: &str, version: &str) -> PathBuf {
         self.service_dir(name, version).join("data")
     }
-    /// Per-instance runtime dir (unix socket, pid file).
+    /// Per-instance runtime dir (unix socket, pid file). Deliberately
+    /// **short and flat** — `state/run/<token>/`, *not* nested under the
+    /// deep versioned [`service_dir`]. The unix socket that lands here is
+    /// bound by its absolute path, and macOS caps `sun_path` at 103 bytes
+    /// (Linux 107); the versioned tree (`state/services/<name>/<version>/…`)
+    /// plus a temp-dir prefix overflows that limit, aborting the service
+    /// with "socket file path is too long". A short hashed run dir keeps
+    /// the socket comfortably under the cap on every platform. Nothing
+    /// durable lives here — the socket and pidfile are recreated on every
+    /// start — so the flat layout needs no migration.
+    ///
+    /// [`service_dir`]: Paths::service_dir
     pub fn service_run(&self, name: &str, version: &str) -> PathBuf {
-        self.service_dir(name, version).join("run")
+        self.state().join("run").join(instance_run_token(name, version))
     }
     /// Per-instance log dir (rotated logs land here).
     pub fn service_log(&self, name: &str, version: &str) -> PathBuf {
@@ -583,6 +594,28 @@ pub fn project_hash(project: &Path) -> String {
         .unwrap_or(b"");
     let mut hasher = Sha256::new();
     hasher.update(bytes);
+    let digest = hasher.finalize();
+    let mut out = String::with_capacity(12);
+    for b in digest.iter().take(6) {
+        write!(out, "{b:02x}").expect("writing to String");
+    }
+    out
+}
+
+/// Short, stable token naming an instance's runtime dir: first 12 hex of
+/// `sha256("<name>\0<version>")`. A flat hashed dir under `state/run/`
+/// keeps the bound unix-socket path short enough for macOS's 103-byte
+/// `sun_path` limit even under a deep temp-dir prefix — see
+/// [`Paths::service_run`]. The `\0` separator keeps `(name, version)`
+/// pairs unambiguous (`ab`+`c` can't collide with `a`+`bc`).
+#[must_use]
+pub fn instance_run_token(name: &str, version: &str) -> String {
+    use sha2::{Digest, Sha256};
+    use std::fmt::Write as _;
+    let mut hasher = Sha256::new();
+    hasher.update(name.as_bytes());
+    hasher.update([0u8]);
+    hasher.update(version.as_bytes());
     let digest = hasher.finalize();
     let mut out = String::with_capacity(12);
     for b in digest.iter().take(6) {
@@ -780,10 +813,17 @@ mod tests {
             p.service_data("redis", "8.6.3"),
             Path::new("/h/state/services/redis/8.6.3/data")
         );
+        // The run dir is a short, flat hashed path (macOS `sun_path`
+        // headroom), *not* under the deep versioned service dir.
         assert_eq!(
             p.service_run("redis", "8.6.3"),
-            Path::new("/h/state/services/redis/8.6.3/run")
+            p.state().join("run").join(instance_run_token("redis", "8.6.3"))
         );
+        assert!(!p.service_run("redis", "8.6.3").starts_with(p.service_dir("redis", "8.6.3")));
+        // Distinct instances get distinct run dirs; same instance is stable.
+        assert_ne!(p.service_run("redis", "8.6.3"), p.service_run("redis", "8.0.0"));
+        assert_ne!(p.service_run("redis", "8.6.3"), p.service_run("mariadb", "8.6.3"));
+        assert_eq!(p.service_run("redis", "8.6.3"), p.service_run("redis", "8.6.3"));
         assert_eq!(
             p.service_log("redis", "8.6.3"),
             Path::new("/h/state/services/redis/8.6.3/log")

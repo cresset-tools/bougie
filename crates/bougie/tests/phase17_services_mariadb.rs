@@ -72,8 +72,12 @@ fn mariadb_client(env: &TestEnv) -> std::path::PathBuf {
 }
 
 fn mariadb_socket(env: &TestEnv) -> std::path::PathBuf {
+    // The runtime dir is a short, flat `state/run/<token>/` (macOS
+    // `sun_path` headroom), not the deep versioned service dir.
     env.home_path()
-        .join("state/services/mariadb/11.4.4/run/mariadb.sock")
+        .join("state/run")
+        .join(bougie_paths::instance_run_token("mariadb", "11.4.4"))
+        .join("mariadb.sock")
 }
 
 fn wait_for(path: &Path, timeout: Duration) -> bool {

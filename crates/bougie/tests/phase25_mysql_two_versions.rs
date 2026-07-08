@@ -80,10 +80,12 @@ fn up(env: &TestEnv, proj: &Path) {
 }
 
 fn socket_for(env: &TestEnv, version: &str) -> PathBuf {
+    // Runtime dir is a short, flat `state/run/<token>/` (macOS `sun_path`
+    // headroom), keyed by (name, version) — not the deep versioned dir.
     env.home_path()
-        .join("state/services/mysql")
-        .join(version)
-        .join("run/mysql.sock")
+        .join("state/run")
+        .join(bougie_paths::instance_run_token("mysql", version))
+        .join("mysql.sock")
 }
 
 fn wait_for(path: &Path, timeout: Duration) -> bool {
@@ -228,9 +230,14 @@ fn two_mysql_versions_run_as_distinct_instances() {
         .stdout
         .clone();
     let env_a = String::from_utf8(env_a).unwrap();
+    // The socket lives in a hashed run dir keyed by (name, version), so
+    // point-at-the-right-version is proven by the 8.0 run token being
+    // present and the 8.4 one absent.
+    let tok_80 = bougie_paths::instance_run_token("mysql", MYSQL_8_0);
+    let tok_84 = bougie_paths::instance_run_token("mysql", MYSQL_8_4);
     assert!(
-        env_a.contains(&format!("/mysql/{MYSQL_8_0}/")),
-        "project A's env should point at the 8.0 socket, got:\n{env_a}"
+        env_a.contains(&tok_80) && !env_a.contains(&tok_84),
+        "project A's env should point at the 8.0 socket (token {tok_80}), not 8.4's ({tok_84}); got:\n{env_a}"
     );
 
     stop_daemon(&env);

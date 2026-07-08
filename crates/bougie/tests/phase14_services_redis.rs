@@ -83,7 +83,9 @@ fn up_starts_fake_redis_and_provisions_a_tenant() {
     // Socket should exist.
     let sock = env
         .home_path()
-        .join("state/services/redis/8.6.3/run/redis.sock");
+        .join("state/run")
+        .join(bougie_paths::instance_run_token("redis", "8.6.3"))
+        .join("redis.sock");
     assert!(sock.exists(), "expected socket at {}", sock.display());
 
     // tenants.json should have one entry for our project with a db_number alloc.
@@ -254,7 +256,9 @@ fn down_in_one_project_keeps_redis_running_for_the_other() {
     // Socket still alive — b's tenant remains.
     let sock = env
         .home_path()
-        .join("state/services/redis/8.6.3/run/redis.sock");
+        .join("state/run")
+        .join(bougie_paths::instance_run_token("redis", "8.6.3"))
+        .join("redis.sock");
     assert!(sock.exists(), "socket must still exist after one project goes down");
 
     // Now drop b too; redis should stop.
