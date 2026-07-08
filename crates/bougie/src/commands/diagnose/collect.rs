@@ -279,9 +279,11 @@ fn unix_sections(
             state.as_deref(),
             Some("running" | "unhealthy" | "health_checking" | "starting" | "stopping")
         );
-        // Single-instance stand-in until IPC threads a resolved version;
-        // this is the version whose endpoint.json the offline readers key on.
-        let version = catalog::default_version(name);
+        // Resolve which instance this project actually runs by scanning
+        // its on-disk ledgers (a non-default mysql 8.0 keys its endpoint /
+        // socket / log under 8.0.46, not the catalog default 8.4.10).
+        let version = resolve_project_version(paths, name, project_root);
+        let version = version.as_str();
         let binding = entry.map_or_else(
             || "(not in the service catalog)".to_owned(),
             |e| binding_line(paths, name, version, e.binding, holds_binding),
@@ -305,7 +307,7 @@ fn unix_sections(
             status_note: live_svc.and_then(live_note),
             state,
             binding,
-            log_tail: tail_file(&paths.service_log_file(name, bougie_daemon::daemon::catalog::default_version(name)), scrub),
+            log_tail: tail_file(&paths.service_log_file(name, version), scrub),
         });
     }
 
@@ -354,6 +356,16 @@ fn probe_port(port: u16, service: &str, purpose: Option<&'static str>, expected:
 }
 
 #[cfg(unix)]
+/// Resolve which instance version this project runs for `name` by
+/// scanning its on-disk ledgers (`INSTANCES_PLAN` §6). Falls back to the
+/// catalog default when the project has no tenant or no project root.
+fn resolve_project_version(paths: &Paths, name: &str, project_root: Option<&Path>) -> String {
+    use bougie_daemon::daemon::{catalog, tenants};
+    project_root
+        .and_then(|root| tenants::project_instance_version(paths, name, root))
+        .unwrap_or_else(|| catalog::default_version(name).to_owned())
+}
+
 fn binding_line(
     paths: &Paths,
     name: &str,

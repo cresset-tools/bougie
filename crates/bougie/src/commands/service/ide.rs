@@ -7,9 +7,13 @@
 //! IDE's database tool — connecting over the unix socket with no keychain
 //! prompt.
 //!
-//! Only MariaDB is handled. bougie's redis is unix-socket-only and
-//! PhpStorm's Redis driver speaks TCP only, so a redis data source could
-//! never connect; it's deliberately out of scope.
+//! Only the project's relational DB is handled — `MariaDB` **or** `MySQL`
+//! (the two are mutually exclusive per project). Both are wired through
+//! the `MariaDB` JDBC driver's `localSocket`, which connects to a `MySQL`
+//! server just as well and avoids `MySQL` Connector/J's socket-factory
+//! ceremony. bougie's redis is unix-socket-only and `PhpStorm`'s Redis
+//! driver speaks TCP only, so a redis data source could never connect;
+//! it's deliberately out of scope.
 //!
 //! ## Plaintext password
 //!
@@ -30,14 +34,18 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-/// Service whose tenant we turn into a PhpStorm data source.
-const SERVICE: &str = "mariadb";
+/// Relational-DB services we turn into a PhpStorm data source, paired
+/// with their socket file name. A project declares at most one of these
+/// (mariadb/mysql are mutually exclusive), so the first with a tenant
+/// wins.
+const DB_SERVICES: &[(&str, &str)] = &[("mariadb", "mariadb.sock"), ("mysql", "mysql.sock")];
 
-/// Write (or refresh) the PhpStorm MariaDB data source for `project_root`,
-/// given the daemon's `service -> tenant` map from `service.up`.
+/// Write (or refresh) the `PhpStorm` data source for `project_root`'s
+/// relational DB (`MariaDB` or `MySQL`), given the daemon's `service ->
+/// tenant` map from `service.up`.
 ///
 /// Returns `Ok(Some(path))` for the file we wrote, `Ok(None)` when there
-/// was nothing to do (off-switch set, or no mariadb tenant in `tenants`).
+/// was nothing to do (off-switch set, or no DB tenant in `tenants`).
 /// Errors are the caller's to treat as non-fatal — this is IDE sugar, not
 /// part of bringing services up.
 pub fn write_phpstorm_datasources(
@@ -48,14 +56,22 @@ pub fn write_phpstorm_datasources(
     if ide_disabled() {
         return Ok(None);
     }
-    let Some(tenant) = tenants.get(SERVICE) else {
+    let Some((service, sockname, tenant)) = DB_SERVICES
+        .iter()
+        .find_map(|&(svc, sock)| tenants.get(svc).map(|t| (svc, sock, t)))
+    else {
         return Ok(None);
     };
 
     let password =
-        bougie_daemon::daemon::credentials::derive_password(paths, SERVICE, project_root)
-            .wrap_err("deriving the mariadb password for the PhpStorm data source")?;
-    let socket = paths.service_run(SERVICE, bougie_daemon::daemon::catalog::default_version(SERVICE)).join("mariadb.sock");
+        bougie_daemon::daemon::credentials::derive_password(paths, service, project_root)
+            .wrap_err_with(|| format!("deriving the {service} password for the PhpStorm data source"))?;
+    // Key the socket on the version this project actually runs (a
+    // non-default mysql 8.0 lives under its own dir), falling back to the
+    // catalog default when no ledger owns it yet.
+    let version = bougie_daemon::daemon::tenants::project_instance_version(paths, service, project_root)
+        .unwrap_or_else(|| bougie_daemon::daemon::catalog::default_version(service).to_owned());
+    let socket = paths.service_run(service, &version).join(sockname);
 
     let ds = datasource_block(tenant, &socket.to_string_lossy(), &password, project_root);
 

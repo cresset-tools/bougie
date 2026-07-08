@@ -97,6 +97,30 @@ pub fn load_all_sync(path: &Path) -> Result<Vec<Tenant>> {
 /// yields an empty vec.
 ///
 /// [`Paths::service_dir`]: bougie_paths::Paths::service_dir
+/// The instance version `project` runs for `service`, found by scanning
+/// every on-disk ledger (`INSTANCES_PLAN` §6). Matches the project by
+/// canonical path first, raw path second (the ledger stores whatever
+/// spelling the daemon was handed). `None` when no instance's ledger
+/// owns the project. The daemon-less display/IDE consumers (`diagnose`,
+/// `PhpStorm` datasource) use this to point at the *right* version dir
+/// rather than the catalog default.
+#[must_use]
+pub fn project_instance_version(
+    paths: &bougie_paths::Paths,
+    service: &str,
+    project: &Path,
+) -> Option<String> {
+    let canon = std::fs::canonicalize(project).unwrap_or_else(|_| project.to_path_buf());
+    for v in instance_versions(&paths.service_name_dir(service)) {
+        if let Ok(rows) = load_all_sync(&paths.service_tenants(service, &v))
+            && rows.iter().any(|t| t.project == canon || t.project == project)
+        {
+            return Some(v);
+        }
+    }
+    None
+}
+
 #[must_use]
 pub fn instance_versions(name_dir: &Path) -> Vec<String> {
     let mut out = Vec::new();
