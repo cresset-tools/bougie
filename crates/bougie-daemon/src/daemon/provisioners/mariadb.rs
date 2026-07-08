@@ -49,7 +49,7 @@ pub async fn pre_start(paths: &Paths) -> Result<()> {
         return Ok(());
     }
 
-    let basedir = store_layout::basedir(paths, entry)
+    let basedir = store_layout::basedir(paths, entry, &entry.version)
         .wrap_err("resolving mariadb basedir")?;
     let install_db = basedir.join("bin/mariadb-install-db");
     if !tokio::fs::try_exists(&install_db).await.unwrap_or(false) {
@@ -210,7 +210,7 @@ pub(crate) async fn health(paths: &Paths, socket: &Path) -> Result<()> {
 fn mariadb_client_binary(paths: &Paths) -> Result<PathBuf> {
     let entry = crate::daemon::catalog::find("mariadb")
         .ok_or_else(|| eyre!("BUG: mariadb missing from catalog"))?;
-    let basedir = store_layout::basedir(paths, entry)?;
+    let basedir = store_layout::basedir(paths, entry, &entry.version)?;
     let bin = basedir.join("bin/mariadb");
     if !bin.exists() {
         return Err(eyre!(

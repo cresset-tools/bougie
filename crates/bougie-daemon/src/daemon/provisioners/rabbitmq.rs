@@ -221,7 +221,7 @@ pub(crate) async fn health(paths: &Paths) -> Result<()> {
 fn ctl_binary(paths: &Paths) -> Result<PathBuf> {
     let entry = crate::daemon::catalog::find("rabbitmq")
         .ok_or_else(|| eyre!("BUG: rabbitmq missing from catalog"))?;
-    let basedir = store_layout::basedir(paths, entry)
+    let basedir = store_layout::basedir(paths, entry, &entry.version)
         .wrap_err("resolving rabbitmq basedir")?;
     let ctl = basedir.join("sbin/rabbitmqctl");
     if !ctl.is_file() {

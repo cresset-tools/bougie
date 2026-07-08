@@ -166,7 +166,10 @@ fn client_binary(
     rel_path: &str,
     tool: &str,
 ) -> Result<PathBuf> {
-    let basedir = store_layout::basedir(paths, entry).map_err(|_| {
+    // The curated clients live in the default-version store tree (the
+    // catalog is single-version; a multi-version `exec` target is a Phase 4
+    // concern).
+    let basedir = store_layout::basedir(paths, entry, entry.version).map_err(|_| {
         eyre!(
             "{tool}: service `{name}` isn't installed yet — run `bougie up {name}` \
              once to fetch it",
@@ -193,7 +196,7 @@ fn discover_binary(
     entry: &'static CatalogEntry,
     tool: &str,
 ) -> Result<Option<PathBuf>> {
-    let basedir = store_layout::basedir(paths, entry)?;
+    let basedir = store_layout::basedir(paths, entry, entry.version)?;
     for sub in ["bin", "sbin"] {
         let p = basedir.join(sub).join(tool);
         if p.is_file() {

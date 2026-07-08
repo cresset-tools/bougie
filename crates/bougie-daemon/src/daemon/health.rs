@@ -35,8 +35,8 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 /// Bounded by [`PROBE_TIMEOUT`]; the exec-based probes (mariadb,
 /// rabbitmq) set `kill_on_drop`, so a timeout that drops the future also
 /// reaps the client process.
-pub async fn probe(name: &str, paths: &Paths) -> Result<()> {
-    match tokio::time::timeout(PROBE_TIMEOUT, probe_inner(name, paths)).await {
+pub async fn probe(name: &str, version: &str, paths: &Paths) -> Result<()> {
+    match tokio::time::timeout(PROBE_TIMEOUT, probe_inner(name, version, paths)).await {
         Ok(r) => r,
         Err(_) => Err(eyre!(
             "health probe for `{name}` timed out after {PROBE_TIMEOUT:?}"
@@ -44,22 +44,22 @@ pub async fn probe(name: &str, paths: &Paths) -> Result<()> {
     }
 }
 
-async fn probe_inner(name: &str, paths: &Paths) -> Result<()> {
+async fn probe_inner(name: &str, version: &str, paths: &Paths) -> Result<()> {
     let Some(entry) = catalog::find(name) else {
         return Err(eyre!("unknown service `{name}`"));
     };
     match name {
         "redis" => {
-            let sock = socket_path(entry, paths)?;
+            let sock = socket_path(entry, version, paths)?;
             super::provisioners::redis::health(&sock).await
         }
         "mariadb" => {
-            let sock = socket_path(entry, paths)?;
+            let sock = socket_path(entry, version, paths)?;
             super::provisioners::mariadb::health(paths, &sock).await
         }
         "opensearch" => {
             let port =
-                super::endpoint::effective_primary(paths, "opensearch", &entry.version, 9200);
+                super::endpoint::effective_primary(paths, "opensearch", version, 9200);
             super::provisioners::opensearch::health(port).await
         }
         "rabbitmq" => super::provisioners::rabbitmq::health(paths).await,
@@ -70,7 +70,7 @@ async fn probe_inner(name: &str, paths: &Paths) -> Result<()> {
             let http = super::endpoint::effective_extra(
                 paths,
                 "mailpit",
-                &entry.version,
+                version,
                 "http",
                 catalog::MAILPIT_HTTP_PORT,
             );
@@ -85,7 +85,7 @@ async fn probe_inner(name: &str, paths: &Paths) -> Result<()> {
         // reload. `server` therefore falls through to `connect`.
         // Runtime-only deps + anything without a richer probe: connect to
         // the binding (or trivially Ok for `Binding::None`).
-        _ => connect(entry, paths).await,
+        _ => connect(entry, version, paths).await,
     }
 }
 
@@ -93,10 +93,10 @@ async fn probe_inner(name: &str, paths: &Paths) -> Result<()> {
 /// probe. Kept as the default so a future service with no protocol probe
 /// still gets the old behaviour, and `Binding::None` deps stay
 /// unprobed.
-async fn connect(entry: &CatalogEntry, paths: &Paths) -> Result<()> {
+async fn connect(entry: &CatalogEntry, version: &str, paths: &Paths) -> Result<()> {
     match entry.binding {
         Binding::UnixSocket { sockname } => {
-            let path = paths.service_run(entry.name, &entry.version).join(sockname);
+            let path = paths.service_run(entry.name, version).join(sockname);
             tokio::net::UnixStream::connect(&path)
                 .await
                 .map(drop)
@@ -109,7 +109,7 @@ async fn connect(entry: &CatalogEntry, paths: &Paths) -> Result<()> {
                 })
         }
         Binding::Tcp { port } => {
-            let port = super::endpoint::effective_primary(paths, entry.name, &entry.version, port);
+            let port = super::endpoint::effective_primary(paths, entry.name, version, port);
             tokio::net::TcpStream::connect(("127.0.0.1", port))
                 .await
                 .map(drop)
@@ -120,9 +120,9 @@ async fn connect(entry: &CatalogEntry, paths: &Paths) -> Result<()> {
     }
 }
 
-fn socket_path(entry: &CatalogEntry, paths: &Paths) -> Result<PathBuf> {
+fn socket_path(entry: &CatalogEntry, version: &str, paths: &Paths) -> Result<PathBuf> {
     match entry.binding {
-        Binding::UnixSocket { sockname } => Ok(paths.service_run(entry.name, &entry.version).join(sockname)),
+        Binding::UnixSocket { sockname } => Ok(paths.service_run(entry.name, version).join(sockname)),
         _ => Err(eyre!("{} is not a unix-socket service", entry.name)),
     }
 }
@@ -167,7 +167,7 @@ mod tests {
 
     #[tokio::test]
     async fn unknown_service_errors() {
-        let err = probe("postgres", &test_paths()).await.unwrap_err();
+        let err = probe("postgres", "0", &test_paths()).await.unwrap_err();
         assert!(format!("{err:#}").contains("unknown service"));
     }
 
@@ -175,8 +175,8 @@ mod tests {
     async fn runtime_only_dep_is_trivially_healthy() {
         // jdk/erlang have `Binding::None` — the connect fallback treats
         // them as healthy (they're never reachable as services).
-        assert!(probe("jdk", &test_paths()).await.is_ok());
-        assert!(probe("erlang", &test_paths()).await.is_ok());
+        assert!(probe("jdk", crate::daemon::catalog::default_version("jdk"), &test_paths()).await.is_ok());
+        assert!(probe("erlang", crate::daemon::catalog::default_version("erlang"), &test_paths()).await.is_ok());
     }
 
     #[tokio::test]
@@ -188,7 +188,7 @@ mod tests {
         std::fs::create_dir_all(sock.parent().unwrap()).unwrap();
         let listener = tokio::net::UnixListener::bind(&sock).unwrap();
         let entry = catalog::find("redis").unwrap();
-        let ok = connect(entry, &paths).await;
+        let ok = connect(entry, &entry.version, &paths).await;
         assert!(ok.is_ok(), "{ok:?}");
         drop(listener);
     }
@@ -198,6 +198,6 @@ mod tests {
         let paths = test_paths();
         let entry = catalog::find("redis").unwrap();
         // No socket created → connect refused.
-        assert!(connect(entry, &paths).await.is_err());
+        assert!(connect(entry, &entry.version, &paths).await.is_err());
     }
 }

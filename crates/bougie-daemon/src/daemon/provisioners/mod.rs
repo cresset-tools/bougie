@@ -50,6 +50,7 @@ pub async fn pre_start(entry: &CatalogEntry, paths: &Paths) -> Result<()> {
 pub async fn provision(
     entry: &CatalogEntry,
     paths: &Paths,
+    version: &str,
     tenants_path: &Path,
     tenant_name: &str,
     project: &Path,
@@ -57,12 +58,12 @@ pub async fn provision(
     match entry.tenancy {
         Tenancy::Redis => redis::provision(tenants_path, tenant_name, project).await,
         Tenancy::Mariadb => {
-            let socket = paths.service_run("mariadb", &entry.version).join("mariadb.sock");
+            let socket = paths.service_run("mariadb", version).join("mariadb.sock");
             mariadb::provision(paths, tenants_path, tenant_name, project, &socket).await
         }
         Tenancy::Opensearch => {
             let port =
-                crate::daemon::endpoint::effective_primary(paths, "opensearch", &entry.version, 9200);
+                crate::daemon::endpoint::effective_primary(paths, "opensearch", version, 9200);
             opensearch::provision(port, tenants_path, tenant_name, project).await
         }
         Tenancy::BougieServer => {
@@ -80,6 +81,7 @@ pub async fn provision(
 pub async fn deprovision(
     entry: &CatalogEntry,
     paths: &Paths,
+    version: &str,
     tenants_path: &Path,
     tenant_name: &str,
     socket_path: Option<&Path>,
@@ -92,7 +94,7 @@ pub async fn deprovision(
         }
         Tenancy::Opensearch => {
             let port =
-                crate::daemon::endpoint::effective_primary(paths, "opensearch", &entry.version, 9200);
+                crate::daemon::endpoint::effective_primary(paths, "opensearch", version, 9200);
             opensearch::deprovision(port, tenants_path, tenant_name, purge).await
         }
         Tenancy::BougieServer => {

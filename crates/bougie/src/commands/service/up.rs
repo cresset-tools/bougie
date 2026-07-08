@@ -111,7 +111,8 @@ pub fn run(format: OutputFormat, names: Vec<String>, detach: bool) -> Result<Exi
         .map(|(name, pin)| {
             let tenant = pin
                 .tenant().map_or_else(|| default_tenant.clone(), str::to_owned);
-            json!({"name": name, "tenant": tenant})
+            let version = resolve_service_version(name, pin);
+            json!({"name": name, "version": version, "tenant": tenant})
         })
         .collect();
     let args = json!({
@@ -192,6 +193,23 @@ pub fn run(format: OutputFormat, names: Vec<String>, detach: bool) -> Result<Exi
         }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// Resolve a project's `[services]` pin to the concrete version the
+/// daemon should run this service at.
+///
+/// This is the seam where a pin (`redis = "8.6"`, `redis = "*"`, or a
+/// `[services.redis] version = "…"` table) becomes one exact version.
+/// While the catalog is single-version (Phase 1b) there's only ever one
+/// choice, so every pin — set, unset, or `"*"` — resolves to the catalog
+/// default. When the catalog carries multiple versions of a service
+/// (Phase 4: e.g. `mysql` beside `mariadb`, or two elasticsearch majors)
+/// this is where the pin gets intersected against the available versions
+/// and the highest match is selected, mirroring `bougie-resolver`'s PHP +
+/// extension resolution. Keeping it a named function now means that change
+/// lands in one place without touching the wire or the daemon.
+fn resolve_service_version(name: &str, _pin: &ServicePin) -> String {
+    bougie_daemon::daemon::catalog::default_version(name).to_string()
 }
 
 /// Best-effort read of the default DB connection's `username` from

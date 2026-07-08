@@ -261,18 +261,19 @@ async fn serve(paths: Paths) -> Result<ExitCode> {
                         // the ticker keeps reaping every second regardless
                         // of probe latency.
                         let due = supervisor.lock().await.check_all().await;
-                        for name in due {
+                        for inst in due {
                             let sup = Arc::clone(&supervisor);
                             tokio::spawn(async move {
                                 if let Err(e) =
-                                    crate::daemon::supervisor::start_service(&sup, name).await
+                                    crate::daemon::supervisor::start_service(&sup, &inst).await
                                 {
                                     tracing::warn!(
-                                        service = name,
+                                        service = inst.name.as_str(),
+                                        version = inst.version.as_str(),
                                         error = %e,
                                         "auto-restart failed; will retry on a later backoff tick"
                                     );
-                                    sup.lock().await.note_restart_failure(name);
+                                    sup.lock().await.note_restart_failure(&inst);
                                 }
                             });
                         }
@@ -285,16 +286,16 @@ async fn serve(paths: Paths) -> Result<ExitCode> {
                         // "Running". See `health::probe` and the
                         // `Supervisor::health_*` methods.
                         let health_due = supervisor.lock().await.health_due();
-                        for name in health_due {
+                        for inst in health_due {
                             let sup = Arc::clone(&supervisor);
                             let paths = paths.clone();
                             tokio::spawn(async move {
-                                let ok = crate::daemon::health::probe(name, &paths)
+                                let ok = crate::daemon::health::probe(&inst.name, &inst.version, &paths)
                                     .await
                                     .is_ok();
-                                let outcome = sup.lock().await.record_health(name, ok);
+                                let outcome = sup.lock().await.record_health(&inst, ok);
                                 if outcome == crate::daemon::supervisor::HealthOutcome::Breach {
-                                    sup.lock().await.fail_unhealthy(name).await;
+                                    sup.lock().await.fail_unhealthy(&inst).await;
                                 }
                             });
                         }
@@ -355,7 +356,7 @@ async fn serve(paths: Paths) -> Result<ExitCode> {
 /// tenants already exist on disk). Best-effort: failures are logged,
 /// never fatal.
 async fn restore_services(state: &Arc<DaemonState>) {
-    use crate::daemon::{catalog, provisioners, store_fetch, supervisor};
+    use crate::daemon::{catalog, instance::Instance, provisioners, store_fetch, supervisor};
 
     let wanted = wanted_services(&state.paths).await;
     if wanted.is_empty() {
@@ -371,7 +372,14 @@ async fn restore_services(state: &Arc<DaemonState>) {
     tracing::info!(?wanted, "restore: re-spawning services after daemon (re)start");
     for name in order {
         let Some(entry) = catalog::find(name) else { continue };
-        if let Err(e) = store_fetch::ensure_tarball(&state.paths, entry, None).await {
+        // Phase 1b: the catalog is single-version, so the restored
+        // instance always runs at the entry's default version. When the
+        // pin ledger records a concrete version per project (Phase 4),
+        // `wanted_services` will surface the (name, version) pairs directly.
+        let inst = Instance::new(entry.name, entry.version);
+        if let Err(e) =
+            store_fetch::ensure_tarball(&state.paths, entry, entry.version.to_string(), None).await
+        {
             tracing::warn!(service = name, error = format!("{e:#}"), "restore: tarball fetch");
             continue;
         }
@@ -379,7 +387,7 @@ async fn restore_services(state: &Arc<DaemonState>) {
             tracing::warn!(service = name, error = %e, "restore: pre_start");
             continue;
         }
-        match supervisor::start_service(&state.supervisor, name).await {
+        match supervisor::start_service(&state.supervisor, &inst).await {
             Ok(true) => tracing::info!(service = name, "restore: re-spawned"),
             Ok(false) => {}
             Err(e) => tracing::warn!(service = name, error = %e, "restore: start"),
@@ -407,8 +415,8 @@ async fn wanted_services(paths: &Paths) -> Vec<&'static str> {
 }
 
 async fn drain(state: &Arc<DaemonState>) {
-    use crate::daemon::supervisor::ServiceState;
-    let running: Vec<&'static str> = {
+    use crate::daemon::{instance::Instance, supervisor::ServiceState};
+    let running: Vec<Instance> = {
         let sup = state.supervisor.lock().await;
         sup.snapshot()
             .into_iter()
@@ -421,17 +429,14 @@ async fn drain(state: &Arc<DaemonState>) {
                         | ServiceState::Starting
                 )
             })
-            // SAFETY: catalog names are 'static; the snapshot copied
-            // them into owned Strings, but we can re-resolve to 'static
-            // via the catalog itself.
-            .filter_map(|s| {
-                crate::daemon::catalog::find(&s.name).map(|e| e.name)
-            })
+            // The snapshot carries each instance's `(name, version)`, so
+            // stop by the same identity it was spawned under.
+            .map(|s| Instance::new(s.name, s.version))
             .collect()
     };
-    for name in running.iter().rev() {
+    for inst in running.iter().rev() {
         let mut sup = state.supervisor.lock().await;
-        let _ = sup.stop(name).await;
+        let _ = sup.stop(inst).await;
     }
 }
 

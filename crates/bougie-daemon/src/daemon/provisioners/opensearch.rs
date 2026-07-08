@@ -67,7 +67,10 @@ pub async fn pre_start(paths: &Paths) -> Result<()> {
 
     let entry = crate::daemon::catalog::find("opensearch")
         .ok_or_else(|| eyre!("BUG: opensearch missing from catalog"))?;
-    let basedir = store_layout::basedir(paths, entry)
+    // pre_start bootstraps the default-version instance's config tree.
+    // (Multi-version bootstrap is a Phase 4 concern; opensearch is
+    // single-version in the catalog.)
+    let basedir = store_layout::basedir(paths, entry, entry.version)
         .wrap_err("resolving opensearch basedir")?;
     let src_config = basedir.join("config");
     if !tokio::fs::metadata(&src_config).await.is_ok_and(|m| m.is_dir()) {
