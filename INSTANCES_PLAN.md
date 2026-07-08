@@ -273,17 +273,22 @@ service (`mysql` 8.4 + 8.0) runs end-to-end. Phase 3's offline ledger-scan
 is done for the connection-critical consumers (`tenant_env` / `bougie run`
 env / `credentials` / client-exec wiring / `projects list` / default-tenant
 derivation / `down` / daemon-restart restore) via
-`tenants::instance_versions`; `service status`, `diagnose`, and `ide`
-datasource writing still resolve the catalog **default** version (display /
-IDE-nicety only, tracked as remaining Phase 3). Phase 5 (SERVICES.md, full
-migration validation) outstanding.
+`tenants::instance_versions`, **and now for the display / IDE consumers too**:
+`service status`, `diagnose`, and the `ide` PhpStorm datasource resolve the
+project's *actual* instance version via `tenants::project_instance_version`
+(shared ledger-scan), so a non-default `mysql` 8.0 shows its own socket /
+port / log rather than 8.4's. `ide` also generalizes to the project's
+relational DB (mariadb **or** mysql). Additionally, **mariadb and mysql are
+now mutually exclusive per project** (`catalog::EXCLUSIVE_GROUPS`, enforced
+in `service add` + `bougie up`) — a project runs one relational DB. Phase 5
+(SERVICES.md, full migration validation) outstanding.
 
 | Phase | Deliverable | Status |
 | --- | --- | --- |
 | 0 | `Instance`/`InstanceId` type, version-keyed `Paths` helpers, `endpoint.json` model + allocator (unit-tested), legacy-state migration. No behavior change — default version only. | ✅ |
 | 1 | Version through the up IPC (`ServiceRequest.version`, schema bump), instance-keyed supervisor map, lazy instance creation, per-instance spawn/health/restart from the resolved tarball. | ✅ |
 | 2 | Per-instance port allocation + fallback; effective ports threaded into every exec/provisioner/health site (incl. the new `-Etransport.port`); hard-fail → warn+relocate. | ✅ |
-| 3 | Offline + CLI: ledger-scan resolution in `tenant_env`/`credentials`/run-env/ide; `service status`, diagnose, and `service catalog` show version + effective ports. | 🟡 core done; status/diagnose/ide display still default-version |
+| 3 | Offline + CLI: ledger-scan resolution in `tenant_env`/`credentials`/run-env/ide; `service status`, diagnose, and `service catalog` show version + effective ports. | ✅ connection-critical + display/IDE consumers resolve the project's real instance version via `project_instance_version` (`service catalog` version column remains for Phase 5) |
 | 4 | Version resolution + multi-version catalog/index (coordinate `SERVICES.md`); pin → concrete version in the CLI. | ✅ `mysql` entry (8.4/8.0), constraint-based `resolve_service_version`, `mysqld --initialize-insecure` provisioner, version-aware sandbox; real 2-version smoke `phase25` (gated `BOUGIE_SKIP_REAL_MYSQL`) |
 | 5 | Docs (`SERVICES.md`), tests, migration validation. | ⬜ |
 
