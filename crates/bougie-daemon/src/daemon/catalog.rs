@@ -374,6 +374,33 @@ pub const CATALOG: &[CatalogEntry] = &[
 
 // -------------------- lookup --------------------
 
+/// Groups of services that are mutually exclusive within a single
+/// project. A project picks **one** relational database, not both:
+/// `mariadb` and `mysql` both speak the `MySQL` wire protocol, bind a
+/// `*.sock`, and share the database+user+GRANT tenant model. The
+/// per-project `BOUGIE_SERVICE_<NAME>_*` env is name-keyed and the
+/// `mysql`/`mysqldump` client shims dispatch on basename alone, so a
+/// project declaring both would be ambiguous about which one backs
+/// `mysql`, `BOUGIE_SERVICE_MARIADB_*` vs `_MYSQL_*`, and the datadir.
+pub const EXCLUSIVE_GROUPS: &[&[&str]] = &[&["mariadb", "mysql"]];
+
+/// If `declared` names two services from the same [`EXCLUSIVE_GROUPS`]
+/// group, return that pair (in group order). Used by `service add` and
+/// `bougie up` to reject a project that declares both. `None` when the
+/// declared set is conflict-free.
+pub fn exclusive_conflict<'a>(
+    declared: impl IntoIterator<Item = &'a str>,
+) -> Option<(&'static str, &'static str)> {
+    let set: std::collections::HashSet<&str> = declared.into_iter().collect();
+    for group in EXCLUSIVE_GROUPS {
+        let mut present = group.iter().copied().filter(|n| set.contains(n));
+        if let (Some(a), Some(b)) = (present.next(), present.next()) {
+            return Some((a, b));
+        }
+    }
+    None
+}
+
 /// Look up an entry by name. `None` if unknown.
 pub fn find(name: &str) -> Option<&'static CatalogEntry> {
     CATALOG.iter().find(|e| e.name == name)
@@ -495,6 +522,33 @@ mod tests {
     fn find_returns_none_for_unknown() {
         assert!(find("postgres").is_none());
         assert!(find("").is_none());
+    }
+
+    #[test]
+    fn mariadb_and_mysql_are_mutually_exclusive() {
+        // Both DBs declared → conflict, reported in group order.
+        assert_eq!(
+            exclusive_conflict(["mariadb", "mysql"]),
+            Some(("mariadb", "mysql"))
+        );
+        assert_eq!(
+            exclusive_conflict(["redis", "mysql", "mariadb"]),
+            Some(("mariadb", "mysql"))
+        );
+        // Either one alone, or with unrelated services, is fine.
+        assert_eq!(exclusive_conflict(["mariadb", "redis"]), None);
+        assert_eq!(exclusive_conflict(["mysql", "opensearch"]), None);
+        assert_eq!(exclusive_conflict(["redis", "rabbitmq"]), None);
+        assert_eq!(exclusive_conflict(std::iter::empty()), None);
+    }
+
+    #[test]
+    fn exclusive_group_members_are_real_catalog_entries() {
+        for group in EXCLUSIVE_GROUPS {
+            for name in *group {
+                assert!(find(name).is_some(), "exclusive group names unknown `{name}`");
+            }
+        }
     }
 
     #[test]

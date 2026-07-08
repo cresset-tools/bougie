@@ -76,6 +76,17 @@ pub fn run(format: OutputFormat, names: Vec<String>, detach: bool) -> Result<Exi
         .iter()
         .map(|(k, v)| (k.clone(), v))
         .collect();
+    // A project runs one relational DB. Reject a hand-edited config that
+    // declares both mariadb and mysql before bringing anything up — even a
+    // targeted `bougie up mysql` shouldn't proceed from an ambiguous set.
+    if let Some((a, b)) =
+        bougie_daemon::daemon::catalog::exclusive_conflict(declared.iter().map(|(k, _)| k.as_str()))
+    {
+        return Err(eyre!(
+            "this project declares both `{a}` and `{b}`, but they're mutually exclusive \
+             relational databases — keep one in `[services]` (`bougie service remove {b}`)."
+        ));
+    }
     let selected: Vec<(String, &ServicePin)> = if names.is_empty() {
         declared
     } else {

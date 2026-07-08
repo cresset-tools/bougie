@@ -69,6 +69,29 @@ pub fn run(format: OutputFormat, names: Vec<String>) -> Result<ExitCode> {
     }
 
     let project_root = locate_project_root()?;
+
+    // A project runs one relational DB, not both. Reject a mariadb/mysql
+    // clash across the union of what's already declared and what this
+    // command adds — before any write, so the project never lands in the
+    // conflicting state. (Also catches `service add mariadb mysql` in a
+    // single invocation.)
+    let existing = bougie_config::load_project(&project_root)
+        .map(|p| p.bougie.services.keys().cloned().collect::<Vec<_>>())
+        .unwrap_or_default();
+    let declared: Vec<&str> = existing
+        .iter()
+        .map(String::as_str)
+        .chain(parsed.iter().map(|(n, _)| n.as_str()))
+        .collect();
+    if let Some((a, b)) = catalog::exclusive_conflict(declared) {
+        return Err(eyre!(
+            "a project can run only one of `{a}` and `{b}` — they're mutually \
+             exclusive relational databases. Keep one; `bougie service remove {other}` \
+             the other first.",
+            other = if parsed.iter().any(|(n, _)| n == a) { b } else { a },
+        ));
+    }
+
     let target = choose_config_target(&project_root)?;
     let target_label = match &target {
         ConfigTarget::Composer(p) => p.display().to_string(),
