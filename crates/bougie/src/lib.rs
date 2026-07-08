@@ -18,7 +18,7 @@ use bougie_cli::{
     CacheCommand, ComposerCommand, ExtCommand, NodeCommand, PhpCommand, SelfCommand, ToolCommand,
 };
 #[cfg(unix)]
-use bougie_cli::{ProjectsCommand, ServiceCommand, ServiceDaemonCommand};
+use bougie_cli::{DbCommand, ProjectsCommand, ServiceCommand, ServiceDaemonCommand};
 use eyre::Result;
 use std::io::IsTerminal;
 use std::process::ExitCode;
@@ -105,6 +105,7 @@ fn command_name(cmd: &Command) -> &'static str {
         Command::Server(_) => "server",
         Command::Service(_) => "service",
         Command::Projects(_) => "projects",
+        Command::Db(_) => "db",
         Command::Make { .. } => "make",
         Command::Format { .. } => "format",
         Command::Start { .. } => "start",
@@ -747,6 +748,10 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
         }
         #[cfg(not(unix))]
         Command::Projects(_) => unsupported_on_windows("bougie projects"),
+        #[cfg(unix)]
+        Command::Db(DbCommand::Seed(args)) => commands::db::seed::run(format, args),
+        #[cfg(not(unix))]
+        Command::Db(_) => unsupported_on_windows("bougie db"),
         #[cfg(unix)]
         Command::Make {
             task,
