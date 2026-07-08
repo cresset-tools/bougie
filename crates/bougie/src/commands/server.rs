@@ -218,7 +218,7 @@ fn server_listen_port(paths: &bougie_paths::Paths) -> u16 {
 
 /// Best-effort browser launch. Silent no-op target on headless boxes —
 /// callers ignore the error and the URL is printed regardless.
-fn open_url(url: &str) -> Result<()> {
+pub(crate) fn open_url(url: &str) -> Result<()> {
     let mut cmd;
     #[cfg(target_os = "macos")]
     {

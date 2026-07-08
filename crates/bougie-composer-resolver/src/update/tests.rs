@@ -2836,6 +2836,34 @@ fn write_http_basic_at_creates_merges_and_round_trips() {
 }
 
 #[test]
+fn write_bearer_at_creates_merges_and_coexists_with_basic() {
+    // Path-based core, so the test never touches HOME / XDG_CONFIG_HOME.
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("bougie").join("auth.json");
+
+    // Seed an http-basic entry the bearer write must preserve.
+    crate::update::write_http_basic_at(&path, "basic.example", "u", "p").unwrap();
+    crate::update::write_bearer_at(&path, "packages.acme.com", "sconce_abc").unwrap();
+    // A second bearer host merges in rather than clobbering the first.
+    crate::update::write_bearer_at(&path, "other.example", "sconce_def").unwrap();
+
+    let got = crate::update::read_auth_json_at(&path).unwrap();
+    match got.get("packages.acme.com").unwrap() {
+        crate::metadata::AuthCredentials::Bearer { token } => assert_eq!(token, "sconce_abc"),
+        other => panic!("expected Bearer, got {other:?}"),
+    }
+    assert!(got.contains_key("other.example"), "first bearer host must survive the second write");
+    assert!(got.contains_key("basic.example"), "pre-existing http-basic entry must survive");
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "credential file must be 0600");
+    }
+}
+
+#[test]
 fn read_auth_json_at_returns_empty_for_missing_file() {
     let tmp = TempDir::new().unwrap();
     let out = crate::update::read_auth_json_at(&tmp.path().join("nope.json")).unwrap();

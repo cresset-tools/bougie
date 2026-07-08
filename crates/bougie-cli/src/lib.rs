@@ -532,6 +532,14 @@ pub enum Command {
         purge: bool,
     },
 
+    /// Authenticate against a sconce Composer registry
+    #[command(display_order = 6)]
+    Login {
+        /// Base URL of the registry, e.g. `https://packages.acme.com`
+        #[arg(value_name = "URL")]
+        url: String,
+    },
+
     /// Run project tasks
     #[command(display_order = 7)]
     Make {
@@ -1730,6 +1738,16 @@ mod tests {
         };
         assert_eq!(names, ["redis"]);
         assert!(purge);
+    }
+
+    #[test]
+    fn login_takes_a_required_url() {
+        let Command::Login { url } = cmd(&["bougie", "login", "https://packages.acme.com"]) else {
+            panic!("expected login");
+        };
+        assert_eq!(url, "https://packages.acme.com");
+        // The URL is required.
+        assert!(Cli::try_parse_from(["bougie", "login"]).is_err());
     }
 
     #[test]
