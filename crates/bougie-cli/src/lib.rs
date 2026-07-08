@@ -497,6 +497,10 @@ pub enum Command {
     #[command(subcommand, display_order = 32)]
     Projects(ProjectsCommand),
 
+    /// Manage the project's dev database (seed from a snapshot)
+    #[command(subcommand, display_order = 33)]
+    Db(DbCommand),
+
     /// Bring the whole project up
     #[command(display_order = 3)]
     Start {
@@ -711,6 +715,26 @@ pub enum ProjectsCommand {
         #[arg(short = 'y', long)]
         yes: bool,
     },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum DbCommand {
+    /// Load a `.jibsdump` snapshot into the project's mariadb tenant,
+    /// giving a local database shaped like production. The snapshot is
+    /// produced by jibs (anonymized server-side); `--from` takes a local
+    /// path or an http(s) URL (e.g. a presigned snapshot).
+    Seed(DbSeedArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct DbSeedArgs {
+    /// Path or http(s) URL of the `.jibsdump` snapshot to load
+    #[arg(long, value_name = "PATH_OR_URL")]
+    pub from: String,
+    /// Discard leftover state from a previous interrupted load first
+    /// (forwarded to `jibs load --clean`)
+    #[arg(long)]
+    pub clean: bool,
 }
 
 #[derive(Subcommand, Debug)]
