@@ -778,7 +778,11 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
         ),
         #[cfg(not(unix))]
         Command::Make { .. } => unsupported_on_windows("bougie make"),
-        Command::Login { url } => commands::login::run(format, &url),
+        Command::Login { url, no_provision, composer_json } => commands::login::run(
+            format,
+            &url,
+            commands::login::ProvisionMode::from_flags(no_provision, composer_json),
+        ),
         Command::Format { args } => commands::format::run(&args),
         #[cfg(unix)]
         Command::Start { no_sync, dry_run, explain, no_builtin, recipe } => {
