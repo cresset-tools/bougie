@@ -70,7 +70,7 @@ jobs:
       # `latest/` installers below. The mirrored release artifacts
       # themselves never come from the checkout.
       - name: "Check out consent snippets"
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
           sparse-checkout: scripts
