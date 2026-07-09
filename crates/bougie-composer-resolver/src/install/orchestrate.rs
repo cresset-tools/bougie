@@ -177,8 +177,9 @@ pub fn install_from_lock_with_patches(
     // sitting behind the same auth as the metadata (Magento's
     // `/archives/...`, private satis, GitLab CI Composer ZIPs) need
     // the header; public-CDN dists from Packagist do not.
-    let composer_json_value: Value = serde_json::from_slice(&composer_json_bytes)
-        .map_err(|e| eyre!("parsing composer.json: {e}"))?;
+    let composer_json_value: Value = serde_json::from_slice(&composer_json_bytes).map_err(|e| {
+        bougie_errors::BougieError::Config { path: "composer.json".into(), detail: e.to_string() }
+    })?;
     let auth: HashMap<String, AuthCredentials> =
         read_all_auth(&composer_json_value, project_root).map_err(|e| eyre!(e))?;
 
@@ -495,7 +496,7 @@ pub fn install_from_lock_with_patches(
             apcu_prefix: None,
             autoloader_suffix: None,
         })
-        .map_err(|e| eyre!("autoload dump failed: {e}"))?;
+        .wrap_err("autoload dump failed")?;
         // Record the fingerprint so the next unchanged sync can skip the
         // dump. Best-effort: a write failure just means we regenerate
         // next time (the old behavior), so it's a warning, not an error.

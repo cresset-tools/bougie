@@ -70,8 +70,10 @@ pub fn verify_lock(project_root: &Path, opts: VerifyOptions) -> Result<VerifyOut
 
     let composer_json_bytes = std::fs::read(&composer_json_path)
         .wrap_err_with(|| format!("reading {}", composer_json_path.display()))?;
-    let composer_json: serde_json::Value = serde_json::from_slice(&composer_json_bytes)
-        .map_err(|e| eyre!("parsing composer.json: {e}"))?;
+    let composer_json: serde_json::Value =
+        serde_json::from_slice(&composer_json_bytes).map_err(|e| {
+            bougie_errors::BougieError::Config { path: "composer.json".into(), detail: e.to_string() }
+        })?;
     let lock = Lock::read(&composer_lock_path)?;
 
     // Content-hash check first — a mismatch is its own kind of

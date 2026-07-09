@@ -1,10 +1,13 @@
 //! `bougie.toml` reader and skeleton writer.
 
 use super::BougieConfig;
-use eyre::{Result, WrapErr};
+use bougie_errors::BougieError;
+use eyre::Result;
 
 pub fn read_bougie_toml(text: &str) -> Result<BougieConfig> {
-    toml_edit::de::from_str(text).wrap_err("parsing bougie.toml")
+    toml_edit::de::from_str(text).map_err(|e| {
+        BougieError::Config { path: "bougie.toml".into(), detail: e.to_string() }.into()
+    })
 }
 
 /// Skeleton emitted by `bougie init --toml`. Hand-written (not via
