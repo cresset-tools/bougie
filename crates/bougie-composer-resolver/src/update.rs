@@ -2749,6 +2749,69 @@ pub(crate) fn write_http_basic_at(
     Ok(())
 }
 
+/// Merge a `bearer` token for `host` into bougie's own credential store
+/// ([`bougie_auth_json_candidates`]), creating the file (and parent dir) if
+/// needed and preserving any existing entries. `host` is the origin key
+/// (`host[:port]`, see [`crate::metadata::auth_origin`]). The file is written
+/// `0600` on Unix since it holds a secret. Returns the path written.
+///
+/// This is what `bougie login` persists: a sconce device-flow read token, which
+/// authenticates every repository served under `host`.
+pub fn write_bougie_bearer(host: &str, token: &str) -> Result<PathBuf, BuildError> {
+    let path = bougie_auth_json_write_target().ok_or_else(|| {
+        BuildError::Internal(
+            "cannot determine a bougie config dir to store credentials \
+             (set XDG_CONFIG_HOME or HOME)"
+                .to_string(),
+        )
+    })?;
+    write_bearer_at(&path, host, token)?;
+    Ok(path)
+}
+
+/// Path-based core of [`write_bougie_bearer`], split out so it can be
+/// unit-tested without mutating the process environment.
+pub(crate) fn write_bearer_at(path: &Path, host: &str, token: &str) -> Result<(), BuildError> {
+    // Load existing content so unrelated entries (other hosts, http-basic
+    // creds) survive; start from an empty object otherwise.
+    let mut doc: Value = if path.is_file() {
+        let bytes = std::fs::read(path)
+            .map_err(|e| BuildError::Internal(format!("reading {}: {e}", path.display())))?;
+        serde_json::from_slice(&bytes)
+            .map_err(|e| BuildError::Internal(format!("parsing {}: {e}", path.display())))?
+    } else {
+        Value::Object(serde_json::Map::new())
+    };
+    let obj = doc.as_object_mut().ok_or_else(|| {
+        BuildError::Internal(format!("{}: not a JSON object", path.display()))
+    })?;
+    let bearer = obj
+        .entry("bearer")
+        .or_insert_with(|| Value::Object(serde_json::Map::new()));
+    let bearer = bearer.as_object_mut().ok_or_else(|| {
+        BuildError::Internal(format!("{}: `bearer` is not an object", path.display()))
+    })?;
+    bearer.insert(host.to_string(), Value::String(token.to_string()));
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| BuildError::Internal(format!("creating {}: {e}", parent.display())))?;
+    }
+    let mut s = serde_json::to_string_pretty(&doc)
+        .map_err(|e| BuildError::Internal(format!("serializing {}: {e}", path.display())))?;
+    s.push('\n');
+    std::fs::write(path, s.as_bytes())
+        .map_err(|e| BuildError::Internal(format!("writing {}: {e}", path.display())))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        // Best-effort tightening; a failure here doesn't invalidate the
+        // write (the credential is stored), so don't propagate it.
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    }
+    Ok(())
+}
+
 /// Parse the JSON body of the `COMPOSER_AUTH` environment variable.
 /// The shape is the same as `auth.json` — a top-level object with
 /// `http-basic` / `bearer` (and Composer's other auth keys, which

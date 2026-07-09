@@ -327,7 +327,7 @@ fn extract_cache_namespace(url: &str) -> String {
 /// Falls back to the whole URL when no host can be parsed; that won't
 /// match any host-keyed auth map, which is the correct "no
 /// credentials" outcome.
-pub(crate) fn auth_origin(url: &str) -> String {
+pub fn auth_origin(url: &str) -> String {
     if let Some(after_scheme) = url.split_once("://").map(|(_, rest)| rest) {
         let host_and_port = after_scheme.split('/').next().unwrap_or("");
         if !host_and_port.is_empty() {

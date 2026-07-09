@@ -110,6 +110,7 @@ fn command_name(cmd: &Command) -> &'static str {
         Command::Format { .. } => "format",
         Command::Start { .. } => "start",
         Command::Stop { .. } => "stop",
+        Command::Login { .. } => "login",
     }
 }
 
@@ -777,6 +778,7 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
         ),
         #[cfg(not(unix))]
         Command::Make { .. } => unsupported_on_windows("bougie make"),
+        Command::Login { url } => commands::login::run(format, &url),
         Command::Format { args } => commands::format::run(&args),
         #[cfg(unix)]
         Command::Start { no_sync, dry_run, explain, no_builtin, recipe } => {
