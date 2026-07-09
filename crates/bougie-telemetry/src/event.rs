@@ -33,8 +33,8 @@ pub const COMMAND_VOCAB: &[&str] = &[
 /// [`COMMAND_VOCAB`].
 pub const OUTCOME_VOCAB: &[&str] = &[
     "ok", "network", "index-signature", "manifest-hash", "blob-hash", "resolution",
-    "unknown-target", "yanked", "lock-held", "filesystem", "self-update", "usage",
-    "panic", "other",
+    "unknown-target", "yanked", "lock-held", "filesystem", "self-update", "no-project",
+    "config", "service", "usage", "panic", "other",
 ];
 
 /// Envelope fields shared by every event, flattened into each line.
@@ -168,6 +168,9 @@ pub fn outcome_for_error(err: &eyre::Report) -> &'static str {
             BougieError::LockHeld { .. } => "lock-held",
             BougieError::Filesystem { .. } => "filesystem",
             BougieError::SelfUpdate { .. } => "self-update",
+            BougieError::NoProject { .. } => "no-project",
+            BougieError::Config { .. } => "config",
+            BougieError::Service { .. } => "service",
         };
     }
     if err.chain().any(<dyn std::error::Error>::is::<reqwest::Error>) {
@@ -223,6 +226,20 @@ mod tests {
         });
         assert_eq!(outcome_for_error(&err), "resolution");
         assert_eq!(outcome_for_error(&eyre::eyre!("misc")), "other");
+    }
+
+    #[test]
+    fn every_bougie_error_outcome_is_in_the_vocab() {
+        let variants = [
+            BougieError::NoProject { detail: String::new() },
+            BougieError::Config { path: String::new(), detail: String::new() },
+            BougieError::Service { code: String::new(), detail: String::new() },
+        ];
+        for v in variants {
+            let outcome = outcome_for_error(&eyre::Report::new(v));
+            assert!(OUTCOME_VOCAB.contains(&outcome), "{outcome} missing from OUTCOME_VOCAB");
+            assert_ne!(outcome, "other");
+        }
     }
 
     #[test]

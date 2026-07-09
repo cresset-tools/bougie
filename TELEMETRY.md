@@ -82,7 +82,7 @@ One NDJSON line per event. Envelope fields on every event:
 | --- | --- |
 | `name` | the subcommand verb (`sync`, `add`, `composer`, `server`, …) — a closed set; nested subcommands collapse to the parent verb |
 | `duration_ms` | integer |
-| `outcome` | `ok`, or an error *category*: `network`, `index-signature`, `manifest-hash`, `blob-hash`, `resolution`, `unknown-target`, `yanked`, `lock-held`, `filesystem`, `self-update`, `other` |
+| `outcome` | `ok`, or an error *category*: `network`, `index-signature`, `manifest-hash`, `blob-hash`, `resolution`, `unknown-target`, `yanked`, `lock-held`, `filesystem`, `self-update`, `no-project`, `config`, `service`, `other` |
 | `exit_code` | integer |
 
 The category label and exit code are the *entire* error payload — no

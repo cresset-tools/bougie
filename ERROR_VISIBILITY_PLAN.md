@@ -4,14 +4,21 @@ Working plan for making bougie's failures legible — to the maintainer
 reading the telemetry dashboard, to the user reading stderr, and to
 `bougie diagnose` assembling a report after the fact.
 
-**Status: Phases 0–1 done (2026-07-09), Phase 1 uncommitted.**
-Phase 0: collector `failure` rollup dim (command × non-ok outcome) +
-dashboard panel on infra main (cae770c, pushed, not yet deployed;
-backfills all retained days on the first maintenance pass after
-deploy). Findings below. Phase 1: chain-walking classifier + boundary
-conversions in this worktree; full suite green except the
-pre-existing phase18 opensearch port-conflict (dev stack running on
-this box).
+**Status: Phases 0–2 done (2026-07-09).**
+Phase 0: collector `failure` rollup dim + dashboard panel on infra
+main (cae770c, pushed, not yet deployed). Phase 1: chain-walking
+classifier + boundary conversions. Phase 2 (first slice): `NoProject`
+(exit 30) / `Config` (31) / `Service` (70) variants, wired at the
+locate-project helpers, the config parse boundaries, and the
+daemon-client error frames; all three verified end-to-end against the
+real binary. `subprocess` deferred (no data yet); `php-selection`
+folded. **Rollout gate:** the live collector rejects the three new
+labels until its bougie-telemetry dep bumps past the next release —
+either pre-widen the collector with a temporary extra-allowlist
+(infra) before the release, or accept the small rejection window.
+Remaining: Phase 3 (usage lane), Phase 4 (failure ring + hints),
+Phase 5 (docs/measure), plus data-driven iteration on `new`/`composer`
+verb failures once the new categories start reporting.
 
 Motivating data (2026-07-09): the collected command events show
 **17 `other` outcomes against 71 `ok`** — roughly one invocation in

@@ -90,6 +90,23 @@ pub enum BougieError {
 
     #[error("self-update failed: {detail}")]
     SelfUpdate { detail: String },
+
+    /// No project marker found walking up from the invocation
+    /// directory. `detail` carries the site's full message — which
+    /// markers were looked for and the fitting hint differ per verb.
+    #[error("{detail}")]
+    NoProject { detail: String },
+
+    /// A user-editable config source (composer.json, bougie.toml,
+    /// server.toml) failed to parse or validate.
+    #[error("invalid {path}\n  detail: {detail}")]
+    Config { path: String, detail: String },
+
+    /// An error frame from bougied, or a failure reaching it. `code`
+    /// is the control-protocol error code (`service_start_failed`,
+    /// `unknown_service`, …) — the wire's own closed vocabulary.
+    #[error("bougied: {detail} ({code})")]
+    Service { code: String, detail: String },
 }
 
 impl BougieError {
@@ -102,15 +119,22 @@ impl BougieError {
             Self::Resolution { .. } => 20,
             Self::UnknownTarget { .. } => 21,
             Self::YankedSelected { .. } => 22,
+            Self::NoProject { .. } => 30,
+            Self::Config { .. } => 31,
             Self::LockHeld { .. } => 40,
             Self::Filesystem { .. } => 50,
             Self::SelfUpdate { .. } => 60,
+            Self::Service { .. } => 70,
         }
     }
 }
 
+/// Chain-walking on purpose, mirroring telemetry's
+/// `outcome_for_error`: a typed error buried under wrapping layers
+/// must yield the same exit code as one at the report root.
 pub fn exit_code_for(err: &eyre::Report) -> u8 {
-    err.downcast_ref::<BougieError>()
+    err.chain()
+        .find_map(|cause| cause.downcast_ref::<BougieError>())
         .map_or(1, BougieError::exit_code)
 }
 
@@ -150,6 +174,9 @@ mod tests {
             BougieError::Filesystem { operation: String::new(), detail: String::new() }
                 .exit_code(),
             BougieError::SelfUpdate { detail: String::new() }.exit_code(),
+            BougieError::NoProject { detail: String::new() }.exit_code(),
+            BougieError::Config { path: String::new(), detail: String::new() }.exit_code(),
+            BougieError::Service { code: String::new(), detail: String::new() }.exit_code(),
         ];
         let mut sorted = codes;
         sorted.sort_unstable();
@@ -172,6 +199,16 @@ mod tests {
     fn exit_code_for_unknown_error_defaults_to_one() {
         let report = eyre::eyre!("something else");
         assert_eq!(exit_code_for(&report), 1);
+    }
+
+    #[test]
+    fn exit_code_for_chain_buried_bougie_error() {
+        let report = eyre::Report::new(BougieError::Service {
+            code: "service_start_failed".into(),
+            detail: "rabbitmq: exited during startup".into(),
+        })
+        .wrap_err("starting declared services");
+        assert_eq!(exit_code_for(&report), 70);
     }
 
     #[derive(Debug, Error)]

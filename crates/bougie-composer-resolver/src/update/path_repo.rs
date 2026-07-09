@@ -155,8 +155,12 @@ pub(crate) fn read_path_package(
         return Ok(None);
     }
     let bytes = std::fs::read(&composer_path)?;
-    let json: Value = serde_json::from_slice(&bytes)
-        .map_err(|e| eyre::eyre!("parsing {}: {e}", composer_path.display()))?;
+    let json: Value = serde_json::from_slice(&bytes).map_err(|e| {
+        bougie_errors::BougieError::Config {
+            path: composer_path.display().to_string(),
+            detail: e.to_string(),
+        }
+    })?;
     let Some(obj) = json.as_object() else {
         tracing::warn!(path = %composer_path.display(), "composer.json is not an object; skipping");
         return Ok(None);
