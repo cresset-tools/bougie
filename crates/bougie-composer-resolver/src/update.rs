@@ -2467,17 +2467,19 @@ pub(crate) fn read_repositories(
     Ok(repos)
 }
 
-/// The project-local, gitignored overlay of extra Composer `repositories` that
-/// `bougie login` provisions, so registry URLs stay out of the committed
-/// composer.json. A JSON array of the same entry shape composer.json's
-/// `repositories` array uses (e.g. `[{"type":"composer","url":"https://…"}]`).
-pub(crate) const REPO_OVERLAY_REL_PATH: &str = ".bougie/repositories.json";
+/// The project-local overlay of extra Composer `repositories` that `bougie
+/// login` provisions, so registry URLs stay out of the committed composer.json.
+/// A JSON array of the same entry shape composer.json's `repositories` array
+/// uses (e.g. `[{"type":"composer","url":"https://…"}]`). It lives under
+/// `vendor/bougie/` — bougie's own disposable, gitignored project tree — so it
+/// never touches the committed working tree.
+pub(crate) const REPO_OVERLAY_REL_PATH: &str = "vendor/bougie/repositories.json";
 
 /// Load the repositories overlay entries from
-/// `<project_root>/.bougie/repositories.json`. Missing file → no overlay (the
-/// common case). A file that exists but isn't a JSON array is an error: it's
-/// bougie-written, so malformed content is a real problem worth surfacing rather
-/// than silently ignoring the team's registry config.
+/// `<project_root>/vendor/bougie/repositories.json`. Missing file → no overlay
+/// (the common case). A file that exists but isn't a JSON array is an error:
+/// it's bougie-written, so malformed content is a real problem worth surfacing
+/// rather than silently ignoring the team's registry config.
 pub(crate) fn read_repositories_overlay(project_root: &Path) -> Result<Vec<Value>, BuildError> {
     let path = project_root.join(REPO_OVERLAY_REL_PATH);
     let bytes = match std::fs::read(&path) {
@@ -2502,10 +2504,11 @@ pub(crate) fn read_repositories_overlay(project_root: &Path) -> Result<Vec<Value
 }
 
 /// Provision the repositories overlay: merge `urls` into
-/// `<project_root>/.bougie/repositories.json` as `{"type":"composer","url":…}`
-/// entries, creating it (and `.bougie/`) if needed and deduping by URL so a
-/// repeat `bougie login` adds nothing. Also ensures `.bougie/` is gitignored
-/// (best-effort). Returns the overlay path and how many entries were newly added.
+/// `<project_root>/vendor/bougie/repositories.json` as `{"type":"composer",
+/// "url":…}` entries, creating `vendor/bougie/` if needed and deduping by URL so
+/// a repeat `bougie login` adds nothing. `vendor/` is gitignored by convention,
+/// so this never dirties the committed tree. Returns the overlay path and how
+/// many entries were newly added.
 pub fn write_repositories_overlay(
     project_root: &Path,
     urls: &[String],
@@ -2533,27 +2536,7 @@ pub fn write_repositories_overlay(
     s.push('\n');
     std::fs::write(&path, s.as_bytes())
         .map_err(|e| BuildError::Internal(format!("writing {}: {e}", path.display())))?;
-    ensure_gitignored(project_root, ".bougie/");
     Ok((path, added))
-}
-
-/// Best-effort: append `pattern` to `<project_root>/.gitignore` when absent, so
-/// the overlay — bougie's local, non-committed config — stays out of the tree. A
-/// failure here doesn't invalidate the overlay write, so nothing is propagated.
-fn ensure_gitignored(project_root: &Path, pattern: &str) {
-    let path = project_root.join(".gitignore");
-    let existing = std::fs::read_to_string(&path).unwrap_or_default();
-    let bare = pattern.trim_end_matches('/');
-    if existing.lines().map(str::trim).any(|l| l == pattern || l == bare) {
-        return;
-    }
-    let mut out = existing;
-    if !out.is_empty() && !out.ends_with('\n') {
-        out.push('\n');
-    }
-    out.push_str(pattern);
-    out.push('\n');
-    let _ = std::fs::write(&path, out);
 }
 
 /// Parse an `{http-basic, bearer}` auth object — the shape that lives

@@ -12,9 +12,10 @@
 //!
 //! With a token in hand we then discover which repositories it can access
 //! (`GET /api/v1/repos`) and provision them so the dev doesn't paste URLs:
-//! by default into a local, gitignored `.bougie/repositories.json` overlay the
-//! resolver merges at resolve time; with `--composer-json`, into the committed
-//! `composer.json` so teammates on stock Composer see them too. Provisioning is
+//! by default into a `vendor/bougie/repositories.json` overlay (bougie's own
+//! gitignored project tree) the resolver merges at resolve time; with
+//! `--composer-json`, into the committed `composer.json` so teammates on stock
+//! Composer see them too. Provisioning is
 //! best-effort — the token is already stored, and re-running is idempotent, so a
 //! discovery/write hiccup warns rather than failing the login.
 
@@ -29,7 +30,7 @@ use std::time::{Duration, Instant};
 /// Where `bougie login` writes the discovered `repositories`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProvisionMode {
-    /// Default: bougie's local, gitignored `.bougie/repositories.json` overlay.
+    /// Default: bougie's `vendor/bougie/repositories.json` overlay (gitignored).
     Overlay,
     /// `--composer-json`: the committed `composer.json` (stock-Composer-visible).
     ComposerJson,

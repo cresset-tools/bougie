@@ -2072,7 +2072,7 @@ fn read_repositories_overlay_reads_array_absent_is_empty_nonarray_errors() {
             .is_empty()
     );
     // A JSON array of entries → those entries.
-    let dir = tmp.path().join(".bougie");
+    let dir = tmp.path().join("vendor").join("bougie");
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(
         dir.join("repositories.json"),

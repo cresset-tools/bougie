@@ -1770,14 +1770,6 @@ fn migrate_legacy_layout(paths: &Paths, project_root: &std::path::Path) {
     if !legacy.is_dir() {
         return;
     }
-    // `.bougie/` is also where `bougie login` provisions its `repositories.json`
-    // overlay, which is *not* the legacy toolchain. Only migrate a directory
-    // that actually carries the old toolchain layout (its `bin/` shims or
-    // `conf.d-local/` fragments); an overlay-only `.bougie/` is left intact.
-    let is_legacy_toolchain = legacy.join("bin").is_dir() || legacy.join("conf.d-local").is_dir();
-    if !is_legacy_toolchain {
-        return;
-    }
     let legacy_local = legacy.join("conf.d-local");
     let dest_local = paths.project_confd_local(project_root);
     // Whether conf.d-local is safely preserved (nothing to rescue, the
@@ -2088,23 +2080,6 @@ mod tests {
         // No top-level `.bougie/` → nothing happens, no panic.
         migrate_legacy_layout(&paths, proj.path());
         assert!(!paths.project_confd_local(proj.path()).exists());
-    }
-
-    #[test]
-    fn migrate_legacy_layout_preserves_repositories_overlay() {
-        let proj = TempDir::new().unwrap();
-        let home = TempDir::new().unwrap();
-        let paths = Paths::new(home.path().to_path_buf(), home.path().to_path_buf());
-        // A `.bougie/` that carries only the login-provisioned overlay (no
-        // toolchain `bin/`/`conf.d-local/`) must not be mistaken for the legacy
-        // layout and wiped.
-        let overlay = proj.path().join(".bougie").join("repositories.json");
-        std::fs::create_dir_all(overlay.parent().unwrap()).unwrap();
-        std::fs::write(&overlay, "[]\n").unwrap();
-
-        migrate_legacy_layout(&paths, proj.path());
-
-        assert!(overlay.is_file(), "overlay must survive sync's legacy migration");
     }
 
     #[test]
