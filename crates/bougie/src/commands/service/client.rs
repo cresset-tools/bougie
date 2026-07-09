@@ -95,6 +95,16 @@ struct ErrorBody {
     message: String,
 }
 
+/// Lift a daemon error frame into the typed taxonomy. The protocol's
+/// `code` is its own closed vocabulary (`service_start_failed`,
+/// `unknown_service`, …) — carrying it typed is what lets telemetry
+/// and the exit-code map see daemon failures as `service` instead of
+/// an uncategorizable string (the frame crosses the socket as text,
+/// so no chain-walk can recover it downstream).
+fn daemon_error(e: ErrorBody) -> eyre::Report {
+    eyre::Report::new(bougie_errors::BougieError::Service { code: e.code, detail: e.message })
+}
+
 /// Issue a request to `bougied` and return the deserialized payload
 /// of the terminal `result` frame. Progress frames are forwarded to
 /// the caller's stderr (or stdout, per the frame's `stream` field)
@@ -424,7 +434,7 @@ fn issue_streaming(stream: UnixStream, request: &Value) -> Result<()> {
                     code: "unknown".into(),
                     message: "bougied returned an error without a body".into(),
                 });
-                return Err(eyre!("bougied: {} ({})", e.message, e.code));
+                return Err(daemon_error(e));
             }
         }
     }
@@ -496,7 +506,7 @@ fn issue<R: DeserializeOwned>(stream: UnixStream, request: &Value) -> Result<R> 
                     code: "unknown".into(),
                     message: "bougied returned an error without a body".into(),
                 });
-                return Err(eyre!("bougied: {} ({})", e.message, e.code));
+                return Err(daemon_error(e));
             }
         }
     }

@@ -371,10 +371,12 @@ fn locate_project_root() -> Result<PathBuf> {
         .find(|p| bougie_paths::project::is_root(p))
         .map(Path::to_path_buf)
         .ok_or_else(|| {
-            eyre!(
-                "no bougie project here (no `vendor/bougie/` in {} or any parent) — \
-                 run `bougie init` first",
-                cwd.display()
-            )
+            eyre::Report::new(bougie_errors::BougieError::NoProject {
+                detail: format!(
+                    "no bougie project here (no `vendor/bougie/` in {} or any parent) — \
+                     run `bougie init` first",
+                    cwd.display()
+                ),
+            })
         })
 }

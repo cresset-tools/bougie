@@ -33,7 +33,7 @@ use crate::request::ToolRequest;
 use crate::resolve::{PhpChoice, PhpSource, ProjectContext};
 use crate::exec;
 use bougie_paths::Paths;
-use eyre::{Result, bail};
+use eyre::{Result, WrapErr, bail};
 use sha2::{Digest, Sha256};
 use std::ffi::OsString;
 use std::fs::FileTimes;
@@ -123,7 +123,7 @@ pub fn prepare(
         // (composer.json, vendor/, wrapper under bin/, conf.d/,
         // receipt.toml) is identical to a persistent install.
         std::fs::create_dir_all(&cache_dir)
-            .map_err(|e| eyre::eyre!("creating {}: {e}", cache_dir.display()))?;
+            .wrap_err_with(|| format!("creating {}", cache_dir.display()))?;
         install_prepared(
             ctx,
             &plan,

@@ -3791,8 +3791,9 @@ pub fn dry_run_update_partial(
     }
     let composer_json_bytes = std::fs::read(&composer_json_path)
         .wrap_err_with(|| format!("reading {}", composer_json_path.display()))?;
-    let composer_json: Value = serde_json::from_slice(&composer_json_bytes)
-        .map_err(|e| eyre!("parsing composer.json: {e}"))?;
+    let composer_json: Value = serde_json::from_slice(&composer_json_bytes).map_err(|e| {
+        bougie_errors::BougieError::Config { path: "composer.json".into(), detail: e.to_string() }
+    })?;
 
     let client = build_client()?;
     // Auth assembly: composer.json `config`, global Composer
@@ -4053,8 +4054,9 @@ pub fn resolve_for_lockfile_partial(
     }
     let composer_json_bytes = std::fs::read(&composer_json_path)
         .wrap_err_with(|| format!("reading {}", composer_json_path.display()))?;
-    let composer_json: Value = serde_json::from_slice(&composer_json_bytes)
-        .map_err(|e| eyre!("parsing composer.json: {e}"))?;
+    let composer_json: Value = serde_json::from_slice(&composer_json_bytes).map_err(|e| {
+        bougie_errors::BougieError::Config { path: "composer.json".into(), detail: e.to_string() }
+    })?;
 
     let auth = read_all_auth(&composer_json, project_root).map_err(|e| eyre!(e))?;
 

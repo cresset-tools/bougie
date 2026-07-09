@@ -27,10 +27,12 @@ pub fn locate_project_root() -> Result<PathBuf> {
             return Ok(anc.to_path_buf());
         }
     }
-    Err(eyre!(
-        "no bougie project found (no `composer.json`, `bougie.toml`, or `vendor/bougie/` in {} or any parent)",
-        cwd.display()
-    ))
+    Err(eyre::Report::new(bougie_errors::BougieError::NoProject {
+        detail: format!(
+            "no bougie project found (no `composer.json`, `bougie.toml`, or `vendor/bougie/` in {} or any parent)",
+            cwd.display()
+        ),
+    }))
 }
 
 /// Pick which file to mutate. If `bougie.toml` exists in the project,

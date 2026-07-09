@@ -539,6 +539,7 @@ dependencies = [
 name = "bougie-config"
 version = "0.46.1"
 dependencies = [
+ "bougie-errors",
  "eyre",
  "serde",
  "serde_json",

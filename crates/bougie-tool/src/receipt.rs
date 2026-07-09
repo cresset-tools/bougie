@@ -113,7 +113,7 @@ pub fn refresh_php_pin(
     let entries = match std::fs::read_dir(&root) {
         Ok(e) => e,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(refreshed),
-        Err(e) => return Err(eyre::eyre!("reading {}: {e}", root.display())),
+        Err(e) => return Err(eyre::Report::new(e).wrap_err(format!("reading {}", root.display()))),
     };
     for entry in entries.flatten() {
         let receipt_path = entry.path().join("receipt.toml");

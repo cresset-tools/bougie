@@ -5,7 +5,8 @@
 //! the optional `extra.bougie` block.
 
 use super::BougieConfig;
-use eyre::{Result, WrapErr};
+use bougie_errors::BougieError;
+use eyre::Result;
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,7 +30,9 @@ pub struct ComposerJson {
 }
 
 pub fn read_composer_json(text: &str) -> Result<ComposerJson> {
-    let v: serde_json::Value = serde_json::from_str(text).wrap_err("parsing composer.json")?;
+    let v: serde_json::Value = serde_json::from_str(text).map_err(|e| {
+        BougieError::Config { path: "composer.json".into(), detail: e.to_string() }
+    })?;
     let require = v.get("require").and_then(serde_json::Value::as_object);
 
     let require_php = require
@@ -54,7 +57,10 @@ pub fn read_composer_json(text: &str) -> Result<ComposerJson> {
         .and_then(|e| e.get("bougie"))
         .map(|b| serde_json::from_value::<BougieConfig>(b.clone()))
         .transpose()
-        .wrap_err("deserializing extra.bougie")?;
+        .map_err(|e| BougieError::Config {
+            path: "composer.json".into(),
+            detail: format!("deserializing extra.bougie: {e}"),
+        })?;
 
     let scripts = v
         .get("scripts")

@@ -28,7 +28,7 @@ use std::path::Path;
 use bougie_composer::lockfile::{Lock, LockFunding, LockPackage};
 use bougie_composer::metadata::PackageMetadata;
 use bougie_paths::Paths;
-use eyre::{eyre, Result};
+use eyre::{Context, Result, eyre};
 use serde_json::Value;
 
 use crate::hash::FxHashMap;
@@ -335,9 +335,10 @@ pub fn latest_versions(
 ) -> Result<FxHashMap<String, Vec<String>>> {
     let composer_json_path = project_root.join("composer.json");
     let composer_json_bytes = std::fs::read(&composer_json_path)
-        .map_err(|e| eyre!("reading {}: {e}", composer_json_path.display()))?;
-    let composer_json: Value = serde_json::from_slice(&composer_json_bytes)
-        .map_err(|e| eyre!("parsing composer.json: {e}"))?;
+        .wrap_err_with(|| format!("reading {}", composer_json_path.display()))?;
+    let composer_json: Value = serde_json::from_slice(&composer_json_bytes).map_err(|e| {
+        bougie_errors::BougieError::Config { path: "composer.json".into(), detail: e.to_string() }
+    })?;
 
     let auth = crate::update::read_all_auth(&composer_json, project_root).map_err(|e| eyre!(e))?;
     let repos = crate::update::read_repositories(&composer_json, Repo::packagist(), &auth)
