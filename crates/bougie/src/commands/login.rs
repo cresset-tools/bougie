@@ -264,6 +264,14 @@ fn provision(
         );
     };
 
+    // Record which registry this project is wired to, durably (outside
+    // `vendor/`), so `bougie start` can re-provision the overlay after a
+    // `rm -rf vendor`. Only for the overlay sink — a committed composer.json
+    // survives a wipe on its own. Best-effort: never affects login.
+    if mode == ProvisionMode::Overlay {
+        crate::commands::team::write_record(&root, base);
+    }
+
     // Discover the repos this token can see.
     let urls = match fetch_repo_urls(client, base, token) {
         Ok(urls) => urls,
@@ -309,7 +317,9 @@ fn provision(
 }
 
 /// `GET {base}/api/v1/repos` with the token → the repositories' Composer URLs.
-fn fetch_repo_urls(
+/// Shared with `bougie start`'s team-mode self-heal ([`crate::commands::team`]),
+/// which re-runs discovery against the recorded registry after a `vendor/` wipe.
+pub(crate) fn fetch_repo_urls(
     client: &reqwest::blocking::Client,
     base: &str,
     token: &str,

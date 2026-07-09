@@ -29,6 +29,13 @@ pub struct StartOptions {
 
 /// Run the project's `start` task in the current directory.
 pub fn run(format: OutputFormat, opts: StartOptions) -> Result<ExitCode> {
+    // Team-mode self-heal: if this project is wired to a sconce registry and
+    // its repo-config overlay was wiped (`rm -rf vendor`), re-provision it
+    // before sync so private packages resolve. Best-effort — never blocks
+    // `start`; skipped for `--dry-run`/`--explain`, which change nothing.
+    if !opts.dry_run && !opts.explain {
+        crate::commands::team::heal_overlay_before_start();
+    }
     make::run(
         format,
         MakeOptions {
