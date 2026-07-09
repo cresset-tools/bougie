@@ -465,6 +465,28 @@ impl Paths {
             .join(project_hash(project_root))
     }
 
+    /// Directory holding a project's **stable connection-socket symlinks**
+    /// (`$BOUGIE_HOME/state/conn/<project-hash>/`). Namespaced under
+    /// `conn/` — distinct from the instance run dirs under `run/` — so a
+    /// project hash can never collide with an [`instance_run_token`].
+    pub fn project_conn_dir(&self, project_root: &Path) -> PathBuf {
+        self.state().join("conn").join(project_hash(project_root))
+    }
+
+    /// A project's **stable connection socket** for a unix-socket service
+    /// (`state/conn/<project-hash>/<sockname>`). This is a *symlink* the
+    /// daemon repoints at whichever instance the project currently runs,
+    /// so an app that bakes this path into its config — e.g. Magento
+    /// `app/etc/env.php`'s db `host` or redis `server` — keeps connecting
+    /// across service version bumps and the version-keyed instance-socket
+    /// relocation. Keyed by the *project* (not the version), because a
+    /// project runs exactly one instance of a given DB at a time. Kept
+    /// short + flat for macOS's 103-byte `sun_path` limit; the daemon
+    /// creates/repoints it on `bougie up` (see the up dispatcher).
+    pub fn project_conn_socket(&self, project_root: &Path, sockname: &str) -> PathBuf {
+        self.project_conn_dir(project_root).join(sockname)
+    }
+
     /// `<project-state>/conf.d-local/` — machine-local extensions added
     /// via `bougie ext add --so <path>`. These are NOT recorded in
     /// `composer.json` and NOT mirrored by `bougie sync`, so they have
@@ -799,6 +821,31 @@ mod tests {
         );
         // Distinct from the disposable vendor dir.
         assert!(!p.project_confd_local(root).starts_with(root));
+    }
+
+    #[test]
+    fn project_conn_socket_is_stable_short_and_version_independent() {
+        let p = Paths::new(PathBuf::from("/h"), PathBuf::from("/c"));
+        let root = Path::new("/srv/app");
+        let hash = project_hash(root);
+        // Keyed by the project (not a version), namespaced under conn/.
+        assert_eq!(
+            p.project_conn_socket(root, "mariadb.sock"),
+            PathBuf::from(format!("/h/state/conn/{hash}/mariadb.sock"))
+        );
+        // NOT under an instance run dir → a project hash can't collide
+        // with an instance run token.
+        assert!(!p.project_conn_socket(root, "mariadb.sock").starts_with(p.state().join("run")));
+        // Same project + sockname is stable no matter the running version;
+        // a different project gets a different stable socket.
+        assert_eq!(
+            p.project_conn_socket(root, "redis.sock"),
+            p.project_conn_socket(root, "redis.sock")
+        );
+        assert_ne!(
+            p.project_conn_socket(root, "redis.sock"),
+            p.project_conn_socket(Path::new("/srv/other"), "redis.sock")
+        );
     }
 
     #[test]

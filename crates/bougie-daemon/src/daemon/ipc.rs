@@ -1228,6 +1228,39 @@ async fn dispatch_env(state: &Arc<DaemonState>, project: std::path::PathBuf) -> 
     ResultFrame::ok(serde_json::json!({"vars": Value::Object(vars)}))
 }
 
+/// (Re)point a project's **stable connection socket**
+/// (`state/conn/<project-hash>/<sockname>`) at this instance's real
+/// socket, so an app that baked the stable path keeps connecting after
+/// the version-keyed instance socket relocated (see
+/// [`bougie_paths::Paths::project_conn_socket`]). Called on every `up` so
+/// it follows a project switching DB versions. No-op for TCP / `None`
+/// services (they carry a `HOST`/`PORT`, not a socket). Best-effort: a
+/// symlink hiccup is logged, never fails the up.
+fn link_project_conn_socket(
+    paths: &bougie_paths::Paths,
+    entry: &crate::daemon::catalog::CatalogEntry,
+    version: &str,
+    project: &std::path::Path,
+) {
+    let crate::daemon::catalog::Binding::UnixSocket { sockname } = entry.binding else {
+        return;
+    };
+    let real = paths.service_run(entry.name, version).join(sockname);
+    let stable = paths.project_conn_socket(project, sockname);
+    if let Some(dir) = stable.parent()
+        && let Err(e) = std::fs::create_dir_all(dir)
+    {
+        tracing::warn!(service = entry.name, error = %e, "conn-link: mkdir failed");
+        return;
+    }
+    // A symlink can't be created over an existing one; remove first so a
+    // repoint (version switch) replaces a now-stale target atomically.
+    let _ = std::fs::remove_file(&stable);
+    if let Err(e) = std::os::unix::fs::symlink(&real, &stable) {
+        tracing::warn!(service = entry.name, error = %e, "conn-link: symlink failed");
+    }
+}
+
 async fn dispatch_up(
     state: &Arc<DaemonState>,
     project: std::path::PathBuf,
@@ -1331,6 +1364,10 @@ async fn dispatch_up(
             .await;
             match prov_res {
                 Ok(t) => {
+                    // Point the project's stable connection socket at this
+                    // instance so a baked env.php path survives version
+                    // bumps + the instance-socket relocation.
+                    link_project_conn_socket(&state.paths, entry, &version, &project);
                     tenants_map.insert(name.to_string(), Value::String(t.tenant));
                 }
                 Err(e) => {
@@ -1435,6 +1472,36 @@ pub(super) type ShutdownTx = watch::Sender<bool>;
 mod tests {
     use super::*;
     use std::collections::HashSet;
+
+    #[test]
+    fn conn_link_points_at_the_instance_and_repoints_on_version_switch() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let paths = bougie_paths::Paths::new(dir.path().to_path_buf(), dir.path().join("cache"));
+        let entry = crate::daemon::catalog::find("mysql").unwrap();
+        let project = std::path::Path::new("/srv/shop");
+
+        // Stand in for the 8.0 instance's bound socket.
+        let real_80 = paths.service_run("mysql", "8.0.46").join("mysql.sock");
+        std::fs::create_dir_all(real_80.parent().unwrap()).unwrap();
+        std::fs::write(&real_80, b"").unwrap();
+
+        link_project_conn_socket(&paths, entry, "8.0.46", project);
+        let conn = paths.project_conn_socket(project, "mysql.sock");
+        assert!(
+            conn.symlink_metadata().unwrap().file_type().is_symlink(),
+            "conn socket must be a symlink"
+        );
+        assert_eq!(std::fs::read_link(&conn).unwrap(), real_80, "must point at the 8.0 instance");
+
+        // Switching the project to 8.4 repoints the SAME stable path — an
+        // app's baked env.php host doesn't change across the bump.
+        let real_84 = paths.service_run("mysql", "8.4.10").join("mysql.sock");
+        std::fs::create_dir_all(real_84.parent().unwrap()).unwrap();
+        std::fs::write(&real_84, b"").unwrap();
+        link_project_conn_socket(&paths, entry, "8.4.10", project);
+        assert_eq!(std::fs::read_link(&conn).unwrap(), real_84, "must repoint at 8.4");
+        assert_eq!(conn, paths.project_conn_socket(project, "mysql.sock"), "path is stable");
+    }
 
     #[test]
     fn preflight_skips_unix_socket_and_runtime_dep_services() {

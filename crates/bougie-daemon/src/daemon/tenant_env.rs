@@ -72,9 +72,12 @@ pub fn tenant_service_env(
 
     match entry.name {
         "redis" => {
+            // Emit the STABLE per-project socket (a symlink the daemon
+            // repoints at the live instance), not the version-keyed
+            // instance socket — so a path baked into app config survives
+            // version bumps + the instance-socket relocation.
             let sock = paths
-                .service_run("redis", version)
-                .join("redis.sock")
+                .project_conn_socket(&tenant.project, "redis.sock")
                 .display()
                 .to_string();
             vars.insert(format!("{prefix}SOCKET"), Value::String(sock));
@@ -91,9 +94,12 @@ pub fn tenant_service_env(
                 Binding::UnixSocket { sockname } => sockname,
                 _ => "mysql.sock",
             };
+            // Stable per-project socket (symlink → live instance), not the
+            // version-keyed instance socket: this is what `--db-host`
+            // bakes into env.php at install time, so it must not move when
+            // the DB version bumps.
             let sock = paths
-                .service_run(entry.name, version)
-                .join(sockname)
+                .project_conn_socket(&tenant.project, sockname)
                 .display()
                 .to_string();
             vars.insert(format!("{prefix}SOCKET"), Value::String(sock));
@@ -259,28 +265,37 @@ mod tests {
     }
 
     #[test]
-    fn mysql_socket_is_keyed_by_the_resolved_version() {
-        // The whole point of multi-instance: a project on the non-default
-        // 8.0 must get an 8.0-keyed socket, not the catalog default's.
+    fn mysql_socket_is_the_stable_per_project_conn_path() {
+        // The emitted SOCKET is the project's STABLE connection socket (a
+        // symlink the daemon repoints at the live instance), not the
+        // version-keyed instance socket — so a path baked into env.php at
+        // install time survives DB version bumps. It therefore must NOT
+        // depend on the version arg; the version-keying lives in the
+        // symlink target (proven in the daemon conn-link test).
         let dir = TempDir::new().unwrap();
         let paths = paths_in(&dir);
         let entry = catalog::find("mysql").unwrap();
         let mut t = tenant("acme");
         t.secrets.insert("password".into(), "deadbeef".into());
 
-        let vars = tenant_service_env(&paths, entry, "8.0.46", &t);
-        let sock = vars["BOUGIE_SERVICE_MYSQL_SOCKET"].as_str().unwrap();
-        assert!(sock.ends_with("mysql.sock"), "{sock}");
-        // The run dir is a short hashed `state/run/<token>/` (macOS
-        // `sun_path` headroom); the version keys the *token*, so the 8.0
-        // socket lands in a different dir than the catalog default (8.4).
-        let tok_80 = bougie_paths::instance_run_token("mysql", "8.0.46");
-        let tok_default = bougie_paths::instance_run_token("mysql", entry.version);
-        assert_ne!(tok_80, tok_default, "8.0 must key a different run dir than the default");
-        assert!(
-            sock.contains(&tok_80) && !sock.contains(&tok_default),
-            "socket must use the resolved-8.0 run token {tok_80}, not the default {tok_default}: {sock}"
+        let sock_80 = tenant_service_env(&paths, entry, "8.0.46", &t)
+            ["BOUGIE_SERVICE_MYSQL_SOCKET"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let sock_84 = tenant_service_env(&paths, entry, "8.4.10", &t)
+            ["BOUGIE_SERVICE_MYSQL_SOCKET"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(sock_80, sock_84, "socket must not depend on the DB version");
+        assert_eq!(
+            sock_80,
+            paths.project_conn_socket(&t.project, "mysql.sock").display().to_string()
         );
+        assert!(sock_80.ends_with("mysql.sock"), "{sock_80}");
+
+        let vars = tenant_service_env(&paths, entry, "8.0.46", &t);
         assert_eq!(
             vars["BOUGIE_SERVICE_MYSQL_DATABASE"],
             Value::String("acme".into())

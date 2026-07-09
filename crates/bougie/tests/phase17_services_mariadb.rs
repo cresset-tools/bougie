@@ -415,10 +415,24 @@ fn bougie_run_exports_mariadb_env_vars() {
         );
     }
     let stdout = String::from_utf8_lossy(&out.stdout);
-    let socket_path = mariadb_socket(&env).display().to_string();
+    // The socket var is the project's STABLE connection socket (a symlink
+    // the daemon points at the live instance), NOT the version-keyed
+    // instance path — so a baked env.php host survives version bumps.
+    let conn_socket = env
+        .home_path()
+        .join("state/conn")
+        .join(bougie_paths::project_hash(proj.path()))
+        .join("mariadb.sock");
     assert!(
-        stdout.contains(&format!("BOUGIE_SERVICE_MARIADB_SOCKET={socket_path}")),
-        "missing socket var; env was:\n{stdout}"
+        stdout.contains(&format!("BOUGIE_SERVICE_MARIADB_SOCKET={}", conn_socket.display())),
+        "socket var should be the stable conn socket {}; env was:\n{stdout}",
+        conn_socket.display()
+    );
+    // …and that stable socket resolves to the running instance socket.
+    assert_eq!(
+        std::fs::read_link(&conn_socket).ok(),
+        Some(mariadb_socket(&env)),
+        "conn socket must symlink to the live instance socket"
     );
     assert!(
         stdout.contains("BOUGIE_SERVICE_MARIADB_DATABASE=acme_blog"),

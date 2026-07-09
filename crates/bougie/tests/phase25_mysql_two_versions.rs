@@ -230,14 +230,29 @@ fn two_mysql_versions_run_as_distinct_instances() {
         .stdout
         .clone();
     let env_a = String::from_utf8(env_a).unwrap();
-    // The socket lives in a hashed run dir keyed by (name, version), so
-    // point-at-the-right-version is proven by the 8.0 run token being
-    // present and the 8.4 one absent.
+    // The DB socket handed to the app is now the project's STABLE conn
+    // socket (a symlink), not the version-keyed instance path — so it
+    // survives version bumps. Prove project A points at the *8.0* instance
+    // by resolving that symlink to the 8.0 run token (and not 8.4's).
+    let conn_a = env
+        .home_path()
+        .join("state/conn")
+        .join(bougie_paths::project_hash(&proj_a))
+        .join("mysql.sock");
+    assert!(
+        env_a.contains(&conn_a.display().to_string()),
+        "project A's env should expose its stable conn socket {}; got:\n{env_a}",
+        conn_a.display()
+    );
+    let target = std::fs::read_link(&conn_a)
+        .unwrap_or_else(|e| panic!("reading conn symlink {}: {e}", conn_a.display()))
+        .display()
+        .to_string();
     let tok_80 = bougie_paths::instance_run_token("mysql", MYSQL_8_0);
     let tok_84 = bougie_paths::instance_run_token("mysql", MYSQL_8_4);
     assert!(
-        env_a.contains(&tok_80) && !env_a.contains(&tok_84),
-        "project A's env should point at the 8.0 socket (token {tok_80}), not 8.4's ({tok_84}); got:\n{env_a}"
+        target.contains(&tok_80) && !target.contains(&tok_84),
+        "project A's stable socket must resolve to the 8.0 instance ({tok_80}), not 8.4 ({tok_84}); got {target}"
     );
 
     stop_daemon(&env);
