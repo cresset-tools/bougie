@@ -148,20 +148,35 @@ impl Enrichment {
 /// Map a failed command's error to its telemetry category — the
 /// category label and exit code are the *entire* error payload; no
 /// message content ever leaves the machine outside the crash lane.
+///
+/// Classification walks the full cause chain: a typed [`BougieError`]
+/// anywhere in it wins; otherwise the transport and io roots that
+/// ad-hoc eyre wrapping buries are still recovered
+/// (`reqwest::Error` → `network`, `std::io::Error` → `filesystem`).
+/// Network is checked before io deliberately — transport errors often
+/// carry an io root, and the transport is the failure's substance.
 pub fn outcome_for_error(err: &eyre::Report) -> &'static str {
-    match err.downcast_ref::<BougieError>() {
-        Some(BougieError::Network { .. }) => "network",
-        Some(BougieError::IndexSignature { .. }) => "index-signature",
-        Some(BougieError::ManifestHashMismatch { .. }) => "manifest-hash",
-        Some(BougieError::BlobHashMismatch { .. }) => "blob-hash",
-        Some(BougieError::Resolution { .. }) => "resolution",
-        Some(BougieError::UnknownTarget { .. }) => "unknown-target",
-        Some(BougieError::YankedSelected { .. }) => "yanked",
-        Some(BougieError::LockHeld { .. }) => "lock-held",
-        Some(BougieError::Filesystem { .. }) => "filesystem",
-        Some(BougieError::SelfUpdate { .. }) => "self-update",
-        None => "other",
+    if let Some(typed) = err.chain().find_map(|cause| cause.downcast_ref::<BougieError>()) {
+        return match typed {
+            BougieError::Network { .. } => "network",
+            BougieError::IndexSignature { .. } => "index-signature",
+            BougieError::ManifestHashMismatch { .. } => "manifest-hash",
+            BougieError::BlobHashMismatch { .. } => "blob-hash",
+            BougieError::Resolution { .. } => "resolution",
+            BougieError::UnknownTarget { .. } => "unknown-target",
+            BougieError::YankedSelected { .. } => "yanked",
+            BougieError::LockHeld { .. } => "lock-held",
+            BougieError::Filesystem { .. } => "filesystem",
+            BougieError::SelfUpdate { .. } => "self-update",
+        };
     }
+    if err.chain().any(<dyn std::error::Error>::is::<reqwest::Error>) {
+        return "network";
+    }
+    if err.chain().any(<dyn std::error::Error>::is::<std::io::Error>) {
+        return "filesystem";
+    }
+    "other"
 }
 
 pub fn os() -> &'static str {
@@ -208,6 +223,60 @@ mod tests {
         });
         assert_eq!(outcome_for_error(&err), "resolution");
         assert_eq!(outcome_for_error(&eyre::eyre!("misc")), "other");
+    }
+
+    #[test]
+    fn typed_error_classifies_through_wrap_layers() {
+        let err = eyre::Report::new(BougieError::LockHeld { path: String::new(), pid: 42 })
+            .wrap_err("syncing the project")
+            .wrap_err("outer context");
+        assert_eq!(outcome_for_error(&err), "lock-held");
+    }
+
+    #[test]
+    fn io_rooted_chain_classifies_as_filesystem() {
+        let err = eyre::Report::new(std::io::Error::other("disk fell off"))
+            .wrap_err("materializing vendor tree");
+        assert_eq!(outcome_for_error(&err), "filesystem");
+    }
+
+    #[test]
+    fn network_rooted_chain_classifies_as_network() {
+        // A builder-stage reqwest error: no socket is touched, but the
+        // type is the same one a transport failure surfaces as.
+        let req = reqwest::blocking::get("no-scheme").unwrap_err();
+        let err = eyre::Report::new(req).wrap_err("fetching packagist metadata");
+        assert_eq!(outcome_for_error(&err), "network");
+    }
+
+    #[test]
+    fn network_wins_over_the_io_root_of_a_transport_error() {
+        // A real refused connection: reqwest outermost, an ECONNREFUSED
+        // io::Error at the root. Both types sit in one chain — the
+        // network-before-io check order is what keeps this out of
+        // `filesystem`.
+        let port = {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.local_addr().unwrap().port()
+            // Dropped here: connecting now gets ECONNREFUSED.
+        };
+        let req = reqwest::blocking::get(format!("http://127.0.0.1:{port}/")).unwrap_err();
+        let err = eyre::Report::new(req).wrap_err("mirror fetch");
+        assert!(
+            err.chain().any(|cause| cause.is::<std::io::Error>()),
+            "test premise: the transport error should carry an io root"
+        );
+        assert_eq!(outcome_for_error(&err), "network");
+    }
+
+    #[test]
+    fn stringified_causes_stay_other() {
+        // Flattening a typed error into a message destroys the type —
+        // the classifier cannot recover it. Documented limitation; the
+        // fix is removing the flattening at the call site.
+        let io = std::io::Error::other("gone");
+        let err = eyre::eyre!("copying vendor tree: {io}");
+        assert_eq!(outcome_for_error(&err), "other");
     }
 
     #[test]

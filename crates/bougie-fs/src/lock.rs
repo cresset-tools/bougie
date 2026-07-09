@@ -44,7 +44,8 @@ impl ExclusiveGuard {
                 Ok(()) => break,
                 Err(TryLockError::WouldBlock) => {}
                 Err(TryLockError::Error(e)) => {
-                    return Err(eyre::eyre!("acquiring lock {}: {e}", path.display()));
+                    return Err(eyre::Report::new(e)
+                        .wrap_err(format!("acquiring lock {}", path.display())));
                 }
             }
             if Instant::now() >= deadline {

@@ -88,6 +88,10 @@ One NDJSON line per event. Envelope fields on every event:
 The category label and exit code are the *entire* error payload — no
 error messages, no offending package, no URL, no path.
 
+Categorization walks the error's full cause chain: `network` and
+`filesystem` also cover failures whose transport or io root sits
+beneath ad-hoc wrapping layers, not only errors typed at the source.
+
 Commands that materialize a project (`sync` and the verbs built on
 it) may additionally attach:
 

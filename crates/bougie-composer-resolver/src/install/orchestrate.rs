@@ -495,7 +495,7 @@ pub fn install_from_lock_with_patches(
             apcu_prefix: None,
             autoloader_suffix: None,
         })
-        .map_err(|e| eyre!("autoload dump failed: {e}"))?;
+        .wrap_err("autoload dump failed")?;
         // Record the fingerprint so the next unchanged sync can skip the
         // dump. Best-effort: a write failure just means we regenerate
         // next time (the old behavior), so it's a warning, not an error.

@@ -11,7 +11,7 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use eyre::{Result, bail};
+use eyre::{Result, WrapErr as _, bail};
 use flickzeug::{ApplyConfig, FuzzyConfig, apply_with_config};
 
 use crate::diff::{self, ChangeKind, FileDiff, strip_components};
@@ -121,8 +121,8 @@ fn plan_at_depth<'a>(
 
         let new_content = match file.kind {
             ChangeKind::Modify => {
-                let base = fs::read_to_string(&abs_path).map_err(|e| {
-                    eyre::eyre!("cannot read `{}` for patching: {e}", abs_path.display())
+                let base = fs::read_to_string(&abs_path).wrap_err_with(|| {
+                    format!("cannot read `{}` for patching", abs_path.display())
                 })?;
                 let (content, stats) = apply_with_config(&base, &file.diff, config)
                     .map_err(|e| eyre::eyre!("hunk failed on `{rel}`: {e}"))?;
@@ -163,15 +163,15 @@ fn commit(ops: &[PlannedOp<'_>]) -> Result<()> {
         match &op.new_content {
             Some(content) => {
                 if let Some(parent) = op.abs_path.parent() {
-                    fs::create_dir_all(parent).map_err(|e| {
-                        eyre::eyre!("cannot create `{}`: {e}", parent.display())
+                    fs::create_dir_all(parent).wrap_err_with(|| {
+                        format!("cannot create `{}`", parent.display())
                     })?;
                 }
                 atomic_write(&op.abs_path, content.as_bytes())?;
             }
             None => {
-                fs::remove_file(&op.abs_path).map_err(|e| {
-                    eyre::eyre!("cannot delete `{}`: {e}", op.abs_path.display())
+                fs::remove_file(&op.abs_path).wrap_err_with(|| {
+                    format!("cannot delete `{}`", op.abs_path.display())
                 })?;
             }
         }
@@ -193,13 +193,12 @@ fn action_for(kind: ChangeKind) -> FileAction {
 fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
     let dir = path.parent().unwrap_or_else(|| Path::new("."));
     let mut tmp = tempfile_in(dir)?;
-    tmp.write_all(bytes)
-        .map_err(|e| eyre::eyre!("write to temp file failed: {e}"))?;
+    tmp.write_all(bytes).wrap_err("write to temp file failed")?;
     tmp.flush().ok();
     let tmp_path = tmp.into_temp_path();
     tmp_path
         .persist(path)
-        .map_err(|e| eyre::eyre!("cannot finalize `{}`: {e}", path.display()))?;
+        .wrap_err_with(|| format!("cannot finalize `{}`", path.display()))?;
     Ok(())
 }
 
@@ -207,7 +206,7 @@ fn tempfile_in(dir: &Path) -> Result<tempfile::NamedTempFile> {
     tempfile::Builder::new()
         .prefix(".bougie-patch-")
         .tempfile_in(dir)
-        .map_err(|e| eyre::eyre!("cannot create temp file in `{}`: {e}", dir.display()))
+        .wrap_err_with(|| format!("cannot create temp file in `{}`", dir.display()))
 }
 
 #[cfg(test)]

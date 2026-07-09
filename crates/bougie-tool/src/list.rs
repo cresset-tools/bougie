@@ -36,7 +36,7 @@ pub fn list(paths: &Paths) -> Result<Vec<ListedTool>> {
     let entries = match std::fs::read_dir(&root) {
         Ok(e) => e,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(e) => return Err(eyre::eyre!("reading {}: {e}", root.display())),
+        Err(e) => return Err(eyre::Report::new(e).wrap_err(format!("reading {}", root.display()))),
     };
 
     let mut out = Vec::new();
