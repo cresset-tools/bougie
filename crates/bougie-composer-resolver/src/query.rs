@@ -340,8 +340,11 @@ pub fn latest_versions(
         .map_err(|e| eyre!("parsing composer.json: {e}"))?;
 
     let auth = crate::update::read_all_auth(&composer_json, project_root).map_err(|e| eyre!(e))?;
-    let repos = crate::update::read_repositories(&composer_json, Repo::packagist(), &auth)
-        .map_err(|e| eyre!(e))?;
+    let overlay =
+        crate::update::read_repositories_overlay(project_root).map_err(|e| eyre!(e))?;
+    let repos =
+        crate::update::read_repositories(&composer_json, Repo::packagist(), &auth, &overlay)
+            .map_err(|e| eyre!(e))?;
     let client = build_client()?;
 
     // Probe each repo's protocol once; v1 repos also need their provider

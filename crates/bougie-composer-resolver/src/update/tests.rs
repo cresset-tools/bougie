@@ -1983,6 +1983,7 @@ fn path_repo_entry_parses_into_path_kind() {
         &composer_json,
         crate::metadata::Repo::from_url("http://unused"),
         &std::collections::HashMap::new(),
+        &[],
     )
     .unwrap();
     assert_eq!(repos.len(), 1, "packagist disabled, one path repo remains");
@@ -2007,6 +2008,7 @@ fn path_repo_defaults_when_options_omitted() {
         &composer_json,
         crate::metadata::Repo::from_url("http://unused"),
         &std::collections::HashMap::new(),
+        &[],
     )
     .unwrap();
     let RepoKind::Path(cfg) = &repos[0].kind else {
@@ -2028,9 +2030,61 @@ fn path_repo_missing_url_errors() {
         &composer_json,
         crate::metadata::Repo::from_url("http://unused"),
         &std::collections::HashMap::new(),
+        &[],
     )
     .unwrap_err();
     assert!(format!("{err}").contains("missing `url`"), "{err}");
+}
+
+#[test]
+fn overlay_repos_merge_after_composer_json_and_dedup() {
+    let composer_json = json!({
+        "repositories": [{"type": "composer", "url": "https://a.example"}],
+        "require": {},
+    });
+    let overlay = vec![
+        json!({"type": "composer", "url": "https://b.example"}),
+        // Same URL as the composer.json repo → must be dropped, not duplicated.
+        json!({"type": "composer", "url": "https://a.example"}),
+    ];
+    let repos = crate::update::read_repositories(
+        &composer_json,
+        crate::metadata::Repo::packagist(),
+        &std::collections::HashMap::new(),
+        &overlay,
+    )
+    .unwrap();
+    let urls: Vec<&str> = repos.iter().map(|r| r.url.as_str()).collect();
+    // composer.json repo first, then the overlay-only repo, then implicit
+    // Packagist last; the duplicate overlay entry is dropped.
+    assert_eq!(repos.len(), 3, "a + b + packagist, dup dropped: {urls:?}");
+    assert_eq!(urls[0], "https://a.example");
+    assert_eq!(urls[1], "https://b.example");
+}
+
+#[test]
+fn read_repositories_overlay_reads_array_absent_is_empty_nonarray_errors() {
+    let tmp = TempDir::new().unwrap();
+    // Absent file → no overlay.
+    assert!(
+        crate::update::read_repositories_overlay(tmp.path())
+            .unwrap()
+            .is_empty()
+    );
+    // A JSON array of entries → those entries.
+    let dir = tmp.path().join(".bougie");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("repositories.json"),
+        r#"[{"type":"composer","url":"https://x.example"}]"#,
+    )
+    .unwrap();
+    let entries = crate::update::read_repositories_overlay(tmp.path()).unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["url"], "https://x.example");
+    // Present but not an array → an error (it's bougie-written, so surface it).
+    std::fs::write(dir.join("repositories.json"), r#"{"nope":true}"#).unwrap();
+    assert!(crate::update::read_repositories_overlay(tmp.path()).is_err());
 }
 
 
@@ -2320,6 +2374,7 @@ fn http_basic_auth_from_config_unlocks_private_repo() {
         true,
         auth,
         crate::platform::PlatformEnv::default(),
+        None,
     )
     .unwrap();
     let root = provider.root_version();
@@ -2379,6 +2434,7 @@ fn bearer_auth_from_config_unlocks_private_repo() {
         true,
         auth,
         crate::platform::PlatformEnv::default(),
+        None,
     )
     .unwrap();
     let root = provider.root_version();
@@ -2461,6 +2517,7 @@ fn auth_json_overrides_composer_json_config() {
         true,
         auth,
         crate::platform::PlatformEnv::default(),
+        None,
     )
     .unwrap();
     let root = provider.root_version();
@@ -3114,6 +3171,7 @@ fn analyze_resolution_problems_does_not_spuriously_flag_satisfied_php() {
         true,
         auth,
         crate::platform::PlatformEnv::new(Some(Version::parse("8.4.5").unwrap())),
+        None,
     )
     .unwrap();
     provider.pre_fetch_closure().unwrap();
@@ -3168,6 +3226,7 @@ fn ignore_platform_req_php_drops_the_edge_and_resolves() {
         auth,
         crate::platform::PlatformEnv::new(Some(Version::parse("8.3.31").unwrap()))
             .ignoring(crate::platform::PlatformIgnore::new(false, &["php".to_string()])),
+        None,
     )
     .unwrap();
     provider.pre_fetch_closure().unwrap();
@@ -3218,6 +3277,7 @@ fn analyze_resolution_problems_reports_php_version_mismatch_clearly() {
         true,
         auth,
         crate::platform::PlatformEnv::new(Some(Version::parse("8.3.31").unwrap())),
+        None,
     )
     .unwrap();
     provider.pre_fetch_closure().unwrap();

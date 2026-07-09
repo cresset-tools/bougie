@@ -506,6 +506,7 @@ impl ResolveProvider {
             no_dev,
             HashMap::new(),
             PlatformEnv::default(),
+            None,
         )
     }
 
@@ -521,6 +522,7 @@ impl ResolveProvider {
         no_dev: bool,
         auth: HashMap<String, crate::metadata::AuthCredentials>,
         platform: PlatformEnv,
+        project_root: Option<&Path>,
     ) -> Result<Self, BuildError> {
         let minimum_stability = read_minimum_stability(composer_json)?;
         let prefer_stable = read_prefer_stable(composer_json)?;
@@ -529,7 +531,15 @@ impl ResolveProvider {
         let direct_deps: FxHashSet<PackageName> =
             root_deps.iter().map(|(name, _)| name.clone()).collect();
         let root_replaces = read_root_replaces(composer_json);
-        let repos = read_repositories(composer_json, default_packagist, &auth)?;
+        // The `bougie login`-provisioned repositories overlay lives beside the
+        // project's composer.json but is never part of it, so it's loaded here
+        // (not folded into `composer_json`) and thus can't affect the lock's
+        // content-hash. `build()` and unit tests pass `None`.
+        let overlay = match project_root {
+            Some(root) => read_repositories_overlay(root)?,
+            None => Vec::new(),
+        };
+        let repos = read_repositories(composer_json, default_packagist, &auth, &overlay)?;
         // Any synthetic value works for the root version — pubgrub
         // never compares it against another candidate. Match the
         // verify provider's choice for cross-module consistency.
@@ -2369,6 +2379,7 @@ pub(crate) fn read_repositories(
     composer_json: &Value,
     default_packagist: Repo,
     auth: &HashMap<String, crate::metadata::AuthCredentials>,
+    overlay: &[Value],
 ) -> Result<Vec<Repo>, BuildError> {
     let obj = composer_json.as_object().ok_or_else(|| {
         BuildError::Internal("composer.json top-level is not an object".into())
@@ -2413,6 +2424,30 @@ pub(crate) fn read_repositories(
             }
         }
     }
+    // Project-local, gitignored overlay (`bougie login`-provisioned): extra
+    // `repositories` kept out of the committed composer.json. Added after the
+    // committed repos and before implicit Packagist — so they're preferred over
+    // public Packagist just like a declared private repo — and deduped by URL so
+    // a repo already in composer.json isn't added twice. The overlay is purely
+    // additive: any disable sentinel that slipped in is ignored (it must not be
+    // able to turn Packagist off from outside the manifest).
+    if !overlay.is_empty() {
+        let mut seen: std::collections::HashSet<String> =
+            repos.iter().map(|r| r.url.clone()).collect();
+        for entry in overlay {
+            let Some(entry_obj) = entry.as_object() else { continue };
+            if entry_is_disable_packagist(entry_obj) {
+                continue;
+            }
+            let mut parsed = Vec::new();
+            parse_repo_entry(entry_obj, auth, &mut parsed)?;
+            for repo in parsed {
+                if seen.insert(repo.url.clone()) {
+                    repos.push(repo);
+                }
+            }
+        }
+    }
     if keep_default_packagist {
         // Public Packagist gets auth attached too if the user has
         // credentials for repo.packagist.org (rare but valid for
@@ -2430,6 +2465,95 @@ pub(crate) fn read_repositories(
         ));
     }
     Ok(repos)
+}
+
+/// The project-local, gitignored overlay of extra Composer `repositories` that
+/// `bougie login` provisions, so registry URLs stay out of the committed
+/// composer.json. A JSON array of the same entry shape composer.json's
+/// `repositories` array uses (e.g. `[{"type":"composer","url":"https://…"}]`).
+pub(crate) const REPO_OVERLAY_REL_PATH: &str = ".bougie/repositories.json";
+
+/// Load the repositories overlay entries from
+/// `<project_root>/.bougie/repositories.json`. Missing file → no overlay (the
+/// common case). A file that exists but isn't a JSON array is an error: it's
+/// bougie-written, so malformed content is a real problem worth surfacing rather
+/// than silently ignoring the team's registry config.
+pub(crate) fn read_repositories_overlay(project_root: &Path) -> Result<Vec<Value>, BuildError> {
+    let path = project_root.join(REPO_OVERLAY_REL_PATH);
+    let bytes = match std::fs::read(&path) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => {
+            return Err(BuildError::Internal(format!(
+                "reading {}: {e}",
+                path.display()
+            )));
+        }
+    };
+    let value: Value = serde_json::from_slice(&bytes)
+        .map_err(|e| BuildError::Internal(format!("parsing {}: {e}", path.display())))?;
+    match value {
+        Value::Array(entries) => Ok(entries),
+        _ => Err(BuildError::Internal(format!(
+            "{}: must be a JSON array of Composer repository entries",
+            path.display()
+        ))),
+    }
+}
+
+/// Provision the repositories overlay: merge `urls` into
+/// `<project_root>/.bougie/repositories.json` as `{"type":"composer","url":…}`
+/// entries, creating it (and `.bougie/`) if needed and deduping by URL so a
+/// repeat `bougie login` adds nothing. Also ensures `.bougie/` is gitignored
+/// (best-effort). Returns the overlay path and how many entries were newly added.
+pub fn write_repositories_overlay(
+    project_root: &Path,
+    urls: &[String],
+) -> Result<(PathBuf, usize), BuildError> {
+    let path = project_root.join(REPO_OVERLAY_REL_PATH);
+    // Reuse the reader so an existing overlay is preserved (and validated).
+    let mut entries = read_repositories_overlay(project_root)?;
+    let mut seen: std::collections::HashSet<String> = entries
+        .iter()
+        .filter_map(|e| e.get("url").and_then(Value::as_str).map(str::to_owned))
+        .collect();
+    let mut added = 0;
+    for url in urls {
+        if seen.insert(url.clone()) {
+            entries.push(serde_json::json!({ "type": "composer", "url": url }));
+            added += 1;
+        }
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| BuildError::Internal(format!("creating {}: {e}", parent.display())))?;
+    }
+    let mut s = serde_json::to_string_pretty(&Value::Array(entries))
+        .map_err(|e| BuildError::Internal(format!("serializing {}: {e}", path.display())))?;
+    s.push('\n');
+    std::fs::write(&path, s.as_bytes())
+        .map_err(|e| BuildError::Internal(format!("writing {}: {e}", path.display())))?;
+    ensure_gitignored(project_root, ".bougie/");
+    Ok((path, added))
+}
+
+/// Best-effort: append `pattern` to `<project_root>/.gitignore` when absent, so
+/// the overlay — bougie's local, non-committed config — stays out of the tree. A
+/// failure here doesn't invalidate the overlay write, so nothing is propagated.
+fn ensure_gitignored(project_root: &Path, pattern: &str) {
+    let path = project_root.join(".gitignore");
+    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    let bare = pattern.trim_end_matches('/');
+    if existing.lines().map(str::trim).any(|l| l == pattern || l == bare) {
+        return;
+    }
+    let mut out = existing;
+    if !out.is_empty() && !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out.push_str(pattern);
+    out.push('\n');
+    let _ = std::fs::write(&path, out);
 }
 
 /// Parse an `{http-basic, bearer}` auth object — the shape that lives
@@ -3807,6 +3931,7 @@ pub fn dry_run_update_partial(
         opts.no_dev,
         auth,
         PlatformEnv::detect(project_root, &composer_json).ignoring(ignore_platform.clone()),
+        Some(project_root),
     )
     .map_err(|e| eyre!(e))?;
     provider.set_resolution(opts.resolution);
@@ -4161,6 +4286,7 @@ fn solve_into_lock_packages(
         no_dev,
         auth,
         platform,
+        Some(project_root),
     )
     .map_err(|e| eyre!(e))?;
     provider.set_resolution(resolution);

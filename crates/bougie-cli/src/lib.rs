@@ -538,6 +538,15 @@ pub enum Command {
         /// Base URL of the registry, e.g. `https://packages.acme.com`
         #[arg(value_name = "URL")]
         url: String,
+        /// Don't auto-provision the project's Composer `repositories` after
+        /// login (only store the token)
+        #[arg(long = "no-provision")]
+        no_provision: bool,
+        /// Write the provisioned repositories into the committed `composer.json`
+        /// (visible to stock Composer) instead of bougie's local, gitignored
+        /// `.bougie/repositories.json` overlay
+        #[arg(long = "composer-json", conflicts_with = "no_provision")]
+        composer_json: bool,
     },
 
     /// Run project tasks
@@ -1742,7 +1751,7 @@ mod tests {
 
     #[test]
     fn login_takes_a_required_url() {
-        let Command::Login { url } = cmd(&["bougie", "login", "https://packages.acme.com"]) else {
+        let Command::Login { url, .. } = cmd(&["bougie", "login", "https://packages.acme.com"]) else {
             panic!("expected login");
         };
         assert_eq!(url, "https://packages.acme.com");
