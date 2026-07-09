@@ -173,6 +173,15 @@ pub fn run(format: OutputFormat, names: Vec<String>, detach: bool) -> Result<Exi
         );
     }
 
+    // Repoint any stale bougie socket path baked into app/etc/env.php
+    // (Magento's db `host`, redis `server`) at the project's stable
+    // connection socket. A shop installed under an older bougie baked the
+    // then-current instance socket, which version-keying + the run-dir
+    // move relocate; without this the app fails with `[2002] No such file
+    // or directory` after the upgrade. Runs after the daemon created the
+    // stable symlink (during the up IPC above), so the target exists.
+    repoint_env_php_sockets(&project_root, &paths);
+
     // Attach to the combined ("multilog") stream of the services we
     // brought up, the way `docker compose up` follows its containers.
     // Gated to an interactive text-mode invocation: a non-TTY run (CI,
@@ -315,10 +324,101 @@ fn parse_db_username(env_php: &str) -> Option<String> {
     Some(rest[..end].to_string())
 }
 
+/// Rewrite every bougie-owned unix-socket path baked into `env.php` to
+/// the project's **stable connection socket**, keyed by the socket file
+/// name.
+///
+/// A shop installed under an older bougie baked the then-current instance
+/// socket path (Magento's db `host`, redis `server`, …). Version-keying +
+/// the run-dir relocation move that socket, so the literal goes stale and
+/// the app dies with `[2002] No such file or directory`. We repoint each
+/// stale path — any absolute `*.sock` under `state_prefix` (bougie-owned,
+/// so a user's external `/var/run/mysqld/mysqld.sock` is never touched) —
+/// at the `state/conn/<project-hash>/<sockname>` symlink the daemon keeps
+/// pointed at the live instance.
+///
+/// Returns the rewritten text + the paths replaced, or `None` when
+/// nothing changed. Pure over its inputs so it unit-tests without a
+/// fixture file.
+fn rewrite_env_php_sockets(
+    env_php: &str,
+    state_prefix: &std::path::Path,
+    stable_for: impl Fn(&str) -> std::path::PathBuf,
+) -> Option<(String, Vec<String>)> {
+    let mut repl: Vec<(String, String)> = Vec::new();
+    let bytes = env_php.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let c = bytes[i];
+        if (c == b'\'' || c == b'"')
+            && let Some(rel) = env_php[i + 1..].find(c as char)
+        {
+            // Socket paths carry no quotes/backslashes, so a naive
+            // close-quote scan (no PHP escape handling) is exact here.
+            let content = &env_php[i + 1..i + 1 + rel];
+            if content.starts_with('/')
+                && content.ends_with(".sock")
+                && std::path::Path::new(content).starts_with(state_prefix)
+                && let Some(sockname) =
+                    std::path::Path::new(content).file_name().and_then(|s| s.to_str())
+            {
+                let target = stable_for(sockname).display().to_string();
+                if target != content && !repl.iter().any(|(o, _)| o == content) {
+                    repl.push((content.to_string(), target));
+                }
+            }
+            i += 1 + rel + 1;
+            continue;
+        }
+        i += 1;
+    }
+    if repl.is_empty() {
+        return None;
+    }
+    let mut out = env_php.to_string();
+    let mut changed = Vec::new();
+    for (old, new) in &repl {
+        out = out.replace(old.as_str(), new);
+        changed.push(old.clone());
+    }
+    Some((out, changed))
+}
+
+/// Repoint stale bougie socket paths in `<project>/app/etc/env.php` at the
+/// project's stable connection socket. Best-effort + stderr-only: a shop
+/// that never touched env.php (no Magento) or has no stale paths is a
+/// no-op, and an I/O hiccup never fails `up`.
+fn repoint_env_php_sockets(project_root: &std::path::Path, paths: &bougie_paths::Paths) {
+    let env_php_path = project_root.join("app/etc/env.php");
+    let Ok(text) = std::fs::read_to_string(&env_php_path) else {
+        return;
+    };
+    let state_prefix = paths.state();
+    let Some((new_text, changed)) = rewrite_env_php_sockets(&text, &state_prefix, |sockname| {
+        paths.project_conn_socket(project_root, sockname)
+    }) else {
+        return;
+    };
+    match std::fs::write(&env_php_path, new_text) {
+        Ok(()) => eprintln!(
+            "note: repointed {} stale service socket path(s) in app/etc/env.php at this \
+             project's stable socket:\n         {}",
+            changed.len(),
+            changed.join("\n         "),
+        ),
+        Err(e) => {
+            eprintln!("warning: could not update stale socket paths in app/etc/env.php: {e}");
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{is_full_exact, parse_db_username, resolve_service_version};
+    use super::{
+        is_full_exact, parse_db_username, resolve_service_version, rewrite_env_php_sockets,
+    };
     use bougie_config::ServicePin;
+    use std::path::{Path, PathBuf};
 
     fn pin(v: &str) -> ServicePin {
         ServicePin::Version(v.to_owned())
@@ -421,5 +521,43 @@ return array (
     #[test]
     fn none_when_no_db_block() {
         assert_eq!(parse_db_username("<?php return array ();"), None);
+    }
+
+    /// Map every sockname to `/h/state/conn/PROJ/<sockname>`.
+    fn stable(sockname: &str) -> PathBuf {
+        PathBuf::from(format!("/h/state/conn/PROJ/{sockname}"))
+    }
+
+    #[test]
+    fn repoints_stale_bougie_db_and_redis_sockets_leaving_external_alone() {
+        // A shop installed under an older bougie: db host is the flat
+        // pre-version-keying socket, redis is a versioned instance socket,
+        // and there's a user's own external socket + a localhost host.
+        let env = "return array (\n\
+             'db' => array ( 'connection' => array ( 'default' => array (\n\
+               'host' => '/h/state/services/mariadb/run/mariadb.sock',\n\
+               'username' => 'shop' ) ) ),\n\
+             'cache' => array ( 'frontend' => array ( 'default' => array (\n\
+               'backend_options' => array ( 'server' => '/h/state/run/abc123def456/redis.sock' ) ) ) ),\n\
+             'external' => '/var/run/mysqld/mysqld.sock',\n\
+             'queue' => array ( 'amqp' => array ( 'host' => 'localhost' ) ) );";
+        let (out, changed) = rewrite_env_php_sockets(env, Path::new("/h/state"), stable).unwrap();
+        // Both bougie sockets repointed at the stable per-project socket.
+        assert!(out.contains("'host' => '/h/state/conn/PROJ/mariadb.sock'"), "{out}");
+        assert!(out.contains("'server' => '/h/state/conn/PROJ/redis.sock'"), "{out}");
+        // A user's external socket + a TCP host are left untouched.
+        assert!(out.contains("'/var/run/mysqld/mysqld.sock'"), "external socket must survive");
+        assert!(out.contains("'host' => 'localhost'"), "TCP host must survive");
+        assert_eq!(changed.len(), 2);
+    }
+
+    #[test]
+    fn socket_rewrite_is_idempotent_and_skips_clean_configs() {
+        // Already-stable path → nothing to do.
+        let stable_cfg = "'host' => '/h/state/conn/PROJ/mariadb.sock',";
+        assert!(rewrite_env_php_sockets(stable_cfg, Path::new("/h/state"), stable).is_none());
+        // No bougie-owned sockets at all → nothing to do.
+        let external = "'host' => 'localhost', 'server' => '/var/run/redis.sock',";
+        assert!(rewrite_env_php_sockets(external, Path::new("/h/state"), stable).is_none());
     }
 }
