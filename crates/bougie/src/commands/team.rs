@@ -8,14 +8,15 @@
 //! [`crate::commands::tenant`], that record lives outside `vendor/`, so it
 //! survives `rm -rf vendor`.
 //!
-//! `bougie start` reads it back: if the overlay was wiped along with `vendor/`,
+//! `bougie sync` reads it back: if the overlay was wiped along with `vendor/`,
 //! it re-discovers the org's repositories from the recorded registry (reusing
 //! the stored login token) and rewrites the overlay — so private packages
-//! resolve again with no manual `bougie login`. The overlay is a resolution
-//! input, so the heal runs *before* `start`'s sync. The whole path is
+//! resolve again with no manual `bougie login`. Sync is where the overlay is
+//! consumed (it feeds resolution), so it's the natural place to restore it;
+//! `bougie start` heals for free via its sync prologue. The whole path is
 //! best-effort: not a team project, overlay already intact, logged out, or the
 //! registry unreachable all degrade to (at most) a one-line note and never
-//! block `start`.
+//! block the sync.
 //!
 //! Today the registry is the org the dev logged into (M4's `/api/v1/repos`); a
 //! later step keys team config off the project's git remote via a served
@@ -92,29 +93,23 @@ fn write_record_at(path: &Path, registry: &str) {
     }
 }
 
-/// Re-provision the repositories overlay for the project in the current
-/// directory when it's missing — the `rm -rf vendor` self-heal. Called at the
-/// top of `bougie start`, before sync, so private packages resolve. Entirely
-/// best-effort: not a team project, overlay already present, logged out, or
-/// registry unreachable each degrade to (at most) a one-line stderr note and
-/// never affect `start`'s outcome.
-pub fn heal_overlay_before_start() {
-    let Ok(cwd) = std::env::current_dir() else {
-        return;
-    };
-    let Some(root) = crate::failure::project_root_near(&cwd) else {
-        return;
-    };
+/// Re-provision `project_root`'s repositories overlay when it's missing — the
+/// `rm -rf vendor` self-heal. Called at the top of `bougie sync`, before
+/// resolution, so private packages resolve (and so `bougie start` heals via its
+/// sync prologue). Entirely best-effort: not a team project, overlay already
+/// present, logged out, or registry unreachable each degrade to (at most) a
+/// one-line stderr note and never affect the sync's outcome.
+pub fn heal_overlay(project_root: &Path) {
     // Not a team project (never logged in here in overlay mode) → nothing to do.
-    let Some(record) = read_record(&root) else {
+    let Some(record) = read_record(project_root) else {
         return;
     };
-    // Overlay intact → keep `start` fast and offline; only a wipe (missing
-    // file) reaches for the network.
-    if repositories_overlay_path(&root).exists() {
+    // Overlay intact → keep sync fast and offline; only a wipe (missing file)
+    // reaches for the network.
+    if repositories_overlay_path(project_root).exists() {
         return;
     }
-    match reprovision(&root, &record.registry) {
+    match reprovision(project_root, &record.registry) {
         Ok(0) => {}
         Ok(n) => eprintln!(
             "Restored {n} Composer repositor{} from {} (vendor/ was wiped).",

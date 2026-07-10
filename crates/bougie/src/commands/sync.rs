@@ -357,6 +357,15 @@ pub fn run(
     // theme's `web/tailwind/` — syncs the real project, not the cwd.
     let project_root = project_root.to_path_buf();
 
+    // Team-mode self-heal: if this project is wired to a registry and its
+    // repo-config overlay was wiped (`rm -rf vendor`), restore it before
+    // resolution so private packages resolve. Best-effort; skipped when offline
+    // (can't fetch) or on a dry run (writes nothing). `bougie start` inherits
+    // this via its sync prologue.
+    if !offline && !dry_run {
+        crate::commands::team::heal_overlay(&project_root);
+    }
+
     // Step 1 — ensure a composer.lock exists before PHP inference so
     // `infer()` / `infer_extensions()` can read it. This must happen
     // before `resolve_php_inputs` (which calls `infer()`). Timed as the
