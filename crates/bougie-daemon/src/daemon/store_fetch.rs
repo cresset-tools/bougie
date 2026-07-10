@@ -89,6 +89,7 @@ const LOCK_TIMEOUT: Duration = Duration::from_mins(1);
 pub async fn ensure_tarball(
     paths: &Paths,
     entry: &'static CatalogEntry,
+    version: String,
     bar: Option<Arc<DownloadBar>>,
 ) -> Result<Vec<ResolvedTool>> {
     // The `server` catalog entry reuses the bougie binary itself —
@@ -97,11 +98,11 @@ pub async fn ensure_tarball(
     if entry.tarball.is_empty() {
         return Ok(Vec::new());
     }
-    if store_layout::basedir(paths, entry).is_ok() {
+    if store_layout::basedir(paths, entry, &version).is_ok() {
         return Ok(Vec::new());
     }
     let paths = paths.clone();
-    tokio::task::spawn_blocking(move || fetch_blocking(&paths, entry, bar.as_deref()))
+    tokio::task::spawn_blocking(move || fetch_blocking(&paths, entry, &version, bar.as_deref()))
         .await
         .wrap_err("joining tarball-fetch task")?
 }
@@ -109,6 +110,7 @@ pub async fn ensure_tarball(
 fn fetch_blocking(
     paths: &Paths,
     entry: &CatalogEntry,
+    version: &str,
     external_bar: Option<&DownloadBar>,
 ) -> Result<Vec<ResolvedTool>> {
     let target = Triple::detect()?.to_string();
@@ -120,7 +122,7 @@ fn fetch_blocking(
     // could have populated the store while we were queued behind
     // it, in which case there's nothing left to do and skipping the
     // network round-trip is the polite choice.
-    if store_layout::basedir(paths, entry).is_ok() {
+    if store_layout::basedir(paths, entry, version).is_ok() {
         return Ok(Vec::new());
     }
 
@@ -130,7 +132,7 @@ fn fetch_blocking(
     let fetched = fetch_root(&client, &host, &cache_root, build_verifier)?;
 
     let section = fetch_tool_section(&client, &fetched, &host, &cache_root, &target, entry.name)?;
-    let artifact = pick_pinned_artifact(&section.artifacts, entry.version).ok_or_else(|| {
+    let artifact = pick_pinned_artifact(&section.artifacts, version).ok_or_else(|| {
         let published: Vec<&str> = section
             .artifacts
             .iter()
@@ -143,7 +145,7 @@ fn fetch_blocking(
              — upgrade bougie (`bougie self upgrade`) or pin the catalog version that \
              the index still ships.",
             entry.name,
-            entry.version,
+            version,
             if published.is_empty() {
                 "(none)".into()
             } else {
@@ -177,7 +179,7 @@ fn fetch_blocking(
 
     std::fs::create_dir_all(paths.store())
         .wrap_err_with(|| format!("creating {}", paths.store().display()))?;
-    let dest = paths.store().join(entry.tarball);
+    let dest = paths.store().join(format!("{}-{}", entry.name, version));
 
     // Caller-supplied bar with a sink that forwards events over IPC
     // (see `dispatch_up_streaming` in `ipc.rs`); fall back to a fully
@@ -882,6 +884,7 @@ mod tests {
         CatalogEntry {
             name,
             version: "1.0.0",
+            versions: &["1.0.0"],
             tarball: name,
             binary: "bin/x",
             binding: Binding::None,

@@ -88,7 +88,7 @@ fn services_up_or_dump(env: &TestEnv, proj_path: &Path, extra_args: &[&str]) {
 /// (sandbox denial, JNA extraction failure, etc.) rather than just
 /// the supervisor's "TCP-connect never won" rollup. Best-effort.
 fn dump_opensearch_log(env: &TestEnv, label: &str) {
-    let p = env.home_path().join("state/services/opensearch/log/opensearch.log");
+    let p = env.home_path().join("state/services/opensearch/2.19.5/log/opensearch.log");
     eprintln!("\n===== opensearch.log [{label}] @ {} =====", p.display());
     match fs::read_to_string(&p) {
         Ok(s) => {
@@ -180,7 +180,7 @@ fn up_starts_opensearch_and_provisions_index_template() {
     assert_eq!(v["version"]["number"], "2.19.5");
 
     // The provisioner persisted a tenant + index_prefix.
-    let tenants = env.home_path().join("state/services/opensearch/tenants.json");
+    let tenants = env.home_path().join("state/services/opensearch/2.19.5/tenants.json");
     let ledger = fs::read_to_string(&tenants).expect("tenants.json");
     let line = ledger.lines().next().expect("at least one tenant line");
     let t: serde_json::Value = serde_json::from_str(line).unwrap();
@@ -217,7 +217,7 @@ fn second_up_is_idempotent() {
     services_up_or_dump(&env, proj.path(), &[]);
 
     let ledger = fs::read_to_string(
-        env.home_path().join("state/services/opensearch/tenants.json"),
+        env.home_path().join("state/services/opensearch/2.19.5/tenants.json"),
     )
     .unwrap();
     let n = ledger.lines().filter(|l| !l.trim().is_empty()).count();
@@ -317,7 +317,7 @@ fn down_purge_drops_template_and_indices() {
         .success();
 
     // Tenant ledger empty.
-    let p = env.home_path().join("state/services/opensearch/tenants.json");
+    let p = env.home_path().join("state/services/opensearch/2.19.5/tenants.json");
     let ledger = fs::read_to_string(&p).unwrap_or_default();
     assert!(
         ledger.lines().all(|l| l.trim().is_empty()),

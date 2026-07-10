@@ -32,11 +32,20 @@ const LOOPBACK: &str = "127.0.0.1";
 /// Alloc values keep their ledger JSON type (redis `db_number` stays a
 /// number) so the IPC reply is byte-stable; env-file consumers
 /// stringify at the edge.
+///
+/// `version` is the resolved instance version this tenant belongs to —
+/// which version-keyed state dir holds its socket / endpoint. For a
+/// single-version service it's the catalog default; for a multi-version
+/// one (`mysql` 8.0 beside 8.4) it's the concrete version the offline
+/// resolver ([`crate::daemon::tenants::instance_versions`]) found the
+/// project's ledger row under, so an 8.0 project gets its own 8.0 socket
+/// rather than the default 8.4 one.
 #[must_use]
 #[allow(clippy::too_many_lines, reason = "one arm per catalog service")]
 pub fn tenant_service_env(
     paths: &Paths,
     entry: &CatalogEntry,
+    version: &str,
     tenant: &Tenant,
 ) -> serde_json::Map<String, Value> {
     let mut vars = serde_json::Map::new();
@@ -47,16 +56,28 @@ pub fn tenant_service_env(
     // host/port (Magento's `setup:install --opensearch-host
     // --opensearch-port`, etc.) read these directly instead of
     // parsing URL bytes in shell.
-    if let Binding::Tcp { port } = entry.binding {
+    // Effective primary TCP port — relocated when the catalog default was
+    // taken, read from the instance's endpoint.json; falls back to the
+    // catalog default when unrecorded (works offline, no daemon needed).
+    let tcp_port = match entry.binding {
+        Binding::Tcp { port } => {
+            Some(crate::daemon::endpoint::effective_primary(paths, entry.name, version, port))
+        }
+        Binding::UnixSocket { .. } | Binding::None => None,
+    };
+    if let Some(port) = tcp_port {
         vars.insert(format!("{prefix}HOST"), Value::String(LOOPBACK.into()));
         vars.insert(format!("{prefix}PORT"), Value::String(port.to_string()));
     }
 
     match entry.name {
         "redis" => {
+            // Emit the STABLE per-project socket (a symlink the daemon
+            // repoints at the live instance), not the version-keyed
+            // instance socket — so a path baked into app config survives
+            // version bumps + the instance-socket relocation.
             let sock = paths
-                .service_run("redis")
-                .join("redis.sock")
+                .project_conn_socket(&tenant.project, "redis.sock")
                 .display()
                 .to_string();
             vars.insert(format!("{prefix}SOCKET"), Value::String(sock));
@@ -64,10 +85,21 @@ pub fn tenant_service_env(
                 vars.insert(format!("{prefix}DB"), db.clone());
             }
         }
-        "mariadb" => {
+        // mariadb and mysql share the database+user+password vocabulary;
+        // they differ only in the socket file name (and, upstream, the
+        // provisioner). Fold them into one arm keyed off the catalog
+        // socket name so the two never drift.
+        "mariadb" | "mysql" => {
+            let sockname = match entry.binding {
+                Binding::UnixSocket { sockname } => sockname,
+                _ => "mysql.sock",
+            };
+            // Stable per-project socket (symlink → live instance), not the
+            // version-keyed instance socket: this is what `--db-host`
+            // bakes into env.php at install time, so it must not move when
+            // the DB version bumps.
             let sock = paths
-                .service_run("mariadb")
-                .join("mariadb.sock")
+                .project_conn_socket(&tenant.project, sockname)
                 .display()
                 .to_string();
             vars.insert(format!("{prefix}SOCKET"), Value::String(sock));
@@ -87,7 +119,7 @@ pub fn tenant_service_env(
             // URL composed from the catalog port (set above as
             // _HOST/_PORT). Surface the tenant's reserved index
             // prefix so apps build `<prefix>articles` etc.
-            if let Binding::Tcp { port } = entry.binding {
+            if let Some(port) = tcp_port {
                 vars.insert(
                     format!("{prefix}URL"),
                     Value::String(format!("http://{LOOPBACK}:{port}")),
@@ -101,7 +133,7 @@ pub fn tenant_service_env(
             // Root URL alongside the tenant's reserved hostname
             // so apps can build absolute redirects without
             // re-encoding the suffix.
-            if let Binding::Tcp { port } = entry.binding {
+            if let Some(port) = tcp_port {
                 vars.insert(
                     format!("{prefix}URL"),
                     Value::String(format!("http://{LOOPBACK}:{port}")),
@@ -126,7 +158,7 @@ pub fn tenant_service_env(
                 .and_then(|v| v.as_str())
                 .unwrap_or(&tenant.tenant);
             let pw = tenant.secrets.get("password").cloned().unwrap_or_default();
-            if let Binding::Tcp { port } = entry.binding {
+            if let Some(port) = tcp_port {
                 let url = format!(
                     "amqp://{}:{}@{LOOPBACK}:{port}/{}",
                     urlencode(user),
@@ -147,7 +179,7 @@ pub fn tenant_service_env(
             // style DSN from the same port so apps can splice
             // `MAILER_DSN` directly (no auth — the dev sink accepts
             // any/no credentials).
-            if let Binding::Tcp { port } = entry.binding {
+            if let Some(port) = tcp_port {
                 vars.insert(
                     format!("{prefix}DSN"),
                     Value::String(format!("smtp://{LOOPBACK}:{port}")),
@@ -158,7 +190,7 @@ pub fn tenant_service_env(
             // it explicitly so `bougie run` users can open it.
             vars.insert(
                 format!("{prefix}DASHBOARD_URL"),
-                Value::String(format!("http://{LOOPBACK}:{}", catalog::MAILPIT_HTTP_PORT)),
+                Value::String(format!("http://{LOOPBACK}:{}", crate::daemon::endpoint::effective_extra(paths, "mailpit", version, "http", catalog::MAILPIT_HTTP_PORT))),
             );
         }
         _ => {}
@@ -204,7 +236,7 @@ mod tests {
         let mut t = tenant("acme");
         t.secrets.insert("password".into(), "deadbeef".into());
 
-        let vars = tenant_service_env(&paths, entry, &t);
+        let vars = tenant_service_env(&paths, entry, entry.version, &t);
         assert_eq!(
             vars["BOUGIE_SERVICE_MARIADB_DATABASE"],
             Value::String("acme".into())
@@ -228,8 +260,52 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let paths = paths_in(&dir);
         let entry = catalog::find("mariadb").unwrap();
-        let vars = tenant_service_env(&paths, entry, &tenant("acme"));
+        let vars = tenant_service_env(&paths, entry, entry.version, &tenant("acme"));
         assert!(!vars.contains_key("BOUGIE_SERVICE_MARIADB_PASSWORD"));
+    }
+
+    #[test]
+    fn mysql_socket_is_the_stable_per_project_conn_path() {
+        // The emitted SOCKET is the project's STABLE connection socket (a
+        // symlink the daemon repoints at the live instance), not the
+        // version-keyed instance socket — so a path baked into env.php at
+        // install time survives DB version bumps. It therefore must NOT
+        // depend on the version arg; the version-keying lives in the
+        // symlink target (proven in the daemon conn-link test).
+        let dir = TempDir::new().unwrap();
+        let paths = paths_in(&dir);
+        let entry = catalog::find("mysql").unwrap();
+        let mut t = tenant("acme");
+        t.secrets.insert("password".into(), "deadbeef".into());
+
+        let sock_80 = tenant_service_env(&paths, entry, "8.0.46", &t)
+            ["BOUGIE_SERVICE_MYSQL_SOCKET"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let sock_84 = tenant_service_env(&paths, entry, "8.4.10", &t)
+            ["BOUGIE_SERVICE_MYSQL_SOCKET"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(sock_80, sock_84, "socket must not depend on the DB version");
+        assert_eq!(
+            sock_80,
+            paths.project_conn_socket(&t.project, "mysql.sock").display().to_string()
+        );
+        assert!(sock_80.ends_with("mysql.sock"), "{sock_80}");
+
+        let vars = tenant_service_env(&paths, entry, "8.0.46", &t);
+        assert_eq!(
+            vars["BOUGIE_SERVICE_MYSQL_DATABASE"],
+            Value::String("acme".into())
+        );
+        assert_eq!(
+            vars["BOUGIE_SERVICE_MYSQL_PASSWORD"],
+            Value::String("deadbeef".into())
+        );
+        // Unix-socket service — no HOST/PORT.
+        assert!(!vars.contains_key("BOUGIE_SERVICE_MYSQL_HOST"));
     }
 
     #[test]
@@ -240,7 +316,7 @@ mod tests {
         let mut t = tenant("acme");
         t.alloc.insert("db_number".into(), Value::from(3));
 
-        let vars = tenant_service_env(&paths, entry, &t);
+        let vars = tenant_service_env(&paths, entry, entry.version, &t);
         assert_eq!(vars["BOUGIE_SERVICE_REDIS_DB"], Value::from(3));
         assert!(
             vars["BOUGIE_SERVICE_REDIS_SOCKET"]
@@ -261,7 +337,7 @@ mod tests {
             .insert("username".into(), Value::String("acme".into()));
         t.secrets.insert("password".into(), "p@ss/word".into());
 
-        let vars = tenant_service_env(&paths, entry, &t);
+        let vars = tenant_service_env(&paths, entry, entry.version, &t);
         assert_eq!(
             vars["BOUGIE_SERVICE_RABBITMQ_URL"],
             Value::String("amqp://acme:p%40ss%2Fword@127.0.0.1:5672/acme".into())
@@ -281,7 +357,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let paths = paths_in(&dir);
         let entry = catalog::find("mailpit").unwrap();
-        let vars = tenant_service_env(&paths, entry, &tenant("acme"));
+        let vars = tenant_service_env(&paths, entry, entry.version, &tenant("acme"));
         assert_eq!(
             vars["BOUGIE_SERVICE_MAILPIT_DSN"],
             Value::String("smtp://127.0.0.1:1025".into())
@@ -301,7 +377,7 @@ mod tests {
         let mut t = tenant("acme");
         t.alloc
             .insert("index_prefix".into(), Value::String("acme_".into()));
-        let vars = tenant_service_env(&paths, os, &t);
+        let vars = tenant_service_env(&paths, os, os.version, &t);
         assert_eq!(
             vars["BOUGIE_SERVICE_OPENSEARCH_URL"],
             Value::String("http://127.0.0.1:9200".into())
@@ -315,7 +391,7 @@ mod tests {
         let mut t = tenant("acme");
         t.alloc
             .insert("hostname".into(), Value::String("acme.bougie.run".into()));
-        let vars = tenant_service_env(&paths, srv, &t);
+        let vars = tenant_service_env(&paths, srv, srv.version, &t);
         assert_eq!(
             vars["BOUGIE_SERVICE_SERVER_HOSTNAME"],
             Value::String("acme.bougie.run".into())

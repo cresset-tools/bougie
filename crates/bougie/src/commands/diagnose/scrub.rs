@@ -22,20 +22,29 @@ impl Scrubber {
     pub fn from_env(paths: &Paths, project_root: Option<&Path>) -> Self {
         let mut secrets = Vec::new();
 
-        // Tenant ledgers: state/services/<name>/tenants.json is JSON
-        // Lines; every value under `secrets` is a generated credential.
-        if let Ok(entries) = std::fs::read_dir(paths.services_dir()) {
-            for entry in entries.flatten() {
-                let Ok(text) = std::fs::read_to_string(entry.path().join("tenants.json")) else {
+        // Tenant ledgers: state/services/<name>/<version>/tenants.json is
+        // JSON Lines; every value under `secrets` is a generated
+        // credential. Instances are version-keyed, so descend one level
+        // (per-version subdir) below each service name.
+        if let Ok(name_entries) = std::fs::read_dir(paths.services_dir()) {
+            for name_entry in name_entries.flatten() {
+                let Ok(version_entries) = std::fs::read_dir(name_entry.path()) else {
                     continue;
                 };
-                for line in text.lines() {
-                    let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+                for version_entry in version_entries.flatten() {
+                    let Ok(text) =
+                        std::fs::read_to_string(version_entry.path().join("tenants.json"))
+                    else {
                         continue;
                     };
-                    if let Some(map) = v.get("secrets").and_then(serde_json::Value::as_object) {
-                        for val in map.values().filter_map(serde_json::Value::as_str) {
-                            push_secret(&mut secrets, val, "tenant-secret");
+                    for line in text.lines() {
+                        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+                            continue;
+                        };
+                        if let Some(map) = v.get("secrets").and_then(serde_json::Value::as_object) {
+                            for val in map.values().filter_map(serde_json::Value::as_str) {
+                                push_secret(&mut secrets, val, "tenant-secret");
+                            }
                         }
                     }
                 }
@@ -134,7 +143,8 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let root: PathBuf = tmp.path().into();
         let paths = Paths::new(root.clone(), root.clone());
-        let dir = paths.services_dir().join("mariadb");
+        // Version-keyed layout: state/services/<name>/<version>/tenants.json.
+        let dir = paths.service_dir("mariadb", "11.4.4");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
             dir.join("tenants.json"),

@@ -1,8 +1,8 @@
 //! `bougie service credentials` — offline tenant connection info.
 //!
 //! No daemon: the command reads the on-disk tenant ledgers
-//! (`$BOUGIE_HOME/state/services/<svc>/tenants.json`) directly, so the
-//! tests plant ledger rows by hand and assert on the three output
+//! (`$BOUGIE_HOME/state/services/<svc>/<version>/tenants.json`) directly,
+//! so the tests plant ledger rows by hand and assert on the three output
 //! forms (text, json-v1, --env).
 
 mod common;
@@ -29,7 +29,11 @@ fn project_with_services() -> TempDir {
 /// Append a mariadb tenant row for `project`, the way the provisioner
 /// records it (password persisted in `secrets`).
 fn plant_mariadb_tenant(env: &TestEnv, project: &Path, password: &str) {
-    let dir = env.home_path().join("state/services/mariadb");
+    // Ledgers are version-keyed; the offline reader resolves the version
+    // via the catalog default (the single-instance stand-in), so plant
+    // there rather than the legacy flat path.
+    let version = bougie_daemon::daemon::catalog::default_version("mariadb");
+    let dir = env.home_path().join("state/services/mariadb").join(version);
     fs::create_dir_all(&dir).unwrap();
     let canon = project.canonicalize().unwrap();
     let row = serde_json::json!({
@@ -134,8 +138,10 @@ fn env_emits_the_bougie_run_variable_names() {
 fn ledger_row_without_password_falls_back_to_derivation() {
     let env = TestEnv::new();
     let proj = project_with_services();
-    // Pre-derivation ledger row: no secrets recorded.
-    let dir = env.home_path().join("state/services/mariadb");
+    // Pre-derivation ledger row: no secrets recorded. Version-keyed path,
+    // matching the offline reader's catalog-default resolution.
+    let version = bougie_daemon::daemon::catalog::default_version("mariadb");
+    let dir = env.home_path().join("state/services/mariadb").join(version);
     fs::create_dir_all(&dir).unwrap();
     let canon = proj.path().canonicalize().unwrap();
     let row = serde_json::json!({

@@ -30,8 +30,10 @@ use tokio::sync::watch;
 use super::state::DaemonState;
 
 /// Schema version stamped on every response frame. Bumped on
-/// breaking changes to existing method shapes.
-pub const SCHEMA_VERSION: u32 = 1;
+/// breaking changes to existing method shapes. v2: `service.up` requests
+/// carry a per-service `version`, and the `status` response reports a
+/// `version` per service instance (two versions of one service coexist).
+pub const SCHEMA_VERSION: u32 = 2;
 
 /// What `daemon.version` reports as the daemon's running version.
 /// Honors `BOUGIE_VERSION_OVERRIDE` so the integration test suite
@@ -164,6 +166,12 @@ fn default_lines() -> usize {
 #[derive(Debug, Deserialize)]
 pub struct ServiceRequest {
     pub name: String,
+    /// Concrete version the CLI resolved for this service from the
+    /// project's `[services]` pin (never a range — the CLI resolves it via
+    /// `resolve_service_version` before the call). With the catalog still
+    /// single-version this is always the catalog default, but it travels
+    /// on the wire so the daemon keys the instance by `(name, version)`.
+    pub version: String,
     pub tenant: String,
 }
 
@@ -341,9 +349,14 @@ async fn write_terminal(
 fn parse_request(line: &str) -> Result<Request, String> {
     let env: RequestEnvelope = serde_json::from_str(line)
         .map_err(|e| format!("malformed request envelope: {e}"))?;
-    if env.version != 1 {
+    // Accept both v1 and v2. v2 added the per-service `version` on
+    // `service.up`; the two control probes (`daemon.version`,
+    // `daemon.shutdown`) still speak v1 so a *newer* CLI can query and
+    // shut down an *older* v1-only daemon during a version upgrade — the
+    // response version handshake restarts it before any v2-shaped call.
+    if env.version != 1 && env.version != 2 {
         return Err(format!(
-            "unsupported wire-protocol version `v={}` (expected 1)",
+            "unsupported wire-protocol version `v={}` (expected 1 or 2)",
             env.version
         ));
     }
@@ -438,13 +451,17 @@ async fn dispatch_restart_streaming(
             return;
         }
     };
+    use crate::daemon::instance::Instance;
     let mut restarted = Vec::new();
     for name in order {
         // Skip transitively-pulled runtime deps that aren't real
         // managed processes (jdk, erlang).
-        if !catalog::find(name).is_some_and(|e| e.user_facing) {
+        let Some(entry) = catalog::find(name).filter(|e| e.user_facing) else {
             continue;
-        }
+        };
+        // Phase 1b: `restart` names services, not instances, so resolve to
+        // the default-version instance (single-version catalog).
+        let inst = Instance::new(entry.name, entry.version);
         let _ = write_progress(write_half, "stderr", &format!("stopping {name}\n")).await;
         // `stop` returns Ok(false) when the service wasn't running;
         // skip those — `restart` of a stopped service is a no-op,
@@ -452,7 +469,7 @@ async fn dispatch_restart_streaming(
         // lock is released before the (off-lock) start below.
         let was_running = {
             let mut sup = state.supervisor.lock().await;
-            match sup.stop(name).await {
+            match sup.stop(&inst).await {
                 Ok(true) => true,
                 Ok(false) => false,
                 Err(e) => {
@@ -468,7 +485,7 @@ async fn dispatch_restart_streaming(
         };
         if was_running {
             let _ = write_progress(write_half, "stderr", &format!("starting {name}\n")).await;
-            if let Err(e) = super::supervisor::start_service(&state.supervisor, name).await {
+            if let Err(e) = super::supervisor::start_service(&state.supervisor, &inst).await {
                 write_terminal(
                     write_half,
                     &ResultFrame::err("service_start_failed", format!("{name}: {e}")),
@@ -516,7 +533,7 @@ async fn dispatch_logs(
             write_terminal(write_half, &frame).await;
             return;
         };
-        let log_path = state.paths.service_log_file(entry.name);
+        let log_path = state.paths.service_log_file(entry.name, &entry.version);
         targets.push((entry.name, log_path));
     }
 
@@ -984,8 +1001,8 @@ async fn preflight_port_warnings(
     for (name, port) in ports_to_preflight(&order, &active) {
         if tcp_port_in_use(port).await {
             let msg = format!(
-                "warning: 127.0.0.1:{port} is already in use; starting `{name}` may fail \
-                 until you free that port\n"
+                "note: 127.0.0.1:{port} is already in use; `{name}` will start on a \
+                 nearby free port instead (see `bougie service status` for its address)\n"
             );
             let _ = write_progress(write_half, "stderr", &msg).await;
         }
@@ -1116,13 +1133,13 @@ async fn dispatch_shutdown_streaming(
     write_half: &mut tokio::net::unix::OwnedWriteHalf,
     state: &Arc<DaemonState>,
 ) {
-    use crate::daemon::catalog;
+    use crate::daemon::instance::Instance;
     use crate::daemon::supervisor::ServiceState;
 
     // Snapshot the running set in reverse start-order. Mirrors
     // `daemon::drain` so the progress we stream matches the teardown
     // the daemon would do anyway.
-    let running: Vec<&'static str> = {
+    let running: Vec<Instance> = {
         let sup = state.supervisor.lock().await;
         sup.snapshot()
             .into_iter()
@@ -1135,19 +1152,20 @@ async fn dispatch_shutdown_streaming(
                         | ServiceState::Starting
                 )
             })
-            // Re-resolve to the catalog's 'static name; the snapshot
-            // owns a copy as a String.
-            .filter_map(|s| catalog::find(&s.name).map(|e| e.name))
+            // Stop by the same `(name, version)` identity the instance was
+            // spawned under.
+            .map(|s| Instance::new(s.name, s.version))
             .collect()
     };
 
     let mut stopped: Vec<String> = Vec::new();
-    for &name in running.iter().rev() {
+    for inst in running.iter().rev() {
+        let name = inst.name.as_str();
         let _ = write_progress(write_half, "stderr", &format!("stopping {name}\n")).await;
         // Re-take the lock per service: stops are sequential and the
         // grace window per service can be seconds, so holding the lock
         // across the whole drain would needlessly block the status tick.
-        let res = state.supervisor.lock().await.stop(name).await;
+        let res = state.supervisor.lock().await.stop(inst).await;
         match res {
             Ok(true) => stopped.push(name.to_string()),
             // Raced to Stopped/Failed between snapshot and stop — fine.
@@ -1185,16 +1203,62 @@ async fn dispatch_env(state: &Arc<DaemonState>, project: std::path::PathBuf) -> 
         if !entry.user_facing {
             continue;
         }
-        let tenants_path = state.paths.service_tenants(entry.name);
-        let Ok(all) = tenants::load_all(&tenants_path).await else {
-            continue;
-        };
-        let Some(tenant) = all.into_iter().find(|t| t.project == project) else {
-            continue;
-        };
-        vars.extend(tenant_env::tenant_service_env(&state.paths, entry, &tenant));
+        // Multi-instance: a project may run any published version of a
+        // service (mysql 8.0 while a sibling project runs 8.4). Scan every
+        // on-disk instance ledger for this project's row and emit the env
+        // keyed to the version it actually landed in, so the socket / port
+        // vars point at the right instance rather than the catalog default.
+        let name_dir = state.paths.service_name_dir(entry.name);
+        for version in tenants::instance_versions(&name_dir) {
+            let ledger = state.paths.service_tenants(entry.name, &version);
+            let Ok(all) = tenants::load_all(&ledger).await else {
+                continue;
+            };
+            if let Some(tenant) = all.into_iter().find(|t| t.project == project) {
+                vars.extend(tenant_env::tenant_service_env(
+                    &state.paths,
+                    entry,
+                    &version,
+                    &tenant,
+                ));
+                break; // one version per project per service
+            }
+        }
     }
     ResultFrame::ok(serde_json::json!({"vars": Value::Object(vars)}))
+}
+
+/// (Re)point a project's **stable connection socket**
+/// (`state/conn/<project-hash>/<sockname>`) at this instance's real
+/// socket, so an app that baked the stable path keeps connecting after
+/// the version-keyed instance socket relocated (see
+/// [`bougie_paths::Paths::project_conn_socket`]). Called on every `up` so
+/// it follows a project switching DB versions. No-op for TCP / `None`
+/// services (they carry a `HOST`/`PORT`, not a socket). Best-effort: a
+/// symlink hiccup is logged, never fails the up.
+fn link_project_conn_socket(
+    paths: &bougie_paths::Paths,
+    entry: &crate::daemon::catalog::CatalogEntry,
+    version: &str,
+    project: &std::path::Path,
+) {
+    let crate::daemon::catalog::Binding::UnixSocket { sockname } = entry.binding else {
+        return;
+    };
+    let real = paths.service_run(entry.name, version).join(sockname);
+    let stable = paths.project_conn_socket(project, sockname);
+    if let Some(dir) = stable.parent()
+        && let Err(e) = std::fs::create_dir_all(dir)
+    {
+        tracing::warn!(service = entry.name, error = %e, "conn-link: mkdir failed");
+        return;
+    }
+    // A symlink can't be created over an existing one; remove first so a
+    // repoint (version switch) replaces a now-stale target atomically.
+    let _ = std::fs::remove_file(&stable);
+    if let Err(e) = std::os::unix::fs::symlink(&real, &stable) {
+        tracing::warn!(service = entry.name, error = %e, "conn-link: symlink failed");
+    }
 }
 
 async fn dispatch_up(
@@ -1203,7 +1267,7 @@ async fn dispatch_up(
     services: Vec<ServiceRequest>,
     bar: Option<std::sync::Arc<bougie_fetch::DownloadBar>>,
 ) -> ResultFrame {
-    use crate::daemon::{catalog, provisioners};
+    use crate::daemon::{catalog, instance::Instance, provisioners};
 
     let names: Vec<&str> = services.iter().map(|s| s.name.as_str()).collect();
     let order = match super::supervisor::compute_start_order(&names) {
@@ -1217,20 +1281,35 @@ async fn dispatch_up(
     for name in order {
         // Skip transitive runtime deps; not all are real services.
         let Some(entry) = catalog::find(name) else { continue };
+        // The requested instance runs at the version the CLI resolved for
+        // it (from the project's `[services]` pin). Transitive deps ordered
+        // in but not explicitly requested run at their catalog default.
+        // With the catalog still single-version this always equals
+        // `entry.version`, but threading it keeps the whole up-path keyed by
+        // the same `(name, version)` the supervisor map, store, and state
+        // tree use.
+        let version = services
+            .iter()
+            .find(|s| s.name == name)
+            .map_or_else(|| entry.version.to_string(), |s| s.version.clone());
+        let inst = Instance::new(entry.name, &version);
         // Backstop the tarball: pre_start and supervisor.start both
         // resolve `store_layout::basedir` and bail if it's missing.
         // No-op once the tarball is on disk, so re-runs only pay
         // an `is_dir` check.
-        let deps_for_service =
-            match super::store_fetch::ensure_tarball(&state.paths, entry, bar.clone()).await {
-                Ok(deps) => deps,
-                Err(e) => {
-                    return ResultFrame::err(
-                        "service_tarball_fetch_failed",
-                        format!("{name}: {e:#}"),
-                    );
-                }
-            };
+        let deps_for_service = match super::store_fetch::ensure_tarball(
+            &state.paths,
+            entry,
+            version.clone(),
+            bar.clone(),
+        )
+        .await
+        {
+            Ok(deps) => deps,
+            Err(e) => {
+                return ResultFrame::err("service_tarball_fetch_failed", format!("{name}: {e:#}"));
+            }
+        };
         if !deps_for_service.is_empty() {
             // Per UNBUNDLE_PLAN.md Phase 4: only services that
             // actually walked `requires_tools[]` contribute to the
@@ -1245,7 +1324,7 @@ async fn dispatch_up(
         // The dispatcher owns the sync/async bridge: mariadb and the
         // other sync provisioners run on the blocking pool internally;
         // opensearch is natively async.
-        let pre_res = provisioners::pre_start(entry, &state.paths).await;
+        let pre_res = provisioners::pre_start(entry, &state.paths, &version).await;
         if let Err(e) = pre_res {
             return ResultFrame::err(
                 "pre_start_failed",
@@ -1255,7 +1334,7 @@ async fn dispatch_up(
         // Start (idempotent). The health probe runs off the supervisor
         // lock, so a slow service (opensearch/rabbitmq, up to 90s) doesn't
         // block `status` or the reaper while we wait for it to come up.
-        let start_res = super::supervisor::start_service(&state.supervisor, name).await;
+        let start_res = super::supervisor::start_service(&state.supervisor, &inst).await;
         match start_res {
             Ok(true) => started.push(name.to_string()),
             Ok(false) => {}
@@ -1273,10 +1352,11 @@ async fn dispatch_up(
                 Some(s) => s.tenant.clone(),
                 None => continue, // dep ordered in but not in the request
             };
-            let tenants_path = state.paths.service_tenants(name);
+            let tenants_path = state.paths.service_tenants(name, &version);
             let prov_res = provisioners::provision(
                 entry,
                 &state.paths,
+                &version,
                 &tenants_path,
                 &tenant_name,
                 &project,
@@ -1284,6 +1364,10 @@ async fn dispatch_up(
             .await;
             match prov_res {
                 Ok(t) => {
+                    // Point the project's stable connection socket at this
+                    // instance so a baked env.php path survives version
+                    // bumps + the instance-socket relocation.
+                    link_project_conn_socket(&state.paths, entry, &version, &project);
                     tenants_map.insert(name.to_string(), Value::String(t.tenant));
                 }
                 Err(e) => {
@@ -1309,7 +1393,7 @@ async fn dispatch_down(
     services: Vec<String>,
     purge: bool,
 ) -> ResultFrame {
-    use crate::daemon::{catalog, provisioners, tenants};
+    use crate::daemon::{catalog, instance::Instance, provisioners, tenants};
 
     let mut stopped = Vec::new();
     let mut deprovisioned = Vec::new();
@@ -1317,19 +1401,37 @@ async fn dispatch_down(
         let Some(entry) = catalog::find(&name) else {
             return ResultFrame::err("unknown_service", format!("`{name}` not in catalog"));
         };
+        // The `down` wire names services, not instances. Resolve which
+        // instance *this project* is running by scanning every version's
+        // ledger for the project's row — a multi-version service (mysql
+        // 8.0 beside 8.4) may have both up at once, and we must tear down
+        // the one this project owns. Fall back to the catalog default when
+        // the project has no tenant (nothing to tear down either way).
+        let mut resolved = entry.version.to_string();
+        for v in tenants::instance_versions(&state.paths.service_name_dir(entry.name)) {
+            let lp = state.paths.service_tenants(entry.name, &v);
+            if let Ok(all) = tenants::load_all(&lp).await
+                && all.iter().any(|t| t.project == project)
+            {
+                resolved = v;
+                break;
+            }
+        }
+        let version = resolved.as_str();
         if entry.user_facing {
-            let tenants_path = state.paths.service_tenants(entry.name);
+            let tenants_path = state.paths.service_tenants(entry.name, version);
             // Find this project's tenant; if any, deprovision it.
             let project_tenant = tenants::load_all(&tenants_path)
                 .await
                 .ok()
                 .and_then(|all| all.into_iter().find(|t| t.project == project));
             if let Some(t) = project_tenant {
-                let sock_default = state.paths.service_run(entry.name).join(format!("{}.sock", entry.name));
+                let sock_default = state.paths.service_run(entry.name, version).join(format!("{}.sock", entry.name));
                 let sock_opt = sock_default.exists().then_some(sock_default);
                 let deprov_res = provisioners::deprovision(
                     entry,
                     &state.paths,
+                    version,
                     &tenants_path,
                     &t.tenant,
                     sock_opt.as_deref(),
@@ -1349,7 +1451,8 @@ async fn dispatch_down(
                 .await
                 .map_or(0, |v| v.len());
             if remaining == 0 {
-                let stop_res = state.supervisor.lock().await.stop(entry.name).await;
+                let inst = Instance::new(entry.name, version);
+                let stop_res = state.supervisor.lock().await.stop(&inst).await;
                 if let Ok(true) = stop_res {
                     stopped.push(entry.name.to_string());
                 }
@@ -1369,6 +1472,36 @@ pub(super) type ShutdownTx = watch::Sender<bool>;
 mod tests {
     use super::*;
     use std::collections::HashSet;
+
+    #[test]
+    fn conn_link_points_at_the_instance_and_repoints_on_version_switch() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let paths = bougie_paths::Paths::new(dir.path().to_path_buf(), dir.path().join("cache"));
+        let entry = crate::daemon::catalog::find("mysql").unwrap();
+        let project = std::path::Path::new("/srv/shop");
+
+        // Stand in for the 8.0 instance's bound socket.
+        let real_80 = paths.service_run("mysql", "8.0.46").join("mysql.sock");
+        std::fs::create_dir_all(real_80.parent().unwrap()).unwrap();
+        std::fs::write(&real_80, b"").unwrap();
+
+        link_project_conn_socket(&paths, entry, "8.0.46", project);
+        let conn = paths.project_conn_socket(project, "mysql.sock");
+        assert!(
+            conn.symlink_metadata().unwrap().file_type().is_symlink(),
+            "conn socket must be a symlink"
+        );
+        assert_eq!(std::fs::read_link(&conn).unwrap(), real_80, "must point at the 8.0 instance");
+
+        // Switching the project to 8.4 repoints the SAME stable path — an
+        // app's baked env.php host doesn't change across the bump.
+        let real_84 = paths.service_run("mysql", "8.4.10").join("mysql.sock");
+        std::fs::create_dir_all(real_84.parent().unwrap()).unwrap();
+        std::fs::write(&real_84, b"").unwrap();
+        link_project_conn_socket(&paths, entry, "8.4.10", project);
+        assert_eq!(std::fs::read_link(&conn).unwrap(), real_84, "must repoint at 8.4");
+        assert_eq!(conn, paths.project_conn_socket(project, "mysql.sock"), "path is stable");
+    }
 
     #[test]
     fn preflight_skips_unix_socket_and_runtime_dep_services() {
@@ -1435,9 +1568,17 @@ mod tests {
     }
 
     #[test]
+    fn accepts_both_supported_wire_versions() {
+        // v1 (legacy control probes) and v2 (per-service `version`) both
+        // parse; v2 is the current CLI default.
+        assert!(parse_request(r#"{"v": 1, "method": "status"}"#).is_ok());
+        assert!(parse_request(r#"{"v": 2, "method": "status"}"#).is_ok());
+    }
+
+    #[test]
     fn rejects_unknown_wire_version() {
-        let err = parse_request(r#"{"v": 2, "method": "status"}"#).unwrap_err();
-        assert!(err.contains("v=2"), "{err}");
+        let err = parse_request(r#"{"v": 3, "method": "status"}"#).unwrap_err();
+        assert!(err.contains("v=3"), "{err}");
     }
 
     #[test]
@@ -1449,7 +1590,7 @@ mod tests {
     #[test]
     fn parses_service_up_request() {
         let r = parse_request(
-            r#"{"v": 1, "method": "service.up", "args": {"project": "/p", "services": [{"name": "redis", "tenant": "acme"}]}}"#,
+            r#"{"v": 2, "method": "service.up", "args": {"project": "/p", "services": [{"name": "redis", "version": "8.6.3", "tenant": "acme"}]}}"#,
         )
         .unwrap();
         let Request::ServiceUp(args) = r else {
@@ -1458,6 +1599,7 @@ mod tests {
         assert_eq!(args.project, std::path::Path::new("/p"));
         assert_eq!(args.services.len(), 1);
         assert_eq!(args.services[0].name, "redis");
+        assert_eq!(args.services[0].version, "8.6.3");
         assert_eq!(args.services[0].tenant, "acme");
     }
 
@@ -1511,7 +1653,7 @@ mod tests {
     fn ok_frame_serializes_without_error_field() {
         let f = ResultFrame::ok(serde_json::json!({"a": 1}));
         let s = serde_json::to_string(&f).unwrap();
-        assert!(s.contains(r#""schema_version":1"#));
+        assert!(s.contains(r#""schema_version":2"#));
         assert!(s.contains(r#""type":"result""#));
         assert!(s.contains(r#""ok":true"#));
         assert!(s.contains(r#""result":{"a":1}"#));

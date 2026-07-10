@@ -116,7 +116,7 @@ pub fn call<R: DeserializeOwned>(paths: &Paths, method: &str, args: Value) -> Re
     ensure_compatible_daemon(paths, method)?;
     let sock = paths.bougied_sock();
     let stream = connect_with_autospawn(&sock)?;
-    let request = serde_json::json!({"v": 1, "method": method, "args": args});
+    let request = serde_json::json!({"v": 2, "method": method, "args": args});
     issue(stream, &request)
 }
 
@@ -129,7 +129,7 @@ pub fn call_streaming(paths: &Paths, method: &str, args: Value) -> Result<()> {
     ensure_compatible_daemon(paths, method)?;
     let sock = paths.bougied_sock();
     let stream = connect_with_autospawn(&sock)?;
-    let request = serde_json::json!({"v": 1, "method": method, "args": args});
+    let request = serde_json::json!({"v": 2, "method": method, "args": args});
     issue_streaming(stream, &request)
 }
 
@@ -251,6 +251,9 @@ fn probe_daemon_version(sock: &Path) -> Option<String> {
     stream
         .set_write_timeout(Some(Duration::from_secs(2)))
         .ok()?;
+    // Deliberately v1: this probe must be understood by an *older*,
+    // v1-only daemon so the version handshake can detect the mismatch and
+    // restart it. A v2 daemon accepts v1 too (see `ipc::parse_request`).
     let req = serde_json::json!({"v": 1, "method": "daemon.version"});
     let payload = serde_json::to_vec(&req).ok()?;
     {
@@ -284,6 +287,8 @@ fn send_shutdown(sock: &Path) -> Result<()> {
     stream
         .set_write_timeout(Some(Duration::from_secs(5)))
         .wrap_err("set_write_timeout on shutdown stream")?;
+    // v1 for the same cross-version reason as the version probe: we may be
+    // shutting down an older, v1-only daemon during an upgrade.
     let req = serde_json::json!({"v": 1, "method": "daemon.shutdown"});
     let payload = serde_json::to_vec(&req).wrap_err("serializing shutdown")?;
     {

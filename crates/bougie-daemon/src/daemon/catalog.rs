@@ -33,6 +33,15 @@ pub struct CatalogEntry {
     pub name: &'static str,
     /// Default upstream version when the project pin is `"*"` or absent.
     pub version: &'static str,
+    /// Every version bougie knows how to run for this service, newest
+    /// first by convention. `version` (the default) must appear here.
+    /// Single-element for single-version services; `mysql` carries both
+    /// 8.4 and 8.0 so two projects can pin different majors and run them
+    /// side by side. The pin resolver intersects a project's partial or
+    /// range pin against this compiled-in set; the index stays
+    /// authoritative at fetch time (an exact pin naming a version the
+    /// index ships but this list omits is passed through untouched).
+    pub versions: &'static [&'static str],
     /// Tarball identifier in the bougie index. Pinned per release.
     pub tarball: &'static str,
     /// Path to the main binary inside the extracted tarball
@@ -129,6 +138,14 @@ pub enum Binding {
 pub enum Tenancy {
     /// `CREATE DATABASE <t>; CREATE USER <t>@localhost …`.
     Mariadb,
+    /// Same database+user+GRANT tenant model as [`Tenancy::Mariadb`],
+    /// but bootstrapped with `mysqld --initialize-insecure` (`MySQL` has
+    /// no `mariadb-install-db`) and provisioned by connecting as the
+    /// passwordless `root@localhost` the insecure init leaves behind.
+    /// Users get the `MySQL` default `caching_sha2_password` plugin, which
+    /// works unchanged on both 8.0 and 8.4 (unlike `mysql_native_password`,
+    /// which 8.4 disables by default).
+    Mysql,
     /// Allocate logical DB number 0..15.
     Redis,
     /// Create index template `<t>-*`.
@@ -159,6 +176,7 @@ pub const CATALOG: &[CatalogEntry] = &[
     CatalogEntry {
         name: "redis",
         version: "8.6.3",
+        versions: &["8.6.3"],
         tarball: "redis-8.6.3",
         binary: "bin/redis-server",
         binding: Binding::UnixSocket { sockname: "redis.sock" },
@@ -176,6 +194,7 @@ pub const CATALOG: &[CatalogEntry] = &[
         // 11.4.4 matches the tag published by the bougie index today;
         // bump when the index ships a newer 11.4.x.
         version: "11.4.4",
+        versions: &["11.4.4"],
         tarball: "mariadb-11.4.4",
         binary: "bin/mariadbd",
         binding: Binding::UnixSocket { sockname: "mariadb.sock" },
@@ -201,8 +220,35 @@ pub const CATALOG: &[CatalogEntry] = &[
         ],
     },
     CatalogEntry {
+        name: "mysql",
+        // 8.4 LTS is the default; 8.0 rides alongside so a project stuck
+        // on the older series can pin `mysql = "8.0"` and run it beside a
+        // sibling project's 8.4. Both are published by the bougie index
+        // (`tool/mysql`); bump the patch levels when it ships newer.
+        version: "8.4.10",
+        versions: &["8.4.10", "8.0.46"],
+        tarball: "mysql-8.4.10",
+        binary: "bin/mysqld",
+        binding: Binding::UnixSocket { sockname: "mysql.sock" },
+        tenancy: Tenancy::Mysql,
+        requires: &[],
+        after: &[],
+        runtime_deps: &[],
+        user_facing: true,
+        summary: "MySQL (8.4 LTS / 8.0); one database + user per project tenant.",
+        sandbox: SandboxKind::Strict,
+        // No curated client shims: mariadb already owns the catalog-wide
+        // `mysql`/`mysqldump`/`mysqladmin` names (the argv[0] shim
+        // dispatches on basename alone, so a name can back only one
+        // service). MySQL's own `bin/mysql` client stays reachable via
+        // `bougie service exec mysql -- mysql …`. Per-project client
+        // resolution is a follow-up (INSTANCES_PLAN, client-collision).
+        clients: &[],
+    },
+    CatalogEntry {
         name: "opensearch",
         version: "2.19.5",
+        versions: &["2.19.5"],
         tarball: "opensearch-2.19.5",
         binary: "bin/opensearch",
         binding: Binding::Tcp { port: 9200 },
@@ -229,6 +275,7 @@ pub const CATALOG: &[CatalogEntry] = &[
     CatalogEntry {
         name: "rabbitmq",
         version: "4.2.6",
+        versions: &["4.2.6"],
         tarball: "rabbitmq-4.2.6",
         binary: "sbin/rabbitmq-server",
         binding: Binding::Tcp { port: 5672 },
@@ -248,6 +295,7 @@ pub const CATALOG: &[CatalogEntry] = &[
     CatalogEntry {
         name: "mailpit",
         version: "1.30.2",
+        versions: &["1.30.2"],
         tarball: "mailpit-1.30.2",
         // Single static Go binary — the index lays it out at
         // `install/bin/mailpit`, same `bin/` convention as redis.
@@ -271,6 +319,7 @@ pub const CATALOG: &[CatalogEntry] = &[
         // spawn time. The version string surfaces in `bougie service
         // catalog` output for completeness.
         version: env!("CARGO_PKG_VERSION"),
+        versions: &[env!("CARGO_PKG_VERSION")],
         tarball: "",
         binary: "bougie",
         binding: Binding::Tcp { port: 7080 },
@@ -292,6 +341,7 @@ pub const CATALOG: &[CatalogEntry] = &[
     CatalogEntry {
         name: "jdk",
         version: "21.0.11+10",
+        versions: &["21.0.11+10"],
         tarball: "jdk-21.0.11+10",
         binary: "bin/java",
         binding: Binding::None,
@@ -307,6 +357,7 @@ pub const CATALOG: &[CatalogEntry] = &[
     CatalogEntry {
         name: "erlang",
         version: "27.3.4.11",
+        versions: &["27.3.4.11"],
         tarball: "erlang-27.3.4.11",
         binary: "bin/erl",
         binding: Binding::None,
@@ -323,9 +374,48 @@ pub const CATALOG: &[CatalogEntry] = &[
 
 // -------------------- lookup --------------------
 
+/// Groups of services that are mutually exclusive within a single
+/// project. A project picks **one** relational database, not both:
+/// `mariadb` and `mysql` both speak the `MySQL` wire protocol, bind a
+/// `*.sock`, and share the database+user+GRANT tenant model. The
+/// per-project `BOUGIE_SERVICE_<NAME>_*` env is name-keyed and the
+/// `mysql`/`mysqldump` client shims dispatch on basename alone, so a
+/// project declaring both would be ambiguous about which one backs
+/// `mysql`, `BOUGIE_SERVICE_MARIADB_*` vs `_MYSQL_*`, and the datadir.
+pub const EXCLUSIVE_GROUPS: &[&[&str]] = &[&["mariadb", "mysql"]];
+
+/// If `declared` names two services from the same [`EXCLUSIVE_GROUPS`]
+/// group, return that pair (in group order). Used by `service add` and
+/// `bougie up` to reject a project that declares both. `None` when the
+/// declared set is conflict-free.
+pub fn exclusive_conflict<'a>(
+    declared: impl IntoIterator<Item = &'a str>,
+) -> Option<(&'static str, &'static str)> {
+    let set: std::collections::HashSet<&str> = declared.into_iter().collect();
+    for group in EXCLUSIVE_GROUPS {
+        let mut present = group.iter().copied().filter(|n| set.contains(n));
+        if let (Some(a), Some(b)) = (present.next(), present.next()) {
+            return Some((a, b));
+        }
+    }
+    None
+}
+
 /// Look up an entry by name. `None` if unknown.
 pub fn find(name: &str) -> Option<&'static CatalogEntry> {
     CATALOG.iter().find(|e| e.name == name)
+}
+
+/// The catalog default version for a service name, or `""` if unknown.
+///
+/// The single-instance stand-in used while the runtime state tree is
+/// version-keyed but the request/IPC layer doesn't yet carry a resolved
+/// version (Phase 1a). Once instances are threaded end-to-end the
+/// resolved version comes from the caller and this is only a fallback
+/// for name-only paths (offline consumers before the ledger-scan lands).
+#[must_use]
+pub fn default_version(name: &str) -> &'static str {
+    find(name).map_or("", |e| e.version)
 }
 
 /// Look up a client tool by its user-facing name across the whole
@@ -372,10 +462,44 @@ mod tests {
     fn find_returns_known_entries() {
         assert!(find("redis").is_some());
         assert!(find("mariadb").is_some());
+        assert!(find("mysql").is_some());
         assert!(find("opensearch").is_some());
         assert!(find("rabbitmq").is_some());
         assert!(find("mailpit").is_some());
         assert!(find("server").is_some());
+    }
+
+    #[test]
+    fn every_entry_lists_its_default_version() {
+        // The pin resolver treats `versions` as the known set and
+        // `version` as the fallback; the default must be resolvable
+        // from the set, and no entry may ship an empty list.
+        for e in CATALOG {
+            assert!(!e.versions.is_empty(), "{} has no versions", e.name);
+            assert!(
+                e.versions.contains(&e.version),
+                "{}: default `{}` not in versions {:?}",
+                e.name,
+                e.version,
+                e.versions
+            );
+        }
+    }
+
+    #[test]
+    fn mysql_ships_two_majors_with_its_own_tenancy() {
+        let m = find("mysql").unwrap();
+        assert!(m.user_facing);
+        assert!(matches!(m.tenancy, Tenancy::Mysql));
+        // Both published majors present; 8.4 is the default.
+        assert_eq!(m.version, "8.4.10");
+        assert!(m.versions.contains(&"8.4.10"));
+        assert!(m.versions.contains(&"8.0.46"));
+        // Unix socket, like mariadb — coexists by version-keyed socket
+        // path, not a port.
+        assert!(matches!(m.binding, Binding::UnixSocket { .. }));
+        // No curated clients (mariadb owns the `mysql*` shim names).
+        assert!(m.clients.is_empty());
     }
 
     #[test]
@@ -398,6 +522,33 @@ mod tests {
     fn find_returns_none_for_unknown() {
         assert!(find("postgres").is_none());
         assert!(find("").is_none());
+    }
+
+    #[test]
+    fn mariadb_and_mysql_are_mutually_exclusive() {
+        // Both DBs declared → conflict, reported in group order.
+        assert_eq!(
+            exclusive_conflict(["mariadb", "mysql"]),
+            Some(("mariadb", "mysql"))
+        );
+        assert_eq!(
+            exclusive_conflict(["redis", "mysql", "mariadb"]),
+            Some(("mariadb", "mysql"))
+        );
+        // Either one alone, or with unrelated services, is fine.
+        assert_eq!(exclusive_conflict(["mariadb", "redis"]), None);
+        assert_eq!(exclusive_conflict(["mysql", "opensearch"]), None);
+        assert_eq!(exclusive_conflict(["redis", "rabbitmq"]), None);
+        assert_eq!(exclusive_conflict(std::iter::empty()), None);
+    }
+
+    #[test]
+    fn exclusive_group_members_are_real_catalog_entries() {
+        for group in EXCLUSIVE_GROUPS {
+            for name in *group {
+                assert!(find(name).is_some(), "exclusive group names unknown `{name}`");
+            }
+        }
     }
 
     #[test]

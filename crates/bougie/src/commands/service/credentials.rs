@@ -120,7 +120,7 @@ pub fn run(format: OutputFormat, name: Option<String>, env: bool) -> Result<Exit
     let mut services = Vec::new();
     let mut not_provisioned = Vec::new();
     for entry in entries {
-        let Some(mut tenant) = find_tenant(&paths, entry.name, &project_root)? else {
+        let Some((version, mut tenant)) = find_tenant(&paths, entry.name, &project_root)? else {
             if name.is_some() {
                 return Err(no_tenant_err(entry.name));
             }
@@ -128,7 +128,7 @@ pub fn run(format: OutputFormat, name: Option<String>, env: bool) -> Result<Exit
             continue;
         };
         resolve_password(&paths, entry, &mut tenant)?;
-        let vars = tenant_service_env(&paths, entry, &tenant);
+        let vars = tenant_service_env(&paths, entry, &version, &tenant);
         services.push(ServiceCredentials {
             service: entry.name.to_string(),
             tenant: tenant.tenant,
@@ -156,7 +156,7 @@ pub fn run(format: OutputFormat, name: Option<String>, env: bool) -> Result<Exit
 /// deriving it — the same function the provisioners use, so the values
 /// agree (mirrors the mariadb wiring in `exec.rs`).
 fn resolve_password(paths: &Paths, entry: &CatalogEntry, tenant: &mut Tenant) -> Result<()> {
-    if !matches!(entry.tenancy, Tenancy::Mariadb | Tenancy::Rabbitmq)
+    if !matches!(entry.tenancy, Tenancy::Mariadb | Tenancy::Mysql | Tenancy::Rabbitmq)
         || tenant.secrets.contains_key("password")
     {
         return Ok(());

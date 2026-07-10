@@ -166,7 +166,10 @@ fn client_binary(
     rel_path: &str,
     tool: &str,
 ) -> Result<PathBuf> {
-    let basedir = store_layout::basedir(paths, entry).map_err(|_| {
+    // The curated clients live in the default-version store tree (the
+    // catalog is single-version; a multi-version `exec` target is a Phase 4
+    // concern).
+    let basedir = store_layout::basedir(paths, entry, entry.version).map_err(|_| {
         eyre!(
             "{tool}: service `{name}` isn't installed yet — run `bougie up {name}` \
              once to fetch it",
@@ -193,7 +196,7 @@ fn discover_binary(
     entry: &'static CatalogEntry,
     tool: &str,
 ) -> Result<Option<PathBuf>> {
-    let basedir = store_layout::basedir(paths, entry)?;
+    let basedir = store_layout::basedir(paths, entry, entry.version)?;
     for sub in ["bin", "sbin"] {
         let p = basedir.join(sub).join(tool);
         if p.is_file() {
@@ -234,32 +237,46 @@ fn exec_wired(
     Err(err).wrap_err_with(|| format!("exec {}", binary.display()))
 }
 
-/// The project's tenant row for `service`, matched the way
-/// `projects purge` matches: by canonical path first, raw path second
-/// (the ledger stores whatever spelling the daemon was handed).
-/// Shared with `credentials.rs`, which reads the same ledgers.
+/// The project's tenant row for `service`, plus the instance version its
+/// ledger lives under. Matched the way `projects purge` matches: by
+/// canonical path first, raw path second (the ledger stores whatever
+/// spelling the daemon was handed). Shared with `credentials.rs`, which
+/// reads the same ledgers.
+///
+/// Scans every on-disk instance ledger rather than assuming the catalog
+/// default, so a project running the non-default version of a
+/// multi-version service (mysql 8.0 beside another project's 8.4) is
+/// found under — and wired to — its own version dir (`INSTANCES_PLAN` §6).
 pub(super) fn find_tenant(
     paths: &Paths,
     service: &str,
     project_root: &Path,
-) -> Result<Option<Tenant>> {
-    let rows = tenants::load_all_sync(&paths.service_tenants(service))?;
+) -> Result<Option<(String, Tenant)>> {
     let canon = project_root
         .canonicalize()
         .unwrap_or_else(|_| project_root.to_path_buf());
-    Ok(rows
-        .into_iter()
-        .find(|t| t.project == canon || t.project == project_root))
+    for version in tenants::instance_versions(&paths.service_name_dir(service)) {
+        let rows = tenants::load_all_sync(&paths.service_tenants(service, &version))?;
+        if let Some(t) = rows
+            .into_iter()
+            .find(|t| t.project == canon || t.project == project_root)
+        {
+            return Ok(Some((version, t)));
+        }
+    }
+    Ok(None)
 }
 
 pub(super) fn no_tenant_err(service: &str) -> eyre::Report {
     eyre!("no {service} tenant is provisioned for this project — run `bougie up {service}` first")
 }
 
-/// The service's Unix socket path, when its catalog binding is one.
-fn socket_path(paths: &Paths, entry: &CatalogEntry) -> Option<PathBuf> {
+/// The service's Unix socket path for a given instance `version`, when
+/// its catalog binding is one. The version keys the run dir so a
+/// non-default instance (mysql 8.0) resolves to its own socket.
+fn socket_path(paths: &Paths, entry: &CatalogEntry, version: &str) -> Option<PathBuf> {
     match entry.binding {
-        Binding::UnixSocket { sockname } => Some(paths.service_run(entry.name).join(sockname)),
+        Binding::UnixSocket { sockname } => Some(paths.service_run(entry.name, version).join(sockname)),
         Binding::Tcp { .. } | Binding::None => None,
     }
 }
@@ -282,9 +299,9 @@ fn mariadb_wiring(
     if manages_own_defaults(args) {
         return Ok(args.to_vec());
     }
-    let tenant =
+    let (version, tenant) =
         find_tenant(paths, entry.name, project_root)?.ok_or_else(|| no_tenant_err(entry.name))?;
-    let socket = socket_path(paths, entry)
+    let socket = socket_path(paths, entry, &version)
         .ok_or_else(|| eyre!("BUG: mariadb catalog entry lost its socket binding"))?;
     // Prefer the ledger's recorded password; fall back to deriving it
     // (same function the provisioner used, so they agree).
@@ -316,7 +333,7 @@ fn manages_own_defaults(args: &[OsString]) -> bool {
 /// so it can never go stale against the ledger, and works for tenants
 /// provisioned before this feature existed.
 fn write_client_cnf(paths: &Paths, tenant: &str, socket: &Path, password: &str) -> Result<PathBuf> {
-    let dir = paths.service_conf("mariadb").join("clients");
+    let dir = paths.service_conf("mariadb", bougie_daemon::daemon::catalog::default_version("mariadb")).join("clients");
     std::fs::create_dir_all(&dir).wrap_err_with(|| format!("creating {}", dir.display()))?;
     let path = dir.join(format!("{tenant}.cnf"));
     let content = client_cnf_content(socket, tenant, password);
@@ -366,10 +383,10 @@ fn redis_wiring(
     entry: &'static CatalogEntry,
     args: &[OsString],
 ) -> Result<Vec<OsString>> {
-    let socket = socket_path(paths, entry)
-        .ok_or_else(|| eyre!("BUG: redis catalog entry lost its socket binding"))?;
-    let tenant =
+    let (version, tenant) =
         find_tenant(paths, entry.name, project_root)?.ok_or_else(|| no_tenant_err(entry.name))?;
+    let socket = socket_path(paths, entry, &version)
+        .ok_or_else(|| eyre!("BUG: redis catalog entry lost its socket binding"))?;
     let db = tenant
         .alloc
         .get("db_number")
@@ -413,8 +430,12 @@ fn apply_rabbitmq_env(cmd: &mut Command, paths: &Paths) {
             cmd.env_remove(&k);
         }
     }
-    cmd.env("HOME", paths.service_data("rabbitmq").join("home"));
-    cmd.envs(rabbitmq_env(paths));
+    let version = bougie_daemon::daemon::catalog::default_version("rabbitmq");
+    cmd.env("HOME", paths.service_data("rabbitmq", version).join("home"));
+    // ctl reaches the node via nodename, not the AMQP port; pass the
+    // broker's effective port anyway so the two never disagree.
+    let node_port = bougie_daemon::daemon::endpoint::effective_primary(paths, "rabbitmq", version, 5672);
+    cmd.envs(rabbitmq_env(paths, node_port));
 }
 
 #[cfg(test)]
@@ -525,7 +546,7 @@ mod tests {
         let proj = td.path().join("proj");
         std::fs::create_dir_all(&proj).unwrap();
 
-        let ledger = paths.service_tenants("redis");
+        let ledger = paths.service_tenants("redis", bougie_daemon::daemon::catalog::default_version("redis"));
         std::fs::create_dir_all(ledger.parent().unwrap()).unwrap();
         let row = format!(
             "{}\n",
@@ -539,7 +560,8 @@ mod tests {
         );
         std::fs::write(&ledger, row).unwrap();
 
-        let t = find_tenant(&paths, "redis", &proj).unwrap().unwrap();
+        let (version, t) = find_tenant(&paths, "redis", &proj).unwrap().unwrap();
+        assert_eq!(version, bougie_daemon::daemon::catalog::default_version("redis"));
         assert_eq!(t.tenant, "proj");
         assert_eq!(t.alloc["db_number"], 5);
         // A different project resolves to no tenant.
