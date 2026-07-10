@@ -2539,6 +2539,15 @@ pub fn write_repositories_overlay(
     Ok((path, added))
 }
 
+/// The absolute path of a project's repositories overlay
+/// (`<project_root>/vendor/bougie/repositories.json`). Exposed so callers
+/// outside this crate (e.g. `bougie start`'s team-mode self-heal) can test
+/// whether the overlay is present without restating the relative path.
+#[must_use]
+pub fn repositories_overlay_path(project_root: &Path) -> PathBuf {
+    project_root.join(REPO_OVERLAY_REL_PATH)
+}
+
 /// Parse an `{http-basic, bearer}` auth object — the shape that lives
 /// at the top level of `auth.json` and (nested under `config`) inside
 /// `composer.json`. Error messages prefix each path with `source` so
@@ -2769,6 +2778,21 @@ pub fn read_bougie_auth_json() -> Result<HashMap<String, crate::metadata::AuthCr
         }
     }
     Ok(HashMap::new())
+}
+
+/// Read back a `bearer` token for `host` from bougie's own credential store —
+/// the read-side twin of [`write_bougie_bearer`]. `host` is the origin key
+/// (`host[:port]`, see [`crate::metadata::auth_origin`]). Returns `None` when
+/// the store is absent/unreadable, has no entry for `host`, or that entry is
+/// not a bearer credential — every non-success collapses to "no token" so
+/// callers (e.g. `bougie start`'s self-heal) can treat it as best-effort.
+#[must_use]
+pub fn read_bougie_bearer(host: &str) -> Option<String> {
+    let map = read_bougie_auth_json().ok()?;
+    match map.get(host)? {
+        crate::metadata::AuthCredentials::Bearer { token } => Some(token.clone()),
+        _ => None,
+    }
 }
 
 /// The path bougie writes its credential store to: an existing candidate
