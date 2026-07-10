@@ -204,3 +204,44 @@ fn empty_dir(env: &Env) -> &Path {
     // Leak-free: lives inside the TempDir, cleaned on drop.
     Box::leak(dir.into_boxed_path())
 }
+
+#[test]
+fn parse_failure_spools_a_usage_event_named_after_the_verb() {
+    let env = Env::new();
+    env.bougie().args(["telemetry", "local"]).assert().success();
+
+    let out = env.bougie().args(["sync", "--definitely-not-a-flag"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(2));
+
+    let lines = env.spooled_lines();
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    let event: serde_json::Value = serde_json::from_str(&lines[0]).unwrap();
+    assert_eq!(event["event"], "command");
+    assert_eq!(event["name"], "sync");
+    assert_eq!(event["outcome"], "usage");
+    assert_eq!(event["exit_code"], 2);
+}
+
+#[test]
+fn typoed_verb_records_unknown_and_help_records_nothing() {
+    let env = Env::new();
+    env.bougie().args(["telemetry", "local"]).assert().success();
+
+    // The typo'd token itself must never reach the spool — the event
+    // name degrades to the vocabulary's `unknown`.
+    let out = env.bougie().arg("sylc").output().unwrap();
+    assert_eq!(out.status.code(), Some(2));
+
+    // Help and version — flag or bare-invocation form — are clap
+    // succeeding, not user mistakes: no events.
+    env.bougie().arg("--help").assert().success();
+    env.bougie().arg("--version").assert().success();
+    let _ = env.bougie().output().unwrap();
+
+    let lines = env.spooled_lines();
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    let event: serde_json::Value = serde_json::from_str(&lines[0]).unwrap();
+    assert_eq!(event["name"], "unknown");
+    assert_eq!(event["outcome"], "usage");
+    assert!(!lines[0].contains("sylc"), "typo must not reach the wire: {}", lines[0]);
+}

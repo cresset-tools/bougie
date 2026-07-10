@@ -70,8 +70,13 @@ fn main() -> ExitCode {
             // own flags (`magequery --help` printed the hidden
             // tool-exec help instead of the tool's). See
             // `commands::tool_exec::cli_from_argv`.
-            let cli = bougie::commands::tool_exec::cli_from_argv(std::env::args_os())
-                .unwrap_or_else(Cli::parse);
+            let cli = match bougie::commands::tool_exec::cli_from_argv(std::env::args_os()) {
+                Some(cli) => cli,
+                None => match Cli::try_parse() {
+                    Ok(cli) => cli,
+                    Err(err) => return exit_for_parse_error(&err),
+                },
+            };
             match bougie::run(cli) {
                 Ok(code) => code,
                 Err(err) => {
@@ -85,6 +90,37 @@ fn main() -> ExitCode {
         // The worker panicked; its message already reached stderr via the
         // default hook. Mirror Rust's conventional panic exit code.
         .unwrap_or(ExitCode::from(101))
+}
+
+/// A failed parse is signal — the `usage` telemetry lane. Only a
+/// *failed* one, though: help and version renders (including the help
+/// a bare `bougie` prints) are clap succeeding at its job, not user
+/// mistakes, and stay unrecorded. The verb is the first token when it
+/// names a known command, else `unknown` (closed vocabulary — the
+/// typo itself never leaves the machine). Rendering and exit codes
+/// are exactly clap's own.
+fn exit_for_parse_error(err: &clap::Error) -> ExitCode {
+    use clap::error::ErrorKind;
+    let help_like = matches!(
+        err.kind(),
+        ErrorKind::DisplayHelp
+            | ErrorKind::DisplayVersion
+            | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+    );
+    if !help_like {
+        let recorder = bougie_telemetry::Recorder::init(
+            bougie::usage_command_name(std::env::args_os()),
+            bougie_telemetry::BinInfo {
+                version: env!("CARGO_PKG_VERSION"),
+                build_sha: bougie_cli::BUILD_SHA,
+            },
+        );
+        let exit_code = u8::try_from(err.exit_code()).unwrap_or(2);
+        recorder.record_command(std::time::Duration::ZERO, "usage", exit_code);
+        recorder.maybe_spawn_flush();
+    }
+    let _ = err.print();
+    ExitCode::from(u8::try_from(err.exit_code()).unwrap_or(2))
 }
 
 /// Install a `tracing-subscriber` configured from the environment.

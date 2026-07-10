@@ -4,7 +4,11 @@ Working plan for making bougie's failures legible — to the maintainer
 reading the telemetry dashboard, to the user reading stderr, and to
 `bougie diagnose` assembling a report after the fact.
 
-**Status: Phases 0–2 and 4 done; Phase 3 (usage lane) remaining.**
+**Status: Phases 0–4 done; Phase 5 (measure) remaining.**
+Phase 3 (2026-07-10): `Cli::try_parse` in main — parse failures
+record a `usage` event (verb = first token if in the vocab, else
+`unknown`; the typo never leaves the machine), help/version renders
+stay unrecorded, clap's output and exit codes preserved exactly.
 Phases 0–2 shipped in bougie-v0.47.0 (released off-branch, only
 #485); collector deployed with the failure panel + 0.47 vocab — the
 rollout gate is closed. Phase 4 (2026-07-10): the single

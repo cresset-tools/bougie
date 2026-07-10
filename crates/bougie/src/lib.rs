@@ -76,6 +76,24 @@ fn platform_ignore(
     bougie_composer_resolver::PlatformIgnore::new(ignore_all, reqs)
 }
 
+/// Best-effort verb for a `usage` (parse-failure) telemetry event:
+/// the first non-flag argument when it names a known verb, else
+/// `"unknown"`. Closed vocabulary in, closed vocabulary out — a
+/// typo'd verb never reaches the wire.
+pub fn usage_command_name<I>(args: I) -> &'static str
+where
+    I: IntoIterator<Item = std::ffi::OsString>,
+{
+    args.into_iter()
+        .skip(1) // argv[0]
+        .filter_map(|a| a.into_string().ok())
+        .find(|a| !a.starts_with('-'))
+        .and_then(|tok| {
+            bougie_telemetry::event::COMMAND_VOCAB.iter().find(|v| **v == tok).copied()
+        })
+        .unwrap_or("unknown")
+}
+
 /// Stable, human-readable name for the running subcommand, used as the
 /// `command` span field so a Ctrl-\ activity dump (and `BOUGIE_LOG`)
 /// shows which verb is running even before any deeper span opens.
@@ -843,5 +861,26 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
                 commands::diagnose::DiagnoseArgs { issue, yes, edit, no_edit, last, project, args },
             )
         }
+    }
+}
+
+#[cfg(test)]
+mod usage_name_tests {
+    use std::ffi::OsString;
+
+    fn args(list: &[&str]) -> Vec<OsString> {
+        list.iter().map(OsString::from).collect()
+    }
+
+    #[test]
+    fn first_non_flag_token_maps_through_the_vocab() {
+        assert_eq!(super::usage_command_name(args(&["bougie", "sync", "--bad"])), "sync");
+        assert_eq!(
+            super::usage_command_name(args(&["bougie", "--format", "json-v1", "snyc"])),
+            "unknown",
+        );
+        assert_eq!(super::usage_command_name(args(&["bougie", "sylc"])), "unknown");
+        assert_eq!(super::usage_command_name(args(&["bougie", "--bad-flag"])), "unknown");
+        assert_eq!(super::usage_command_name(args(&["bougie"])), "unknown");
     }
 }
