@@ -9,18 +9,21 @@
 //! survives `rm -rf vendor`.
 //!
 //! `bougie sync` reads it back: if the overlay was wiped along with `vendor/`,
-//! it re-discovers the org's repositories from the recorded registry (reusing
-//! the stored login token) and rewrites the overlay — so private packages
-//! resolve again with no manual `bougie login`. Sync is where the overlay is
-//! consumed (it feeds resolution), so it's the natural place to restore it;
-//! `bougie start` heals for free via its sync prologue. The whole path is
-//! best-effort: not a team project, overlay already intact, logged out, or the
-//! registry unreachable all degrade to (at most) a one-line note and never
-//! block the sync.
+//! it re-discovers the project's repositories from the recorded registry
+//! (reusing the stored login token) and rewrites the overlay — so private
+//! packages resolve again with no manual `bougie login`. Sync is where the
+//! overlay is consumed (it feeds resolution), so it's the natural place to
+//! restore it; `bougie start` heals for free via its sync prologue. The whole
+//! path is best-effort: not a team project, overlay already intact, logged out,
+//! or the registry unreachable all degrade to (at most) a one-line note and
+//! never block the sync.
 //!
-//! Today the registry is the org the dev logged into (M4's `/api/v1/repos`); a
-//! later step keys team config off the project's git remote via a served
-//! manifest, at which point the record grows beyond a bare registry URL.
+//! Discovery is **git-remote-keyed**: when the project has an `origin` remote,
+//! bougie fetches the team manifest (`GET /api/v1/manifest?remote=…`) — the
+//! authoritative, per-project repo list the registry maps to that remote — and
+//! caches it next to the record (`manifest.json`) for offline restores. A
+//! project with no remote, or a remote the registry doesn't recognize, falls
+//! back to the login org's repositories (M4's `/api/v1/repos`).
 
 use bougie_composer_resolver::metadata::auth_origin;
 use bougie_composer_resolver::update::{
@@ -124,23 +127,172 @@ pub fn heal_overlay(project_root: &Path) {
     }
 }
 
-/// Discover the stored login token's repositories at `registry` and (re)write
-/// the overlay in `root`; returns how many entries were written. Errors on a
-/// missing token or failed discovery so the caller can surface a note.
+/// Discover the project's repositories at `registry` and (re)write the overlay
+/// in `root`; returns how many entries were written. Errors on a missing token
+/// or a failed discovery so the caller can surface a note.
 fn reprovision(root: &Path, registry: &str) -> eyre::Result<usize> {
-    use eyre::{WrapErr, eyre};
+    use eyre::eyre;
     let base = registry.trim_end_matches('/');
     let host = auth_origin(base);
     let token = read_bougie_bearer(&host).ok_or_else(|| eyre!("not logged in to {host}"))?;
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(30))
-        .user_agent(format!("bougie/{}", env!("CARGO_PKG_VERSION")))
-        .build()
-        .wrap_err("building http client")?;
-    let urls = crate::commands::login::fetch_repo_urls(&client, base, &token)?;
+    let client = http_client()?;
+    let urls = discover_repo_urls(&client, base, &token, root)?;
     let (_path, added) =
         write_repositories_overlay(root, &urls).map_err(|e| eyre!("writing overlay: {e}"))?;
     Ok(added)
+}
+
+/// A blocking HTTP client configured like `bougie login`'s.
+fn http_client() -> eyre::Result<reqwest::blocking::Client> {
+    use eyre::WrapErr;
+    reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .user_agent(format!("bougie/{}", env!("CARGO_PKG_VERSION")))
+        .build()
+        .wrap_err("building http client")
+}
+
+/// The team manifest served at `GET /api/v1/manifest?remote=…`. Forward-
+/// compatible: only `repositories` is read today, so a richer manifest (pinned
+/// service versions, policy, …) from a newer registry is tolerated. The cache
+/// stores the raw bytes, not this struct, so those extra fields survive a
+/// round-trip for a future bougie that understands them.
+#[derive(Debug, Clone, Deserialize)]
+struct Manifest {
+    #[serde(default)]
+    repositories: Vec<ManifestRepo>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ManifestRepo {
+    url: String,
+}
+
+/// Discover the project's Composer repository URLs. Prefers the git-remote-keyed
+/// team manifest (caching it for offline restores); falls back to the login
+/// org's `/api/v1/repos` when the project has no `origin` remote or the registry
+/// doesn't recognize it. On a network/registry error, a previously-cached
+/// manifest is used so a wiped overlay still restores offline.
+pub fn discover_repo_urls(
+    client: &reqwest::blocking::Client,
+    base: &str,
+    token: &str,
+    project_root: &Path,
+) -> eyre::Result<Vec<String>> {
+    if let Some(remote) = git_remote(project_root) {
+        match fetch_manifest_raw(client, base, token, &remote) {
+            Ok(Some(raw)) => {
+                write_cached_manifest(project_root, &raw);
+                return Ok(manifest_urls(&raw));
+            }
+            // Remote not registered as a team project → the login org's repos.
+            Ok(None) => {}
+            Err(e) => {
+                // Registry unreachable: fall back to the last cached manifest so
+                // a `rm -rf vendor` still heals offline; else surface the error.
+                if let Some(raw) = read_cached_manifest(project_root) {
+                    return Ok(manifest_urls(&raw));
+                }
+                return Err(e);
+            }
+        }
+    }
+    crate::commands::login::fetch_repo_urls(client, base, token)
+}
+
+/// `GET {base}/api/v1/manifest?remote=…` → the raw manifest bytes (`Some`), or
+/// `None` when the registry has no team config for this remote (404). Any other
+/// non-success status is an error.
+fn fetch_manifest_raw(
+    client: &reqwest::blocking::Client,
+    base: &str,
+    token: &str,
+    remote: &str,
+) -> eyre::Result<Option<Vec<u8>>> {
+    use eyre::{WrapErr, eyre};
+    let resp = client
+        .get(format!("{base}/api/v1/manifest"))
+        .query(&[("remote", remote)])
+        .bearer_auth(token)
+        .send()
+        .wrap_err("requesting team manifest")?;
+    let status = resp.status();
+    if status == reqwest::StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
+    if !status.is_success() {
+        return Err(eyre!("registry answered {status} for /api/v1/manifest"));
+    }
+    let bytes = resp.bytes().wrap_err("reading team manifest")?;
+    Ok(Some(bytes.to_vec()))
+}
+
+/// The Composer repository URLs in a raw manifest; empty if it can't be parsed
+/// (a shape bougie doesn't understand is treated as "no repositories").
+fn manifest_urls(raw: &[u8]) -> Vec<String> {
+    serde_json::from_slice::<Manifest>(raw)
+        .map(|m| m.repositories.into_iter().map(|r| r.url).collect())
+        .unwrap_or_default()
+}
+
+/// `$BOUGIE_HOME/state/projects/<hash>/manifest.json` — the cached raw manifest,
+/// beside the [`record_path`] team record.
+fn manifest_cache_path(project_root: &Path) -> Option<PathBuf> {
+    let paths = Paths::from_env().ok()?;
+    Some(paths.project_state_dir(project_root).join("manifest.json"))
+}
+
+fn write_cached_manifest(project_root: &Path, raw: &[u8]) {
+    let Some(path) = manifest_cache_path(project_root) else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(path, raw);
+}
+
+fn read_cached_manifest(project_root: &Path) -> Option<Vec<u8>> {
+    std::fs::read(manifest_cache_path(project_root)?).ok()
+}
+
+/// The project's `origin` remote URL from `.git/config`, if it's a git checkout
+/// with an origin. A dependency-free minimal parse (no `git` binary needed); the
+/// value is sent to the registry verbatim and normalized server-side.
+fn git_remote(project_root: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(project_root.join(".git").join("config")).ok()?;
+    parse_git_origin(&text)
+}
+
+/// Extract `[remote "origin"] url = …` from a `.git/config` body.
+fn parse_git_origin(config: &str) -> Option<String> {
+    let mut in_origin = false;
+    for line in config.lines() {
+        let t = line.trim();
+        if t.starts_with('[') {
+            in_origin = section_is_remote_origin(t);
+            continue;
+        }
+        if in_origin
+            && let Some((key, val)) = t.split_once('=')
+            && key.trim().eq_ignore_ascii_case("url")
+        {
+            let url = val.trim();
+            if !url.is_empty() {
+                return Some(url.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Whether a `.git/config` section header is `[remote "origin"]` (the section
+/// name is case-insensitive per git; the subsection `"origin"` is not).
+fn section_is_remote_origin(header: &str) -> bool {
+    let inner = header.trim_start_matches('[').trim_end_matches(']').trim();
+    inner
+        .get(..6)
+        .is_some_and(|s| s.eq_ignore_ascii_case("remote") && inner[6..].trim() == "\"origin\"")
 }
 
 #[cfg(test)]
@@ -193,5 +345,40 @@ mod tests {
             read_record_at(&path).unwrap().registry,
             "https://new.example"
         );
+    }
+
+    #[test]
+    fn parse_git_origin_reads_the_origin_url() {
+        let cfg = "[core]\n\trepositoryformatversion = 0\n\
+                   [remote \"origin\"]\n\turl = git@github.com:acme/shop.git\n\
+                   \tfetch = +refs/heads/*:refs/remotes/origin/*\n\
+                   [remote \"upstream\"]\n\turl = https://github.com/up/shop.git\n\
+                   [branch \"main\"]\n\tremote = origin\n";
+        assert_eq!(
+            parse_git_origin(cfg).as_deref(),
+            Some("git@github.com:acme/shop.git")
+        );
+    }
+
+    #[test]
+    fn parse_git_origin_none_without_an_origin() {
+        assert!(parse_git_origin("[remote \"upstream\"]\n\turl = https://x/y.git\n").is_none());
+        assert!(parse_git_origin("").is_none());
+    }
+
+    #[test]
+    fn manifest_urls_extracts_repos_and_ignores_unknown_fields() {
+        let raw = br#"{"schema_version":1,"org":"acme","remote":"github.com/acme/shop",
+            "repositories":[{"org":"acme","repo":"web","url":"https://r/acme/web"},
+            {"url":"https://r/acme/api"}],"services":{"php":"8.3"}}"#;
+        assert_eq!(
+            manifest_urls(raw),
+            vec![
+                "https://r/acme/web".to_string(),
+                "https://r/acme/api".to_string()
+            ]
+        );
+        assert!(manifest_urls(b"not json").is_empty());
+        assert!(manifest_urls(br#"{"repositories":[]}"#).is_empty());
     }
 }
