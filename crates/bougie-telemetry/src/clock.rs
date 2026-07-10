@@ -48,6 +48,18 @@ impl UtcHour {
     }
 }
 
+/// `2026-07-09 06:12:34 UTC` from unix seconds — full precision, for
+/// human-facing listings of *local* artifacts (the failure ring).
+/// Telemetry events themselves stay hour-truncated by construction;
+/// nothing on the wire uses this.
+pub fn format_epoch_utc(secs: u64) -> String {
+    let secs = i64::try_from(secs).unwrap_or(0);
+    let (year, month, day) = civil_from_days(secs.div_euclid(86_400));
+    let rem = secs.rem_euclid(86_400);
+    let (hour, minute, second) = (rem / 3_600, (rem % 3_600) / 60, rem % 60);
+    format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02} UTC")
+}
+
 /// Days since 1970-01-01 → (year, month, day). Hinnant's algorithm;
 /// exact for the entire i64-day range we can encounter.
 #[allow(

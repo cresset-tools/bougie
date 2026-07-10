@@ -172,9 +172,30 @@ fn report_error(err: &eyre::Report) {
             eprintln!("             {rest}");
         }
     }
-    // Capture the full context locally (single slot, never uploaded on
-    // its own) and point at the zero-effort reporting path. Local-only
-    // by design — see `bougie::failure`.
+    // One category-specific next step where the message itself doesn't
+    // already carry one (several BougieError variants embed their own
+    // hint block — those categories are absent here on purpose).
+    if let Some(hint) = category_hint(bougie_telemetry::outcome_for_error(err)) {
+        eprintln!("hint: {hint}");
+    }
+    // Capture the full context locally (a small ring, never uploaded
+    // on its own) and point at the zero-effort reporting path.
+    // Local-only by design — see `bougie::failure`.
     bougie::failure::record(err);
     eprintln!("hint: run `bougie diagnose` to assemble a shareable report");
+}
+
+/// The static next-step line for a telemetry error category, if that
+/// category has one worth printing.
+fn category_hint(category: &str) -> Option<&'static str> {
+    match category {
+        "network" => Some(
+            "check connectivity and proxy settings; `--offline` works where supported",
+        ),
+        "service" => Some(
+            "`bougie service status` shows service state; \
+             `bougie service logs <name>` has the failing service's log",
+        ),
+        _ => None,
+    }
 }

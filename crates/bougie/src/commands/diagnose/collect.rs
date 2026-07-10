@@ -33,6 +33,10 @@ pub struct DiagnoseReport {
     pub project: Option<ProjectInfo>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub failure: Option<LastFailure>,
+    /// Older entries from the local failure ring, newest first —
+    /// compact one-liners; the full chain ships only for `failure`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub earlier_failures: Vec<EarlierFailure>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rerun: Option<RerunCapture>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -43,6 +47,18 @@ pub struct DiagnoseReport {
     pub server: Option<ServerInfo>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub ports: Vec<PortInfo>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct EarlierFailure {
+    /// First occurrence, `2026-07-09 06:12:34 UTC`.
+    pub when: String,
+    pub category: String,
+    /// Consecutive occurrences the ring collapsed into this entry.
+    pub repeats: u64,
+    pub command: String,
+    /// Head of the error chain only.
+    pub error: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -117,6 +133,7 @@ pub struct PortInfo {
 pub fn collect(
     paths: &Paths,
     failure: Option<LastFailure>,
+    earlier: Vec<LastFailure>,
     rerun: Option<RerunCapture>,
     project_root: Option<&Path>,
     scrub: &Scrubber,
@@ -127,6 +144,16 @@ pub fn collect(
         f.project_dir = None; // the project section already carries it, scrubbed
         f
     });
+    let earlier_failures = earlier
+        .into_iter()
+        .map(|f| EarlierFailure {
+            when: crate::failure::format_epoch(f.ts_epoch),
+            category: f.category,
+            repeats: f.repeats,
+            command: scrub.scrub(&f.argv.join(" ")),
+            error: f.chain.first().map(|c| scrub.scrub(c)).unwrap_or_default(),
+        })
+        .collect();
     let rerun = rerun.map(|mut r| {
         r.argv = r.argv.iter().map(|a| scrub.scrub(a)).collect();
         r.stderr_tail = scrub.scrub(&r.stderr_tail);
@@ -159,6 +186,7 @@ pub fn collect(
         bougie_env_names: env_names,
         project,
         failure,
+        earlier_failures,
         rerun,
         daemon,
         services,

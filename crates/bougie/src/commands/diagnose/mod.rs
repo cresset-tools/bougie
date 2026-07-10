@@ -65,6 +65,7 @@ pub struct DiagnoseArgs {
     pub yes: bool,
     pub edit: bool,
     pub no_edit: bool,
+    pub last: bool,
     pub project: Option<PathBuf>,
     pub args: Vec<OsString>,
 }
@@ -75,17 +76,18 @@ pub fn run(format: OutputFormat, args: DiagnoseArgs) -> Result<ExitCode> {
         yes,
         edit,
         no_edit,
+        last,
         project,
         args,
     } = args;
     let paths = Paths::from_env()?;
 
-    let rerun = if args.is_empty() {
-        None
-    } else {
-        Some(rerun_capture(&args)?)
-    };
-    let failure = failure::load(paths.cache());
+    if last {
+        return print_recent(format, &paths);
+    }
+
+    let rerun = (!args.is_empty()).then(|| rerun_capture(&args)).transpose()?;
+    let (failure, recent) = newest_and_earlier(&paths);
     if failure.is_none() && rerun.is_none() {
         eprintln!(
             "nothing to report yet: run the failing command first, or reproduce one now with\n\
@@ -96,7 +98,8 @@ pub fn run(format: OutputFormat, args: DiagnoseArgs) -> Result<ExitCode> {
 
     let project_root = resolve_project_root(project.as_deref(), failure.as_ref());
     let scrubber = scrub::Scrubber::from_env(&paths, project_root.as_deref());
-    let report = collect::collect(&paths, failure, rerun, project_root.as_deref(), &scrubber);
+    let report =
+        collect::collect(&paths, failure, recent, rerun, project_root.as_deref(), &scrubber);
     let mut markdown = render::to_markdown(&report);
     cap_report(&mut markdown);
 
@@ -194,6 +197,64 @@ fn confirm_send(markdown: &str) -> Result<bool> {
 /// The project the report is about: `--project` wins, then the
 /// project around the cwd, then the one recorded with the last
 /// failure (schema-2 `project_dir`).
+/// The newest recorded failure (reported in full) split from the
+/// older ring entries (compact one-liners).
+fn newest_and_earlier(paths: &Paths) -> (Option<LastFailure>, Vec<LastFailure>) {
+    let mut recent = failure::load_recent(paths.cache());
+    let newest = if recent.is_empty() {
+        None
+    } else {
+        Some(recent.remove(0))
+    };
+    (newest, recent)
+}
+
+/// `--last`: print the local failure ring, newest first, and exit.
+/// Verbatim local data — no collection, no scrubbing, nothing leaves
+/// the machine.
+fn print_recent(format: OutputFormat, paths: &Paths) -> Result<ExitCode> {
+    let recent = failure::load_recent(paths.cache());
+    if recent.is_empty() {
+        eprintln!("no failures recorded yet");
+        return Ok(ExitCode::FAILURE);
+    }
+    emit(format, &RecentFailures(recent))?;
+    Ok(ExitCode::SUCCESS)
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(transparent)]
+struct RecentFailures(Vec<LastFailure>);
+
+impl bougie_output::output::Render for RecentFailures {
+    fn render_text(&self, w: &mut dyn io::Write) -> io::Result<()> {
+        for (i, f) in self.0.iter().enumerate() {
+            if i > 0 {
+                writeln!(w)?;
+            }
+            let mut when = failure::format_epoch(f.ts_epoch);
+            if f.repeats > 1 {
+                let until = f
+                    .last_ts_epoch
+                    .map(|t| failure::format_epoch(t))
+                    .filter(|t| *t != when)
+                    .map_or_else(String::new, |t| format!(" until {t}"));
+                when = format!("{when} ×{}{until}", f.repeats);
+            }
+            writeln!(w, "{when} — {} (exit {})", f.category, f.exit_code)?;
+            writeln!(w, "  command:   {}", f.argv.join(" "))?;
+            for (j, msg) in f.chain.iter().enumerate() {
+                if j == 0 {
+                    writeln!(w, "  error:     {msg}")?;
+                } else {
+                    writeln!(w, "  caused by: {msg}")?;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 fn resolve_project_root(flag: Option<&Path>, failure: Option<&LastFailure>) -> Option<PathBuf> {
     if let Some(p) = flag {
         return Some(std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf()));

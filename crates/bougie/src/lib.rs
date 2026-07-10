@@ -837,10 +837,10 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
         Command::ToolExec { wrapper, args } => commands::tool_exec::run(&wrapper, args),
         Command::Telemetry { command } => commands::telemetry::run(format, command),
         Command::TelemetryFlush => commands::telemetry_flush::run(),
-        Command::Diagnose { issue, yes, edit, no_edit, project, args } => {
+        Command::Diagnose { issue, yes, edit, no_edit, last, project, args } => {
             commands::diagnose::run(
                 format,
-                commands::diagnose::DiagnoseArgs { issue, yes, edit, no_edit, project, args },
+                commands::diagnose::DiagnoseArgs { issue, yes, edit, no_edit, last, project, args },
             )
         }
     }
