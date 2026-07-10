@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.48.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.47.0...bougie-v0.48.0) (2026-07-10)
+
+
+### Features
+
+* **composer:** install composer-plugin package files (hooks stay skipped) ([#491](https://github.com/cresset-tools/bougie/issues/491)) ([6b0f6b9](https://github.com/cresset-tools/bougie/commit/6b0f6b9f6b26ce681f1b0da7ffd40bea464895dc))
+* **diagnose:** failure ring with repeat-collapsing replaces the single slot ([#490](https://github.com/cresset-tools/bougie/issues/490)) ([a42e49f](https://github.com/cresset-tools/bougie/commit/a42e49fca509a4ec03f858237d9c2fdfb507e962))
+
+
+### Bug Fixes
+
+* **composer:** accept the PHP empty-array form in PSR namespace maps ([#489](https://github.com/cresset-tools/bougie/issues/489)) ([59d9269](https://github.com/cresset-tools/bougie/commit/59d926972e75afcae6adcbef65cbf38abaf24004))
+
 ## [0.47.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.46.1...bougie-v0.47.0) (2026-07-09)
 
 
