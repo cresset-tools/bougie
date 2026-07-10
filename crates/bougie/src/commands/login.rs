@@ -272,8 +272,9 @@ fn provision(
         crate::commands::team::write_record(&root, base);
     }
 
-    // Discover the repos this token can see.
-    let urls = match fetch_repo_urls(client, base, token) {
+    // Discover the repos this token can see — the git-remote-keyed team manifest
+    // when the project has an `origin` remote, else the login org's repos.
+    let urls = match crate::commands::team::discover_repo_urls(client, base, token, &root) {
         Ok(urls) => urls,
         Err(e) => {
             return skipped(&format!(
