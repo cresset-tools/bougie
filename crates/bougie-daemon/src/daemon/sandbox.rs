@@ -30,15 +30,21 @@ use sandbox_run::{ProtectHome, ProtectSystem, Sandbox, SandboxPolicy};
 /// binary, re-exec'd as `bougie-babysit`). It's granted read+exec so the
 /// child can run it even under `ProtectHome::Yes`, which would otherwise
 /// hide it when it lives under `$HOME`.
+/// `version` keys the read-write allowlist onto the instance's own
+/// version dir. Multi-version services (mysql 8.0 beside 8.4) must not
+/// share the catalog default's data/run dirs, or the non-default
+/// instance would be denied write access to its real datadir under
+/// enforced Landlock.
 pub fn build_policy(
     entry: &CatalogEntry,
+    version: &str,
     paths: &Paths,
     babysit_bin: &Path,
 ) -> Result<Option<SandboxPolicy>> {
     warn_once_if_landlock_unavailable();
     match entry.sandbox {
-        SandboxKind::Strict => build_strict(entry, paths, babysit_bin).map(Some),
-        SandboxKind::LightHome => build_light_home(entry, paths),
+        SandboxKind::Strict => build_strict(entry, version, paths, babysit_bin).map(Some),
+        SandboxKind::LightHome => build_light_home(entry, version, paths),
     }
 }
 
@@ -63,11 +69,16 @@ fn warn_once_if_landlock_unavailable() {
 #[cfg(not(target_os = "linux"))]
 fn warn_once_if_landlock_unavailable() {}
 
-fn build_strict(entry: &CatalogEntry, paths: &Paths, babysit_bin: &Path) -> Result<SandboxPolicy> {
-    let data = paths.service_data(entry.name);
-    let run = paths.service_run(entry.name);
-    let log = paths.service_log(entry.name);
-    let conf = paths.service_conf(entry.name);
+fn build_strict(
+    entry: &CatalogEntry,
+    version: &str,
+    paths: &Paths,
+    babysit_bin: &Path,
+) -> Result<SandboxPolicy> {
+    let data = paths.service_data(entry.name, version);
+    let run = paths.service_run(entry.name, version);
+    let log = paths.service_log(entry.name, version);
+    let conf = paths.service_conf(entry.name, version);
     for p in [&data, &run, &log, &conf] {
         std::fs::create_dir_all(p)
             .wrap_err_with(|| format!("creating {}", p.display()))?;
@@ -166,14 +177,18 @@ fn build_strict(entry: &CatalogEntry, paths: &Paths, babysit_bin: &Path) -> Resu
 /// Code that needs cross-platform deny semantics should switch to a
 /// cgroups + LSM-hook approach when we have it.
 #[cfg(not(target_os = "macos"))]
-fn build_light_home(entry: &CatalogEntry, paths: &Paths) -> Result<Option<SandboxPolicy>> {
+fn build_light_home(
+    entry: &CatalogEntry,
+    version: &str,
+    paths: &Paths,
+) -> Result<Option<SandboxPolicy>> {
     // Still create the per-service dirs so paths the supervisor
     // assumes (data/run/log/conf) are present.
     for p in [
-        paths.service_data(entry.name),
-        paths.service_run(entry.name),
-        paths.service_log(entry.name),
-        paths.service_conf(entry.name),
+        paths.service_data(entry.name, version),
+        paths.service_run(entry.name, version),
+        paths.service_log(entry.name, version),
+        paths.service_conf(entry.name, version),
     ] {
         std::fs::create_dir_all(&p)
             .wrap_err_with(|| format!("creating {}", p.display()))?;
@@ -182,12 +197,16 @@ fn build_light_home(entry: &CatalogEntry, paths: &Paths) -> Result<Option<Sandbo
 }
 
 #[cfg(target_os = "macos")]
-fn build_light_home(entry: &CatalogEntry, paths: &Paths) -> Result<Option<SandboxPolicy>> {
+fn build_light_home(
+    entry: &CatalogEntry,
+    version: &str,
+    paths: &Paths,
+) -> Result<Option<SandboxPolicy>> {
     for p in [
-        paths.service_data(entry.name),
-        paths.service_run(entry.name),
-        paths.service_log(entry.name),
-        paths.service_conf(entry.name),
+        paths.service_data(entry.name, version),
+        paths.service_run(entry.name, version),
+        paths.service_log(entry.name, version),
+        paths.service_conf(entry.name, version),
     ] {
         std::fs::create_dir_all(&p)
             .wrap_err_with(|| format!("creating {}", p.display()))?;
@@ -222,7 +241,7 @@ fn nofile_for(name: &str) -> u64 {
         // rabbitmq joins this list because Erlang's port driver
         // pre-allocates 65k port slots and chokes on EMFILE if the
         // soft limit is below that ceiling.
-        "opensearch" | "mariadb" | "rabbitmq" => 65_536,
+        "opensearch" | "mariadb" | "mysql" | "rabbitmq" => 65_536,
         _ => 4_096,
     }
 }
@@ -246,11 +265,11 @@ mod tests {
         let paths = Paths::new(tmp.path().into(), tmp.path().into());
         let entry = catalog::find("redis").unwrap();
         let babysit_bin = std::env::current_exe().unwrap();
-        let _policy = build_policy(entry, &paths, &babysit_bin).expect("policy build");
-        assert!(paths.service_data("redis").is_dir());
-        assert!(paths.service_run("redis").is_dir());
-        assert!(paths.service_log("redis").is_dir());
-        assert!(paths.service_conf("redis").is_dir());
+        let _policy = build_policy(entry, entry.version, &paths, &babysit_bin).expect("policy build");
+        assert!(paths.service_data("redis", crate::daemon::catalog::default_version("redis")).is_dir());
+        assert!(paths.service_run("redis", crate::daemon::catalog::default_version("redis")).is_dir());
+        assert!(paths.service_log("redis", crate::daemon::catalog::default_version("redis")).is_dir());
+        assert!(paths.service_conf("redis", crate::daemon::catalog::default_version("redis")).is_dir());
     }
 
     #[test]

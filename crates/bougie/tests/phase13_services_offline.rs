@@ -144,6 +144,56 @@ fn add_unknown_service_errors_with_known_list() {
 }
 
 #[test]
+fn add_mysql_is_rejected_when_mariadb_already_declared() {
+    // A project runs one relational DB. mariadb is declared; adding mysql
+    // must fail before touching composer.json.
+    let env = TestEnv::new();
+    let proj = empty_project();
+    env.bougie()
+        .args(["service", "add", "mariadb"])
+        .current_dir(proj.path())
+        .timeout(STEP_TIMEOUT)
+        .assert()
+        .success();
+    let out = env
+        .bougie()
+        .args(["service", "add", "mysql"])
+        .current_dir(proj.path())
+        .timeout(STEP_TIMEOUT)
+        .assert()
+        .failure()
+        .get_output()
+        .stderr
+        .clone();
+    let s = String::from_utf8(out).unwrap();
+    assert!(s.contains("mutually exclusive"), "{s}");
+    // composer.json still declares only mariadb — the write was refused.
+    let composer = fs::read_to_string(proj.path().join("composer.json")).unwrap();
+    assert!(composer.contains("mariadb"), "{composer}");
+    assert!(!composer.contains("mysql"), "mysql should not have been written: {composer}");
+}
+
+#[test]
+fn add_mariadb_and_mysql_together_is_rejected() {
+    // Both in one invocation → rejected, nothing written.
+    let env = TestEnv::new();
+    let proj = empty_project();
+    let out = env
+        .bougie()
+        .args(["service", "add", "mariadb", "mysql"])
+        .current_dir(proj.path())
+        .timeout(STEP_TIMEOUT)
+        .assert()
+        .failure()
+        .get_output()
+        .stderr
+        .clone();
+    assert!(String::from_utf8(out).unwrap().contains("mutually exclusive"));
+    let composer = fs::read_to_string(proj.path().join("composer.json")).unwrap();
+    assert!(!composer.contains("mariadb") && !composer.contains("mysql"), "{composer}");
+}
+
+#[test]
 fn add_runtime_dep_is_rejected() {
     let env = TestEnv::new();
     let proj = empty_project();

@@ -193,7 +193,7 @@ fn up_binds_smtp_and_ui_and_provisions_a_bare_tenant() {
 
     // A bare ledger row: the project is present, with no alloc/secrets
     // (shared sink — every project shares one instance).
-    let tenants = env.home_path().join("state/services/mailpit/tenants.json");
+    let tenants = env.home_path().join("state/services/mailpit/1.30.2/tenants.json");
     let ledger = fs::read_to_string(&tenants).expect("tenants.json should exist");
     let line = ledger.lines().next().expect("one tenant line");
     let v: serde_json::Value = serde_json::from_str(line).unwrap();
@@ -353,7 +353,7 @@ fn down_drops_tenant_and_stops_when_last_goes_away() {
     assert_eq!(mailpit["state"], "stopped");
 
     // Ledger emptied.
-    let tenants = env.home_path().join("state/services/mailpit/tenants.json");
+    let tenants = env.home_path().join("state/services/mailpit/1.30.2/tenants.json");
     let after = fs::read_to_string(&tenants).unwrap_or_default();
     assert!(
         after.lines().all(|l| l.trim().is_empty()),

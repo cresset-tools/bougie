@@ -33,6 +33,11 @@ pub struct StatusResult {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ServiceRow {
     pub name: String,
+    /// Resolved instance version — distinguishes two versions of one
+    /// service running at once. `default` for forward tolerance against an
+    /// older daemon that predates instance-keying.
+    #[serde(default)]
+    pub version: String,
     pub state: String,
 }
 
@@ -55,7 +60,12 @@ impl Render for StatusResult {
         } else {
             writeln!(w, "managed services:")?;
             for s in &self.services {
-                writeln!(w, "  {:20} {}", s.name, s.state)?;
+                let label = if s.version.is_empty() {
+                    s.name.clone()
+                } else {
+                    format!("{}@{}", s.name, s.version)
+                };
+                writeln!(w, "  {label:24} {}", s.state)?;
             }
         }
         Ok(())

@@ -30,17 +30,25 @@ use tokio::time::Instant;
 /// works.
 const RABBITMQCTL_READY_TIMEOUT: Duration = Duration::from_mins(1);
 
+/// rabbitmq's catalog default version — the `<version>` segment in its
+/// state paths. Phase 1a runs a single instance at the default version;
+/// once the request layer carries a resolved version this becomes the
+/// threaded instance version.
+fn svc_version() -> &'static str {
+    crate::daemon::catalog::default_version("rabbitmq")
+}
+
 /// rabbitmq pre-start hook. Creates the directories rabbitmq writes
 /// to under our RW allowlist. No bootstrap step — rabbitmq creates
 /// its own mnesia + log files on first start.
 pub async fn pre_start(paths: &Paths) -> Result<()> {
     for p in [
-        paths.service_data("rabbitmq"),
-        paths.service_data("rabbitmq").join("mnesia"),
-        paths.service_data("rabbitmq").join("home"),
-        paths.service_log("rabbitmq"),
-        paths.service_run("rabbitmq"),
-        paths.service_conf("rabbitmq"),
+        paths.service_data("rabbitmq", svc_version()),
+        paths.service_data("rabbitmq", svc_version()).join("mnesia"),
+        paths.service_data("rabbitmq", svc_version()).join("home"),
+        paths.service_log("rabbitmq", svc_version()),
+        paths.service_run("rabbitmq", svc_version()),
+        paths.service_conf("rabbitmq", svc_version()),
     ] {
         tokio::fs::create_dir_all(&p)
             .await
@@ -213,7 +221,7 @@ pub(crate) async fn health(paths: &Paths) -> Result<()> {
 fn ctl_binary(paths: &Paths) -> Result<PathBuf> {
     let entry = crate::daemon::catalog::find("rabbitmq")
         .ok_or_else(|| eyre!("BUG: rabbitmq missing from catalog"))?;
-    let basedir = store_layout::basedir(paths, entry)
+    let basedir = store_layout::basedir(paths, entry, &entry.version)
         .wrap_err("resolving rabbitmq basedir")?;
     let ctl = basedir.join("sbin/rabbitmqctl");
     if !ctl.is_file() {
@@ -249,7 +257,7 @@ async fn run_ctl(ctl: &Path, paths: &Paths, args: &[&str]) -> Result<()> {
 /// than a silent split-brain.
 fn build_ctl_env(cmd: &mut Command, paths: &Paths) {
     cmd.env_clear()
-        .env("HOME", paths.service_data("rabbitmq").join("home"))
+        .env("HOME", paths.service_data("rabbitmq", svc_version()).join("home"))
         .env("PATH", "/usr/bin:/bin")
         // Belt-and-suspenders against a dangling cwd: bougied anchors
         // its own cwd to the state root, but pin these out-of-band ctl
@@ -259,8 +267,11 @@ fn build_ctl_env(cmd: &mut Command, paths: &Paths) {
         // unlinked — exactly the failure mode that anchoring the server
         // via `render_exec_cwd` already guards against. The data dir is
         // created in `pre_start`, owned by us, and stable.
-        .current_dir(paths.service_data("rabbitmq"))
-        .envs(rabbitmq_env(paths));
+        .current_dir(paths.service_data("rabbitmq", svc_version()))
+        // rabbitmqctl reaches the node via RABBITMQ_NODENAME (epmd), not
+        // the AMQP port, so this value is immaterial to ctl — but keep it
+        // consistent with the running broker's effective port.
+        .envs(rabbitmq_env(paths, crate::daemon::endpoint::effective_primary(paths, "rabbitmq", svc_version(), 5672)));
 }
 
 /// Block until `rabbitmqctl status` returns 0. The TCP probe was
@@ -291,11 +302,11 @@ async fn wait_for_ctl_ready(ctl: &Path, paths: &Paths, timeout: Duration) -> Res
 /// and bougie's own out-of-band rabbitmqctl calls. Kept in one place
 /// so an off-by-one between the two would surface as "node not
 /// running" against ourselves rather than a silent split-brain.
-pub fn rabbitmq_env(paths: &Paths) -> Vec<(String, String)> {
-    let data = paths.service_data("rabbitmq");
-    let log = paths.service_log("rabbitmq");
-    let run = paths.service_run("rabbitmq");
-    let conf = paths.service_conf("rabbitmq");
+pub fn rabbitmq_env(paths: &Paths, node_port: u16) -> Vec<(String, String)> {
+    let data = paths.service_data("rabbitmq", svc_version());
+    let log = paths.service_log("rabbitmq", svc_version());
+    let run = paths.service_run("rabbitmq", svc_version());
+    let conf = paths.service_conf("rabbitmq", svc_version());
     vec![
         // Pin the node to a stable shortname. Default is
         // `rabbit@$(hostname)`, which couples the dev broker to the
@@ -307,7 +318,7 @@ pub fn rabbitmq_env(paths: &Paths) -> Vec<(String, String)> {
         // `RABBITMQ_USE_LONGNAME=true`).
         ("RABBITMQ_NODENAME".into(), "rabbit@localhost".into()),
         ("RABBITMQ_NODE_IP_ADDRESS".into(), "127.0.0.1".into()),
-        ("RABBITMQ_NODE_PORT".into(), "5672".into()),
+        ("RABBITMQ_NODE_PORT".into(), node_port.to_string()),
         // RabbitMQ's `rabbitmq-defaults` script reads $RABBITMQ_BASE
         // for everything that doesn't have a more specific knob.
         ("RABBITMQ_BASE".into(), data.display().to_string()),
@@ -370,7 +381,7 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let paths = Paths::new(tmp.path().into(), tmp.path().into());
         let env: std::collections::HashMap<_, _> =
-            rabbitmq_env(&paths).into_iter().collect();
+            rabbitmq_env(&paths, 5672).into_iter().collect();
         assert_eq!(env.get("RABBITMQ_NODENAME").map(std::string::String::as_str), Some("rabbit@localhost"));
         assert_eq!(env.get("RABBITMQ_NODE_IP_ADDRESS").map(std::string::String::as_str), Some("127.0.0.1"));
         assert_eq!(env.get("RABBITMQ_NODE_PORT").map(std::string::String::as_str), Some("5672"));

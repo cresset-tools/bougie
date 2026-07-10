@@ -35,7 +35,7 @@ const CONTROL_TIMEOUT: Duration = Duration::from_secs(5);
 /// the dir, but it does so via `build_strict` which is *not* called
 /// for the `LightHome` stance the server entry uses.)
 pub async fn pre_start(paths: &Paths) -> Result<()> {
-    let conf = paths.service_conf("server");
+    let conf = paths.service_conf("server", crate::daemon::catalog::default_version("server"));
     tokio::fs::create_dir_all(&conf)
         .await
         .wrap_err_with(|| format!("creating {}", conf.display()))?;
@@ -132,7 +132,7 @@ pub async fn deprovision(
 
 /// Resolve `<service_conf>/server.toml`.
 pub fn server_toml_path(paths: &Paths) -> PathBuf {
-    paths.service_conf("server").join("server.toml")
+    paths.service_conf("server", crate::daemon::catalog::default_version("server")).join("server.toml")
 }
 
 /// `bougie service add server` records the tenant name as

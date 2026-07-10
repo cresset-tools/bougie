@@ -82,7 +82,12 @@ pub fn run(_format: OutputFormat, args: DbSeedArgs) -> Result<ExitCode> {
 /// credentials` prints). `MariaDB` is socket-only; `user` and the database name
 /// are both the tenant name.
 fn mariadb_dsn(paths: &Paths, project_root: &Path) -> Result<String> {
-    let ledger = paths.service_tenants(MARIADB);
+    // Multi-instance: resolve which mariadb version this project runs by
+    // scanning the on-disk ledgers, then read that instance's tenant ledger.
+    let version = tenants::project_instance_version(paths, MARIADB, project_root).ok_or_else(|| {
+        eyre!("no mariadb tenant is provisioned for this project — run `bougie up mariadb` first")
+    })?;
+    let ledger = paths.service_tenants(MARIADB, &version);
     let rows = tenants::load_all_sync(&ledger).wrap_err("reading the mariadb tenant ledger")?;
     let canon = project_root
         .canonicalize()
@@ -103,7 +108,11 @@ fn mariadb_dsn(paths: &Paths, project_root: &Path) -> Result<String> {
         None => derive_password(paths, MARIADB, &tenant.project)
             .wrap_err("deriving the mariadb tenant password")?,
     };
-    let socket = paths.service_run(MARIADB).join("mariadb.sock");
+    // Connect via the project's STABLE connection socket (a symlink the
+    // daemon keeps pointed at the live instance) — the same path `bougie
+    // service credentials` and `bougie run` hand out, stable across DB
+    // version bumps.
+    let socket = paths.project_conn_socket(project_root, "mariadb.sock");
 
     // `localhost` is a placeholder the mysql driver ignores once `socket=` is
     // set. Percent-encode every interpolated value: the socket path is absolute

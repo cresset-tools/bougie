@@ -372,36 +372,78 @@ impl Paths {
     pub fn services_dir(&self) -> PathBuf {
         self.state().join("services")
     }
-    /// Per-service root: `$BOUGIE_HOME/state/services/<name>/`.
-    pub fn service_dir(&self, name: &str) -> PathBuf {
+    /// Per-service-name root: `$BOUGIE_HOME/state/services/<name>/`.
+    /// Groups every version of a service; each concrete instance lives in
+    /// a `<version>/` subdir below this (see [`service_dir`]). Callers
+    /// that need to enumerate a service's instances (offline ledger-scan,
+    /// migration) walk this dir.
+    ///
+    /// [`service_dir`]: Self::service_dir
+    pub fn service_name_dir(&self, name: &str) -> PathBuf {
         self.services_dir().join(name)
     }
-    /// Per-service durable data (mariadb datadir, redis dump, …).
-    pub fn service_data(&self, name: &str) -> PathBuf {
-        self.service_dir(name).join("data")
+    /// Per-instance root: `$BOUGIE_HOME/state/services/<name>/<version>/`.
+    /// The `version` segment is what lets two versions of one service
+    /// (or a service beside a foreign holder of its default port) keep
+    /// separate datadirs, sockets, ledgers, and endpoints.
+    ///
+    /// `server` is the one exception: a shared singleton that is never
+    /// versioned. Its state stays name-only (`.../services/server/`) so a
+    /// bougie upgrade doesn't strand every registered vhost under a stale
+    /// version dir. The `version` argument is ignored for it, and the
+    /// startup migration is likewise exempt. Special-casing here — rather
+    /// than at each call site — keeps every `server` path uniform no
+    /// matter which caller (offline reader, provisioner, supervisor) built
+    /// it.
+    pub fn service_dir(&self, name: &str, version: &str) -> PathBuf {
+        if name == "server" {
+            return self.service_name_dir(name);
+        }
+        self.service_name_dir(name).join(version)
     }
-    /// Per-service runtime dir (unix socket, pid file).
-    pub fn service_run(&self, name: &str) -> PathBuf {
-        self.service_dir(name).join("run")
+    /// Per-instance durable data (mariadb datadir, redis dump, …).
+    pub fn service_data(&self, name: &str, version: &str) -> PathBuf {
+        self.service_dir(name, version).join("data")
     }
-    /// Per-service log dir (rotated logs land here).
-    pub fn service_log(&self, name: &str) -> PathBuf {
-        self.service_dir(name).join("log")
+    /// Per-instance runtime dir (unix socket, pid file). Deliberately
+    /// **short and flat** — `state/run/<token>/`, *not* nested under the
+    /// deep versioned [`service_dir`]. The unix socket that lands here is
+    /// bound by its absolute path, and macOS caps `sun_path` at 103 bytes
+    /// (Linux 107); the versioned tree (`state/services/<name>/<version>/…`)
+    /// plus a temp-dir prefix overflows that limit, aborting the service
+    /// with "socket file path is too long". A short hashed run dir keeps
+    /// the socket comfortably under the cap on every platform. Nothing
+    /// durable lives here — the socket and pidfile are recreated on every
+    /// start — so the flat layout needs no migration.
+    ///
+    /// [`service_dir`]: Paths::service_dir
+    pub fn service_run(&self, name: &str, version: &str) -> PathBuf {
+        self.state().join("run").join(instance_run_token(name, version))
     }
-    /// A service's live log file (`<name>.log`; rotated siblings are
+    /// Per-instance log dir (rotated logs land here).
+    pub fn service_log(&self, name: &str, version: &str) -> PathBuf {
+        self.service_dir(name, version).join("log")
+    }
+    /// An instance's live log file (`<name>.log`; rotated siblings are
     /// `.1` … `.N`). Single source of truth for the join — the
     /// supervisor writes it, the daemon's `service.logs` streams it,
     /// and `bougie diagnose` tails it offline.
-    pub fn service_log_file(&self, name: &str) -> PathBuf {
-        self.service_log(name).join(format!("{name}.log"))
+    pub fn service_log_file(&self, name: &str, version: &str) -> PathBuf {
+        self.service_log(name, version).join(format!("{name}.log"))
     }
-    /// Per-service rendered config (read-only to the service via sandbox).
-    pub fn service_conf(&self, name: &str) -> PathBuf {
-        self.service_dir(name).join("conf")
+    /// Per-instance rendered config (read-only to the service via sandbox).
+    pub fn service_conf(&self, name: &str, version: &str) -> PathBuf {
+        self.service_dir(name, version).join("conf")
     }
-    /// Per-service tenant ledger (JSON Lines, see SERVICES.md §3.3).
-    pub fn service_tenants(&self, name: &str) -> PathBuf {
-        self.service_dir(name).join("tenants.json")
+    /// Per-instance tenant ledger (JSON Lines, see SERVICES.md §3.3).
+    pub fn service_tenants(&self, name: &str, version: &str) -> PathBuf {
+        self.service_dir(name, version).join("tenants.json")
+    }
+    /// Per-instance resolved endpoint (`endpoint.json`) — the actual
+    /// bound TCP ports, which may differ from the catalog default when
+    /// it was taken. Absent for socket-only services.
+    pub fn service_endpoint(&self, name: &str, version: &str) -> PathBuf {
+        self.service_dir(name, version).join("endpoint.json")
     }
 
     // ---------- durable per-project state (under `home`) ----------
@@ -421,6 +463,28 @@ impl Paths {
         self.state()
             .join("projects")
             .join(project_hash(project_root))
+    }
+
+    /// Directory holding a project's **stable connection-socket symlinks**
+    /// (`$BOUGIE_HOME/state/conn/<project-hash>/`). Namespaced under
+    /// `conn/` — distinct from the instance run dirs under `run/` — so a
+    /// project hash can never collide with an [`instance_run_token`].
+    pub fn project_conn_dir(&self, project_root: &Path) -> PathBuf {
+        self.state().join("conn").join(project_hash(project_root))
+    }
+
+    /// A project's **stable connection socket** for a unix-socket service
+    /// (`state/conn/<project-hash>/<sockname>`). This is a *symlink* the
+    /// daemon repoints at whichever instance the project currently runs,
+    /// so an app that bakes this path into its config — e.g. Magento
+    /// `app/etc/env.php`'s db `host` or redis `server` — keeps connecting
+    /// across service version bumps and the version-keyed instance-socket
+    /// relocation. Keyed by the *project* (not the version), because a
+    /// project runs exactly one instance of a given DB at a time. Kept
+    /// short + flat for macOS's 103-byte `sun_path` limit; the daemon
+    /// creates/repoints it on `bougie up` (see the up dispatcher).
+    pub fn project_conn_socket(&self, project_root: &Path, sockname: &str) -> PathBuf {
+        self.project_conn_dir(project_root).join(sockname)
     }
 
     /// `<project-state>/conf.d-local/` — machine-local extensions added
@@ -552,6 +616,28 @@ pub fn project_hash(project: &Path) -> String {
         .unwrap_or(b"");
     let mut hasher = Sha256::new();
     hasher.update(bytes);
+    let digest = hasher.finalize();
+    let mut out = String::with_capacity(12);
+    for b in digest.iter().take(6) {
+        write!(out, "{b:02x}").expect("writing to String");
+    }
+    out
+}
+
+/// Short, stable token naming an instance's runtime dir: first 12 hex of
+/// `sha256("<name>\0<version>")`. A flat hashed dir under `state/run/`
+/// keeps the bound unix-socket path short enough for macOS's 103-byte
+/// `sun_path` limit even under a deep temp-dir prefix — see
+/// [`Paths::service_run`]. The `\0` separator keeps `(name, version)`
+/// pairs unambiguous (`ab`+`c` can't collide with `a`+`bc`).
+#[must_use]
+pub fn instance_run_token(name: &str, version: &str) -> String {
+    use sha2::{Digest, Sha256};
+    use std::fmt::Write as _;
+    let mut hasher = Sha256::new();
+    hasher.update(name.as_bytes());
+    hasher.update([0u8]);
+    hasher.update(version.as_bytes());
     let digest = hasher.finalize();
     let mut out = String::with_capacity(12);
     for b in digest.iter().take(6) {
@@ -738,19 +824,89 @@ mod tests {
     }
 
     #[test]
+    fn project_conn_socket_is_stable_short_and_version_independent() {
+        let p = Paths::new(PathBuf::from("/h"), PathBuf::from("/c"));
+        let root = Path::new("/srv/app");
+        let hash = project_hash(root);
+        // Keyed by the project (not a version), namespaced under conn/.
+        assert_eq!(
+            p.project_conn_socket(root, "mariadb.sock"),
+            PathBuf::from(format!("/h/state/conn/{hash}/mariadb.sock"))
+        );
+        // NOT under an instance run dir → a project hash can't collide
+        // with an instance run token.
+        assert!(!p.project_conn_socket(root, "mariadb.sock").starts_with(p.state().join("run")));
+        // Same project + sockname is stable no matter the running version;
+        // a different project gets a different stable socket.
+        assert_eq!(
+            p.project_conn_socket(root, "redis.sock"),
+            p.project_conn_socket(root, "redis.sock")
+        );
+        assert_ne!(
+            p.project_conn_socket(root, "redis.sock"),
+            p.project_conn_socket(Path::new("/srv/other"), "redis.sock")
+        );
+    }
+
+    #[test]
     fn bougied_and_service_paths_compose() {
         let p = Paths::new(PathBuf::from("/h"), PathBuf::from("/c"));
         assert_eq!(p.bougied_sock(), Path::new("/h/state/bougied.sock"));
         assert_eq!(p.bougied_pid(), Path::new("/h/state/bougied.pid"));
         assert_eq!(p.services_dir(), Path::new("/h/state/services"));
-        assert_eq!(p.service_dir("redis"), Path::new("/h/state/services/redis"));
-        assert_eq!(p.service_data("redis"), Path::new("/h/state/services/redis/data"));
-        assert_eq!(p.service_run("redis"), Path::new("/h/state/services/redis/run"));
-        assert_eq!(p.service_log("redis"), Path::new("/h/state/services/redis/log"));
-        assert_eq!(p.service_conf("redis"), Path::new("/h/state/services/redis/conf"));
+        assert_eq!(p.service_name_dir("redis"), Path::new("/h/state/services/redis"));
+        assert_eq!(p.service_dir("redis", "8.6.3"), Path::new("/h/state/services/redis/8.6.3"));
         assert_eq!(
-            p.service_tenants("redis"),
-            Path::new("/h/state/services/redis/tenants.json")
+            p.service_data("redis", "8.6.3"),
+            Path::new("/h/state/services/redis/8.6.3/data")
+        );
+        // The run dir is a short, flat hashed path (macOS `sun_path`
+        // headroom), *not* under the deep versioned service dir.
+        assert_eq!(
+            p.service_run("redis", "8.6.3"),
+            p.state().join("run").join(instance_run_token("redis", "8.6.3"))
+        );
+        assert!(!p.service_run("redis", "8.6.3").starts_with(p.service_dir("redis", "8.6.3")));
+        // Distinct instances get distinct run dirs; same instance is stable.
+        assert_ne!(p.service_run("redis", "8.6.3"), p.service_run("redis", "8.0.0"));
+        assert_ne!(p.service_run("redis", "8.6.3"), p.service_run("mariadb", "8.6.3"));
+        assert_eq!(p.service_run("redis", "8.6.3"), p.service_run("redis", "8.6.3"));
+        assert_eq!(
+            p.service_log("redis", "8.6.3"),
+            Path::new("/h/state/services/redis/8.6.3/log")
+        );
+        assert_eq!(
+            p.service_conf("redis", "8.6.3"),
+            Path::new("/h/state/services/redis/8.6.3/conf")
+        );
+        assert_eq!(
+            p.service_tenants("redis", "8.6.3"),
+            Path::new("/h/state/services/redis/8.6.3/tenants.json")
+        );
+        assert_eq!(
+            p.service_endpoint("redis", "8.6.3"),
+            Path::new("/h/state/services/redis/8.6.3/endpoint.json")
+        );
+    }
+
+    #[test]
+    fn server_state_is_name_only_never_versioned() {
+        let p = Paths::new(PathBuf::from("/h"), PathBuf::from("/c"));
+        // The version argument is ignored for the shared singleton server —
+        // its state must survive a bougie upgrade in place.
+        assert_eq!(p.service_dir("server", "0.45.0"), Path::new("/h/state/services/server"));
+        assert_eq!(p.service_dir("server", "0.99.0"), Path::new("/h/state/services/server"));
+        assert_eq!(
+            p.service_conf("server", "0.45.0"),
+            Path::new("/h/state/services/server/conf")
+        );
+        assert_eq!(
+            p.service_tenants("server", "0.45.0"),
+            Path::new("/h/state/services/server/tenants.json")
+        );
+        assert_eq!(
+            p.service_log_file("server", "0.45.0"),
+            Path::new("/h/state/services/server/log/server.log")
         );
     }
 
