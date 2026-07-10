@@ -646,13 +646,43 @@ fn install_resolves_and_writes_lock_when_missing() {
 }
 
 #[test]
-fn install_warns_and_skips_composer_plugin() {
-    // End-to-end check that the preflight warning reaches the CLI as
-    // a `warning:` stderr line and the install still succeeds (the
-    // plugin package itself is silently skipped — its install-time
-    // hook is the PHP we won't run).
+fn install_extracts_composer_plugin_files_and_warns_about_hooks() {
+    // End-to-end check that a composer-plugin package's FILES install
+    // like any other package's (plugins can double as runtime libraries
+    // — php-http/discovery's classes are called by opensearch-php at
+    // runtime) while the hooks-not-run warning reaches the CLI as a
+    // `warning:` stderr line.
     let env = TestEnv::new();
     let proj = TempDir::new().unwrap();
+
+    let top = "acme-plugin-aaaaaaaaaa";
+    let mut body: Vec<u8> = Vec::new();
+    {
+        let cursor = std::io::Cursor::new(&mut body);
+        let mut zw = zip::ZipWriter::new(cursor);
+        let opts = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        zw.start_file(format!("{top}/composer.json"), opts).unwrap();
+        zw.write_all(br#"{"name":"acme/plugin","type":"composer-plugin"}"#)
+            .unwrap();
+        zw.start_file(format!("{top}/src/Discovery.php"), opts).unwrap();
+        zw.write_all(b"<?php // runtime half of a dual-purpose plugin\n")
+            .unwrap();
+        zw.finish().unwrap();
+    }
+    let zip_sha1 = sha1_hex(&body);
+
+    let rt = rt();
+    let (uri, _server) = rt.block_on(async {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(wm_path("/dists/acme-plugin.zip"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(body))
+            .mount(&server)
+            .await;
+        (server.uri(), server)
+    });
+
     let composer_json = r#"{"name":"test/plug","require":{}}"#;
     let hash =
         bougie_composer::lockfile::content_hash(composer_json.as_bytes()).unwrap();
@@ -661,13 +691,13 @@ fn install_warns_and_skips_composer_plugin() {
             "content-hash": "{hash}",
             "packages": [
                 {{
-                    "name": "evil/plugin",
+                    "name": "acme/plugin",
                     "version": "1.0.0",
                     "type": "composer-plugin",
                     "dist": {{
                         "type": "zip",
-                        "url": "https://example/p.zip",
-                        "shasum": "1111111111111111111111111111111111111111"
+                        "url": "{uri}/dists/acme-plugin.zip",
+                        "shasum": "{zip_sha1}"
                     }}
                 }}
             ],
@@ -685,13 +715,12 @@ fn install_warns_and_skips_composer_plugin() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(output.status.success(), "exit status: {:?}\nstderr: {stderr}", output.status);
     assert!(stderr.contains("warning:"), "{stderr}");
-    assert!(stderr.contains("evil/plugin"), "{stderr}");
-    // The plugin zip URL points at an unreachable example.com host;
-    // the test would have failed (network error / 404) if extraction
-    // were attempted, so a clean exit proves the skip works.
+    assert!(stderr.contains("acme/plugin"), "{stderr}");
+    assert!(stderr.contains("install-time hooks"), "{stderr}");
+    // The runtime half of the package must be on disk.
     assert!(
-        !proj.path().join("vendor/evil/plugin").exists(),
-        "plugin must not be extracted",
+        proj.path().join("vendor/acme/plugin/src/Discovery.php").is_file(),
+        "plugin package files must be extracted into vendor/",
     );
 }
 

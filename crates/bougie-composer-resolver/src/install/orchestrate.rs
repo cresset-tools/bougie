@@ -81,10 +81,13 @@ pub struct InstallSummary {
     /// vendor directory already existed — skipped entirely (no download,
     /// no extraction).
     pub packages_up_to_date: u32,
-    /// Composer-plugin packages we skipped over (their zip was not
-    /// extracted because bougie won't run plugin install-time PHP and
-    /// the extracted tree would be inert).
-    pub packages_skipped_plugin: u32,
+    /// Composer-plugin packages whose install-time hooks were not run.
+    /// Their files install like any other package's — several plugins
+    /// double as runtime libraries (`php-http/discovery` is the
+    /// canonical case: its install hook is optional, but opensearch-php
+    /// calls its `Http\Discovery\*` classes at runtime) — bougie just
+    /// never executes their hook PHP.
+    pub plugin_hooks_skipped: u32,
     /// Packages that were in the previous `installed.json` but are no
     /// longer in the lock file (or excluded by `--no-dev`) and had
     /// their vendor directory removed.
@@ -195,18 +198,21 @@ pub fn install_from_lock_with_patches(
     //     relevant, but a stray path-dist entry in a project that
     //     the user is comfortable with shouldn't block install — the
     //     autoloader treats them by reading the lock anyway.
-    //   - composer-plugin packages: preflight warned about them.
-    //     We don't extract their zip because bougie won't run the
-    //     plugin's install-time hook and the extracted tree would be
-    //     inert (autoload entries pointing at code nothing loads).
     //   - metapackages: no `dist` and no code by definition; they
     //     exist purely as require-graph nodes.
+    //
+    // Composer-plugin packages install like any other (preflight warns
+    // that their install-time hooks won't run): plugins are ordinary
+    // packages whose code other packages may load at runtime —
+    // `php-http/discovery` ships `Http\Discovery\*` classes that
+    // opensearch-php calls — so skipping their files broke consumers
+    // and left the autoloader with entries pointing nowhere.
     let candidates: Vec<&LockPackage> = if opts.no_dev {
         lock.packages.iter().collect()
     } else {
         lock.all_packages().collect()
     };
-    let packages_skipped_plugin = u32::try_from(
+    let plugin_hooks_skipped = u32::try_from(
         candidates.iter().filter(|p| p.is_composer_plugin()).count(),
     )
     .unwrap_or(u32::MAX);
@@ -243,7 +249,7 @@ pub fn install_from_lock_with_patches(
     let installable: Vec<&LockPackage> = candidates
         .iter()
         .copied()
-        .filter(|p| !p.is_path_dist() && !p.is_composer_plugin() && !p.is_metapackage())
+        .filter(|p| !p.is_path_dist() && !p.is_metapackage())
         .collect();
 
     // Path packages are materialized separately (symlink-or-copy), not
@@ -569,7 +575,7 @@ pub fn install_from_lock_with_patches(
         packages_installed,
         packages_already_present,
         packages_up_to_date,
-        packages_skipped_plugin,
+        plugin_hooks_skipped,
         packages_removed,
         bins_installed: bin_summary.bins_installed,
         files_deployed: deploy_summary.files_deployed,
@@ -1095,12 +1101,12 @@ fn content_hash_warning(composer_json_bytes: &[u8], lock: &Lock) -> Result<Optio
 /// preflight having rejected these and unwraps accordingly.
 ///
 /// Warnings are things bougie deliberately doesn't execute but can
-/// install around: Composer plugins (the package zip is skipped — the
-/// extracted tree would be inert without the install-time hook) and a
-/// non-empty `scripts` section in `composer.json` when script execution
-/// isn't opted in (the package set installs fine; the user's post-install
-/// hooks just don't run). When `scripts_on`, the hooks run the scripts, so
-/// no warning is emitted.
+/// install around: Composer plugins (their files install like any other
+/// package's — several double as runtime libraries — but their
+/// install-time hooks never run) and a non-empty `scripts` section in
+/// `composer.json` when script execution isn't opted in (the package set
+/// installs fine; the user's post-install hooks just don't run). When
+/// `scripts_on`, the hooks run the scripts, so no warning is emitted.
 ///
 /// Every hard reason is aggregated into a single error so the user
 /// sees every blocker in one pass rather than fix-one-hit-next.
@@ -1154,12 +1160,14 @@ fn preflight(
             continue;
         }
         if p.is_composer_plugin() {
-            // Plugin install-time hooks are arbitrary PHP we won't
-            // run. Skip the package — `install_from_lock` filters it
-            // out of `install_set` for the same reason. Names are
-            // aggregated into one warning after the loop.
+            // Plugin install-time hooks are arbitrary PHP we won't run,
+            // but the package's FILES install like any other (plugins
+            // can double as runtime libraries — php-http/discovery's
+            // classes are called by opensearch-php at runtime). Collect
+            // the name for one aggregated hooks-not-run warning after
+            // the loop, then fall through to the dist checks below:
+            // since we extract it, its dist must be installable.
             plugin_packages.push(p.name.clone());
-            continue;
         }
         let Some(dist) = &p.dist else {
             reasons.push(format!(
@@ -1193,11 +1201,12 @@ fn preflight(
         let noun = if plugin_packages.len() == 1 { "package" } else { "packages" };
         warnings.push(format!(
             "{noun} {names} {verb} Composer plugins (type `composer-plugin`); \
-             bougie does not run plugin install-time hooks and skips \
-             {pronoun}. Run `bougie run -- composer install` if the \
-             plugin behavior is required.",
+             {pronoun} files install like any other package's, but bougie \
+             does not run plugin install-time hooks. Run \
+             `bougie run -- composer install` if the hook behavior is \
+             required.",
             verb = if plugin_packages.len() == 1 { "is a" } else { "are" },
-            pronoun = if plugin_packages.len() == 1 { "the package itself" } else { "them" },
+            pronoun = if plugin_packages.len() == 1 { "its" } else { "their" },
         ));
     }
 
