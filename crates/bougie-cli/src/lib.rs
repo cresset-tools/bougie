@@ -502,7 +502,7 @@ pub enum Command {
     Projects(ProjectsCommand),
 
     /// Manage the project's dev database (seed from a snapshot)
-    #[command(subcommand, display_order = 33)]
+    #[command(subcommand, display_order = 33, hide = true)]
     Db(DbCommand),
 
     /// Bring the whole project up
@@ -536,8 +536,8 @@ pub enum Command {
         purge: bool,
     },
 
-    /// Authenticate against a sconce Composer registry
-    #[command(display_order = 6)]
+    /// Authenticate against a Composer registry
+    #[command(display_order = 6, hide = true)]
     Login {
         /// Base URL of the registry, e.g. `https://packages.acme.com`
         #[arg(value_name = "URL")]
@@ -741,9 +741,8 @@ pub enum ProjectsCommand {
 #[derive(Subcommand, Debug)]
 pub enum DbCommand {
     /// Load a `.jibsdump` snapshot into the project's mariadb tenant,
-    /// giving a local database shaped like production. The snapshot is
-    /// produced by jibs (anonymized server-side); `--from` takes a local
-    /// path or an http(s) URL (e.g. a presigned snapshot).
+    /// giving a local database shaped like production. `--from` takes a
+    /// local path or an http(s) URL (e.g. a presigned snapshot).
     Seed(DbSeedArgs),
 }
 
@@ -753,7 +752,6 @@ pub struct DbSeedArgs {
     #[arg(long, value_name = "PATH_OR_URL")]
     pub from: String,
     /// Discard leftover state from a previous interrupted load first
-    /// (forwarded to `jibs load --clean`)
     #[arg(long)]
     pub clean: bool,
 }
