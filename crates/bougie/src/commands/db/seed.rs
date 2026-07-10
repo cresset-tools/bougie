@@ -50,6 +50,21 @@ pub fn run(_format: OutputFormat, args: DbSeedArgs) -> Result<ExitCode> {
     let paths = Paths::from_env()?;
     let project_root = locate_project_root()?;
 
+    // `--from` wins; otherwise load whatever `bougie db pull` last fetched for
+    // this project. Resolve it up front so a "nothing to seed" error beats the
+    // (potentially slow) tenant resolution + jibs fetch below.
+    let from = match args.from {
+        Some(from) => from,
+        None => super::pull::pulled_snapshot_path(&paths, &project_root)
+            .map(|p| p.to_string_lossy().into_owned())
+            .ok_or_else(|| {
+                eyre!(
+                    "nothing to seed: pass `--from <path-or-url>`, or run `bougie db pull \
+                     --repo <org/repo>` first"
+                )
+            })?,
+    };
+
     let dsn = mariadb_dsn(&paths, &project_root)?;
     let jibs = ensure_jibs(&paths)?;
 
@@ -57,14 +72,14 @@ pub fn run(_format: OutputFormat, args: DbSeedArgs) -> Result<ExitCode> {
     // per-table progress and any dropped-row warnings pass straight through.
     let mut cmd = Command::new(&jibs);
     cmd.arg("load")
-        .arg(&args.from)
+        .arg(&from)
         .arg("--local-mysql")
         .arg(&dsn);
     if args.clean {
         cmd.arg("--clean");
     }
 
-    println!("bougie db seed: loading {} into the mariadb tenant", args.from);
+    println!("bougie db seed: loading {from} into the mariadb tenant");
     let status = cmd
         .status()
         .wrap_err_with(|| format!("failed to execute jibs at {}", jibs.display()))?;
