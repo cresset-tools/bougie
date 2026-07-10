@@ -32,7 +32,11 @@ pub struct InstallResult {
     pub packages_installed: u32,
     pub packages_already_present: u32,
     pub packages_up_to_date: u32,
-    pub packages_skipped_plugin: u32,
+    /// Composer-plugin packages whose files were installed but whose
+    /// install-time hooks were not run. (schema_version 3: renamed from
+    /// `packages_skipped_plugin`, whose semantics — package skipped
+    /// entirely — no longer exist.)
+    pub plugin_hooks_skipped: u32,
     pub packages_removed: u32,
     pub bins_installed: u32,
     /// Files copied into the project root by the native Magento deploy
@@ -45,12 +49,12 @@ pub struct InstallResult {
 impl From<InstallSummary> for InstallResult {
     fn from(s: InstallSummary) -> Self {
         Self {
-            schema_version: 2,
+            schema_version: 3,
             project_root: s.project_root,
             packages_installed: s.packages_installed,
             packages_already_present: s.packages_already_present,
             packages_up_to_date: s.packages_up_to_date,
-            packages_skipped_plugin: s.packages_skipped_plugin,
+            plugin_hooks_skipped: s.plugin_hooks_skipped,
             packages_removed: s.packages_removed,
             bins_installed: s.bins_installed,
             files_deployed: s.files_deployed,
@@ -95,8 +99,8 @@ impl Render for InstallResult {
         } else {
             String::new()
         };
-        let skipped = if self.packages_skipped_plugin > 0 {
-            format!(", {} plugin(s) skipped", self.packages_skipped_plugin)
+        let skipped = if self.plugin_hooks_skipped > 0 {
+            format!(", {} plugin hook(s) skipped", self.plugin_hooks_skipped)
         } else {
             String::new()
         };

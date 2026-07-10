@@ -87,14 +87,58 @@ fn missing_composer_json_errors_with_helpful_message() {
 }
 
 #[test]
-fn composer_plugin_package_warns_and_is_skipped() {
-    // The plugin itself isn't extracted (bougie won't run its install
-    // hook). Install still completes and surfaces a warning naming the
-    // plugin, with the skip reflected in `packages_skipped_plugin`.
+fn composer_plugin_package_files_install_but_hooks_are_skipped() {
+    // A composer-plugin package installs like any other — plugins can
+    // double as runtime libraries (php-http/discovery's classes are
+    // called by opensearch-php at runtime), so skipping the files broke
+    // consumers. Only the plugin's install-time hooks never run, which
+    // the install surfaces as a warning + `plugin_hooks_skipped`.
+    use sha1::Digest as _;
+    use std::io::Write as _;
+    use wiremock::matchers::{method, path as wm_path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
     let tmp = TempDir::new().unwrap();
     let paths = paths_in(tmp.path());
     let proj = tmp.path().join("p");
     std::fs::create_dir_all(&proj).unwrap();
+
+    // A zip whose top-level dir carries a src/ file — the "runtime
+    // library half" of a dual-purpose plugin.
+    let mut zip_body: Vec<u8> = Vec::new();
+    {
+        let cursor = std::io::Cursor::new(&mut zip_body);
+        let mut zw = zip::ZipWriter::new(cursor);
+        let opts = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        zw.start_file("acme-plugin-abc/composer.json", opts).unwrap();
+        zw.write_all(br#"{"name":"acme/plugin","type":"composer-plugin"}"#)
+            .unwrap();
+        zw.start_file("acme-plugin-abc/src/Discovery.php", opts).unwrap();
+        zw.write_all(b"<?php class Discovery {}").unwrap();
+        zw.finish().unwrap();
+    }
+    let digest = sha1::Sha1::digest(&zip_body);
+    let mut zip_sha1 = String::with_capacity(40);
+    for b in digest {
+        use std::fmt::Write as _;
+        let _ = write!(zip_sha1, "{b:02x}");
+    }
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let (uri, _server) = rt.block_on(async {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(wm_path("/dists/acme-plugin.zip"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(zip_body))
+            .mount(&server)
+            .await;
+        (server.uri(), server)
+    });
+
     let hash = hash_for(MINIMAL_COMPOSER_JSON);
     let lock = format!(
         r#"{{
@@ -106,8 +150,8 @@ fn composer_plugin_package_warns_and_is_skipped() {
                     "type": "composer-plugin",
                     "dist": {{
                         "type": "zip",
-                        "url": "https://example/p.zip",
-                        "shasum": "1111111111111111111111111111111111111111"
+                        "url": "{uri}/dists/acme-plugin.zip",
+                        "shasum": "{zip_sha1}"
                     }}
                 }}
             ],
@@ -117,20 +161,17 @@ fn composer_plugin_package_warns_and_is_skipped() {
     write_project(&proj, MINIMAL_COMPOSER_JSON, &lock);
 
     let summary = install_from_lock(&paths, &proj, InstallOptions::default(), None)
-        .expect("install must succeed; the plugin is skipped, not rejected");
-    assert_eq!(summary.packages_installed, 0);
-    assert_eq!(summary.packages_skipped_plugin, 1);
+        .expect("install must succeed; only the plugin's hooks are skipped");
+    assert_eq!(summary.packages_installed, 1);
+    assert_eq!(summary.plugin_hooks_skipped, 1);
     assert_eq!(summary.warnings.len(), 1, "{:?}", summary.warnings);
     let warning = &summary.warnings[0];
     assert!(warning.contains("acme/plugin"), "{warning}");
-    assert!(warning.contains("Composer plugin"), "{warning}");
-    // The plugin's zip URL must not have been hit (the test would have
-    // failed long before this assertion if it had — there is no mock
-    // server in this test). Belt-and-suspenders: ensure no vendor dir
-    // was created for it.
+    assert!(warning.contains("install-time hooks"), "{warning}");
+    // The runtime half of the package must be on disk.
     assert!(
-        !proj.join("vendor/acme/plugin").exists(),
-        "plugin must not be extracted",
+        proj.join("vendor/acme/plugin/src/Discovery.php").is_file(),
+        "plugin package files must be extracted into vendor/",
     );
 }
 
@@ -331,7 +372,7 @@ fn no_dev_hides_dev_only_packages_from_preflight() {
     .expect("preflight should pass with --no-dev");
     assert_eq!(summary.packages_installed, 0);
     assert_eq!(summary.packages_already_present, 0);
-    assert_eq!(summary.packages_skipped_plugin, 0);
+    assert_eq!(summary.plugin_hooks_skipped, 0);
     assert!(summary.warnings.is_empty(), "{:?}", summary.warnings);
     assert!(summary.no_dev);
 }
