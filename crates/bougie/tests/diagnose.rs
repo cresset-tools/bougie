@@ -56,13 +56,23 @@ impl Env {
             "failure output points at diagnose: {stderr}"
         );
         assert!(
-            self.cache.path().join("telemetry/last-failure.json").is_file(),
-            "last failure recorded"
+            !self.ring_entries().is_empty(),
+            "failure recorded into the ring"
         );
     }
 
+    /// Ring entry files under `telemetry/failures/`, oldest → newest.
+    fn ring_entries(&self) -> Vec<PathBuf> {
+        let dir = self.cache.path().join("telemetry/failures");
+        let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
+            .map(|rd| rd.flatten().map(|e| e.path()).collect())
+            .unwrap_or_default();
+        files.sort();
+        files
+    }
+
     /// A project dir declaring rabbitmq, with a recorded failure from
-    /// inside it (so `project_dir` lands in last-failure.json).
+    /// inside it (so `project_dir` lands in the ring entry).
     fn project_with_failure(&self) -> PathBuf {
         let proj = self.home.path().join("proj");
         std::fs::create_dir_all(&proj).unwrap();
@@ -259,10 +269,10 @@ fn report_carries_service_log_tail_and_ports_offline() {
 fn last_failure_records_project_dir() {
     let env = Env::new();
     let proj = env.project_with_failure();
-    let raw =
-        std::fs::read_to_string(env.cache.path().join("telemetry/last-failure.json")).unwrap();
+    let newest = env.ring_entries().pop().expect("a ring entry was written");
+    let raw = std::fs::read_to_string(newest).unwrap();
     let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
-    assert_eq!(v["schema"], 2);
+    assert_eq!(v["schema"], 3);
     // The child records its cwd as the OS reports it — canonicalized.
     // On macOS the tempdir path reaches the child via the /private
     // symlink prefix, so compare canonical forms.

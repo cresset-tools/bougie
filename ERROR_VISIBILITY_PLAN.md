@@ -4,21 +4,20 @@ Working plan for making bougie's failures legible — to the maintainer
 reading the telemetry dashboard, to the user reading stderr, and to
 `bougie diagnose` assembling a report after the fact.
 
-**Status: Phases 0–2 done (2026-07-09).**
-Phase 0: collector `failure` rollup dim + dashboard panel on infra
-main (cae770c, pushed, not yet deployed). Phase 1: chain-walking
-classifier + boundary conversions. Phase 2 (first slice): `NoProject`
-(exit 30) / `Config` (31) / `Service` (70) variants, wired at the
-locate-project helpers, the config parse boundaries, and the
-daemon-client error frames; all three verified end-to-end against the
-real binary. `subprocess` deferred (no data yet); `php-selection`
-folded. **Rollout gate:** the live collector rejects the three new
-labels until its bougie-telemetry dep bumps past the next release —
-either pre-widen the collector with a temporary extra-allowlist
-(infra) before the release, or accept the small rejection window.
-Remaining: Phase 3 (usage lane), Phase 4 (failure ring + hints),
-Phase 5 (docs/measure), plus data-driven iteration on `new`/`composer`
-verb failures once the new categories start reporting.
+**Status: Phases 0–2 and 4 done; Phase 3 (usage lane) remaining.**
+Phases 0–2 shipped in bougie-v0.47.0 (released off-branch, only
+#485); collector deployed with the failure panel + 0.47 vocab — the
+rollout gate is closed. Phase 4 (2026-07-10): the single
+`last-failure.json` slot became a ring under `telemetry/failures/`
+with consecutive identical failures collapsing into a repeat counter
+(motivated by a real 1,555-event `watch`-loop burst that overwrote
+its own evidence), `bougie diagnose --last`, an "earlier failures"
+report section, and category-keyed stderr hints (network, service).
+Remaining: Phase 3, Phase 5 (measure `other` share dropping), plus
+data-driven iteration on `new`/`composer` verb failures once the new
+categories start reporting; collector-side, consider an
+install-weighted failure view so one runaway machine can't dominate
+the panel.
 
 Motivating data (2026-07-09): the collected command events show
 **17 `other` outcomes against 71 `ok`** — roughly one invocation in

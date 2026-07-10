@@ -203,7 +203,12 @@ are the one mailing it. `--issue` skips the upload entirely and
 writes `./bougie-diagnose.md` for a GitHub issue instead. Diagnostic
 reports are retained for 180 days and deleted on request by report
 id. The failure context it reads
-(`<cache>/telemetry/last-failure.json`) is a local file of the same
-class as a log, written on any command error and overwritten by the
-next one; since schema 2 it also records the project root so a later
-`diagnose` finds the right services.
+(`<cache>/telemetry/failures/`) is a small local ring of files of the
+same class as a log, written on any command error: the ten most
+recent distinct failures are kept, and a consecutive repeat of the
+same failure (a retry loop) collapses into the newest entry's repeat
+counter instead of displacing older evidence. `bougie diagnose
+--last` prints the ring locally without collecting or sending
+anything. Since schema 2 entries also record the project root so a
+later `diagnose` finds the right services; the pre-ring
+`last-failure.json` single slot is still read as a fallback.

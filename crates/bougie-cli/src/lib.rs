@@ -473,6 +473,10 @@ pub enum Command {
         /// Skip the $EDITOR pass; print the report and confirm instead
         #[arg(long)]
         no_edit: bool,
+        /// Print the locally recorded recent failures and exit —
+        /// nothing is collected, rendered, or sent
+        #[arg(long)]
+        last: bool,
         /// Project whose services to report on (default: the project
         /// around the current directory, or the one recorded with the
         /// last failure)

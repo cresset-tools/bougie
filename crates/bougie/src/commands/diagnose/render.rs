@@ -86,12 +86,35 @@ fn write_markdown(md: &mut String, r: &DiagnoseReport) -> std::fmt::Result {
         writeln!(md)?;
         writeln!(md, "command:   {}", f.argv.join(" "))?;
         writeln!(md, "category:  {} (exit {})", f.category, f.exit_code)?;
+        if f.repeats > 1 {
+            let first = crate::failure::format_epoch(f.ts_epoch);
+            let last = crate::failure::format_epoch(f.last_ts_epoch.unwrap_or(f.ts_epoch));
+            if first == last {
+                writeln!(md, "repeated:  ×{} (at {first})", f.repeats)?;
+            } else {
+                writeln!(md, "repeated:  ×{} (first {first}, last {last})", f.repeats)?;
+            }
+        }
         for (i, msg) in f.chain.iter().enumerate() {
             if i == 0 {
                 writeln!(md, "error:     {msg}")?;
             } else {
                 writeln!(md, "caused by: {msg}")?;
             }
+        }
+    }
+
+    if !r.earlier_failures.is_empty() {
+        writeln!(md)?;
+        writeln!(md, "## earlier failures")?;
+        writeln!(md)?;
+        for f in &r.earlier_failures {
+            let times = if f.repeats > 1 {
+                format!(" ×{}", f.repeats)
+            } else {
+                String::new()
+            };
+            writeln!(md, "- {}{times} [{}] `{}` — {}", f.when, f.category, f.command, f.error)?;
         }
     }
 
