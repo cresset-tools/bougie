@@ -72,8 +72,12 @@ fn mariadb_client(env: &TestEnv) -> std::path::PathBuf {
 }
 
 fn mariadb_socket(env: &TestEnv) -> std::path::PathBuf {
+    // The runtime dir is a short, flat `state/run/<token>/` (macOS
+    // `sun_path` headroom), not the deep versioned service dir.
     env.home_path()
-        .join("state/services/mariadb/run/mariadb.sock")
+        .join("state/run")
+        .join(bougie_paths::instance_run_token("mariadb", "11.4.4"))
+        .join("mariadb.sock")
 }
 
 fn wait_for(path: &Path, timeout: Duration) -> bool {
@@ -88,7 +92,7 @@ fn wait_for(path: &Path, timeout: Duration) -> bool {
 }
 
 fn read_tenant(env: &TestEnv) -> serde_json::Value {
-    let p = env.home_path().join("state/services/mariadb/tenants.json");
+    let p = env.home_path().join("state/services/mariadb/11.4.4/tenants.json");
     let ledger = fs::read_to_string(&p).expect("tenants.json should exist");
     let line = ledger.lines().next().expect("at least one tenant");
     serde_json::from_str(line).expect("tenant record is JSON")
@@ -195,7 +199,7 @@ fn second_up_is_idempotent_no_duplicate_tenant() {
         .success();
 
     let ledger = fs::read_to_string(
-        env.home_path().join("state/services/mariadb/tenants.json"),
+        env.home_path().join("state/services/mariadb/11.4.4/tenants.json"),
     )
     .unwrap();
     let n = ledger.lines().filter(|l| !l.trim().is_empty()).count();
@@ -231,7 +235,7 @@ fn two_projects_get_isolated_databases() {
     }
 
     let ledger = fs::read_to_string(
-        env.home_path().join("state/services/mariadb/tenants.json"),
+        env.home_path().join("state/services/mariadb/11.4.4/tenants.json"),
     )
     .unwrap();
     let lines: Vec<_> = ledger.lines().filter(|l| !l.trim().is_empty()).collect();
@@ -321,7 +325,7 @@ fn down_purge_drops_database_and_user() {
         .success();
 
     // Tenant record is gone.
-    let p = env.home_path().join("state/services/mariadb/tenants.json");
+    let p = env.home_path().join("state/services/mariadb/11.4.4/tenants.json");
     let ledger = fs::read_to_string(&p).unwrap_or_default();
     assert!(
         ledger.lines().all(|l| l.trim().is_empty()),
@@ -411,10 +415,24 @@ fn bougie_run_exports_mariadb_env_vars() {
         );
     }
     let stdout = String::from_utf8_lossy(&out.stdout);
-    let socket_path = mariadb_socket(&env).display().to_string();
+    // The socket var is the project's STABLE connection socket (a symlink
+    // the daemon points at the live instance), NOT the version-keyed
+    // instance path — so a baked env.php host survives version bumps.
+    let conn_socket = env
+        .home_path()
+        .join("state/conn")
+        .join(bougie_paths::project_hash(proj.path()))
+        .join("mariadb.sock");
     assert!(
-        stdout.contains(&format!("BOUGIE_SERVICE_MARIADB_SOCKET={socket_path}")),
-        "missing socket var; env was:\n{stdout}"
+        stdout.contains(&format!("BOUGIE_SERVICE_MARIADB_SOCKET={}", conn_socket.display())),
+        "socket var should be the stable conn socket {}; env was:\n{stdout}",
+        conn_socket.display()
+    );
+    // …and that stable socket resolves to the running instance socket.
+    assert_eq!(
+        std::fs::read_link(&conn_socket).ok(),
+        Some(mariadb_socket(&env)),
+        "conn socket must symlink to the live instance socket"
     );
     assert!(
         stdout.contains("BOUGIE_SERVICE_MARIADB_DATABASE=acme_blog"),

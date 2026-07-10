@@ -56,7 +56,7 @@ fn logs_tail_shows_lines_the_service_wrote() {
     // Give the forwarder a moment to flush the chunk.
     let log_path = env
         .home_path()
-        .join("state/services/redis/log/redis.log");
+        .join("state/services/redis/8.6.3/log/redis.log");
     let deadline = Instant::now() + STEP_TIMEOUT;
     while !log_path.exists() || fs::metadata(&log_path).map(|m| m.len()).unwrap_or(0) == 0 {
         assert!(
@@ -108,7 +108,7 @@ fn logs_no_arg_tails_all_declared_services_combined() {
 
     let log_path = env
         .home_path()
-        .join("state/services/redis/log/redis.log");
+        .join("state/services/redis/8.6.3/log/redis.log");
     let deadline = Instant::now() + STEP_TIMEOUT;
     while !log_path.exists() || fs::metadata(&log_path).map(|m| m.len()).unwrap_or(0) == 0 {
         assert!(
@@ -162,7 +162,7 @@ fn logs_n_truncates_to_requested_lines() {
     // tail enough to see our markers.
     let log_path = env
         .home_path()
-        .join("state/services/redis/log/redis.log");
+        .join("state/services/redis/8.6.3/log/redis.log");
     std::thread::sleep(Duration::from_millis(100)); // let forwarder settle
     let mut text = String::new();
     for i in 0..10 {
@@ -253,7 +253,7 @@ fn logs_follow_streams_new_bytes_then_ends_on_disconnect() {
     // Inject a marker through the log file directly.
     let log_path = env
         .home_path()
-        .join("state/services/redis/log/redis.log");
+        .join("state/services/redis/8.6.3/log/redis.log");
     let mut f = fs::OpenOptions::new().append(true).open(&log_path).unwrap();
     f.write_all(b"FOLLOW-MARKER\n").unwrap();
     f.sync_all().unwrap();
@@ -322,7 +322,7 @@ fn multi_service_logs_prefixes_each_line_with_the_service_name() {
     std::thread::sleep(Duration::from_millis(500));
     let log_path = env
         .home_path()
-        .join("state/services/redis/log/redis.log");
+        .join("state/services/redis/8.6.3/log/redis.log");
     let mut f = fs::OpenOptions::new().append(true).open(&log_path).unwrap();
     f.write_all(b"MULTI-MARKER\n").unwrap();
     f.sync_all().unwrap();

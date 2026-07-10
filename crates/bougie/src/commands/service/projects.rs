@@ -208,12 +208,21 @@ fn load_rows(paths: &Paths) -> Result<Vec<TenantRow>> {
         if matches!(entry.tenancy, Tenancy::None) {
             continue;
         }
-        for t in load_ledger(&paths.service_tenants(entry.name))? {
+        // Scan every instance ledger, not just the catalog default: a
+        // multi-version service (mysql 8.0 beside 8.4) keeps one ledger
+        // per version dir, and each project's tenant must show up.
+        let mut rows = Vec::new();
+        for version in bougie_daemon::daemon::tenants::instance_versions(
+            &paths.service_name_dir(entry.name),
+        ) {
+            rows.extend(load_ledger(&paths.service_tenants(entry.name, &version))?);
+        }
+        for t in rows {
             let mut alloc = t.alloc;
-            // mariadb's database + user are just the tenant name and so
-            // aren't recorded in the ledger's `alloc`; synthesize them so
-            // `--alloc` shows where the project's data actually lives.
-            if entry.name == "mariadb" {
+            // mariadb/mysql's database + user are just the tenant name and
+            // so aren't recorded in the ledger's `alloc`; synthesize them
+            // so `--alloc` shows where the project's data actually lives.
+            if entry.name == "mariadb" || entry.name == "mysql" {
                 alloc
                     .entry("database".to_string())
                     .or_insert_with(|| Value::String(t.tenant.clone()));

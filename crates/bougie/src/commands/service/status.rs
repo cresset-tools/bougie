@@ -143,18 +143,36 @@ fn status_note(row: &ServiceRow) -> String {
 /// `$BOUGIE_HOME/state/services/<name>/run/<sockname>`, since the bare
 /// `sockname` the daemon reports isn't enough to connect with. A `none`
 /// binding, a `null`, or any shape we don't recognize renders as `-`.
-fn format_binding(paths: &Paths, name: &str, binding: &Value) -> String {
+fn format_binding(paths: &Paths, name: &str, version: &str, binding: &Value) -> String {
     match binding.get("kind").and_then(Value::as_str) {
         Some("tcp") => binding
             .get("port")
             .and_then(Value::as_u64)
-            .map_or_else(|| "-".into(), |p| format!("tcp 127.0.0.1:{p}")),
+            .and_then(|p| u16::try_from(p).ok())
+            .map_or_else(
+                || "-".into(),
+                |default| {
+                    // Report where the instance actually landed — the
+                    // effective port from endpoint.json, which differs
+                    // from the catalog default when it was relocated off
+                    // an occupied port. Keyed by the *running* instance's
+                    // version so a non-default instance reads its own
+                    // endpoint, not the catalog default's.
+                    let port =
+                        bougie_daemon::daemon::endpoint::effective_primary(paths, name, version, default);
+                    if port == default {
+                        format!("tcp 127.0.0.1:{port}")
+                    } else {
+                        format!("tcp 127.0.0.1:{port} (relocated from {default})")
+                    }
+                },
+            ),
         Some("unix_socket") => binding
             .get("sockname")
             .and_then(Value::as_str)
             .map_or_else(
                 || "-".into(),
-                |s| format!("socket {}", paths.service_run(name).join(s).display()),
+                |s| format!("socket {}", paths.service_run(name, version).join(s).display()),
             ),
         _ => "-".into(),
     }
@@ -183,7 +201,18 @@ pub fn run(format: OutputFormat, name: Option<String>) -> Result<ExitCode> {
                 let _ = target;
             }
             let binding = v.get("binding").cloned().unwrap_or(Value::Null);
-            let binding_display = format_binding(&paths, &name, &binding);
+            // The daemon reports each running instance's resolved version;
+            // fall back to the catalog default for forward tolerance
+            // against a pre-instance-keyed daemon.
+            let version = v
+                .get("version")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+                .map_or_else(
+                    || bougie_daemon::daemon::catalog::default_version(&name).to_owned(),
+                    str::to_owned,
+                );
+            let binding_display = format_binding(&paths, &name, &version, &binding);
             Some(ServiceRow {
                 declared: declared.contains(name.as_str()),
                 state: v
@@ -258,7 +287,8 @@ mod tests {
     /// A row wired with a resolved binding display, for the binding-column
     /// tests.
     fn binding_row(paths: &Paths, name: &str, binding: Value) -> ServiceRow {
-        let binding_display = format_binding(paths, name, &binding);
+        let v = bougie_daemon::daemon::catalog::default_version(name);
+        let binding_display = format_binding(paths, name, v, &binding);
         ServiceRow {
             name: name.into(),
             state: "running".into(),
@@ -322,20 +352,46 @@ mod tests {
 
     #[test]
     fn format_binding_covers_every_kind() {
+        use bougie_daemon::daemon::catalog::default_version as dv;
         let paths = test_paths();
         assert_eq!(
-            format_binding(&paths, "opensearch", &json!({"kind": "tcp", "port": 9200})),
+            format_binding(&paths, "opensearch", dv("opensearch"), &json!({"kind": "tcp", "port": 9200})),
             "tcp 127.0.0.1:9200"
         );
-        // Unix sockets resolve to the absolute per-service run path.
+        // Unix sockets resolve to the absolute per-instance run path
+        // (short, flat `state/run/<token>/` — macOS `sun_path` headroom).
         assert_eq!(
-            format_binding(&paths, "redis", &json!({"kind": "unix_socket", "sockname": "redis.sock"})),
-            "socket /h/state/services/redis/run/redis.sock"
+            format_binding(&paths, "redis", dv("redis"), &json!({"kind": "unix_socket", "sockname": "redis.sock"})),
+            format!("socket {}", paths.service_run("redis", dv("redis")).join("redis.sock").display())
         );
         // `none`, a bare null, and unknown shapes all degrade to `-`.
-        assert_eq!(format_binding(&paths, "x", &json!({"kind": "none"})), "-");
-        assert_eq!(format_binding(&paths, "x", &Value::Null), "-");
-        assert_eq!(format_binding(&paths, "x", &json!({"kind": "tcp"})), "-");
+        assert_eq!(format_binding(&paths, "x", "1.0", &json!({"kind": "none"})), "-");
+        assert_eq!(format_binding(&paths, "x", "1.0", &Value::Null), "-");
+        assert_eq!(format_binding(&paths, "x", "1.0", &json!({"kind": "tcp"})), "-");
+    }
+
+    #[test]
+    fn format_binding_surfaces_a_relocated_port() {
+        use bougie_daemon::daemon::{catalog, endpoint::ServiceEndpoint};
+
+        let home = tempfile::TempDir::new().unwrap();
+        let paths = Paths::new(home.path().to_path_buf(), home.path().join("cache"));
+        let version = catalog::default_version("opensearch");
+
+        // The instance was relocated off a squatted 9200 and recorded 9207.
+        ServiceEndpoint::new(9207)
+            .save(&paths.service_endpoint("opensearch", version))
+            .unwrap();
+        assert_eq!(
+            format_binding(&paths, "opensearch", version, &json!({"kind": "tcp", "port": 9200})),
+            "tcp 127.0.0.1:9207 (relocated from 9200)"
+        );
+
+        // A service with no endpoint.json still shows the catalog default.
+        assert_eq!(
+            format_binding(&paths, "rabbitmq", catalog::default_version("rabbitmq"), &json!({"kind": "tcp", "port": 5672})),
+            "tcp 127.0.0.1:5672"
+        );
     }
 
     #[test]
@@ -352,9 +408,13 @@ mod tests {
         let mut buf = Vec::new();
         result.render_text(&mut buf).unwrap();
         let text = String::from_utf8(buf).unwrap();
+        let mariadb_sock = paths
+            .service_run("mariadb", bougie_daemon::daemon::catalog::default_version("mariadb"))
+            .join("mariadb.sock");
         assert!(
-            text.contains("socket /h/state/services/mariadb/run/mariadb.sock"),
-            "text: {text}"
+            text.contains(&format!("socket {}", mariadb_sock.display())),
+            "text: {text}\nexpected socket: {}",
+            mariadb_sock.display()
         );
         assert!(text.contains("tcp 127.0.0.1:9200"), "text: {text}");
         // Existing columns survive alongside the new one.

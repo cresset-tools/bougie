@@ -29,7 +29,7 @@ use std::path::{Path, PathBuf};
 /// Locate the service's basedir under `$BOUGIE_HOME/store/`. Prefers
 /// the exact `<tarball>` name; falls back to any directory starting
 /// with `<tarball>-` (the hash-suffixed form produced by the index).
-pub fn basedir(paths: &Paths, entry: &CatalogEntry) -> Result<PathBuf> {
+pub fn basedir(paths: &Paths, entry: &CatalogEntry, version: &str) -> Result<PathBuf> {
     if entry.tarball.is_empty() {
         // `server` has no tarball — it reuses the bougie binary itself.
         return Err(eyre!(
@@ -37,12 +37,17 @@ pub fn basedir(paths: &Paths, entry: &CatalogEntry) -> Result<PathBuf> {
             entry.name
         ));
     }
+    // Instance tarball is `<name>-<resolved-version>`; the catalog
+    // `entry.tarball` (`<name>-<default>`) is only the default. A
+    // non-default instance (a second version of the same service) lives
+    // in its own store dir, which is why the version keys the lookup.
+    let tarball = format!("{}-{}", entry.name, version);
     let store = paths.store();
-    let exact = store.join(entry.tarball);
+    let exact = store.join(&tarball);
     if exact.is_dir() {
         return Ok(exact);
     }
-    let prefix = format!("{}-", entry.tarball);
+    let prefix = format!("{tarball}-");
     if let Ok(rd) = std::fs::read_dir(&store) {
         for ent in rd.flatten() {
             if ent
@@ -60,9 +65,9 @@ pub fn basedir(paths: &Paths, entry: &CatalogEntry) -> Result<PathBuf> {
          before any basedir() call — reaching here means the fetch \
          was skipped or its sibling rename to `{}` was rolled back.",
         entry.name,
-        entry.tarball,
+        tarball,
         store.display(),
-        entry.tarball,
+        tarball,
     ))
 }
 
@@ -124,13 +129,13 @@ pub fn create_link_into(outer_root: &Path, link_into: &str, inner_root: &Path) -
 }
 
 /// Locate the main binary inside the service's store directory.
-pub fn binary(paths: &Paths, entry: &CatalogEntry) -> Result<PathBuf> {
+pub fn binary(paths: &Paths, entry: &CatalogEntry, version: &str) -> Result<PathBuf> {
     if entry.tarball.is_empty() {
         let exe = std::env::current_exe()
             .map_err(|e| eyre!("locating current bougie binary: {e}"))?;
         return Ok(exe);
     }
-    Ok(basedir(paths, entry)?.join(entry.binary))
+    Ok(basedir(paths, entry, version)?.join(entry.binary))
 }
 
 #[cfg(test)]
@@ -144,7 +149,7 @@ mod tests {
         let paths = Paths::new(tmp.path().into(), tmp.path().into());
         std::fs::create_dir_all(paths.store().join("redis-8.6.3")).unwrap();
         let entry = catalog::find("redis").unwrap();
-        let bd = basedir(&paths, entry).unwrap();
+        let bd = basedir(&paths, entry, &entry.version).unwrap();
         assert!(bd.ends_with("redis-8.6.3"));
     }
 
@@ -154,7 +159,7 @@ mod tests {
         let paths = Paths::new(tmp.path().into(), tmp.path().into());
         std::fs::create_dir_all(paths.store().join("redis-8.6.3-abc123")).unwrap();
         let entry = catalog::find("redis").unwrap();
-        let bd = basedir(&paths, entry).unwrap();
+        let bd = basedir(&paths, entry, &entry.version).unwrap();
         assert!(bd.to_string_lossy().contains("redis-8.6.3-abc123"));
     }
 
@@ -163,7 +168,7 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let paths = Paths::new(tmp.path().into(), tmp.path().into());
         let entry = catalog::find("redis").unwrap();
-        let err = basedir(&paths, entry).unwrap_err();
+        let err = basedir(&paths, entry, &entry.version).unwrap_err();
         let msg = format!("{err:#}");
         assert!(msg.contains("tarball"), "{msg}");
         assert!(msg.contains("redis-8.6.3"), "{msg}");
@@ -176,7 +181,7 @@ mod tests {
         std::fs::create_dir_all(paths.store().join("mariadb-11.4.4/bin")).unwrap();
         std::fs::write(paths.store().join("mariadb-11.4.4/bin/mariadbd"), "x").unwrap();
         let entry = catalog::find("mariadb").unwrap();
-        let bin = binary(&paths, entry).unwrap();
+        let bin = binary(&paths, entry, &entry.version).unwrap();
         assert!(bin.ends_with("mariadb-11.4.4/bin/mariadbd"));
     }
 

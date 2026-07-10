@@ -223,7 +223,7 @@ fn unix_sections(
     Vec<PortInfo>,
 ) {
     use crate::commands::service::client;
-    use bougie_daemon::daemon::catalog;
+    use bougie_daemon::daemon::{catalog, endpoint};
     use std::collections::HashMap;
 
     #[derive(Debug, serde::Deserialize)]
@@ -279,16 +279,26 @@ fn unix_sections(
             state.as_deref(),
             Some("running" | "unhealthy" | "health_checking" | "starting" | "stopping")
         );
+        // Resolve which instance this project actually runs by scanning
+        // its on-disk ledgers (a non-default mysql 8.0 keys its endpoint /
+        // socket / log under 8.0.46, not the catalog default 8.4.10).
+        let version = resolve_project_version(paths, name, project_root);
+        let version = version.as_str();
         let binding = entry.map_or_else(
             || "(not in the service catalog)".to_owned(),
-            |e| binding_line(paths, name, e.binding, holds_binding),
+            |e| binding_line(paths, name, version, e.binding, holds_binding),
         );
         if let Some(e) = entry {
             if let catalog::Binding::Tcp { port } = e.binding {
-                ports.push(probe_port(port, name, None, holds_binding));
+                let eff = endpoint::effective_primary(paths, name, version, port);
+                ports.push(probe_port(eff, name, None, holds_binding));
             }
-            for (port, purpose) in extra_ports(name) {
-                ports.push(probe_port(*port, name, Some(purpose), holds_binding));
+            for &(port, purpose, label) in extra_ports(name) {
+                // Relocatable sidecars (mailpit's web UI) carry an
+                // endpoint label; fixed ones (epmd) don't move.
+                let eff =
+                    label.map_or(port, |l| endpoint::effective_extra(paths, name, version, l, port));
+                ports.push(probe_port(eff, name, Some(purpose), holds_binding));
             }
         }
         services.push(ServiceInfo {
@@ -297,7 +307,7 @@ fn unix_sections(
             status_note: live_svc.and_then(live_note),
             state,
             binding,
-            log_tail: tail_file(&paths.service_log_file(name), scrub),
+            log_tail: tail_file(&paths.service_log_file(name, version), scrub),
         });
     }
 
@@ -307,14 +317,22 @@ fn unix_sections(
 }
 
 /// Sidecar / rides-along ports probed in addition to a service's
-/// catalog binding.
+/// catalog binding. The third field is the `endpoint.json` `extra` label
+/// when the port relocates with the instance (`None` for a fixed port).
 #[cfg(unix)]
-fn extra_ports(name: &str) -> &'static [(u16, &'static str)] {
+fn extra_ports(name: &str) -> &'static [(u16, &'static str, Option<&'static str>)] {
     match name {
         // epmd is rabbitmq's in-group sidecar; a squatted 4369 breaks
-        // node registration even when 5672 itself is free.
-        "rabbitmq" => &[(4369, "epmd")],
-        "mailpit" => &[(bougie_daemon::daemon::catalog::MAILPIT_HTTP_PORT, "web ui")],
+        // node registration even when 5672 itself is free. Fixed port —
+        // it doesn't relocate, so there's no endpoint label.
+        "rabbitmq" => &[(4369, "epmd", None)],
+        // Mailpit's web UI rides alongside SMTP and relocates with it,
+        // recorded under `extra["http"]`.
+        "mailpit" => &[(
+            bougie_daemon::daemon::catalog::MAILPIT_HTTP_PORT,
+            "web ui",
+            Some("http"),
+        )],
         _ => &[],
     }
 }
@@ -338,29 +356,50 @@ fn probe_port(port: u16, service: &str, purpose: Option<&'static str>, expected:
 }
 
 #[cfg(unix)]
+/// Resolve which instance version this project runs for `name` by
+/// scanning its on-disk ledgers (`INSTANCES_PLAN` §6). Falls back to the
+/// catalog default when the project has no tenant or no project root.
+fn resolve_project_version(paths: &Paths, name: &str, project_root: Option<&Path>) -> String {
+    use bougie_daemon::daemon::{catalog, tenants};
+    project_root
+        .and_then(|root| tenants::project_instance_version(paths, name, root))
+        .unwrap_or_else(|| catalog::default_version(name).to_owned())
+}
+
+#[cfg(unix)]
 fn binding_line(
     paths: &Paths,
     name: &str,
+    version: &str,
     binding: bougie_daemon::daemon::catalog::Binding,
     holds_binding: bool,
 ) -> String {
-    use bougie_daemon::daemon::{catalog::Binding, ports};
+    use bougie_daemon::daemon::{catalog::Binding, endpoint, ports};
     match binding {
         Binding::Tcp { port } => {
-            if !ports::port_in_use(port) {
-                return format!("tcp 127.0.0.1:{port} — not listening");
+            // Report where the instance actually landed. When it relocated
+            // off an occupied catalog port, note the original so a reader
+            // chasing a stale config still recognises the service.
+            let eff = endpoint::effective_primary(paths, name, version, port);
+            let relocated = if eff == port {
+                String::new()
+            } else {
+                format!(" (relocated from {port})")
+            };
+            if !ports::port_in_use(eff) {
+                return format!("tcp 127.0.0.1:{eff}{relocated} — not listening");
             }
             if holds_binding {
-                return format!("tcp 127.0.0.1:{port} — listening (this service)");
+                return format!("tcp 127.0.0.1:{eff}{relocated} — listening (this service)");
             }
-            let holder = ports::holder_of(port).map_or_else(
+            let holder = ports::holder_of(eff).map_or_else(
                 || "another process".to_owned(),
                 |h| format!("{} (pid {})", h.comm, h.pid),
             );
-            format!("tcp 127.0.0.1:{port} — **in use by {holder}**, not this service")
+            format!("tcp 127.0.0.1:{eff}{relocated} — **in use by {holder}**, not this service")
         }
         Binding::UnixSocket { sockname } => {
-            let path = paths.service_run(name).join(sockname);
+            let path = paths.service_run(name, version).join(sockname);
             let exists = if path.exists() { "present" } else { "absent" };
             format!("unix socket {} — {exists}", path.display())
         }
@@ -400,7 +439,7 @@ fn live_note(v: &serde_json::Value) -> Option<String> {
 /// host-filtered tail of the (shared, host-prefixed) server log.
 #[cfg(unix)]
 fn server_info(paths: &Paths, project_root: &Path, scrub: &Scrubber) -> Option<ServerInfo> {
-    let conf = paths.service_conf("server").join("server.toml");
+    let conf = paths.service_conf("server", bougie_daemon::daemon::catalog::default_version("server")).join("server.toml");
     let config = bougie_server::server::config::load(&conf).ok()?;
     let canonical = std::fs::canonicalize(project_root).unwrap_or_else(|_| project_root.into());
     let host = config
@@ -409,7 +448,7 @@ fn server_info(paths: &Paths, project_root: &Path, scrub: &Scrubber) -> Option<S
         .find(|h| h.project == project_root || h.project == canonical)?
         .hostname
         .clone();
-    let lines = bougie_daemon::daemon::logs::tail_lines(&paths.service_log_file("server"), 1000)
+    let lines = bougie_daemon::daemon::logs::tail_lines(&paths.service_log_file("server", bougie_daemon::daemon::catalog::default_version("server")), 1000)
         .unwrap_or_default()
         .into_iter()
         .filter(|l| l.contains(&host))

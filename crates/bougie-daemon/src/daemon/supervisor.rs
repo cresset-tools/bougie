@@ -6,6 +6,8 @@
 //! dispatch land in subsequent phases (5–10).
 
 use super::catalog::{self, Binding, CatalogEntry};
+use super::endpoint;
+use super::instance::{Instance, InstanceId};
 use super::logs::LogWriter;
 use super::sandbox;
 use super::store_layout;
@@ -120,6 +122,11 @@ pub enum ServiceState {
 #[derive(Debug)]
 pub struct ManagedService {
     pub name: &'static str,
+    /// Concrete resolved version this instance runs at. With the catalog
+    /// still single-version this is the catalog default, but the map is
+    /// keyed by `(name, version)` so a second version of one service is a
+    /// distinct slot.
+    pub version: String,
     pub state: ServiceState,
     pub child: Option<Child>,
     /// PID of the babysit shim.
@@ -165,9 +172,10 @@ pub struct ManagedService {
 }
 
 impl ManagedService {
-    fn new(name: &'static str) -> Self {
+    fn new(name: &'static str, version: impl Into<String>) -> Self {
         Self {
             name,
+            version: version.into(),
             state: ServiceState::Stopped,
             child: None,
             pid: None,
@@ -184,6 +192,12 @@ impl ManagedService {
             last_health_ok: None,
         }
     }
+
+    /// This slot's `(name, version)` identity. Callers derive the map key
+    /// from it via [`Instance::id`].
+    fn instance(&self) -> Instance {
+        Instance::new(self.name, &self.version)
+    }
 }
 
 /// Snapshot returned by the IPC `status` method. Stable shape; the
@@ -191,6 +205,9 @@ impl ManagedService {
 #[derive(Debug, Clone, Serialize)]
 pub struct ServiceStatus {
     pub name: String,
+    /// The instance's resolved version — distinguishes two instances of
+    /// one service in the status list.
+    pub version: String,
     pub state: ServiceState,
     pub pid: Option<u32>,
     pub uptime_ms: Option<u64>,
@@ -232,7 +249,7 @@ fn is_zero_u32(n: &u32) -> bool {
 /// See [`start_service`].
 #[derive(Debug)]
 pub struct PendingHealth {
-    name: &'static str,
+    instance: Instance,
     paths: Paths,
     child: Child,
 }
@@ -241,7 +258,7 @@ impl PendingHealth {
     /// Probe until the service is healthy, exits early, or its
     /// per-service deadline elapses. Runs without the supervisor lock.
     async fn wait_healthy(&mut self) -> Result<()> {
-        wait_for_health(self.name, &self.paths, &mut self.child).await
+        wait_for_health(&self.instance, &self.paths, &mut self.child).await
     }
 }
 
@@ -294,7 +311,10 @@ pub enum HealthOutcome {
 
 #[derive(Debug)]
 pub struct Supervisor {
-    services: HashMap<&'static str, ManagedService>,
+    /// Keyed by instance id (`<name>-<version>`), created lazily on first
+    /// `up`. An empty map means nothing has been requested yet — a service
+    /// declared-but-never-upped simply has no slot (treated as Stopped).
+    services: HashMap<InstanceId, ManagedService>,
     paths: Paths,
     /// How this host can kill a service's whole subtree. Detected once
     /// at construction. Phase 1: recorded + logged, not yet consumed —
@@ -306,10 +326,11 @@ pub struct Supervisor {
 
 impl Supervisor {
     pub fn new(paths: Paths) -> Self {
-        let mut services = HashMap::new();
-        for entry in catalog::CATALOG {
-            services.insert(entry.name, ManagedService::new(entry.name));
-        }
+        // Instances are created lazily on first `up` — the map starts
+        // empty. (Pre-seeding a Stopped slot per catalog entry made sense
+        // when a service was a name-singleton; now that two versions of one
+        // service can coexist, there's no single slot to pre-seed.)
+        let services = HashMap::new();
         let backend = super::cgroup::detect(&paths.state());
         tracing::info!(
             backend = backend.label(),
@@ -372,6 +393,7 @@ impl Supervisor {
                 });
                 Some(ServiceStatus {
                     name: svc.name.to_string(),
+                    version: svc.version.clone(),
                     state: svc.state,
                     pid: svc.pid,
                     uptime_ms: svc
@@ -391,42 +413,116 @@ impl Supervisor {
                 })
             })
             .collect();
-        out.sort_by(|a, b| a.name.cmp(&b.name));
+        out.sort_by(|a, b| a.name.cmp(&b.name).then(a.version.cmp(&b.version)));
         out
     }
 
     /// Resolve the on-disk path of a service's main binary. Thin
     /// wrapper over `store_layout::binary` so the supervisor and the
     /// per-service provisioners agree on where each service lives.
-    fn binary_path(&self, entry: &CatalogEntry) -> Result<std::path::PathBuf> {
-        store_layout::binary(&self.paths, entry)
+    fn binary_path(&self, entry: &CatalogEntry, version: &str) -> Result<std::path::PathBuf> {
+        store_layout::binary(&self.paths, entry, version)
     }
 
-    /// Spawn a service's babysit and stamp it `HealthChecking`, *without*
-    /// running the health probe — the caller ([`start_service`]) drops
-    /// the lock and probes the returned [`PendingHealth`] off-lock, then
-    /// re-locks for [`Supervisor::finalize_start`]. Splitting the start
-    /// this way keeps the up-to-90s probe from blocking `status` and the
-    /// reaper behind `Mutex<Supervisor>`.
+    /// Resolve (and persist) the effective TCP endpoint for an instance:
+    /// reuse a recorded endpoint's ports where still bindable (sticky),
+    /// else the catalog defaults, else scan upward for free ports. Writes
+    /// `endpoint.json`. Returns `None` for socket-only / `Binding::None`
+    /// services — they can't collide on a port, and their coexistence
+    /// comes from the version-keyed socket path, not a port.
+    fn resolve_endpoint(
+        &self,
+        entry: &CatalogEntry,
+        version: &str,
+    ) -> Result<Option<endpoint::ServiceEndpoint>> {
+        let Binding::Tcp { port: default_primary } = entry.binding else {
+            return Ok(None);
+        };
+        let ep_path = self.paths.service_endpoint(entry.name, version);
+        let recorded = endpoint::ServiceEndpoint::load(&ep_path)?;
+
+        // Ports claimed in this pass, so a multi-port service can't pick
+        // the same number twice. Each `allocate_port` gets a fresh closure
+        // (dropped before the following `push`), so `claimed` can grow
+        // between calls.
+        let mut claimed: Vec<u16> = Vec::new();
+
+        let primary = super::ports::allocate_port(
+            default_primary,
+            recorded.as_ref().map(|e| e.primary),
+            |p| !claimed.contains(&p) && !super::ports::port_in_use(p),
+        )
+        .ok_or_else(|| {
+            eyre!(
+                "no free port near {default_primary} for `{}` (scanned {} above the default)",
+                entry.name,
+                super::ports::PORT_SCAN_SPAN,
+            )
+        })?;
+        claimed.push(primary);
+        if primary != default_primary {
+            tracing::warn!(
+                service = entry.name,
+                default = default_primary,
+                chosen = primary,
+                holder = %super::ports::describe_holder(default_primary),
+                "catalog port taken; relocating to a free port",
+            );
+        }
+
+        let mut ep = endpoint::ServiceEndpoint::new(primary);
+        for &(label, default) in secondary_ports(entry.name) {
+            let recorded_extra = recorded.as_ref().and_then(|e| e.extra_port(label));
+            let chosen = super::ports::allocate_port(default, recorded_extra, |p| {
+                !claimed.contains(&p) && !super::ports::port_in_use(p)
+            })
+            .ok_or_else(|| eyre!("no free {label} port near {default} for `{}`", entry.name))?;
+            claimed.push(chosen);
+            if chosen != default {
+                tracing::warn!(
+                    service = entry.name,
+                    port = label,
+                    default,
+                    chosen,
+                    "secondary port taken; relocating",
+                );
+            }
+            ep.extra.insert(label.to_owned(), chosen);
+        }
+
+        ep.save(&ep_path)?;
+        Ok(Some(ep))
+    }
+
+    /// Spawn a service instance's babysit and stamp it `HealthChecking`,
+    /// *without* running the health probe — the caller ([`start_service`])
+    /// drops the lock and probes the returned [`PendingHealth`] off-lock,
+    /// then re-locks for [`Supervisor::finalize_start`]. Splitting the
+    /// start this way keeps the up-to-90s probe from blocking `status` and
+    /// the reaper behind `Mutex<Supervisor>`.
     ///
-    /// Returns [`SpawnOutcome::AlreadyRunning`] if the service was already
+    /// The `(name, version)` instance slot is created lazily on the first
+    /// `up` — there is no pre-seeded map, so a missing slot is normal, not
+    /// a bug. The `.expect`/`.unwrap` on `services.get_mut(&id)` below are
+    /// safe only because this method inserts the slot at the top and holds
+    /// the lock throughout; nothing removes it mid-call.
+    ///
+    /// Returns [`SpawnOutcome::AlreadyRunning`] if the instance was already
     /// Starting/HealthChecking/Running.
-    ///
-    /// # Panics
-    ///
-    /// Panics on a BUG: the inner `services.get_mut(name).unwrap()`
-    /// calls assume `name` is in the map, which `Supervisor::new`
-    /// populates from the catalog. A panic here means the catalog
-    /// shifted under us mid-call.
-    pub async fn spawn_service(&mut self, name: &str) -> Result<SpawnOutcome> {
-        let entry = catalog::find(name)
-            .ok_or_else(|| eyre!("unknown service `{name}`"))?;
+    pub async fn spawn_service(&mut self, inst: &Instance) -> Result<SpawnOutcome> {
+        let entry = catalog::find(&inst.name)
+            .ok_or_else(|| eyre!("unknown service `{}`", inst.name))?;
+        let version = inst.version.as_str();
+        let id = inst.id();
+        // Lazy creation: the first `up` for this (name, version) instance
+        // materializes its slot. There is no pre-seeded Stopped slot to
+        // find anymore — the map holds only instances that were requested.
+        self.services
+            .entry(id.clone())
+            .or_insert_with(|| ManagedService::new(entry.name, version));
         // Idempotence check via an immutable borrow that ends here.
         {
-            let svc = self
-                .services
-                .get(entry.name)
-                .ok_or_else(|| eyre!("BUG: service `{}` missing from supervisor map", entry.name))?;
+            let svc = self.services.get(&id).expect("slot just inserted above");
             if matches!(
                 svc.state,
                 ServiceState::Running
@@ -442,26 +538,23 @@ impl Supervisor {
         // a due restart. `failure_count` carries over until either a
         // successful sustained run resets it (handled in check_all)
         // or another failure increments it.
-        if let Some(svc) = self.services.get_mut(entry.name) {
+        if let Some(svc) = self.services.get_mut(&id) {
             svc.restart_at = None;
         }
 
-        // Fail fast on an occupied catalog port BEFORE spawning: the
-        // service would only crash against EADDRINUSE with a
-        // buried-in-the-log message, while this probe can name the
-        // squatter while it's still alive. Auto-restarts keep their
-        // backoff retries (the ticker treats this error like any other
-        // start failure), so a conflict that clears is recovered from.
-        if let Binding::Tcp { port } = entry.binding
-            && super::ports::port_in_use(port)
-        {
-            return Err(eyre!(
-                "port {port} is already in use by {} — `{}` cannot start; \
-                 stop whatever is listening on 127.0.0.1:{port} and retry",
-                super::ports::describe_holder(port),
-                entry.name,
-            ));
-        }
+        // Resolve the effective TCP endpoint BEFORE spawning: allocate a
+        // free port when the catalog default is already taken — by the
+        // developer's own service or by a sibling instance (two search
+        // engines both want 9200) — reusing a previously-recorded port
+        // stickily. Persisted to endpoint.json so the exec args, the
+        // health probe, and offline consumers (`bougie run` env,
+        // `credentials`) all agree on where the service actually landed.
+        //
+        // This replaces the old hard-fail-on-occupied-port: rather than
+        // refuse, we bind our *own* free port, which also closes the
+        // masquerade hazard the hard-fail guarded against — we can never
+        // health-probe onto someone else's live service.
+        let endpoint = self.resolve_endpoint(entry, version)?;
 
         // All immutable-self work first so we can later take a single
         // mutable borrow without conflicting with these reads.
@@ -473,11 +566,11 @@ impl Supervisor {
         // without the carve-in the child can't even `execve` babysit.
         let bougie_bin = std::env::current_exe()
             .wrap_err("locating current_exe for bougie-babysit")?;
-        let policy = sandbox::build_policy(entry, &self.paths, &bougie_bin)
+        let policy = sandbox::build_policy(entry, version, &self.paths, &bougie_bin)
             .wrap_err_with(|| format!("compiling sandbox policy for {}", entry.name))?;
-        let binary = self.binary_path(entry)?;
-        let args = render_exec_args(entry, &self.paths);
-        let log_path = self.paths.service_log_file(entry.name);
+        let binary = self.binary_path(entry, version)?;
+        let args = render_exec_args(entry, version, &self.paths, endpoint.as_ref());
+        let log_path = self.paths.service_log_file(entry.name, version);
         // Open the LogWriter eagerly — confirms the parent dir is
         // writable before we fork a child. Wrap in Arc<Mutex<…>> so
         // the two stdio forwarder tasks (stdout, stderr) can share
@@ -487,8 +580,8 @@ impl Supervisor {
             .wrap_err_with(|| format!("opening log writer for {}", entry.name))?;
         let log_writer = Arc::new(Mutex::new(log_writer));
 
-        let env = render_exec_env(entry, &self.paths);
-        let cwd = render_exec_cwd(entry, &self.paths);
+        let env = render_exec_env(entry, version, &self.paths, endpoint.as_ref());
+        let cwd = render_exec_cwd(entry, version, &self.paths);
 
         // bougied does not exec the service directly: it spawns a
         // `bougie-babysit` shim (same binary, argv[0] override) that
@@ -670,8 +763,8 @@ impl Supervisor {
         {
             let svc = self
                 .services
-                .get_mut(entry.name)
-                .expect("services map populated in Supervisor::new");
+                .get_mut(&id)
+                .expect("instance slot inserted at the top of spawn_service");
             svc.state = ServiceState::HealthChecking;
             svc.started_at = Some(Instant::now());
             svc.pid = pid;
@@ -696,13 +789,13 @@ impl Supervisor {
         // can't masquerade as a healthy start.
         let child = self
             .services
-            .get_mut(entry.name)
+            .get_mut(&id)
             .unwrap()
             .child
             .take()
             .expect("BUG: child was just set above");
         Ok(SpawnOutcome::Spawned(Box::new(PendingHealth {
-            name: entry.name,
+            instance: inst.clone(),
             paths: self.paths.clone(),
             child,
         })))
@@ -719,14 +812,16 @@ impl Supervisor {
     /// invariant, same as [`Supervisor::spawn_service`]).
     pub fn finalize_start(
         &mut self,
-        name: &'static str,
+        inst: &Instance,
         child: Child,
         probe: Result<()>,
     ) -> StartFinalize {
-        let svc = self
-            .services
-            .get_mut(name)
-            .expect("services map populated in Supervisor::new");
+        // The instance slot exists — `spawn_service` created it and we're
+        // resolving that same spawn. A racing `stop` may have changed its
+        // state (handled below) but never removes the slot.
+        let Some(svc) = self.services.get_mut(&inst.id()) else {
+            return StartFinalize::Superseded(child);
+        };
         // If the service left `HealthChecking` while we probed off-lock —
         // a racing `stop`/`down` or a daemon drain — honor the newer
         // state instead of resurrecting it. `stop` already tore the group
@@ -769,13 +864,14 @@ impl Supervisor {
     /// leave a *live* child parked under `Failed` (see `finalize_start`)
     /// that only this path can kill. Both are handled by running the full
     /// teardown below and clearing the crash-backoff bookkeeping.
-    pub async fn stop(&mut self, name: &str) -> Result<bool> {
-        let entry = catalog::find(name)
-            .ok_or_else(|| eyre!("unknown service `{name}`"))?;
-        let svc = self
-            .services
-            .get_mut(entry.name)
-            .ok_or_else(|| eyre!("BUG: service `{}` missing from supervisor map", entry.name))?;
+    pub async fn stop(&mut self, inst: &Instance) -> Result<bool> {
+        let entry = catalog::find(&inst.name)
+            .ok_or_else(|| eyre!("unknown service `{}`", inst.name))?;
+        let id = inst.id();
+        // An unknown / never-upped instance has no slot — nothing to stop.
+        let Some(svc) = self.services.get_mut(&id) else {
+            return Ok(false);
+        };
         if !matches!(
             svc.state,
             ServiceState::Running
@@ -853,7 +949,7 @@ impl Supervisor {
             .await;
         }
 
-        if let Some(svc) = self.services.get_mut(entry.name) {
+        if let Some(svc) = self.services.get_mut(&id) {
             svc.state = ServiceState::Stopped;
             svc.pid = None;
             svc.service_pgid = None;
@@ -873,8 +969,8 @@ impl Supervisor {
         Ok(true)
     }
 
-    /// Reap any service whose child has exited, then return the names of
-    /// services whose backoff deadline is now due for an auto-restart.
+    /// Reap any service whose child has exited, then return the instances
+    /// whose backoff deadline is now due for an auto-restart.
     ///
     /// Called once per second by the daemon's ticker. Two passes: first
     /// reap+schedule under this `&mut self` borrow, then collect the due
@@ -883,7 +979,7 @@ impl Supervisor {
     /// 90s health probe can't stall reaping or `status`. The due deadlines
     /// are cleared on collection so the next tick doesn't re-issue a
     /// restart that's already in flight.
-    pub async fn check_all(&mut self) -> Vec<&'static str> {
+    pub async fn check_all(&mut self) -> Vec<Instance> {
         // Pass 1: reap exited children, transition Failed, schedule
         // the next restart deadline with exponential backoff.
         let now = Instant::now();
@@ -977,17 +1073,17 @@ impl Supervisor {
         // ticker, which drives each restart through `start_service` off
         // the lock.
         let due_now = Instant::now();
-        let due: Vec<&'static str> = self
+        let due: Vec<Instance> = self
             .services
             .values()
             .filter(|s| {
                 s.state == ServiceState::Failed
                     && s.restart_at.is_some_and(|d| d <= due_now)
             })
-            .map(|s| s.name)
+            .map(ManagedService::instance)
             .collect();
-        for &name in &due {
-            if let Some(svc) = self.services.get_mut(name) {
+        for inst in &due {
+            if let Some(svc) = self.services.get_mut(&inst.id()) {
                 svc.restart_at = None;
             }
         }
@@ -1001,8 +1097,8 @@ impl Supervisor {
     /// backoff. A *probe*-phase failure instead leaves the dead babysit in
     /// the map for the next [`Supervisor::check_all`] tick to
     /// reap+reschedule, so this no-ops when a child is already present.
-    pub fn note_restart_failure(&mut self, name: &'static str) {
-        let Some(svc) = self.services.get_mut(name) else {
+    pub fn note_restart_failure(&mut self, inst: &Instance) {
+        let Some(svc) = self.services.get_mut(&inst.id()) else {
             return;
         };
         if svc.child.is_some() || svc.restart_at.is_some() {
@@ -1028,7 +1124,7 @@ impl Supervisor {
     /// [`Supervisor::record_health`] — same off-lock discipline as the
     /// start-time probe. Services with no real binding (runtime-only deps)
     /// are never probed.
-    pub fn health_due(&mut self) -> Vec<&'static str> {
+    pub fn health_due(&mut self) -> Vec<Instance> {
         let now = Instant::now();
         let mut due = Vec::new();
         for svc in self.services.values_mut() {
@@ -1043,7 +1139,7 @@ impl Supervisor {
             }
             if svc.next_health_at.is_some_and(|t| t <= now) {
                 svc.health_inflight = true;
-                due.push(svc.name);
+                due.push(svc.instance());
             }
         }
         due
@@ -1053,9 +1149,10 @@ impl Supervisor {
     /// health state. Fast + under the lock — the probe itself already ran
     /// off-lock. Reschedules the next probe and returns what the caller
     /// must do next (see [`HealthOutcome`]).
-    pub fn record_health(&mut self, name: &str, ok: bool) -> HealthOutcome {
+    pub fn record_health(&mut self, inst: &Instance, ok: bool) -> HealthOutcome {
         let now = Instant::now();
-        let Some(svc) = self.services.get_mut(name) else {
+        let name = inst.name.as_str();
+        let Some(svc) = self.services.get_mut(&inst.id()) else {
             return HealthOutcome::Gone;
         };
         // A racing stop/crash/restart moved it out of a probe-able state
@@ -1108,30 +1205,32 @@ impl Supervisor {
     /// Held under the lock across the teardown — the same brief grace
     /// window `bougie down`/`restart` already hold it for. Breaches are
     /// rare, so the cost to the 1s reaper is bounded and infrequent.
-    pub async fn fail_unhealthy(&mut self, name: &'static str) {
+    pub async fn fail_unhealthy(&mut self, inst: &Instance) {
+        let id = inst.id();
+        let name = inst.name.as_str();
         // Capture the prior Running window AND failure count before `stop`
         // clears them (`stop` zeroes `failure_count` + `started_at`), so
         // the escalation/reset rule matches the crash path — otherwise a
         // health breach could never advance past failure #1.
         let (prev_run, prev_count) = self
             .services
-            .get(name)
+            .get(&id)
             .map(|s| (s.started_at.map(|t| t.elapsed()), s.failure_count))
             .unwrap_or((None, 0));
         // Only act if it's still the `Unhealthy` service we flagged — a
         // racing stop/restart may have moved it on.
         if !matches!(
-            self.services.get(name).map(|s| s.state),
+            self.services.get(&id).map(|s| s.state),
             Some(ServiceState::Unhealthy)
         ) {
             return;
         }
         // Graceful teardown of the wedged group (sets state Stopped).
-        let _ = self.stop(name).await;
+        let _ = self.stop(inst).await;
         // Re-stamp as a crash-equivalent failure so the existing
         // backoff/give-up machinery respawns it.
         let now = Instant::now();
-        let Some(svc) = self.services.get_mut(name) else {
+        let Some(svc) = self.services.get_mut(&id) else {
             return;
         };
         let next_count = match prev_run {
@@ -1189,10 +1288,10 @@ fn compute_backoff(failure_count: u32) -> Duration {
 ///   to the child and BEAM aborts with `invalid_current_directory`
 ///   ("cannot start loader") before it can read its boot script.
 ///   Anchor CWD to the service data dir, which is in the RW set.
-fn render_exec_cwd(entry: &CatalogEntry, paths: &Paths) -> Option<std::path::PathBuf> {
+fn render_exec_cwd(entry: &CatalogEntry, version: &str, paths: &Paths) -> Option<std::path::PathBuf> {
     match entry.name {
-        "opensearch" => Some(paths.service_data("opensearch")),
-        "rabbitmq" => Some(paths.service_data("rabbitmq")),
+        "opensearch" => Some(paths.service_data("opensearch", version)),
+        "rabbitmq" => Some(paths.service_data("rabbitmq", version)),
         _ => None,
     }
 }
@@ -1214,27 +1313,56 @@ fn sidecar_for(entry: &CatalogEntry, paths: &Paths) -> Option<(std::path::PathBu
         return None;
     }
     let erlang = catalog::find("erlang")?;
-    let basedir = store_layout::basedir(paths, erlang).ok()?;
+    let basedir = store_layout::basedir(paths, erlang, &erlang.version).ok()?;
     let epmd = basedir.join("bin/epmd");
     epmd.is_file().then_some((epmd, 4369))
 }
 
-fn render_exec_env(entry: &CatalogEntry, paths: &Paths) -> Vec<(String, String)> {
+/// OpenSearch's default transport/cluster port (9300). Not modelled by
+/// the catalog `Binding` (which holds one port), so it rides in
+/// `endpoint.json` under the `transport` label — and, like the HTTP
+/// port, gets relocated when a sibling instance or a foreign process
+/// already holds it.
+const OPENSEARCH_TRANSPORT_PORT: u16 = 9300;
+
+/// Named secondary TCP ports a service binds alongside its primary
+/// `Binding::Tcp` port. Each is allocated (and relocated on conflict)
+/// independently by [`Supervisor::resolve_endpoint`] and recorded in
+/// `endpoint.json` under its label.
+fn secondary_ports(name: &str) -> &'static [(&'static str, u16)] {
+    match name {
+        // Web UI / REST API; SMTP is the primary binding.
+        "mailpit" => &[("http", catalog::MAILPIT_HTTP_PORT)],
+        // Transport port, bound even in single-node mode.
+        "opensearch" => &[("transport", OPENSEARCH_TRANSPORT_PORT)],
+        _ => &[],
+    }
+}
+
+fn render_exec_env(
+    entry: &CatalogEntry,
+    version: &str,
+    paths: &Paths,
+    endpoint: Option<&endpoint::ServiceEndpoint>,
+) -> Vec<(String, String)> {
     match entry.name {
         "rabbitmq" => {
             // Reuse the provisioner's env-builder so rabbitmqctl and
             // rabbitmq-server agree on RABBITMQ_NODENAME etc. Plus
-            // HOME so the Erlang VM can write its `.erlang.cookie`.
-            let mut env = super::provisioners::rabbitmq::rabbitmq_env(paths);
+            // HOME so the Erlang VM can write its `.erlang.cookie`. The
+            // AMQP listener binds the effective (possibly relocated)
+            // port.
+            let node_port = endpoint.map_or(5672, |e| e.primary);
+            let mut env = super::provisioners::rabbitmq::rabbitmq_env(paths, node_port);
             env.push((
                 "HOME".into(),
-                paths.service_data("rabbitmq").join("home").display().to_string(),
+                paths.service_data("rabbitmq", version).join("home").display().to_string(),
             ));
             env
         }
         "opensearch" => {
-            let tmp = paths.service_data("opensearch").join("tmp");
-            let conf = paths.service_conf("opensearch");
+            let tmp = paths.service_data("opensearch", version).join("tmp");
+            let conf = paths.service_conf("opensearch", version);
             // Explicit `OPENSEARCH_JAVA_HOME` short-circuits the
             // platform sniff in `bin/opensearch-env`. Without it,
             // the launcher's `darwin` branch hard-codes
@@ -1243,7 +1371,7 @@ fn render_exec_env(entry: &CatalogEntry, paths: &Paths) -> Vec<(String, String)>
             // "could not find java in bundled jdk at ...". Our PBS
             // tarball lays the JDK out at `install/jdk/bin/java`
             // on every platform.
-            let java_home = store_layout::basedir(paths, entry)
+            let java_home = store_layout::basedir(paths, entry, version)
                 .map(|p| p.join("jdk"))
                 .unwrap_or_default();
             vec![
@@ -1280,11 +1408,16 @@ fn render_exec_env(entry: &CatalogEntry, paths: &Paths) -> Vec<(String, String)>
 /// here rather than templated — services have idiosyncratic flags
 /// (mariadb's `--skip-networking`, redis's `--unixsocketperm`, etc.)
 /// and the table is short. Fallback `[]` runs the binary with no args.
-fn render_exec_args(entry: &CatalogEntry, paths: &Paths) -> Vec<String> {
+fn render_exec_args(
+    entry: &CatalogEntry,
+    version: &str,
+    paths: &Paths,
+    endpoint: Option<&endpoint::ServiceEndpoint>,
+) -> Vec<String> {
     match entry.name {
         "redis" => {
-            let sock = paths.service_run("redis").join("redis.sock").display().to_string();
-            let dir = paths.service_data("redis").display().to_string();
+            let sock = paths.service_run("redis", version).join("redis.sock").display().to_string();
+            let dir = paths.service_data("redis", version).display().to_string();
             vec![
                 "--port".into(),
                 "0".into(),
@@ -1316,40 +1449,51 @@ fn render_exec_args(entry: &CatalogEntry, paths: &Paths) -> Vec<String> {
             // authored ~/.config/bougie/server.toml. The provisioner
             // (`provisioners::bougie_server`) writes hosts to the
             // same path.
-            let cfg = paths.service_conf("server").join("server.toml");
+            let cfg = paths.service_conf("server", version).join("server.toml");
+            let port = endpoint.map_or(7080, |e| e.primary);
             vec![
                 "server".into(),
                 "run".into(),
                 "--config".into(),
                 cfg.display().to_string(),
                 "--listen".into(),
-                "127.0.0.1:7080".into(),
+                format!("127.0.0.1:{port}"),
             ]
         }
         "opensearch" => {
-            let data = paths.service_data("opensearch").display().to_string();
-            let log = paths.service_log("opensearch").display().to_string();
+            let data = paths.service_data("opensearch", version).display().to_string();
+            let log = paths.service_log("opensearch", version).display().to_string();
             // OpenSearch writes JNA-extracted native libs + assorted
             // temporaries under `OPENSEARCH_TMPDIR`. The sandbox hides
             // /tmp (ProtectSystem::Strict), so pin it under the data
             // dir which is already RW. Created by `pre_start`.
+            // Effective ports from endpoint.json (catalog defaults 9200 /
+            // 9300 when nothing recorded). Both are relocated when taken,
+            // so two search engines — or opensearch beside elasticsearch —
+            // coexist.
+            let http_port = endpoint.map_or(9200, |e| e.primary);
+            let transport_port =
+                endpoint.and_then(|e| e.extra_port("transport")).unwrap_or(OPENSEARCH_TRANSPORT_PORT);
             vec![
                 format!("-Epath.data={data}"),
                 format!("-Epath.logs={log}"),
                 // Loopback only — bougie service never bind public
                 // addresses (SERVICES.md §6).
                 "-Enetwork.host=127.0.0.1".into(),
-                // Catalog binding pins :9200. Keep the two in lockstep.
-                "-Ehttp.port=9200".into(),
+                format!("-Ehttp.port={http_port}"),
+                // Transport port is bound even in single-node mode; pin it
+                // to the allocated value so a sibling instance doesn't
+                // collide on the default 9300.
+                format!("-Etransport.port={transport_port}"),
                 // No cluster bootstrap — single-node dev mode skips
                 // discovery + initial_cluster_manager_nodes ceremony.
                 "-Ediscovery.type=single-node".into(),
             ]
         }
         "mariadb" => {
-            let data_path = paths.service_data("mariadb");
+            let data_path = paths.service_data("mariadb", version);
             let datadir = data_path.display().to_string();
-            let sock = paths.service_run("mariadb").join("mariadb.sock").display().to_string();
+            let sock = paths.service_run("mariadb", version).join("mariadb.sock").display().to_string();
             // InnoDB writes temporaries during startup. The sandbox
             // hides /tmp (default systemd-style ProtectSystem), so
             // pin them under the already-RW datadir. Best-effort
@@ -1360,7 +1504,7 @@ fn render_exec_args(entry: &CatalogEntry, paths: &Paths) -> Vec<String> {
             // `basedir` is the install root the tarball extracted into;
             // mariadbd reads `share/mariadb/english/errmsg.sys` etc.
             // from there.
-            let basedir = store_layout::basedir(paths, entry)
+            let basedir = store_layout::basedir(paths, entry, version)
                 .map(|p| p.display().to_string())
                 .unwrap_or_default();
             vec![
@@ -1387,6 +1531,34 @@ fn render_exec_args(entry: &CatalogEntry, paths: &Paths) -> Vec<String> {
                 "--slow-query-log=0".into(),
             ]
         }
+        "mysql" => {
+            let data_path = paths.service_data("mysql", version);
+            let datadir = data_path.display().to_string();
+            let sock = paths.service_run("mysql", version).join("mysql.sock").display().to_string();
+            // InnoDB temporaries, same reasoning as mariadb: the sandbox
+            // hides /tmp, so pin them under the already-RW datadir.
+            let tmpdir = data_path.join("tmp");
+            let _ = std::fs::create_dir_all(&tmpdir);
+            let basedir = store_layout::basedir(paths, entry, version)
+                .map(|p| p.display().to_string())
+                .unwrap_or_default();
+            vec![
+                // `--no-defaults` first — ignore a host /etc/my.cnf whose
+                // options our bundled mysqld may reject.
+                "--no-defaults".into(),
+                format!("--basedir={basedir}"),
+                format!("--datadir={datadir}"),
+                format!("--socket={sock}"),
+                format!("--tmpdir={}", tmpdir.display()),
+                // Bougie services bind unix sockets only (SERVICES.md §6);
+                // keep mysqld off 0.0.0.0:3306.
+                "--skip-networking".into(),
+                // No query logs — the dev workflow needs neither and it
+                // keeps the datadir small.
+                "--general-log=0".into(),
+                "--slow-query-log=0".into(),
+            ]
+        }
         "mailpit" => {
             // Loopback-only, like every bougie service (SERVICES.md §6).
             // SMTP is the catalog binding (health-probed); the web UI
@@ -1394,10 +1566,15 @@ fn render_exec_args(entry: &CatalogEntry, paths: &Paths) -> Vec<String> {
             // service data dir so it survives restarts — the dir is
             // created (and made RW) by the sandbox before spawn, and
             // Mailpit creates the SQLite file + its WAL siblings there.
-            let smtp = format!("127.0.0.1:{}", catalog::MAILPIT_SMTP_PORT);
-            let http = format!("127.0.0.1:{}", catalog::MAILPIT_HTTP_PORT);
+            let smtp = format!("127.0.0.1:{}", endpoint.map_or(catalog::MAILPIT_SMTP_PORT, |e| e.primary));
+            let http = format!(
+                "127.0.0.1:{}",
+                endpoint
+                    .and_then(|e| e.extra_port("http"))
+                    .unwrap_or(catalog::MAILPIT_HTTP_PORT)
+            );
             let db = paths
-                .service_data("mailpit")
+                .service_data("mailpit", version)
                 .join("mailpit.db")
                 .display()
                 .to_string();
@@ -1445,8 +1622,10 @@ where
     });
 }
 
-#[tracing::instrument(skip_all, fields(service = name))]
-async fn wait_for_health(name: &str, paths: &Paths, child: &mut Child) -> Result<()> {
+#[tracing::instrument(skip_all, fields(service = inst.name.as_str(), version = inst.version.as_str()))]
+async fn wait_for_health(inst: &Instance, paths: &Paths, child: &mut Child) -> Result<()> {
+    let name = inst.name.as_str();
+    let version = inst.version.as_str();
     let timeout = health_timeout_for(name);
     let deadline = Instant::now() + timeout;
     loop {
@@ -1461,13 +1640,13 @@ async fn wait_for_health(name: &str, paths: &Paths, child: &mut Child) -> Result
             return Err(eyre!(
                 "service `{name}` exited during startup (status {status}); \
                  check `bougie service logs {name}` for the full log{}",
-                startup_log_excerpt(name, paths),
+                startup_log_excerpt(name, version, paths),
             ));
         }
         // Protocol-aware readiness (see `health::probe`): a service is
         // only healthy once it can actually answer, not merely once its
         // port is bound.
-        let last_err = match super::health::probe(name, paths).await {
+        let last_err = match super::health::probe(name, version, paths).await {
             Ok(()) => return Ok(()),
             Err(e) => e,
         };
@@ -1475,7 +1654,7 @@ async fn wait_for_health(name: &str, paths: &Paths, child: &mut Child) -> Result
             return Err(eyre!(
                 "service `{name}` did not become healthy within {timeout:?} \
                  (last probe: {last_err:#}); check `bougie service logs {name}`{}",
-                startup_log_excerpt(name, paths),
+                startup_log_excerpt(name, version, paths),
             ));
         }
         tokio::time::sleep(HEALTH_POLL).await;
@@ -1497,8 +1676,8 @@ const STARTUP_LOG_EXCERPT_BYTES: usize = 4 * 1024;
 /// with the failure into `status`, `bougied.log`, and `bougie
 /// diagnose` instead of staying buried on the daemon host). Empty
 /// string when there is no log to quote.
-fn startup_log_excerpt(name: &str, paths: &Paths) -> String {
-    let lines = super::logs::tail_lines(&paths.service_log_file(name), STARTUP_LOG_EXCERPT_LINES)
+fn startup_log_excerpt(name: &str, version: &str, paths: &Paths) -> String {
+    let lines = super::logs::tail_lines(&paths.service_log_file(name, version), STARTUP_LOG_EXCERPT_LINES)
         .unwrap_or_default();
     let mut excerpt = String::new();
     for line in &lines {
@@ -1768,20 +1947,20 @@ pub type Shared = Arc<Mutex<Supervisor>>;
 /// Returns `Ok(true)` if this call brought the service up, `Ok(false)` if
 /// it was already running (or was stopped mid-probe), `Err` if the spawn
 /// or the health probe failed.
-pub async fn start_service(sup: &Shared, name: &str) -> Result<bool> {
-    let mut pending = match sup.lock().await.spawn_service(name).await? {
+pub async fn start_service(sup: &Shared, inst: &Instance) -> Result<bool> {
+    let mut pending = match sup.lock().await.spawn_service(inst).await? {
         SpawnOutcome::AlreadyRunning => return Ok(false),
         // Move out of the box so the fields below can be moved out by value.
         SpawnOutcome::Spawned(pending) => *pending,
     };
     // Off-lock: the supervisor mutex is free for `status` and the reaper
     // while this probe runs.
-    let name = pending.name;
+    let inst = pending.instance.clone();
     let probe = pending.wait_healthy().await;
     let child = pending.child;
     // Re-lock only to finalize. Bind the guard to a statement so it drops
     // before the `Superseded` arm awaits the child reap.
-    let finalize = sup.lock().await.finalize_start(name, child, probe);
+    let finalize = sup.lock().await.finalize_start(&inst, child, probe);
     match finalize {
         StartFinalize::Started => Ok(true),
         StartFinalize::Failed(e) => Err(e),
@@ -1815,7 +1994,7 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let paths = Paths::new(tmp.path().into(), tmp.path().into());
         let entry = catalog::find("redis").unwrap();
-        let args = render_exec_args(entry, &paths);
+        let args = render_exec_args(entry, entry.version, &paths, None);
         assert!(args.iter().any(|a| a == "--unixsocket"));
         assert!(args.iter().any(|a| a == "--port"));
         // Must include "0" right after "--port"
@@ -1829,7 +2008,7 @@ mod tests {
         let paths = Paths::new(tmp.path().into(), tmp.path().into());
         let supervisor = Supervisor::new(paths);
         let entry = catalog::find("redis").unwrap();
-        let err = supervisor.binary_path(entry).unwrap_err();
+        let err = supervisor.binary_path(entry, entry.version).unwrap_err();
         let msg = format!("{err:#}");
         assert!(msg.contains("tarball"), "{msg}");
         assert!(msg.contains("redis-8.6.3"), "{msg}");
@@ -1844,7 +2023,7 @@ mod tests {
         std::fs::write(paths.store().join("redis-8.6.3/bin/redis-server"), "fake").unwrap();
         let supervisor = Supervisor::new(paths.clone());
         let entry = catalog::find("redis").unwrap();
-        let path = supervisor.binary_path(entry).unwrap();
+        let path = supervisor.binary_path(entry, entry.version).unwrap();
         assert!(path.ends_with("redis-8.6.3/bin/redis-server"));
     }
 
@@ -1857,19 +2036,25 @@ mod tests {
         std::fs::write(paths.store().join("redis-8.6.3-abc123/bin/redis-server"), "fake").unwrap();
         let supervisor = Supervisor::new(paths);
         let entry = catalog::find("redis").unwrap();
-        let path = supervisor.binary_path(entry).unwrap();
+        let path = supervisor.binary_path(entry, entry.version).unwrap();
         assert!(path.to_string_lossy().contains("redis-8.6.3-abc123"));
     }
 
     #[test]
-    fn snapshot_lists_every_catalog_entry_as_stopped() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let paths = Paths::new(tmp.path().into(), tmp.path().into());
-        let supervisor = Supervisor::new(paths);
-        let snap = supervisor.snapshot();
-        assert!(snap.iter().any(|s| s.name == "redis" && s.state == ServiceState::Stopped));
+    fn snapshot_is_empty_until_instances_are_seeded() {
+        // Lazy creation: a fresh supervisor holds no instances, so its
+        // snapshot is empty (the pre-lazy version pre-seeded a Stopped slot
+        // per catalog entry). Seeding an instance — what the first `up`
+        // does — makes it appear as Stopped with its resolved version.
+        let mut sup = test_supervisor();
+        assert!(sup.snapshot().is_empty(), "no instances until one is upped");
+        let redis = seed(&mut sup, "redis");
+        seed(&mut sup, "mariadb");
+        let snap = sup.snapshot();
+        assert!(snap.iter().any(|s| s.name == "redis"
+            && s.version == redis.version
+            && s.state == ServiceState::Stopped));
         assert!(snap.iter().any(|s| s.name == "mariadb"));
-        assert!(snap.iter().any(|s| s.name == "jdk"));
     }
 
     #[test]
@@ -1900,10 +2085,11 @@ mod tests {
 
     #[test]
     fn fresh_service_has_no_failure_or_restart_bookkeeping() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let paths = Paths::new(tmp.path().into(), tmp.path().into());
-        let supervisor = Supervisor::new(paths);
-        let snap = supervisor.snapshot();
+        let mut sup = test_supervisor();
+        seed(&mut sup, "redis");
+        seed(&mut sup, "mariadb");
+        let snap = sup.snapshot();
+        assert!(!snap.is_empty(), "seeded instances present");
         for s in &snap {
             assert_eq!(s.failure_count, 0, "{}: failure_count should be 0", s.name);
             assert!(s.next_restart_ms.is_none(), "{}: no respawn pending", s.name);
@@ -1918,24 +2104,63 @@ mod tests {
         Supervisor::new(Paths::new(path.clone(), path))
     }
 
-    #[tokio::test]
-    async fn spawn_refuses_when_catalog_port_is_squatted() {
-        let mut sup = test_supervisor();
-        // Squat rabbitmq's AMQP port. If something else already holds
-        // it the probe below still reads "in use" and the assertion is
-        // unaffected; only a sandbox that forbids loopback binds
-        // entirely makes the scenario unbuildable — skip then.
+    /// Seed a `Stopped` slot for `name`'s default-version instance and
+    /// return its instance identity. Lazy creation leaves the map empty, so
+    /// a test that pokes `services.get_mut(&id)` (or drives a lifecycle
+    /// method that expects an existing slot) seeds first — this stands in
+    /// for the first `up` having materialized the instance. Idempotent.
+    fn seed(sup: &mut Supervisor, name: &'static str) -> Instance {
+        let version = catalog::default_version(name);
+        let inst = Instance::new(name, version);
+        sup.services
+            .entry(inst.id())
+            .or_insert_with(|| ManagedService::new(name, version));
+        inst
+    }
+
+    #[test]
+    fn resolve_endpoint_relocates_off_a_squatted_catalog_port() {
+        let sup = test_supervisor();
+        let entry = catalog::find("rabbitmq").unwrap();
+        // Squat rabbitmq's AMQP port. Only a sandbox forbidding loopback
+        // binds makes the scenario unbuildable — skip then.
         let _squat = std::net::TcpListener::bind("127.0.0.1:5672").ok();
         if !crate::daemon::ports::port_in_use(5672) {
             return;
         }
-        let err = sup.spawn_service("rabbitmq").await.unwrap_err();
-        let msg = format!("{err:#}");
-        assert!(msg.contains("port 5672 is already in use"), "{msg}");
-        assert!(msg.contains("rabbitmq"), "{msg}");
-        // Fails before any tarball/store work — the whole point is a
-        // crisp pre-spawn error, not an EADDRINUSE crash loop.
-        assert!(!msg.contains("tarball"), "{msg}");
+        // No hard-fail any more: it relocates and records the new port.
+        let ep = sup
+            .resolve_endpoint(entry, entry.version)
+            .unwrap()
+            .expect("a tcp service has an endpoint");
+        assert_ne!(ep.primary, 5672, "must relocate off the squatted port");
+        assert!(ep.primary > 5672, "scans upward from the default: {}", ep.primary);
+        // Persisted so exec args / health / offline consumers agree.
+        let back = endpoint::ServiceEndpoint::load(&sup.paths.service_endpoint("rabbitmq", &entry.version))
+            .unwrap()
+            .unwrap();
+        assert_eq!(back, ep);
+    }
+
+    #[test]
+    fn resolve_endpoint_uses_defaults_when_free_and_is_sticky() {
+        let sup = test_supervisor();
+        let entry = catalog::find("mailpit").unwrap(); // 1025 SMTP + 8025 http
+        if crate::daemon::ports::port_in_use(1025) || crate::daemon::ports::port_in_use(8025) {
+            return; // something already holds a default here — skip
+        }
+        let ep = sup.resolve_endpoint(entry, entry.version).unwrap().unwrap();
+        assert_eq!(ep.primary, 1025);
+        assert_eq!(ep.extra_port("http"), Some(8025));
+        // Sticky: a second resolve reuses the recorded ports verbatim.
+        assert_eq!(sup.resolve_endpoint(entry, entry.version).unwrap().unwrap(), ep);
+    }
+
+    #[test]
+    fn resolve_endpoint_is_none_for_socket_services() {
+        let sup = test_supervisor();
+        let entry = catalog::find("redis").unwrap();
+        assert!(sup.resolve_endpoint(entry, entry.version).unwrap().is_none());
     }
 
     #[test]
@@ -1943,7 +2168,10 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let path: std::path::PathBuf = tmp.keep();
         let paths = Paths::new(path.clone(), path);
-        assert_eq!(startup_log_excerpt("redis", &paths), "");
+        assert_eq!(
+            startup_log_excerpt("redis", catalog::default_version("redis"), &paths),
+            ""
+        );
     }
 
     #[test]
@@ -1951,7 +2179,7 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let path: std::path::PathBuf = tmp.keep();
         let paths = Paths::new(path.clone(), path);
-        let log = paths.service_log_file("redis");
+        let log = paths.service_log_file("redis", crate::daemon::catalog::default_version("redis"));
         std::fs::create_dir_all(log.parent().unwrap()).unwrap();
         let mut contents = String::new();
         for i in 0..40 {
@@ -1959,7 +2187,7 @@ mod tests {
         }
         contents.push_str("Address already in use: 127.0.0.1:6379\n");
         std::fs::write(&log, contents).unwrap();
-        let excerpt = startup_log_excerpt("redis", &paths);
+        let excerpt = startup_log_excerpt("redis", catalog::default_version("redis"), &paths);
         assert!(excerpt.starts_with("; last log lines:"), "{excerpt}");
         assert!(excerpt.contains("Address already in use"), "{excerpt}");
         // Only the tail is quoted.
@@ -1971,7 +2199,7 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let path: std::path::PathBuf = tmp.keep();
         let paths = Paths::new(path.clone(), path);
-        let log = paths.service_log_file("redis");
+        let log = paths.service_log_file("redis", crate::daemon::catalog::default_version("redis"));
         std::fs::create_dir_all(log.parent().unwrap()).unwrap();
         std::fs::write(&log, "BOOT FAILED: Address already in use\n").unwrap();
         // Stand-in for a babysit whose service died at startup.
@@ -1982,7 +2210,8 @@ mod tests {
             .stderr(Stdio::null())
             .spawn()
             .expect("spawn sh");
-        let err = wait_for_health("redis", &paths, &mut child).await.unwrap_err();
+        let inst = Instance::new("redis", catalog::default_version("redis"));
+        let err = wait_for_health(&inst, &paths, &mut child).await.unwrap_err();
         let msg = format!("{err:#}");
         assert!(msg.contains("exited during startup"), "{msg}");
         assert!(msg.contains("BOOT FAILED: Address already in use"), "{msg}");
@@ -2010,28 +2239,30 @@ mod tests {
     #[tokio::test]
     async fn finalize_start_running_on_healthy_probe() {
         let mut sup = test_supervisor();
-        sup.services.get_mut("redis").unwrap().state = ServiceState::HealthChecking;
+        let redis = seed(&mut sup, "redis");
+        sup.services.get_mut(&redis.id()).unwrap().state = ServiceState::HealthChecking;
         let child = spawn_dummy_child();
-        let outcome = sup.finalize_start("redis", child, Ok(()));
+        let outcome = sup.finalize_start(&redis, child, Ok(()));
         assert!(matches!(outcome, StartFinalize::Started));
-        let svc = sup.services.get("redis").unwrap();
+        let svc = sup.services.get(&redis.id()).unwrap();
         assert_eq!(svc.state, ServiceState::Running);
         assert!(svc.child.is_some(), "child put back in the map");
-        reap(sup.services.get_mut("redis").unwrap().child.take().unwrap()).await;
+        reap(sup.services.get_mut(&redis.id()).unwrap().child.take().unwrap()).await;
     }
 
     #[tokio::test]
     async fn finalize_start_failed_on_probe_error() {
         let mut sup = test_supervisor();
-        sup.services.get_mut("redis").unwrap().state = ServiceState::HealthChecking;
+        let redis = seed(&mut sup, "redis");
+        sup.services.get_mut(&redis.id()).unwrap().state = ServiceState::HealthChecking;
         let child = spawn_dummy_child();
-        let outcome = sup.finalize_start("redis", child, Err(eyre::eyre!("port never opened")));
+        let outcome = sup.finalize_start(&redis, child, Err(eyre::eyre!("port never opened")));
         assert!(matches!(outcome, StartFinalize::Failed(_)));
-        let svc = sup.services.get("redis").unwrap();
+        let svc = sup.services.get(&redis.id()).unwrap();
         assert_eq!(svc.state, ServiceState::Failed);
         // The (dead/wedged) child is kept so the next check_all tick reaps it.
         assert!(svc.child.is_some());
-        reap(sup.services.get_mut("redis").unwrap().child.take().unwrap()).await;
+        reap(sup.services.get_mut(&redis.id()).unwrap().child.take().unwrap()).await;
     }
 
     #[tokio::test]
@@ -2041,13 +2272,14 @@ mod tests {
         // service — it must hand the stale child back instead of marking a
         // stopped service Running.
         let mut sup = test_supervisor();
-        sup.services.get_mut("redis").unwrap().state = ServiceState::Stopped;
+        let redis = seed(&mut sup, "redis");
+        sup.services.get_mut(&redis.id()).unwrap().state = ServiceState::Stopped;
         let child = spawn_dummy_child();
-        let outcome = sup.finalize_start("redis", child, Ok(()));
+        let outcome = sup.finalize_start(&redis, child, Ok(()));
         let StartFinalize::Superseded(stale) = outcome else {
             panic!("expected Superseded when the service left HealthChecking");
         };
-        let svc = sup.services.get("redis").unwrap();
+        let svc = sup.services.get(&redis.id()).unwrap();
         assert_eq!(svc.state, ServiceState::Stopped, "honor the newer state");
         assert!(svc.child.is_none(), "do not stash the stale child in the map");
         reap(stale).await;
@@ -2056,15 +2288,16 @@ mod tests {
     #[tokio::test]
     async fn check_all_returns_due_restarts_and_clears_deadline() {
         let mut sup = test_supervisor();
+        let redis = seed(&mut sup, "redis");
         {
-            let svc = sup.services.get_mut("redis").unwrap();
+            let svc = sup.services.get_mut(&redis.id()).unwrap();
             svc.state = ServiceState::Failed;
             // `now` here is <= the `now` check_all samples, so it's due.
             svc.restart_at = Some(Instant::now());
         }
         let due = sup.check_all().await;
-        assert!(due.contains(&"redis"), "overdue Failed service is due");
-        let svc = sup.services.get("redis").unwrap();
+        assert!(due.iter().any(|i| i.name == "redis"), "overdue Failed service is due");
+        let svc = sup.services.get(&redis.id()).unwrap();
         // Deadline cleared so the next tick won't double-issue the restart
         // that's now in flight off-lock.
         assert!(svc.restart_at.is_none());
@@ -2077,29 +2310,31 @@ mod tests {
         let mut sup = test_supervisor();
         // Comfortably in the future (and not a round minute, which a
         // pedantic lint would rather see as `from_mins`).
+        let redis = seed(&mut sup, "redis");
         let deadline = Instant::now() + Duration::from_secs(90);
         {
-            let svc = sup.services.get_mut("redis").unwrap();
+            let svc = sup.services.get_mut(&redis.id()).unwrap();
             svc.state = ServiceState::Failed;
             svc.restart_at = Some(deadline);
         }
         let due = sup.check_all().await;
         assert!(due.is_empty(), "not-yet-due restart is left alone");
-        assert_eq!(sup.services.get("redis").unwrap().restart_at, Some(deadline));
+        assert_eq!(sup.services.get(&redis.id()).unwrap().restart_at, Some(deadline));
     }
 
     #[test]
     fn note_restart_failure_arms_backoff_when_idle() {
         let mut sup = test_supervisor();
+        let redis = seed(&mut sup, "redis");
         {
-            let svc = sup.services.get_mut("redis").unwrap();
+            let svc = sup.services.get_mut(&redis.id()).unwrap();
             svc.state = ServiceState::Failed;
             svc.failure_count = 1;
             svc.restart_at = None;
             svc.child = None;
         }
-        sup.note_restart_failure("redis");
-        let svc = sup.services.get("redis").unwrap();
+        sup.note_restart_failure(&redis);
+        let svc = sup.services.get(&redis.id()).unwrap();
         assert_eq!(svc.failure_count, 2, "spawn-phase failure bumps the count");
         assert!(svc.restart_at.is_some(), "next backoff armed");
     }
@@ -2107,15 +2342,16 @@ mod tests {
     #[test]
     fn note_restart_failure_noops_when_already_rearmed() {
         let mut sup = test_supervisor();
+        let redis = seed(&mut sup, "redis");
         let deadline = Instant::now() + Duration::from_secs(99);
         {
-            let svc = sup.services.get_mut("redis").unwrap();
+            let svc = sup.services.get_mut(&redis.id()).unwrap();
             svc.state = ServiceState::Failed;
             svc.failure_count = 3;
             svc.restart_at = Some(deadline);
         }
-        sup.note_restart_failure("redis");
-        let svc = sup.services.get("redis").unwrap();
+        sup.note_restart_failure(&redis);
+        let svc = sup.services.get(&redis.id()).unwrap();
         // A probe-phase failure (handled by check_all) or an already-armed
         // deadline must not be double-counted.
         assert_eq!(svc.failure_count, 3);
@@ -2124,24 +2360,28 @@ mod tests {
 
     // -------------------- continuous health --------------------
 
-    /// Put a service into a live, probe-able state for the health tests.
-    fn mark_running(sup: &mut Supervisor, name: &'static str) {
-        let svc = sup.services.get_mut(name).unwrap();
+    /// Seed a service and put it into a live, probe-able state for the
+    /// health tests. Returns the instance identity so callers can address
+    /// the same `(name, version)` slot.
+    fn mark_running(sup: &mut Supervisor, name: &'static str) -> Instance {
+        let inst = seed(sup, name);
+        let svc = sup.services.get_mut(&inst.id()).unwrap();
         svc.state = ServiceState::Running;
         svc.started_at = Some(Instant::now());
         svc.next_health_at = Some(Instant::now());
         svc.health_inflight = false;
         svc.health_misses = 0;
+        inst
     }
 
     #[test]
     fn record_health_pass_resets_misses() {
         let mut sup = test_supervisor();
-        mark_running(&mut sup, "redis");
-        sup.services.get_mut("redis").unwrap().health_misses = 2;
-        let out = sup.record_health("redis", true);
+        let redis = mark_running(&mut sup, "redis");
+        sup.services.get_mut(&redis.id()).unwrap().health_misses = 2;
+        let out = sup.record_health(&redis, true);
         assert_eq!(out, HealthOutcome::Healthy);
-        let svc = sup.services.get("redis").unwrap();
+        let svc = sup.services.get(&redis.id()).unwrap();
         assert_eq!(svc.health_misses, 0);
         assert_eq!(svc.state, ServiceState::Running);
         assert!(!svc.health_inflight);
@@ -2151,10 +2391,10 @@ mod tests {
     #[test]
     fn record_health_first_miss_marks_unhealthy_but_not_breach() {
         let mut sup = test_supervisor();
-        mark_running(&mut sup, "redis");
-        let out = sup.record_health("redis", false);
+        let redis = mark_running(&mut sup, "redis");
+        let out = sup.record_health(&redis, false);
         assert_eq!(out, HealthOutcome::Degraded);
-        let svc = sup.services.get("redis").unwrap();
+        let svc = sup.services.get(&redis.id()).unwrap();
         assert_eq!(svc.health_misses, 1);
         assert_eq!(svc.state, ServiceState::Unhealthy);
     }
@@ -2162,15 +2402,15 @@ mod tests {
     #[test]
     fn record_health_recovers_unhealthy_to_running() {
         let mut sup = test_supervisor();
-        mark_running(&mut sup, "redis");
+        let redis = mark_running(&mut sup, "redis");
         {
-            let svc = sup.services.get_mut("redis").unwrap();
+            let svc = sup.services.get_mut(&redis.id()).unwrap();
             svc.state = ServiceState::Unhealthy;
             svc.health_misses = 2;
         }
-        let out = sup.record_health("redis", true);
+        let out = sup.record_health(&redis, true);
         assert_eq!(out, HealthOutcome::Healthy);
-        let svc = sup.services.get("redis").unwrap();
+        let svc = sup.services.get(&redis.id()).unwrap();
         assert_eq!(svc.state, ServiceState::Running);
         assert_eq!(svc.health_misses, 0);
     }
@@ -2178,11 +2418,11 @@ mod tests {
     #[test]
     fn record_health_breaches_at_threshold() {
         let mut sup = test_supervisor();
-        mark_running(&mut sup, "redis");
-        sup.services.get_mut("redis").unwrap().health_misses = HEALTH_FAILURE_THRESHOLD - 1;
-        let out = sup.record_health("redis", false);
+        let redis = mark_running(&mut sup, "redis");
+        sup.services.get_mut(&redis.id()).unwrap().health_misses = HEALTH_FAILURE_THRESHOLD - 1;
+        let out = sup.record_health(&redis, false);
         assert_eq!(out, HealthOutcome::Breach);
-        let svc = sup.services.get("redis").unwrap();
+        let svc = sup.services.get(&redis.id()).unwrap();
         assert_eq!(svc.health_misses, HEALTH_FAILURE_THRESHOLD);
         assert_eq!(svc.state, ServiceState::Unhealthy);
         // Out of the rotation until fail_unhealthy/restart re-arms it.
@@ -2193,21 +2433,21 @@ mod tests {
     fn record_health_discards_stale_result_when_not_probeable() {
         // The probe ran off-lock and the service was stopped meanwhile.
         let mut sup = test_supervisor();
-        sup.services.get_mut("redis").unwrap().state = ServiceState::Stopped;
-        let out = sup.record_health("redis", false);
+        let redis = seed(&mut sup, "redis"); // seeded Stopped
+        let out = sup.record_health(&redis, false);
         assert_eq!(out, HealthOutcome::Gone);
-        assert_eq!(sup.services.get("redis").unwrap().state, ServiceState::Stopped);
+        assert_eq!(sup.services.get(&redis.id()).unwrap().state, ServiceState::Stopped);
     }
 
     #[test]
     fn health_due_picks_running_and_marks_inflight() {
         let mut sup = test_supervisor();
-        mark_running(&mut sup, "redis");
+        let redis = mark_running(&mut sup, "redis");
         let due = sup.health_due();
-        assert!(due.contains(&"redis"));
-        assert!(sup.services.get("redis").unwrap().health_inflight);
+        assert!(due.iter().any(|i| i.name == "redis"));
+        assert!(sup.services.get(&redis.id()).unwrap().health_inflight);
         // A second pass must not re-issue while the first is in flight.
-        assert!(!sup.health_due().contains(&"redis"));
+        assert!(!sup.health_due().iter().any(|i| i.name == "redis"));
     }
 
     #[test]
@@ -2215,23 +2455,25 @@ mod tests {
         let mut sup = test_supervisor();
         // Stopped redis: not due.
         // jdk has Binding::None — never probed even if somehow "Running".
+        seed(&mut sup, "redis"); // seeded Stopped
+        let jdk = seed(&mut sup, "jdk");
         {
-            let jdk = sup.services.get_mut("jdk").unwrap();
-            jdk.state = ServiceState::Running;
-            jdk.next_health_at = Some(Instant::now());
+            let j = sup.services.get_mut(&jdk.id()).unwrap();
+            j.state = ServiceState::Running;
+            j.next_health_at = Some(Instant::now());
         }
         let due = sup.health_due();
-        assert!(!due.contains(&"redis"), "stopped service not probed");
-        assert!(!due.contains(&"jdk"), "Binding::None never probed");
+        assert!(!due.iter().any(|i| i.name == "redis"), "stopped service not probed");
+        assert!(!due.iter().any(|i| i.name == "jdk"), "Binding::None never probed");
     }
 
     #[tokio::test]
     async fn fail_unhealthy_is_noop_unless_unhealthy() {
         let mut sup = test_supervisor();
-        mark_running(&mut sup, "redis"); // Running, not Unhealthy
-        sup.fail_unhealthy("redis").await;
+        let redis = mark_running(&mut sup, "redis"); // Running, not Unhealthy
+        sup.fail_unhealthy(&redis).await;
         // Untouched: still Running, no restart scheduled.
-        let svc = sup.services.get("redis").unwrap();
+        let svc = sup.services.get(&redis.id()).unwrap();
         assert_eq!(svc.state, ServiceState::Running);
         assert!(svc.restart_at.is_none());
     }
@@ -2239,9 +2481,10 @@ mod tests {
     #[tokio::test]
     async fn fail_unhealthy_tears_down_and_schedules_restart() {
         let mut sup = test_supervisor();
+        let redis = seed(&mut sup, "redis");
         let child = spawn_dummy_child();
         {
-            let svc = sup.services.get_mut("redis").unwrap();
+            let svc = sup.services.get_mut(&redis.id()).unwrap();
             svc.state = ServiceState::Unhealthy;
             svc.pid = Some(child.id().unwrap());
             svc.child = Some(child);
@@ -2250,8 +2493,8 @@ mod tests {
             svc.failure_count = 2;
             svc.health_misses = HEALTH_FAILURE_THRESHOLD;
         }
-        sup.fail_unhealthy("redis").await;
-        let svc = sup.services.get("redis").unwrap();
+        sup.fail_unhealthy(&redis).await;
+        let svc = sup.services.get(&redis.id()).unwrap();
         assert_eq!(svc.state, ServiceState::Failed);
         assert_eq!(svc.failure_count, 3, "breach counts as a fresh failure");
         assert_eq!(svc.health_misses, 0);
@@ -2262,9 +2505,10 @@ mod tests {
     #[tokio::test]
     async fn fail_unhealthy_gives_up_past_the_attempt_cap() {
         let mut sup = test_supervisor();
+        let redis = seed(&mut sup, "redis");
         let child = spawn_dummy_child();
         {
-            let svc = sup.services.get_mut("redis").unwrap();
+            let svc = sup.services.get_mut(&redis.id()).unwrap();
             svc.state = ServiceState::Unhealthy;
             svc.pid = Some(child.id().unwrap());
             svc.child = Some(child);
@@ -2272,8 +2516,8 @@ mod tests {
             // Already at the cap → the next failure exceeds it.
             svc.failure_count = MAX_RESTART_ATTEMPTS;
         }
-        sup.fail_unhealthy("redis").await;
-        let svc = sup.services.get("redis").unwrap();
+        sup.fail_unhealthy(&redis).await;
+        let svc = sup.services.get(&redis.id()).unwrap();
         assert_eq!(svc.state, ServiceState::Failed);
         assert!(
             svc.restart_at.is_none(),
@@ -2284,9 +2528,9 @@ mod tests {
     #[test]
     fn snapshot_surfaces_health_misses_and_threshold() {
         let mut sup = test_supervisor();
-        mark_running(&mut sup, "redis");
+        let redis_inst = mark_running(&mut sup, "redis");
         {
-            let svc = sup.services.get_mut("redis").unwrap();
+            let svc = sup.services.get_mut(&redis_inst.id()).unwrap();
             svc.state = ServiceState::Unhealthy;
             svc.health_misses = 2;
         }
@@ -2303,23 +2547,24 @@ mod tests {
         // Taking it down (e.g. the last tenant deprovisioned) must stop it,
         // not no-op — otherwise check_all resurrects it from the deadline.
         let mut sup = test_supervisor();
+        let redis = seed(&mut sup, "redis");
         {
-            let svc = sup.services.get_mut("redis").unwrap();
+            let svc = sup.services.get_mut(&redis.id()).unwrap();
             svc.state = ServiceState::Failed;
             svc.failure_count = 3;
             svc.restart_at = Some(Instant::now()); // due now
             svc.child = None; // crashed-and-already-reaped
         }
-        let stopped = sup.stop("redis").await.unwrap();
+        let stopped = sup.stop(&redis).await.unwrap();
         assert!(stopped, "stop() must act on a Failed service");
-        let svc = sup.services.get("redis").unwrap();
+        let svc = sup.services.get(&redis.id()).unwrap();
         assert_eq!(svc.state, ServiceState::Stopped);
         assert!(svc.restart_at.is_none(), "armed restart deadline cleared");
         assert_eq!(svc.failure_count, 0, "backoff budget reset");
 
         // The restart pass must not bring it back — its state is Stopped now.
         let due = sup.check_all().await;
-        assert!(!due.contains(&"redis"), "an explicitly stopped service is not restarted");
+        assert!(!due.iter().any(|i| i.name == "redis"), "an explicitly stopped service is not restarted");
     }
 
     #[tokio::test]
@@ -2329,16 +2574,17 @@ mod tests {
         // stop() refused Failed, so the service was unstoppable. It must now
         // take and kill the child.
         let mut sup = test_supervisor();
+        let redis = seed(&mut sup, "redis");
         let child = spawn_dummy_child();
         {
-            let svc = sup.services.get_mut("redis").unwrap();
+            let svc = sup.services.get_mut(&redis.id()).unwrap();
             svc.state = ServiceState::Failed;
             svc.child = Some(child);
             svc.restart_at = None;
         }
-        let stopped = sup.stop("redis").await.unwrap();
+        let stopped = sup.stop(&redis).await.unwrap();
         assert!(stopped);
-        let svc = sup.services.get("redis").unwrap();
+        let svc = sup.services.get(&redis.id()).unwrap();
         assert_eq!(svc.state, ServiceState::Stopped);
         assert!(svc.child.is_none(), "the live child was taken and killed");
     }
