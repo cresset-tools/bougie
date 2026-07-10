@@ -295,6 +295,13 @@ pub(crate) fn read_root_manifest(project_root: &Path) -> Result<RootManifest, Du
 /// array of strings as the value. Both shapes get normalized to
 /// `Vec<String>`. Order is preserved (we requested `preserve_order`
 /// from `serde_json` at the crate level).
+///
+/// An **empty array** is accepted as an empty map (the PHP
+/// empty-object quirk): `json_encode` can't tell an empty assoc array
+/// from an empty list, so Composer-written locks routinely carry
+/// `"psr-0": []` (real example: Mage-OS module packages) and Composer
+/// itself tolerates it. A non-empty array is still an error — that
+/// shape is genuinely malformed.
 fn de_namespace_map<'de, D>(d: D) -> Result<Vec<(String, Vec<String>)>, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -308,7 +315,16 @@ where
         Many(Vec<String>),
     }
 
-    let raw: serde_json::Map<String, serde_json::Value> = Deserialize::deserialize(d)?;
+    let raw = match serde_json::Value::deserialize(d)? {
+        serde_json::Value::Object(map) => map,
+        serde_json::Value::Array(items) if items.is_empty() => serde_json::Map::new(),
+        other => {
+            return Err(D::Error::custom(format!(
+                "expected a namespace map or an empty array \
+                 (the PHP empty-object quirk), got {other}"
+            )));
+        }
+    };
     let mut out = Vec::with_capacity(raw.len());
     for (k, v) in raw {
         let parsed: OneOrMany = serde_json::from_value(v).map_err(D::Error::custom)?;
@@ -335,6 +351,27 @@ mod tests {
             "require": require,
         }))
         .expect("valid Package json")
+    }
+
+    #[test]
+    fn namespace_map_accepts_php_empty_array_form() {
+        // PHP's json_encode writes an empty assoc array as `[]`, so
+        // Composer-written locks carry `"psr-0": []` (seen in the wild
+        // on Mage-OS module packages). A non-empty array stays an error.
+        let block: AutoloadBlock = serde_json::from_value(serde_json::json!({
+            "psr-4": {"Acme\\Mod\\": ""},
+            "psr-0": [],
+            "files": ["registration.php"],
+        }))
+        .expect("empty-array psr-0 parses as an empty map");
+        assert!(block.psr0.is_empty());
+        assert_eq!(block.psr4.len(), 1);
+
+        let err = serde_json::from_value::<AutoloadBlock>(serde_json::json!({
+            "psr-0": ["oops"],
+        }))
+        .unwrap_err();
+        assert!(err.to_string().contains("empty array"), "{err}");
     }
 
     #[test]

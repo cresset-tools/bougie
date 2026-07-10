@@ -59,6 +59,28 @@ where
     }
 }
 
+/// [`map_or_empty_array`] for maps with arbitrary `Value`s — the PSR
+/// namespace maps, whose values are a string or an array of strings.
+/// Same PHP empty-object quirk: Composer-written locks carry
+/// `"psr-0": []` for a package whose composer.json declared an empty
+/// map (real example: Mage-OS module packages).
+fn value_map_or_empty_array<'de, D>(deserializer: D) -> Result<BTreeMap<String, Value>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    use serde::de::Error;
+    match Value::deserialize(deserializer)? {
+        Value::Object(map) => Ok(map.into_iter().collect()),
+        Value::Array(arr) if arr.is_empty() => Ok(BTreeMap::new()),
+        Value::Array(_) => Err(D::Error::custom(
+            "expected a map or an empty array (the PHP empty-object quirk); got a non-empty array",
+        )),
+        other => Err(D::Error::custom(format!(
+            "expected a map, got {other:?}",
+        ))),
+    }
+}
+
 /// Deserialize a `Vec<String>` while mirroring Composer's quirky
 /// tolerance for malformed list items in `autoload.classmap` /
 /// `autoload.files` / `autoload.exclude-from-classmap` / `bin`.
@@ -956,10 +978,12 @@ pub struct LockAutoload {
     /// more directories. Each value is either a single string or an
     /// array of strings; both arrive here as a generic `Value` so we
     /// don't lose information when round-tripping through the typed
-    /// shape. `bougie-autoloader` already handles both forms.
-    #[serde(rename = "psr-4", default)]
+    /// shape. `bougie-autoloader` already handles both forms. (Empty
+    /// maps arrive as `[]` — the PHP empty-object quirk; round-tripping
+    /// normalizes them to `{}`, which Composer also accepts.)
+    #[serde(rename = "psr-4", default, deserialize_with = "value_map_or_empty_array")]
     pub psr_4: BTreeMap<String, Value>,
-    #[serde(rename = "psr-0", default)]
+    #[serde(rename = "psr-0", default, deserialize_with = "value_map_or_empty_array")]
     pub psr_0: BTreeMap<String, Value>,
     #[serde(default, deserialize_with = "string_list_lenient")]
     pub classmap: Vec<String>,
@@ -1439,6 +1463,49 @@ mod tests {
         let pd = lock.get("platform-dev").unwrap();
         assert!(pd.is_object());
         assert_eq!(pd.get("ext-xdebug").unwrap(), &Value::String("*".into()));
+    }
+
+    #[test]
+    fn lock_autoload_psr_maps_handle_array_form_empty() {
+        // PHP's json_encode writes an empty assoc array as `[]`, so
+        // Composer-written locks carry `"psr-0": []` for packages whose
+        // composer.json declared an empty map (seen in the wild on
+        // Mage-OS module packages). A non-empty array stays an error.
+        let lock = Lock::from_bytes(
+            br#"{
+                "content-hash": "x",
+                "packages": [{
+                    "name": "acme/mod",
+                    "version": "1.0.0",
+                    "autoload": {
+                        "psr-4": {"Acme\\Mod\\": ""},
+                        "psr-0": [],
+                        "classmap": [],
+                        "files": ["registration.php"]
+                    }
+                }],
+                "packages-dev": []
+            }"#,
+        )
+        .unwrap();
+        let autoload = &lock.packages[0].autoload;
+        assert!(autoload.psr_0.is_empty());
+        assert_eq!(autoload.psr_4.len(), 1);
+        assert_eq!(autoload.files, vec!["registration.php"]);
+
+        let err = Lock::from_bytes(
+            br#"{
+                "content-hash": "x",
+                "packages": [{
+                    "name": "acme/mod",
+                    "version": "1.0.0",
+                    "autoload": {"psr-0": ["oops"]}
+                }],
+                "packages-dev": []
+            }"#,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("non-empty array"), "{err}");
     }
 
     #[test]
