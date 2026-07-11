@@ -416,6 +416,27 @@ async fn wanted_services(paths: &Paths) -> Vec<(&'static str, String)> {
         if !entry.user_facing {
             continue;
         }
+        // `server` is a name-only singleton (see `Paths::service_dir`): all
+        // versions collapse onto one state tree and one name-only tenant
+        // ledger, so it must resolve to exactly ONE instance, keyed by the
+        // catalog default version — the same id `service.up`/`bougie server`
+        // use. Scanning `instance_versions` for it can yield a spurious
+        // second entry: the "" from the name-only ledger *plus* a stray
+        // `<version>/` dir a pre-name-only bougie wrote and the migration
+        // deliberately leaves untouched. Two `(name, version)` pairs → two
+        // InstanceIds → `restore_services` spawns the server twice, the
+        // second relocating onto a fallback port (the duplicate-server /
+        // moved-port bug on upgrade). Collapse to the canonical instance.
+        if entry.name == "server" {
+            let v = catalog::default_version("server");
+            let n = tenants::load_all(&paths.service_tenants("server", v))
+                .await
+                .map_or(0, |t| t.len());
+            if n > 0 {
+                wanted.push(("server", v.to_string()));
+            }
+            continue;
+        }
         for version in tenants::instance_versions(&paths.service_name_dir(entry.name)) {
             let tenants_path = paths.service_tenants(entry.name, &version);
             let n = tenants::load_all(&tenants_path).await.map_or(0, |v| v.len());
@@ -535,6 +556,61 @@ mod tests {
                 .any(|(n, v)| *n == svc && v == catalog::default_version(svc)),
             "expected {svc}@{} in {wanted:?}",
             catalog::default_version(svc)
+        );
+    }
+
+    /// Regression: `server` is a name-only singleton. If its state dir holds
+    /// both the canonical name-only ledger *and* a stray `<version>/` ledger
+    /// (left by a pre-name-only bougie, which the startup migration
+    /// deliberately doesn't touch), `wanted_services` must still yield
+    /// exactly ONE server instance, keyed by the catalog default version.
+    /// Before the collapse this returned two `(name, version)` pairs, so
+    /// `restore_services` spawned the server twice and the second relocated
+    /// onto a fallback port — the duplicate-server / moved-port bug seen on
+    /// upgrade.
+    #[tokio::test]
+    async fn wanted_services_collapses_server_to_a_single_instance() {
+        let home = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let paths = Paths::new(home.path().to_path_buf(), cache.path().to_path_buf());
+
+        let default_v = catalog::default_version("server");
+
+        // Canonical name-only ledger (what current `service.up` writes; the
+        // version arg collapses away for the name-only server).
+        let name_only = paths.service_tenants("server", default_v);
+        std::fs::create_dir_all(name_only.parent().unwrap()).unwrap();
+        tenants::append(&name_only, &Tenant::new("acme", "/tmp/acme"))
+            .await
+            .unwrap();
+
+        // Stray version-keyed ledger from an older on-disk layout: a
+        // `<version>/tenants.json` under the same name-only service dir —
+        // exactly what makes `instance_versions` report a second entry.
+        let stray = paths.service_name_dir("server").join("0.40.0");
+        std::fs::create_dir_all(&stray).unwrap();
+        tenants::append(&stray.join("tenants.json"), &Tenant::new("acme", "/tmp/acme"))
+            .await
+            .unwrap();
+
+        // Precondition: the raw scan really does see two versions here — the
+        // divergence the collapse defends against.
+        let raw = tenants::instance_versions(&paths.service_name_dir("server"));
+        assert!(
+            raw.len() >= 2,
+            "test precondition: expected ≥2 raw server versions, got {raw:?}"
+        );
+
+        let wanted = wanted_services(&paths).await;
+        let servers: Vec<_> = wanted.iter().filter(|(n, _)| *n == "server").collect();
+        assert_eq!(
+            servers.len(),
+            1,
+            "server must collapse to a single instance, got {servers:?}"
+        );
+        assert_eq!(
+            servers[0].1, default_v,
+            "the server instance must key on the catalog default version"
         );
     }
 
