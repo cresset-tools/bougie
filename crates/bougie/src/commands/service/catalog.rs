@@ -18,7 +18,13 @@ pub struct CatalogResult {
 #[derive(Debug, Serialize)]
 pub struct CatalogRow {
     pub name: String,
+    /// The catalog *default* version — what a bare `bougie up <name>` runs.
     pub version: String,
+    /// Every version the catalog can run for this service (default first).
+    /// A single-version service lists just `[version]`; a multi-version one
+    /// like `mysql` lists both (8.4 + 8.0), which are the values a
+    /// `[services]` pin can resolve to.
+    pub versions: Vec<String>,
     pub binding: Binding,
     pub tenancy: Tenancy,
     pub user_facing: bool,
@@ -30,6 +36,7 @@ impl From<&CatalogEntry> for CatalogRow {
         Self {
             name: e.name.into(),
             version: e.version.into(),
+            versions: e.versions.iter().map(|v| (*v).to_string()).collect(),
             binding: e.binding,
             tenancy: e.tenancy,
             user_facing: e.user_facing,
@@ -51,9 +58,9 @@ impl Render for CatalogResult {
             };
             writeln!(
                 w,
-                "{name:14} {ver:12} {bind:24} {summary}",
+                "{name:14} {vers:20} {bind:24} {summary}",
                 name = row.name,
-                ver = row.version,
+                vers = row.versions.join(", "),
                 bind = binding,
                 summary = row.summary,
             )?;

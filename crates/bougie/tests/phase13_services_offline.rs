@@ -63,6 +63,31 @@ fn catalog_json_v1_contains_every_entry() {
     assert!(names.contains(&"redis"));
     assert!(names.contains(&"jdk"), "JSON output exposes runtime deps too: {names:?}");
     assert!(names.contains(&"erlang"));
+
+    // Every entry carries a non-empty `versions` list whose first element is
+    // the default `version` (additive to schema 1 — back-compat preserved).
+    for e in entries {
+        let name = e["name"].as_str().unwrap();
+        let versions = e["versions"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{name} missing versions array: {e}"));
+        assert!(!versions.is_empty(), "{name} has an empty versions list");
+        assert_eq!(
+            versions[0], e["version"],
+            "{name}: versions[0] should be the default version"
+        );
+    }
+
+    // mysql is the multi-version service — the catalog offers 8.4 *and* 8.0.
+    let mysql = entries
+        .iter()
+        .find(|e| e["name"] == "mysql")
+        .expect("mysql entry");
+    let mysql_versions = mysql["versions"].as_array().unwrap();
+    assert!(
+        mysql_versions.len() >= 2,
+        "mysql should advertise multiple versions, got {mysql_versions:?}"
+    );
 }
 
 // -------------------- add --------------------
