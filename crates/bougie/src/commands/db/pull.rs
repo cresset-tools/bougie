@@ -55,9 +55,13 @@ struct PulledSnapshot {
     reason = "owned args from clap-parsed CLI"
 )]
 pub fn run(_format: OutputFormat, args: DbPullArgs) -> Result<ExitCode> {
-    let (org, repo) = parse_repo(&args.repo)?;
     let paths = Paths::from_env()?;
     let project_root = locate_project_root()?;
+
+    // `--repo`/`--env` win; otherwise default from the snapshot source the team
+    // manifest advertises for this project (cached by `bougie login`/`sync`).
+    let (repo_spec, env) = resolve_target(&args, &project_root)?;
+    let (org, repo) = parse_repo(&repo_spec)?;
 
     // Registry + auth come from `bougie login` — the team record names the
     // registry, the auth store holds the org-scoped bearer keyed by its host.
@@ -71,14 +75,8 @@ pub fn run(_format: OutputFormat, args: DbPullArgs) -> Result<ExitCode> {
     let token = read_bougie_bearer(&host)
         .ok_or_else(|| eyre!("not logged in to {host} — run `bougie login {base}`"))?;
 
-    let url = format!(
-        "{base}/{org}/{repo}/snapshots/{env}/latest",
-        env = args.env
-    );
-    println!(
-        "bougie db pull: fetching {org}/{repo} {} snapshot from {base}",
-        args.env
-    );
+    let url = format!("{base}/{org}/{repo}/snapshots/{env}/latest");
+    println!("bougie db pull: fetching {org}/{repo} {env} snapshot from {base}");
 
     let snap_dir = paths.cache().join("snapshots");
     fs::create_dir_all(&snap_dir)
@@ -87,7 +85,7 @@ pub fn run(_format: OutputFormat, args: DbPullArgs) -> Result<ExitCode> {
     let (digest, size, path) = download_snapshot(&url, &token, &snap_dir)
         .wrap_err_with(|| format!("pulling the snapshot from {url}"))?;
 
-    write_pointer(&paths, &project_root, &args.repo, &args.env, &digest, &path)?;
+    write_pointer(&paths, &project_root, &repo_spec, &env, &digest, &path)?;
 
     println!(
         "bougie db pull: cached {} ({}, sha256 {digest})",
@@ -96,6 +94,35 @@ pub fn run(_format: OutputFormat, args: DbPullArgs) -> Result<ExitCode> {
     );
     println!("run `bougie db seed` to load it into the mariadb tenant");
     Ok(ExitCode::SUCCESS)
+}
+
+/// Resolve which `(repo, env)` to pull. `--repo` wins (with `--env` or the
+/// `production` default); otherwise fall back to the snapshot source the team
+/// manifest advertises for this project, letting `--env` still override its
+/// environment. Errors when neither is available.
+fn resolve_target(args: &DbPullArgs, project_root: &Path) -> Result<(String, String)> {
+    if let Some(repo) = &args.repo {
+        let env = args.env.clone().unwrap_or_else(default_env);
+        return Ok((repo.clone(), env));
+    }
+    let (repo, manifest_env) = team::cached_snapshot_ref(project_root).ok_or_else(|| {
+        eyre!(
+            "no --repo given and the team manifest has no snapshot source for this project. \
+             Pass `--repo <org/repo>`, or have an admin run `sconce remote-snapshot`. (If you \
+             just registered one, run `bougie sync` to refresh the cached manifest.)"
+        )
+    })?;
+    // Explicit --env overrides the manifest's environment.
+    let env = args
+        .env
+        .clone()
+        .or(manifest_env)
+        .unwrap_or_else(default_env);
+    Ok((repo, env))
+}
+
+fn default_env() -> String {
+    "production".to_string()
 }
 
 /// Split `<org>/<repo>`. Both halves must be present and non-empty, and there
@@ -241,6 +268,29 @@ fn human_size(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resolve_target_uses_explicit_repo_over_manifest() {
+        // repo is Some → the manifest is never consulted, so project_root is
+        // irrelevant. Default env is production; --env overrides it.
+        let root = Path::new("/nonexistent");
+        let a = DbPullArgs {
+            repo: Some("acme/shop".to_string()),
+            env: None,
+        };
+        assert_eq!(
+            resolve_target(&a, root).unwrap(),
+            ("acme/shop".to_string(), "production".to_string())
+        );
+        let b = DbPullArgs {
+            repo: Some("acme/shop".to_string()),
+            env: Some("staging".to_string()),
+        };
+        assert_eq!(
+            resolve_target(&b, root).unwrap(),
+            ("acme/shop".to_string(), "staging".to_string())
+        );
+    }
 
     #[test]
     fn parse_repo_splits_org_and_repo() {

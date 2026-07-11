@@ -161,11 +161,22 @@ fn http_client() -> eyre::Result<reqwest::blocking::Client> {
 struct Manifest {
     #[serde(default)]
     repositories: Vec<ManifestRepo>,
+    #[serde(default)]
+    snapshot: Option<ManifestSnapshot>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 struct ManifestRepo {
     url: String,
+}
+
+/// The database snapshot source the team manifest advertises (added by sconce's
+/// `remote-snapshot`). Lenient: `env` may be absent (defaults to production).
+#[derive(Debug, Clone, Deserialize)]
+struct ManifestSnapshot {
+    repo: String,
+    #[serde(default)]
+    env: Option<String>,
 }
 
 /// Discover the project's Composer repository URLs. Prefers the git-remote-keyed
@@ -254,6 +265,24 @@ fn write_cached_manifest(project_root: &Path, raw: &[u8]) {
 
 fn read_cached_manifest(project_root: &Path) -> Option<Vec<u8>> {
     std::fs::read(manifest_cache_path(project_root)?).ok()
+}
+
+/// The database snapshot source the cached team manifest advertises for this
+/// project, as `(repo, env)` where `repo` is `<org>/<repo>` and `env` is the
+/// manifest's environment when present. `None` if no manifest is cached (login
+/// against a non-team project, or a registry with no snapshot configured) or it
+/// carries no snapshot block. Lets `bougie db pull` default its target.
+pub(crate) fn cached_snapshot_ref(project_root: &Path) -> Option<(String, Option<String>)> {
+    manifest_snapshot(&read_cached_manifest(project_root)?)
+}
+
+/// Extract the snapshot source `(repo, env)` from raw manifest bytes. `None`
+/// when there's no snapshot block or the bytes don't parse; `env` is `None` when
+/// the block omits it.
+fn manifest_snapshot(raw: &[u8]) -> Option<(String, Option<String>)> {
+    let manifest: Manifest = serde_json::from_slice(raw).ok()?;
+    let snap = manifest.snapshot?;
+    Some((snap.repo, snap.env))
 }
 
 /// The project's `origin` remote URL from `.git/config`, if it's a git checkout
@@ -380,5 +409,22 @@ mod tests {
         );
         assert!(manifest_urls(b"not json").is_empty());
         assert!(manifest_urls(br#"{"repositories":[]}"#).is_empty());
+    }
+
+    #[test]
+    fn manifest_snapshot_reads_repo_and_optional_env() {
+        let raw = br#"{"repositories":[],"snapshot":{"repo":"acme/data","env":"staging"}}"#;
+        assert_eq!(
+            manifest_snapshot(raw),
+            Some(("acme/data".to_string(), Some("staging".to_string())))
+        );
+        // env is optional (defaults are applied downstream).
+        assert_eq!(
+            manifest_snapshot(br#"{"snapshot":{"repo":"acme/data"}}"#),
+            Some(("acme/data".to_string(), None))
+        );
+        // No snapshot block, and unparseable bytes, both yield None.
+        assert_eq!(manifest_snapshot(br#"{"repositories":[]}"#), None);
+        assert_eq!(manifest_snapshot(b"not json"), None);
     }
 }

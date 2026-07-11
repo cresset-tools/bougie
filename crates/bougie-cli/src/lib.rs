@@ -765,12 +765,14 @@ pub struct DbSeedArgs {
 
 #[derive(Args, Debug)]
 pub struct DbPullArgs {
-    /// The snapshot's repository on the registry, as `<org>/<repo>`.
+    /// The snapshot's repository on the registry, as `<org>/<repo>`. Defaults to
+    /// the snapshot source the team manifest advertises for this project.
     #[arg(long, value_name = "ORG/REPO")]
-    pub repo: String,
+    pub repo: Option<String>,
     /// Which environment's snapshot to pull (e.g. `production`, `staging`).
-    #[arg(long, default_value = "production")]
-    pub env: String,
+    /// Defaults to the manifest's environment, or `production`.
+    #[arg(long)]
+    pub env: Option<String>,
 }
 
 #[derive(Subcommand, Debug)]
