@@ -22,6 +22,7 @@ use bougie_daemon::daemon::tenants;
 use bougie_paths::Paths;
 use bougie_platform::target::Triple;
 use eyre::{Result, WrapErr, eyre};
+use serde::{Deserialize, Serialize};
 
 use super::super::native_fetch;
 use super::super::service::config_mut::locate_project_root;
@@ -50,19 +51,35 @@ pub fn run(_format: OutputFormat, args: DbSeedArgs) -> Result<ExitCode> {
     let paths = Paths::from_env()?;
     let project_root = locate_project_root()?;
 
+    // One-shot gate: once a project is seeded, `db seed` is a no-op so it's safe
+    // to run on every `bougie start`. Checked *before* resolving a source, so a
+    // seeded project needs neither `--from` nor a cached pull. `--force` (and
+    // `db refresh`) bypass it to reload the newest data — the deliberate clobber.
+    let marker_path = seed_marker_path(&paths, &project_root);
+    if !args.force {
+        if let Some(marker) = read_seed_marker(&marker_path) {
+            println!(
+                "bougie db seed: database already seeded (from {}). Use `bougie db seed \
+                 --force` or `bougie db refresh` to reload.",
+                marker.describe()
+            );
+            return Ok(ExitCode::SUCCESS);
+        }
+    }
+
     // `--from` wins; otherwise load whatever `bougie db pull` last fetched for
-    // this project. Resolve it up front so a "nothing to seed" error beats the
-    // (potentially slow) tenant resolution + jibs fetch below.
-    let from = match args.from {
-        Some(from) => from,
-        None => super::pull::pulled_snapshot_path(&paths, &project_root)
-            .map(|p| p.to_string_lossy().into_owned())
-            .ok_or_else(|| {
+    // this project (carrying its digest so the marker can record it).
+    let (from, digest) = match args.from {
+        Some(from) => (from, None),
+        None => {
+            let snap = super::pull::pulled_snapshot(&paths, &project_root).ok_or_else(|| {
                 eyre!(
                     "nothing to seed: pass `--from <path-or-url>`, or run `bougie db pull \
                      --repo <org/repo>` first"
                 )
-            })?,
+            })?;
+            (snap.path, Some(snap.digest))
+        }
     };
 
     let dsn = mariadb_dsn(&paths, &project_root)?;
@@ -84,12 +101,78 @@ pub fn run(_format: OutputFormat, args: DbSeedArgs) -> Result<ExitCode> {
         .status()
         .wrap_err_with(|| format!("failed to execute jibs at {}", jibs.display()))?;
 
+    // Record the seed only on success, so a failed/partial load stays re-runnable
+    // (no marker → next `db seed` retries). A marker-write hiccup only forfeits
+    // the one-shot skip; it never fails the load.
+    if status.success() {
+        let marker = SeedMarker {
+            schema_version: SEED_MARKER_SCHEMA_VERSION,
+            source: from,
+            digest,
+            seeded_at_unix: now_unix(),
+        };
+        if let Err(e) = write_seed_marker(&marker_path, &marker) {
+            eprintln!("bougie db seed: warning: couldn't record the seed marker: {e}");
+        }
+    }
+
     // Mirror jibs's exit code so scripting/CI sees the load's real outcome.
     let code = status
         .code()
         .and_then(|c| u8::try_from(c).ok())
         .unwrap_or(1);
     Ok(ExitCode::from(code))
+}
+
+/// On-disk shape of the seed marker. Bumped if the layout changes.
+const SEED_MARKER_SCHEMA_VERSION: u32 = 1;
+
+/// The durable record that a project's database has been seeded — written under
+/// the project state dir (survives `rm -rf vendor`), so `db seed` is a one-shot.
+#[derive(Serialize, Deserialize)]
+struct SeedMarker {
+    schema_version: u32,
+    /// What was loaded — the pulled snapshot's cache path, or the `--from` value.
+    source: String,
+    /// Hex sha256 of the loaded snapshot, when known (a pulled snapshot). Lets a
+    /// later staleness check compare it against the registry's `latest`.
+    digest: Option<String>,
+    /// When the seed ran (unix seconds).
+    seeded_at_unix: u64,
+}
+
+impl SeedMarker {
+    /// A short human description for the "already seeded (from …)" message.
+    fn describe(&self) -> String {
+        match &self.digest {
+            Some(d) => format!("snapshot {}", &d[..d.len().min(16)]),
+            None => self.source.clone(),
+        }
+    }
+}
+
+fn seed_marker_path(paths: &Paths, project_root: &Path) -> PathBuf {
+    paths.project_state_dir(project_root).join("seeded.json")
+}
+
+fn read_seed_marker(path: &Path) -> Option<SeedMarker> {
+    serde_json::from_slice(&fs::read(path).ok()?).ok()
+}
+
+fn write_seed_marker(path: &Path, marker: &SeedMarker) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .wrap_err_with(|| format!("creating project state dir {}", parent.display()))?;
+    }
+    let json = serde_json::to_vec_pretty(marker).wrap_err("serializing the seed marker")?;
+    fs::write(path, json).wrap_err_with(|| format!("writing {}", path.display()))
+}
+
+fn now_unix() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 /// Build a `mysql://` DSN for the project's mariadb tenant, sourced offline from
@@ -237,7 +320,50 @@ fn urls(tag: &str, file: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::urlencode;
+    use super::{
+        SEED_MARKER_SCHEMA_VERSION, SeedMarker, read_seed_marker, urlencode, write_seed_marker,
+    };
+
+    #[test]
+    fn seed_marker_round_trips() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("state").join("seeded.json");
+
+        // Absent marker → None (the "not yet seeded" case).
+        assert!(read_seed_marker(&path).is_none());
+
+        let marker = SeedMarker {
+            schema_version: SEED_MARKER_SCHEMA_VERSION,
+            source: "/cache/snapshots/deadbeefcafe1234.jibsdump".to_string(),
+            digest: Some("deadbeefcafe1234abcd".to_string()),
+            seeded_at_unix: 1_700_000_000,
+        };
+        write_seed_marker(&path, &marker).unwrap(); // also creates the parent dir
+        let back = read_seed_marker(&path).expect("round-trips");
+        assert_eq!(back.source, marker.source);
+        assert_eq!(back.digest.as_deref(), Some("deadbeefcafe1234abcd"));
+        assert_eq!(back.seeded_at_unix, 1_700_000_000);
+    }
+
+    #[test]
+    fn seed_marker_describe_prefers_short_digest_else_source() {
+        let with_digest = SeedMarker {
+            schema_version: SEED_MARKER_SCHEMA_VERSION,
+            source: "/some/very/long/path.jibsdump".to_string(),
+            digest: Some("0123456789abcdef0000".to_string()),
+            seeded_at_unix: 0,
+        };
+        // First 16 hex chars of the digest.
+        assert_eq!(with_digest.describe(), "snapshot 0123456789abcdef");
+
+        let no_digest = SeedMarker {
+            schema_version: SEED_MARKER_SCHEMA_VERSION,
+            source: "https://example.test/prod.jibsdump".to_string(),
+            digest: None,
+            seeded_at_unix: 0,
+        };
+        assert_eq!(no_digest.describe(), "https://example.test/prod.jibsdump");
+    }
 
     #[test]
     fn urlencode_leaves_unreserved_untouched() {
