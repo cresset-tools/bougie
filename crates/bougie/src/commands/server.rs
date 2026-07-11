@@ -337,9 +337,15 @@ fn serve(format: OutputFormat, args: &ServeArgs) -> Result<ExitCode> {
         Some(name) => sanitize_tenant(name),
         None => derive_default_tenant(&project_root, &paths),
     };
+    // `version` is required on the wire (`ServiceRequest`) since the
+    // multi-instance up-IPC landed; omitting it makes the daemon reject the
+    // call with "missing field `version`". For the name-only `server` the
+    // value is fixed — its catalog default, i.e. the running bougie's own
+    // version — and it must match what restore and `bougie up server` send
+    // so every path keys the singleton by the same InstanceId.
     let call_args = json!({
         "project": project_root,
-        "services": [{"name": "server", "tenant": tenant}],
+        "services": [{"name": "server", "version": server_state_version(), "tenant": tenant}],
     });
     let _: Value = client::call(&paths, "service.up", call_args)?;
 
