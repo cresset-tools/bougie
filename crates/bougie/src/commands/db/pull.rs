@@ -38,16 +38,16 @@ const POINTER_SCHEMA_VERSION: u32 = 1;
 /// under the durable project state dir (survives `rm -rf vendor`). `bougie db
 /// seed` reads it when invoked with no `--from`.
 #[derive(Serialize, Deserialize)]
-struct PulledSnapshot {
+pub(crate) struct PulledSnapshot {
     schema_version: u32,
     /// The registry repository the snapshot came from, as `<org>/<repo>`.
     repo: String,
     /// The environment whose `latest` pointer was resolved.
     environment: String,
     /// Hex sha256 of the dump — also the cache filename stem.
-    digest: String,
+    pub(crate) digest: String,
     /// Absolute path of the cached `.jibsdump`.
-    path: String,
+    pub(crate) path: String,
 }
 
 #[allow(
@@ -230,15 +230,15 @@ fn write_pointer(
     Ok(())
 }
 
-/// Path of the snapshot most recently fetched by `bougie db pull` for this
-/// project — `None` if nothing has been pulled or the cached file is gone (e.g.
-/// the cache was cleared). Read by `bougie db seed` when given no `--from`.
-pub(crate) fn pulled_snapshot_path(paths: &Paths, project_root: &Path) -> Option<PathBuf> {
+/// The snapshot most recently fetched by `bougie db pull` for this project —
+/// `None` if nothing has been pulled or the cached file is gone (e.g. the cache
+/// was cleared). Carries the digest so `bougie db seed` can record what it
+/// loaded. Read by `bougie db seed` when given no `--from`.
+pub(crate) fn pulled_snapshot(paths: &Paths, project_root: &Path) -> Option<PulledSnapshot> {
     let file = paths.project_state_dir(project_root).join("pulled-snapshot.json");
     let bytes = fs::read(&file).ok()?;
     let record: PulledSnapshot = serde_json::from_slice(&bytes).ok()?;
-    let path = PathBuf::from(record.path);
-    path.is_file().then_some(path)
+    Path::new(&record.path).is_file().then_some(record)
 }
 
 /// Lowercase hex of a digest, the repo idiom (`sha2` 0.11 has no `io::Write`).
@@ -328,16 +328,18 @@ mod tests {
         fs::create_dir_all(&project).unwrap();
 
         // No pointer yet → None.
-        assert!(pulled_snapshot_path(&paths, &project).is_none());
+        assert!(pulled_snapshot(&paths, &project).is_none());
 
-        // A pointer to a real cached file → Some(that path).
+        // A pointer to a real cached file → Some(record) carrying path + digest.
         let cached = tmp.path().join("snap.jibsdump");
         fs::write(&cached, b"dump").unwrap();
         write_pointer(&paths, &project, "acme/shop", "production", "deadbeef", &cached).unwrap();
-        assert_eq!(pulled_snapshot_path(&paths, &project), Some(cached.clone()));
+        let got = pulled_snapshot(&paths, &project).expect("record");
+        assert_eq!(got.path, cached.to_string_lossy());
+        assert_eq!(got.digest, "deadbeef");
 
         // A pointer whose file has been removed → None (cache was cleared).
         fs::remove_file(&cached).unwrap();
-        assert!(pulled_snapshot_path(&paths, &project).is_none());
+        assert!(pulled_snapshot(&paths, &project).is_none());
     }
 }

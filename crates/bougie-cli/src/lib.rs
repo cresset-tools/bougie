@@ -750,6 +750,10 @@ pub enum DbCommand {
     /// load it without a URL. The registry and login are the ones from
     /// `bougie login`.
     Pull(DbPullArgs),
+    /// Refresh the local database from production: pull the latest snapshot,
+    /// then reload it (`db pull` + `db seed --force`). The deliberate
+    /// "give me fresh prod data now" action — it clobbers local DB state.
+    Refresh(DbPullArgs),
 }
 
 #[derive(Args, Debug)]
@@ -761,6 +765,11 @@ pub struct DbSeedArgs {
     /// Discard leftover state from a previous interrupted load first
     #[arg(long)]
     pub clean: bool,
+    /// Reseed even if the database was already seeded — reload the snapshot and
+    /// update the seed marker. Without this, `db seed` is a one-shot no-op once
+    /// the project has been seeded (so it's safe to run on every `bougie start`).
+    #[arg(long)]
+    pub force: bool,
 }
 
 #[derive(Args, Debug)]
