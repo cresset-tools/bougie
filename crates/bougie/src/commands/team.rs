@@ -161,7 +161,10 @@ fn http_client() -> eyre::Result<reqwest::blocking::Client> {
 struct Manifest {
     #[serde(default)]
     repositories: Vec<ManifestRepo>,
+    // Only read by the (Unix-only) `db pull` command; on Windows it's parsed but
+    // unused, so don't let the dead-code lint fail the build there.
     #[serde(default)]
+    #[cfg_attr(not(unix), allow(dead_code))]
     snapshot: Option<ManifestSnapshot>,
 }
 
@@ -173,6 +176,7 @@ struct ManifestRepo {
 /// The database snapshot source the team manifest advertises (added by sconce's
 /// `remote-snapshot`). Lenient: `env` may be absent (defaults to production).
 #[derive(Debug, Clone, Deserialize)]
+#[cfg_attr(not(unix), allow(dead_code))]
 struct ManifestSnapshot {
     repo: String,
     #[serde(default)]
@@ -272,6 +276,7 @@ fn read_cached_manifest(project_root: &Path) -> Option<Vec<u8>> {
 /// manifest's environment when present. `None` if no manifest is cached (login
 /// against a non-team project, or a registry with no snapshot configured) or it
 /// carries no snapshot block. Lets `bougie db pull` default its target.
+#[cfg_attr(not(unix), allow(dead_code))]
 pub(crate) fn cached_snapshot_ref(project_root: &Path) -> Option<(String, Option<String>)> {
     manifest_snapshot(&read_cached_manifest(project_root)?)
 }
@@ -279,6 +284,7 @@ pub(crate) fn cached_snapshot_ref(project_root: &Path) -> Option<(String, Option
 /// Extract the snapshot source `(repo, env)` from raw manifest bytes. `None`
 /// when there's no snapshot block or the bytes don't parse; `env` is `None` when
 /// the block omits it.
+#[cfg_attr(not(unix), allow(dead_code))]
 fn manifest_snapshot(raw: &[u8]) -> Option<(String, Option<String>)> {
     let manifest: Manifest = serde_json::from_slice(raw).ok()?;
     let snap = manifest.snapshot?;
