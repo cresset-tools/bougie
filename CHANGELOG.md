@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.49.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.48.0...bougie-v0.49.0) (2026-07-11)
+
+
+### Features
+
+* **db:** add `bougie db pull` to fetch prod-shaped snapshots from the registry ([#500](https://github.com/cresset-tools/bougie/issues/500)) ([8a1d969](https://github.com/cresset-tools/bougie/commit/8a1d9697a81acd716afb4745b019e49bc1881b4c))
+* **db:** default `bougie db pull` target from the team manifest snapshot ([#502](https://github.com/cresset-tools/bougie/issues/502)) ([4c2b11c](https://github.com/cresset-tools/bougie/commit/4c2b11cdfa80af5911088dbc7c1bb8bcf215b7ab))
+* **db:** make `bougie db seed` one-shot + add `bougie db refresh` ([#504](https://github.com/cresset-tools/bougie/issues/504)) ([37a3569](https://github.com/cresset-tools/bougie/commit/37a3569432224b954f22a0312135c318578037b4))
+* **services:** multi-instance services + real multi-version mysql (integrate onto main) ([#492](https://github.com/cresset-tools/bougie/issues/492)) ([33948ec](https://github.com/cresset-tools/bougie/commit/33948ec02799ff6d907c9e6f5aa78eac0399b745))
+* **service:** surface all catalog versions in `service catalog` ([#498](https://github.com/cresset-tools/bougie/issues/498)) ([fc24f27](https://github.com/cresset-tools/bougie/commit/fc24f2725f388b7b3df33f3db9802459d8136182))
+* **sync:** source the repo overlay from the git-remote-keyed team manifest ([#495](https://github.com/cresset-tools/bougie/issues/495)) ([80bc69d](https://github.com/cresset-tools/bougie/commit/80bc69d499e0736f09e26727be71610cfb0635f9))
+* **telemetry:** record clap parse failures as the usage outcome ([#494](https://github.com/cresset-tools/bougie/issues/494)) ([52e25e5](https://github.com/cresset-tools/bougie/commit/52e25e56780a0ba7cdbc942ce2d32b087cedf099))
+
 ## [0.48.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.47.0...bougie-v0.48.0) (2026-07-10)
 
 
