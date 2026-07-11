@@ -769,6 +769,8 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
         Command::Projects(_) => unsupported_on_windows("bougie projects"),
         #[cfg(unix)]
         Command::Db(DbCommand::Seed(args)) => commands::db::seed::run(format, args),
+        #[cfg(unix)]
+        Command::Db(DbCommand::Pull(args)) => commands::db::pull::run(format, args),
         #[cfg(not(unix))]
         Command::Db(_) => unsupported_on_windows("bougie db"),
         #[cfg(unix)]

@@ -742,18 +742,35 @@ pub enum ProjectsCommand {
 pub enum DbCommand {
     /// Load a `.jibsdump` snapshot into the project's mariadb tenant,
     /// giving a local database shaped like production. `--from` takes a
-    /// local path or an http(s) URL (e.g. a presigned snapshot).
+    /// local path or an http(s) URL (e.g. a presigned snapshot); omit it
+    /// to load the snapshot most recently fetched by `bougie db pull`.
     Seed(DbSeedArgs),
+    /// Download the latest production-shaped snapshot for a repo from the
+    /// team's sconce registry into the local cache, so `bougie db seed` can
+    /// load it without a URL. The registry and login are the ones from
+    /// `bougie login`.
+    Pull(DbPullArgs),
 }
 
 #[derive(Args, Debug)]
 pub struct DbSeedArgs {
-    /// Path or http(s) URL of the `.jibsdump` snapshot to load
+    /// Path or http(s) URL of the `.jibsdump` snapshot to load. Omit to load
+    /// the snapshot most recently fetched by `bougie db pull`.
     #[arg(long, value_name = "PATH_OR_URL")]
-    pub from: String,
+    pub from: Option<String>,
     /// Discard leftover state from a previous interrupted load first
     #[arg(long)]
     pub clean: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct DbPullArgs {
+    /// The snapshot's repository on the registry, as `<org>/<repo>`.
+    #[arg(long, value_name = "ORG/REPO")]
+    pub repo: String,
+    /// Which environment's snapshot to pull (e.g. `production`, `staging`).
+    #[arg(long, default_value = "production")]
+    pub env: String,
 }
 
 #[derive(Subcommand, Debug)]
