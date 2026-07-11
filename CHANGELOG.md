@@ -18,6 +18,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * **sync:** source the repo overlay from the git-remote-keyed team manifest ([#495](https://github.com/cresset-tools/bougie/issues/495)) ([80bc69d](https://github.com/cresset-tools/bougie/commit/80bc69d499e0736f09e26727be71610cfb0635f9))
 * **telemetry:** record clap parse failures as the usage outcome ([#494](https://github.com/cresset-tools/bougie/issues/494)) ([52e25e5](https://github.com/cresset-tools/bougie/commit/52e25e56780a0ba7cdbc942ce2d32b087cedf099))
 
+
+### Bug Fixes
+
+* **services:** stop restore from spawning the server twice on upgrade ([#503](https://github.com/cresset-tools/bougie/issues/503)) ([15f6683](https://github.com/cresset-tools/bougie/commit/15f6683d37c42ebdc24ccc8c361f3f35288f5a29))
+
 ## [0.48.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.47.0...bougie-v0.48.0) (2026-07-10)
 
 
