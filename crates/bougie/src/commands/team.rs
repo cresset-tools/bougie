@@ -31,6 +31,7 @@ use bougie_composer_resolver::update::{
 };
 use bougie_paths::Paths;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -166,6 +167,11 @@ struct Manifest {
     #[serde(default)]
     #[cfg_attr(not(unix), allow(dead_code))]
     snapshot: Option<ManifestSnapshot>,
+    // Named database sources for `bougie db get --source <name>`; Unix-only
+    // consumer, so silence the dead-code lint on Windows like `snapshot`.
+    #[serde(default)]
+    #[cfg_attr(not(unix), allow(dead_code))]
+    sources: BTreeMap<String, ManifestSource>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -181,6 +187,22 @@ struct ManifestSnapshot {
     repo: String,
     #[serde(default)]
     env: Option<String>,
+}
+
+/// A named database source the team manifest advertises (set with sconce's
+/// `remote-source`), selected by `bougie db get --source <name>`. `host` is the
+/// jibs SSH target; the rest refine that connection. Everything but `host` is
+/// optional. Consumed only by the Unix-only `db get`.
+#[derive(Debug, Clone, Deserialize)]
+#[cfg_attr(not(unix), allow(dead_code))]
+pub(crate) struct ManifestSource {
+    pub(crate) host: String,
+    #[serde(default)]
+    pub(crate) remote_mysql: Option<String>,
+    #[serde(default)]
+    pub(crate) identity: Option<String>,
+    #[serde(default)]
+    pub(crate) port: Option<u16>,
 }
 
 /// Discover the project's Composer repository URLs. Prefers the git-remote-keyed
@@ -289,6 +311,18 @@ fn manifest_snapshot(raw: &[u8]) -> Option<(String, Option<String>)> {
     let manifest: Manifest = serde_json::from_slice(raw).ok()?;
     let snap = manifest.snapshot?;
     Some((snap.repo, snap.env))
+}
+
+/// The named database sources the cached team manifest advertises for this
+/// project, keyed by name. Empty when no manifest is cached (login against a
+/// non-team project, or a registry with no sources configured), it carries no
+/// `sources` block, or the bytes don't parse. Backs `bougie db get --source`.
+#[cfg_attr(not(unix), allow(dead_code))]
+pub(crate) fn cached_sources(project_root: &Path) -> BTreeMap<String, ManifestSource> {
+    read_cached_manifest(project_root)
+        .and_then(|raw| serde_json::from_slice::<Manifest>(&raw).ok())
+        .map(|m| m.sources)
+        .unwrap_or_default()
 }
 
 /// The project's `origin` remote URL from `.git/config`, if it's a git checkout

@@ -763,8 +763,13 @@ pub enum DbCommand {
 
 #[derive(Args, Debug)]
 pub struct DbGetArgs {
+    /// Name of a team-configured source (`production`, `staging`, …) advertised
+    /// in the manifest — supplies `--host` and its connection defaults, each of
+    /// which an explicit flag still overrides. See `sconce remote-source`.
+    #[arg(long, value_name = "NAME")]
+    pub source: Option<String>,
     /// SSH source `user@host` of the (anonymizing, read-only) server jibs runs
-    /// the aggregate on. Falls back to `$BOUGIE_DBGET_HOST`.
+    /// the aggregate on. Falls back to the `--source`, then `$BOUGIE_DBGET_HOST`.
     #[arg(long, value_name = "USER@HOST")]
     pub host: Option<String>,
     /// MySQL connection URL *on the source host*. Falls back to
