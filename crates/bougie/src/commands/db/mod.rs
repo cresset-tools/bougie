@@ -7,6 +7,7 @@
 //! (one-shot — a no-op once seeded, unless `--force`); and `refresh` = `pull` +
 //! `seed --force`, the explicit "give me fresh prod data now" action.
 
+pub mod get;
 pub mod pull;
 pub mod refresh;
 pub mod seed;

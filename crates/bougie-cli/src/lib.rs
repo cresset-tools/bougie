@@ -754,6 +754,46 @@ pub enum DbCommand {
     /// then reload it (`db pull` + `db seed --force`). The deliberate
     /// "give me fresh prod data now" action — it clobbers local DB state.
     Refresh(DbPullArgs),
+    /// Pull a specific production row-graph (anonymized) into the *existing*
+    /// local database without a reseed — reproduce a prod ticket in seconds.
+    /// Wraps jibs's on-demand `get` against the team's `.jibs` config, into the
+    /// project's mariadb tenant. e.g. `bougie db get order --id 12345`.
+    Get(DbGetArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct DbGetArgs {
+    /// SSH source `user@host` of the (anonymizing, read-only) server jibs runs
+    /// the aggregate on. Falls back to `$BOUGIE_DBGET_HOST`.
+    #[arg(long, value_name = "USER@HOST")]
+    pub host: Option<String>,
+    /// MySQL connection URL *on the source host*. Falls back to
+    /// `$BOUGIE_DBGET_REMOTE_MYSQL`; omit for jibs's default.
+    #[arg(long, value_name = "URL")]
+    pub remote_mysql: Option<String>,
+    /// Path to the jibs config (`.jibs`/`.json`) — the anonymization rules +
+    /// get functions. Defaults to `$BOUGIE_DBGET_CONFIG`, else the project's
+    /// single `*.jibs` file.
+    #[arg(long, value_name = "PATH")]
+    pub config: Option<String>,
+    /// SSH private key path.
+    #[arg(long, value_name = "PATH")]
+    pub identity: Option<String>,
+    /// SSH port on the source host.
+    #[arg(long, value_name = "PORT")]
+    pub port: Option<u16>,
+    /// Variable assignment `K=V` for the aggregate (repeatable), forwarded to
+    /// jibs `--var`.
+    #[arg(long = "var", value_name = "K=V")]
+    pub vars: Vec<String>,
+    /// Accept + save new SSH host keys on first connect (TOFU) instead of
+    /// jibs's default host-key policy.
+    #[arg(long)]
+    pub accept_new_host_keys: bool,
+    /// The get-function invocation(s), passed to jibs verbatim:
+    /// `<func> [--param value ...]`. e.g. `order --id 12345`.
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
+    pub query: Vec<String>,
 }
 
 #[derive(Args, Debug)]
