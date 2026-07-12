@@ -34,6 +34,11 @@ use crate::commands::team;
 /// On-disk shape of `pulled-snapshot.json`. Bumped if the layout changes.
 const POINTER_SCHEMA_VERSION: u32 = 1;
 
+/// Exit code for `--if-configured` when nothing is configured to pull — the
+/// recipe's signal to fall back to a fresh `setup:install` (distinct from a real
+/// failure, which stays non-zero-but-not-3).
+const NOT_CONFIGURED: u8 = 3;
+
 /// The per-project record of the last snapshot `bougie db pull` fetched, written
 /// under the durable project state dir (survives `rm -rf vendor`). `bougie db
 /// seed` reads it when invoked with no `--from`.
@@ -59,17 +64,42 @@ pub fn run(_format: OutputFormat, args: DbPullArgs) -> Result<ExitCode> {
     let project_root = locate_project_root()?;
 
     // `--repo`/`--env` win; otherwise default from the snapshot source the team
-    // manifest advertises for this project (cached by `bougie login`/`sync`).
-    let (repo_spec, env) = resolve_target(&args, &project_root)?;
+    // manifest advertises for this project (cached by `bougie login`/`sync`). No
+    // source configured is a hard error normally, but a soft `exit 3` under
+    // `--if-configured` so the recipe can fall back to a fresh install.
+    let (repo_spec, env) = match resolve_target(&args, &project_root) {
+        Ok(target) => target,
+        Err(_) if args.if_configured => {
+            eprintln!(
+                "bougie db pull: no database snapshot source is configured for this project; \
+                 skipping (--if-configured)."
+            );
+            return Ok(ExitCode::from(NOT_CONFIGURED));
+        }
+        Err(e) => return Err(e),
+    };
     let (org, repo) = parse_repo(&repo_spec)?;
 
     // Registry + auth come from `bougie login` — the team record names the
     // registry, the auth store holds the org-scoped bearer keyed by its host.
-    let record = team::read_record(&project_root).ok_or_else(|| {
-        eyre!(
-            "this project isn't wired to a sconce registry — run `bougie login <registry>` first"
-        )
-    })?;
+    // "Not a team project" is `exit 3` under `--if-configured`; being logged out
+    // of one stays a hard error (the user needs to re-login, not silently fall
+    // back to a throwaway install).
+    let record = match team::read_record(&project_root) {
+        Some(record) => record,
+        None if args.if_configured => {
+            eprintln!(
+                "bougie db pull: this project isn't wired to a sconce registry; skipping \
+                 (--if-configured)."
+            );
+            return Ok(ExitCode::from(NOT_CONFIGURED));
+        }
+        None => {
+            return Err(eyre!(
+                "this project isn't wired to a sconce registry — run `bougie login <registry>` first"
+            ));
+        }
+    };
     let base = record.registry.trim_end_matches('/').to_string();
     let host = auth_origin(&base);
     let token = read_bougie_bearer(&host)
@@ -277,6 +307,7 @@ mod tests {
         let a = DbPullArgs {
             repo: Some("acme/shop".to_string()),
             env: None,
+            if_configured: false,
         };
         assert_eq!(
             resolve_target(&a, root).unwrap(),
@@ -285,6 +316,7 @@ mod tests {
         let b = DbPullArgs {
             repo: Some("acme/shop".to_string()),
             env: Some("staging".to_string()),
+            if_configured: false,
         };
         assert_eq!(
             resolve_target(&b, root).unwrap(),

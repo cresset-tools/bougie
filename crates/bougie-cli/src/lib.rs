@@ -782,6 +782,13 @@ pub struct DbPullArgs {
     /// Defaults to the manifest's environment, or `production`.
     #[arg(long)]
     pub env: Option<String>,
+    /// For automation (the recipe `seed` step): when no snapshot source is
+    /// configured for this project — not a team project, or no dump set up —
+    /// exit 3 instead of erroring. A real failure (auth, network, 404) still
+    /// exits non-zero. Lets a caller tell "nothing to seed here" apart from "the
+    /// pull broke" and fall back to a fresh install only in the former.
+    #[arg(long)]
+    pub if_configured: bool,
 }
 
 #[derive(Subcommand, Debug)]
