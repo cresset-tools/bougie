@@ -12,6 +12,7 @@
 //! `$BOUGIE_DBGET_*` fallbacks). A login-token hosted gateway that removes the
 //! need for any source access on the laptop is future work.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
@@ -20,6 +21,7 @@ use bougie_paths::Paths;
 use eyre::{Result, WrapErr, eyre};
 
 use super::super::service::config_mut::locate_project_root;
+use crate::commands::team::{self, ManifestSource};
 
 const HOST_ENV: &str = "BOUGIE_DBGET_HOST";
 const REMOTE_MYSQL_ENV: &str = "BOUGIE_DBGET_REMOTE_MYSQL";
@@ -34,23 +36,44 @@ pub fn run(_format: OutputFormat, args: DbGetArgs) -> Result<ExitCode> {
     let project_root = locate_project_root()?;
 
     // Resolve everything cheap/offline first, so a config/host error beats the
-    // (potentially slow) jibs fetch.
-    let host = args.host.clone().or_else(|| env_nonempty(HOST_ENV)).ok_or_else(|| {
-        eyre!(
-            "no source host: pass `--host user@host` (or set {HOST_ENV}). `bougie db get` runs \
-             jibs's anonymizing aggregate on the source host and streams the rows in."
-        )
-    })?;
+    // (potentially slow) jibs fetch. A `--source <name>` selects a team-
+    // configured connection from the cached manifest; explicit flags override
+    // each of its fields, and the `$BOUGIE_DBGET_*` env vars are the last resort.
+    let source = match &args.source {
+        Some(name) => Some(resolve_source(team::cached_sources(&project_root), name)?),
+        None => None,
+    };
+    let host = args
+        .host
+        .clone()
+        .or_else(|| source.as_ref().map(|s| s.host.clone()))
+        .or_else(|| env_nonempty(HOST_ENV))
+        .ok_or_else(|| {
+            eyre!(
+                "no source host: pass `--host user@host`, `--source <name>` (a team-configured \
+                 source), or set {HOST_ENV}. `bougie db get` runs jibs's anonymizing aggregate on \
+                 the source host and streams the rows in."
+            )
+        })?;
     let config = resolve_config(&args, &project_root)?;
     let dsn = super::seed::mariadb_dsn(&paths, &project_root)?;
     let jibs = super::seed::ensure_jibs(&paths)?;
 
-    let remote_mysql = args.remote_mysql.clone().or_else(|| env_nonempty(REMOTE_MYSQL_ENV));
+    let remote_mysql = args
+        .remote_mysql
+        .clone()
+        .or_else(|| source.as_ref().and_then(|s| s.remote_mysql.clone()))
+        .or_else(|| env_nonempty(REMOTE_MYSQL_ENV));
+    let identity = args
+        .identity
+        .clone()
+        .or_else(|| source.as_ref().and_then(|s| s.identity.clone()));
+    let port = args.port.or_else(|| source.as_ref().and_then(|s| s.port));
     let argv = build_get_argv(&GetInvocation {
         host: &host,
         remote_mysql: remote_mysql.as_deref(),
-        identity: args.identity.as_deref(),
-        port: args.port,
+        identity: identity.as_deref(),
+        port,
         accept_new_host_keys: args.accept_new_host_keys,
         vars: &args.vars,
         local_mysql: &dsn,
@@ -171,6 +194,32 @@ fn env_nonempty(key: &str) -> Option<String> {
     std::env::var(key).ok().filter(|v| !v.trim().is_empty())
 }
 
+/// Pick the named source out of the manifest's `sources` map. Errors — listing
+/// the names that *are* available — when the source is unknown, so a typo is a
+/// clean message rather than a puzzling missing-host error downstream.
+fn resolve_source(
+    mut sources: BTreeMap<String, ManifestSource>,
+    name: &str,
+) -> Result<ManifestSource> {
+    if let Some(src) = sources.remove(name) {
+        return Ok(src);
+    }
+    if sources.is_empty() {
+        Err(eyre!(
+            "no team database sources are configured for this project (looked for `{name}`). A \
+             maintainer adds them with `sconce remote-source <remote> {name} --host …`; run \
+             `bougie sync` to refresh the manifest. Or pass `--host user@host` directly."
+        ))
+    } else {
+        let names: Vec<&str> = sources.keys().map(String::as_str).collect();
+        Err(eyre!(
+            "no team database source named `{name}` (available: {}). Pick one with `--source \
+             <name>`, or pass `--host user@host` directly.",
+            names.join(", ")
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -229,6 +278,38 @@ mod tests {
         }
         // Repeated --var is emitted once per assignment.
         assert_eq!(argv.iter().filter(|a| *a == "--var").count(), 2);
+    }
+
+    fn src(host: &str, port: Option<u16>) -> ManifestSource {
+        ManifestSource {
+            host: host.to_string(),
+            remote_mysql: None,
+            identity: None,
+            port,
+        }
+    }
+
+    #[test]
+    fn resolve_source_selects_named_and_errors_on_unknown() {
+        let mut sources = BTreeMap::new();
+        sources.insert("production".to_string(), src("deploy@prod", Some(2201)));
+        sources.insert("staging".to_string(), src("deploy@staging", None));
+
+        // A known name resolves to its connection.
+        let picked = resolve_source(sources.clone(), "staging").unwrap();
+        assert_eq!(picked.host, "deploy@staging");
+        let picked = resolve_source(sources.clone(), "production").unwrap();
+        assert_eq!(picked.port, Some(2201));
+
+        // An unknown name lists what's available, and names the typo.
+        let err = resolve_source(sources, "prod").unwrap_err().to_string();
+        assert!(err.contains("production"), "{err}");
+        assert!(err.contains("staging"), "{err}");
+        assert!(err.contains("`prod`"), "{err}");
+
+        // No sources at all → the "configure them" message, not a name list.
+        let err = resolve_source(BTreeMap::new(), "production").unwrap_err().to_string();
+        assert!(err.contains("no team database sources"), "{err}");
     }
 
     #[test]
