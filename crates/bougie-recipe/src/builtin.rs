@@ -142,6 +142,19 @@ mod tests {
     /// PATH that records every invocation's argv, plus the tenant env
     /// the daemon would inject. Returns the recorded argv log.
     fn run_script(script: &str, root: &std::path::Path, rabbitmq_env: bool) -> String {
+        // Default: `bougie db pull --if-configured` reports "nothing configured"
+        // (exit 3), so the install task takes the fresh `setup:install` path.
+        run_script_pull(script, root, rabbitmq_env, 3)
+    }
+
+    /// Like [`run_script`] but with an explicit exit code for `bougie db pull
+    /// --if-configured` — `0` drives the team-seed branch, `3` the fresh install.
+    fn run_script_pull(
+        script: &str,
+        root: &std::path::Path,
+        rabbitmq_env: bool,
+        pull_rc: i32,
+    ) -> String {
         use std::os::unix::fs::PermissionsExt;
         let bindir = root.join(".stub-bin");
         std::fs::create_dir_all(&bindir).unwrap();
@@ -149,10 +162,14 @@ mod tests {
         let _ = std::fs::remove_file(&log);
         let fake = bindir.join("bougie");
         // `cat` drains stdin so the install task's heredoc-fed
-        // `bougie run -- php <<'PHP'` step can't block or SIGPIPE.
+        // `bougie run -- php <<'PHP'` step can't block or SIGPIPE. `db pull
+        // --if-configured` returns `pull_rc` to pick the install-vs-seed branch.
         std::fs::write(
             &fake,
-            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$BOUGIE_STUB_LOG\"\ncat > /dev/null\n",
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$BOUGIE_STUB_LOG\"\ncat > /dev/null\n\
+                 case \"$*\" in *'db pull'*) exit {pull_rc};; esac\n"
+            ),
         )
         .unwrap();
         std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -223,6 +240,65 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("vendor/magento/module-amqp")).unwrap();
         let log = run_script(&install, dir.path(), false);
         assert!(!log.contains("--amqp"), "log:\n{log}");
+    }
+
+    #[test]
+    fn magento_install_seeds_in_team_mode_else_setup_installs() {
+        let magento = load_builtin("magento").unwrap();
+        let install = magento.tasks["install"].run.clone().unwrap();
+
+        // A team snapshot is configured (`db pull --if-configured` exits 0) →
+        // seed from the dump + write env.php, and DON'T run setup:install.
+        let dir = tempfile::tempdir().unwrap();
+        let log = run_script_pull(&install, dir.path(), false, 0);
+        assert!(log.contains("db seed"), "must load the dump:\n{log}");
+        assert!(log.contains("run -- php"), "must write env.php:\n{log}");
+        assert!(
+            log.contains("config:set --lock-env web/unsecure/base_url"),
+            "must point base_url at the local server:\n{log}"
+        );
+        assert!(log.contains("deploy:mode:set developer"), "log:\n{log}");
+        assert!(
+            !log.contains("setup:install"),
+            "seed path must not run a fresh setup:install:\n{log}"
+        );
+
+        // Nothing configured (`db pull` exits 3) → fresh setup:install, no seed.
+        let dir = tempfile::tempdir().unwrap();
+        let log = run_script_pull(&install, dir.path(), true, 3);
+        assert!(log.contains("setup:install"), "fresh path must install:\n{log}");
+        assert!(
+            !log.contains("db seed"),
+            "fresh path must not seed:\n{log}"
+        );
+
+        // A real pull failure (exit 1) must abort, NOT silently fall back to a
+        // destructive fresh install.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        let bindir = root.join(".stub-bin");
+        std::fs::create_dir_all(&bindir).unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let fake = bindir.join("bougie");
+            std::fs::write(&fake, "#!/bin/sh\ncase \"$*\" in *'db pull'*) exit 1;; esac\n").unwrap();
+            std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let path = format!(
+            "{}:{}",
+            bindir.display(),
+            std::env::var("PATH").unwrap_or_default()
+        );
+        let status = std::process::Command::new("/bin/sh")
+            .arg("-e")
+            .arg("-c")
+            .arg(&install)
+            .current_dir(&root)
+            .env("PATH", path)
+            .env("BOUGIE_STUB_LOG", root.join("argv.log"))
+            .status()
+            .unwrap();
+        assert!(!status.success(), "a real pull failure must abort the task");
     }
 
     #[test]

@@ -77,7 +77,78 @@ check = "test -f app/etc/env.php"
 # without the services task). The flags are staged into the positional
 # params (`set --`) — POSIX sh's only array — so an empty set expands
 # to zero words in `"$@"`.
+#
+# Team mode: if a production database snapshot is configured for this project,
+# seed the local DB from it instead of a fresh `setup:install`. `bougie db pull
+# --if-configured` exits 3 when nothing is configured (not a team project, or no
+# dump set up) — the signal to fall through to a fresh install below. A real
+# pull failure (auth / network / 404) is a HARD error: we must not clobber a
+# would-be team database with a throwaway fresh install on a transient hiccup.
 run = """
+rc=0
+bougie db pull --if-configured || rc=$?
+case "$rc" in
+  0)
+    # Load the production-shaped dump (one-shot; `bougie db seed` records a
+    # marker so it won't reload on the next start).
+    bougie db seed
+    # The dump carries production's database, but app/etc/env.php is a gitignored
+    # local file it can't provide — write one wired to THIS machine's services.
+    # A fresh crypt key means production-encrypted config values (payment creds,
+    # etc.) won't decrypt locally; that's expected for dev and stops neither
+    # Magento nor admin login from working.
+    echo | bougie run -- php <<'PHP'
+<?php
+$redis = [
+    'server' => getenv('BOUGIE_SERVICE_REDIS_SOCKET'),
+    'port' => '0',
+    'database' => getenv('BOUGIE_SERVICE_REDIS_DB'),
+    'id_prefix' => 'bgc_',
+];
+$cache = ['backend' => 'Magento\\Framework\\Cache\\Backend\\Redis', 'backend_options' => $redis];
+$env = [
+    'backend' => ['frontName' => 'admin'],
+    'crypt' => ['key' => bin2hex(random_bytes(16))],
+    'db' => [
+        'table_prefix' => '',
+        'connection' => [
+            'default' => [
+                'host' => getenv('BOUGIE_SERVICE_MARIADB_SOCKET'),
+                'dbname' => getenv('BOUGIE_SERVICE_MARIADB_DATABASE'),
+                'username' => getenv('BOUGIE_SERVICE_MARIADB_USER'),
+                'password' => getenv('BOUGIE_SERVICE_MARIADB_PASSWORD'),
+                'active' => '1',
+            ],
+        ],
+    ],
+    'resource' => ['default_setup' => ['connection' => 'default']],
+    'x-frame-options' => 'SAMEORIGIN',
+    'MAGE_MODE' => 'developer',
+    'session' => ['save' => 'files'],
+    'lock' => ['provider' => 'db'],
+    'cache' => ['frontend' => ['default' => $cache, 'page_cache' => $cache]],
+    'install' => ['date' => date('r')],
+];
+file_put_contents('app/etc/env.php', '<?php' . PHP_EOL . 'return ' . var_export($env, true) . ';' . PHP_EOL);
+PHP
+    # The dump has production's base_url; point the store at the local dev server
+    # (locked into env.php so it can't be changed from the seeded admin config).
+    base="http://${BOUGIE_SERVICE_SERVER_HOSTNAME}:${BOUGIE_SERVICE_SERVER_PORT}/"
+    bougie run -- bin/magento config:set --lock-env web/unsecure/base_url "$base"
+    bougie run -- bin/magento config:set --lock-env web/secure/base_url "$base"
+    bougie run -- bin/magento deploy:mode:set developer
+    exit 0
+    ;;
+  3)
+    : # nothing configured — fall through to a fresh setup:install
+    ;;
+  *)
+    echo "bougie: pulling the team database snapshot failed (exit $rc); refusing to fall back to a fresh install" >&2
+    exit "$rc"
+    ;;
+esac
+
+# Fresh install (no team snapshot configured):
 amqp=no
 for d in vendor/*/module-amqp app/code/Magento/Amqp; do
   if [ -d "$d" ]; then amqp=yes; fi
