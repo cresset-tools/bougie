@@ -179,7 +179,7 @@ fn now_unix() -> u64 {
 /// the tenant ledger + derived password (the same values `bougie service
 /// credentials` prints). `MariaDB` is socket-only; `user` and the database name
 /// are both the tenant name.
-fn mariadb_dsn(paths: &Paths, project_root: &Path) -> Result<String> {
+pub(crate) fn mariadb_dsn(paths: &Paths, project_root: &Path) -> Result<String> {
     // Multi-instance: resolve which mariadb version this project runs by
     // scanning the on-disk ledgers, then read that instance's tenant ledger.
     let version = tenants::project_instance_version(paths, MARIADB, project_root).ok_or_else(|| {
@@ -244,7 +244,7 @@ fn urlencode(s: &str) -> String {
 /// Path to a ready-to-run `jibs` binary: the `BOUGIE_JIBS_PATH` override when
 /// set, otherwise a cached pinned download (fetched + extracted on a cache
 /// miss), mirroring `bougie format`'s wick handling.
-fn ensure_jibs(paths: &Paths) -> Result<PathBuf> {
+pub(crate) fn ensure_jibs(paths: &Paths) -> Result<PathBuf> {
     if let Some(p) = std::env::var_os(JIBS_PATH_ENV) {
         let p = PathBuf::from(p);
         if !p.is_file() {
