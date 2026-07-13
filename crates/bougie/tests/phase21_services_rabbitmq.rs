@@ -135,12 +135,20 @@ fn rabbitmqctl(env: &TestEnv, args: &[&str]) -> (i32, String, String) {
         .home_path()
         .join("store/rabbitmq-4.2.6/sbin/rabbitmqctl");
     let home = env.home_path().join("state/services/rabbitmq/4.2.6/data/home");
+    // Mirror bougied's ctl PATH (see rabbitmq.rs `ctl_path`): FHS
+    // defaults plus the inherited PATH, so rabbitmqctl's shell launchers
+    // find coreutils (`dirname`, `readlink`) on non-FHS hosts like
+    // NixOS, where `/usr/bin:/bin` alone would break them.
+    let path = match std::env::var("PATH") {
+        Ok(p) if !p.is_empty() => format!("/usr/bin:/bin:{p}"),
+        _ => "/usr/bin:/bin".to_string(),
+    };
     let out = Command::new(&ctl)
         .args(args)
         // Mirror bougied's env so we hit the same node.
         .env_clear()
         .env("HOME", &home)
-        .env("PATH", "/usr/bin:/bin")
+        .env("PATH", &path)
         .env("RABBITMQ_NODENAME", "rabbit@localhost")
         .env("RABBITMQ_NODE_IP_ADDRESS", "127.0.0.1")
         .env("RABBITMQ_NODE_PORT", "5672")
