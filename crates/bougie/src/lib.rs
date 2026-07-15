@@ -845,6 +845,7 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
             args.php.as_deref(),
             &args.with,
             args.no_project,
+            args.bin.as_deref(),
             args.command,
         ),
         Command::Tool(ToolCommand::Bgx(args)) => commands::tool_run::run(
@@ -852,6 +853,7 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
             args.tool_run.php.as_deref(),
             &args.tool_run.with,
             args.tool_run.no_project,
+            args.tool_run.bin.as_deref(),
             args.tool_run.command,
         ),
         Command::Tool(ToolCommand::List) => commands::tool_list::run(format),

@@ -1782,6 +1782,13 @@ pub struct ToolRunArgs {
     /// (tool requirements win on conflict)
     #[arg(long)]
     pub no_project: bool,
+    /// Which of the package's bins to run. Needed when a package
+    /// exposes several bins and none matches its `<name>` segment
+    /// (e.g. `inchoo/magento-bricklayer` exposes `bricklayer` and
+    /// `bricklayer-mcp`). Like every bougie option, it must come
+    /// before the package
+    #[arg(long, value_name = "NAME")]
+    pub bin: Option<String>,
     /// The tool's Composer package (optionally `@<constraint>`) followed
     /// by the arguments to forward to it. bougie's own options must come
     /// *before* the package; everything from the package onward is passed
@@ -1820,6 +1827,31 @@ mod tests {
             cmd(&["bougie", "start", "--no-sync", "--dry-run"]),
             Command::Start { no_sync: true, dry_run: true, .. }
         ));
+    }
+
+    #[test]
+    fn tool_run_bin_before_package_is_a_bougie_flag() {
+        let Command::Tool(ToolCommand::Run(args)) = cmd(&[
+            "bougie", "tool", "run", "--bin", "bricklayer-mcp",
+            "inchoo/magento-bricklayer", "serve",
+        ]) else {
+            panic!("expected tool run");
+        };
+        assert_eq!(args.bin.as_deref(), Some("bricklayer-mcp"));
+        assert_eq!(args.command, ["inchoo/magento-bricklayer", "serve"]);
+    }
+
+    #[test]
+    fn tool_run_bin_after_package_is_forwarded() {
+        // `trailing_var_arg`: everything from the package onward goes to
+        // the tool verbatim, so a `--bin` there is the tool's own flag.
+        let Command::Tool(ToolCommand::Run(args)) =
+            cmd(&["bougie", "tool", "run", "inchoo/magento-bricklayer", "--bin", "x"])
+        else {
+            panic!("expected tool run");
+        };
+        assert_eq!(args.bin, None);
+        assert_eq!(args.command, ["inchoo/magento-bricklayer", "--bin", "x"]);
     }
 
     #[test]

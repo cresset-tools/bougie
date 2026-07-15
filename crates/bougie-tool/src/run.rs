@@ -59,12 +59,14 @@ pub fn run(
     php_spec: Option<&str>,
     with: &[String],
     project: Option<&ProjectContext>,
+    bin: Option<&str>,
     user_args: Vec<OsString>,
 ) -> Result<std::convert::Infallible> {
     let plan = prepare(ctx, request, php_spec, with, project)?;
 
     let receipt = crate::receipt::read(&plan.tool_dir.join("receipt.toml"))?;
-    let entry = pick_bin(&receipt.entrypoints, &plan.package)?;
+    let declared = crate::install::read_default_bin(&plan.tool_dir, &plan.package)?;
+    let entry = pick_bin(&receipt.entrypoints, &plan.package, bin, declared.as_deref())?;
     let Some(wrapper) = entry_to_wrapper(&plan.tool_dir, entry) else {
         bail!(
             "tool dir {} is missing the wrapper for bin `{}`",
@@ -249,14 +251,42 @@ fn receipt_matches(
     their_ext.as_slice() == sorted_ext
 }
 
-/// Pick the bin to run for a `tool run <pkg>` request: prefer one
-/// whose name matches the package's `<name>` segment
-/// (`phpstan/phpstan` → `phpstan`); else if there's exactly one bin,
-/// use it; else error with a hint to install + run from PATH.
+/// Pick the bin to run for a `tool run <pkg>` request.
+///
+/// Selection precedence:
+/// 1. `wanted` — the user's explicit `--bin <name>`. Returns that entry
+///    or errors listing the bins the tool actually exposes (an explicit
+///    request that can't be honoured is a hard error).
+/// 2. `declared` — the package's own `extra.bougie.default-bin`. Used
+///    when it resolves to a real bin; a stale/typo'd value falls
+///    through rather than breaking the run.
+/// 3. A bin whose name matches the package's `<name>` segment
+///    (`phpstan/phpstan` → `phpstan`).
+/// 4. The sole bin, if there's exactly one.
+/// 5. Otherwise error with a hint to pass `--bin` (or install + run
+///    from PATH).
 pub fn pick_bin<'a>(
     entries: &'a [ToolEntrypoint],
     package: &str,
+    wanted: Option<&str>,
+    declared: Option<&str>,
 ) -> Result<&'a ToolEntrypoint> {
+    if let Some(name) = wanted {
+        if let Some(e) = entries.iter().find(|e| e.name == name) {
+            return Ok(e);
+        }
+        let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+        if names.is_empty() {
+            bail!("tool `{package}` has no bin entries, so `--bin {name}` can't be satisfied");
+        }
+        bail!(
+            "tool `{package}` has no bin `{name}`; available bins: {list}",
+            list = names.join(", "),
+        );
+    }
+    if let Some(e) = declared.and_then(|name| entries.iter().find(|e| e.name == name)) {
+        return Ok(e);
+    }
     let preferred = package.rsplit_once('/').map_or(package, |(_, n)| n);
     if let Some(e) = entries.iter().find(|e| e.name == preferred) {
         return Ok(e);
@@ -268,7 +298,7 @@ pub fn pick_bin<'a>(
             let names: Vec<&str> = many.iter().map(|e| e.name.as_str()).collect();
             bail!(
                 "tool `{package}` exposes {n} bins ({list}); none match the package name `{preferred}`.\n\
-                 Use `bougie tool install {package}` and run the bin from PATH.",
+                 Select one with `--bin <NAME>`, or `bougie tool install {package}` to run the bin from PATH.",
                 n = many.len(),
                 list = names.join(", "),
             )
@@ -366,29 +396,96 @@ mod tests {
     #[test]
     fn pick_bin_prefers_package_name_match() {
         let entries = [ep("phpstan"), ep("phpstan.phar")];
-        let chosen = pick_bin(&entries, "phpstan/phpstan").unwrap();
+        let chosen = pick_bin(&entries, "phpstan/phpstan", None, None).unwrap();
         assert_eq!(chosen.name, "phpstan");
     }
 
     #[test]
     fn pick_bin_falls_back_to_single_when_no_name_match() {
         let entries = [ep("rector")];
-        let chosen = pick_bin(&entries, "vendor/something-else").unwrap();
+        let chosen = pick_bin(&entries, "vendor/something-else", None, None).unwrap();
         assert_eq!(chosen.name, "rector");
     }
 
     #[test]
     fn pick_bin_errors_on_ambiguous_multi() {
         let entries = [ep("a"), ep("b"), ep("c")];
-        let err = pick_bin(&entries, "v/x").unwrap_err().to_string();
+        let err = pick_bin(&entries, "v/x", None, None).unwrap_err().to_string();
         assert!(err.contains("exposes 3 bins"), "{err}");
+        assert!(err.contains("--bin"), "{err}");
         assert!(err.contains("tool install"), "{err}");
     }
 
     #[test]
     fn pick_bin_errors_on_empty_entries() {
-        let err = pick_bin(&[], "v/p").unwrap_err().to_string();
+        let err = pick_bin(&[], "v/p", None, None).unwrap_err().to_string();
         assert!(err.contains("no bin entries"), "{err}");
+    }
+
+    #[test]
+    fn pick_bin_selects_explicit_bin_among_many() {
+        let entries = [ep("bricklayer"), ep("bricklayer-mcp")];
+        let chosen =
+            pick_bin(&entries, "inchoo/magento-bricklayer", Some("bricklayer-mcp"), None)
+                .unwrap();
+        assert_eq!(chosen.name, "bricklayer-mcp");
+    }
+
+    #[test]
+    fn pick_bin_explicit_bin_overrides_name_match() {
+        // `--bin` wins even when a bin matches the package name.
+        let entries = [ep("phpstan"), ep("phpstan-secondary")];
+        let chosen =
+            pick_bin(&entries, "phpstan/phpstan", Some("phpstan-secondary"), None).unwrap();
+        assert_eq!(chosen.name, "phpstan-secondary");
+    }
+
+    #[test]
+    fn pick_bin_errors_on_unknown_explicit_bin() {
+        let entries = [ep("bricklayer"), ep("bricklayer-mcp")];
+        let err = pick_bin(&entries, "inchoo/magento-bricklayer", Some("nope"), None)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("no bin `nope`"), "{err}");
+        assert!(err.contains("bricklayer, bricklayer-mcp"), "{err}");
+    }
+
+    #[test]
+    fn pick_bin_honours_declared_default_over_ambiguity() {
+        // No `--bin`, no name match, but the package declares a default.
+        let entries = [ep("bricklayer"), ep("bricklayer-mcp")];
+        let chosen = pick_bin(
+            &entries,
+            "inchoo/magento-bricklayer",
+            None,
+            Some("bricklayer"),
+        )
+        .unwrap();
+        assert_eq!(chosen.name, "bricklayer");
+    }
+
+    #[test]
+    fn pick_bin_explicit_bin_beats_declared_default() {
+        let entries = [ep("bricklayer"), ep("bricklayer-mcp")];
+        let chosen = pick_bin(
+            &entries,
+            "inchoo/magento-bricklayer",
+            Some("bricklayer-mcp"),
+            Some("bricklayer"),
+        )
+        .unwrap();
+        assert_eq!(chosen.name, "bricklayer-mcp");
+    }
+
+    #[test]
+    fn pick_bin_stale_declared_default_falls_through() {
+        // A declared default that no longer names a real bin must not
+        // break the run — fall through to the heuristics (here: the
+        // package-name match).
+        let entries = [ep("phpstan"), ep("phpstan.phar")];
+        let chosen =
+            pick_bin(&entries, "phpstan/phpstan", None, Some("gone")).unwrap();
+        assert_eq!(chosen.name, "phpstan");
     }
 
     fn plan_for(
