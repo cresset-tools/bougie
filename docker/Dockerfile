@@ -7,8 +7,9 @@
 #
 #     COPY --from=ghcr.io/cresset-tools/bougie:latest /bougie /bgx /usr/local/bin/
 #
-# Built natively for both linux/amd64 and linux/arm64 on Depot's per-arch
-# native builders — no QEMU, no cross-compile. The `build` stage runs on
+# Built natively for both linux/amd64 and linux/arm64 — each arch compiles
+# on its own GitHub-hosted runner (amd64 on ubuntu-latest, arm64 on
+# ubuntu-24.04-arm), no QEMU, no cross-compile. The `build` stage runs on
 # Alpine, so musl is the native libc and a plain `cargo build --release`
 # yields a fully static binary on each arch; the same image therefore drops
 # into scratch, alpine, and debian alike. The final `scratch` stage runs no
