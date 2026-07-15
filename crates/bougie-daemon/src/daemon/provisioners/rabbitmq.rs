@@ -251,14 +251,21 @@ async fn run_ctl(ctl: &Path, paths: &Paths, args: &[&str]) -> Result<()> {
     Ok(())
 }
 
-/// Shared env-builder for both rabbitmqctl and the supervisor's
-/// rabbitmq-server spawn. Centralised so a path drift between the
-/// two would surface as "node not running" against ourselves rather
-/// than a silent split-brain.
+/// Env-builder for bougied's out-of-band `rabbitmqctl` calls (health
+/// probe, `wait_for_ctl_ready`, tenant provision/deprovision). The
+/// node-locating knobs (`RABBITMQ_NODENAME` etc.) come from
+/// [`rabbitmq_env`], which the supervisor's `rabbitmq-server` spawn also
+/// uses — that shared builder is what keeps ctl and the broker pointed
+/// at the same node. This function does *not* touch the running broker;
+/// it only shapes the environment of the short-lived ctl child.
+///
+/// We `env_clear()` and rebuild from scratch so a stale
+/// `RABBITMQ_NODENAME` in the operator's shell can't point us at the
+/// wrong broker.
 fn build_ctl_env(cmd: &mut Command, paths: &Paths) {
     cmd.env_clear()
         .env("HOME", paths.service_data("rabbitmq", svc_version()).join("home"))
-        .env("PATH", "/usr/bin:/bin")
+        .env("PATH", ctl_path())
         // Belt-and-suspenders against a dangling cwd: bougied anchors
         // its own cwd to the state root, but pin these out-of-band ctl
         // probes to the rabbitmq data dir regardless. rabbitmqctl is an
@@ -272,6 +279,41 @@ fn build_ctl_env(cmd: &mut Command, paths: &Paths) {
         // the AMQP port, so this value is immaterial to ctl — but keep it
         // consistent with the running broker's effective port.
         .envs(rabbitmq_env(paths, crate::daemon::endpoint::effective_primary(paths, "rabbitmq", svc_version(), 5672)));
+}
+
+/// PATH for the ctl child: the FHS defaults, plus whatever bougied
+/// inherited, appended.
+///
+/// `rabbitmqctl` is a shell script whose `rabbitmq-env` prelude (and
+/// Erlang's own `erl` launcher) shell out to coreutils — `dirname`,
+/// `readlink`, etc. On FHS distros those live under `/usr/bin:/bin`, so
+/// the old hardcoded value sufficed. On non-FHS hosts (NixOS) `/usr/bin`
+/// holds only `env` and `/bin` only `sh`; the launcher dies with
+/// `dirname: command not found` and the node never reports healthy.
+/// bougied inherits its PATH from the CLI that auto-spawned it — which
+/// demonstrably resolves those tools — so appending it recovers the
+/// non-FHS case while leaving FHS lookups byte-identical (the FHS dirs
+/// are searched first). This must never revert to a bare literal.
+fn ctl_path() -> String {
+    ctl_path_from(std::env::var("PATH").ok().as_deref())
+}
+
+/// Pure core of [`ctl_path`], split out so the `inherited == None` /
+/// empty branches are testable without mutating the process environment
+/// (`std::env::remove_var` is `unsafe` under edition 2024, which the
+/// workspace's `deny(unsafe_code)` forbids here). FHS defaults come
+/// first; inherited entries are appended, skipping any already present
+/// so the resulting PATH carries no duplicate segments.
+fn ctl_path_from(inherited: Option<&str>) -> String {
+    let mut segments = vec!["/usr/bin", "/bin"];
+    if let Some(inherited) = inherited {
+        for segment in inherited.split(':') {
+            if !segment.is_empty() && !segments.contains(&segment) {
+                segments.push(segment);
+            }
+        }
+    }
+    segments.join(":")
 }
 
 /// Block until `rabbitmqctl status` returns 0. The TCP probe was
@@ -391,5 +433,31 @@ mod tests {
         assert!(env
             .get("RABBITMQ_LOG_BASE")
             .is_some_and(|p| p.contains("rabbitmq") && p.ends_with("/log")));
+    }
+
+    #[test]
+    fn ctl_path_appends_inherited_after_fhs_defaults() {
+        assert_eq!(
+            ctl_path_from(Some("/nix/store/coreutils/bin:/run/current-system/sw/bin")),
+            "/usr/bin:/bin:/nix/store/coreutils/bin:/run/current-system/sw/bin"
+        );
+    }
+
+    #[test]
+    fn ctl_path_falls_back_to_fhs_defaults_when_unset_or_empty() {
+        // The `remove_var`-free reason the pure fn exists: exercise the
+        // None branch that a live `bougied` with no PATH would hit.
+        assert_eq!(ctl_path_from(None), "/usr/bin:/bin");
+        assert_eq!(ctl_path_from(Some("")), "/usr/bin:/bin");
+    }
+
+    #[test]
+    fn ctl_path_dedupes_fhs_and_repeated_segments() {
+        // Inherited PATH that already leads with the FHS dirs (and
+        // repeats one) must not produce duplicate segments.
+        assert_eq!(
+            ctl_path_from(Some("/bin:/usr/bin:/opt/x:/opt/x:/usr/local/bin")),
+            "/usr/bin:/bin:/opt/x:/usr/local/bin"
+        );
     }
 }
