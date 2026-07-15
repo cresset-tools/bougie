@@ -131,6 +131,21 @@ pub struct CrashEvent {
     pub message: Option<String>,
 }
 
+/// A successful `self update`: the on-disk binary was swapped from one
+/// published release to another. Spooled directly at the swap (like the
+/// crash lane), so `self update`'s own `command` event and this `update`
+/// event both describe the same run. Both versions are public release
+/// numbers — the entire payload, no paths or identifiers.
+#[derive(Debug, Clone, Serialize)]
+pub struct UpdateEvent {
+    #[serde(flatten)]
+    pub common: Common,
+    /// The release that was replaced (equals `common.bougie_version`).
+    pub from_version: String,
+    /// The release now on disk.
+    pub to_version: String,
+}
+
 impl Enrichment {
     /// Drop the per-project ecosystem fields (throttle hit), keeping
     /// the perf fields, which carry no project shape.
@@ -335,5 +350,35 @@ mod tests {
         // Set enrichment flattens to the top level.
         assert_eq!(json["resolve_ms"], 88);
         assert_eq!(json["php_version"], "8.4");
+    }
+
+    #[test]
+    fn update_event_serializes_flat_with_version_pair() {
+        let ev = UpdateEvent {
+            common: Common {
+                schema: SCHEMA,
+                event: "update",
+                ts: "2026-07-15T09:00:00Z".into(),
+                install_id: "unset".into(),
+                invocation: "00000000-0000-4000-8000-000000000000".into(),
+                bougie_version: "0.48.0",
+                build_sha: None,
+                os: os(),
+                arch: arch(),
+                libc: libc(),
+                ci: false,
+                install_method: "installer",
+            },
+            from_version: "0.48.0".into(),
+            to_version: "0.49.0".into(),
+        };
+        let json: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&ev).unwrap()).unwrap();
+        assert_eq!(json["event"], "update");
+        // The version transition, flattened alongside the envelope.
+        assert_eq!(json["from_version"], "0.48.0");
+        assert_eq!(json["to_version"], "0.49.0");
+        // from_version mirrors the running (pre-swap) version.
+        assert_eq!(json["bougie_version"], json["from_version"]);
     }
 }
