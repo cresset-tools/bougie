@@ -79,17 +79,20 @@ docker run --rm -v "$PWD:/app" -w /app ghcr.io/cresset-tools/bougie:alpine sync
 
 ## How the images are built
 
-The images are built with [Depot](https://depot.dev) (project `ngljfb827z`, see
-`depot.json`), which provides native per-arch builders for both `linux/amd64`
-and `linux/arm64` — no QEMU, no cross-compile, no arm runner.
+The images are built on GitHub-hosted runners, one per architecture: `amd64`
+on `ubuntu-latest` and `arm64` on the free `ubuntu-24.04-arm` runner (the repo
+is public). Each arch builds natively — no QEMU, no cross-compile — pushes an
+untagged image by digest, and a merge job assembles the per-arch digests into a
+single multi-arch manifest with `docker buildx imagetools create`.
 
 `docker/Dockerfile` compiles natively on each arch: the `build` stage runs on
 `rust:<ver>-alpine`, so musl is the native libc and a plain `cargo build
 --release` yields a fully static binary. The final `scratch` stage runs no code
 — it just holds the native-arch binaries.
 
-just-built base binaries onto a real OS base; its only `RUN` is the per-base CA
-certificate install, which Depot's native arm64 builder runs without emulation.
+`docker/Dockerfile.extra` overlays the just-built base binaries onto a real OS
+base; its only `RUN` is the per-base CA certificate install, which the arm64
+runner performs natively without emulation.
 
 CI: `.github/workflows/build-docker.yml`, wired into the release as a
 post-announce job via `post-announce-jobs` in `dist-workspace.toml`. It also

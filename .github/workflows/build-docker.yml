@@ -1,6 +1,6 @@
 name: build-docker
 
-# Builds and publishes bougie's container images via Depot.
+# Builds and publishes bougie's container images on GitHub-hosted runners.
 #
 # Two entry points:
 #
@@ -22,14 +22,23 @@ name: build-docker
 #   ghcr.io/cresset-tools/bougie:<v>-debian-slim   runnable, debian:trixie-slim
 #   ghcr.io/cresset-tools/bougie:<v>-alpine        runnable, alpine:3.22
 #
-# Depot builds linux/amd64 and linux/arm64 on its own native per-arch builders
-# — no QEMU, no cross-compile, no arm runner. The base image (docker/Dockerfile)
-# compiles natively on each arch; the variant images (docker/Dockerfile.extra)
-# are tiny `COPY --from` overlays. Depot's project (depot.json, id ngljfb827z)
-# also owns the layer cache, so the GitHub Actions cache is no longer wired in.
+# Multi-arch strategy: each architecture builds natively on its own
+# GitHub-hosted runner — amd64 on `ubuntu-latest`, arm64 on the free
+# `ubuntu-24.04-arm` runner (this repo is public, so arm runners cost
+# nothing). No QEMU, no cross-compile. Each per-arch leg pushes an
+# untagged image *by digest*; a follow-up merge job assembles the
+# per-arch digests into one multi-arch manifest with `buildx imagetools
+# create` and applies the release tags. The base image
+# (docker/Dockerfile) compiles natively on each arch; the variant images
+# (docker/Dockerfile.extra) are tiny `COPY --from` overlays. Layer cache
+# is the GitHub Actions cache (`type=gha`), scoped per arch so the two
+# legs don't clobber each other.
 #
-# Auth: Depot trusts this repo via OIDC, so each job grants `id-token: write`
-# and no DEPOT_TOKEN secret is needed.
+# Attestation: per-arch builds set `provenance: false` so `push-by-digest`
+# yields clean single-arch image digests (deterministic for the merge);
+# provenance is attested once, on the final multi-arch index, via
+# actions/attest-build-provenance (push-to-registry), which is the
+# authoritative, GitHub-visible attestation.
 
 on:
   workflow_call:
@@ -46,7 +55,6 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - "rust-toolchain.toml"
-      - "depot.json"
       - ".github/workflows/build-docker.yml"
 
 permissions: {}
@@ -54,50 +62,107 @@ permissions: {}
 env:
   # github.repository is already lowercase for this repo; GHCR requires it.
   IMAGE: ghcr.io/${{ github.repository }}
-  # Depot project that owns the builders + layer cache (see depot.json).
-  DEPOT_PROJECT: ngljfb827z
 
 jobs:
   # PR smoke test: prove the base image still builds. amd64 only (the arm64
-  # leg is the same native build, just on an arm64 builder) and never pushed.
+  # leg is the same native build, just on an arm64 runner) and never pushed.
   pr-smoke:
     if: ${{ github.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      id-token: write # Depot OIDC
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: depot/setup-action@v1
-      - uses: depot/build-push-action@v1
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
         with:
-          project: ${{ env.DEPOT_PROJECT }}
           context: .
           file: docker/Dockerfile
           platforms: linux/amd64
           push: false
+          cache-from: type=gha,scope=base-linux-amd64
+          cache-to: type=gha,mode=max,scope=base-linux-amd64
 
-  # Release: build + push the multi-arch scratch base image.
+  # Release: build the scratch base image natively per-arch and push each
+  # leg to GHCR by digest (untagged). The `base` merge job assembles them.
+  base-build:
+    if: ${{ inputs.plan != '' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - { arch: linux/amd64, runner: ubuntu-latest }
+          - { arch: linux/arm64, runner: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.platform.runner }}
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Platform pair
+        run: |
+          platform='${{ matrix.platform.arch }}'
+          echo "PLATFORM_PAIR=${platform//\//-}" >> "$GITHUB_ENV"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          platforms: ${{ matrix.platform.arch }}
+          tags: ${{ env.IMAGE }}
+          # Clean single-arch image digests for a deterministic merge;
+          # provenance is attested on the final index in the `base` job.
+          provenance: false
+          outputs: type=image,push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=base-${{ env.PLATFORM_PAIR }}
+          cache-to: type=gha,mode=max,scope=base-${{ env.PLATFORM_PAIR }}
+
+      - name: Export digest
+        run: |
+          mkdir -p "${{ runner.temp }}/digests"
+          digest='${{ steps.build.outputs.digest }}'
+          touch "${{ runner.temp }}/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v7
+        with:
+          name: digests-base-${{ env.PLATFORM_PAIR }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # Release: merge the per-arch base digests into one multi-arch manifest,
+  # tag it, and attest the final index.
   base:
+    needs: base-build
     if: ${{ inputs.plan != '' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
-      id-token: write # GHCR login + Depot OIDC + attestations
+      id-token: write # attestations
       attestations: write
     outputs:
       version: ${{ steps.ver.outputs.version }}
       major_minor: ${{ steps.ver.outputs.major_minor }}
       is_prerelease: ${{ steps.ver.outputs.is_prerelease }}
-      digest: ${{ steps.build.outputs.digest }}
+      digest: ${{ steps.digest.outputs.digest }}
     steps:
-      - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-
       - name: Derive version from dist plan
         id: ver
         # announcement_tag is `bougie-v<version>`; strip the namespace to get
@@ -114,7 +179,14 @@ jobs:
             echo "is_prerelease=${prerelease}"
           } >> "$GITHUB_OUTPUT"
 
-      - uses: depot/setup-action@v1
+      - name: Download digests
+        uses: actions/download-artifact@v8
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digests-base-*
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@v3
 
       - uses: docker/login-action@v4
         with:
@@ -133,57 +205,126 @@ jobs:
             type=raw,value=${{ steps.ver.outputs.major_minor }},enable=${{ steps.ver.outputs.is_prerelease == 'false' }}
             type=raw,value=latest,enable=${{ steps.ver.outputs.is_prerelease == 'false' }}
 
-      - name: Build and push base image
-        id: build
-        uses: depot/build-push-action@v1
-        with:
-          project: ${{ env.DEPOT_PROJECT }}
-          context: .
-          file: docker/Dockerfile
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          annotations: ${{ steps.meta.outputs.annotations }}
-          provenance: mode=max
-          sbom: true
+      - name: Create multi-arch manifest and push
+        working-directory: ${{ runner.temp }}/digests
+        run: |
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf '${{ env.IMAGE }}@sha256:%s ' *)
+
+      - name: Record final digest
+        id: digest
+        run: |
+          set -euo pipefail
+          digest=$(docker buildx imagetools inspect \
+            "${{ env.IMAGE }}:${{ steps.ver.outputs.version }}" \
+            --format '{{.Manifest.Digest}}')
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
 
       - name: Attest base image provenance
         uses: actions/attest-build-provenance@v4
         with:
           subject-name: ${{ env.IMAGE }}
-          subject-digest: ${{ steps.build.outputs.digest }}
+          subject-digest: ${{ steps.digest.outputs.digest }}
           push-to-registry: true
 
-  # Release: overlay the just-pushed base binaries onto runnable OS bases.
-  # Pinned to the base image by digest so a variant always matches its base.
-  extra:
+  # Release: overlay the just-pushed base binaries onto runnable OS bases,
+  # natively per-arch. Pinned to the base image by its multi-arch index
+  # digest so each arch leg pulls the matching sub-image, and a variant
+  # always matches the base it was cut from. Pushed by digest for the merge.
+  extra-build:
     needs: base
     if: ${{ inputs.plan != '' }}
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-      id-token: write # GHCR login + Depot OIDC + attestations
-      attestations: write
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - suffix: debian-slim
+        platform:
+          - { arch: linux/amd64, runner: ubuntu-latest }
+          - { arch: linux/arm64, runner: ubuntu-24.04-arm }
+        suffix:
+          - name: debian-slim
             base_image: debian:trixie-slim
             certs_install: "apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*"
-          - suffix: alpine
+          - name: alpine
             base_image: alpine:3.22
             certs_install: "apk add --no-cache ca-certificates"
+    runs-on: ${{ matrix.platform.runner }}
+    permissions:
+      contents: read
+      packages: write
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
-      # The variant Dockerfile's only RUN is the cert install; Depot's native
-      # arm64 builder runs the arm64 leg without emulation, so no QEMU setup.
-      - uses: depot/setup-action@v1
+      - name: Platform pair
+        run: |
+          platform='${{ matrix.platform.arch }}'
+          echo "PLATFORM_PAIR=${platform//\//-}" >> "$GITHUB_ENV"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push ${{ matrix.suffix.name }} by digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.extra
+          platforms: ${{ matrix.platform.arch }}
+          provenance: false
+          build-args: |
+            BASE_IMAGE=${{ matrix.suffix.base_image }}
+            BOUGIE_IMAGE=${{ env.IMAGE }}@${{ needs.base.outputs.digest }}
+            CERTS_INSTALL=${{ matrix.suffix.certs_install }}
+          tags: ${{ env.IMAGE }}
+          outputs: type=image,push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=extra-${{ matrix.suffix.name }}-${{ env.PLATFORM_PAIR }}
+          cache-to: type=gha,mode=max,scope=extra-${{ matrix.suffix.name }}-${{ env.PLATFORM_PAIR }}
+
+      - name: Export digest
+        run: |
+          mkdir -p "${{ runner.temp }}/digests"
+          digest='${{ steps.build.outputs.digest }}'
+          touch "${{ runner.temp }}/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v7
+        with:
+          name: digests-extra-${{ matrix.suffix.name }}-${{ env.PLATFORM_PAIR }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # Release: merge each variant's per-arch digests into a multi-arch
+  # manifest, tag it, and attest the final index.
+  extra:
+    needs: [base, extra-build]
+    if: ${{ inputs.plan != '' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write # attestations
+      attestations: write
+    strategy:
+      fail-fast: false
+      matrix:
+        suffix: [debian-slim, alpine]
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v8
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digests-extra-${{ matrix.suffix }}-*
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@v3
 
       - uses: docker/login-action@v4
         with:
@@ -202,28 +343,25 @@ jobs:
             type=raw,value=${{ needs.base.outputs.major_minor }}-${{ matrix.suffix }},enable=${{ needs.base.outputs.is_prerelease == 'false' }}
             type=raw,value=${{ matrix.suffix }},enable=${{ needs.base.outputs.is_prerelease == 'false' }}
 
-      - name: Build and push ${{ matrix.suffix }} variant
-        id: build
-        uses: depot/build-push-action@v1
-        with:
-          project: ${{ env.DEPOT_PROJECT }}
-          context: .
-          file: docker/Dockerfile.extra
-          platforms: linux/amd64,linux/arm64
-          push: true
-          build-args: |
-            BASE_IMAGE=${{ matrix.base_image }}
-            BOUGIE_IMAGE=${{ env.IMAGE }}@${{ needs.base.outputs.digest }}
-            CERTS_INSTALL=${{ matrix.certs_install }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          annotations: ${{ steps.meta.outputs.annotations }}
-          provenance: mode=max
-          sbom: true
+      - name: Create multi-arch manifest and push
+        working-directory: ${{ runner.temp }}/digests
+        run: |
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf '${{ env.IMAGE }}@sha256:%s ' *)
+
+      - name: Record final digest
+        id: digest
+        run: |
+          set -euo pipefail
+          digest=$(docker buildx imagetools inspect \
+            "${{ env.IMAGE }}:${{ needs.base.outputs.version }}-${{ matrix.suffix }}" \
+            --format '{{.Manifest.Digest}}')
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
 
       - name: Attest ${{ matrix.suffix }} variant provenance
         uses: actions/attest-build-provenance@v4
         with:
           subject-name: ${{ env.IMAGE }}
-          subject-digest: ${{ steps.build.outputs.digest }}
+          subject-digest: ${{ steps.digest.outputs.digest }}
           push-to-registry: true
