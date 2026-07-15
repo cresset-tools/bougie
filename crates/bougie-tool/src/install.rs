@@ -592,6 +592,38 @@ fn bin_filename(vendor_relative: &str) -> String {
         .unwrap_or_default()
 }
 
+/// Read the package's self-declared main bin from
+/// `extra.bougie.default-bin` in its own `composer.json`.
+///
+/// This lets a multi-bin package name the bin `bougie tool run` / `bgx`
+/// should pick when the user passes no `--bin` and no bin matches the
+/// package's `<name>` segment (e.g. `inchoo/magento-bricklayer` can
+/// point at `bricklayer` so it wins over `bricklayer-mcp`). The value
+/// is basenamed, so both `"bricklayer"` and `"bin/bricklayer"` resolve
+/// to `bricklayer`. A missing or non-string value yields `None`; the
+/// selector then falls back to its heuristics.
+pub fn read_default_bin(tool_dir: &Path, package: &str) -> Result<Option<String>> {
+    let package_json = tool_dir
+        .join("vendor")
+        .join(package)
+        .join("composer.json");
+    let bytes = match std::fs::read(&package_json) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(eyre::eyre!("reading {}: {e}", package_json.display())),
+    };
+    let value: serde_json::Value = serde_json::from_slice(&bytes)
+        .wrap_err_with(|| format!("parsing {}", package_json.display()))?;
+    let declared = value
+        .get("extra")
+        .and_then(|e| e.get("bougie"))
+        .and_then(|b| b.get("default-bin"))
+        .and_then(serde_json::Value::as_str)
+        .map(bin_filename)
+        .filter(|s| !s.is_empty());
+    Ok(declared)
+}
+
 /// Make sure `$BOUGIE_LOCAL/bin/bougie` exists and points at the
 /// current bougie binary. Tool wrappers shebang into this path, so
 /// the indirection is what lets self-update relocate the binary
@@ -783,6 +815,51 @@ mod tests {
         std::fs::write(pkg_dir.join("composer.json"), r#"{"name":"v/p"}"#).unwrap();
         let entries = read_bin_entries(td.path(), "v/p").unwrap();
         assert!(entries.is_empty());
+    }
+
+    fn write_manifest(td: &tempfile::TempDir, package: &str, body: &str) {
+        let pkg_dir = td.path().join("vendor").join(package);
+        std::fs::create_dir_all(&pkg_dir).unwrap();
+        std::fs::write(pkg_dir.join("composer.json"), body).unwrap();
+    }
+
+    #[test]
+    fn read_default_bin_extracts_declared_main() {
+        let td = tempfile::TempDir::new().unwrap();
+        write_manifest(
+            &td,
+            "inchoo/magento-bricklayer",
+            r#"{"name":"inchoo/magento-bricklayer","bin":["bin/bricklayer","bin/bricklayer-mcp"],
+                "extra":{"bougie":{"default-bin":"bin/bricklayer"}}}"#,
+        );
+        let got = read_default_bin(td.path(), "inchoo/magento-bricklayer").unwrap();
+        // Basenamed so `bin/bricklayer` matches the emitted entry `bricklayer`.
+        assert_eq!(got.as_deref(), Some("bricklayer"));
+    }
+
+    #[test]
+    fn read_default_bin_is_none_without_declaration() {
+        let td = tempfile::TempDir::new().unwrap();
+        write_manifest(&td, "v/p", r#"{"name":"v/p","bin":["a","b"]}"#);
+        assert_eq!(read_default_bin(td.path(), "v/p").unwrap(), None);
+    }
+
+    #[test]
+    fn read_default_bin_ignores_non_string() {
+        let td = tempfile::TempDir::new().unwrap();
+        write_manifest(
+            &td,
+            "v/p",
+            r#"{"name":"v/p","extra":{"bougie":{"default-bin":["a"]}}}"#,
+        );
+        assert_eq!(read_default_bin(td.path(), "v/p").unwrap(), None);
+    }
+
+    #[test]
+    fn read_default_bin_is_none_when_manifest_missing() {
+        let td = tempfile::TempDir::new().unwrap();
+        // No vendor tree at all.
+        assert_eq!(read_default_bin(td.path(), "v/p").unwrap(), None);
     }
 
     #[cfg(unix)]

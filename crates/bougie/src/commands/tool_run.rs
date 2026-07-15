@@ -33,6 +33,7 @@ pub fn run(
     php_spec: Option<&str>,
     with: &[String],
     no_project: bool,
+    bin: Option<&str>,
     mut command: Vec<OsString>,
 ) -> Result<ExitCode> {
     // clap enforces `required = true`, so `command` is non-empty; keep a
@@ -75,6 +76,6 @@ pub fn run(
     // into PHP. The `Result` carries only the prep-time / execve
     // failure mode.
     let _: std::convert::Infallible =
-        run::run(&ctx, &req, php_spec, with, project.as_ref(), args)?;
+        run::run(&ctx, &req, php_spec, with, project.as_ref(), bin, args)?;
     unreachable!("tool run execve never returns on success");
 }

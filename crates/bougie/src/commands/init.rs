@@ -342,7 +342,8 @@ fn run_installer_starter(package: &str, root: &Path, format: OutputFormat) -> Re
     // there's nothing meaningful to derive from the (half-written) cwd.
     let plan = run::prepare(&ctx, &req, None, &[], None)?;
     let receipt = receipt::read(&plan.tool_dir.join("receipt.toml"))?;
-    let entry = run::pick_bin(&receipt.entrypoints, &plan.package)?;
+    let declared = bougie_tool::install::read_default_bin(&plan.tool_dir, &plan.package)?;
+    let entry = run::pick_bin(&receipt.entrypoints, &plan.package, None, declared.as_deref())?;
     let wrapper = plan.tool_dir.join("bin").join(&entry.name);
     if !wrapper.is_file() {
         return Err(eyre!(
