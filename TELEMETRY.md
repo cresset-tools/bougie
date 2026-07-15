@@ -64,7 +64,7 @@ One NDJSON line per event. Envelope fields on every event:
 | field | values | notes |
 | --- | --- | --- |
 | `schema` | `1` | wire-schema version |
-| `event` | `command` \| `crash` | |
+| `event` | `command` \| `crash` \| `update` | |
 | `ts` | RFC 3339 UTC, **truncated to the hour** | sub-hour timing is never recorded |
 | `install_id` | UUIDv4, or `"unset"` | minted only at consent; `telemetry reset` rotates it |
 | `invocation` | UUIDv4 | per-process, never stored, correlates one run's events |
@@ -123,6 +123,19 @@ per day):
 | `frames` | ≤ 40 entries | symbol names kept **only** for bougie/Rust-runtime code (`bougie…`, `std::…`, `core::…`, `alloc::…`); everything else collapses to `[external]`. Stripped release binaries yield `+0x…` module-relative offsets instead — meaningless without the matching build artifact |
 | `message` | ≤ 200 chars, scrubbed | anything path-shaped, anything containing your home directory, and quoted spans longer than 12 chars are replaced with `[redacted]` before the message leaves the process. Standard Rust panic messages ("index out of bounds: …") survive |
 
+`update` event fields (one per successful `self update` that actually
+swaps the binary — the "already up to date" and "assets not published
+yet" no-ops never emit one):
+
+| field | values | notes |
+| --- | --- | --- |
+| `from_version` | semver | the release that was replaced (equals `bougie_version`) |
+| `to_version` | semver | the release now on disk |
+
+Both are public release numbers — the entire payload. No paths, no
+identifiers. It answers "how many installs self-update, and how fast a
+new release is adopted," nothing more.
+
 ## What is never collected
 
 Project names, directory paths, Composer package names, git remotes,
@@ -170,6 +183,17 @@ doc diverge), and the collector's allowlist
 (cresset-tools/infra, `hosts/telemetry/bougie-collector`). Anything
 that *expands* what is collected bumps the consent version, so every
 existing opt-in is asked again; narrowing never re-asks.
+
+One judged exception: the `update` event's `to_version` is a public
+release number sitting right beside the `bougie_version` already on
+every event, and the disclosure already discloses "anonymous usage
+statistics" without enumerating event kinds — so it shipped at consent
+version 1, unbumped. The bar for a bump is *new information about you*
+(a project's shape, a new machine attribute), not a new arrangement of
+release numbers bougie already sends. Bumping here would instead have
+stopped uploads from every existing opt-in until it re-consented — and
+non-interactive installs (the re-prompt is tty-gated) would simply have
+gone dark, the opposite of the intent.
 
 ## Network calls that are not telemetry
 

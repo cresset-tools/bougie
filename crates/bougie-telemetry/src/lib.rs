@@ -24,6 +24,7 @@ pub mod recorder;
 pub mod scrub;
 pub mod spawn;
 pub mod spool;
+pub mod update;
 
 pub use event::{outcome_for_error, OUTCOME_OK};
 pub use mode::{Mode, ModeState, Source, CONSENT_VERSION};

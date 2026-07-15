@@ -12,7 +12,7 @@
 //! the vocab/doc and CI fails here.
 
 use bougie_telemetry::event::{
-    self, CommandEvent, Common, CrashEvent, Enrichment, COMMAND_VOCAB, OUTCOME_VOCAB,
+    self, CommandEvent, Common, CrashEvent, Enrichment, UpdateEvent, COMMAND_VOCAB, OUTCOME_VOCAB,
 };
 
 /// The dispatcher's verb names, scraped from `command_name()`'s match
@@ -131,16 +131,22 @@ fn every_serialized_field_is_documented_in_telemetry_md() {
         },
     };
     let crash = CrashEvent {
-        common: Common { event: "crash", ..common },
+        common: Common { event: "crash", ..common.clone() },
         command: "sync",
         fingerprint: "0123456789abcdef".into(),
         frames: vec!["bougie::run".into()],
         message: Some("m".into()),
     };
+    let update = UpdateEvent {
+        common: Common { event: "update", ..common },
+        from_version: "0.48.0".into(),
+        to_version: "0.49.0".into(),
+    };
 
     for value in [
         serde_json::to_value(&command).unwrap(),
         serde_json::to_value(&crash).unwrap(),
+        serde_json::to_value(&update).unwrap(),
     ] {
         for key in value.as_object().unwrap().keys() {
             assert!(

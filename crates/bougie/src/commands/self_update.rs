@@ -198,6 +198,19 @@ pub fn run(force: bool) -> Result<ExitCode> {
         replace(&new_bgx, &bgx_target)?;
     }
 
+    // The swap succeeded: record a best-effort `update` telemetry event
+    // (no-op unless telemetry is on). This lives *after* the swap so the
+    // no-op "already up to date" / "assets not published yet" paths above
+    // never count as an update.
+    bougie_telemetry::update::record(
+        bougie_telemetry::BinInfo {
+            version: current,
+            build_sha: bougie_cli::BUILD_SHA,
+        },
+        current,
+        &latest.version,
+    );
+
     println!("updated bougie {current} -> {}", latest.version);
     Ok(ExitCode::SUCCESS)
 }

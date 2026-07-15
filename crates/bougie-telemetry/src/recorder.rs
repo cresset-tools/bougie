@@ -146,7 +146,7 @@ impl Recorder {
 /// Best-effort install-channel detection: the dist install receipt
 /// marks installer-managed binaries; a missing build SHA marks a
 /// crates.io tarball build (`cargo install`).
-fn install_method(config_dir: Option<PathBuf>, info: BinInfo) -> &'static str {
+pub(crate) fn install_method(config_dir: Option<PathBuf>, info: BinInfo) -> &'static str {
     let receipt = config_dir
         .map(|d| d.join("bougie-receipt.json"))
         .is_some_and(|p| p.exists());
