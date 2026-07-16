@@ -435,6 +435,22 @@ impl Supervisor {
         entry: &CatalogEntry,
         version: &str,
     ) -> Result<Option<endpoint::ServiceEndpoint>> {
+        self.resolve_endpoint_with(entry, version, super::ports::port_in_use)
+    }
+
+    /// The body of [`resolve_endpoint`] with the "is this port taken?"
+    /// probe injected. Production passes [`ports::port_in_use`]; tests pass
+    /// a deterministic port map so endpoint resolution doesn't race the
+    /// host's live sockets — a default port can read free at a pre-check
+    /// and be taken microseconds later (this flaked mailpit's 1025 → 1026
+    /// on macOS CI). Same rationale as the injected `is_free` closure on
+    /// [`ports::allocate_port`].
+    fn resolve_endpoint_with(
+        &self,
+        entry: &CatalogEntry,
+        version: &str,
+        port_in_use: impl Fn(u16) -> bool,
+    ) -> Result<Option<endpoint::ServiceEndpoint>> {
         let Binding::Tcp { port: default_primary } = entry.binding else {
             return Ok(None);
         };
@@ -450,7 +466,7 @@ impl Supervisor {
         let primary = super::ports::allocate_port(
             default_primary,
             recorded.as_ref().map(|e| e.primary),
-            |p| !claimed.contains(&p) && !super::ports::port_in_use(p),
+            |p| !claimed.contains(&p) && !port_in_use(p),
         )
         .ok_or_else(|| {
             eyre!(
@@ -474,7 +490,7 @@ impl Supervisor {
         for &(label, default) in secondary_ports(entry.name) {
             let recorded_extra = recorded.as_ref().and_then(|e| e.extra_port(label));
             let chosen = super::ports::allocate_port(default, recorded_extra, |p| {
-                !claimed.contains(&p) && !super::ports::port_in_use(p)
+                !claimed.contains(&p) && !port_in_use(p)
             })
             .ok_or_else(|| eyre!("no free {label} port near {default} for `{}`", entry.name))?;
             claimed.push(chosen);
@@ -2122,15 +2138,12 @@ mod tests {
     fn resolve_endpoint_relocates_off_a_squatted_catalog_port() {
         let sup = test_supervisor();
         let entry = catalog::find("rabbitmq").unwrap();
-        // Squat rabbitmq's AMQP port. Only a sandbox forbidding loopback
-        // binds makes the scenario unbuildable — skip then.
-        let _squat = std::net::TcpListener::bind("127.0.0.1:5672").ok();
-        if !crate::daemon::ports::port_in_use(5672) {
-            return;
-        }
+        // Squat rabbitmq's AMQP port through the injected probe rather than
+        // a real socket bind: deterministic, and immune to a sandbox that
+        // forbids loopback binds or a relocation target that's itself busy.
         // No hard-fail any more: it relocates and records the new port.
         let ep = sup
-            .resolve_endpoint(entry, entry.version)
+            .resolve_endpoint_with(entry, entry.version, |p| p == 5672)
             .unwrap()
             .expect("a tcp service has an endpoint");
         assert_ne!(ep.primary, 5672, "must relocate off the squatted port");
@@ -2146,14 +2159,18 @@ mod tests {
     fn resolve_endpoint_uses_defaults_when_free_and_is_sticky() {
         let sup = test_supervisor();
         let entry = catalog::find("mailpit").unwrap(); // 1025 SMTP + 8025 http
-        if crate::daemon::ports::port_in_use(1025) || crate::daemon::ports::port_in_use(8025) {
-            return; // something already holds a default here — skip
-        }
-        let ep = sup.resolve_endpoint(entry, entry.version).unwrap().unwrap();
+        // Resolve against an all-free port map so the assertion can't race
+        // the host: with the live-socket probe a transient bind of 1025
+        // between a pre-check and the resolve relocated us to 1026 on macOS
+        // CI. Deterministic probe → the defaults are always chosen here.
+        let ep = sup.resolve_endpoint_with(entry, entry.version, |_| false).unwrap().unwrap();
         assert_eq!(ep.primary, 1025);
         assert_eq!(ep.extra_port("http"), Some(8025));
         // Sticky: a second resolve reuses the recorded ports verbatim.
-        assert_eq!(sup.resolve_endpoint(entry, entry.version).unwrap().unwrap(), ep);
+        assert_eq!(
+            sup.resolve_endpoint_with(entry, entry.version, |_| false).unwrap().unwrap(),
+            ep
+        );
     }
 
     #[test]
