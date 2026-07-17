@@ -53,8 +53,11 @@ mark {
  * Structural borders use --vp-c-text-1 so they invert in dark mode.
  */
 :root {
-  /* All dividers become ink rules (tables, h2 rules, hr, nav). */
+  /* All dividers become ink rules (tables, h2 rules, hr, nav).
+     The gutter color drives the navbar rule and layout edges — the
+     theme's scoped rules win on specificity, so recolor the variable. */
   --vp-c-divider: var(--vp-c-text-1);
+  --vp-c-gutter: var(--vp-c-text-1);
   /* Code blocks: paper background, the border does the work. */
   --vp-code-block-bg: var(--vp-c-bg);
   --vp-sidebar-bg-color: var(--vp-c-bg);
@@ -70,6 +73,14 @@ mark {
 
 .VPNavBar .content-body {
   align-items: center;
+  gap: 16px;
+}
+
+/* No vertical separator lines in the header — the landing has none. */
+.VPNavBar .content-body > .translations::before,
+.VPNavBar .content-body > .appearance::before,
+.VPNavBar .content-body > .social-links::before {
+  content: none !important;
 }
 
 /* Docs layout: one full-width header with the sidebar starting
@@ -84,17 +95,31 @@ mark {
     background-color: var(--vp-c-bg);
   }
 
+  /* Header contents + rule live in a landing-style centered container
+     (site-wrap: 940px, 36px side padding); the page below stays wide.
+     !important throughout: the theme's scoped rules (sidebar-width
+     indents, viewport-centering calcs) carry higher specificity. */
+  .VPNavBar .wrapper {
+    max-width: 940px;
+    margin: 0 auto;
+    padding: 0 36px !important;
+  }
+
+  .VPNavBar .divider {
+    max-width: 940px;
+    margin: 0 auto;
+    padding: 0 36px !important;
+  }
+
   .VPNavBar.has-sidebar > .wrapper > .container > .title {
     position: static;
     width: auto;
+    padding: 0 !important;
   }
 
   .VPNavBar.has-sidebar > .wrapper > .container > .content {
     padding-left: 16px;
-  }
-
-  .VPNavBar.has-sidebar > .divider {
-    padding-left: 0;
+    padding-right: 0 !important;
   }
 
   .VPSidebar {
