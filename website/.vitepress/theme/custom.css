@@ -60,10 +60,65 @@ mark {
   --vp-sidebar-bg-color: var(--vp-c-bg);
 }
 
-/* Navbar: chip wordmark + mono uppercase links, hard bottom rule. */
+/* Navbar: same arrangement as the landing top-bar — chip, then the
+   nav links, a spacer, and GitHub at the far edge (search + theme
+   toggle keep their place in between; the landing has neither). */
 .VPNavBar .divider-line {
-  height: 2px;
+  height: 3px;
   background-color: var(--vp-c-text-1);
+}
+
+.VPNavBar .content-body {
+  align-items: center;
+}
+
+.VPNavBar .content-body > .VPNavBarMenu {
+  order: -1;
+}
+
+.VPNavBar .content-body > .VPNavBarSearch {
+  flex-grow: 0;
+  margin-left: auto;
+}
+
+/* Nav links: text-hugging accent underline on hover, like the
+   landing top-bar/footer links. */
+.VPNavBarMenuLink {
+  height: auto !important;
+  align-self: center;
+  padding: 2px 0 !important;
+  margin: 0 12px;
+  border-bottom: 2px solid transparent;
+}
+
+.VPNavBarMenuLink:hover,
+.VPNavBarMenuLink.active {
+  color: var(--vp-c-brand-1);
+  border-bottom-color: var(--vp-c-brand-1);
+}
+
+/* GitHub: mono text link instead of the icon, as on the landing. */
+.VPSocialLink[aria-label*='github' i] {
+  width: auto;
+  height: auto;
+  border-bottom: 2px solid transparent;
+  padding-bottom: 2px;
+}
+
+.VPSocialLink[aria-label*='github' i]:hover {
+  color: var(--vp-c-brand-1);
+  border-bottom-color: var(--vp-c-brand-1);
+}
+
+.VPSocialLink[aria-label*='github' i] svg {
+  display: none;
+}
+
+.VPSocialLink[aria-label*='github' i]::after {
+  content: 'GitHub';
+  font: 500 12px/1 var(--vp-font-family-mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
 }
 
 .VPNavBarTitle {
@@ -82,6 +137,11 @@ mark {
   font: 500 12px/1 var(--vp-font-family-mono);
   letter-spacing: 0.06em;
   text-transform: uppercase;
+}
+
+.VPNavBarTitle .title:hover {
+  background: var(--vp-c-brand-1);
+  color: #fff;
 }
 
 .VPNavBarMenuLink,
