@@ -286,15 +286,33 @@ mark {
   background: transparent;
 }
 
+/* Square the "Ctrl K" key-hint boxes. */
+#app .DocSearch-Button-Key {
+  border-radius: 0;
+}
+
 /* Squared corners across the board. */
 .vp-doc div[class*='language-'],
 .vp-doc .custom-block,
 .vp-doc :not(pre) > code,
 .VPButton,
-.VPSwitch,
-.VPSwitch .check,
 .VPDocAsideOutline .outline-marker,
 .vp-doc img {
+  border-radius: 0;
+}
+
+/* Light/dark toggle: square the track and knob (ink track border) to
+   match the neo-brutalist chip/code-box treatment, while keeping the
+   default light knob so the sun/moon glyph stays visible. The theme's
+   scoped .VPSwitch rules need the #app prefix to override. */
+#app .VPSwitch {
+  border-radius: 0;
+  border: 2px solid var(--vp-c-text-1);
+  background-color: var(--vp-c-bg);
+}
+
+#app .VPSwitch .check,
+#app .VPSwitch .icon {
   border-radius: 0;
 }
 
@@ -376,6 +394,11 @@ mark {
 .vp-doc .custom-block {
   border: 2.5px solid var(--vp-c-text-1);
   background: var(--vp-c-bg);
+}
+
+/* Prev/next pager links: square the rounded border box. */
+#app .VPDocFooter .pager-link {
+  border-radius: 0;
 }
 
 /* Page footer: mono uppercase over a hard rule, like the landing. */
