@@ -4,7 +4,7 @@
  * ultramarine accent (#2f27ff), lime pop (#caff00).
  */
 :root {
-  --bougie-ink: #0b0b0a;
+  --bougie-ink: #000000;
   --bougie-accent: #2f27ff;
   --bougie-pop: #caff00;
 
@@ -24,6 +24,14 @@
 
   /* The wordmark is ink, like the landing page — not gradient-tinted. */
   --vp-home-hero-name-color: var(--vp-c-text-1);
+}
+
+/* Full black text in light mode — override VitePress's default
+   dark-slate greys (text-1 rgba(60,60,67), text-2 lighter). Scoped
+   to :not(.dark) so dark mode keeps the theme's light-on-dark text. */
+:root:not(.dark) {
+  --vp-c-text-1: #000000;
+  --vp-c-text-2: #000000;
 }
 
 .dark {
@@ -108,11 +116,13 @@ mark {
     padding: 0 36px !important;
   }
 
-  /* Bottom-align the bar's items 12px above the rule, like the
-     landing top-bar (which is baseline-anchored, not centered). */
+  /* Center the bar's items on a shared axis 45px down — the same
+     center-aligned arrangement as the landing top-bar, where the
+     chip and the shorter nav text share a baseline. padding-top
+     22px seats that center: (68 + 22) / 2 = 45. */
   .VPNavBar .wrapper > .container {
-    align-items: flex-end;
-    padding-bottom: 12px;
+    align-items: center;
+    padding-top: 22px;
   }
 
   /* The theme pins .title, .content, and the menu links to the full
@@ -126,10 +136,10 @@ mark {
     height: auto !important;
   }
 
-  /* Bottom-align the header items (chip, links, search, github) just
-     above the rule, matching the landing top-bar's baseline anchor. */
+  /* Center the content-body items (links, search, github) on the same
+     axis as the chip, matching the landing top-bar. */
   .VPNavBar .content-body {
-    align-items: flex-end;
+    align-items: center;
   }
 
   .VPNavBar .divider {
@@ -178,8 +188,11 @@ mark {
 .VPNavBarMenuLink {
   height: auto !important;
   line-height: 1 !important;
-  padding: 2px 0 !important;
+  /* Match the landing nav link box exactly: 12px text + 2px bottom
+     padding + 2px border = 16px, bottom-only (no top padding). */
+  padding: 0 0 2px !important;
   margin: 0;
+  font-weight: 500;
   border-bottom: 2px solid transparent;
 }
 
@@ -226,13 +239,19 @@ mark {
   display: flex;
 }
 
-/* A tight chip like the landing top-bar, not a full-height slab. */
+/* A tight chip like the landing top-bar, not a full-height slab.
+   Pin the height to exactly 22px (box-border) with flex-centered
+   text so it matches the landing chip to the pixel, rather than
+   letting the font line box round it to 23px. */
 .VPNavBarTitle .title {
-  height: auto;
+  display: inline-flex;
+  align-items: center;
+  box-sizing: border-box;
+  height: 22px;
   width: fit-content;
   background: var(--vp-c-text-1);
   color: var(--vp-c-bg);
-  padding: 5px 10px;
+  padding: 0 10px;
   font: 500 12px/1 var(--vp-font-family-mono);
   letter-spacing: 0.06em;
   text-transform: uppercase;

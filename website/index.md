@@ -150,7 +150,7 @@ When you have installed bougie, try this command to get a Mage-OS demo:
 <style scoped>
 .landing {
   --bg: #ffffff;
-  --ink: #0b0b0a;
+  --ink: #000000;
   --accent: #2f27ff;
   --accent-ink: #fff;
   --pop: #caff00;
@@ -213,6 +213,14 @@ top-bar nav a,
 top-bar span a {
   border-bottom: 2px solid transparent;
   padding-bottom: 2px
+}
+
+/* Render the GitHub link like the nav links (inline-block, tight
+   line-height) so it shares their 16px box and baseline instead of
+   an inline anchor's taller line box. */
+top-bar span a {
+  display: inline-block;
+  line-height: 1
 }
 
 top-bar nav a:hover,
