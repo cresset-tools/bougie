@@ -151,7 +151,7 @@ mark {
 
   .VPSidebar {
     top: calc(var(--vp-layout-top-height, 0px) + var(--vp-nav-height));
-    padding-top: 24px;
+    padding-top: 48px;
   }
 
   /* Scroll-masking curtain from the full-height layout — obsolete here. */
@@ -306,7 +306,7 @@ mark {
 
 /* Sidebar: paper background, hard edge, mono uppercase group titles. */
 .VPSidebar {
-  border-right: 2px solid var(--vp-c-text-1);
+  background-color: var(--vp-c-bg);
 }
 
 .VPSidebarItem.level-0 > .item > .text {
