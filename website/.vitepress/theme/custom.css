@@ -307,7 +307,10 @@ mark {
    scoped .VPSwitch rules need the #app prefix to override. */
 #app .VPSwitch {
   border-radius: 0;
-  border: 2px solid var(--vp-c-text-1);
+  /* 1px to match the Ctrl+K key hint — and it's the width the knob's
+     top:1px/left:1px position is calibrated for, so the glyph stays
+     centered (a 2px border shifted it 1px down and right). */
+  border: 1px solid var(--vp-c-text-1);
   background-color: var(--vp-c-bg);
 }
 
