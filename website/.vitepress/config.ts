@@ -20,6 +20,26 @@ export default defineConfig({
     },
   },
 
+  markdown: {
+    config(md) {
+      // Render shell code fences (```sh / ```bash / …) as the branded
+      // <ShellBox> instead of a plain highlighted block. The command is
+      // passed base64-encoded so arbitrary shell text survives without
+      // escaping or clashing with Vue's `{{ }}` interpolation.
+      const SHELL = new Set(['sh', 'bash', 'shell', 'zsh', 'console'])
+      const fallback = md.renderer.rules.fence
+      md.renderer.rules.fence = (tokens, idx, options, env, self) => {
+        const token = tokens[idx]
+        const lang = (token.info || '').trim().split(/[\s{]/)[0].toLowerCase()
+        if (SHELL.has(lang)) {
+          const b64 = Buffer.from(token.content, 'utf-8').toString('base64')
+          return `<ShellBox raw="${b64}" />\n`
+        }
+        return fallback(tokens, idx, options, env, self)
+      }
+    },
+  },
+
   head: [
     ['link', { rel: 'icon', href: '/favicon.svg', type: 'image/svg+xml' }],
     // Brand fonts, same as the bougie.tools landing page.

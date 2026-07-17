@@ -1,21 +1,50 @@
 <script setup>
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 
 const props = defineProps({
-  // The command to display and copy. May also be passed as the default slot.
+  // Single-line command (used directly on the landing).
   cmd: { type: String, default: '' },
-  // Left prompt glyph.
+  // Base64-encoded (possibly multi-line) command, used by the
+  // markdown-it fence transform so arbitrary shell text — quotes,
+  // pipes, braces, `{{ }}` — survives without escaping.
+  raw: { type: String, default: '' },
   prompt: { type: String, default: '$' },
-  // 'default' (paper box, accent prompt) or 'accent' (accent box, lime prompt).
+  // 'default' (paper box, accent prompt) or 'accent' (accent box).
   variant: { type: String, default: 'default' },
 })
 
-const root = ref(null)
-const label = ref('copy')
+function decodeBase64Utf8(b64) {
+  const bin = atob(b64)
+  const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0))
+  return new TextDecoder().decode(bytes)
+}
 
+const text = computed(() =>
+  (props.raw ? decodeBase64Utf8(props.raw) : props.cmd).replace(/\n+$/, ''),
+)
+
+// Split each line into a code part and a trailing shell comment so the
+// comment can be dimmed. A comment starts at line-start `#` or a `#`
+// preceded by whitespace (so `foo#bar` mid-token isn't split).
+const lines = computed(() =>
+  text.value.split('\n').map((line) => {
+    let at = -1
+    if (line.startsWith('#')) at = 0
+    else {
+      const m = line.match(/\s#/)
+      if (m) at = m.index + 1
+    }
+    return at < 0
+      ? { code: line, comment: '' }
+      : { code: line.slice(0, at), comment: line.slice(at) }
+  }),
+)
+
+const multiline = computed(() => lines.value.length > 1)
+
+const label = ref('copy')
 function copy() {
-  const text = (props.cmd || root.value?.querySelector('code')?.textContent || '').trim()
-  navigator.clipboard?.writeText(text).then(() => {
+  navigator.clipboard?.writeText(text.value).then(() => {
     label.value = 'copied'
     setTimeout(() => (label.value = 'copy'), 1500)
   })
@@ -23,10 +52,18 @@ function copy() {
 </script>
 
 <template>
-  <div ref="root" class="shell-box" :class="`shell-box--${variant}`">
-    <span class="shell-box__prompt">{{ prompt }}</span>
-    <code class="shell-box__cmd"><slot>{{ cmd }}</slot></code>
-    <button class="shell-box__copy" type="button" aria-label="Copy command" @click="copy">
+  <div
+    class="shell-box"
+    :class="[`shell-box--${variant}`, { 'shell-box--multiline': multiline }]"
+  >
+    <span v-if="!multiline" class="shell-box__prompt">{{ prompt }}</span>
+    <code class="shell-box__cmd"><span v-for="(ln, i) in lines" :key="i" class="shell-box__line"><span>{{ ln.code }}</span><span v-if="ln.comment" class="shell-box__comment">{{ ln.comment }}</span></span></code>
+    <button
+      class="shell-box__copy"
+      type="button"
+      aria-label="Copy command"
+      @click="copy"
+    >
       {{ label }}
     </button>
   </div>
@@ -34,12 +71,9 @@ function copy() {
 
 <style scoped>
 /* Terminal/shell box matching the bougie.tools landing page. Colors
-   come from the global brand tokens so it works on any page (light or
-   dark) — the landing simply resolves them to the same values. */
+   come from the landing's semantic tokens when present (so it tracks
+   the landing's light/dark palette), else the global theme tokens. */
 .shell-box {
-  /* Prefer the landing's semantic tokens (so it tracks the landing's
-     light/dark palette), falling back to the global theme tokens when
-     used on a docs page outside .landing. */
   --box-ink: var(--ink, var(--vp-c-text-1));
   --box-accent: var(--accent, var(--vp-c-brand-1));
   --box-bg: var(--bg, var(--vp-c-bg));
@@ -50,6 +84,10 @@ function copy() {
   max-width: 700px;
   border: 2.5px solid var(--box-ink);
   font-family: var(--vp-font-family-mono);
+}
+
+.shell-box--multiline {
+  align-items: flex-start;
 }
 
 .shell-box__prompt {
@@ -63,16 +101,35 @@ function copy() {
 
 .shell-box__cmd {
   flex: 1;
+  min-width: 0;
   display: flex;
   align-items: center;
   padding: 15px 16px;
+  /* Single line: tight, so the box height matches the landing install
+     box to the pixel. Multi-line loosens below for readability. */
   font: 500 14px/1 var(--vp-font-family-mono);
   color: var(--box-ink);
   background: transparent;
   overflow-x: auto;
 }
 
+.shell-box--multiline .shell-box__cmd {
+  display: block;
+  line-height: 1.7;
+}
+
+.shell-box__line {
+  display: block;
+  white-space: pre;
+}
+
+.shell-box__comment {
+  color: var(--box-ink);
+  opacity: 0.5;
+}
+
 .shell-box__copy {
+  flex-shrink: 0;
   border: 0;
   border-left: 2.5px solid var(--box-ink);
   background: transparent;
@@ -82,6 +139,11 @@ function copy() {
   letter-spacing: 0.08em;
   text-transform: uppercase;
   cursor: pointer;
+}
+
+.shell-box--multiline .shell-box__copy {
+  align-self: stretch;
+  padding-top: 15px;
 }
 
 .shell-box__copy:hover {
