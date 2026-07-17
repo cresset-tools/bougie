@@ -49,6 +49,10 @@ pub(crate) struct PulledSnapshot {
     repo: String,
     /// The environment whose `latest` pointer was resolved.
     environment: String,
+    /// The data profile whose `latest` was resolved (`full` on pointers written
+    /// before profiles existed).
+    #[serde(default = "default_profile")]
+    profile: String,
     /// Hex sha256 of the dump — also the cache filename stem.
     pub(crate) digest: String,
     /// Absolute path of the cached `.jibsdump`.
@@ -63,11 +67,12 @@ pub fn run(_format: OutputFormat, args: DbPullArgs) -> Result<ExitCode> {
     let paths = Paths::from_env()?;
     let project_root = locate_project_root()?;
 
-    // `--repo`/`--env` win; otherwise default from the snapshot source the team
-    // manifest advertises for this project (cached by `bougie login`/`sync`). No
+    // `--repo`/`--env`/`--profile` win; otherwise default from the snapshot
+    // source the team manifest advertises for this project (cached by `bougie
+    // login`/`sync`). No
     // source configured is a hard error normally, but a soft `exit 3` under
     // `--if-configured` so the recipe can fall back to a fresh install.
-    let (repo_spec, env) = match resolve_target(&args, &project_root) {
+    let (repo_spec, env, profile) = match resolve_target(&args, &project_root) {
         Ok(target) => target,
         Err(_) if args.if_configured => {
             eprintln!(
@@ -105,8 +110,14 @@ pub fn run(_format: OutputFormat, args: DbPullArgs) -> Result<ExitCode> {
     let token = read_bougie_bearer(&host)
         .ok_or_else(|| eyre!("not logged in to {host} — run `bougie login {base}`"))?;
 
-    let url = format!("{base}/{org}/{repo}/snapshots/{env}/latest");
-    println!("bougie db pull: fetching {org}/{repo} {env} snapshot from {base}");
+    // The default profile stays off the URL: byte-identical to the pre-profile
+    // request, so it keeps working against a registry predating profiles.
+    let url = if profile == "full" {
+        format!("{base}/{org}/{repo}/snapshots/{env}/latest")
+    } else {
+        format!("{base}/{org}/{repo}/snapshots/{env}/latest?profile={profile}")
+    };
+    println!("bougie db pull: fetching {org}/{repo} {env}/{profile} snapshot from {base}");
 
     let snap_dir = paths.cache().join("snapshots");
     fs::create_dir_all(&snap_dir)
@@ -115,7 +126,7 @@ pub fn run(_format: OutputFormat, args: DbPullArgs) -> Result<ExitCode> {
     let (digest, size, path) = download_snapshot(&url, &token, &snap_dir)
         .wrap_err_with(|| format!("pulling the snapshot from {url}"))?;
 
-    write_pointer(&paths, &project_root, &repo_spec, &env, &digest, &path)?;
+    write_pointer(&paths, &project_root, &repo_spec, &env, &profile, &digest, &path)?;
 
     println!(
         "bougie db pull: cached {} ({}, sha256 {digest})",
@@ -126,33 +137,40 @@ pub fn run(_format: OutputFormat, args: DbPullArgs) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// Resolve which `(repo, env)` to pull. `--repo` wins (with `--env` or the
-/// `production` default); otherwise fall back to the snapshot source the team
-/// manifest advertises for this project, letting `--env` still override its
-/// environment. Errors when neither is available.
-fn resolve_target(args: &DbPullArgs, project_root: &Path) -> Result<(String, String)> {
+/// Resolve which `(repo, env, profile)` to pull. `--repo` wins (with `--env`/
+/// `--profile` or their `production`/`full` defaults); otherwise fall back to
+/// the snapshot source the team manifest advertises for this project, letting
+/// `--env` and `--profile` still override its fields individually. Errors when
+/// neither is available.
+fn resolve_target(args: &DbPullArgs, project_root: &Path) -> Result<(String, String, String)> {
     if let Some(repo) = &args.repo {
         let env = args.env.clone().unwrap_or_else(default_env);
-        return Ok((repo.clone(), env));
+        let profile = args.profile.clone().unwrap_or_else(default_profile);
+        return Ok((repo.clone(), env, profile));
     }
-    let (repo, manifest_env) = team::cached_snapshot_ref(project_root).ok_or_else(|| {
+    let snap = team::cached_snapshot_ref(project_root).ok_or_else(|| {
         eyre!(
             "no --repo given and the team manifest has no snapshot source for this project. \
              Pass `--repo <org/repo>`, or have an admin run `sconce remote-snapshot`. (If you \
              just registered one, run `bougie sync` to refresh the cached manifest.)"
         )
     })?;
-    // Explicit --env overrides the manifest's environment.
-    let env = args
-        .env
+    // Explicit --env/--profile override the manifest's fields.
+    let env = args.env.clone().or(snap.env).unwrap_or_else(default_env);
+    let profile = args
+        .profile
         .clone()
-        .or(manifest_env)
-        .unwrap_or_else(default_env);
-    Ok((repo, env))
+        .or(snap.profile)
+        .unwrap_or_else(default_profile);
+    Ok((snap.repo, env, profile))
 }
 
 fn default_env() -> String {
     "production".to_string()
+}
+
+fn default_profile() -> String {
+    "full".to_string()
 }
 
 /// Split `<org>/<repo>`. Both halves must be present and non-empty, and there
@@ -195,8 +213,8 @@ fn download_snapshot(url: &str, token: &str, snap_dir: &Path) -> Result<(String,
     let status = resp.status();
     if status == reqwest::StatusCode::NOT_FOUND {
         return Err(eyre!(
-            "the registry has no snapshot for this repo/environment (404). Check `--repo` and \
-             `--env`, and that a snapshot has been published for it."
+            "the registry has no snapshot for this repo/environment/profile (404). Check \
+             `--repo`, `--env` and `--profile`, and that a snapshot has been published for it."
         ));
     }
     if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
@@ -241,6 +259,7 @@ fn write_pointer(
     project_root: &Path,
     repo: &str,
     environment: &str,
+    profile: &str,
     digest: &str,
     path: &Path,
 ) -> Result<()> {
@@ -248,6 +267,7 @@ fn write_pointer(
         schema_version: POINTER_SCHEMA_VERSION,
         repo: repo.to_string(),
         environment: environment.to_string(),
+        profile: profile.to_string(),
         digest: digest.to_string(),
         path: path.to_string_lossy().into_owned(),
     };
@@ -302,25 +322,36 @@ mod tests {
     #[test]
     fn resolve_target_uses_explicit_repo_over_manifest() {
         // repo is Some → the manifest is never consulted, so project_root is
-        // irrelevant. Default env is production; --env overrides it.
+        // irrelevant. Default env is production and default profile is full;
+        // --env/--profile override them.
         let root = Path::new("/nonexistent");
         let a = DbPullArgs {
             repo: Some("acme/shop".to_string()),
             env: None,
+            profile: None,
             if_configured: false,
         };
         assert_eq!(
             resolve_target(&a, root).unwrap(),
-            ("acme/shop".to_string(), "production".to_string())
+            (
+                "acme/shop".to_string(),
+                "production".to_string(),
+                "full".to_string()
+            )
         );
         let b = DbPullArgs {
             repo: Some("acme/shop".to_string()),
             env: Some("staging".to_string()),
+            profile: Some("small".to_string()),
             if_configured: false,
         };
         assert_eq!(
             resolve_target(&b, root).unwrap(),
-            ("acme/shop".to_string(), "staging".to_string())
+            (
+                "acme/shop".to_string(),
+                "staging".to_string(),
+                "small".to_string()
+            )
         );
     }
 
@@ -365,13 +396,50 @@ mod tests {
         // A pointer to a real cached file → Some(record) carrying path + digest.
         let cached = tmp.path().join("snap.jibsdump");
         fs::write(&cached, b"dump").unwrap();
-        write_pointer(&paths, &project, "acme/shop", "production", "deadbeef", &cached).unwrap();
+        write_pointer(
+            &paths,
+            &project,
+            "acme/shop",
+            "production",
+            "small",
+            "deadbeef",
+            &cached,
+        )
+        .unwrap();
         let got = pulled_snapshot(&paths, &project).expect("record");
         assert_eq!(got.path, cached.to_string_lossy());
         assert_eq!(got.digest, "deadbeef");
+        assert_eq!(got.profile, "small");
 
         // A pointer whose file has been removed → None (cache was cleared).
         fs::remove_file(&cached).unwrap();
         assert!(pulled_snapshot(&paths, &project).is_none());
+    }
+
+    #[test]
+    fn pulled_snapshot_pointer_predating_profiles_defaults_to_full() {
+        // A pointer written before profiles existed has no `profile` key — it
+        // must still parse (as `full`), not invalidate the pulled snapshot.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let paths = Paths::new(tmp.path().to_path_buf(), tmp.path().join("cache"));
+        let project = tmp.path().join("proj");
+        fs::create_dir_all(&project).unwrap();
+        let cached = tmp.path().join("snap.jibsdump");
+        fs::write(&cached, b"dump").unwrap();
+
+        let dir = paths.project_state_dir(&project);
+        fs::create_dir_all(&dir).unwrap();
+        let old = serde_json::json!({
+            "schema_version": 1,
+            "repo": "acme/shop",
+            "environment": "production",
+            "digest": "deadbeef",
+            "path": cached.to_string_lossy(),
+        });
+        fs::write(dir.join("pulled-snapshot.json"), old.to_string()).unwrap();
+
+        let got = pulled_snapshot(&paths, &project).expect("old pointer still parses");
+        assert_eq!(got.profile, "full");
+        assert_eq!(got.digest, "deadbeef");
     }
 }
