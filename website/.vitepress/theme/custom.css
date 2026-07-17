@@ -296,6 +296,26 @@ mark {
   border-radius: 0;
 }
 
+/* Search modal: square every corner and give the shell + search bar an
+   ink border, matching the neo-brutalist boxes. */
+#app .VPLocalSearchBox .shell {
+  border-radius: 0;
+  border: 2.5px solid var(--vp-c-text-1);
+}
+
+#app .VPLocalSearchBox .search-bar {
+  border: 2px solid var(--vp-c-text-1);
+}
+
+#app .VPLocalSearchBox .search-bar,
+#app .VPLocalSearchBox .result,
+#app .VPLocalSearchBox kbd,
+#app .VPLocalSearchBox .titles mark,
+#app .VPLocalSearchBox .excerpt mark,
+#app .VPLocalSearchBox [class*='language-'] {
+  border-radius: 0;
+}
+
 /* Squared corners across the board. */
 .vp-doc div[class*='language-'],
 .vp-doc .custom-block,
