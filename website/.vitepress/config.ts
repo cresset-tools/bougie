@@ -9,6 +9,17 @@ export default defineConfig({
   lastUpdated: true,
   sitemap: { hostname: 'https://bougie.tools' },
 
+  // The landing page (index.md) replicates the hand-built bougie.tools
+  // page, which uses custom elements (site-wrap, top-bar, …) — tell Vue
+  // they're plain elements, not components to resolve.
+  vue: {
+    template: {
+      compilerOptions: {
+        isCustomElement: (tag) => tag.includes('-'),
+      },
+    },
+  },
+
   head: [
     ['link', { rel: 'icon', href: '/favicon.svg', type: 'image/svg+xml' }],
     // Brand fonts, same as the bougie.tools landing page.
