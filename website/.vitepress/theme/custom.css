@@ -58,6 +58,9 @@ mark {
      theme's scoped rules win on specificity, so recolor the variable. */
   --vp-c-divider: var(--vp-c-text-1);
   --vp-c-gutter: var(--vp-c-text-1);
+  /* Landing top-bar geometry: 34px above the chip + 22px chip +
+     12px below + 3px rule = 71px total; 68px + the 3px divider. */
+  --vp-nav-height: 68px;
   /* Code blocks: paper background, the border does the work. */
   --vp-code-block-bg: var(--vp-c-bg);
   --vp-sidebar-bg-color: var(--vp-c-bg);
@@ -105,6 +108,30 @@ mark {
     padding: 0 36px !important;
   }
 
+  /* Bottom-align the bar's items 12px above the rule, like the
+     landing top-bar (which is baseline-anchored, not centered). */
+  .VPNavBar .wrapper > .container {
+    align-items: flex-end;
+    padding-bottom: 12px;
+  }
+
+  /* The theme pins .title, .content, and the menu links to the full
+     nav height (line-height:var(--vp-nav-height)), so they overflow
+     the bar and sit at the top. Collapse them to content height so the
+     container's flex-end + padding-bottom bottom-aligns everything,
+     like the baseline-anchored landing top-bar. */
+  .VPNavBar .container > .title,
+  .VPNavBar .content,
+  .VPNavBar .content-body {
+    height: auto !important;
+  }
+
+  /* Bottom-align the header items (chip, links, search, github) just
+     above the rule, matching the landing top-bar's baseline anchor. */
+  .VPNavBar .content-body {
+    align-items: flex-end;
+  }
+
   .VPNavBar .divider {
     max-width: 940px;
     margin: 0 auto;
@@ -144,11 +171,15 @@ mark {
 
 /* Nav links: text-hugging accent underline on hover, like the
    landing top-bar/footer links. */
+.VPNavBarMenu {
+  gap: 18px;
+}
+
 .VPNavBarMenuLink {
   height: auto !important;
-  align-self: center;
+  line-height: 1 !important;
   padding: 2px 0 !important;
-  margin: 0 12px;
+  margin: 0;
   border-bottom: 2px solid transparent;
 }
 
@@ -156,6 +187,13 @@ mark {
 .VPNavBarMenuLink.active {
   color: var(--vp-c-brand-1);
   border-bottom-color: var(--vp-c-brand-1);
+}
+
+/* The social-links group carries a theme -8px right margin to offset
+   icon padding we no longer render; zero it so GitHub's right edge
+   lands on the container edge like the landing top-bar. */
+.VPNavBar .social-links {
+  margin-right: 0;
 }
 
 /* GitHub: mono text link instead of the icon, as on the landing. */
@@ -186,8 +224,6 @@ mark {
 
 .VPNavBarTitle {
   display: flex;
-  align-items: center;
-  height: var(--vp-nav-height);
 }
 
 /* A tight chip like the landing top-bar, not a full-height slab. */
