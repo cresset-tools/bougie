@@ -99,13 +99,17 @@ mark {
    contains the wordmark. The child chains matter: the title wrapper
    div and the chip anchor inside VPNavBarTitle both carry the class
    `title`, and only the wrapper may be reflowed. */
-@media (min-width: 960px) {
-  /* The has-sidebar navbar is transparent by default (the sidebar
-     column used to paint under it) — needs its own paper now. */
-  .VPNavBar.has-sidebar {
-    background-color: var(--vp-c-bg);
-  }
+/* Fully opaque header background on every page so scrolled content
+   never shows through the fixed bar (VitePress leaves the has-sidebar
+   navbar transparent, and elsewhere uses a translucent nav bg). */
+.VPNav,
+.VPNavBar,
+.VPNavBar.has-sidebar {
+  background-color: var(--vp-c-bg) !important;
+  backdrop-filter: none !important;
+}
 
+@media (min-width: 960px) {
   /* Header contents + rule live in a landing-style centered container
      (site-wrap: 940px, 36px side padding); the page below stays wide.
      !important throughout: the theme's scoped rules (sidebar-width
@@ -154,14 +158,18 @@ mark {
     padding: 0 !important;
   }
 
-  .VPNavBar.has-sidebar > .wrapper > .container > .content {
-    padding-left: 16px;
+  /* 16px chip->nav gap on every page (docs and blog alike), matching
+     the landing top-bar; overrides the has-sidebar sidebar-width pad. */
+  .VPNavBar .wrapper > .container > .content {
+    padding-left: 16px !important;
     padding-right: 0 !important;
   }
 
+  /* Align the first sidebar group with the content heading and the
+     "on this page" outline. !important: the theme's scoped-CSS
+     (.VPSidebar[data-v-*]) padding-top outranks a plain class. */
   .VPSidebar {
-    top: calc(var(--vp-layout-top-height, 0px) + var(--vp-nav-height));
-    padding-top: 48px;
+    padding-top: 106px !important;
   }
 
   /* Scroll-masking curtain from the full-height layout — obsolete here. */
