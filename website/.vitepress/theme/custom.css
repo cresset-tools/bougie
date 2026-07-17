@@ -319,6 +319,12 @@ mark {
   border-radius: 0;
 }
 
+/* Knob background = page background (dark gray in dark mode) instead
+   of the theme's pure black, so it matches the page. */
+#app .VPSwitch .check {
+  background-color: var(--vp-c-bg);
+}
+
 /* Code blocks: bordered boxes like the landing's install-box. */
 .vp-doc div[class*='language-'] {
   border: 2.5px solid var(--vp-c-text-1);
