@@ -52,7 +52,7 @@ onMounted(() => {
 <div class="landing">
 <site-wrap>
 <top-bar>
-<a class="main-link" href="https://cresset.tools">cresset.tools</a>
+<a class="main-link" href="/">bougie.tools</a>
 <nav>
 <a href="/docs/">Docs</a>
 <a href="/blog/">Blog</a>

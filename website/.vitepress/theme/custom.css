@@ -39,20 +39,140 @@
   --vp-button-brand-active-bg: #3a33e6;
 }
 
-/* Echo the heavy, tight landing-page wordmark in the home hero. */
-.VPHero .name {
-  font-weight: 900;
-  letter-spacing: -0.04em;
-}
-
-.VPHero .text {
-  font-weight: 800;
-  letter-spacing: -0.02em;
-}
-
 /* Landing-page `key-token` treatment: lime pop behind inline marks. */
 mark {
   background: var(--bougie-pop);
   color: var(--bougie-ink);
   padding: 1px 4px;
+}
+
+/**
+ * Swiss-poster treatment for the theme pages (docs/blog/changelog),
+ * carrying the landing page's language: hard ink rules, squared
+ * corners, heavy tight headings, mono uppercase micro-labels.
+ * Structural borders use --vp-c-text-1 so they invert in dark mode.
+ */
+:root {
+  /* All dividers become ink rules (tables, h2 rules, hr, nav). */
+  --vp-c-divider: var(--vp-c-text-1);
+  /* Code blocks: paper background, the border does the work. */
+  --vp-code-block-bg: var(--vp-c-bg);
+  --vp-sidebar-bg-color: var(--vp-c-bg);
+}
+
+/* Navbar: chip wordmark + mono uppercase links, hard bottom rule. */
+.VPNavBar .divider-line {
+  height: 2px;
+  background-color: var(--vp-c-text-1);
+}
+
+.VPNavBarTitle {
+  display: flex;
+  align-items: center;
+  height: var(--vp-nav-height);
+}
+
+/* A tight chip like the landing top-bar, not a full-height slab. */
+.VPNavBarTitle .title {
+  height: auto;
+  width: fit-content;
+  background: var(--vp-c-text-1);
+  color: var(--vp-c-bg);
+  padding: 5px 10px;
+  font: 500 12px/1 var(--vp-font-family-mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.VPNavBarMenuLink,
+.VPNavBarMenuGroup > button {
+  font-family: var(--vp-font-family-mono) !important;
+  font-size: 12px !important;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.DocSearch-Button {
+  border: 2px solid var(--vp-c-text-1);
+  border-radius: 0;
+  background: transparent;
+}
+
+/* Squared corners across the board. */
+.vp-doc div[class*='language-'],
+.vp-doc .custom-block,
+.vp-doc :not(pre) > code,
+.VPButton,
+.VPSwitch,
+.VPSwitch .check,
+.VPDocAsideOutline .outline-marker,
+.vp-doc img {
+  border-radius: 0;
+}
+
+/* Code blocks: bordered boxes like the landing's install-box. */
+.vp-doc div[class*='language-'] {
+  border: 2.5px solid var(--vp-c-text-1);
+}
+
+.vp-doc [class*='language-'] > button.copy {
+  border-radius: 0;
+}
+
+/* Inline code: plain mono ink, like the landing's inline <code>. */
+.vp-doc :not(pre) > code {
+  background: transparent;
+  color: var(--vp-c-text-1);
+  padding: 0;
+  font-weight: 600;
+}
+
+/* Headings: heavy and tight, h2 sections opened by a hard rule. */
+.vp-doc h1 {
+  font-weight: 900;
+  letter-spacing: -0.03em;
+}
+
+.vp-doc h2 {
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  border-top: 2.5px solid var(--vp-c-text-1);
+}
+
+.vp-doc h3,
+.vp-doc h4 {
+  font-weight: 800;
+  letter-spacing: -0.01em;
+}
+
+/* Sidebar: paper background, hard edge, mono uppercase group titles. */
+.VPSidebar {
+  border-right: 2px solid var(--vp-c-text-1);
+}
+
+.VPSidebarItem.level-0 > .item > .text {
+  font: 700 11px/1.6 var(--vp-font-family-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+/* "On this page": same micro-label treatment. */
+.VPDocAsideOutline .outline-title {
+  font: 700 11px/1.6 var(--vp-font-family-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+/* Custom containers: hard boxes, no tint wash. */
+.vp-doc .custom-block {
+  border: 2.5px solid var(--vp-c-text-1);
+  background: var(--vp-c-bg);
+}
+
+/* Page footer: mono uppercase over a hard rule, like the landing. */
+.VPFooter {
+  border-top: 3px solid var(--vp-c-text-1) !important;
+  font: 500 12px/1.8 var(--vp-font-family-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
 }

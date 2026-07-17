@@ -47,6 +47,8 @@ export default defineConfig({
   ],
 
   themeConfig: {
+    siteTitle: 'bougie.tools',
+
     nav: [
       { text: 'Docs', link: '/docs/', activeMatch: '^/docs/' },
       { text: 'Blog', link: '/blog/', activeMatch: '^/blog/' },
