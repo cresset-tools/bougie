@@ -253,7 +253,10 @@ mark {
    Pin the height to exactly 22px (box-border) with flex-centered
    text so it matches the landing chip to the pixel, rather than
    letting the font line box round it to 23px. */
-.VPNavBarTitle .title {
+/* #app: the theme's `.VPNavBarTitle.has-sidebar .title` (which colors
+   the chip's border-bottom with the divider ink) outranks a plain
+   selector, so keep the border-bottom transparent here. */
+#app .VPNavBarTitle .title {
   display: inline-flex;
   align-items: center;
   box-sizing: border-box;
@@ -265,6 +268,7 @@ mark {
   font: 500 12px/1 var(--vp-font-family-mono);
   letter-spacing: 0.06em;
   text-transform: uppercase;
+  border-bottom-color: transparent;
 }
 
 .VPNavBarTitle .title:hover {
