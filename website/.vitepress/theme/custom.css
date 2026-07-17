@@ -359,6 +359,12 @@ mark {
   border-radius: 0;
 }
 
+/* The "Copied" tooltip that pops left of the copy button (#app to
+   outrank the theme's scoped-specificity ::before rule). */
+#app .vp-doc [class*='language-'] > button.copy.copied::before {
+  border-radius: 0;
+}
+
 /* Inline code: plain mono ink, like the landing's inline <code>. */
 .vp-doc :not(pre) > code {
   background: transparent;
