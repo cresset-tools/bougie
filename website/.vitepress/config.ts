@@ -50,9 +50,11 @@ export default defineConfig({
     siteTitle: 'bougie.tools',
 
     nav: [
-      { text: 'Docs', link: '/docs/', activeMatch: '^/docs/' },
+      // Changelog lives under /docs/, so exclude it from the Docs match
+      // (otherwise both light up on the changelog page).
+      { text: 'Docs', link: '/docs/', activeMatch: '^/docs/(?!changelog)' },
       { text: 'Blog', link: '/blog/', activeMatch: '^/blog/' },
-      { text: 'Changelog', link: '/docs/changelog' },
+      { text: 'Changelog', link: '/docs/changelog', activeMatch: '/docs/changelog' },
     ],
 
     sidebar: {
