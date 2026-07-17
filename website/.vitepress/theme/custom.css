@@ -72,6 +72,42 @@ mark {
   align-items: center;
 }
 
+/* Docs layout: one full-width header with the sidebar starting
+   underneath it, instead of a full-height sidebar column that
+   contains the wordmark. The child chains matter: the title wrapper
+   div and the chip anchor inside VPNavBarTitle both carry the class
+   `title`, and only the wrapper may be reflowed. */
+@media (min-width: 960px) {
+  /* The has-sidebar navbar is transparent by default (the sidebar
+     column used to paint under it) — needs its own paper now. */
+  .VPNavBar.has-sidebar {
+    background-color: var(--vp-c-bg);
+  }
+
+  .VPNavBar.has-sidebar > .wrapper > .container > .title {
+    position: static;
+    width: auto;
+  }
+
+  .VPNavBar.has-sidebar > .wrapper > .container > .content {
+    padding-left: 16px;
+  }
+
+  .VPNavBar.has-sidebar > .divider {
+    padding-left: 0;
+  }
+
+  .VPSidebar {
+    top: calc(var(--vp-layout-top-height, 0px) + var(--vp-nav-height));
+    padding-top: 24px;
+  }
+
+  /* Scroll-masking curtain from the full-height layout — obsolete here. */
+  .VPSidebar .curtain {
+    display: none;
+  }
+}
+
 .VPNavBar .content-body > .VPNavBarMenu {
   order: -1;
 }
@@ -110,7 +146,9 @@ mark {
   border-bottom-color: var(--vp-c-brand-1);
 }
 
-.VPSocialLink[aria-label*='github' i] svg {
+/* The icon renders as an svg or a masked span depending on version —
+   hide any element child; the ::after text below replaces it. */
+.VPSocialLink[aria-label*='github' i] > * {
   display: none;
 }
 
