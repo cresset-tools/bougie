@@ -3,6 +3,7 @@ title: A new home for bougie
 date: 2026-07-17
 description: bougie now has proper documentation, a changelog page, and this blog.
 sidebar: false
+aside: false
 ---
 
 # A new home for bougie

@@ -203,8 +203,11 @@ mark {
   border-bottom: 2px solid transparent;
 }
 
-.VPNavBarMenuLink:hover,
-.VPNavBarMenuLink.active {
+/* #app prefix so these outrank the id-specificity base rule above
+   (whose transparent border would otherwise win the hover/active
+   underline, like the landing top-bar links). */
+#app .VPNavBarMenuLink:hover,
+#app .VPNavBarMenuLink.active {
   color: var(--vp-c-brand-1);
   border-bottom-color: var(--vp-c-brand-1);
 }
@@ -352,6 +355,21 @@ mark {
   line-height: 32px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
+}
+
+/* Blog (and any no-sidebar doc): center the article in the same
+   940px / 36px container as the header, instead of the theme's
+   narrower default doc width, so the two edges line up. */
+@media (min-width: 960px) {
+  #app .VPDoc:not(.has-sidebar) .container {
+    max-width: 940px;
+  }
+
+  #app .VPDoc:not(.has-sidebar) .content {
+    max-width: 100%;
+    padding-left: 36px;
+    padding-right: 36px;
+  }
 }
 
 /* Custom containers: hard boxes, no tint wash. */
