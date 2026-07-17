@@ -33,22 +33,6 @@ head:
   Styles are scoped so nothing leaks into the docs/blog theme pages.
 -->
 
-<script setup>
-import { onMounted } from 'vue'
-
-onMounted(() => {
-  document.querySelectorAll('.copy-btn').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const code = btn.parentElement.querySelector('code')
-      navigator.clipboard.writeText(code.textContent.trim()).then(() => {
-        btn.textContent = 'copied'
-        setTimeout(() => { btn.textContent = 'copy' }, 1500)
-      })
-    })
-  })
-})
-</script>
-
 <div class="landing">
 <site-wrap>
 <top-bar>
@@ -69,11 +53,7 @@ onMounted(() => {
 Start up your PHP projects with no hassle, and live the bougie lifestyle.
 It does it all: install PHP, install your <code>vendor/</code> and then starts your services.
 </hero-sub>
-<install-box>
-<install-prompt>$</install-prompt>
-<code>curl -LsSf https://bougie.tools/install.sh | sh</code>
-<button class="copy-btn" aria-label="Copy install command">copy</button>
-</install-box>
+<div class="install-slot"><ShellBox cmd="curl -LsSf https://bougie.tools/install.sh | sh" /></div>
 <install-alt>Windows: <code>irm https://bougie.tools/install.ps1 | iex</code></install-alt>
 </hero-banner>
 
@@ -131,11 +111,7 @@ the full service stack, and the packages are done installing before your coffee 
 <p>
 When you have installed bougie, try this command to get a Mage-OS demo:
 </p>
-<command-box>
-<command-prompt>$</command-prompt>
-<code>bougie new bougie-store --starter mageos --start</code>
-<button class="copy-btn" aria-label="Copy command">copy</button>
-</command-box>
+<div class="command-slot"><ShellBox variant="accent" cmd="bougie new bougie-store --starter mageos --start" /></div>
 </call-band>
 
 <footer>
@@ -280,57 +256,10 @@ hero-sub {
   text-wrap: pretty
 }
 
-install-box {
-  display: flex;
-  align-items: stretch;
+/* Spacing for the <ShellBox> in the hero (the box itself is the shared
+   component in .vitepress/theme/components/ShellBox.vue). */
+.install-slot {
   margin: 32px 0 0;
-  max-width: 700px;
-  border: 2.5px solid var(--ink)
-}
-
-install-prompt {
-  background: var(--accent);
-  color: var(--accent-ink);
-  display: flex;
-  align-items: center;
-  padding: 0 16px;
-  font: 700 18px/1 var(--mono-font)
-}
-
-install-box code {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  padding: 15px 16px;
-  font: 500 14px/1 var(--mono-font);
-  overflow-x: auto
-}
-
-.copy-btn {
-  border: 0;
-  border-left: 2.5px solid var(--ink);
-  background: transparent;
-  color: var(--ink);
-  padding: 0 14px;
-  font: 700 11px/1 var(--mono-font);
-  letter-spacing: .08em;
-  text-transform: uppercase;
-  cursor: pointer;
-}
-
-.copy-btn:hover {
-  background: var(--ink);
-  color: var(--bg)
-}
-
-command-box .copy-btn {
-  border-left-color: var(--accent-ink);
-  color: var(--accent-ink)
-}
-
-command-box .copy-btn:hover {
-  background: var(--accent-ink);
-  color: var(--accent)
 }
 
 install-alt {
@@ -429,31 +358,8 @@ band-em {
   padding: 0 .12em
 }
 
-command-box {
-  display: flex;
-  align-items: stretch;
+.command-slot {
   margin: 20px 0 0;
-  max-width: 700px;
-  border: 2.5px solid var(--accent-ink)
-}
-
-command-prompt {
-  background: var(--pop);
-  color: var(--ink);
-  display: flex;
-  align-items: center;
-  padding: 0 16px;
-  font: 700 18px/1 var(--mono-font)
-}
-
-command-box code {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  padding: 15px 16px;
-  font: 500 14px/1 var(--mono-font);
-  color: var(--accent-ink);
-  overflow-x: auto
 }
 
 footer {
@@ -503,26 +409,6 @@ footer a:hover {
 
   feature-cell.double {
     grid-column: span 1
-  }
-
-  install-box,
-  command-box {
-    flex-direction: column
-  }
-
-  install-prompt,
-  command-prompt {
-    padding: 8px 16px
-  }
-
-  .copy-btn {
-    border-left: 0;
-    border-top: 2.5px solid var(--ink);
-    padding: 10px 16px
-  }
-
-  command-box .copy-btn {
-    border-top-color: var(--accent-ink)
   }
 
   call-band h2 {
