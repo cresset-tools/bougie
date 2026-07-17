@@ -37,10 +37,13 @@ function copy() {
    come from the global brand tokens so it works on any page (light or
    dark) — the landing simply resolves them to the same values. */
 .shell-box {
-  --box-ink: var(--vp-c-text-1);
-  --box-accent: var(--vp-c-brand-1);
-  --box-bg: var(--vp-c-bg);
-  --box-pop: var(--bougie-pop, #caff00);
+  /* Prefer the landing's semantic tokens (so it tracks the landing's
+     light/dark palette), falling back to the global theme tokens when
+     used on a docs page outside .landing. */
+  --box-ink: var(--ink, var(--vp-c-text-1));
+  --box-accent: var(--accent, var(--vp-c-brand-1));
+  --box-bg: var(--bg, var(--vp-c-bg));
+  --box-pop: var(--pop, var(--bougie-pop, #caff00));
 
   display: flex;
   align-items: stretch;
@@ -95,7 +98,8 @@ function copy() {
 
 .shell-box--accent .shell-box__prompt {
   background: var(--box-pop);
-  color: var(--box-ink);
+  /* Fixed dark: the lime prompt is always a light field. */
+  color: #0b0b0a;
 }
 
 .shell-box--accent .shell-box__cmd {

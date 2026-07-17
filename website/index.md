@@ -43,6 +43,7 @@ head:
 <a href="/docs/changelog">Changelog</a>
 </nav>
 <layout-spacer></layout-spacer>
+<AppearanceToggle />
 <span><a href="https://github.com/cresset-tools/bougie">GitHub</a></span>
 </top-bar>
 
@@ -139,6 +140,17 @@ When you have installed bougie, try this command to get a Mage-OS demo:
   color: var(--ink);
   font: 16px/1.5 var(--main-font);
   -webkit-font-smoothing: antialiased;
+}
+
+/* Dark mode: invert the semantic tokens. Everything on the landing is
+   painted from --bg/--ink/--accent/--muted, so the whole page follows.
+   (The lime --pop stays; text on it is fixed-dark below.) */
+.dark .landing {
+  --bg: #1b1b1f;
+  --ink: #e8e8e6;
+  --accent: #6a62ff;
+  --accent-ink: #ffffff;
+  --muted: #a0a09a;
 }
 
 * {
@@ -315,7 +327,7 @@ feature-cell p {
 
 key-token {
   font: 600 .86em/1 var(--mono-font);
-  color: var(--ink);
+  color: #0b0b0a;
   background: var(--pop);
   padding: 1px 4px
 }
@@ -354,7 +366,7 @@ call-band p {
 
 band-em {
   background: var(--pop);
-  color: var(--ink);
+  color: #0b0b0a;
   padding: 0 .12em
 }
 
