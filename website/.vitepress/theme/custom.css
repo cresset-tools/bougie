@@ -271,7 +271,8 @@ mark {
   border-bottom-color: transparent;
 }
 
-.VPNavBarTitle .title:hover {
+/* #app so it outranks the id-specificity base chip rule above. */
+#app .VPNavBarTitle .title:hover {
   background: var(--vp-c-brand-1);
   color: #fff;
 }
@@ -412,6 +413,11 @@ mark {
 /* Prev/next pager links: square the rounded border box. */
 #app .VPDocFooter .pager-link {
   border-radius: 0;
+}
+
+/* ShellBox in docs flow: same vertical rhythm as a code block. */
+.vp-doc .shell-box {
+  margin: 16px 0;
 }
 
 /* Page footer: mono uppercase over a hard rule, like the landing. */

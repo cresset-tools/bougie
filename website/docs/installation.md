@@ -2,9 +2,7 @@
 
 ## Installer script (macOS and Linux)
 
-```sh
-curl -LsSf https://bougie.tools/install.sh | sh
-```
+<ShellBox cmd="curl -LsSf https://bougie.tools/install.sh | sh" />
 
 The installer downloads the right binary for your platform and puts it
 on your `PATH`.
@@ -13,9 +11,7 @@ on your `PATH`.
 
 If you have a Rust toolchain, you can build from source instead:
 
-```sh
-cargo install bougie
-```
+<ShellBox cmd="cargo install bougie" />
 
 ## Platform support
 
@@ -28,9 +24,7 @@ supported.
 
 bougie can update itself in place:
 
-```sh
-bougie self update
-```
+<ShellBox cmd="bougie self update" />
 
 ## Telemetry
 
