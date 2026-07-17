@@ -22,17 +22,20 @@ export default defineConfig({
 
   markdown: {
     config(md) {
-      // Render shell code fences (```sh / ```bash / …) as the branded
-      // <ShellBox> instead of a plain highlighted block. The command is
-      // passed base64-encoded so arbitrary shell text survives without
+      // Render *single-line* shell code fences (```sh / ```bash / …) as
+      // the branded <ShellBox> instead of a plain highlighted block.
+      // Multi-line blocks fall through to the default fence so they keep
+      // VitePress's syntax highlighting and aligned comments. The command
+      // is passed base64-encoded so arbitrary shell text survives without
       // escaping or clashing with Vue's `{{ }}` interpolation.
       const SHELL = new Set(['sh', 'bash', 'shell', 'zsh', 'console'])
       const fallback = md.renderer.rules.fence
       md.renderer.rules.fence = (tokens, idx, options, env, self) => {
         const token = tokens[idx]
         const lang = (token.info || '').trim().split(/[\s{]/)[0].toLowerCase()
-        if (SHELL.has(lang)) {
-          const b64 = Buffer.from(token.content, 'utf-8').toString('base64')
+        const content = token.content.replace(/\n+$/, '')
+        if (SHELL.has(lang) && !content.includes('\n')) {
+          const b64 = Buffer.from(content, 'utf-8').toString('base64')
           return `<ShellBox raw="${b64}" />\n`
         }
         return fallback(tokens, idx, options, env, self)
