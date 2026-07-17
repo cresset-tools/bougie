@@ -1,0 +1,80 @@
+name: Website
+
+# Builds the VitePress site (landing + /docs + /blog) on PRs and deploys
+# it to the web server on pushes to main. CHANGELOG.md is in the paths
+# because /docs/changelog @includes it — a release merge must redeploy.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'website/**'
+      - 'CHANGELOG.md'
+      - '.github/workflows/website.yml'
+  pull_request:
+    paths:
+      - 'website/**'
+      - 'CHANGELOG.md'
+      - '.github/workflows/website.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: build site
+    runs-on: ubuntu-latest
+    steps:
+      # Full history so VitePress lastUpdated timestamps are real.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+
+      - name: npm ci
+        working-directory: website
+        run: npm ci
+
+      - name: vitepress build
+        working-directory: website
+        run: npm run build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: site
+          path: website/.vitepress/dist
+
+  # Deploys to the box behind bougie.tools over rsync. Inert until the
+  # repo is configured with:
+  #   vars.WEBSITE_DEPLOY_TARGET    e.g. deploy@bougie.tools:/var/www/bougie.tools/site/
+  #   secrets.WEBSITE_DEPLOY_KEY    private SSH key for that user
+  #   secrets.WEBSITE_DEPLOY_KNOWN_HOSTS  `ssh-keyscan <host>` output
+  #
+  # The target directory must be dedicated to this site: rsync runs with
+  # --delete. Keep install.sh out of it — serve it from its own nginx
+  # location (or its current path) so a site deploy can never clobber it.
+  deploy:
+    name: deploy to bougie.tools
+    if: github.event_name == 'push' && vars.WEBSITE_DEPLOY_TARGET != ''
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: site
+          path: dist
+
+      - name: Install SSH key
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.WEBSITE_DEPLOY_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "${{ secrets.WEBSITE_DEPLOY_KNOWN_HOSTS }}" >> ~/.ssh/known_hosts
+
+      - name: rsync site
+        run: rsync -az --delete dist/ "${{ vars.WEBSITE_DEPLOY_TARGET }}"

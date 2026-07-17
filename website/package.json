@@ -1,0 +1,14 @@
+{
+  "name": "bougie-website",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vitepress dev",
+    "build": "vitepress build",
+    "preview": "vitepress preview"
+  },
+  "devDependencies": {
+    "feed": "^4.2.2",
+    "vitepress": "^1.6.3"
+  }
+}

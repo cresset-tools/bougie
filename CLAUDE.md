@@ -37,6 +37,14 @@ contract for index format, server behavior, and service tarballs).
   `nix develop`.
 - `*_PLAN.md` at repo root — In-flight design docs (see "Plan docs" below).
   Shipped plans get deleted, not archived.
+- `website/` — VitePress site for bougie.tools (landing page + `/docs` +
+  `/blog`). `docs/changelog.md` `@include`s the root `CHANGELOG.md`; the
+  blog index + RSS feed are driven by `blog/posts.data.js` /
+  `.vitepress/genFeed.ts`. Built + rsync-deployed by
+  `.github/workflows/website.yml` (deploy is inert until
+  `WEBSITE_DEPLOY_*` repo vars/secrets are set); the Rust CI matrix
+  `paths-ignore`s it. Website commits use the `docs` type so
+  release-please ignores them.
 - `target/` — Standard Cargo build dir.
 
 ## Workspace crates
