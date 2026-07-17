@@ -1,17 +1,18 @@
 <script setup>
 import { ref } from 'vue'
 
-const props = defineProps({
-  // The single-line command to display and copy.
-  cmd: { type: String, default: '' },
+defineProps({
   prompt: { type: String, default: '$' },
   // 'default' (paper box, accent prompt) or 'accent' (accent box).
   variant: { type: String, default: 'default' },
 })
 
+// The command is the component's children; copy reads it back off the DOM.
+const codeEl = ref(null)
 const label = ref('copy')
 function copy() {
-  navigator.clipboard?.writeText(props.cmd.trim()).then(() => {
+  const text = (codeEl.value?.textContent || '').trim()
+  navigator.clipboard?.writeText(text).then(() => {
     label.value = 'copied'
     setTimeout(() => (label.value = 'copy'), 1500)
   })
@@ -21,7 +22,7 @@ function copy() {
 <template>
   <div class="shell-box" :class="`shell-box--${variant}`">
     <span class="shell-box__prompt">{{ prompt }}</span>
-    <code class="shell-box__cmd">{{ cmd }}</code>
+    <code ref="codeEl" class="shell-box__cmd"><slot /></code>
     <button
       class="shell-box__copy"
       type="button"

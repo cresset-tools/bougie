@@ -25,9 +25,9 @@ export default defineConfig({
       // Render *single-line* shell code fences (```sh / ```bash / …) as
       // the branded <ShellBox>. Multi-line blocks fall through to the
       // default fence so they keep VitePress's syntax highlighting and
-      // aligned comments. Single-line commands are HTML-escaped into the
-      // cmd attribute (no `{{ }}` risk — a static attribute isn't
-      // interpolated, and shell text has no mustaches anyway).
+      // aligned comments. The command is the component's children,
+      // HTML-escaped (the block output is inserted as raw HTML, so it
+      // isn't re-parsed as markdown).
       const SHELL = new Set(['sh', 'bash', 'shell', 'zsh', 'console'])
       const fallback = md.renderer.rules.fence
       md.renderer.rules.fence = (tokens, idx, options, env, self) => {
@@ -35,7 +35,7 @@ export default defineConfig({
         const lang = (token.info || '').trim().split(/[\s{]/)[0].toLowerCase()
         const content = token.content.replace(/\n+$/, '')
         if (SHELL.has(lang) && !content.includes('\n')) {
-          return `<ShellBox cmd="${md.utils.escapeHtml(content)}" />\n`
+          return `<ShellBox>${md.utils.escapeHtml(content)}</ShellBox>\n`
         }
         return fallback(tokens, idx, options, env, self)
       }

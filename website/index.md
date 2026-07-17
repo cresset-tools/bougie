@@ -54,7 +54,7 @@ head:
 Start up your PHP projects with no hassle, and live the bougie lifestyle.
 It does it all: install PHP, install your <code>vendor/</code> and then starts your services.
 </hero-sub>
-<div class="install-slot"><ShellBox cmd="curl -LsSf https://bougie.tools/install.sh | sh" /></div>
+<div class="install-slot"><ShellBox>curl -LsSf https://bougie.tools/install.sh | sh</ShellBox></div>
 <install-alt>Windows: <code>irm https://bougie.tools/install.ps1 | iex</code></install-alt>
 </hero-banner>
 
@@ -112,7 +112,7 @@ the full service stack, and the packages are done installing before your coffee 
 <p>
 When you have installed bougie, try this command to get a Mage-OS demo:
 </p>
-<div class="command-slot"><ShellBox variant="accent" cmd="bougie new bougie-store --starter mageos --start" /></div>
+<div class="command-slot"><ShellBox variant="accent">bougie new bougie-store --starter mageos --start</ShellBox></div>
 </call-band>
 
 <footer>
