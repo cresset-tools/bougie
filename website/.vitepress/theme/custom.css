@@ -281,7 +281,7 @@ mark {
 }
 
 .DocSearch-Button {
-  border: 2px solid var(--vp-c-text-1);
+  border: none;
   border-radius: 0;
   background: transparent;
 }
