@@ -1,15 +1,5 @@
 # Quickstart
 
-The short version — from a fresh clone to a running project:
-
-```shellbox
-bougie sync              # install PHP, extensions and vendor/
-bougie up                # start MariaDB, Redis, OpenSearch, …
-bougie server            # a local https:// URL for the project
-```
-
-The rest of this page walks through each step.
-
 ## Start a project
 
 Create a new project, or adopt an existing Composer project as-is:

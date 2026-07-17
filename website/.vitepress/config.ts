@@ -22,24 +22,20 @@ export default defineConfig({
 
   markdown: {
     config(md) {
-      // Render shell code fences as the branded <ShellBox>. Plain
-      // ```sh / ```bash / … only convert when single-line, so multi-line
-      // blocks keep VitePress's syntax highlighting and aligned comments.
-      // ```shellbox is an explicit opt-in that always renders as a
-      // ShellBox, including multi-line sessions. The command is passed
-      // base64-encoded so arbitrary shell text survives without escaping
-      // or clashing with Vue's `{{ }}` interpolation.
+      // Render *single-line* shell code fences (```sh / ```bash / …) as
+      // the branded <ShellBox>. Multi-line blocks fall through to the
+      // default fence so they keep VitePress's syntax highlighting and
+      // aligned comments. Single-line commands are HTML-escaped into the
+      // cmd attribute (no `{{ }}` risk — a static attribute isn't
+      // interpolated, and shell text has no mustaches anyway).
       const SHELL = new Set(['sh', 'bash', 'shell', 'zsh', 'console'])
       const fallback = md.renderer.rules.fence
       md.renderer.rules.fence = (tokens, idx, options, env, self) => {
         const token = tokens[idx]
         const lang = (token.info || '').trim().split(/[\s{]/)[0].toLowerCase()
         const content = token.content.replace(/\n+$/, '')
-        const isBox =
-          lang === 'shellbox' || (SHELL.has(lang) && !content.includes('\n'))
-        if (isBox) {
-          const b64 = Buffer.from(content, 'utf-8').toString('base64')
-          return `<ShellBox raw="${b64}" />\n`
+        if (SHELL.has(lang) && !content.includes('\n')) {
+          return `<ShellBox cmd="${md.utils.escapeHtml(content)}" />\n`
         }
         return fallback(tokens, idx, options, env, self)
       }

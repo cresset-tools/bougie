@@ -1,50 +1,17 @@
 <script setup>
-import { computed, ref } from 'vue'
+import { ref } from 'vue'
 
 const props = defineProps({
-  // Single-line command (used directly on the landing).
+  // The single-line command to display and copy.
   cmd: { type: String, default: '' },
-  // Base64-encoded (possibly multi-line) command, used by the
-  // markdown-it fence transform so arbitrary shell text — quotes,
-  // pipes, braces, `{{ }}` — survives without escaping.
-  raw: { type: String, default: '' },
   prompt: { type: String, default: '$' },
   // 'default' (paper box, accent prompt) or 'accent' (accent box).
   variant: { type: String, default: 'default' },
 })
 
-function decodeBase64Utf8(b64) {
-  const bin = atob(b64)
-  const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0))
-  return new TextDecoder().decode(bytes)
-}
-
-const text = computed(() =>
-  (props.raw ? decodeBase64Utf8(props.raw) : props.cmd).replace(/\n+$/, ''),
-)
-
-// Split each line into a code part and a trailing shell comment so the
-// comment can be dimmed. A comment starts at line-start `#` or a `#`
-// preceded by whitespace (so `foo#bar` mid-token isn't split).
-const lines = computed(() =>
-  text.value.split('\n').map((line) => {
-    let at = -1
-    if (line.startsWith('#')) at = 0
-    else {
-      const m = line.match(/\s#/)
-      if (m) at = m.index + 1
-    }
-    return at < 0
-      ? { code: line, comment: '' }
-      : { code: line.slice(0, at), comment: line.slice(at) }
-  }),
-)
-
-const multiline = computed(() => lines.value.length > 1)
-
 const label = ref('copy')
 function copy() {
-  navigator.clipboard?.writeText(text.value).then(() => {
+  navigator.clipboard?.writeText(props.cmd.trim()).then(() => {
     label.value = 'copied'
     setTimeout(() => (label.value = 'copy'), 1500)
   })
@@ -52,12 +19,9 @@ function copy() {
 </script>
 
 <template>
-  <div
-    class="shell-box"
-    :class="[`shell-box--${variant}`, { 'shell-box--multiline': multiline }]"
-  >
-    <span v-if="!multiline" class="shell-box__prompt">{{ prompt }}</span>
-    <code class="shell-box__cmd"><span v-for="(ln, i) in lines" :key="i" class="shell-box__line"><span>{{ ln.code }}</span><span v-if="ln.comment" class="shell-box__comment">{{ ln.comment }}</span></span></code>
+  <div class="shell-box" :class="`shell-box--${variant}`">
+    <span class="shell-box__prompt">{{ prompt }}</span>
+    <code class="shell-box__cmd">{{ cmd }}</code>
     <button
       class="shell-box__copy"
       type="button"
@@ -86,10 +50,6 @@ function copy() {
   font-family: var(--vp-font-family-mono);
 }
 
-.shell-box--multiline {
-  align-items: flex-start;
-}
-
 .shell-box__prompt {
   display: flex;
   align-items: center;
@@ -105,27 +65,10 @@ function copy() {
   display: flex;
   align-items: center;
   padding: 15px 16px;
-  /* Single line: tight, so the box height matches the landing install
-     box to the pixel. Multi-line loosens below for readability. */
   font: 500 14px/1 var(--vp-font-family-mono);
   color: var(--box-ink);
   background: transparent;
   overflow-x: auto;
-}
-
-.shell-box--multiline .shell-box__cmd {
-  display: block;
-  line-height: 1.7;
-}
-
-.shell-box__line {
-  display: block;
-  white-space: pre;
-}
-
-.shell-box__comment {
-  color: var(--box-ink);
-  opacity: 0.5;
 }
 
 .shell-box__copy {
@@ -139,11 +82,6 @@ function copy() {
   letter-spacing: 0.08em;
   text-transform: uppercase;
   cursor: pointer;
-}
-
-.shell-box--multiline .shell-box__copy {
-  align-self: stretch;
-  padding-top: 15px;
 }
 
 .shell-box__copy:hover {
