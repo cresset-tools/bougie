@@ -1,28 +1,58 @@
 /**
- * bougie brand accents over the default VitePress theme.
- * A bougie is a candle: warm amber over the stock green.
+ * bougie brand over the default VitePress theme, matched to the
+ * bougie.tools landing page: Archivo + JetBrains Mono, ink black,
+ * ultramarine accent (#2f27ff), lime pop (#caff00).
  */
 :root {
-  --vp-c-brand-1: #b45309;
-  --vp-c-brand-2: #d97706;
-  --vp-c-brand-3: #f59e0b;
-  --vp-c-brand-soft: rgba(245, 158, 11, 0.14);
+  --bougie-ink: #0b0b0a;
+  --bougie-accent: #2f27ff;
+  --bougie-pop: #caff00;
 
-  --vp-button-brand-bg: #b45309;
-  --vp-button-brand-hover-bg: #92400e;
-  --vp-button-brand-active-bg: #78350f;
+  --vp-font-family-base: 'Archivo', ui-sans-serif, system-ui, sans-serif;
+  --vp-font-family-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular,
+    Menlo, monospace;
 
-  --vp-home-hero-name-color: transparent;
-  --vp-home-hero-name-background: -webkit-linear-gradient(
-    120deg,
-    #f59e0b,
-    #b45309
-  );
+  --vp-c-brand-1: #2f27ff;
+  --vp-c-brand-2: #241dd6;
+  --vp-c-brand-3: #2f27ff;
+  --vp-c-brand-soft: rgba(47, 39, 255, 0.14);
+
+  --vp-button-brand-bg: #2f27ff;
+  --vp-button-brand-hover-bg: #241dd6;
+  --vp-button-brand-active-bg: #1c16b8;
+  --vp-button-brand-text: #ffffff;
+
+  /* The wordmark is ink, like the landing page — not gradient-tinted. */
+  --vp-home-hero-name-color: var(--vp-c-text-1);
 }
 
 .dark {
-  --vp-c-brand-1: #fbbf24;
-  --vp-c-brand-2: #f59e0b;
-  --vp-c-brand-3: #d97706;
-  --vp-c-brand-soft: rgba(245, 158, 11, 0.16);
+  /* Ultramarine is too dark against the dark bg; lift it for text and
+     links, keep buttons closer to the brand hue. */
+  --vp-c-brand-1: #918bff;
+  --vp-c-brand-2: #7a73ff;
+  --vp-c-brand-3: #4740ff;
+  --vp-c-brand-soft: rgba(122, 115, 255, 0.16);
+
+  --vp-button-brand-bg: #4740ff;
+  --vp-button-brand-hover-bg: #5a54ff;
+  --vp-button-brand-active-bg: #3a33e6;
+}
+
+/* Echo the heavy, tight landing-page wordmark in the home hero. */
+.VPHero .name {
+  font-weight: 900;
+  letter-spacing: -0.04em;
+}
+
+.VPHero .text {
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+/* Landing-page `key-token` treatment: lime pop behind inline marks. */
+mark {
+  background: var(--bougie-pop);
+  color: var(--bougie-ink);
+  padding: 1px 4px;
 }
