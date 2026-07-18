@@ -13,6 +13,7 @@
 //! `jibs`'s `mysql::Opts::from_url` ignores once `socket=` is set).
 
 use std::fs;
+use std::io::{self, IsTerminal as _};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
@@ -47,7 +48,7 @@ const MARIADB: &str = "mariadb";
     clippy::needless_pass_by_value,
     reason = "owned args from clap-parsed CLI"
 )]
-pub fn run(_format: OutputFormat, args: DbSeedArgs) -> Result<ExitCode> {
+pub fn run(format: OutputFormat, args: DbSeedArgs) -> Result<ExitCode> {
     let paths = Paths::from_env()?;
     let project_root = locate_project_root()?;
 
@@ -59,10 +60,19 @@ pub fn run(_format: OutputFormat, args: DbSeedArgs) -> Result<ExitCode> {
     if !args.force {
         if let Some(marker) = read_seed_marker(&marker_path) {
             println!(
-                "bougie db seed: database already seeded (from {}). Use `bougie db seed \
-                 --force` or `bougie db refresh` to reload.",
+                "bougie db seed: database already seeded {} (from {}). Use `bougie db refresh` \
+                 for fresh data, or `bougie db seed --force` to reload this snapshot.",
+                human_age(now_unix().saturating_sub(marker.seeded_at_unix)),
                 marker.describe()
             );
+            return Ok(ExitCode::SUCCESS);
+        }
+    } else if let Some(marker) = read_seed_marker(&marker_path) {
+        // The drift guard: a forced reseed of an already-seeded database wipes
+        // whatever changed locally since (WIP rows, locally-applied migrations),
+        // so it is never silent — confirm interactively, or require `--yes`.
+        if !args.yes && !confirm_reseed(format, &marker)? {
+            eprintln!("aborted; the database was left untouched.");
             return Ok(ExitCode::SUCCESS);
         }
     }
@@ -124,26 +134,58 @@ pub fn run(_format: OutputFormat, args: DbSeedArgs) -> Result<ExitCode> {
     Ok(ExitCode::from(code))
 }
 
+/// Ask before a destructive reseed of an already-seeded database. `Ok(true)` =
+/// go ahead. Outside an interactive text terminal there is nobody to ask, so it
+/// errors pointing at `--yes` — a scripted clobber must be explicit. Shared
+/// with `db refresh`, which confirms *before* its pull (don't download
+/// gigabytes only to abort at the prompt).
+pub(crate) fn confirm_reseed(format: OutputFormat, marker: &SeedMarker) -> Result<bool> {
+    let interactive = matches!(format, OutputFormat::Text) && io::stdin().is_terminal();
+    if !interactive {
+        return Err(eyre!(
+            "refusing to reload an already-seeded database without confirmation — it replaces \
+             all local data (WIP rows, locally-applied migrations). Re-run with --yes."
+        ));
+    }
+    eprintln!(
+        "bougie: this reloads the project's mariadb tenant, replacing ALL local data — \
+         rows you've created, locally-applied migrations, WIP."
+    );
+    eprintln!(
+        "bougie: the database was seeded {} (from {}).",
+        human_age(now_unix().saturating_sub(marker.seeded_at_unix)),
+        marker.describe()
+    );
+    eprint!("Reseed and discard local changes? [y/N] ");
+    io::Write::flush(&mut io::stderr()).ok();
+    let mut line = String::new();
+    io::stdin()
+        .read_line(&mut line)
+        .map_err(|e| eyre!("reading confirmation: {e}"))?;
+    let ans = line.trim().to_ascii_lowercase();
+    Ok(ans == "y" || ans == "yes")
+}
+
 /// On-disk shape of the seed marker. Bumped if the layout changes.
 const SEED_MARKER_SCHEMA_VERSION: u32 = 1;
 
 /// The durable record that a project's database has been seeded — written under
 /// the project state dir (survives `rm -rf vendor`), so `db seed` is a one-shot.
 #[derive(Serialize, Deserialize)]
-struct SeedMarker {
+pub(crate) struct SeedMarker {
     schema_version: u32,
     /// What was loaded — the pulled snapshot's cache path, or the `--from` value.
     source: String,
     /// Hex sha256 of the loaded snapshot, when known (a pulled snapshot). Lets a
     /// later staleness check compare it against the registry's `latest`.
-    digest: Option<String>,
+    pub(crate) digest: Option<String>,
     /// When the seed ran (unix seconds).
-    seeded_at_unix: u64,
+    pub(crate) seeded_at_unix: u64,
 }
 
 impl SeedMarker {
     /// A short human description for the "already seeded (from …)" message.
-    fn describe(&self) -> String {
+    pub(crate) fn describe(&self) -> String {
         match &self.digest {
             Some(d) => format!("snapshot {}", &d[..d.len().min(16)]),
             None => self.source.clone(),
@@ -151,11 +193,11 @@ impl SeedMarker {
     }
 }
 
-fn seed_marker_path(paths: &Paths, project_root: &Path) -> PathBuf {
+pub(crate) fn seed_marker_path(paths: &Paths, project_root: &Path) -> PathBuf {
     paths.project_state_dir(project_root).join("seeded.json")
 }
 
-fn read_seed_marker(path: &Path) -> Option<SeedMarker> {
+pub(crate) fn read_seed_marker(path: &Path) -> Option<SeedMarker> {
     serde_json::from_slice(&fs::read(path).ok()?).ok()
 }
 
@@ -168,11 +210,22 @@ fn write_seed_marker(path: &Path, marker: &SeedMarker) -> Result<()> {
     fs::write(path, json).wrap_err_with(|| format!("writing {}", path.display()))
 }
 
-fn now_unix() -> u64 {
+pub(crate) fn now_unix() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+/// A rough "N units ago" for staleness messages. Coarse on purpose — the
+/// question is "hours or weeks?", not timestamps.
+pub(crate) fn human_age(secs: u64) -> String {
+    match secs {
+        0..=59 => "moments ago".to_string(),
+        60..=3599 => format!("{} minute(s) ago", secs / 60),
+        3600..=86_399 => format!("{} hour(s) ago", secs / 3600),
+        _ => format!("{} day(s) ago", secs / 86_400),
+    }
 }
 
 /// Build a `mysql://` DSN for the project's mariadb tenant, sourced offline from
@@ -363,6 +416,16 @@ mod tests {
             seeded_at_unix: 0,
         };
         assert_eq!(no_digest.describe(), "https://example.test/prod.jibsdump");
+    }
+
+    #[test]
+    fn human_age_scales_units() {
+        use super::human_age;
+        assert_eq!(human_age(0), "moments ago");
+        assert_eq!(human_age(59), "moments ago");
+        assert_eq!(human_age(60), "1 minute(s) ago");
+        assert_eq!(human_age(3 * 3600 + 5), "3 hour(s) ago");
+        assert_eq!(human_age(12 * 86_400), "12 day(s) ago");
     }
 
     #[test]
