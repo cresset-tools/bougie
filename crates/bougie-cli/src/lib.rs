@@ -1357,6 +1357,11 @@ pub enum ComposerCommand {
         /// Skip dev autoload entries (`--no-dev`)
         #[arg(long = "no-dev")]
         no_dev: bool,
+        /// Include dev autoload entries (`--dev`). With neither `--dev` nor
+        /// `--no-dev`, the dev mode is inherited from the installed tree
+        /// (`vendor/composer/installed.json`), matching Composer
+        #[arg(long = "dev")]
+        dev: bool,
         /// Emit the `APCu` loader bootstrap (`--apcu-autoloader`)
         #[arg(long = "apcu-autoloader")]
         apcu_autoloader: bool,

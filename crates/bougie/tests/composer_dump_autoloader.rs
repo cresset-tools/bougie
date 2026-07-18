@@ -193,3 +193,62 @@ fn cli_json_output_carries_flag_state() {
     assert_eq!(v["optimize"], false);
     assert_eq!(v["apcu_autoloader"], false);
 }
+
+/// Report the effective `no_dev` a flag-less `dump-autoloader` resolves to,
+/// after seeding `vendor/composer/installed.json` with the given dev mode.
+fn no_dev_with_installed_dev(env: &TestEnv, installed_dev: bool, extra_arg: Option<&str>) -> bool {
+    let work = stage("classmap-single");
+    let composer_dir = work.path().join("vendor/composer");
+    std::fs::create_dir_all(&composer_dir).unwrap();
+    std::fs::write(
+        composer_dir.join("installed.json"),
+        format!(r#"{{ "packages": [], "dev": {installed_dev} }}"#),
+    )
+    .unwrap();
+
+    let mut cmd = env.bougie();
+    cmd.arg("composer").arg("dump-autoloader");
+    if let Some(a) = extra_arg {
+        cmd.arg(a);
+    }
+    let assert = cmd
+        .arg("--format")
+        .arg("json-v1")
+        .current_dir(work.path())
+        .assert()
+        .success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    v["no_dev"].as_bool().expect("no_dev bool in json-v1 output")
+}
+
+#[test]
+fn cli_inherits_dev_mode_from_installed_json() {
+    // Issue #499: a flag-less dump inherits the installed tree's dev mode.
+    let env = TestEnv::new();
+    // Installed --no-dev (dev:false) → the dump excludes dev.
+    assert!(
+        no_dev_with_installed_dev(&env, false, None),
+        "flag-less dump on a --no-dev tree must resolve no_dev=true"
+    );
+    // Installed with dev (dev:true) → the dump includes dev.
+    assert!(
+        !no_dev_with_installed_dev(&env, true, None),
+        "flag-less dump on a dev tree must resolve no_dev=false"
+    );
+}
+
+#[test]
+fn cli_explicit_dev_flag_overrides_installed_state() {
+    let env = TestEnv::new();
+    // `--dev` forces dev on even though installed.json recorded dev:false.
+    assert!(
+        !no_dev_with_installed_dev(&env, false, Some("--dev")),
+        "--dev must override the installed dev:false"
+    );
+    // `--no-dev` forces dev off even though installed.json recorded dev:true.
+    assert!(
+        no_dev_with_installed_dev(&env, true, Some("--no-dev")),
+        "--no-dev must override the installed dev:true"
+    );
+}
