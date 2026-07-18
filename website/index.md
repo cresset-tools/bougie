@@ -16,22 +16,7 @@ head:
   - - meta
     - property: og:url
       content: https://bougie.tools/
-  - - script
-    - async: true
-      src: https://analytics.yele.dev/js/pa-mTdm9cUNbJ3ZpeG1xYxMT.js
-  - - script
-    - {}
-    - window.plausible = window.plausible || function () { (plausible.q = plausible.q || []).push(arguments) }, plausible.init = plausible.init || function (i) { plausible.o = i || {} }; plausible.init()
 ---
-
-<!--
-  Exact replica of the hand-built bougie.tools landing page, hosted by
-  VitePress so the whole site deploys as one build. The only intended
-  differences from the original: the top-bar gained Docs / Blog /
-  Changelog nav links (same design language), and the footer Docs link
-  points at /docs/ instead of the GitHub README.
-  Styles are scoped so nothing leaks into the docs/blog theme pages.
--->
 
 <div class="landing">
 <site-wrap>

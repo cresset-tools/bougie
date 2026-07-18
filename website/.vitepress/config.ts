@@ -66,6 +66,19 @@ export default defineConfig({
         href: 'https://bougie.tools/blog/feed.xml',
       },
     ],
+    // Privacy-friendly analytics (Plausible), on every page.
+    [
+      'script',
+      {
+        async: '',
+        src: 'https://analytics.yele.dev/js/pa-mTdm9cUNbJ3ZpeG1xYxMT.js',
+      },
+    ],
+    [
+      'script',
+      {},
+      'window.plausible = window.plausible || function () { (plausible.q = plausible.q || []).push(arguments) }, plausible.init = plausible.init || function (i) { plausible.o = i || {} }; plausible.init()',
+    ],
   ],
 
   themeConfig: {
