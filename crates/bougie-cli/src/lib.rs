@@ -492,6 +492,10 @@ pub enum Command {
     #[command(display_order = 30)]
     Server(ServerArgs),
 
+    /// Share the running project on a public https URL (`*.bougie.show`)
+    #[command(display_order = 31)]
+    Share(ShareArgs),
+
     /// Manage project-scoped dev services (formerly `services`, which
     /// remains as a hidden alias)
     #[command(subcommand, display_order = 31, alias = "services")]
@@ -887,6 +891,29 @@ pub struct ServeArgs {
     /// log stream. Matches `service up`'s `-d`
     #[arg(short = 'd', long = "detach")]
     pub detach: bool,
+    /// Skip the implicit `bougie sync` before serving
+    #[arg(long)]
+    pub no_sync: bool,
+}
+
+/// Arguments for `bougie share`: serve the project, then expose it on a
+/// public `<slug>.bougie.show` URL until Ctrl-C ends the share.
+#[derive(Args, Debug)]
+pub struct ShareArgs {
+    /// Tenant to serve (defaults to a name derived from the project). Also
+    /// seeds the public slug `<name>-<random>.bougie.show`
+    #[arg(value_name = "NAME")]
+    pub name: Option<String>,
+    /// Request a stable named slug instead of `<name>-<random>` (may
+    /// require `bougie login`)
+    #[arg(long, value_name = "SLUG")]
+    pub slug: Option<String>,
+    /// Make the share fully public — no view password (loud warning)
+    #[arg(long)]
+    pub public: bool,
+    /// Set a custom view password instead of a generated one
+    #[arg(long, value_name = "PW")]
+    pub password: Option<String>,
     /// Skip the implicit `bougie sync` before serving
     #[arg(long)]
     pub no_sync: bool,

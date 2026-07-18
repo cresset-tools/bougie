@@ -86,6 +86,7 @@ bougie-scripts = { path = "crates/bougie-scripts", version = "0.50.0" } # x-rele
 bougie-server = { path = "crates/bougie-server", version = "0.50.0" } # x-release-please-version
 bougie-telemetry = { path = "crates/bougie-telemetry", version = "0.50.0" } # x-release-please-version
 bougie-tool = { path = "crates/bougie-tool", version = "0.50.0" } # x-release-please-version
+bougie-tunnel = { path = "crates/bougie-tunnel", version = "0.50.0" } # x-release-please-version
 bougie-version = { path = "crates/bougie-version", version = "0.50.0" } # x-release-please-version
 sandbox-run = { path = "crates/sandbox-run", version = "0.50.0" } # x-release-please-version
 macos-sandbox-sys = { path = "crates/macos-sandbox-sys", version = "0.50.0" } # x-release-please-version

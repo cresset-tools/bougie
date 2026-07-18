@@ -403,6 +403,7 @@ dependencies = [
  "bougie-server",
  "bougie-telemetry",
  "bougie-tool",
+ "bougie-tunnel",
  "bougie-version",
  "clap",
  "color-eyre",
@@ -828,7 +829,7 @@ dependencies = [
 
 [[package]]
 name = "bougie-tunnel"
-version = "0.49.0"
+version = "0.50.0"
 dependencies = [
  "eyre",
  "rustls-pemfile",

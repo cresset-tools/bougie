@@ -121,6 +121,7 @@ fn command_name(cmd: &Command) -> &'static str {
         Command::TelemetryFlush => "__telemetry-flush",
         Command::Diagnose { .. } => "diagnose",
         Command::Server(_) => "server",
+        Command::Share(_) => "share",
         Command::Service(_) => "service",
         Command::Projects(_) => "projects",
         Command::Db(_) => "db",
@@ -701,6 +702,10 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
             commands::self_version::run(format, short)
         }
         Command::Server(args) => commands::server::dispatch(format, args),
+        #[cfg(unix)]
+        Command::Share(args) => commands::share::run(format, args),
+        #[cfg(not(unix))]
+        Command::Share(_) => unsupported_on_windows("bougie share"),
         #[cfg(unix)]
         Command::Service(ServiceCommand::Up { names, detach }) => {
             commands::service::up::run(format, names, detach)
