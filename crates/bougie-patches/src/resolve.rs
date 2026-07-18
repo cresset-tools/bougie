@@ -172,6 +172,27 @@ mod tests {
     }
 
     #[test]
+    fn inline_patches_bare_string_array() {
+        // The exact shape from issue #422: a plain array of patch paths, as
+        // accepted by cweagans/composer-patches. Must not error.
+        let cj = json!({
+            "extra": {
+                "patches": {
+                    "amasty/base": [ "patches/amasty/base/fix.patch" ]
+                }
+            }
+        });
+        let dir = tempdir().unwrap();
+        let patches = resolve_root(&cj, dir.path()).unwrap();
+        assert_eq!(patches.len(), 1);
+        assert_eq!(patches[0].target, "amasty/base");
+        assert_eq!(
+            patches[0].source,
+            PatchSource::Local("patches/amasty/base/fix.patch".into())
+        );
+    }
+
+    #[test]
     fn inline_wins_over_file() {
         let dir = tempdir().unwrap();
         fs::write(
