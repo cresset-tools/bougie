@@ -379,7 +379,11 @@ pub fn install_from_lock_with_patches(
                 url: &primary.url,
                 sha1: dist.shasum.as_deref().unwrap_or(""),
                 reference: dist.reference.as_deref().unwrap_or(""),
-                archive: ArchiveKind::Zip,
+                // Preflight rejects every dist type other than these two.
+                archive: match dist.kind.as_str() {
+                    "tar" => ArchiveKind::Tar,
+                    _ => ArchiveKind::Zip,
+                },
                 strip_prefix: None,
                 vendor_dest: dest,
                 auth_header: primary.auth_header.as_deref(),
@@ -1178,11 +1182,12 @@ fn preflight(
             ));
             continue;
         };
-        if dist.kind != "zip" {
+        if dist.kind != "zip" && dist.kind != "tar" {
             reasons.push(format!(
                 "package `{}` uses dist type `{}`; bougie's installer \
-                 currently supports only zip dists. \
-                 Use `bougie run -- composer install`.",
+                 handles only `zip` and `tar` dists. Add a `dist` of one \
+                 of those types to the lockfile, or install this package \
+                 with upstream Composer.",
                 p.name, dist.kind,
             ));
             continue;
