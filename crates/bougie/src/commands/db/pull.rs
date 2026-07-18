@@ -46,13 +46,13 @@ const NOT_CONFIGURED: u8 = 3;
 pub(crate) struct PulledSnapshot {
     schema_version: u32,
     /// The registry repository the snapshot came from, as `<org>/<repo>`.
-    repo: String,
+    pub(crate) repo: String,
     /// The environment whose `latest` pointer was resolved.
-    environment: String,
+    pub(crate) environment: String,
     /// The data profile whose `latest` was resolved (`full` on pointers written
     /// before profiles existed).
     #[serde(default = "default_profile")]
-    profile: String,
+    pub(crate) profile: String,
     /// Hex sha256 of the dump — also the cache filename stem.
     pub(crate) digest: String,
     /// Absolute path of the cached `.jibsdump`.
@@ -175,7 +175,7 @@ fn default_profile() -> String {
 
 /// Split `<org>/<repo>`. Both halves must be present and non-empty, and there
 /// must be exactly one separator — the value indexes a single registry repo.
-fn parse_repo(spec: &str) -> Result<(String, String)> {
+pub(crate) fn parse_repo(spec: &str) -> Result<(String, String)> {
     let mut parts = spec.splitn(2, '/');
     match (parts.next(), parts.next()) {
         (Some(org), Some(repo))
@@ -300,7 +300,7 @@ fn hex_digest(bytes: &[u8]) -> String {
 }
 
 /// A rough human-readable byte count for the "cached …" line.
-fn human_size(bytes: u64) -> String {
+pub(crate) fn human_size(bytes: u64) -> String {
     const UNITS: [&str; 4] = ["B", "KiB", "MiB", "GiB"];
     let mut val = bytes as f64;
     let mut unit = 0;

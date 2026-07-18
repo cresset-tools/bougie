@@ -752,13 +752,19 @@ pub enum DbCommand {
     Pull(DbPullArgs),
     /// Refresh the local database from production: pull the latest snapshot,
     /// then reload it (`db pull` + `db seed --force`). The deliberate
-    /// "give me fresh prod data now" action — it clobbers local DB state.
-    Refresh(DbPullArgs),
+    /// "give me fresh prod data now" action — it clobbers local DB state,
+    /// so it confirms first (skip with `--yes`).
+    Refresh(DbRefreshArgs),
     /// Pull a specific production row-graph (anonymized) into the *existing*
     /// local database without a reseed — reproduce a prod ticket in seconds.
     /// Wraps jibs's on-demand `get` against the team's `.jibs` config, into the
     /// project's mariadb tenant. e.g. `bougie db get order --id 12345`.
     Get(DbGetArgs),
+    /// Show the project's database state: the team's configured snapshot
+    /// source, what was last pulled, when the database was seeded, and — with
+    /// a registry round-trip — whether a newer snapshot has been published.
+    /// Informational only: it never reseeds on its own.
+    Status(DbStatusArgs),
 }
 
 #[derive(Args, Debug)]
@@ -813,8 +819,31 @@ pub struct DbSeedArgs {
     /// Reseed even if the database was already seeded — reload the snapshot and
     /// update the seed marker. Without this, `db seed` is a one-shot no-op once
     /// the project has been seeded (so it's safe to run on every `bougie start`).
+    /// A forced reseed clobbers local data, so it confirms first (see `--yes`).
     #[arg(long)]
     pub force: bool,
+    /// Skip the destructive-reseed confirmation. Required for a `--force`
+    /// reseed of an already-seeded database outside an interactive terminal.
+    #[arg(long, short = 'y')]
+    pub yes: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct DbRefreshArgs {
+    #[command(flatten)]
+    pub pull: DbPullArgs,
+    /// Skip the clobber confirmation. Required outside an interactive terminal
+    /// when the database was already seeded.
+    #[arg(long, short = 'y')]
+    pub yes: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct DbStatusArgs {
+    /// Don't contact the registry — report only the local state (pulled
+    /// snapshot, seed marker). The staleness check needs the round-trip.
+    #[arg(long)]
+    pub offline: bool,
 }
 
 #[derive(Args, Debug)]
