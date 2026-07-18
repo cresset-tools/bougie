@@ -180,13 +180,17 @@ struct ManifestRepo {
 }
 
 /// The database snapshot source the team manifest advertises (added by sconce's
-/// `remote-snapshot`). Lenient: `env` may be absent (defaults to production).
+/// `remote-snapshot`). Lenient: `env` may be absent (defaults to production),
+/// and `profile` — the team's default data profile — may be absent (defaults
+/// to `full`).
 #[derive(Debug, Clone, Deserialize)]
 #[cfg_attr(not(unix), allow(dead_code))]
 struct ManifestSnapshot {
     repo: String,
     #[serde(default)]
     env: Option<String>,
+    #[serde(default)]
+    profile: Option<String>,
 }
 
 /// A named database source the team manifest advertises (set with sconce's
@@ -293,24 +297,38 @@ fn read_cached_manifest(project_root: &Path) -> Option<Vec<u8>> {
     std::fs::read(manifest_cache_path(project_root)?).ok()
 }
 
-/// The database snapshot source the cached team manifest advertises for this
-/// project, as `(repo, env)` where `repo` is `<org>/<repo>` and `env` is the
-/// manifest's environment when present. `None` if no manifest is cached (login
-/// against a non-team project, or a registry with no snapshot configured) or it
-/// carries no snapshot block. Lets `bougie db pull` default its target.
+/// The snapshot source the cached manifest advertises, resolved for `bougie db
+/// pull`: the dataset `repo` (`<org>/<repo>`) plus the environment and default
+/// data profile when the manifest names them.
+#[derive(Debug, PartialEq, Eq)]
 #[cfg_attr(not(unix), allow(dead_code))]
-pub(crate) fn cached_snapshot_ref(project_root: &Path) -> Option<(String, Option<String>)> {
+pub(crate) struct SnapshotRef {
+    pub(crate) repo: String,
+    pub(crate) env: Option<String>,
+    pub(crate) profile: Option<String>,
+}
+
+/// The database snapshot source the cached team manifest advertises for this
+/// project. `None` if no manifest is cached (login against a non-team project,
+/// or a registry with no snapshot configured) or it carries no snapshot block.
+/// Lets `bougie db pull` default its target.
+#[cfg_attr(not(unix), allow(dead_code))]
+pub(crate) fn cached_snapshot_ref(project_root: &Path) -> Option<SnapshotRef> {
     manifest_snapshot(&read_cached_manifest(project_root)?)
 }
 
-/// Extract the snapshot source `(repo, env)` from raw manifest bytes. `None`
-/// when there's no snapshot block or the bytes don't parse; `env` is `None` when
-/// the block omits it.
+/// Extract the snapshot source from raw manifest bytes. `None` when there's no
+/// snapshot block or the bytes don't parse; `env`/`profile` are `None` when the
+/// block omits them.
 #[cfg_attr(not(unix), allow(dead_code))]
-fn manifest_snapshot(raw: &[u8]) -> Option<(String, Option<String>)> {
+fn manifest_snapshot(raw: &[u8]) -> Option<SnapshotRef> {
     let manifest: Manifest = serde_json::from_slice(raw).ok()?;
     let snap = manifest.snapshot?;
-    Some((snap.repo, snap.env))
+    Some(SnapshotRef {
+        repo: snap.repo,
+        env: snap.env,
+        profile: snap.profile,
+    })
 }
 
 /// The named database sources the cached team manifest advertises for this
@@ -452,16 +470,24 @@ mod tests {
     }
 
     #[test]
-    fn manifest_snapshot_reads_repo_and_optional_env() {
-        let raw = br#"{"repositories":[],"snapshot":{"repo":"acme/data","env":"staging"}}"#;
+    fn manifest_snapshot_reads_repo_and_optional_env_and_profile() {
+        let raw = br#"{"repositories":[],"snapshot":{"repo":"acme/data","env":"staging","profile":"small"}}"#;
         assert_eq!(
             manifest_snapshot(raw),
-            Some(("acme/data".to_string(), Some("staging".to_string())))
+            Some(SnapshotRef {
+                repo: "acme/data".to_string(),
+                env: Some("staging".to_string()),
+                profile: Some("small".to_string()),
+            })
         );
-        // env is optional (defaults are applied downstream).
+        // env and profile are optional (defaults are applied downstream).
         assert_eq!(
             manifest_snapshot(br#"{"snapshot":{"repo":"acme/data"}}"#),
-            Some(("acme/data".to_string(), None))
+            Some(SnapshotRef {
+                repo: "acme/data".to_string(),
+                env: None,
+                profile: None,
+            })
         );
         // No snapshot block, and unparseable bytes, both yield None.
         assert_eq!(manifest_snapshot(br#"{"repositories":[]}"#), None);

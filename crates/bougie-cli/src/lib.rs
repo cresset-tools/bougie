@@ -827,6 +827,12 @@ pub struct DbPullArgs {
     /// Defaults to the manifest's environment, or `production`.
     #[arg(long)]
     pub env: Option<String>,
+    /// Which data profile's snapshot to pull (e.g. `small`, `full`, `perf`) —
+    /// separately published variants of the dump, so a tiny slice for quick
+    /// work and the full set for perf testing come from one config. Defaults
+    /// to the manifest's profile, or `full`.
+    #[arg(long, value_name = "NAME")]
+    pub profile: Option<String>,
     /// For automation (the recipe `seed` step): when no snapshot source is
     /// configured for this project — not a team project, or no dump set up —
     /// exit 3 instead of erroring. A real failure (auth, network, 404) still
