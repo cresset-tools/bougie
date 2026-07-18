@@ -2,93 +2,87 @@
 
 ## Start a project
 
-Create a new project, or adopt an existing Composer project as-is:
+Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod
+tempor incididunt ut labore et dolore magna aliqua.
 
 ```sh
-bougie new my-app        # scaffold a fresh project in ./my-app
+bougie new my-app        # lorem ipsum dolor sit amet
 # — or —
 cd existing-project
-bougie sync              # installs PHP, extensions and vendor/
+bougie sync              # consectetur adipiscing elit
 ```
 
-`bougie sync` reads `composer.json` / `composer.lock`, provisions the
-right PHP version and extensions, and installs dependencies — no
-system PHP required.
+Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi
+ut aliquip ex ea commodo consequat.
 
 ## Manage dependencies
 
-```sh
-bougie add monolog/monolog        # add a dependency
-bougie add phpunit/phpunit --dev  # add a dev dependency
-bougie remove monolog/monolog     # remove it again
-bougie lock                       # refresh composer.lock minimally
-bougie tree                       # inspect the dependency tree
-bougie outdated                   # what has newer releases?
-```
-
-Prefer the Composer verbs you already know? They're all there, natively:
+Lorem ipsum dolor sit amet, consectetur adipiscing elit:
 
 ```sh
-bougie composer install
-bougie composer update
-bougie composer why vendor/package
+bougie add monolog/monolog        # lorem ipsum dolor
+bougie add phpunit/phpunit --dev  # sit amet consectetur
+bougie remove monolog/monolog     # adipiscing elit sed
+bougie lock                       # do eiusmod tempor
+bougie tree                       # incididunt ut labore
+bougie outdated                   # et dolore magna aliqua
 ```
+
+Duis aute irure dolor in reprehenderit in voluptate velit esse cillum
+dolore eu fugiat nulla pariatur.
 
 ## Run PHP
 
-`bougie run` executes any command inside the project environment — the
-pinned PHP, the project's extensions, vendor binaries on `PATH`:
+Lorem ipsum dolor sit amet, consectetur adipiscing elit:
 
 ```sh
 bougie run -- php -v
 bougie run -- php bin/magento cache:flush
-bougie run --xdebug -- php test.php   # xdebug overlay, one-off
+bougie run --xdebug -- php test.php   # lorem ipsum dolor
 ```
 
 ## Services
 
-Declare the services your project needs, then:
+Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod
+tempor incididunt ut labore et dolore magna aliqua.
 
 ```sh
-bougie up                  # start them (MariaDB, Redis, OpenSearch, …)
-bougie service status      # what's running?
-bougie service exec mariadb   # open a client wired to your project
-bougie service credentials    # connection info for GUI tools
-bougie down                # stop them
+bougie up                  # lorem ipsum dolor sit amet
+bougie service status      # consectetur adipiscing elit
+bougie service exec mariadb   # sed do eiusmod tempor
+bougie service credentials    # incididunt ut labore
+bougie down                # et dolore magna aliqua
 ```
 
-Services run natively (no Docker), sandboxed, and each project gets its
-own isolated tenant — two projects can share one MariaDB instance
-without seeing each other's databases.
+Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris.
 
 ## Dev server
+
+Lorem ipsum dolor sit amet, consectetur adipiscing elit:
 
 ```sh
 bougie server
 ```
 
-Registers the project with the local dev server and prints its
-`https://` URL on a `bougie.run` subdomain — TLS and FastCGI are
-handled for you.
+Duis aute irure dolor in reprehenderit in voluptate velit esse cillum
+dolore eu fugiat nulla pariatur.
 
 ## Tasks
 
-```sh
-bougie start     # run the project's default recipe
-bougie make lint # run a specific task
-```
+Lorem ipsum dolor sit amet, consectetur adipiscing elit:
 
-For Magento / Mage-OS projects, a built-in recipe takes a fresh clone
-to a running shop with just `bougie start`.
+```sh
+bougie start
+bougie make lint
+```
 
 ## Global tools
 
-Run any Composer CLI tool without installing it into your project,
-npx-style:
+Lorem ipsum dolor sit amet, consectetur adipiscing elit:
 
 ```sh
-bgx laravel/pint                       # ephemeral run
-bougie tool install phpstan/phpstan    # install onto your PATH
+bgx laravel/pint
 ```
 
-Each tool lives in its own isolated vendor tree with its own pinned PHP.
+Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi
+ut aliquip ex ea commodo consequat.

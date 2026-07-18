@@ -1,7 +1,7 @@
 ---
 title: A new home for bougie
 date: 2026-07-17
-description: bougie now has proper documentation, a changelog page, and this blog.
+description: Lorem ipsum dolor sit amet, consectetur adipiscing elit.
 sidebar: false
 aside: false
 ---
@@ -10,19 +10,18 @@ aside: false
 
 _July 17, 2026 · Jelle Besseling_
 
-bougie now has a proper home on the web. Until today, the README was
-the documentation; from now on you'll find guides and reference material
-under [Docs](/docs/), every release on the
-[changelog page](/docs/changelog), and announcements and engineering
-notes right here on the blog ([RSS](/blog/feed.xml)).
+Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod
+tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim
+veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea
+commodo consequat.
 
-If you're new here: bougie gets big PHP projects running with ease — a
-Composer-compatible package manager, PHP toolchain manager, native dev
-services and a dev server, in one fast binary. The
-[quickstart](/docs/quickstart) is the best place to start:
+Duis aute irure dolor in reprehenderit in voluptate velit esse cillum
+dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non
+proident, sunt in culpa qui officia deserunt mollit anim id est laborum.
 
 ```sh
 curl -LsSf https://bougie.tools/install.sh | sh
 ```
 
-More soon.
+Sed ut perspiciatis unde omnis iste natus error sit voluptatem
+accusantium doloremque laudantium.

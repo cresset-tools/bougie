@@ -2,16 +2,19 @@
 
 ## Installer script (macOS and Linux)
 
+Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod
+tempor incididunt ut labore et dolore magna aliqua.
+
 ```sh
 curl -LsSf https://bougie.tools/install.sh | sh
 ```
 
-The installer downloads the right binary for your platform and puts it
-on your `PATH`.
+Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi
+ut aliquip ex ea commodo consequat.
 
 ## Cargo
 
-If you have a Rust toolchain, you can build from source instead:
+Lorem ipsum dolor sit amet, consectetur adipiscing elit:
 
 ```sh
 cargo install bougie
@@ -19,14 +22,14 @@ cargo install bougie
 
 ## Platform support
 
-bougie runs on Linux, macOS and Windows. The services stack
-(`bougie up`, background service supervision) is Unix-only; on Windows,
-package management, PHP toolchain management and `bougie server` are
-supported.
+Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod
+tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim
+veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea
+commodo consequat.
 
 ## Updating
 
-bougie can update itself in place:
+Lorem ipsum dolor sit amet, consectetur adipiscing elit:
 
 ```sh
 bougie self update
@@ -34,11 +37,8 @@ bougie self update
 
 ## Telemetry
 
-bougie can collect anonymous usage statistics and crash reports —
-strictly **opt-in**, asked once at install time or on first interactive
-run. It never collects project names, package names, paths, or IP
-addresses, and it honors `DO_NOT_TRACK`. Inspect exactly what would be
-sent with `bougie telemetry log`; switch with
-`bougie telemetry on`, `off`, or `local`. The complete field list and
-policy live in
-[TELEMETRY.md](https://github.com/cresset-tools/bougie/blob/main/TELEMETRY.md).
+Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod
+tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim
+veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea
+commodo consequat. Duis aute irure dolor in reprehenderit in voluptate
+velit esse cillum dolore eu fugiat nulla pariatur.
