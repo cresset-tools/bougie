@@ -489,6 +489,73 @@ fn tenant_gets_a_scratch_database_namespace() {
 }
 
 #[test]
+fn mariadb_dev_profile_relaxes_durability() {
+    // Issue #482: dev mariadb data is disposable, so the instance runs with
+    // relaxed durability for write throughput under parallel load. Verify the
+    // *live* server actually applied the settings.
+    if should_skip() {
+        eprintln!("skipping: BOUGIE_SKIP_REAL_MARIADB set");
+        return;
+    }
+    let _guard = mariadb_test_lock();
+    let env = TestEnv::new();
+    mariadb_fixture::install_into(env.home_path());
+    let proj = project_with_composer("acme/blog");
+    env.bougie()
+        .args(["service", "add", "mariadb"])
+        .current_dir(proj.path())
+        .timeout(STEP_TIMEOUT)
+        .assert()
+        .success();
+    env.bougie()
+        .args(["service", "up"])
+        .current_dir(proj.path())
+        .timeout(STEP_TIMEOUT)
+        .assert()
+        .success();
+
+    let sock = mariadb_socket(&env);
+    assert!(wait_for(&sock, Duration::from_secs(30)));
+    let os_user = std::env::var("USER")
+        .or_else(|_| std::env::var("LOGNAME"))
+        .unwrap_or_else(|_| "bougie".into());
+    let global_var = |name: &str| -> String {
+        let out = Command::new(mariadb_client(&env))
+            .arg("--no-defaults")
+            .arg(format!("--socket={}", sock.display()))
+            .arg(format!("--user={os_user}"))
+            .arg("--batch")
+            .arg("--skip-column-names")
+            .arg("-e")
+            .arg(format!("SELECT @@global.{name};"))
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "reading {name}: {}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8(out.stdout).unwrap().trim().to_string()
+    };
+
+    assert_eq!(
+        global_var("innodb_flush_log_at_trx_commit"),
+        "0",
+        "commit fsync should be relaxed"
+    );
+    let doublewrite = global_var("innodb_doublewrite");
+    assert!(
+        doublewrite == "OFF" || doublewrite == "0",
+        "doublewrite should be off, got `{doublewrite}`"
+    );
+    let pool: u64 = global_var("innodb_buffer_pool_size")
+        .parse()
+        .expect("buffer pool size is an integer");
+    assert!(
+        pool >= 256 * 1024 * 1024,
+        "buffer pool should be >= 256M, got {pool}"
+    );
+
+    stop_daemon(&env);
+}
+
+#[test]
 fn bougie_run_exports_mariadb_env_vars() {
     if should_skip() {
         eprintln!("skipping: BOUGIE_SKIP_REAL_MARIADB set");
