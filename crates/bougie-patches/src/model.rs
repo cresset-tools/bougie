@@ -117,8 +117,10 @@ pub enum FailureMode {
 /// [`Patch`]es, accepting **both** dialects:
 ///
 /// - an *object* `{ "Description": "url", … }` (v1 compact), and
-/// - an *array* `[ { "description", "url", "sha256"?, "depth"?, "extra"? }, … ]`
-///   (v2 expanded; array elements may themselves be the compact one-key object).
+/// - an *array* whose elements are any of a bare path/url *string*
+///   (`[ "patches/fix.patch", … ]` — cweagans' description-less list form), the
+///   compact one-key object `{ "Description": "url" }`, or the full expanded
+///   object `{ "description", "url", "sha256"?, "depth"?, "extra"? }`.
 ///
 /// `target` is the `vendor/name` key the value was found under.
 pub fn parse_target_patches(target: &str, value: &Value) -> eyre::Result<Vec<Patch>> {
@@ -154,13 +156,30 @@ pub fn parse_target_patches(target: &str, value: &Value) -> eyre::Result<Vec<Pat
     }
 }
 
-/// Parse one element of an expanded-form array. Accepts either the full
-/// `{description, url, …}` object or the compact single-key `{desc: url}`
+/// Parse one element of an expanded-form array. Accepts a bare path/url
+/// *string* (cweagans' description-less list form), the full
+/// `{description, url, …}` object, or the compact single-key `{desc: url}`
 /// object (v2 allows mixing).
 fn parse_expanded_entry(target: &str, item: &Value) -> eyre::Result<Patch> {
-    let obj = item
-        .as_object()
-        .ok_or_else(|| eyre::eyre!("patch entry for `{target}` must be an object"))?;
+    // Bare string element: `[ "patches/fix.patch", … ]`. cweagans accepts a
+    // plain list of patch paths with no description key; treat the path as the
+    // url and default the description to it (same rule as an expanded object
+    // that omits `description`).
+    if let Value::String(url) = item {
+        return Ok(Patch {
+            target: target.to_string(),
+            description: url.clone(),
+            source: PatchSource::from_url(url),
+            sha256: None,
+            depth: DepthSpec::Auto,
+            extra: None,
+            scope: PatchScope::Package,
+        });
+    }
+
+    let obj = item.as_object().ok_or_else(|| {
+        eyre::eyre!("patch entry for `{target}` must be a patch-path string or an object")
+    })?;
 
     // Compact single-key object inside an array: `{ "Description": "url" }`
     // — only when it carries neither `url` nor `description`.
@@ -265,6 +284,48 @@ mod tests {
         assert_eq!(patches.len(), 1);
         assert_eq!(patches[0].description, "Just a desc");
         assert_eq!(patches[0].source, PatchSource::Local("patches/x.patch".into()));
+    }
+
+    #[test]
+    fn bare_string_array_form() {
+        // The cweagans description-less list form (issue #422): a plain array of
+        // patch paths. Each entry applies in order; description defaults to the path.
+        let v = json!(["patches/amasty/base/fix.patch", "https://example.com/b.patch"]);
+        let patches = parse_target_patches("amasty/base", &v).unwrap();
+        assert_eq!(patches.len(), 2);
+        assert_eq!(patches[0].description, "patches/amasty/base/fix.patch");
+        assert_eq!(
+            patches[0].source,
+            PatchSource::Local("patches/amasty/base/fix.patch".into())
+        );
+        assert_eq!(patches[0].depth, DepthSpec::Auto);
+        assert!(patches[0].sha256.is_none());
+        assert_eq!(
+            patches[1].source,
+            PatchSource::Remote("https://example.com/b.patch".into())
+        );
+    }
+
+    #[test]
+    fn mixed_string_and_object_array_form() {
+        // v2 allows mixing shapes within one array.
+        let v = json!([
+            "patches/plain.patch",
+            { "Compact desc": "patches/compact.patch" },
+            { "description": "Expanded", "url": "patches/expanded.patch", "depth": 2 }
+        ]);
+        let patches = parse_target_patches("vendor/pkg", &v).unwrap();
+        assert_eq!(patches.len(), 3);
+        assert_eq!(patches[0].description, "patches/plain.patch");
+        assert_eq!(patches[1].description, "Compact desc");
+        assert_eq!(patches[2].description, "Expanded");
+        assert_eq!(patches[2].depth, DepthSpec::Fixed(2));
+    }
+
+    #[test]
+    fn non_string_non_object_array_element_errors() {
+        let v = json!([42]);
+        assert!(parse_target_patches("vendor/pkg", &v).is_err());
     }
 
     #[test]
