@@ -141,6 +141,14 @@ impl PoolConf<'_> {
              ; (e.g. Magento's pub/.user.ini). CLI php is set separately\n\
              ; (memory_limit=-1) in the argv[0] shim.\n\
              php_value[memory_limit] = 1G\n\
+             ; Dev server: reflect source edits immediately. PHP's default\n\
+             ; opcache.revalidate_freq=2 lets opcache serve a cached script\n\
+             ; for up to 2s after it changes on disk — so a freshly-emitted\n\
+             ; autoload classmap (or any just-saved .php) can lag a couple\n\
+             ; seconds. 0 = re-stat on every request (validate_timestamps\n\
+             ; stays on by default). `php_value` (not `php_admin_value`) so a\n\
+             ; project can still override; harmless if opcache isn't loaded.\n\
+             php_value[opcache.revalidate_freq] = 0\n\
              {scan_dir_line}",
             socket = self.listen_socket.display(),
         )
@@ -316,6 +324,9 @@ mod tests {
         // Magento), overridable by the app — `php_value`, not
         // `php_admin_value`.
         assert!(rendered.contains("php_value[memory_limit] = 1G"));
+        // Dev server re-stats every request so saved edits show up
+        // immediately, instead of PHP's default 2s revalidate window.
+        assert!(rendered.contains("php_value[opcache.revalidate_freq] = 0"));
     }
 
     #[cfg(unix)]
@@ -344,5 +355,8 @@ mod tests {
         // System PHP keeps its own conf.d — bougie injects no scan dir.
         assert!(!rendered.contains("PHP_INI_SCAN_DIR"));
         assert!(rendered.contains("php_value[memory_limit] = 1G"));
+        // The opcache dev tuning applies to system PHP too (the pool
+        // conf carries it regardless of scan-dir injection).
+        assert!(rendered.contains("php_value[opcache.revalidate_freq] = 0"));
     }
 }
