@@ -124,6 +124,7 @@ fn command_name(cmd: &Command) -> &'static str {
         Command::Service(_) => "service",
         Command::Projects(_) => "projects",
         Command::Db(_) => "db",
+        Command::Doctor(_) => "doctor",
         Command::Make { .. } => "make",
         Command::Format { .. } => "format",
         Command::Start { .. } => "start",
@@ -779,6 +780,10 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
         Command::Db(DbCommand::Status(args)) => commands::db::status::run(format, args),
         #[cfg(not(unix))]
         Command::Db(_) => unsupported_on_windows("bougie db"),
+        #[cfg(unix)]
+        Command::Doctor(args) => commands::doctor::run(format, args),
+        #[cfg(not(unix))]
+        Command::Doctor(_) => unsupported_on_windows("bougie doctor"),
         #[cfg(unix)]
         Command::Make {
             task,

@@ -505,6 +505,13 @@ pub enum Command {
     #[command(subcommand, display_order = 33, hide = true)]
     Db(DbCommand),
 
+    /// Verify the whole dev setup: project config, PHP toolchain vs pin,
+    /// service health, team login freshness, and database snapshot currency.
+    /// Read-only — every problem names the command that fixes it. Exits
+    /// non-zero if any check fails (warnings don't).
+    #[command(display_order = 34, hide = true)]
+    Doctor(DoctorArgs),
+
     /// Bring the whole project up
     #[command(display_order = 3)]
     Start {
@@ -836,6 +843,14 @@ pub struct DbRefreshArgs {
     /// when the database was already seeded.
     #[arg(long, short = 'y')]
     pub yes: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct DoctorArgs {
+    /// Don't contact the registry — check only local state. Login freshness
+    /// and snapshot currency need the round-trip.
+    #[arg(long)]
+    pub offline: bool,
 }
 
 #[derive(Args, Debug)]

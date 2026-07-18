@@ -53,6 +53,8 @@ pub mod tool_upgrade;
 #[cfg(unix)]
 pub mod db;
 #[cfg(unix)]
+pub mod doctor;
+#[cfg(unix)]
 pub mod make;
 #[cfg(unix)]
 pub mod start;

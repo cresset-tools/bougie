@@ -108,13 +108,14 @@ pub fn run(_format: OutputFormat, args: DbStatusArgs) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// The metadata the registry serves at `snapshots/{env}/latest/info`.
+/// The metadata the registry serves at `snapshots/{env}/latest/info`. Shared
+/// with `bougie doctor`'s snapshot check.
 #[derive(Debug, Deserialize)]
-struct SnapshotInfo {
-    digest: String,
-    size_bytes: i64,
+pub(crate) struct SnapshotInfo {
+    pub(crate) digest: String,
+    pub(crate) size_bytes: i64,
     /// Unix seconds of when the snapshot was published.
-    created_at: i64,
+    pub(crate) created_at: i64,
 }
 
 /// Fetch the registry's latest-snapshot metadata for the manifest-configured
@@ -139,9 +140,28 @@ fn latest_info(
         return Ok(None);
     };
 
-    let (org, repo) = super::pull::parse_repo(&snap.repo)?;
     let env = snap.env.as_deref().unwrap_or("production");
     let profile = snap.profile.as_deref().unwrap_or("full");
+    let info = fetch_latest_info(&base, &token, &snap.repo, env, profile)?;
+    if info.is_none() {
+        let (org, repo) = super::pull::parse_repo(&snap.repo)?;
+        println!("  registry: no snapshot published for {org}/{repo} {env}/{profile}");
+    }
+    Ok(info)
+}
+
+/// GET `snapshots/{env}/latest/info` on the registry — the silent core, shared
+/// with `bougie doctor`. `Ok(None)` = 404 (nothing published for that
+/// env/profile — or a registry predating the route); network/auth problems are
+/// `Err` for the caller to phrase.
+pub(crate) fn fetch_latest_info(
+    base: &str,
+    token: &str,
+    repo_spec: &str,
+    env: &str,
+    profile: &str,
+) -> Result<Option<SnapshotInfo>> {
+    let (org, repo) = super::pull::parse_repo(repo_spec)?;
     let mut url = format!("{base}/{org}/{repo}/snapshots/{env}/latest/info");
     if profile != "full" {
         url = format!("{url}?profile={profile}");
@@ -155,11 +175,10 @@ fn latest_info(
         .wrap_err("building the HTTP client")?;
     let resp = client
         .get(&url)
-        .bearer_auth(&token)
+        .bearer_auth(token)
         .send()
         .wrap_err("contacting the registry")?;
     if resp.status() == reqwest::StatusCode::NOT_FOUND {
-        println!("  registry: no snapshot published for {org}/{repo} {env}/{profile}");
         return Ok(None);
     }
     if !resp.status().is_success() {
