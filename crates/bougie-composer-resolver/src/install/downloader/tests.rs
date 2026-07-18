@@ -51,6 +51,31 @@ fn build_fixture_zip(top: &str) -> Vec<u8> {
     buf
 }
 
+/// Build a gzip-compressed tar whose entries live under `top/` — the
+/// shape a Composer `tar` dist (satis / private repo / commercial vendor)
+/// takes. Compression is deliberately not reflected in the extension; the
+/// extractor sniffs it, like PHP's `PharData`.
+fn build_fixture_tar_gz(top: &str) -> Vec<u8> {
+    let mut tar_buf: Vec<u8> = Vec::new();
+    {
+        let mut b = tar::Builder::new(&mut tar_buf);
+        for (name, body) in [
+            ("composer.json", &br#"{"name":"acme/foo"}"#[..]),
+            ("src/Foo.php", &b"<?php class Foo {}\n"[..]),
+        ] {
+            let mut h = tar::Header::new_gnu();
+            h.set_size(body.len() as u64);
+            h.set_mode(0o644);
+            h.set_cksum();
+            b.append_data(&mut h, format!("{top}/{name}"), body).unwrap();
+        }
+        b.finish().unwrap();
+    }
+    let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    enc.write_all(&tar_buf).unwrap();
+    enc.finish().unwrap()
+}
+
 /// Build a [`Paths`] rooted at `tmp` so the test owns its cache dir.
 fn paths_in(tmp: &Path) -> Paths {
     let home = tmp.join("home");
@@ -105,6 +130,57 @@ fn downloads_single_zip_and_extracts_with_strip_prefix() {
     assert!(!vendor_dest.join("acme-foo-abc1234").exists());
     let cached = paths.cache_composer_dist().join(format!("{hash}.zip"));
     assert!(cached.is_file(), "cache file should be retained for reuse");
+}
+
+#[test]
+fn downloads_tar_dist_and_extracts_with_detected_prefix() {
+    // Issue #420: a `tar` dist (here gzip-compressed, wrapper name only
+    // known at runtime). `strip_prefix: None` exercises detection, and the
+    // Tar arm sniffs the codec.
+    let tmp = TempDir::new().unwrap();
+    let paths = paths_in(tmp.path());
+    let vendor_dest = tmp.path().join("vendor").join("mirasvit").join("module-email");
+
+    let top = "mirasvit-module-email-abc1234";
+    let body = build_fixture_tar_gz(top);
+    let hash = sha1_hex(&body);
+
+    let rt = rt();
+    let (uri, _server) = rt.block_on(async {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(wm_path("/dists/module-email.tar"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(body.clone()))
+            .mount(&server)
+            .await;
+        let uri = server.uri();
+        (uri, server)
+    });
+
+    let url = format!("{uri}/dists/module-email.tar");
+    let client = reqwest::blocking::Client::new();
+    let bar = DownloadBar::hidden();
+    let dists = [DistRequest {
+        package_name: "mirasvit/module-email",
+        url: &url,
+        sha1: &hash,
+        reference: "",
+        archive: ArchiveKind::Tar,
+        strip_prefix: None,
+        vendor_dest: &vendor_dest,
+        auth_header: None,
+        auth_header_name: None,
+        project_root: tmp.path(),
+        fallbacks: &[],
+    }];
+
+    fetch_and_extract_dists(&client, &paths, &dists, &bar).unwrap();
+
+    assert!(vendor_dest.join("composer.json").is_file());
+    assert!(vendor_dest.join("src/Foo.php").is_file());
+    assert!(!vendor_dest.join(top).exists(), "wrapper dir should be stripped");
+    let cached = paths.cache_composer_dist().join(format!("{hash}.tar"));
+    assert!(cached.is_file(), "tar dist should be cached under a .tar key");
 }
 
 #[test]

@@ -301,6 +301,12 @@ pub enum ArchiveKind {
     /// but `.tar.gz` decodes via `flate2` (already in the dependency tree)
     /// and avoids pulling in an xz/liblzma dependency.
     TarGz,
+    /// POSIX tar whose compression is **auto-detected** from the archive's
+    /// magic bytes (plain, gzip, or zstd) — Composer's `tar` dist type,
+    /// which (like PHP's `PharData`) doesn't record the codec in the
+    /// lockfile. Prefer the explicit [`TarZst`](Self::TarZst) /
+    /// [`TarGz`](Self::TarGz) variants when the producer is known.
+    Tar,
     /// Zip — windows.php.net's interpreter + PECL distribution format, and
     /// nodejs.org's Windows distribution format (`node-v<ver>-win-<arch>.zip`).
     Zip,
@@ -557,6 +563,7 @@ fn try_once_blob(
     match spec.archive {
         ArchiveKind::TarZst => extract_tar_zst(&tmp, &incoming, spec.strip_prefix)?,
         ArchiveKind::TarGz => extract_tar_gz(&tmp, &incoming, spec.strip_prefix)?,
+        ArchiveKind::Tar => extract_tar_auto(&tmp, &incoming, spec.strip_prefix)?,
         ArchiveKind::Zip => extract_zip(&tmp, &incoming, spec.strip_prefix)?,
     }
 
@@ -611,6 +618,87 @@ fn extract_tar_gz(tar_gz: &Path, into: &Path, strip_prefix: &str) -> Result<()> 
         .wrap_err_with(|| format!("opening {}", tar_gz.display()))?;
     let gd = flate2::read::GzDecoder::new(f);
     extract_tar(gd, tar_gz, into, strip_prefix)
+}
+
+/// Extract a POSIX tar whose compression is **auto-detected** from its
+/// leading magic bytes — gzip (`1f 8b`), zstd (`28 b5 2f fd`), or an
+/// uncompressed tar. This mirrors PHP's `PharData`, which sniffs the codec
+/// rather than trusting a filename; it backs Composer's `tar` dist type,
+/// whose codec `composer.lock` never records. Strip-prefix + symlink /
+/// hardlink handling are exactly [`extract_tar`]'s.
+pub fn extract_tar_auto(archive: &Path, into: &Path, strip_prefix: &str) -> Result<()> {
+    let reader = open_tar_reader(archive)?;
+    extract_tar(reader, archive, into, strip_prefix)
+}
+
+/// Scan an auto-detected tar and return the single common top-level path
+/// component if there is exactly one, else the empty string — the tar
+/// analogue of [`detect_zip_top_level`]. Composer dist tarballs wrap their
+/// contents in a `<vendor>-<package>-<ref>/` directory whose exact name
+/// isn't predictable, so it's detected rather than computed. Unlike the zip
+/// path this must decompress to read the entry names, but dist archives are
+/// small and this runs once per package.
+pub fn detect_tar_top_level(archive: &Path) -> Result<String> {
+    let reader = open_tar_reader(archive)?;
+    let mut tar = tar::Archive::new(reader);
+    let mut top: Option<String> = None;
+    for entry in tar
+        .entries()
+        .wrap_err_with(|| format!("reading entries from {}", archive.display()))?
+    {
+        let entry = entry.wrap_err("reading archive entry")?;
+        let path = entry.path().wrap_err("reading entry path")?;
+        let Some(first) = path.components().next() else {
+            continue;
+        };
+        // A leading `..`/absolute/prefix component means we can't name a
+        // safe single wrapper — fall back to no-strip rather than guessing.
+        let std::path::Component::Normal(os) = first else {
+            return Ok(String::new());
+        };
+        let Some(s) = os.to_str() else {
+            return Ok(String::new());
+        };
+        let s = s.to_owned();
+        match &top {
+            None => top = Some(s),
+            Some(existing) if *existing == s => {}
+            Some(_) => return Ok(String::new()),
+        }
+    }
+    Ok(top.unwrap_or_default())
+}
+
+/// Open `archive` and return a reader over its decompressed tar stream,
+/// picking the decoder from the leading magic bytes (gzip / zstd / plain).
+/// Shared by [`extract_tar_auto`] and [`detect_tar_top_level`].
+fn open_tar_reader(archive: &Path) -> Result<Box<dyn Read>> {
+    let mut f = File::open(archive)
+        .wrap_err_with(|| format!("opening {}", archive.display()))?;
+    let mut magic = [0u8; 4];
+    let mut filled = 0;
+    while filled < magic.len() {
+        let n = f
+            .read(&mut magic[filled..])
+            .wrap_err_with(|| format!("reading magic bytes from {}", archive.display()))?;
+        if n == 0 {
+            break;
+        }
+        filled += n;
+    }
+    std::io::Seek::seek(&mut f, std::io::SeekFrom::Start(0))
+        .wrap_err_with(|| format!("rewinding {}", archive.display()))?;
+    let magic = &magic[..filled];
+    if magic.starts_with(&[0x1f, 0x8b]) {
+        Ok(Box::new(flate2::read::GzDecoder::new(f)))
+    } else if magic.starts_with(&[0x28, 0xb5, 0x2f, 0xfd]) {
+        let zd = zstd::stream::read::Decoder::new(f).wrap_err("zstd decoder")?;
+        Ok(Box::new(zd))
+    } else {
+        // Uncompressed POSIX tar (or an unrecognized codec — `tar::Archive`
+        // then surfaces a clear parse error rather than silently misreading).
+        Ok(Box::new(f))
+    }
 }
 
 /// Walk a decompressed tar stream, stripping `strip_prefix` as a leading
@@ -1467,6 +1555,102 @@ mod tests {
         // The symlink resolves through the stripped tree to the real file.
         assert_eq!(std::fs::read(&link).unwrap(), b"js\n");
         assert!(!into.join(prefix).exists());
+    }
+
+    /// Build a POSIX tar wrapping two files under `prefix/`, returning the
+    /// raw (uncompressed) tar bytes. Mirrors a Composer dist tarball's
+    /// `<vendor>-<package>-<ref>/` wrapper layout.
+    fn composer_tar_fixture(prefix: &str) -> Vec<u8> {
+        let mut tar_buf: Vec<u8> = Vec::new();
+        let mut builder = tar::Builder::new(&mut tar_buf);
+        for (name, body) in [("composer.json", &b"{}"[..]), ("src/Email.php", &b"<?php"[..])] {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(body.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            builder
+                .append_data(&mut header, format!("{prefix}/{name}"), body)
+                .unwrap();
+        }
+        builder.finish().unwrap();
+        drop(builder);
+        tar_buf
+    }
+
+    #[test]
+    fn extract_tar_auto_handles_gzip_zstd_and_plain() {
+        let prefix = "mirasvit-module-email-abc1234";
+        let tar_buf = composer_tar_fixture(prefix);
+
+        // gzip
+        let gz = {
+            let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+            enc.write_all(&tar_buf).unwrap();
+            enc.finish().unwrap()
+        };
+        // zstd
+        let zst = zstd::encode_all(&tar_buf[..], 0).unwrap();
+
+        for (label, bytes) in [("gz", &gz), ("zst", &zst), ("plain", &tar_buf)] {
+            let dir = tempfile::TempDir::new().unwrap();
+            let archive = dir.path().join(format!("dist-{label}.tar"));
+            std::fs::write(&archive, bytes).unwrap();
+
+            // Detection finds the single wrapper dir regardless of codec...
+            assert_eq!(detect_tar_top_level(&archive).unwrap(), prefix, "detect {label}");
+
+            // ...and extraction strips it.
+            let into = dir.path().join("out");
+            std::fs::create_dir_all(&into).unwrap();
+            extract_tar_auto(&archive, &into, prefix).unwrap();
+            assert!(into.join("composer.json").is_file(), "composer.json {label}");
+            assert!(into.join("src/Email.php").is_file(), "src/Email.php {label}");
+            assert!(!into.join(prefix).exists(), "wrapper stripped {label}");
+        }
+    }
+
+    #[test]
+    fn detect_tar_top_level_empty_when_flat_or_multiroot() {
+        let dir = tempfile::TempDir::new().unwrap();
+
+        // Flat archive: multiple entries at the root, no common wrapper
+        // → empty (no strip), matching `detect_zip_top_level`.
+        let flat = {
+            let mut buf: Vec<u8> = Vec::new();
+            let mut b = tar::Builder::new(&mut buf);
+            for name in ["composer.json", "README.md"] {
+                let mut h = tar::Header::new_gnu();
+                h.set_size(2);
+                h.set_mode(0o644);
+                h.set_cksum();
+                b.append_data(&mut h, name, &b"{}"[..]).unwrap();
+            }
+            b.finish().unwrap();
+            drop(b);
+            buf
+        };
+        let flat_path = dir.path().join("flat.tar");
+        std::fs::write(&flat_path, &flat).unwrap();
+        assert_eq!(detect_tar_top_level(&flat_path).unwrap(), "");
+
+        // Two distinct top-level dirs → empty (ambiguous, no strip).
+        let multi = {
+            let mut buf: Vec<u8> = Vec::new();
+            let mut b = tar::Builder::new(&mut buf);
+            for name in ["a/x", "b/y"] {
+                let mut h = tar::Header::new_gnu();
+                h.set_size(1);
+                h.set_mode(0o644);
+                h.set_cksum();
+                b.append_data(&mut h, name, &b"z"[..]).unwrap();
+            }
+            b.finish().unwrap();
+            drop(b);
+            buf
+        };
+        let multi_path = dir.path().join("multi.tar");
+        std::fs::write(&multi_path, &multi).unwrap();
+        assert_eq!(detect_tar_top_level(&multi_path).unwrap(), "");
     }
 
     #[test]

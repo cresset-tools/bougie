@@ -210,7 +210,9 @@ fn source_only_package_is_rejected_in_preflight() {
 }
 
 #[test]
-fn tar_dist_kind_is_rejected() {
+fn unsupported_dist_kind_is_rejected() {
+    // A dist type bougie can't handle (e.g. `xz`) is still a hard blocker,
+    // now with a non-circular message (no "run the command you just ran").
     let tmp = TempDir::new().unwrap();
     let paths = paths_in(tmp.path());
     let proj = tmp.path().join("p");
@@ -221,11 +223,11 @@ fn tar_dist_kind_is_rejected() {
             "content-hash": "{hash}",
             "packages": [
                 {{
-                    "name": "acme/tar",
+                    "name": "acme/xz",
                     "version": "1.0.0",
                     "dist": {{
-                        "type": "tar",
-                        "url": "https://example/t.tar.gz",
+                        "type": "xz",
+                        "url": "https://example/t.tar.xz",
                         "shasum": "1111111111111111111111111111111111111111"
                     }}
                 }}
@@ -236,11 +238,48 @@ fn tar_dist_kind_is_rejected() {
     write_project(&proj, MINIMAL_COMPOSER_JSON, &lock);
 
     let err = install_from_lock(&paths, &proj, InstallOptions::default(), None)
-        .expect_err("must reject tar dist");
+        .expect_err("must reject xz dist");
     let msg = format!("{err:#}");
-    assert!(msg.contains("acme/tar"), "{msg}");
-    assert!(msg.contains("`tar`"), "{msg}");
-    assert!(msg.contains("zip dists"), "{msg}");
+    assert!(msg.contains("acme/xz"), "{msg}");
+    assert!(msg.contains("`xz`"), "{msg}");
+    assert!(msg.contains("`zip` and `tar`"), "{msg}");
+    // The old circular "Use `bougie run -- composer install`" suggestion is gone.
+    assert!(!msg.contains("bougie run -- composer install"), "circular: {msg}");
+}
+
+#[test]
+fn tar_dist_kind_passes_preflight() {
+    // Issue #420: a `tar` dist must no longer be rejected — bougie extracts
+    // it natively (see the downloader tests). Exercise `preflight` directly
+    // so no network fetch is needed.
+    let tmp = TempDir::new().unwrap();
+    let proj = tmp.path().join("p");
+    std::fs::create_dir_all(&proj).unwrap();
+    let hash = hash_for(MINIMAL_COMPOSER_JSON);
+    let lock_json = format!(
+        r#"{{
+            "content-hash": "{hash}",
+            "packages": [
+                {{
+                    "name": "mirasvit/module-email",
+                    "version": "1.0.0",
+                    "dist": {{
+                        "type": "tar",
+                        "url": "https://example/module-email.tar",
+                        "shasum": "1111111111111111111111111111111111111111"
+                    }}
+                }}
+            ],
+            "packages-dev": []
+        }}"#
+    );
+    let lock_path = proj.join("composer.lock");
+    std::fs::write(&lock_path, &lock_json).unwrap();
+    let lock = Lock::read(&lock_path).unwrap();
+
+    let warnings = preflight(MINIMAL_COMPOSER_JSON.as_bytes(), &lock, false, false)
+        .expect("tar dist must pass preflight now that bougie handles it");
+    assert!(warnings.is_empty(), "no warnings expected: {warnings:?}");
 }
 
 #[test]
@@ -302,11 +341,11 @@ fn preflight_reports_all_hard_blockers_together() {
                     }}
                 }},
                 {{
-                    "name": "acme/tar",
+                    "name": "acme/xz",
                     "version": "1.0.0",
                     "dist": {{
-                        "type": "tar",
-                        "url": "https://example/t.tar.gz",
+                        "type": "xz",
+                        "url": "https://example/t.tar.xz",
                         "shasum": "2222222222222222222222222222222222222222"
                     }}
                 }},
@@ -328,7 +367,7 @@ fn preflight_reports_all_hard_blockers_together() {
     let err = install_from_lock(&paths, &proj, InstallOptions::default(), None)
         .expect_err("hard blockers must still fail install");
     let msg = format!("{err:#}");
-    assert!(msg.contains("acme/tar"), "tar: {msg}");
+    assert!(msg.contains("acme/xz"), "xz: {msg}");
     assert!(msg.contains("acme/sourceonly"), "sourceonly: {msg}");
 }
 

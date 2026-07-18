@@ -81,6 +81,8 @@ junction = "1"
 tempfile = "3.10"
 sha1 = "0.10"
 zip = { version = "8.0", default-features = false, features = ["deflate"] }
+tar = "0.4"
+flate2 = "1.1"
 wiremock = "0.6"
 tokio = { version = "1", features = ["rt", "macros"] }
 criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }

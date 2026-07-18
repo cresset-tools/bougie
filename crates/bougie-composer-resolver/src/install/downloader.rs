@@ -53,10 +53,12 @@ pub struct DistRequest<'a> {
     /// reference, and those are filtered out before this struct is
     /// built.
     pub reference: &'a str,
-    /// Archive format. Composer publishes mostly zip; tar.gz appears
-    /// for some packages and is not yet supported (the variant will
-    /// error at extraction time — accepted limitation for the
-    /// install-from-lock MVP per `RESOLVER_PLAN.md` Phase A).
+    /// Archive format. Composer publishes mostly zip; some registries
+    /// (satis, private Composer repos, commercial vendors like Mirasvit)
+    /// serve `tar` dists, mapped to [`ArchiveKind::Tar`] and extracted
+    /// with compression sniffing. The `TarZst`/`TarGz` variants are the
+    /// PHP/node toolchain formats and are rejected here — they never
+    /// name a Composer dist.
     pub archive: ArchiveKind,
     /// Top-level directory inside the archive to strip — e.g.
     /// `monolog-monolog-1234567`. `None` (the default for callers
@@ -392,6 +394,35 @@ fn extract_from_cache(cache_root: &Path, dist: &DistRequest<'_>) -> Result<()> {
                     )
                 })?;
         }
+        ArchiveKind::Tar => {
+            // Composer's `tar` dist type. The wrapper dir name isn't
+            // predictable, so detect it (unless the caller pinned one),
+            // exactly as the zip path does; compression is sniffed inside
+            // `extract_tar_auto`.
+            let detected: String;
+            let strip = if let Some(s) = dist.strip_prefix {
+                s
+            } else {
+                detected = bougie_fetch::detect_tar_top_level(&cache_path).wrap_err_with(|| {
+                    format!(
+                        "detecting top-level dir in dist for {} ({})",
+                        dist.package_name,
+                        cache_path.display(),
+                    )
+                })?;
+                detected.as_str()
+            };
+            bougie_fetch::extract_tar_auto(&cache_path, dist.vendor_dest, strip).wrap_err_with(
+                || {
+                    format!(
+                        "extracting dist for {} ({} → {})",
+                        dist.package_name,
+                        cache_path.display(),
+                        dist.vendor_dest.display(),
+                    )
+                },
+            )?;
+        }
         ArchiveKind::TarZst | ArchiveKind::TarGz => {
             return Err(eyre::eyre!(
                 "{:?} is not a Composer dist format; package {} has the wrong archive kind",
@@ -409,6 +440,7 @@ fn extract_from_cache(cache_root: &Path, dist: &DistRequest<'_>) -> Result<()> {
 fn cache_path_for(cache_root: &Path, dist: &DistRequest<'_>) -> PathBuf {
     let ext = match dist.archive {
         ArchiveKind::Zip => "zip",
+        ArchiveKind::Tar => "tar",
         ArchiveKind::TarZst => "tar.zst",
         ArchiveKind::TarGz => "tar.gz",
     };
