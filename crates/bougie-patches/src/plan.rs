@@ -14,6 +14,8 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+use eyre::{Result, WrapErr, bail};
+
 use crate::content_sha256;
 use crate::model::{DepthSpec, FailureMode};
 
@@ -32,6 +34,67 @@ pub struct MaterializedPatch {
     pub content_sha256: String,
     /// Strip-depth selection.
     pub depth: DepthSpec,
+}
+
+/// A package-scoped patch whose source file **cannot be read yet** because it
+/// lives inside a vendor package that is not installed at plan-build time —
+/// the common case being a patch shipped as its own Composer package (a
+/// dedicated "patches repo") after `rm -rf vendor/`. It carries everything
+/// needed to [materialize](DeferredPatch::materialize) it once the owning
+/// package has been extracted, at which point it becomes a regular
+/// [`MaterializedPatch`]. See [`PatchPlan::resolve_deferred`].
+///
+/// Only ever `PatchScope::Package`: project-root (`patches/`-directory) patches
+/// live under the project root, never inside `vendor/`, so they are always
+/// materialized eagerly.
+#[derive(Debug, Clone)]
+pub struct DeferredPatch {
+    /// Target package (`vendor/name`) this patch applies to.
+    pub target: String,
+    /// Human description (PATCHES.txt + reporting).
+    pub description: String,
+    /// The original declared path string, for reporting + the lock's human view.
+    pub origin: String,
+    /// Absolute path the source resolves to — read once the owning package is
+    /// on disk.
+    pub local_path: PathBuf,
+    /// Strip-depth selection.
+    pub depth: DepthSpec,
+    /// Declared sha256 to verify once the bytes are readable (v2 expanded form).
+    pub declared_sha256: Option<String>,
+}
+
+impl DeferredPatch {
+    /// Read the now-present source file and turn this into a
+    /// [`MaterializedPatch`], verifying any declared sha256. Errors if the
+    /// file is still absent (a genuinely missing patch, now surfaced after the
+    /// install rather than before it).
+    pub fn materialize(&self) -> Result<MaterializedPatch> {
+        let bytes = std::fs::read(&self.local_path).wrap_err_with(|| {
+            format!(
+                "patch file `{}` for `{}` not found after installing packages",
+                self.local_path.display(),
+                self.target,
+            )
+        })?;
+        let sha = content_sha256(&bytes);
+        if let Some(declared) = &self.declared_sha256
+            && !declared.eq_ignore_ascii_case(&sha)
+        {
+            bail!(
+                "patch `{}` for `{}`: sha256 mismatch (declared {declared}, actual {sha})",
+                self.description,
+                self.target,
+            );
+        }
+        Ok(MaterializedPatch {
+            description: self.description.clone(),
+            origin: self.origin.clone(),
+            local_path: self.local_path.clone(),
+            content_sha256: sha,
+            depth: self.depth,
+        })
+    }
 }
 
 /// A project-root ("top-level") patch: applied once at the project root, but
@@ -54,6 +117,12 @@ pub struct PatchPlan {
     pub patches: BTreeMap<String, Vec<MaterializedPatch>>,
     /// Project-root patches spanning multiple packages, in apply order.
     pub root_patches: Vec<RootPatch>,
+    /// Package-scoped patches whose source file wasn't readable at plan-build
+    /// time (it lives inside a not-yet-installed vendor package). Materialized
+    /// and folded into [`patches`](Self::patches) by
+    /// [`resolve_deferred`](Self::resolve_deferred) once the owning package has
+    /// been extracted.
+    pub deferred: Vec<DeferredPatch>,
     /// Package name → applied fingerprint, loaded from `patches.lock.json`.
     pub applied: BTreeMap<String, String>,
     /// What to do when a patch fails to apply.
@@ -67,7 +136,30 @@ pub struct PatchPlan {
 impl PatchPlan {
     /// Whether the plan declares any patch at all.
     pub fn is_empty(&self) -> bool {
-        self.patches.is_empty() && self.root_patches.is_empty()
+        self.patches.is_empty() && self.root_patches.is_empty() && self.deferred.is_empty()
+    }
+
+    /// The target packages of the plan's deferred patches — forced into the
+    /// install set so they are re-extracted pristine before the deferred patch
+    /// is applied (on a clean `vendor/` they'd be extracted anyway; this covers
+    /// the case where only the patch-owning package was missing).
+    pub fn deferred_targets(&self) -> impl Iterator<Item = &str> {
+        self.deferred.iter().map(|d| d.target.as_str())
+    }
+
+    /// Materialize every [`deferred`](Self::deferred) patch — now that the
+    /// owning packages are on disk — and fold each into
+    /// [`patches`](Self::patches) under its target, then clear the deferred
+    /// list. Deferred patches append after any eagerly-materialized patches for
+    /// the same target (a target patched by both a project `patches/` file and
+    /// a vendor-shipped one is unusual; the ordering is deterministic across
+    /// runs, which is what the fingerprint needs).
+    pub fn resolve_deferred(&mut self) -> Result<()> {
+        for d in std::mem::take(&mut self.deferred) {
+            let mp = d.materialize()?;
+            self.patches.entry(d.target).or_default().push(mp);
+        }
+        Ok(())
     }
 
     /// The packages this plan targets.
@@ -235,5 +327,72 @@ mod tests {
         // The package is tracked so it gets restored to pristine.
         let tracked: Vec<&str> = plan.tracked_packages().collect();
         assert_eq!(tracked, vec!["vendor/p"]);
+    }
+
+    #[test]
+    fn resolve_deferred_reads_and_folds_into_patches() {
+        let dir = tempfile::tempdir().unwrap();
+        let patch = dir.path().join("vendor/acme/patches/fix.patch");
+        std::fs::create_dir_all(patch.parent().unwrap()).unwrap();
+        std::fs::write(&patch, b"--- a\n+++ b\n").unwrap();
+
+        let mut plan = PatchPlan {
+            deferred: vec![DeferredPatch {
+                target: "acme/widget".into(),
+                description: "Fix from vendor".into(),
+                origin: "vendor/acme/patches/fix.patch".into(),
+                local_path: patch.clone(),
+                depth: DepthSpec::Auto,
+                declared_sha256: None,
+            }],
+            ..PatchPlan::default()
+        };
+        // Before resolution: not empty, target surfaced, not yet in `patches`.
+        assert!(!plan.is_empty());
+        assert_eq!(plan.deferred_targets().collect::<Vec<_>>(), vec!["acme/widget"]);
+        assert!(!plan.patches.contains_key("acme/widget"));
+
+        plan.resolve_deferred().unwrap();
+
+        // After: deferred drained, patch folded under its target with the hash.
+        assert!(plan.deferred.is_empty());
+        let widget = plan.patches.get("acme/widget").expect("folded in");
+        assert_eq!(widget.len(), 1);
+        assert_eq!(widget[0].content_sha256, content_sha256(b"--- a\n+++ b\n"));
+        assert_eq!(widget[0].local_path, patch);
+    }
+
+    #[test]
+    fn resolve_deferred_errors_on_missing_or_mismatched() {
+        // Still-missing file → error (surfaced after install, not before).
+        let dir = tempfile::tempdir().unwrap();
+        let mut plan = PatchPlan {
+            deferred: vec![DeferredPatch {
+                target: "acme/widget".into(),
+                description: "d".into(),
+                origin: "o".into(),
+                local_path: dir.path().join("nope.patch"),
+                depth: DepthSpec::Auto,
+                declared_sha256: None,
+            }],
+            ..PatchPlan::default()
+        };
+        assert!(plan.resolve_deferred().is_err());
+
+        // Present file but wrong declared sha → error.
+        let patch = dir.path().join("fix.patch");
+        std::fs::write(&patch, b"data").unwrap();
+        let mut plan = PatchPlan {
+            deferred: vec![DeferredPatch {
+                target: "acme/widget".into(),
+                description: "d".into(),
+                origin: "o".into(),
+                local_path: patch,
+                depth: DepthSpec::Auto,
+                declared_sha256: Some("00".into()),
+            }],
+            ..PatchPlan::default()
+        };
+        assert!(plan.resolve_deferred().is_err());
     }
 }

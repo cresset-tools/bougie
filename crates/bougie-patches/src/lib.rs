@@ -40,7 +40,7 @@ pub mod target;
 pub use apply::{ApplyOptions, apply_patch_text};
 pub use model::{DepthSpec, FailureMode, Patch, PatchScope, PatchSource, parse_target_patches};
 pub use pass::{PackageApplyResult, append_patches_txt, apply_package_patches};
-pub use plan::{MaterializedPatch, PatchPlan, RootPatch, fingerprint};
+pub use plan::{DeferredPatch, MaterializedPatch, PatchPlan, RootPatch, fingerprint};
 pub use report::{ApplyReport, FileAction, FileOutcome};
 pub use resolve::{resolve_patches_dir, resolve_root};
 pub use target::{InferredTarget, infer_target};

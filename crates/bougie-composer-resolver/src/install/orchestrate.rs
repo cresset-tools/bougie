@@ -446,6 +446,20 @@ pub fn install_from_lock_with_patches(
     // patches apply per package at install time and the
     // magento-composer-installer deploy runs at the end of the command.
     if let Some(plan) = patches {
+        // Deferred (vendor-sourced) patches can be read now that their owning
+        // packages are extracted — materialize + fold them into the plan before
+        // applying, so they patch and earn a `patches.lock.json` fingerprint
+        // like any other (issue #421). The clone keeps the caller's plan intact.
+        let resolved;
+        let plan = if plan.deferred.is_empty() {
+            plan
+        } else {
+            let mut p = plan.clone();
+            p.resolve_deferred()
+                .wrap_err("materializing vendor-sourced patches after install")?;
+            resolved = p;
+            &resolved
+        };
         apply_patch_plan(plan, &install_set, &vendor_dirs, project_root, &mut warnings)?;
     }
 
@@ -607,6 +621,17 @@ fn compute_force_set<'a>(
         .tracked_packages()
         .filter(|name| plan.fingerprint_changed(name))
         .collect();
+
+    // Deferred (vendor-sourced) patches have no fingerprint yet — their source
+    // isn't readable until the owning package is on disk. Force their targets
+    // so they're re-extracted pristine before the patch is applied post-install
+    // (issue #421). On a clean vendor/ the target is extracted anyway; this
+    // also covers a present target whose patch-owning package alone was missing.
+    for target in plan.deferred_targets() {
+        if let Some(p) = installable.iter().find(|p| p.name == target) {
+            force.insert(p.name.as_str());
+        }
+    }
 
     if plan.root_patches.is_empty() {
         return force;

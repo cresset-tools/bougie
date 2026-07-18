@@ -89,6 +89,7 @@ fn plan_for(project_root: &Path, patch_file: &Path) -> PatchPlan {
     PatchPlan {
         patches,
         root_patches: Vec::new(),
+        deferred: Vec::new(),
         applied: lock::read(project_root),
         failure_mode: FailureMode::Abort,
         skip_report: false,
@@ -102,6 +103,7 @@ fn cleanup_plan(project_root: &Path) -> PatchPlan {
     PatchPlan {
         patches: BTreeMap::new(),
         root_patches: Vec::new(),
+        deferred: Vec::new(),
         applied: lock::read(project_root),
         failure_mode: FailureMode::SkipAndWarn,
         skip_report: false,
@@ -173,6 +175,7 @@ fn root_patch_spans_two_packages() {
                 },
                 packages: vec!["acme/one".into(), "acme/two".into()],
             }],
+            deferred: Vec::new(),
             applied: lock::read(project_root),
             failure_mode: FailureMode::Abort,
             skip_report: false,
@@ -312,6 +315,7 @@ fn patched_component_deploys_patched_content() {
     let plan = PatchPlan {
         patches,
         root_patches: Vec::new(),
+        deferred: Vec::new(),
         applied: lock::read(&proj),
         failure_mode: FailureMode::Abort,
         skip_report: false,
@@ -445,5 +449,136 @@ fn reapplication_state_matrix() {
     assert!(
         !lock::read(&proj).contains_key("acme/widget"),
         "fingerprint dropped"
+    );
+}
+
+/// Issue #421: a patch shipped as its own Composer package (a "patches repo")
+/// and referenced under `vendor/`, installed onto a wiped `vendor/`. The patch
+/// source can't be read at plan time (the owning package isn't installed yet),
+/// so the plan carries it as a `DeferredPatch`. The orchestrator must install
+/// both packages first, then materialize + apply the deferred patch to the
+/// target's freshly-extracted tree.
+#[test]
+fn deferred_vendor_sourced_patch_applies_after_install() {
+    use bougie_patches::DeferredPatch;
+
+    let tmp = TempDir::new().unwrap();
+    let paths = paths_in(tmp.path());
+    let proj = tmp.path().join("p");
+    std::fs::create_dir_all(&proj).unwrap();
+
+    // The target package (pristine) and the patches-repo package that ships the
+    // .patch file for it.
+    let widget_zip = tmp.path().join("widget.zip");
+    make_zip(&widget_zip, "widget-1.0.0", &[("src/Widget.php", PRISTINE)]);
+    let patch_diff = "--- a/src/Widget.php\n+++ b/src/Widget.php\n@@ -1,3 +1,3 @@\n alpha\n-beta\n+BETA\n gamma\n";
+    let repo_zip = tmp.path().join("patches-repo.zip");
+    make_zip(
+        &repo_zip,
+        "patches-repo-1.0.0",
+        &[("magento/module-customer/fix.patch", patch_diff)],
+    );
+
+    let cj = r#"{ "name": "acme/test",
+        "require": { "acme/widget": "^1.0", "acme/patches-repo": "^1.0" },
+        "extra": { "patches": { "acme/widget":
+            { "Fix beta": "vendor/acme/patches-repo/magento/module-customer/fix.patch" } } } }"#;
+    std::fs::write(proj.join("composer.json"), cj).unwrap();
+    let hash = bougie_composer::lockfile::content_hash(cj.as_bytes()).unwrap();
+    let lock = format!(
+        r#"{{ "content-hash": "{hash}",
+            "packages": [
+                {{ "name": "acme/widget", "version": "1.0.0", "type": "library",
+                   "dist": {{ "type": "zip", "url": "{}", "shasum": "" }} }},
+                {{ "name": "acme/patches-repo", "version": "1.0.0", "type": "library",
+                   "dist": {{ "type": "zip", "url": "{}", "shasum": "" }} }}
+            ], "packages-dev": [] }}"#,
+        widget_zip.display(),
+        repo_zip.display(),
+    );
+    std::fs::write(proj.join("composer.lock"), lock).unwrap();
+
+    // The plan the CLI bridge builds on a wiped vendor/: the patch source isn't
+    // readable yet, so it's deferred (no content hash), targeting acme/widget.
+    let deferred_path = proj.join("vendor/acme/patches-repo/magento/module-customer/fix.patch");
+    let plan = PatchPlan {
+        patches: BTreeMap::new(),
+        root_patches: Vec::new(),
+        deferred: vec![DeferredPatch {
+            target: "acme/widget".into(),
+            description: "Fix beta".into(),
+            origin: "vendor/acme/patches-repo/magento/module-customer/fix.patch".into(),
+            local_path: deferred_path.clone(),
+            depth: DepthSpec::Auto,
+            declared_sha256: None,
+        }],
+        applied: lock::read(&proj),
+        failure_mode: FailureMode::Abort,
+        skip_report: false,
+        write_lock: false,
+    };
+
+    let s = install_from_lock_with_patches(
+        &paths,
+        &proj,
+        InstallOptions::default(),
+        None,
+        Some(&plan),
+    )
+    .unwrap();
+    assert!(s.warnings.is_empty(), "no warnings: {:?}", s.warnings);
+
+    // The patches-repo shipped the file...
+    assert!(deferred_path.is_file(), "patch file extracted from the vendor package");
+    // ...and the target package was patched with it.
+    let widget_php = proj.join("vendor/acme/widget/src/Widget.php");
+    assert_eq!(
+        std::fs::read_to_string(&widget_php).unwrap(),
+        "alpha\nBETA\ngamma\n",
+        "deferred patch applied to the freshly-extracted target"
+    );
+    // And it earned a fingerprint, so a re-run is a clean no-op.
+    assert!(
+        lock::read(&proj).contains_key("acme/widget"),
+        "deferred patch recorded in patches.lock.json"
+    );
+
+    // Re-run on the now-populated vendor/: the source is readable, so the CLI
+    // would materialize it eagerly. Simulate that with an equivalent eager plan
+    // and assert idempotence (no re-extract, still patched, not doubled).
+    let bytes = std::fs::read(&deferred_path).unwrap();
+    let mut eager = BTreeMap::new();
+    eager.insert(
+        "acme/widget".to_string(),
+        vec![MaterializedPatch {
+            description: "Fix beta".into(),
+            origin: "vendor/acme/patches-repo/magento/module-customer/fix.patch".into(),
+            local_path: deferred_path.clone(),
+            content_sha256: content_sha256(&bytes),
+            depth: DepthSpec::Auto,
+        }],
+    );
+    let eager_plan = PatchPlan {
+        patches: eager,
+        root_patches: Vec::new(),
+        deferred: Vec::new(),
+        applied: lock::read(&proj),
+        failure_mode: FailureMode::Abort,
+        skip_report: false,
+        write_lock: false,
+    };
+    let s2 = install_from_lock_with_patches(
+        &paths,
+        &proj,
+        InstallOptions::default(),
+        None,
+        Some(&eager_plan),
+    )
+    .unwrap();
+    assert_eq!(s2.packages_up_to_date, 2, "nothing re-extracts on the second run");
+    assert_eq!(
+        std::fs::read_to_string(&widget_php).unwrap(),
+        "alpha\nBETA\ngamma\n",
+        "still patched exactly once (not doubled)"
     );
 }
