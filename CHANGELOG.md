@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.51.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.50.0...bougie-v0.51.0) (2026-07-18)
+
+
+### Features
+
+* **composer-resolver:** install native tar dists ([#523](https://github.com/cresset-tools/bougie/issues/523)) ([f5dfc7c](https://github.com/cresset-tools/bougie/commit/f5dfc7cd13673e810125e3bd57f74d2629471595)), closes [#420](https://github.com/cresset-tools/bougie/issues/420)
+* **db:** snapshot-awareness guards — `db status` staleness + reseed confirm ([#526](https://github.com/cresset-tools/bougie/issues/526)) ([3858d37](https://github.com/cresset-tools/bougie/commit/3858d37543fc17f5994ad3c8149e0e80ff08030c))
+* **server:** set opcache.revalidate_freq=0 in the dev pool ([#524](https://github.com/cresset-tools/bougie/issues/524)) ([73467fa](https://github.com/cresset-tools/bougie/commit/73467fac94fec1b1e092a4798f689dc48df7f487))
+* **services:** grant mariadb tenants a scratch-database namespace ([#530](https://github.com/cresset-tools/bougie/issues/530)) ([2b7abc6](https://github.com/cresset-tools/bougie/commit/2b7abc6e9e3b13ed213273ec8e1b6b905e374694)), closes [#480](https://github.com/cresset-tools/bougie/issues/480)
+* **share:** add bougie-tunnel outbound relay client ([#519](https://github.com/cresset-tools/bougie/issues/519)) ([884cf7a](https://github.com/cresset-tools/bougie/commit/884cf7a96a4392a15114bd8c06a77aa9a843ed7f))
+* **share:** add the `bougie share` command ([#525](https://github.com/cresset-tools/bougie/issues/525)) ([3911ff5](https://github.com/cresset-tools/bougie/commit/3911ff5b165c657620d60355d62a22eb44c103bd))
+
+
+### Bug Fixes
+
+* **composer:** dump-autoloader inherits the installed tree's dev mode ([#528](https://github.com/cresset-tools/bougie/issues/528)) ([7329b4e](https://github.com/cresset-tools/bougie/commit/7329b4e0783dfb46f9b715ff608cc999db9fff83)), closes [#499](https://github.com/cresset-tools/bougie/issues/499)
+* **patches:** defer patches sourced from a vendor package ([#527](https://github.com/cresset-tools/bougie/issues/527)) ([48fdce7](https://github.com/cresset-tools/bougie/commit/48fdce77a881bc03e6171027e9727892eeccc0e0)), closes [#421](https://github.com/cresset-tools/bougie/issues/421)
+
 ## [0.50.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.49.0...bougie-v0.50.0) (2026-07-18)
 
 
