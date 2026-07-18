@@ -97,13 +97,15 @@ impl Render for DumpAutoloaderResult {
     }
 }
 
-#[allow(clippy::fn_params_excessive_bools)] // names line up with Composer CLI flags 1:1
+// Params line up with Composer's `dump-autoload` CLI flags 1:1.
+#[allow(clippy::fn_params_excessive_bools, clippy::too_many_arguments)]
 pub fn run(
     format: OutputFormat,
     working_dir: Option<PathBuf>,
     optimize: bool,
     classmap_authoritative: bool,
     no_dev: bool,
+    dev: bool,
     apcu_autoloader: bool,
     apcu_prefix: Option<String>,
     autoloader_suffix: Option<String>,
@@ -119,6 +121,13 @@ pub fn run(
     // An explicit `--apcu-autoloader-prefix` implies `--apcu-autoloader`
     // (Composer does the same — see commands/InstallCommand.php).
     let apcu_autoloader = apcu_autoloader || apcu_prefix.is_some();
+
+    // Composer parity: with neither `--no-dev` nor `--dev`, the dump inherits
+    // the dev mode of the installed tree recorded in
+    // `vendor/composer/installed.json`. Without this, a dump on a
+    // `--no-dev`-installed tree emits `files` autoload requires for dev-only
+    // packages that aren't on disk, and the next PHP run fatals (issue #499).
+    let no_dev = effective_no_dev(no_dev, dev, &project_root);
 
     let req = DumpRequest {
         project_root: &project_root,
@@ -146,6 +155,30 @@ pub fn run(
     Ok(ExitCode::SUCCESS)
 }
 
+/// Resolve the effective `no_dev` for the dump, matching Composer's
+/// `dump-autoload`: an explicit `--no-dev` wins, then `--dev`, and with neither
+/// the dev mode is inherited from the installed tree
+/// ([`installed_dev_mode`]). An absent/mode-less `installed.json` keeps the
+/// dev-included default (a pre-install dump behaves as before).
+fn effective_no_dev(no_dev: bool, dev: bool, project_root: &Path) -> bool {
+    if no_dev {
+        true
+    } else if dev {
+        false
+    } else {
+        installed_dev_mode(project_root).is_some_and(|installed_dev| !installed_dev)
+    }
+}
+
+/// The dev mode recorded in `vendor/composer/installed.json` (`"dev": bool`),
+/// or `None` when the file is absent or doesn't record it — the shape a fresh
+/// (pre-install) project takes.
+fn installed_dev_mode(project_root: &Path) -> Option<bool> {
+    let bytes = std::fs::read(project_root.join("vendor/composer/installed.json")).ok()?;
+    let value: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    value.get("dev").and_then(serde_json::Value::as_bool)
+}
+
 fn require_file(dir: &Path, name: &str) -> Result<()> {
     let path = dir.join(name);
     if !path.is_file() {
@@ -155,4 +188,62 @@ fn require_file(dir: &Path, name: &str) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Write `vendor/composer/installed.json` with the given body under `root`.
+    fn write_installed_json(root: &Path, body: &str) {
+        let dir = root.join("vendor/composer");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("installed.json"), body).unwrap();
+    }
+
+    #[test]
+    fn explicit_flags_win_over_installed_state() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        // Installed dev:true, but --no-dev must still force dev off...
+        write_installed_json(root, r#"{ "packages": [], "dev": true }"#);
+        assert!(effective_no_dev(true, false, root));
+        // ...and installed dev:false with --dev must force dev on.
+        write_installed_json(root, r#"{ "packages": [], "dev": false }"#);
+        assert!(!effective_no_dev(false, true, root));
+    }
+
+    #[test]
+    fn inherits_installed_dev_mode_when_no_flag() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        // Installed --no-dev (dev:false) → dump excludes dev (issue #499).
+        write_installed_json(root, r#"{ "packages": [], "dev": false }"#);
+        assert!(effective_no_dev(false, false, root));
+        // Installed with dev (dev:true) → dump includes dev.
+        write_installed_json(root, r#"{ "packages": [], "dev": true }"#);
+        assert!(!effective_no_dev(false, false, root));
+    }
+
+    #[test]
+    fn defaults_to_dev_included_without_installed_json() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        // No installed.json (pre-install dump) → keep the dev-included default.
+        assert!(!effective_no_dev(false, false, root));
+        // installed.json present but missing the `dev` field → same default.
+        write_installed_json(root, r#"{ "packages": [] }"#);
+        assert!(!effective_no_dev(false, false, root));
+        assert_eq!(installed_dev_mode(root), None);
+    }
+
+    #[test]
+    fn installed_dev_mode_reads_the_field() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write_installed_json(root, r#"{ "packages": [], "dev": false }"#);
+        assert_eq!(installed_dev_mode(root), Some(false));
+        write_installed_json(root, r#"{ "packages": [], "dev": true }"#);
+        assert_eq!(installed_dev_mode(root), Some(true));
+    }
 }

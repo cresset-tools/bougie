@@ -61,6 +61,8 @@ pub mod start;
 #[cfg(unix)]
 pub mod service;
 pub mod server;
+#[cfg(unix)]
+pub mod share;
 pub mod starter;
 pub mod sync;
 pub mod telemetry;

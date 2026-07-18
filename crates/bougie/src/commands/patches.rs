@@ -14,7 +14,7 @@ use bougie_config::ProjectConfig;
 use bougie_fetch::{ArchiveKind, BlobSpec, DownloadBar, Hash, default_client};
 use bougie_patches::model::{FailureMode, PatchScope, PatchSource};
 use bougie_patches::{
-    MaterializedPatch, PatchPlan, RootPatch, content_sha256, lock, resolve_root,
+    DeferredPatch, MaterializedPatch, PatchPlan, RootPatch, content_sha256, lock, resolve_root,
 };
 use bougie_paths::Paths;
 use eyre::{Result, WrapErr, bail};
@@ -64,6 +64,7 @@ pub fn build_plan(
         return Ok(Some(PatchPlan {
             patches: BTreeMap::new(),
             root_patches: Vec::new(),
+            deferred: Vec::new(),
             applied,
             failure_mode: FailureMode::SkipAndWarn,
             skip_report: skip_reporting(&value, project),
@@ -80,12 +81,22 @@ pub fn build_plan(
 
     // Materialize each patch. Package-scoped patches are grouped by target;
     // root ("top-level") patches are collected separately — they apply at the
-    // project root and couple every package they touch.
+    // project root and couple every package they touch. A package-scoped patch
+    // whose source lives inside a not-yet-installed vendor package can't be
+    // read yet (issue #421): it is *deferred*, to be materialized after the
+    // owning package is extracted.
     let client = default_client()?;
     let cache_dir = paths.cache().join("patches");
     let mut grouped: BTreeMap<String, Vec<MaterializedPatch>> = BTreeMap::new();
     let mut root_patches: Vec<RootPatch> = Vec::new();
+    let mut deferred: Vec<DeferredPatch> = Vec::new();
     for patch in patches {
+        if matches!(patch.scope, PatchScope::Package)
+            && let Some(d) = defer_vendor_internal(project_root, &patch)
+        {
+            deferred.push(d);
+            continue;
+        }
         let materialized = materialize(&client, &cache_dir, project_root, &patch)?;
         match patch.scope {
             PatchScope::Package => {
@@ -100,11 +111,42 @@ pub fn build_plan(
     Ok(Some(PatchPlan {
         patches: grouped,
         root_patches,
+        deferred,
         applied,
         failure_mode,
         skip_report,
         write_lock: project.bougie.patches.write_lock.unwrap_or(false),
     }))
+}
+
+/// If `patch` is a package-scoped local patch whose source file isn't present
+/// yet and resolves inside the project's `vendor/` tree, return a
+/// [`DeferredPatch`] to materialize after the owning package is installed
+/// (issue #421 — a patch shipped as its own Composer package, referenced
+/// before `vendor/` is populated). Returns `None` for anything else: remote
+/// patches, present files, and — deliberately — a *missing* file outside
+/// `vendor/`, which stays a hard error at materialize time so a typo'd project
+/// patch fails fast rather than after a full install.
+fn defer_vendor_internal(project_root: &Path, patch: &bougie_patches::Patch) -> Option<DeferredPatch> {
+    let PatchSource::Local(rel) = &patch.source else {
+        return None;
+    };
+    let abs = if rel.is_absolute() {
+        rel.clone()
+    } else {
+        project_root.join(rel)
+    };
+    if abs.exists() || !abs.starts_with(project_root.join("vendor")) {
+        return None;
+    }
+    Some(DeferredPatch {
+        target: patch.target.clone(),
+        description: patch.description.clone(),
+        origin: rel.to_string_lossy().into_owned(),
+        local_path: abs,
+        depth: patch.depth,
+        declared_sha256: patch.sha256.clone(),
+    })
 }
 
 /// Resolve the root patch set without materializing (no network): inline
@@ -501,5 +543,63 @@ mod tests {
         std::fs::write(root.join("composer.json"), r#"{ "name": "acme/app" }"#).unwrap();
         let paths = Paths::new(tmp.path().join("home"), tmp.path().join("cache"));
         assert!(build_plan(&paths, root, &project(None), None).unwrap().is_none());
+    }
+
+    #[test]
+    fn build_plan_defers_vendor_internal_missing_patch() {
+        // Issue #421: the patch source is shipped by a Composer package and
+        // referenced under vendor/, but vendor/ was wiped. build_plan must
+        // defer it (not hard-error) so the owning package can install first.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::write(
+            root.join("composer.json"),
+            r#"{ "name": "acme/app",
+                 "require": { "acme/widget": "^1.0", "acme/patches-repo": "^1.0" },
+                 "extra": { "patches": { "acme/widget":
+                     { "Fix from vendor": "vendor/acme/patches-repo/fix.patch" } } } }"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("composer.lock"),
+            r#"{ "content-hash": "x", "packages": [
+                { "name": "acme/widget", "version": "1.0.0", "type": "library" },
+                { "name": "acme/patches-repo", "version": "1.0.0", "type": "library" }
+            ], "packages-dev": [] }"#,
+        )
+        .unwrap();
+
+        let paths = Paths::new(root.join("home"), root.join("cache"));
+        let plan = build_plan(&paths, root, &project(None), None)
+            .unwrap()
+            .expect("a plan with the deferred patch");
+        assert!(plan.patches.is_empty(), "must not materialize eagerly");
+        assert_eq!(plan.deferred.len(), 1);
+        assert_eq!(plan.deferred[0].target, "acme/widget");
+        assert_eq!(
+            plan.deferred[0].origin,
+            "vendor/acme/patches-repo/fix.patch"
+        );
+    }
+
+    #[test]
+    fn build_plan_errors_on_missing_patch_outside_vendor() {
+        // A missing *project* patch (typo, wrong path) is NOT under vendor/ and
+        // must still fail fast, before any install — not silently deferred.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::write(
+            root.join("composer.json"),
+            r#"{ "name": "acme/app", "require": { "acme/widget": "^1.0" },
+                 "extra": { "patches": { "acme/widget": { "Fix": "patches/typo.patch" } } } }"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("composer.lock"),
+            r#"{ "content-hash": "x", "packages": [ { "name": "acme/widget", "version": "1.0.0", "type": "library" } ], "packages-dev": [] }"#,
+        )
+        .unwrap();
+        let paths = Paths::new(root.join("home"), root.join("cache"));
+        assert!(build_plan(&paths, root, &project(None), None).is_err());
     }
 }

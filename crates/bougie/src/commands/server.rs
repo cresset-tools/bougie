@@ -43,7 +43,7 @@ pub fn dispatch(format: OutputFormat, args: ServerArgs) -> Result<ExitCode> {
 /// compiles on Windows, where `bougie-daemon` (Unix-only) isn't linked.
 /// bougie and bougie-daemon are lockstep-versioned, so the value is
 /// byte-identical to what the daemon writes.
-fn server_state_version() -> &'static str {
+pub(crate) fn server_state_version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
 
@@ -78,7 +78,7 @@ fn build_url(tls: bool, hostname: &str, port: u16) -> String {
 /// Hostname for a tenant. Mirrors the daemon's
 /// `provisioners::bougie_server::derive_hostname` (DNS labels can't
 /// carry underscores, so the tenant's `_` become `-`).
-fn derive_hostname(tenant: &str) -> String {
+pub(crate) fn derive_hostname(tenant: &str) -> String {
     format!("{}.bougie.run", tenant.replace('_', "-"))
 }
 
@@ -221,7 +221,7 @@ fn resolve_web_root(project_root: &std::path::Path, explicit: Option<&str>) -> R
 
 /// Read the shared server's listen port from the bougied-managed
 /// `server.toml`; falls back to the engine default when unreadable.
-fn server_listen_port(paths: &bougie_paths::Paths) -> u16 {
+pub(crate) fn server_listen_port(paths: &bougie_paths::Paths) -> u16 {
     let cfg_path = paths.service_conf("server", server_state_version()).join("server.toml");
     bougie_server::server::config::load(&cfg_path)
         .ok()
@@ -260,7 +260,7 @@ use bougie_output::output::emit;
 /// / `vendor/bougie/`). Cross-platform mirror of
 /// `service::config_mut::locate_project_root`, which lives in the
 /// Unix-only services module.
-fn locate_project_root() -> Result<PathBuf> {
+pub(crate) fn locate_project_root() -> Result<PathBuf> {
     let cwd = std::env::current_dir()?;
     for anc in cwd.ancestors() {
         if anc.join("bougie.toml").is_file()
