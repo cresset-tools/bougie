@@ -113,6 +113,10 @@ bougie-babysit = { workspace = true }
 bougie-daemon = { workspace = true }
 bougie-recipe = { workspace = true }
 sandbox-run = { workspace = true }
+# `bougie share`'s tunnel client + the async runtime it drives (a foreground
+# tunnel that ends on Ctrl-C). Unix-only alongside the daemon it serves through.
+bougie-tunnel = { workspace = true }
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "macros", "signal"] }
 
 # Drives the SIGQUIT (Ctrl-\) activity dump in `debug_dump.rs`. We use
 # the iterator API so signal delivery lands on a normal background

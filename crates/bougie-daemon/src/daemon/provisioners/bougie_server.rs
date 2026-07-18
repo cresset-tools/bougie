@@ -268,7 +268,7 @@ fn resolve_web_root(project: &Path) -> Result<String> {
 /// Best-effort: no-op when the socket file is missing (server not
 /// up yet) and surfaces real I/O failures otherwise so the CLI can
 /// report `provision_failed` with useful context.
-async fn ping_reload_config(_paths: &Paths) -> Result<()> {
+pub async fn ping_reload_config(_paths: &Paths) -> Result<()> {
     let sock = control_socket_path();
     if !tokio::fs::try_exists(&sock).await.unwrap_or(false) {
         // Server isn't running. That's fine on the first

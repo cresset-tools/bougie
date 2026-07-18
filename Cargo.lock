@@ -403,6 +403,7 @@ dependencies = [
  "bougie-server",
  "bougie-telemetry",
  "bougie-tool",
+ "bougie-tunnel",
  "bougie-version",
  "clap",
  "color-eyre",
