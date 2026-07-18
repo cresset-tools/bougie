@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.50.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.49.0...bougie-v0.50.0) (2026-07-18)
+
+
+### Features
+
+* **db:** add `--profile` to db pull/refresh — pick a data-profile snapshot ([#517](https://github.com/cresset-tools/bougie/issues/517)) ([afab667](https://github.com/cresset-tools/bougie/commit/afab667334b647f9b820eba8a7c12b2e513dec0a))
+* **db:** add `bougie db get --source <name>` from the team manifest ([#509](https://github.com/cresset-tools/bougie/issues/509)) ([dd5d19e](https://github.com/cresset-tools/bougie/commit/dd5d19eb24b47b2446a7bf7c0e48bf4a52ea0fcc))
+* **db:** add `bougie db get` — on-demand prod row-graph into the local DB ([#508](https://github.com/cresset-tools/bougie/issues/508)) ([3dc4c72](https://github.com/cresset-tools/bougie/commit/3dc4c72847a75c1ba3547537c7de693a05564de6))
+* **recipe:** seed the DB from the team snapshot instead of setup:install ([#506](https://github.com/cresset-tools/bougie/issues/506)) ([54cf613](https://github.com/cresset-tools/bougie/commit/54cf6138975f639c84375e242ca368f7305b2485))
+* **telemetry:** record a successful self-update as an `update` event ([#513](https://github.com/cresset-tools/bougie/issues/513)) ([a420843](https://github.com/cresset-tools/bougie/commit/a420843e1a66f8e9a03b5cb70628fc1795cdb31b))
+* **tool:** let `bgx`/`tool run` select which bin to run ([#514](https://github.com/cresset-tools/bougie/issues/514)) ([0dc61e4](https://github.com/cresset-tools/bougie/commit/0dc61e4576b0e0b4b6cf0bb5528fed1b3c394fd8))
+
+
+### Bug Fixes
+
+* **daemon:** inherit bougied's PATH for rabbitmqctl probes on non-FHS hosts ([#511](https://github.com/cresset-tools/bougie/issues/511)) ([f5691fa](https://github.com/cresset-tools/bougie/commit/f5691fae4d9134abddee2b9a9c13dae719f70cf9))
+* **patches:** accept cweagans array-of-strings patch format ([#520](https://github.com/cresset-tools/bougie/issues/520)) ([8dfcc0a](https://github.com/cresset-tools/bougie/commit/8dfcc0a6816bc1f6619ae53bed3595bc25a2bb15)), closes [#422](https://github.com/cresset-tools/bougie/issues/422)
+
 ## [0.49.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.48.0...bougie-v0.49.0) (2026-07-11)
 
 
