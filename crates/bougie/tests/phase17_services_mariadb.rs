@@ -374,6 +374,121 @@ fn down_purge_drops_database_and_user() {
 }
 
 #[test]
+fn tenant_gets_a_scratch_database_namespace() {
+    // Issue #480: the tenant can create throwaway `<tenant>_*` databases
+    // (parallel test workers, template+copy) via its `<tenant>_%` grant, but
+    // not databases outside that namespace — and `--purge` drops the scratch
+    // databases too, not just the main one.
+    if should_skip() {
+        eprintln!("skipping: BOUGIE_SKIP_REAL_MARIADB set");
+        return;
+    }
+    let _guard = mariadb_test_lock();
+    let env = TestEnv::new();
+    mariadb_fixture::install_into(env.home_path());
+    let proj = project_with_composer("acme/blog");
+    env.bougie()
+        .args(["service", "add", "mariadb"])
+        .current_dir(proj.path())
+        .timeout(STEP_TIMEOUT)
+        .assert()
+        .success();
+    env.bougie()
+        .args(["service", "up"])
+        .current_dir(proj.path())
+        .timeout(STEP_TIMEOUT)
+        .assert()
+        .success();
+
+    let pw = read_tenant(&env)["secrets"]["password"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let mariadb = mariadb_client(&env);
+    let sock = mariadb_socket(&env);
+    assert!(wait_for(&sock, Duration::from_secs(30)));
+
+    let as_tenant = |sql: &str| {
+        Command::new(&mariadb)
+            .arg("--no-defaults")
+            .arg(format!("--socket={}", sock.display()))
+            .arg("--user=acme_blog")
+            .arg(format!("--password={pw}"))
+            .arg("-e")
+            .arg(sql)
+            .output()
+            .expect("running mariadb client as tenant")
+    };
+
+    // In-namespace scratch database: create + use succeeds.
+    let ok = as_tenant("CREATE DATABASE `acme_blog_t1`; CREATE TABLE `acme_blog_t1`.sentinel (id INT);");
+    assert!(
+        ok.status.success(),
+        "tenant should be able to create a `<tenant>_%` scratch DB: stderr={}",
+        String::from_utf8_lossy(&ok.stderr)
+    );
+
+    // Out-of-namespace database: denied (no matching grant).
+    let denied = as_tenant("CREATE DATABASE `acme_other`;");
+    assert!(
+        !denied.status.success(),
+        "tenant must NOT be able to create a database outside its namespace (it succeeded)"
+    );
+
+    // `--purge` must drop the scratch database along with the main one.
+    env.bougie()
+        .args(["service", "down", "--purge"])
+        .current_dir(proj.path())
+        .timeout(STEP_TIMEOUT)
+        .assert()
+        .success();
+
+    // Bring mariadb back up (fresh project) and, as socket-root, confirm both
+    // the main and the scratch database are gone.
+    let proj2 = project_with_composer("acme/other");
+    env.bougie()
+        .args(["service", "add", "mariadb"])
+        .current_dir(proj2.path())
+        .timeout(STEP_TIMEOUT)
+        .assert()
+        .success();
+    env.bougie()
+        .args(["service", "up"])
+        .current_dir(proj2.path())
+        .timeout(STEP_TIMEOUT)
+        .assert()
+        .success();
+    let sock = mariadb_socket(&env);
+    assert!(wait_for(&sock, Duration::from_secs(30)));
+    let os_user = std::env::var("USER")
+        .or_else(|_| std::env::var("LOGNAME"))
+        .unwrap_or_else(|_| "bougie".into());
+    let out = Command::new(&mariadb)
+        .arg("--no-defaults")
+        .arg(format!("--socket={}", sock.display()))
+        .arg(format!("--user={os_user}"))
+        .arg("--batch")
+        .arg("--skip-column-names")
+        .arg("-e")
+        .arg("SHOW DATABASES;")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "show databases: {}", String::from_utf8_lossy(&out.stderr));
+    let dbs = String::from_utf8(out.stdout).unwrap();
+    let names: Vec<&str> = dbs.lines().map(str::trim).collect();
+    assert!(
+        !names.contains(&"acme_blog"),
+        "main database should be purged; SHOW DATABASES:\n{dbs}"
+    );
+    assert!(
+        !names.contains(&"acme_blog_t1"),
+        "scratch database should be purged too; SHOW DATABASES:\n{dbs}"
+    );
+
+    stop_daemon(&env);
+}
+
+#[test]
 fn bougie_run_exports_mariadb_env_vars() {
     if should_skip() {
         eprintln!("skipping: BOUGIE_SKIP_REAL_MARIADB set");

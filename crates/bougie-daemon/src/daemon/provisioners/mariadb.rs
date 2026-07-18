@@ -3,7 +3,18 @@
 //! Per-project tenant gets:
 //!   - a database named `<tenant>`,
 //!   - a user `<tenant>@localhost` with a random password,
-//!   - `GRANT ALL` on `<tenant>.*`.
+//!   - `GRANT ALL` on `<tenant>.*` **and** on the `<tenant>_%` scratch
+//!     namespace, so the tenant can create throwaway databases
+//!     (`<tenant>_t1`, template+copy, parallel test workers) without needing
+//!     socket-root admin access (SERVICES.md §3.1, issue #480). Underscores in
+//!     the grant patterns are backslash-escaped so the exact-name grant can't
+//!     leak onto sibling databases via `_`'s wildcard meaning.
+//!
+//! Namespace convention: a tenant literally named as another's prefix (e.g.
+//! `acme` vs `acme_blog`) would have its `acme_%` scratch grant overlap
+//! `acme_blog`'s exact database. Tenant names come from `composer.json` names
+//! sanitised to `[A-Za-z0-9_]`, so this only bites deliberately-colliding
+//! project names; documented rather than guarded.
 //!
 //! Auth model: the daemon initialises mariadb with
 //! `--auth-root-authentication-method=socket`, so the OS user that
@@ -142,17 +153,7 @@ pub async fn provision(
         .await
         .wrap_err("mariadb socket never became connectable")?;
 
-    let name = tenant_name;
-    let sql = format!(
-        "CREATE DATABASE IF NOT EXISTS `{name}` \
-           CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci; \
-         CREATE USER IF NOT EXISTS '{name}'@'localhost' \
-           IDENTIFIED BY '{password}'; \
-         ALTER USER '{name}'@'localhost' IDENTIFIED BY '{password}'; \
-         GRANT ALL PRIVILEGES ON `{name}`.* TO '{name}'@'localhost'; \
-         FLUSH PRIVILEGES;",
-    );
-    run_sql(&mariadb_bin, socket, &sql)
+    run_sql(&mariadb_bin, socket, &provision_sql(tenant_name, &password))
         .await
         .wrap_err_with(|| format!("provisioning mariadb tenant `{tenant_name}`"))?;
 
@@ -183,12 +184,18 @@ pub async fn deprovision(
             ));
         }
         let mariadb_bin = mariadb_client_binary(paths)?;
-        let name = tenant_name;
-        let sql = format!(
-            "DROP DATABASE IF EXISTS `{name}`; \
-             DROP USER IF EXISTS '{name}'@'localhost';",
-        );
-        run_sql(&mariadb_bin, sock, &sql)
+        // Enumerate the tenant's scratch databases (`<tenant>_*`) so purge
+        // drops them too — `DROP DATABASE` takes no wildcard (issue #480).
+        let listed = run_sql_output(&mariadb_bin, sock, &scratch_list_sql(tenant_name))
+            .await
+            .wrap_err_with(|| format!("listing scratch databases for `{tenant_name}`"))?;
+        let scratch: Vec<String> = listed
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .map(str::to_owned)
+            .collect();
+        run_sql(&mariadb_bin, sock, &purge_sql(tenant_name, &scratch))
             .await
             .wrap_err_with(|| format!("purging mariadb tenant `{tenant_name}`"))?;
     }
@@ -222,6 +229,12 @@ fn mariadb_client_binary(paths: &Paths) -> Result<PathBuf> {
 }
 
 async fn run_sql(mariadb_bin: &Path, socket: &Path, sql: &str) -> Result<()> {
+    run_sql_output(mariadb_bin, socket, sql).await.map(|_| ())
+}
+
+/// Like [`run_sql`], but returns the client's stdout — used to read back the
+/// rows of a `SELECT` (e.g. enumerating a tenant's scratch databases).
+async fn run_sql_output(mariadb_bin: &Path, socket: &Path, sql: &str) -> Result<String> {
     // `mariadb-install-db --auth-root-authentication-method=socket`
     // makes mariadbd accept the OS-uid owner as a passwordless root,
     // not the literal user `root`. Connect as the daemon's effective
@@ -261,7 +274,7 @@ async fn run_sql(mariadb_bin: &Path, socket: &Path, sql: &str) -> Result<()> {
             String::from_utf8_lossy(&out.stderr)
         ));
     }
-    Ok(())
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 async fn wait_for_socket(path: &Path, timeout: Duration) -> Result<()> {
@@ -284,6 +297,62 @@ fn current_user() -> String {
     std::env::var("USER")
         .or_else(|_| std::env::var("LOGNAME"))
         .unwrap_or_else(|_| "bougie".into())
+}
+
+/// Backslash-escape `_` and `%` so a tenant name is a *literal* in a GRANT
+/// database pattern. In `GRANT ... ON db.*`, MariaDB/MySQL treat `_` and `%`
+/// as LIKE-style wildcards even inside backticks, so an exact-name grant on
+/// `acme_blog` would otherwise also cover `acmeXblog` and friends. Tenant
+/// names are `[A-Za-z0-9_]`, so only `_` can actually occur; `%` is escaped
+/// too for defence in depth.
+fn escape_grant_pattern(name: &str) -> String {
+    name.replace('_', "\\_").replace('%', "\\%")
+}
+
+/// The provisioning SQL: the tenant database + user, plus grants on the exact
+/// database **and** the `<tenant>_%` scratch namespace (issue #480). Callers
+/// must pass a name already checked by [`is_safe_identifier`].
+fn provision_sql(name: &str, password: &str) -> String {
+    let db = escape_grant_pattern(name);
+    format!(
+        "CREATE DATABASE IF NOT EXISTS `{name}` \
+           CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci; \
+         CREATE USER IF NOT EXISTS '{name}'@'localhost' \
+           IDENTIFIED BY '{password}'; \
+         ALTER USER '{name}'@'localhost' IDENTIFIED BY '{password}'; \
+         GRANT ALL PRIVILEGES ON `{db}`.* TO '{name}'@'localhost'; \
+         GRANT ALL PRIVILEGES ON `{db}\\_%`.* TO '{name}'@'localhost'; \
+         FLUSH PRIVILEGES;",
+    )
+}
+
+/// SQL that lists the tenant's scratch databases (`<tenant>_*`). A
+/// `LEFT(SCHEMA_NAME, n) = '<tenant>_'` prefix test avoids `LIKE`, so the
+/// literal underscore in the prefix needs no wildcard-escaping. The main
+/// database `<tenant>` (no trailing `_`) is deliberately excluded — it's
+/// dropped by name in [`purge_sql`].
+fn scratch_list_sql(name: &str) -> String {
+    let prefix = format!("{name}_");
+    format!(
+        "SELECT SCHEMA_NAME FROM information_schema.SCHEMATA \
+         WHERE LEFT(SCHEMA_NAME, {}) = '{prefix}';",
+        prefix.len(),
+    )
+}
+
+/// SQL to purge a tenant: drop each scratch database (real names read back via
+/// [`scratch_list_sql`]), then the main database and the user.
+fn purge_sql(name: &str, scratch_dbs: &[String]) -> String {
+    let mut sql = String::new();
+    for db in scratch_dbs {
+        // Real DB names off the server — backtick-quote and double any
+        // backtick so a weird scratch name can't break out of the identifier.
+        sql.push_str(&format!("DROP DATABASE IF EXISTS `{}`; ", db.replace('`', "``")));
+    }
+    sql.push_str(&format!(
+        "DROP DATABASE IF EXISTS `{name}`; DROP USER IF EXISTS '{name}'@'localhost';"
+    ));
+    sql
 }
 
 /// Match `[A-Za-z0-9_]+`. The CLI already substitutes `/` → `_` in
@@ -315,5 +384,57 @@ mod tests {
         assert!(!is_safe_identifier("foo`bar"));
         assert!(!is_safe_identifier("foo bar"));
         assert!(!is_safe_identifier("foo-bar"));
+    }
+
+    #[test]
+    fn escape_grant_pattern_escapes_wildcards() {
+        // Underscores become literal so the grant can't leak onto siblings.
+        assert_eq!(escape_grant_pattern("acme_blog"), "acme\\_blog");
+        assert_eq!(escape_grant_pattern("plain"), "plain");
+        // `%` never occurs in a real tenant name, but is escaped defensively.
+        assert_eq!(escape_grant_pattern("a%b_c"), "a\\%b\\_c");
+    }
+
+    #[test]
+    fn provision_sql_grants_exact_and_scratch_namespace() {
+        let sql = provision_sql("acme_blog", "secret");
+        // Exact-name grant with the underscore escaped (literal database).
+        assert!(
+            sql.contains("GRANT ALL PRIVILEGES ON `acme\\_blog`.* TO 'acme_blog'@'localhost'"),
+            "exact grant missing/unescaped: {sql}"
+        );
+        // Scratch-namespace grant: `<tenant>_%`, both underscores escaped, `%`
+        // left as the wildcard.
+        assert!(
+            sql.contains("GRANT ALL PRIVILEGES ON `acme\\_blog\\_%`.* TO 'acme_blog'@'localhost'"),
+            "scratch grant missing/malformed: {sql}"
+        );
+        // Database + user still created; user name is unescaped (not a pattern).
+        assert!(sql.contains("CREATE DATABASE IF NOT EXISTS `acme_blog`"));
+        assert!(sql.contains("CREATE USER IF NOT EXISTS 'acme_blog'@'localhost' IDENTIFIED BY 'secret'"));
+    }
+
+    #[test]
+    fn scratch_list_sql_prefix_matches_only_the_namespace() {
+        // Prefix is `<tenant>_` (10 chars for acme_blog), matched with LEFT so
+        // the underscore stays literal and the main DB `acme_blog` is excluded.
+        assert_eq!(
+            scratch_list_sql("acme_blog"),
+            "SELECT SCHEMA_NAME FROM information_schema.SCHEMATA \
+             WHERE LEFT(SCHEMA_NAME, 10) = 'acme_blog_';",
+        );
+    }
+
+    #[test]
+    fn purge_sql_drops_scratch_then_main_and_user() {
+        let sql = purge_sql("acme_blog", &["acme_blog_t1".into(), "acme_blog_t2".into()]);
+        assert!(sql.contains("DROP DATABASE IF EXISTS `acme_blog_t1`;"));
+        assert!(sql.contains("DROP DATABASE IF EXISTS `acme_blog_t2`;"));
+        assert!(sql.contains("DROP DATABASE IF EXISTS `acme_blog`;"));
+        assert!(sql.contains("DROP USER IF EXISTS 'acme_blog'@'localhost';"));
+        // No scratch DBs → just the main database + user.
+        let bare = purge_sql("acme_blog", &[]);
+        assert!(!bare.contains("acme_blog_"));
+        assert!(bare.contains("DROP DATABASE IF EXISTS `acme_blog`;"));
     }
 }
