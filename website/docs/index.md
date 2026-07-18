@@ -31,4 +31,7 @@ proident, sunt in culpa qui officia deserunt mollit anim id est laborum.
 Lorem ipsum dolor sit amet, consectetur adipiscing elit:
 
 - [Installation](/docs/installation)
-- [Quickstart](/docs/quickstart)
+- [Your first project](/docs/tutorials/first-project)
+- [How-to guides](/docs/guides/)
+- [Reference](/docs/reference/)
+- [Concepts](/docs/concepts/)

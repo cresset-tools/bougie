@@ -92,6 +92,8 @@ export default defineConfig({
       { text: 'Changelog', link: '/docs/changelog', activeMatch: '/docs/changelog' },
     ],
 
+    // Diátaxis-shaped sidebar: Getting started, then Tutorials (learn),
+    // Guides (do), Reference (look up), Concepts (understand).
     sidebar: {
       '/docs/': [
         {
@@ -99,12 +101,62 @@ export default defineConfig({
           items: [
             { text: 'What is bougie?', link: '/docs/' },
             { text: 'Installation', link: '/docs/installation' },
-            { text: 'Quickstart', link: '/docs/quickstart' },
+          ],
+        },
+        {
+          text: 'Tutorials',
+          items: [
+            { text: 'Overview', link: '/docs/tutorials/' },
+            { text: 'Your first project', link: '/docs/tutorials/first-project' },
+            { text: 'A Mage-OS store', link: '/docs/tutorials/mageos-store' },
+            { text: 'Single-file scripts', link: '/docs/tutorials/single-file-script' },
+          ],
+        },
+        {
+          text: 'Guides',
+          items: [
+            { text: 'Overview', link: '/docs/guides/' },
+            { text: 'Migrate from Composer', link: '/docs/guides/migrate-from-composer' },
+            { text: 'Manage dependencies', link: '/docs/guides/manage-dependencies' },
+            { text: 'PHP versions', link: '/docs/guides/php-versions' },
+            { text: 'Extensions', link: '/docs/guides/extensions' },
+            { text: 'Services', link: '/docs/guides/services' },
+            { text: 'Dev server', link: '/docs/guides/dev-server' },
+            { text: 'Global tools', link: '/docs/guides/global-tools' },
+            { text: 'Patches', link: '/docs/guides/patches' },
+            { text: 'Recipes', link: '/docs/guides/recipes' },
+            { text: 'Format PHP', link: '/docs/guides/format' },
+            { text: 'Diagnose a failure', link: '/docs/guides/diagnose' },
+            { text: 'Private registry', link: '/docs/guides/private-registry' },
+            { text: 'Share a store', link: '/docs/guides/share-a-store' },
           ],
         },
         {
           text: 'Reference',
-          items: [{ text: 'Changelog', link: '/docs/changelog' }],
+          items: [
+            { text: 'Overview', link: '/docs/reference/' },
+            { text: 'CLI', link: '/docs/reference/cli' },
+            { text: 'Configuration', link: '/docs/reference/configuration' },
+            { text: 'Environment variables', link: '/docs/reference/environment' },
+            { text: 'Service catalog', link: '/docs/reference/services' },
+            { text: 'Platform support', link: '/docs/reference/platforms' },
+            { text: 'File layout', link: '/docs/reference/layout' },
+            { text: 'Changelog', link: '/docs/changelog' },
+          ],
+        },
+        {
+          text: 'Concepts',
+          items: [
+            { text: 'Overview', link: '/docs/concepts/' },
+            { text: 'The uv-for-PHP model', link: '/docs/concepts/uv-for-php' },
+            { text: 'Native services, not Docker', link: '/docs/concepts/native-services' },
+            { text: 'The tenant model', link: '/docs/concepts/tenant-model' },
+            { text: 'How the resolver works', link: '/docs/concepts/resolver' },
+            { text: 'No plugins, opt-in scripts', link: '/docs/concepts/no-plugins' },
+            { text: 'Managed vs. system PHP', link: '/docs/concepts/managed-vs-system-php' },
+            { text: 'Security & supply chain', link: '/docs/concepts/security' },
+            { text: 'Telemetry & privacy', link: '/docs/concepts/telemetry' },
+          ],
         },
       ],
     },
