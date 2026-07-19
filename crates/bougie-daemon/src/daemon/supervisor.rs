@@ -1420,6 +1420,46 @@ fn render_exec_env(
     }
 }
 
+/// InnoDB tuning appended to a dev MariaDB/MySQL launch. Dev service data is
+/// disposable by design (the dump / `service down --purge` lifecycle assumes
+/// it), so the default relaxes production durability for write throughput
+/// under parallel load — the `fsync`-per-commit and stock 128M buffer pool
+/// that hurt many-worker test suites (issue #482):
+///
+/// - `innodb_flush_log_at_trx_commit=0` — flush+fsync the redo log once per
+///   second, not on every commit,
+/// - `innodb_doublewrite=OFF` — skip the doublewrite buffer (its torn-page
+///   protection buys nothing on throwaway data),
+/// - `innodb_buffer_pool_size=256M` — double the stock 128M.
+///
+/// Instance-wide, because the service instance is shared across projects.
+/// `BOUGIE_<SVC>_PROFILE=prod` keeps mariadbd/mysqld's production-faithful
+/// defaults (append nothing); `BOUGIE_<SVC>_BUFFER_POOL_SIZE` overrides the
+/// pool size (e.g. `1G`) for heavy parallel setups. `svc` is the uppercase
+/// service name (`MARIADB` / `MYSQL`).
+fn db_dev_tuning_args(svc: &str) -> Vec<String> {
+    let profile = std::env::var(format!("BOUGIE_{svc}_PROFILE")).ok();
+    let buffer_pool = std::env::var(format!("BOUGIE_{svc}_BUFFER_POOL_SIZE")).ok();
+    db_dev_tuning_args_from(profile.as_deref(), buffer_pool.as_deref())
+}
+
+/// Pure core of [`db_dev_tuning_args`] — the env values resolved, so it's
+/// deterministically unit-testable.
+fn db_dev_tuning_args_from(profile: Option<&str>, buffer_pool: Option<&str>) -> Vec<String> {
+    // Opt back into production durability: append nothing, inheriting the
+    // server's stock defaults.
+    if profile.is_some_and(|p| p.eq_ignore_ascii_case("prod") || p.eq_ignore_ascii_case("production"))
+    {
+        return Vec::new();
+    }
+    let pool = buffer_pool.filter(|s| !s.is_empty()).unwrap_or("256M");
+    vec![
+        "--innodb-flush-log-at-trx-commit=0".into(),
+        "--innodb-doublewrite=OFF".into(),
+        format!("--innodb-buffer-pool-size={pool}"),
+    ]
+}
+
 /// Render `exec_args` for a service. Each entry's argv is hand-rolled
 /// here rather than templated — services have idiosyncratic flags
 /// (mariadb's `--skip-networking`, redis's `--unixsocketperm`, etc.)
@@ -1523,7 +1563,7 @@ fn render_exec_args(
             let basedir = store_layout::basedir(paths, entry, version)
                 .map(|p| p.display().to_string())
                 .unwrap_or_default();
-            vec![
+            let mut args = vec![
                 // Ignore the host's /etc/my.cnf — on CI runners it
                 // typically contains MySQL-8-only settings that our
                 // bundled mariadbd rejects ("unknown variable
@@ -1545,7 +1585,9 @@ fn render_exec_args(
                 // datadir small.
                 "--general-log=0".into(),
                 "--slow-query-log=0".into(),
-            ]
+            ];
+            args.extend(db_dev_tuning_args("MARIADB"));
+            args
         }
         "mysql" => {
             let data_path = paths.service_data("mysql", version);
@@ -1558,7 +1600,7 @@ fn render_exec_args(
             let basedir = store_layout::basedir(paths, entry, version)
                 .map(|p| p.display().to_string())
                 .unwrap_or_default();
-            vec![
+            let mut args = vec![
                 // `--no-defaults` first — ignore a host /etc/my.cnf whose
                 // options our bundled mysqld may reject.
                 "--no-defaults".into(),
@@ -1573,7 +1615,9 @@ fn render_exec_args(
                 // keeps the datadir small.
                 "--general-log=0".into(),
                 "--slow-query-log=0".into(),
-            ]
+            ];
+            args.extend(db_dev_tuning_args("MYSQL"));
+            args
         }
         "mailpit" => {
             // Loopback-only, like every bougie service (SERVICES.md §6).
@@ -2016,6 +2060,56 @@ mod tests {
         // Must include "0" right after "--port"
         let i = args.iter().position(|a| a == "--port").unwrap();
         assert_eq!(args[i + 1], "0");
+    }
+
+    #[test]
+    fn db_dev_tuning_default_relaxes_durability() {
+        let args = db_dev_tuning_args_from(None, None);
+        assert!(args.iter().any(|a| a == "--innodb-flush-log-at-trx-commit=0"), "{args:?}");
+        assert!(args.iter().any(|a| a == "--innodb-doublewrite=OFF"), "{args:?}");
+        assert!(args.iter().any(|a| a == "--innodb-buffer-pool-size=256M"), "{args:?}");
+    }
+
+    #[test]
+    fn db_dev_tuning_prod_profile_appends_nothing() {
+        assert!(db_dev_tuning_args_from(Some("prod"), None).is_empty());
+        assert!(db_dev_tuning_args_from(Some("PRODUCTION"), None).is_empty());
+        // Prod wins even if a buffer-pool override is also set.
+        assert!(db_dev_tuning_args_from(Some("prod"), Some("1G")).is_empty());
+    }
+
+    #[test]
+    fn db_dev_tuning_honours_buffer_pool_override() {
+        let args = db_dev_tuning_args_from(Some("test"), Some("1G"));
+        assert!(args.iter().any(|a| a == "--innodb-buffer-pool-size=1G"), "{args:?}");
+        // An empty override falls back to the default.
+        let args = db_dev_tuning_args_from(None, Some(""));
+        assert!(args.iter().any(|a| a == "--innodb-buffer-pool-size=256M"), "{args:?}");
+    }
+
+    #[test]
+    fn render_exec_args_for_mariadb_relaxes_durability_by_default() {
+        // No BOUGIE_MARIADB_PROFILE in the environment → the dev profile.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let paths = Paths::new(tmp.path().into(), tmp.path().into());
+        let entry = catalog::find("mariadb").unwrap();
+        let args = render_exec_args(entry, entry.version, &paths, None);
+        assert!(args.iter().any(|a| a == "--innodb-flush-log-at-trx-commit=0"), "{args:?}");
+        assert!(args.iter().any(|a| a == "--innodb-doublewrite=OFF"), "{args:?}");
+        assert!(
+            args.iter().any(|a| a.starts_with("--innodb-buffer-pool-size=")),
+            "{args:?}"
+        );
+    }
+
+    #[test]
+    fn render_exec_args_for_mysql_relaxes_durability_by_default() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let paths = Paths::new(tmp.path().into(), tmp.path().into());
+        let entry = catalog::find("mysql").unwrap();
+        let args = render_exec_args(entry, entry.version, &paths, None);
+        assert!(args.iter().any(|a| a == "--innodb-flush-log-at-trx-commit=0"), "{args:?}");
+        assert!(args.iter().any(|a| a == "--innodb-doublewrite=OFF"), "{args:?}");
     }
 
     #[test]
