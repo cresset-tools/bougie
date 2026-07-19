@@ -50,6 +50,12 @@ pub struct AppState {
     /// project so the in-memory classmap converges to Live without
     /// blocking the request itself.
     pub autoloader: Arc<AutoloaderManager>,
+    /// Shared filesystem-watch state. The control socket's
+    /// `reload-config` handler arms watches through it for projects
+    /// that enter the host map while the server is running, so their
+    /// conf.d / composer.json edits (e.g. `bougie ext add`) reach the
+    /// running pools like boot-time projects' do.
+    pub registry: Arc<super::watch_registry::WatchRegistry>,
     /// Bound listen port. Read by `serve_php` for `SERVER_PORT` and
     /// by the control socket's status response. Wrapped in an
     /// `AtomicU16` because the actual port is only known after
@@ -68,6 +74,7 @@ impl AppState {
         config_path: PathBuf,
         pools: Arc<PoolManager>,
         autoloader: Arc<AutoloaderManager>,
+        registry: Arc<super::watch_registry::WatchRegistry>,
         listen_port: u16,
     ) -> eyre::Result<Self> {
         let hosts = build_hosts_map(config)?;
@@ -75,6 +82,7 @@ impl AppState {
             hosts: RwLock::new(hosts),
             pools,
             autoloader,
+            registry,
             listen_port: std::sync::atomic::AtomicU16::new(listen_port),
             config_path,
         })
@@ -637,8 +645,8 @@ mod tests {
             16,
         ));
         let registry = Arc::new(WatchRegistry::new());
-        let am = Arc::new(AutoloaderManager::new(&[], registry));
-        AppState::build(cfg, PathBuf::from("/dev/null"), pm, am, 7080)
+        let am = Arc::new(AutoloaderManager::new(&[], Arc::clone(&registry)));
+        AppState::build(cfg, PathBuf::from("/dev/null"), pm, am, registry, 7080)
     }
 
     #[test]

@@ -69,6 +69,12 @@ impl PathMap {
     pub fn contains_user_code_root(&self, root: &Path) -> bool {
         self.user_code.iter().any(|u| u.root == root)
     }
+    /// Whether the static (conf.d / version-input) watches for
+    /// `project` have already been recorded.
+    pub fn contains_project(&self, project: &Path) -> bool {
+        self.version_input.iter().any(|p| p == project)
+            || self.confd.iter().any(|(_, p)| p == project)
+    }
 }
 
 /// Shared registry. Cloned (as an `Arc`) into both the watcher
@@ -120,11 +126,6 @@ impl WatchRegistry {
         *self.watcher.lock().expect("notify watcher poisoned") = Some(watcher);
     }
 
-    pub(crate) fn with_path_map_mut<R>(&self, f: impl FnOnce(&mut PathMap) -> R) -> R {
-        let mut guard = self.path_map.write().expect("path map poisoned");
-        f(&mut guard)
-    }
-
     /// Arm a project's user-code roots with the notify watcher and
     /// record them in the path map. Idempotent per `(project, root)`
     /// pair so a Lockfile re-bootstrap can call this without
@@ -165,6 +166,73 @@ impl WatchRegistry {
             map.push_user_code_root(project.to_path_buf(), root.clone(), armed);
         }
         Ok(())
+    }
+
+    /// Arm the static per-project watches — the conf.d prefixes
+    /// (recursive) and the project root (non-recursive, for
+    /// composer.json / bougie.toml / composer.lock) — and record them
+    /// in the path map. Called from [`super::watcher::start`] for
+    /// every project in `server.toml` at boot, and from the control
+    /// socket's `reload-config` handler for projects that enter the
+    /// host map while the server is running. Without the latter, a
+    /// project registered mid-run would never get its conf.d /
+    /// composer.json edits picked up — `bougie ext add` after
+    /// `bougie server` would leave the running pool on the old
+    /// extension set until it idled out.
+    ///
+    /// Idempotent per project: an already-recorded project returns an
+    /// empty vec. conf.d prefixes that don't exist are skipped, same
+    /// as at boot (`conf.d-local/` only appears on the first local
+    /// `.so` install). A registry without an installed watcher (tests,
+    /// or a server whose watcher failed to start) records paths
+    /// without attaching OS watches.
+    ///
+    /// Returns the paths newly watched.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the watcher mutex or the path-map `RwLock` is
+    /// poisoned — i.e. a previous holder panicked.
+    pub fn arm_project_watches(&self, project: &Path, confd_dirs: &[PathBuf]) -> Vec<PathBuf> {
+        let mut watcher_guard = self.watcher.lock().expect("notify watcher poisoned");
+        let mut map = self.path_map.write().expect("path map poisoned");
+        if map.contains_project(project) {
+            return Vec::new();
+        }
+        let mut watched: Vec<PathBuf> = Vec::new();
+        for sub in confd_dirs {
+            if !sub.is_dir() {
+                continue;
+            }
+            if let Some(w) = watcher_guard.as_mut()
+                && let Err(e) = w.watch(sub, RecursiveMode::Recursive)
+            {
+                eprintln!("bougie server: failed to watch {}: {e}", sub.display());
+                continue;
+            }
+            map.push_confd(sub.clone(), project.to_path_buf());
+            watched.push(sub.clone());
+        }
+        // Parent of composer.json / bougie.toml / composer.lock so
+        // editors' write-and-rename doesn't invalidate the watch.
+        let root_watch = match watcher_guard.as_mut() {
+            Some(w) => match w.watch(project, RecursiveMode::NonRecursive) {
+                Ok(()) => true,
+                Err(e) => {
+                    eprintln!(
+                        "bougie server: failed to watch {}: {e}",
+                        project.display()
+                    );
+                    false
+                }
+            },
+            None => true,
+        };
+        if root_watch {
+            map.push_version_input(project.to_path_buf());
+            watched.push(project.to_path_buf());
+        }
+        watched
     }
 
     /// Re-evaluate every recorded user-code root for `project` against
@@ -232,5 +300,47 @@ impl WatchRegistry {
 impl std::fmt::Debug for WatchRegistry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("WatchRegistry").finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn arm_project_watches_records_existing_confd_and_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("myapp");
+        let confd = project.join("vendor/bougie/conf.d");
+        std::fs::create_dir_all(&confd).unwrap();
+        let missing = project.join("vendor/bougie/conf.d-debug");
+
+        let reg = WatchRegistry::new();
+        let armed = reg.arm_project_watches(&project, &[confd.clone(), missing.clone()]);
+        assert!(armed.contains(&confd));
+        assert!(armed.contains(&project));
+        assert!(!armed.contains(&missing));
+
+        let map = reg.path_map();
+        assert!(map.confd.iter().any(|(p, proj)| p == &confd && proj == &project));
+        assert!(!map.confd.iter().any(|(p, _)| p == &missing));
+        assert!(map.version_input.contains(&project));
+        assert!(map.contains_project(&project));
+    }
+
+    #[test]
+    fn arm_project_watches_is_idempotent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("myapp");
+        let confd = project.join("vendor/bougie/conf.d");
+        std::fs::create_dir_all(&confd).unwrap();
+
+        let reg = WatchRegistry::new();
+        assert!(!reg.arm_project_watches(&project, std::slice::from_ref(&confd)).is_empty());
+        assert!(reg.arm_project_watches(&project, std::slice::from_ref(&confd)).is_empty());
+
+        let map = reg.path_map();
+        assert_eq!(map.confd.iter().filter(|(_, p)| p == &project).count(), 1);
+        assert_eq!(map.version_input.iter().filter(|p| *p == &project).count(), 1);
     }
 }

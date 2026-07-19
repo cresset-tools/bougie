@@ -336,6 +336,32 @@ fn reload_config(state: &Arc<AppState>) -> Result<usize> {
     let count = state
         .replace_hosts(&cfg)
         .wrap_err("swapping in reloaded host map")?;
+    // Arm filesystem watches for projects that just entered the host
+    // map. bougied provisions a project by appending its `[[host]]`
+    // to server.toml and pinging reload-config, so this is where a
+    // mid-run registration must join the watch set — otherwise its
+    // conf.d / composer.json edits (`bougie ext add`, a PHP version
+    // switch) would never reach the running pools. Idempotent per
+    // project; hosts removed from the map keep their (inert) watches,
+    // matching how boot-time projects behave after a de-provision.
+    let mut seen: std::collections::HashSet<&Path> = std::collections::HashSet::new();
+    for host in &cfg.hosts {
+        if !seen.insert(host.project.as_path()) {
+            continue;
+        }
+        let armed = super::watcher::arm_project(
+            &state.registry,
+            state.pools.bougie_paths(),
+            &host.project,
+        );
+        if !armed.is_empty() {
+            eprintln!(
+                "[watch_arm] project={} paths={} reason=reload-config",
+                host.project.display(),
+                armed.len()
+            );
+        }
+    }
     Ok(count)
 }
 
@@ -472,6 +498,54 @@ mod tests {
     #[test]
     fn unknown_method_errors() {
         assert!(serde_json::from_str::<Request>(r#"{"v":1,"method":"explode"}"#).is_err());
+    }
+
+    #[test]
+    fn reload_config_arms_watches_for_newly_registered_projects() {
+        use crate::server::autoloader_manager::AutoloaderManager;
+        use crate::server::config::{ServerConfig, ServerSection};
+        use crate::server::paths::ServerPaths;
+        use crate::server::pool::PoolManager;
+        use crate::server::watch_registry::WatchRegistry;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("myapp");
+        std::fs::create_dir_all(project.join("vendor/bougie/conf.d")).unwrap();
+        let config_path = tmp.path().join("server.toml");
+        std::fs::write(
+            &config_path,
+            format!("[[host]]\nhostname = \"myapp.bougie.run\"\nproject = {project:?}\n"),
+        )
+        .unwrap();
+
+        let bp = bougie_paths::Paths::new(tmp.path().join("bh"), tmp.path().join("bc"));
+        let sp = ServerPaths::from_root(tmp.path().join("sp"));
+        let pools = Arc::new(PoolManager::new(bp, sp, Duration::from_mins(10), 16));
+        let registry = Arc::new(WatchRegistry::new());
+        let autoloader = Arc::new(AutoloaderManager::new(&[], Arc::clone(&registry)));
+
+        // Boot against an empty host map — the project only appears in
+        // server.toml afterwards, as when bougied provisions a
+        // `[[host]]` mid-run and pings reload-config.
+        let empty = ServerConfig {
+            server: ServerSection::default(),
+            hosts: Vec::new(),
+        };
+        let state = Arc::new(
+            AppState::build(&empty, config_path, pools, autoloader, Arc::clone(&registry), 0)
+                .unwrap(),
+        );
+        assert!(!registry.path_map().contains_project(&project));
+
+        let count = reload_config(&state).unwrap();
+        assert_eq!(count, 1);
+        assert!(registry.path_map().contains_project(&project));
+
+        // A second ping must not double-arm.
+        reload_config(&state).unwrap();
+        let map = registry.path_map();
+        assert_eq!(map.version_input.iter().filter(|p| **p == project).count(), 1);
+        assert_eq!(map.confd.iter().filter(|(_, p)| p == &project).count(), 1);
     }
 
     #[test]

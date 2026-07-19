@@ -77,7 +77,7 @@ pub fn start(
     // The notify callback runs on its own thread; we plumb a sync
     // handle into it. `classify` takes a read guard on the path map
     // for each event — short reads + many writes-from-arm = RwLock.
-    let mut watcher: notify::RecommendedWatcher = notify::recommended_watcher(
+    let watcher: notify::RecommendedWatcher = notify::recommended_watcher(
         move |res: notify::Result<notify::Event>| {
             let Ok(event) = res else { return };
             if !is_relevant(&event.kind) {
@@ -94,51 +94,21 @@ pub fn start(
     )
     .wrap_err("creating notify watcher")?;
 
+    // Hand the constructed watcher to the registry first: both the
+    // boot-time arming below and every later dynamic arm
+    // (`arm_user_code_roots` from the autoloader manager,
+    // `arm_project` from the control socket's `reload-config`)
+    // extend the same watcher through it.
+    registry.install_watcher(watcher);
+
     // Build the initial path map and watch the static prefixes
     // (conf.d, project root for composer.json/bougie.toml/composer.lock).
     // user_code_roots are armed lazily via `WatchRegistry::arm_user_code_roots`
     // when the autoloader manager flips a project Cold → Warming.
     let mut watched: Vec<PathBuf> = Vec::new();
-    {
-        use notify::{RecursiveMode, Watcher as _};
-        for project in projects {
-            for sub in [
-                bougie_installer::conf_d::project_confd_dir(project),
-                bougie_installer::conf_d::project_confd_debug_dir(project),
-                pool_manager.bougie_paths().project_confd_local(project),
-            ] {
-                if sub.is_dir() {
-                    if let Err(e) = watcher.watch(&sub, RecursiveMode::Recursive) {
-                        eprintln!(
-                            "bougie server: failed to watch {}: {e}",
-                            sub.display()
-                        );
-                        continue;
-                    }
-                    registry.with_path_map_mut(|map| {
-                        map.push_confd(sub.clone(), project.clone());
-                    });
-                    watched.push(sub);
-                }
-            }
-            // Parent of composer.json / bougie.toml / composer.lock so
-            // editors' write-and-rename doesn't invalidate the watch.
-            if let Err(e) = watcher.watch(project, RecursiveMode::NonRecursive) {
-                eprintln!(
-                    "bougie server: failed to watch {}: {e}",
-                    project.display()
-                );
-            } else {
-                registry.with_path_map_mut(|map| map.push_version_input(project.clone()));
-                watched.push(project.clone());
-            }
-        }
+    for project in projects {
+        watched.extend(arm_project(registry, pool_manager.bougie_paths(), project));
     }
-
-    // Hand the constructed watcher to the registry. Subsequent
-    // `arm_user_code_roots` calls (from the autoloader manager) will
-    // extend it.
-    registry.install_watcher(watcher);
 
     let pool_manager = Arc::clone(pool_manager);
     let autoloader_manager = Arc::clone(autoloader_manager);
@@ -151,6 +121,28 @@ pub fn start(
         _watched: watched,
         dispatch,
     })
+}
+
+/// Arm the static watches for `project` unless it's already watched.
+/// Called from [`start`] for the boot-time host list and from the
+/// control socket's `reload-config` handler for projects registered
+/// while the server is running (bougied's provision path appends the
+/// `[[host]]` to `server.toml` and pings `reload-config` — this is
+/// the only place a mid-run project enters the picture). Returns the
+/// newly watched paths; empty when the project was already armed.
+pub(crate) fn arm_project(
+    registry: &WatchRegistry,
+    paths: &bougie_paths::Paths,
+    project: &Path,
+) -> Vec<PathBuf> {
+    registry.arm_project_watches(
+        project,
+        &[
+            bougie_installer::conf_d::project_confd_dir(project),
+            bougie_installer::conf_d::project_confd_debug_dir(project),
+            paths.project_confd_local(project),
+        ],
+    )
 }
 
 /// Per-(project, kind) debounce timers + user-code batched path sets.

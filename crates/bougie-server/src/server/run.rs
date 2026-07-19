@@ -90,6 +90,7 @@ pub fn run(
         config_path.clone(),
         Arc::clone(&pools),
         Arc::clone(&autoloader_manager),
+        Arc::clone(&registry),
         listen.port(),
     )?);
 
