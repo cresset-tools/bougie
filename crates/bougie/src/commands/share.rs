@@ -133,6 +133,17 @@ pub fn run(format: OutputFormat, args: ShareArgs) -> Result<ExitCode> {
         // mirroring the tenant (same project/root/rewrites), then reload the
         // live server so its router accepts the new Host.
         add_share_host(&server_toml, &handle.host, &project_root, &root, &rewrites, &paths).await?;
+
+        // Make the framework emit correct absolute URLs over the share (e.g.
+        // Magento's base_url). Request-aware + best-effort: a failure degrades
+        // to possibly-wrong URLs, it never sinks the share.
+        match super::share_fixup::apply(&project_root, &handle.host) {
+            Ok("none") => {}
+            Ok(name) => eprintln!("share: applied {name} base_url fixup for {}", handle.host),
+            Err(e) => {
+                eprintln!("share: warning — base_url fixup failed, the store may emit wrong URLs: {e:#}");
+            }
+        }
         banner(format, &project_root, &handle)?;
 
         // Drive the tunnel until the relay closes it or the user hits Ctrl-C.
@@ -141,7 +152,12 @@ pub fn run(format: OutputFormat, args: ShareArgs) -> Result<ExitCode> {
             _ = tokio::signal::ctrl_c() => Ok(()),
         };
 
-        // Always tear the temporary host back down, whatever ended the share.
+        // Always undo the fixup + tear the temporary host down, whatever ended
+        // the share. (A stale fixup is inert anyway — it only fires for this
+        // share's `X-Forwarded-Host` — but leave env.php pristine on clean exit.)
+        if let Err(e) = super::share_fixup::revert(&project_root) {
+            tracing::warn!("reverting share base_url fixup failed: {e:#}");
+        }
         remove_share_host(&server_toml, &handle.host, &paths).await;
         out
     })?;
