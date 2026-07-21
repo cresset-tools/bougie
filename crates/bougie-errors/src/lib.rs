@@ -107,6 +107,19 @@ pub enum BougieError {
     /// `unknown_service`, …) — the wire's own closed vocabulary.
     #[error("bougied: {detail} ({code})")]
     Service { code: String, detail: String },
+
+    /// A `git` invocation for a VCS/source package failed. `operation`
+    /// names the step (`clone`, `checkout`, `fetch`, …), `url` the repo
+    /// (empty when not applicable, e.g. git not installed), `detail`
+    /// carries git's own stderr, and `hint` is the actionable next step
+    /// (install git, configure credentials, re-resolve a missing ref).
+    #[error(
+        "git {operation} failed{}\n  \
+         detail: {detail}\n  \
+         hint:   {hint}",
+        if url.is_empty() { String::new() } else { format!(" for {url}") }
+    )]
+    Vcs { operation: String, url: String, detail: String, hint: String },
 }
 
 impl BougieError {
@@ -125,6 +138,7 @@ impl BougieError {
             Self::Filesystem { .. } => 50,
             Self::SelfUpdate { .. } => 60,
             Self::Service { .. } => 70,
+            Self::Vcs { .. } => 71,
         }
     }
 }
@@ -177,6 +191,13 @@ mod tests {
             BougieError::NoProject { detail: String::new() }.exit_code(),
             BougieError::Config { path: String::new(), detail: String::new() }.exit_code(),
             BougieError::Service { code: String::new(), detail: String::new() }.exit_code(),
+            BougieError::Vcs {
+                operation: String::new(),
+                url: String::new(),
+                detail: String::new(),
+                hint: String::new(),
+            }
+            .exit_code(),
         ];
         let mut sorted = codes;
         sorted.sort_unstable();

@@ -117,3 +117,54 @@ fn mirror_is_reused_and_dest_is_rewiped() {
         .collect();
     assert_eq!(mirrors.len(), 1, "exactly one cached mirror");
 }
+
+/// Downcast a report to the typed VCS error and return its parts.
+fn vcs_parts(report: &eyre::Report) -> (String, String) {
+    let err = report
+        .downcast_ref::<bougie_errors::BougieError>()
+        .expect("a BougieError::Vcs");
+    match err {
+        bougie_errors::BougieError::Vcs { operation, hint, .. } => {
+            (operation.clone(), hint.clone())
+        }
+        other => panic!("expected Vcs, got {other:?}"),
+    }
+}
+
+#[test]
+fn classifier_maps_auth_and_missing_ref_stderr() {
+    let auth = classify_git("clone", "https://host/x.git", "remote: Authentication failed for 'x'");
+    let (_op, hint) = vcs_parts(&auth);
+    assert!(hint.contains("credential") || hint.contains("bougie login"), "{hint}");
+
+    let missing = classify_git("checkout", "u", "fatal: reference is not a tree: deadbeef");
+    let (_op, hint) = vcs_parts(&missing);
+    assert!(hint.contains("bougie update"), "{hint}");
+
+    // Every classified error maps to the VCS exit code.
+    assert_eq!(bougie_errors::exit_code_for(&auth), 71);
+}
+
+#[test]
+fn git_missing_error_hints_install() {
+    let e = git_missing("invocation");
+    let (op, hint) = vcs_parts(&e);
+    assert_eq!(op, "invocation");
+    assert!(hint.contains("install git"), "{hint}");
+}
+
+#[test]
+fn install_source_bad_ref_is_typed_ref_error() {
+    let tmp = TempDir::new().unwrap();
+    let (_repo, url, _first, _second) = fixture_repo(tmp.path());
+    let paths = paths_in(tmp.path());
+    // A commit that isn't in the repo — checkout must fail with a typed,
+    // actionable error rather than a bare git string.
+    let bogus = "0000000000000000000000000000000000000000";
+    let dest = tmp.path().join("vendor/acme/lib");
+    let err = install_source(&paths, &url, bogus, &dest).expect_err("bogus ref must fail");
+    let (op, hint) = vcs_parts(&err);
+    assert_eq!(op, "checkout");
+    assert!(hint.contains("bougie update"), "{hint}");
+    assert_eq!(bougie_errors::exit_code_for(&err), 71);
+}
