@@ -34,7 +34,7 @@ pub const COMMAND_VOCAB: &[&str] = &[
 pub const OUTCOME_VOCAB: &[&str] = &[
     "ok", "network", "index-signature", "manifest-hash", "blob-hash", "resolution",
     "unknown-target", "yanked", "lock-held", "filesystem", "self-update", "no-project",
-    "config", "service", "usage", "panic", "other",
+    "config", "service", "vcs", "usage", "panic", "other",
 ];
 
 /// Envelope fields shared by every event, flattened into each line.
@@ -186,6 +186,7 @@ pub fn outcome_for_error(err: &eyre::Report) -> &'static str {
             BougieError::NoProject { .. } => "no-project",
             BougieError::Config { .. } => "config",
             BougieError::Service { .. } => "service",
+            BougieError::Vcs { .. } => "vcs",
         };
     }
     if err.chain().any(<dyn std::error::Error>::is::<reqwest::Error>) {

@@ -78,6 +78,12 @@ fn every_outcome_label_is_in_the_outcome_vocab() {
         BougieError::LockHeld { path: String::new(), pid: 0 },
         BougieError::Filesystem { operation: String::new(), detail: String::new() },
         BougieError::SelfUpdate { detail: String::new() },
+        BougieError::Vcs {
+            operation: String::new(),
+            url: String::new(),
+            detail: String::new(),
+            hint: String::new(),
+        },
     ];
     for err in errors {
         let label = bougie_telemetry::outcome_for_error(&eyre::Report::new(err));
