@@ -1130,11 +1130,11 @@ fn ensure_synced_managed(
     )?;
 
     let shims_dir = write_shims(project_root)?;
-    // Make Composer a default tool + the `bougie-run` shebang shim
-    // available: seed both on the user's PATH (tool bin dir) so
-    // `composer …` and `#!/usr/bin/env bougie-run` work from any shell,
-    // routed through bougie's project-aware argv[0] shim. Best-effort and
-    // collision-safe — see `seed_global_shims`.
+    // Make the `bougie-run` shebang shim available on the user's PATH
+    // (tool bin dir) so `#!/usr/bin/env bougie-run` works from any shell,
+    // routed through bougie's project-aware argv[0] shim; also retire the
+    // legacy global `composer` shim. Best-effort and collision-safe —
+    // see `seed_global_shims`.
     seed_global_shims(paths);
 
     let mut global = GlobalState::load(paths)?;
@@ -1699,24 +1699,31 @@ fn baseline_opt_outs(project: &ProjectConfig) -> BTreeSet<String> {
         .collect()
 }
 
-/// Seed (or refresh) the global `composer` and `bougie-run` entries in
-/// the tool bin dir (`~/.local/bin` by default) so a bare `composer` /
-/// `bougie-run` resolves to bougie from any shell. Composer then behaves
-/// as a default-installed tool, and `#!/usr/bin/env bougie-run` script
+/// Seed (or refresh) the global `bougie-run` entry in the tool bin dir
+/// (`~/.local/bin` by default) so `#!/usr/bin/env bougie-run` script
 /// shebangs work on systems whose `env` lacks `-S` (the portable
-/// `#!/usr/bin/env -S bougie run --script` needs no shim). Both route
+/// `#!/usr/bin/env -S bougie run --script` needs no shim). It routes
 /// through the project-aware argv[0] shim (`shim::exec`).
 ///
+/// `composer` is deliberately *not* seeded globally: bougie no longer
+/// plants a `composer` on the user's PATH — the per-project
+/// `vendor/bougie/bin/composer` shim still routes recipe / `bougie run`
+/// invocations to the native subcommands. Any stale bougie-owned
+/// `composer` symlink left by an older version is retired here so
+/// upgrades converge.
+///
 /// Best-effort: a failure here must never fail `bougie sync`.
-/// Collision-safe: only ever refreshes a symlink bougie itself placed
+/// Collision-safe: only ever touches a symlink bougie itself placed
 /// (one whose target is a `bougie` binary); a user's own file
 /// (a real phar, or a symlink they made) is left untouched.
 #[cfg(unix)]
 fn seed_global_shims(paths: &Paths) {
-    for name in ["composer", "bougie-run"] {
-        if let Err(e) = try_seed_global_shim(paths, name) {
-            eprintln!("warning: could not seed global `{name}` shim: {e}");
-        }
+    // Retire the global `composer` shim older versions seeded.
+    if let Err(e) = remove_global_shim(paths, "composer") {
+        eprintln!("warning: could not remove stale global `composer` shim: {e}");
+    }
+    if let Err(e) = try_seed_global_shim(paths, "bougie-run") {
+        eprintln!("warning: could not seed global `bougie-run` shim: {e}");
     }
 }
 
@@ -1738,15 +1745,38 @@ fn is_bougie_owned_link(link: &std::path::Path) -> bool {
         })
 }
 
+/// Remove a bougie-owned shim (a symlink bougie placed) for `name` from
+/// the tool bin dir, retiring a global shim bougie no longer seeds
+/// (currently `composer`). A user's own file or foreign symlink — and an
+/// absent link — are left as-is (all make [`is_bougie_owned_link`]
+/// return false), so this only ever deletes what bougie itself created.
+#[cfg(unix)]
+fn remove_global_shim(paths: &Paths, name: &str) -> Result<()> {
+    remove_owned_shim_in(&paths.tool_bin_dir(), name)
+}
+
+/// Delete a bougie-owned `name` symlink from `bin_dir` when present; a
+/// no-op for a foreign file/symlink or an absent link. Split from
+/// [`remove_global_shim`] so it can be tested against an explicit dir
+/// without touching process env.
+#[cfg(unix)]
+fn remove_owned_shim_in(bin_dir: &std::path::Path, name: &str) -> Result<()> {
+    let link = bin_dir.join(name);
+    if is_bougie_owned_link(&link) {
+        std::fs::remove_file(&link)?;
+    }
+    Ok(())
+}
+
 #[cfg(unix)]
 fn try_seed_global_shim(paths: &Paths, name: &str) -> Result<()> {
     let bin_dir = paths.tool_bin_dir();
     let link = bin_dir.join(name);
     if link.symlink_metadata().is_ok() {
         if !is_bougie_owned_link(&link) {
-            // A recurring, benign condition (the user has their own
-            // `composer` on PATH) — keep it out of the steady-state
-            // summary; surface it only under `--verbose`.
+            // A benign condition (the user has their own binary of that
+            // name on PATH) — keep it out of the steady-state summary;
+            // surface it only under `--verbose`.
             if bougie_output::output::verbose() {
                 eprintln!(
                     "warning: not seeding a global `{name}` — {} already exists \
@@ -2025,6 +2055,43 @@ mod tests {
             std::fs::read_to_string(bin_dir.join("mysqladmin")).unwrap(),
             "user file"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn retires_bougie_owned_composer_shim_but_spares_user_files() {
+        use std::os::unix::fs::symlink;
+
+        let td = TempDir::new().unwrap();
+        let bin_dir = td.path().join("bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        // Owned-link detection keys on the target's file stem being
+        // `bougie`, so the fake binary must be named exactly that.
+        let bougie_bin = td.path().join("bougie");
+        std::fs::write(&bougie_bin, "fake").unwrap();
+        let composer = bin_dir.join("composer");
+
+        // A bougie-owned `composer` symlink is retired.
+        symlink(&bougie_bin, &composer).unwrap();
+        remove_owned_shim_in(&bin_dir, "composer").unwrap();
+        assert!(composer.symlink_metadata().is_err());
+
+        // A user's real `composer` (a regular file / phar) is left alone.
+        std::fs::write(&composer, "real phar").unwrap();
+        remove_owned_shim_in(&bin_dir, "composer").unwrap();
+        assert_eq!(std::fs::read_to_string(&composer).unwrap(), "real phar");
+        std::fs::remove_file(&composer).unwrap();
+
+        // A foreign symlink (target isn't a `bougie` binary) is spared.
+        let other = td.path().join("their-composer.phar");
+        std::fs::write(&other, "x").unwrap();
+        symlink(&other, &composer).unwrap();
+        remove_owned_shim_in(&bin_dir, "composer").unwrap();
+        assert!(composer.symlink_metadata().is_ok());
+        std::fs::remove_file(&composer).unwrap();
+
+        // An absent link is a no-op success.
+        remove_owned_shim_in(&bin_dir, "composer").unwrap();
     }
 
     #[test]
