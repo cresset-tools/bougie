@@ -9,10 +9,11 @@
 //! loopback. Ctrl-C tears the share (and its temporary host) down.
 //!
 //! v1 is foreground + single-connection (no auto-reconnect). The relay speaks
-//! all HTTP; the client is a pure byte-splice (see [`bougie_tunnel`]). The
-//! Magento `base_url` / `X-Forwarded-*` fixup is a follow-up (`SHARE_PLAN.md` §4.4);
-//! today the share inherits the tenant host's docroot + framework rewrites so
-//! static assets resolve identically.
+//! all HTTP; the client is a pure byte-splice (see [`bougie_tunnel`]). The share
+//! inherits the tenant host's docroot + framework rewrites so static assets
+//! resolve identically, and [`super::share_fixup`] makes framework-generated
+//! absolute URLs request-relative (Magento needs a small injected module; most
+//! frameworks already honour `X-Forwarded-*`).
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -25,6 +26,7 @@ use serde_json::{Value, json};
 use crate::commands::server::{
     derive_hostname, locate_project_root, server_listen_port, server_state_version,
 };
+use crate::commands::share_fixup::{self, FixupOutcome};
 use crate::commands::tenant::{derive_default_tenant, sanitize_tenant};
 
 /// Relay tunnel-ingress the client dials. The relay isn't deployed yet —
@@ -69,6 +71,18 @@ pub fn run(format: OutputFormat, args: ShareArgs) -> Result<ExitCode> {
             bougie_composer_resolver::ResolutionStrategy::Highest,
             bougie_composer_resolver::PlatformIgnore::default(),
         )?;
+    }
+
+    // Magento builds absolute URLs from stored config, not from the request, so
+    // a share would otherwise emit the dev host's URLs on the public page.
+    // Deploy the request-relative `base_url` module (idempotent; inert off
+    // bougie hosts). Best-effort — a fixup failure must never block the share.
+    match share_fixup::ensure(&project_root) {
+        Ok(FixupOutcome::Installed) => {
+            tracing::info!("installed the Bougie_Share request-relative base_url module");
+        }
+        Ok(FixupOutcome::AlreadyInstalled | FixupOutcome::NotApplicable) => {}
+        Err(e) => tracing::warn!("share base_url fixup skipped: {e:#}"),
     }
 
     let paths = Paths::from_env()?;
