@@ -553,6 +553,20 @@ pub enum Command {
         /// Base URL of the registry, e.g. `https://packages.acme.com`
         #[arg(value_name = "URL")]
         url: String,
+        /// Non-interactive CI login: exchange the workflow's OIDC JWT for a
+        /// short-lived read token (zero stored secret) instead of the device
+        /// flow. The JWT comes from `$SCONCE_ID_TOKEN` (GitLab, or pre-fetched)
+        /// or is requested from GitHub Actions' token service.
+        #[arg(long, requires = "repository")]
+        ci: bool,
+        /// The sconce repository (`<org>/<repo>`) whose `read` CI policy
+        /// authorizes the exchange. Required with `--ci`.
+        #[arg(long, value_name = "ORG/REPO")]
+        repository: Option<String>,
+        /// OIDC audience to request (GitHub Actions path) — must match the CI
+        /// policy's expected `aud`.
+        #[arg(long, default_value = "sconce")]
+        audience: String,
         /// Don't auto-provision the project's Composer `repositories` after
         /// login (only store the token)
         #[arg(long = "no-provision")]
