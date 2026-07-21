@@ -37,6 +37,7 @@ use crate::update::read_all_auth;
 use super::downloader::{
     fetch_and_extract_dists_with_progress, DistCandidate, DistOutcome, DistRequest,
 };
+use super::source::{materialize_sources, SourceRequest};
 
 /// Caller-supplied install options. Mirrors the subset of Composer's
 /// `install` flags we honor in Phase A.
@@ -345,10 +346,21 @@ pub fn install_from_lock_with_patches(
     // String storage lives in a sibling vec so `DistRequest` can
     // carry borrowed data — no per-request clones, no lifetime
     // gymnastics inside `par_iter`.
-    let candidate_sets: Vec<Vec<DistCandidate>> = install_set
+    // Split the changed set into dist installs and git-source installs
+    // (RESOLVER_PLAN.md Phase D). `vendor_dirs` is index-aligned to
+    // `install_set`; both channels populate the same destinations, and the
+    // rest of the pipeline (patches, deploy, autoload, bins) treats a
+    // source checkout exactly like an extracted dist.
+    let dist_indices: Vec<usize> =
+        (0..install_set.len()).filter(|&i| install_set[i].dist.is_some()).collect();
+    let source_indices: Vec<usize> =
+        (0..install_set.len()).filter(|&i| install_set[i].is_source_install()).collect();
+
+    let candidate_sets: Vec<Vec<DistCandidate>> = dist_indices
         .iter()
-        .map(|p| {
-            p.dist_urls()
+        .map(|&i| {
+            install_set[i]
+                .dist_urls()
                 .into_iter()
                 .map(|url| {
                     let auth_entry = auth_origin_from_url(&url)
@@ -363,11 +375,11 @@ pub fn install_from_lock_with_patches(
                 .collect()
         })
         .collect();
-    let dists: Vec<DistRequest<'_>> = install_set
+    let dists: Vec<DistRequest<'_>> = dist_indices
         .iter()
-        .zip(vendor_dirs.iter())
         .zip(candidate_sets.iter())
-        .map(|((p, dest), candidates)| {
+        .map(|(&i, candidates)| {
+            let p = install_set[i];
             let dist = p.dist.as_ref().unwrap();
             // `dist_urls()` yields at least the dist's own URL for
             // every package with a dist, and preflight filtered the
@@ -385,11 +397,29 @@ pub fn install_from_lock_with_patches(
                     _ => ArchiveKind::Zip,
                 },
                 strip_prefix: None,
-                vendor_dest: dest,
+                vendor_dest: &vendor_dirs[i],
                 auth_header: primary.auth_header.as_deref(),
                 auth_header_name: primary.auth_header_name,
                 project_root,
                 fallbacks,
+            }
+        })
+        .collect();
+
+    // Git-source installs: ordered clone URLs per package (preferred
+    // mirror first), stored in a sibling vec so `SourceRequest` can borrow.
+    let source_url_sets: Vec<Vec<String>> =
+        source_indices.iter().map(|&i| install_set[i].source_urls()).collect();
+    let source_reqs: Vec<SourceRequest<'_>> = source_indices
+        .iter()
+        .zip(source_url_sets.iter())
+        .map(|(&i, urls)| {
+            let p = install_set[i];
+            SourceRequest {
+                package_name: &p.name,
+                urls,
+                reference: p.source.as_ref().map_or("", |s| s.reference.as_str()),
+                vendor_dest: &vendor_dirs[i],
             }
         })
         .collect();
@@ -431,6 +461,12 @@ pub fn install_from_lock_with_patches(
         },
     )?;
     pkg_bar.finish_and_clear();
+
+    // Materialize git `source` packages (clone + checkout) into their
+    // vendor destinations — the Phase D install path. Runs after the dist
+    // fetch so the shared post-install pipeline below (patches, deploy,
+    // autoload, bins) sees every populated tree, dist- or source-sourced.
+    let sources_installed = materialize_sources(paths, &source_reqs)?;
 
     // Materialize `type: path` packages (symlink-or-copy) into their
     // vendor destinations. Done before the autoload dump so the
@@ -585,8 +621,11 @@ pub fn install_from_lock_with_patches(
     .unwrap_or(u32::MAX);
     // Fold path-package materialization into the totals: a freshly
     // linked/copied path package counts as installed; an unchanged one
-    // counts as up-to-date.
-    let packages_installed = packages_installed.saturating_add(path_summary.linked);
+    // counts as up-to-date. Git-source installs (always freshly cloned
+    // when in the install set) count as installed too.
+    let packages_installed = packages_installed
+        .saturating_add(path_summary.linked)
+        .saturating_add(u32::try_from(sources_installed).unwrap_or(u32::MAX));
     let packages_up_to_date = packages_up_to_date.saturating_add(path_summary.up_to_date);
     Ok(InstallSummary {
         project_root: project_root.to_path_buf(),
@@ -930,10 +969,17 @@ fn read_installed_state(project_root: &Path) -> Option<InstalledState> {
         if name.is_empty() {
             continue;
         }
+        // Prefer the dist reference; fall back to the source reference so
+        // git-source installs diff on their checked-out commit.
         let reference = pkg
             .get("dist")
             .and_then(|d| d.get("reference"))
             .and_then(|r| r.as_str())
+            .or_else(|| {
+                pkg.get("source")
+                    .and_then(|s| s.get("reference"))
+                    .and_then(|r| r.as_str())
+            })
             .unwrap_or("");
         packages.insert(name.to_string(), reference.to_string());
     }
@@ -1016,14 +1062,22 @@ pub(crate) fn diff_install_set_with_force<'a>(
 /// The single source of truth for "no fresh extract needed", shared by the
 /// install-set diff and the patch-coupling force computation.
 fn dist_up_to_date(p: &LockPackage, state: &InstalledState, project_root: &Path) -> bool {
-    let lock_ref = p
-        .dist
-        .as_ref()
-        .and_then(|d| d.reference.as_deref())
-        .unwrap_or("");
+    // `install_reference` is the dist reference, or the source reference
+    // for a git-source install — so a source package re-clones only when
+    // its locked commit changes, exactly like a dist re-extracts on a
+    // changed reference.
+    let lock_ref = p.install_reference();
     state.packages.get(&p.name).is_some_and(|installed_ref| {
         installed_ref == lock_ref && project_root.join("vendor").join(&p.name).is_dir()
     })
+}
+
+/// Whether a lock `source` block's `type` is one bougie can install
+/// (git). Composer normalizes github/gitlab/bitbucket VCS sources to
+/// `"git"` in the lock, so this single check covers them all; `hg`/`svn`
+/// sources are not supported.
+fn is_git_source(kind: &str) -> bool {
+    kind == "git"
 }
 
 /// Build the per-package install progress bar. Renders on stderr when
@@ -1199,12 +1253,22 @@ fn preflight(
             plugin_packages.push(p.name.clone());
         }
         let Some(dist) = &p.dist else {
-            reasons.push(format!(
-                "package `{}` has no `dist` block (source-only install); \
-                 bougie does not yet clone VCS sources. \
-                 Use `bougie run -- composer install`.",
-                p.name,
-            ));
+            // No dist: install from a git `source` if there is one
+            // (RESOLVER_PLAN.md Phase D). Non-git sources (hg/svn) and
+            // packages with neither dist nor source are still rejected.
+            match &p.source {
+                Some(src) if is_git_source(&src.kind) => {}
+                Some(src) => reasons.push(format!(
+                    "package `{}` has a `{}` source but bougie can only install \
+                     git sources; install this package with upstream Composer.",
+                    p.name, src.kind,
+                )),
+                None => reasons.push(format!(
+                    "package `{}` has no `dist` block and no git `source` to clone; \
+                     install this package with upstream Composer.",
+                    p.name,
+                )),
+            }
             continue;
         };
         if dist.kind != "zip" && dist.kind != "tar" {
