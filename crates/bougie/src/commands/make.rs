@@ -15,6 +15,7 @@ use bougie_recipe::{
 };
 use eyre::{eyre, Result, WrapErr};
 use serde::Serialize;
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::io::{self, Write};
 use std::path::PathBuf;
@@ -28,8 +29,35 @@ pub struct MakeOptions {
     pub explain: bool,
     pub no_sync: bool,
     pub no_builtin: bool,
+    pub no_team: bool,
     pub recipe: Option<String>,
     pub print: bool,
+}
+
+/// Which layer a merged task's effective definition came from — shown in
+/// `--list` so a dev sees which `test` they're about to run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TaskSource {
+    Builtin,
+    Team,
+    Local,
+}
+
+impl TaskSource {
+    fn label(self) -> &'static str {
+        match self {
+            TaskSource::Builtin => "built-in",
+            TaskSource::Team => "team",
+            TaskSource::Local => "local",
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct TaskListing {
+    pub name: String,
+    pub source: TaskSource,
 }
 
 #[derive(Debug, Serialize)]
@@ -64,14 +92,15 @@ impl Render for MakeResult {
 pub struct ListResult {
     pub schema_version: u32,
     pub recipe: String,
-    pub tasks: Vec<String>,
+    pub tasks: Vec<TaskListing>,
 }
 
 impl Render for ListResult {
     fn render_text(&self, w: &mut dyn Write) -> io::Result<()> {
         writeln!(w, "recipe: {}", self.recipe)?;
+        let width = self.tasks.iter().map(|t| t.name.len()).max().unwrap_or(0);
         for t in &self.tasks {
-            writeln!(w, "  {t}")?;
+            writeln!(w, "  {:<width$}  ({})", t.name, t.source.label())?;
         }
         Ok(())
     }
@@ -94,14 +123,21 @@ pub fn run(format: OutputFormat, opts: MakeOptions) -> Result<ExitCode> {
     let project_root = std::env::current_dir().wrap_err("getting current directory")?;
     let task_opt = opts.task.clone();
 
-    let (recipe_name, recipe) = load_merged_recipe(&project_root, &opts)?;
+    let (recipe_name, recipe, sources) = load_merged_recipe(&project_root, &opts)?;
 
     // A bare `bougie make` lists the available tasks (like `just`); to
     // bring the whole project up use `bougie start`. `--list` forces the
-    // same listing even with a task named.
+    // same listing even with a task named. Each is tagged with its origin
+    // layer (built-in / team / local) so a dev sees which one wins.
     if opts.list || (task_opt.is_none() && !opts.print) {
-        let mut tasks: Vec<String> = recipe.tasks.keys().cloned().collect();
-        tasks.sort();
+        let tasks: Vec<TaskListing> = recipe
+            .tasks
+            .keys()
+            .map(|name| TaskListing {
+                name: name.clone(),
+                source: sources.get(name).copied().unwrap_or(TaskSource::Builtin),
+            })
+            .collect();
         emit(
             format,
             &ListResult { schema_version: 1, recipe: recipe_name, tasks },
@@ -300,14 +336,34 @@ fn configured_recipe(composer_text: Option<&str>) -> Option<String> {
         .map(str::to_string)
 }
 
+/// Convert a manifest-sourced team task into a `bougie-recipe` `TaskDef`. sconce
+/// serves `deps`/`creates` as arrays; an empty `creates` maps to `None` so the
+/// task isn't freshness-gated on nothing.
+fn team_task_to_def(task: crate::commands::team::ManifestRecipeTask) -> bougie_recipe::TaskDef {
+    bougie_recipe::TaskDef {
+        deps: task.deps,
+        creates: if task.creates.is_empty() {
+            None
+        } else {
+            Some(task.creates)
+        },
+        check: task.check,
+        run: task.run,
+    }
+}
+
 /// Resolve the effective recipe per RECIPES.md §4: pick a builtin by
 /// honouring `--recipe <name>`, then a pinned `extra.bougie.recipe`, then
-/// sniffing composer.json — and merge the project's `bougie.toml` recipe
-/// tables over it (or skip the builtin entirely with `--no-builtin`).
+/// sniffing composer.json — then fold the team's manifest tasks over the
+/// builtin, and the project's `bougie.toml` tasks over that. Precedence is
+/// **built-in < team < local**: a team task overrides the framework default,
+/// but a project's own same-named task still wins. `--no-builtin` /
+/// `--no-team` drop a layer. Returns the merged recipe plus, per task, which
+/// layer its winning definition came from (for `--list`).
 fn load_merged_recipe(
     project_root: &PathBuf,
     opts: &MakeOptions,
-) -> Result<(String, Recipe)> {
+) -> Result<(String, Recipe, BTreeMap<String, TaskSource>)> {
     let composer_path = project_root.join("composer.json");
     let composer_text = if composer_path.exists() {
         Some(std::fs::read_to_string(&composer_path).wrap_err_with(|| {
@@ -343,6 +399,20 @@ fn load_merged_recipe(
         load_builtin(&chosen).expect("detected recipe should resolve to a builtin")
     };
 
+    // Team-shared tasks from the cached manifest (empty for a non-team project
+    // or with `--no-team`). Trusted like the private packages / seed recipe the
+    // team already runs — `--list`/`--print` surface them for visibility.
+    let team = if opts.no_team {
+        Recipe::default()
+    } else {
+        Recipe {
+            tasks: crate::commands::team::cached_recipes(project_root)
+                .into_iter()
+                .map(|(name, task)| (name, team_task_to_def(task)))
+                .collect(),
+        }
+    };
+
     let bougie_toml = project_root.join("bougie.toml");
     let local = if bougie_toml.exists() {
         let text = std::fs::read_to_string(&bougie_toml)
@@ -352,18 +422,34 @@ fn load_merged_recipe(
         Recipe::default()
     };
 
-    let merged = merge_with_builtin(builtin, local);
+    // Provenance: the highest layer defining a task is the one that wins, so
+    // record built-in, then overwrite with team, then local.
+    let mut sources = BTreeMap::new();
+    for name in builtin.tasks.keys() {
+        sources.insert(name.clone(), TaskSource::Builtin);
+    }
+    for name in team.tasks.keys() {
+        sources.insert(name.clone(), TaskSource::Team);
+    }
+    for name in local.tasks.keys() {
+        sources.insert(name.clone(), TaskSource::Local);
+    }
+
+    // built-in < team < local (later merge wins per task name).
+    let merged = merge_with_builtin(merge_with_builtin(builtin, team), local);
     if merged.tasks.is_empty() {
         return Err(eyre!(
-            "no tasks defined: --no-builtin was set and bougie.toml has no [task.*] tables"
+            "no tasks defined: --no-builtin was set and neither the team manifest nor \
+             bougie.toml has any [task.*] tables"
         ));
     }
-    Ok((chosen, merged))
+    Ok((chosen, merged, sources))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::configured_recipe;
+    use super::{configured_recipe, team_task_to_def};
+    use crate::commands::team::ManifestRecipeTask;
 
     #[test]
     fn configured_recipe_reads_extra_bougie_recipe() {
@@ -376,5 +462,30 @@ mod tests {
         assert_eq!(configured_recipe(Some(r#"{"extra":{"bougie":{}}}"#)), None);
         assert_eq!(configured_recipe(Some("{}")), None);
         assert_eq!(configured_recipe(None), None);
+    }
+
+    #[test]
+    fn team_task_maps_fields_and_empty_creates_to_none() {
+        // A leaf command task: empty creates → no freshness gate (None).
+        let leaf = team_task_to_def(ManifestRecipeTask {
+            run: Some("phpunit".into()),
+            check: None,
+            deps: vec![],
+            creates: vec![],
+        });
+        assert_eq!(leaf.run.as_deref(), Some("phpunit"));
+        assert_eq!(leaf.creates, None);
+        assert!(leaf.deps.is_empty());
+
+        // deps + check + creates pass through; non-empty creates → Some.
+        let full = team_task_to_def(ManifestRecipeTask {
+            run: Some("build".into()),
+            check: Some("test -f x".into()),
+            deps: vec!["vendor".into(), "services".into()],
+            creates: vec!["build/out".into()],
+        });
+        assert_eq!(full.deps, vec!["vendor", "services"]);
+        assert_eq!(full.check.as_deref(), Some("test -f x"));
+        assert_eq!(full.creates, Some(vec!["build/out".to_string()]));
     }
 }
