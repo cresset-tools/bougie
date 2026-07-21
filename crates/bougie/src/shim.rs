@@ -308,9 +308,10 @@ fn exec_system_php(
 /// subcommand routes to `ComposerCommand::External`, which returns the
 /// "install the real Composer via `bougie tool`" error.
 ///
-/// Shared by the project-local `vendor/bougie/bin/composer` shim and the
-/// global `composer` entry seeded into the tool bin dir, so a bare
-/// `composer …` from any shell behaves exactly like `bougie composer …`.
+/// Reached via the project-local `vendor/bougie/bin/composer` shim
+/// (bougie no longer seeds a global `composer` on the user's PATH), so a
+/// bare `composer …` inside `bougie run` / recipes behaves exactly like
+/// `bougie composer …`.
 fn run_composer_native(args: Vec<std::ffi::OsString>) -> Result<ExitCode> {
     use clap::Parser as _;
     let mut argv: Vec<std::ffi::OsString> = Vec::with_capacity(args.len() + 2);
