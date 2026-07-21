@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.52.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.51.0...bougie-v0.52.0) (2026-07-21)
+
+
+### Features
+
+* add `bougie doctor` — team-aware setup checkup ([#529](https://github.com/cresset-tools/bougie/issues/529)) ([3ecfb20](https://github.com/cresset-tools/bougie/commit/3ecfb20a678d3802ce54af8c877b158be5d81395))
+* **ci:** add `bougie ci init` — generate parity CI from the project ([#541](https://github.com/cresset-tools/bougie/issues/541)) ([21462be](https://github.com/cresset-tools/bougie/commit/21462be35b88bad0caa1f8c54732a0e553ca46b9))
+* **composer-resolver:** install packages from a git source ([#538](https://github.com/cresset-tools/bougie/issues/538)) ([fe3dc0d](https://github.com/cresset-tools/bougie/commit/fe3dc0d6868f64dbc8445971ea1ce5e632a8538b))
+* **composer-resolver:** resolve versions from a git (vcs) repository ([#540](https://github.com/cresset-tools/bougie/issues/540)) ([c24272d](https://github.com/cresset-tools/bougie/commit/c24272d627f393beb57b7a604de0782967dcee93))
+* **composer-resolver:** typed, actionable errors for git (vcs) failures ([#543](https://github.com/cresset-tools/bougie/issues/543)) ([fef1934](https://github.com/cresset-tools/bougie/commit/fef19340b61c7ba588739aee36fc598e057de558))
+* **login:** add `bougie login --ci` — zero-secret CI login via OIDC JWT ([#539](https://github.com/cresset-tools/bougie/issues/539)) ([d906d0e](https://github.com/cresset-tools/bougie/commit/d906d0ee4efedc936bb3f8131fb839664b133aca))
+* **make:** fold team-shared recipe tasks from the manifest ([#536](https://github.com/cresset-tools/bougie/issues/536)) ([6c19493](https://github.com/cresset-tools/bougie/commit/6c194934028f4208460284fd50bfa2ce855b4dc9))
+* **services:** relax dev MariaDB/MySQL durability by default ([#531](https://github.com/cresset-tools/bougie/issues/531)) ([ccee3bf](https://github.com/cresset-tools/bougie/commit/ccee3bf46cc656dcf9b49095a47b1d3a0d805aa3)), closes [#482](https://github.com/cresset-tools/bougie/issues/482)
+* **share:** make Magento base_url request-relative via an injected module ([#542](https://github.com/cresset-tools/bougie/issues/542)) ([bce87b1](https://github.com/cresset-tools/bougie/commit/bce87b18d705468bfef4f0828c31813aaecc1ca3))
+
+
+### Bug Fixes
+
+* **server:** arm filesystem watches for projects registered while running ([#534](https://github.com/cresset-tools/bougie/issues/534)) ([6bd6ec4](https://github.com/cresset-tools/bougie/commit/6bd6ec48b843c8914fd92f567765f6c01a1f7f17))
+* **sync:** stop seeding a global composer shim on PATH ([#544](https://github.com/cresset-tools/bougie/issues/544)) ([f605cc5](https://github.com/cresset-tools/bougie/commit/f605cc5561ec8ec4f60e0b2382fea4cdd4092137))
+
 ## [0.51.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.50.0...bougie-v0.51.0) (2026-07-18)
 
 
