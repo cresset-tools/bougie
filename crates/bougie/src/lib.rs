@@ -799,6 +799,7 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
             explain,
             no_sync,
             no_builtin,
+            no_team,
             recipe,
             print,
         } => commands::make::run(
@@ -810,6 +811,7 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
                 explain,
                 no_sync,
                 no_builtin,
+                no_team,
                 recipe,
                 print,
             },

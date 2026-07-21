@@ -584,6 +584,10 @@ pub enum Command {
         /// Ignore the builtin recipe; use only `bougie.toml`
         #[arg(long)]
         no_builtin: bool,
+        /// Ignore team-shared tasks from the manifest; use only the builtin +
+        /// `bougie.toml`
+        #[arg(long)]
+        no_team: bool,
         /// Force a specific builtin (e.g. `magento`)
         #[arg(long, value_name = "NAME")]
         recipe: Option<String>,

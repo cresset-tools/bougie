@@ -172,6 +172,11 @@ struct Manifest {
     #[serde(default)]
     #[cfg_attr(not(unix), allow(dead_code))]
     sources: BTreeMap<String, ManifestSource>,
+    // Team-shared `bougie make` tasks, folded into the recipe; Unix-only
+    // consumer (`bougie make` is Unix-only), so silence dead-code on Windows.
+    #[serde(default)]
+    #[cfg_attr(not(unix), allow(dead_code))]
+    recipes: BTreeMap<String, ManifestRecipeTask>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -207,6 +212,25 @@ pub(crate) struct ManifestSource {
     pub(crate) identity: Option<String>,
     #[serde(default)]
     pub(crate) port: Option<u16>,
+}
+
+/// A team-shared `bougie make` task the manifest advertises (set with sconce's
+/// `remote-recipe`), folded into the project's recipe. Mirrors a `bougie-recipe`
+/// `TaskDef` in a plain shape (`deps`/`creates` always arrays, as sconce serves
+/// them) — kept a local struct so `team.rs` needs no dep on the Unix-only recipe
+/// crate; `make` converts it to a `TaskDef`. Consumed only by the Unix-only
+/// `bougie make`.
+#[derive(Debug, Clone, Deserialize)]
+#[cfg_attr(not(unix), allow(dead_code))]
+pub(crate) struct ManifestRecipeTask {
+    #[serde(default)]
+    pub(crate) run: Option<String>,
+    #[serde(default)]
+    pub(crate) check: Option<String>,
+    #[serde(default)]
+    pub(crate) deps: Vec<String>,
+    #[serde(default)]
+    pub(crate) creates: Vec<String>,
 }
 
 /// Discover the project's Composer repository URLs. Prefers the git-remote-keyed
@@ -340,6 +364,18 @@ pub(crate) fn cached_sources(project_root: &Path) -> BTreeMap<String, ManifestSo
     read_cached_manifest(project_root)
         .and_then(|raw| serde_json::from_slice::<Manifest>(&raw).ok())
         .map(|m| m.sources)
+        .unwrap_or_default()
+}
+
+/// The team-shared recipe tasks the cached manifest advertises for this project,
+/// keyed by task name. Empty when no manifest is cached (non-team project), it
+/// carries no `recipes` block, or the bytes don't parse. Folded into `bougie
+/// make` between the framework built-in and the project's own tasks.
+#[cfg_attr(not(unix), allow(dead_code))]
+pub(crate) fn cached_recipes(project_root: &Path) -> BTreeMap<String, ManifestRecipeTask> {
+    read_cached_manifest(project_root)
+        .and_then(|raw| serde_json::from_slice::<Manifest>(&raw).ok())
+        .map(|m| m.recipes)
         .unwrap_or_default()
 }
 
