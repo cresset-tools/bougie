@@ -306,6 +306,16 @@ impl Paths {
     pub fn cache_composer_dist(&self) -> PathBuf {
         self.cache.join("composer-dist")
     }
+    /// Persistent cache of bare git mirrors for VCS/source installs at
+    /// `$BOUGIE_CACHE/composer-vcs/<sanitized-url>`. Each entry is a
+    /// `--mirror` clone refreshed with `git remote update`, shared across
+    /// projects so a second install of the same git dependency reuses the
+    /// existing objects without re-cloning. Mirrors Composer's own
+    /// `~/.composer/cache/vcs/` bare-clone convention, under bougie's
+    /// XDG-strict layout.
+    pub fn cache_composer_vcs(&self) -> PathBuf {
+        self.cache.join("composer-vcs")
+    }
     /// Persistent cache of Packagist v2 metadata documents at
     /// `$BOUGIE_CACHE/composer-metadata/p2/<vendor>/<name>.json` (plus
     /// `~dev.json`) with `ETag` sidecars alongside each. Shared across

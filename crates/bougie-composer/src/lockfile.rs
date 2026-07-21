@@ -1043,6 +1043,75 @@ impl LockPackage {
         self.package_type.as_deref() == Some("metapackage")
     }
 
+    /// `true` when this package must be installed from its git `source`
+    /// rather than a dist: it carries a `source` block, has no `dist`
+    /// bougie can fetch, and isn't a metapackage. This is the trigger for
+    /// the clone-and-checkout install path (`RESOLVER_PLAN.md` Phase D) —
+    /// the common case being a private fork or a satis repo that only
+    /// publishes source. A package carrying *both* a dist and a source
+    /// installs from the dist (bougie has no `--prefer-source` yet), so
+    /// this is deliberately gated on `dist.is_none()`.
+    pub fn is_source_install(&self) -> bool {
+        self.dist.is_none() && self.source.is_some() && !self.is_metapackage()
+    }
+
+    /// The revision this package is locked at, for install-freshness
+    /// diffing: the dist reference when there is a dist, else the source
+    /// reference (a full git sha for a source install). Empty when the
+    /// package carries neither — a metapackage, which is never installed.
+    pub fn install_reference(&self) -> &str {
+        if let Some(dist) = &self.dist
+            && let Some(r) = dist.reference.as_deref()
+        {
+            return r;
+        }
+        self.source.as_ref().map_or("", |s| s.reference.as_str())
+    }
+
+    /// Clone-URL candidates for this package's git `source`, in the order
+    /// the installer should try them: the source's own `url` first, then
+    /// each mirror's substituted URL (a `preferred` mirror moves to the
+    /// front), duplicates dropped. Mirrors the shape of [`dist_urls`] so a
+    /// Private-Packagist source mirror is tried before the origin host.
+    /// Empty when the package has no `source`.
+    pub fn source_urls(&self) -> Vec<String> {
+        let Some(source) = &self.source else {
+            return Vec::new();
+        };
+        let name = self.name.to_ascii_lowercase();
+        let version: Cow<'_, str> = match &self.version_normalized {
+            Some(v) => Cow::Borrowed(v.as_str()),
+            None => match composer_semver::version::Version::parse(&self.version) {
+                Ok(v) => Cow::Owned(v.normalized),
+                Err(_) => Cow::Borrowed(self.version.as_str()),
+            },
+        };
+        let process = |template: &str| {
+            process_mirror_url(
+                template,
+                &name,
+                &version,
+                &self.version,
+                Some(source.reference.as_str()),
+                &source.kind,
+            )
+        };
+        let first = if source.url.contains('%') { process(&source.url) } else { source.url.clone() };
+        let mut urls = vec![first];
+        for mirror in &source.mirrors {
+            let url = process(&mirror.url);
+            if urls.contains(&url) {
+                continue;
+            }
+            if mirror.preferred {
+                urls.insert(0, url);
+            } else {
+                urls.push(url);
+            }
+        }
+        urls
+    }
+
     /// Download URL candidates for this package's dist, in the order
     /// the downloader should try them. Composer's `Package::getUrls`:
     /// the dist's own `url` comes first, then each mirror's

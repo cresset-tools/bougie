@@ -9,6 +9,7 @@ mod bin_proxy;
 mod downloader;
 mod orchestrate;
 mod path_link;
+mod source;
 
 pub use downloader::{fetch_and_extract_dists, DistOutcome, DistRequest};
 pub use orchestrate::{

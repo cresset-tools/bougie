@@ -176,13 +176,15 @@ fn composer_plugin_package_files_install_but_hooks_are_skipped() {
 }
 
 #[test]
-fn source_only_package_is_rejected_in_preflight() {
+fn non_git_source_is_rejected_in_preflight() {
+    // A git `source` now installs (Phase D), but a non-git source (svn/hg)
+    // is still a hard blocker — no network needed to prove it, preflight
+    // rejects it before any clone.
     let tmp = TempDir::new().unwrap();
     let paths = paths_in(tmp.path());
     let proj = tmp.path().join("p");
     std::fs::create_dir_all(&proj).unwrap();
     let hash = hash_for(MINIMAL_COMPOSER_JSON);
-    // No `dist` block — only `source` (git).
     let lock = format!(
         r#"{{
             "content-hash": "{hash}",
@@ -191,9 +193,9 @@ fn source_only_package_is_rejected_in_preflight() {
                     "name": "acme/sourceonly",
                     "version": "1.0.0",
                     "source": {{
-                        "type": "git",
-                        "url": "https://example/acme/sourceonly.git",
-                        "reference": "abc"
+                        "type": "svn",
+                        "url": "https://svn.example/acme/sourceonly",
+                        "reference": "42"
                     }}
                 }}
             ],
@@ -203,10 +205,79 @@ fn source_only_package_is_rejected_in_preflight() {
     write_project(&proj, MINIMAL_COMPOSER_JSON, &lock);
 
     let err = install_from_lock(&paths, &proj, InstallOptions::default(), None)
-        .expect_err("must reject source-only package");
+        .expect_err("must reject non-git source");
     let msg = format!("{err:#}");
     assert!(msg.contains("acme/sourceonly"), "{msg}");
-    assert!(msg.contains("source-only"), "{msg}");
+    assert!(msg.contains("`svn` source"), "{msg}");
+    assert!(msg.contains("git sources"), "{msg}");
+}
+
+#[cfg(unix)]
+#[test]
+fn git_source_package_installs_from_lock() {
+    // End-to-end Phase D: a package with only a git `source` (no dist) is
+    // cloned + checked out into vendor/ and the install completes.
+    use std::process::Command;
+    let tmp = TempDir::new().unwrap();
+    let paths = paths_in(tmp.path());
+
+    // A throwaway origin repo, referenced by file:// — no network.
+    let origin = tmp.path().join("origin");
+    std::fs::create_dir_all(origin.join("src")).unwrap();
+    let git = |args: &[&str]| {
+        let st = Command::new("git")
+            .arg("-C")
+            .arg(&origin)
+            .args(["-c", "user.email=t@e", "-c", "user.name=t", "-c", "commit.gpgsign=false"])
+            .args(args)
+            .status()
+            .unwrap();
+        assert!(st.success(), "git {args:?}");
+    };
+    git(&["init", "-q"]);
+    std::fs::write(origin.join("composer.json"), r#"{"name":"acme/lib"}"#).unwrap();
+    std::fs::write(origin.join("src/Thing.php"), "<?php\nnamespace Acme;\nclass Thing {}\n").unwrap();
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "init"]);
+    let sha = {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(&origin)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).trim().to_owned()
+    };
+    let url = format!("file://{}", origin.display());
+
+    let proj = tmp.path().join("p");
+    std::fs::create_dir_all(&proj).unwrap();
+    let hash = hash_for(MINIMAL_COMPOSER_JSON);
+    let lock = format!(
+        r#"{{
+            "content-hash": "{hash}",
+            "packages": [
+                {{
+                    "name": "acme/lib",
+                    "version": "1.0.0",
+                    "source": {{ "type": "git", "url": "{url}", "reference": "{sha}" }}
+                }}
+            ],
+            "packages-dev": []
+        }}"#
+    );
+    write_project(&proj, MINIMAL_COMPOSER_JSON, &lock);
+
+    let summary = install_from_lock(&paths, &proj, InstallOptions::default(), None)
+        .expect("git source install must succeed");
+    assert_eq!(summary.packages_installed, 1, "{:?}", summary);
+    assert!(proj.join("vendor/acme/lib/src/Thing.php").is_file(), "source tree materialized");
+    assert!(proj.join("vendor/autoload.php").is_file(), "autoloader ran");
+
+    // A second install with the same lock is a no-op (up-to-date).
+    let again = install_from_lock(&paths, &proj, InstallOptions::default(), None)
+        .expect("re-install must succeed");
+    assert_eq!(again.packages_installed, 0, "unchanged source is up-to-date: {again:?}");
 }
 
 #[test]
@@ -311,11 +382,11 @@ fn composer_json_with_scripts_warns() {
 
 #[test]
 fn preflight_reports_all_hard_blockers_together() {
-    // Hard blockers (tar + source-only) coexist with soft warnings
+    // Hard blockers (xz dist + non-git source) coexist with soft warnings
     // (plugin + scripts). The error must aggregate every hard blocker;
     // the soft warnings are eaten by the hard-fail path but the
     // important thing is that the user gets the full list of blockers
-    // in one go.
+    // in one go. (A git source would install, so the blocker here is svn.)
     let tmp = TempDir::new().unwrap();
     let paths = paths_in(tmp.path());
     let proj = tmp.path().join("p");
@@ -353,9 +424,9 @@ fn preflight_reports_all_hard_blockers_together() {
                     "name": "acme/sourceonly",
                     "version": "1.0.0",
                     "source": {{
-                        "type": "git",
-                        "url": "https://example/acme/sourceonly.git",
-                        "reference": "abc"
+                        "type": "svn",
+                        "url": "https://svn.example/acme/sourceonly",
+                        "reference": "42"
                     }}
                 }}
             ],
