@@ -382,7 +382,7 @@ fn relative_path(base: &Path, target: &Path) -> String {
 
 /// Deserialize a `{name: constraint}` object into a sorted string map,
 /// tolerating a missing / non-object value (→ empty).
-fn string_map(value: Option<&Value>) -> std::collections::BTreeMap<String, String> {
+pub(crate) fn string_map(value: Option<&Value>) -> std::collections::BTreeMap<String, String> {
     let mut out = std::collections::BTreeMap::new();
     if let Some(obj) = value.and_then(Value::as_object) {
         for (k, v) in obj {
@@ -396,7 +396,7 @@ fn string_map(value: Option<&Value>) -> std::collections::BTreeMap<String, Strin
 
 /// Read a `bin` / `license`-style field that is either a single string
 /// or an array of strings into a vec.
-fn string_list(value: Option<&Value>) -> Vec<String> {
+pub(crate) fn string_list(value: Option<&Value>) -> Vec<String> {
     match value {
         Some(Value::String(s)) => vec![s.clone()],
         Some(Value::Array(items)) => items

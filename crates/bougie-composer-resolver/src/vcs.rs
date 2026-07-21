@@ -144,5 +144,111 @@ fn render_args(args: &[&std::ffi::OsStr]) -> String {
     args.iter().map(|a| a.to_string_lossy()).collect::<Vec<_>>().join(" ")
 }
 
+/// Like [`run_git`] but returns captured stdout on success.
+fn git_output(cwd: Option<&Path>, args: &[&std::ffi::OsStr]) -> Result<Vec<u8>> {
+    let mut cmd = Command::new("git");
+    if let Some(dir) = cwd {
+        cmd.arg("-C").arg(dir);
+    }
+    cmd.args(args);
+    let out = cmd
+        .output()
+        .map_err(|e| eyre!("could not run git: {e} (is git on PATH?)"))?;
+    if out.status.success() {
+        Ok(out.stdout)
+    } else {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        Err(eyre!("git {} failed: {}", render_args(args), stderr.trim()))
+    }
+}
+
+/// Ensure a fully-refreshed bare `--mirror` clone of `url`: clone on first
+/// use, otherwise `git remote update --prune` to pick up new tags and
+/// branches. Used for metadata discovery (which wants current refs),
+/// vs. [`install_source`]'s cache which fetches only when a pinned commit
+/// is missing.
+pub fn refresh_mirror(paths: &Paths, url: &str) -> Result<PathBuf> {
+    let cache_root = paths.cache_composer_vcs();
+    std::fs::create_dir_all(&cache_root)
+        .wrap_err_with(|| format!("creating {}", cache_root.display()))?;
+    let mirror = cache_root.join(mirror_dir_name(url));
+    if mirror.join("HEAD").is_file() {
+        run_git(Some(&mirror), &["remote".as_ref(), "update".as_ref(), "--prune".as_ref()])
+            .wrap_err_with(|| format!("refreshing mirror for {url}"))?;
+    } else {
+        let _ = std::fs::remove_dir_all(&mirror);
+        run_git(None, &["clone".as_ref(), "--mirror".as_ref(), "--quiet".as_ref(), url.as_ref(), mirror.as_os_str()])
+            .wrap_err_with(|| format!("mirroring {url}"))?;
+    }
+    Ok(mirror)
+}
+
+/// A discovered git ref (tag or branch) with the commit it resolves to.
+#[derive(Debug, Clone)]
+pub struct GitRef {
+    /// Short name — the tag (`v1.2.3`) or branch (`main`).
+    pub name: String,
+    /// Commit sha the ref points to (annotated tags are dereferenced to
+    /// their commit).
+    pub sha: String,
+    pub is_tag: bool,
+}
+
+/// Enumerate a mirror's tags and branches. Annotated tags are
+/// dereferenced to the commit they point at (`*objectname`).
+pub fn list_refs(mirror: &Path) -> Result<Vec<GitRef>> {
+    let out = git_output(
+        Some(mirror),
+        &[
+            "for-each-ref".as_ref(),
+            "--format=%(objectname) %(*objectname) %(refname)".as_ref(),
+            "refs/tags".as_ref(),
+            "refs/heads".as_ref(),
+        ],
+    )?;
+    let text = String::from_utf8_lossy(&out);
+    let mut refs = Vec::new();
+    for line in text.lines() {
+        // `%(objectname) %(*objectname) %(refname)`; the middle field is
+        // empty (→ two spaces) for branches and lightweight tags.
+        let mut it = line.splitn(3, ' ');
+        let obj = it.next().unwrap_or("");
+        let deref = it.next().unwrap_or("");
+        let refname = it.next().unwrap_or("");
+        let sha = if deref.is_empty() { obj } else { deref };
+        if sha.is_empty() {
+            continue;
+        }
+        let (is_tag, name) = if let Some(n) = refname.strip_prefix("refs/tags/") {
+            (true, n)
+        } else if let Some(n) = refname.strip_prefix("refs/heads/") {
+            (false, n)
+        } else {
+            continue;
+        };
+        refs.push(GitRef { name: name.to_owned(), sha: sha.to_owned(), is_tag });
+    }
+    Ok(refs)
+}
+
+/// Read a file's bytes at a given commit without a working tree
+/// (`git show <sha>:<path>`). Returns `Ok(None)` when the path doesn't
+/// exist at that ref (or can't be read) so the caller can skip it.
+pub fn read_file_at(mirror: &Path, sha: &str, path: &str) -> Result<Option<Vec<u8>>> {
+    let spec = format!("{sha}:{path}");
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(mirror)
+        .arg("show")
+        .arg(&spec)
+        .output()
+        .map_err(|e| eyre!("could not run git: {e} (is git on PATH?)"))?;
+    if out.status.success() {
+        Ok(Some(out.stdout))
+    } else {
+        Ok(None)
+    }
+}
+
 #[cfg(test)]
 mod tests;

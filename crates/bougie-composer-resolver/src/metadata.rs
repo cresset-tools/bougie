@@ -102,6 +102,21 @@ pub struct Repo {
 pub enum RepoKind {
     Composer,
     Path(PathRepoConfig),
+    /// A Composer `type: vcs` (git) repository. Its candidates are
+    /// discovered by cloning the repo and reading each tag/branch's
+    /// `composer.json`, then seeded into the resolver cache before the
+    /// solve — like [`RepoKind::Path`], never HTTP-fetched.
+    Vcs(VcsRepoConfig),
+}
+
+/// Parsed configuration of a Composer `type: vcs` (git) repository entry.
+/// Only the clone `url` is needed — versions come from the repo's git
+/// tags and branches, discovered at seed time.
+#[derive(Debug, Clone)]
+pub struct VcsRepoConfig {
+    /// The repository `url` verbatim from composer.json — a git remote
+    /// (https or ssh) that `git` can clone.
+    pub url: String,
 }
 
 /// Parsed configuration of a Composer `type: path` repository entry.
@@ -251,9 +266,38 @@ impl Repo {
         }
     }
 
+    /// Build a `vcs` (git) repository from its parsed config. Like
+    /// [`Repo::path`], resolution to concrete package versions happens
+    /// later (at seed time, by cloning and reading git refs); the cache
+    /// namespace is a stable hash of the url.
+    pub fn vcs(config: VcsRepoConfig) -> Self {
+        let url = config.url.clone();
+        let cache_namespace = format!("vcs-{:016x}", fnv1a(&url));
+        Self {
+            kind: RepoKind::Vcs(config),
+            url,
+            cache_namespace,
+            auth: None,
+            protocol: None,
+            dist_mirrors: Vec::new(),
+        }
+    }
+
     /// Whether this is a `type: path` repository.
     pub fn is_path(&self) -> bool {
         matches!(self.kind, RepoKind::Path(_))
+    }
+
+    /// Whether this is a `type: vcs` (git) repository.
+    pub fn is_vcs(&self) -> bool {
+        matches!(self.kind, RepoKind::Vcs(_))
+    }
+
+    /// Whether this repo's candidates are seeded into the resolver cache
+    /// locally (path from disk, vcs from a git clone) rather than fetched
+    /// over HTTP. The metadata/prefetch paths skip these repos.
+    pub fn seeds_candidates(&self) -> bool {
+        matches!(self.kind, RepoKind::Path(_) | RepoKind::Vcs(_))
     }
 
     /// Attach auth credentials. Chainable on `Repo::from_url`.
