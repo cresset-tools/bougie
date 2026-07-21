@@ -1922,10 +1922,12 @@ fn unknown_repo_type_yields_build_error() {
 }
 
 #[test]
-fn vcs_repo_type_is_ignored_silently() {
-    // VCS repositories aren't supported yet but should not break
-    // resolution against the public-Packagist fallback for packages
-    // that DO live there.
+fn vcs_repo_present_does_not_block_packagist() {
+    // A `type: vcs` repo is now parsed and served by the seeding path.
+    // This direct-resolve harness doesn't run the seed step, so the vcs
+    // repo contributes nothing over the network (`fetch_one` returns
+    // `None` for it) and a package that also lives on Packagist still
+    // resolves from there — no clone attempt, no breakage.
     let tmp = TempDir::new().unwrap();
     let paths = paths_in(tmp.path());
 
@@ -1958,6 +1960,85 @@ fn vcs_repo_type_is_ignored_silently() {
     assert!(solution
         .get(&PubGrubPackage::Package("acme/foo".into()))
         .is_some());
+}
+
+#[cfg(unix)]
+#[test]
+fn vcs_repo_resolves_from_git_source() {
+    // End-to-end D2: a `{type: vcs}` git repo is cloned, its tag becomes a
+    // candidate version, the solver picks it, and the lock carries a
+    // `source` block (no dist) — all from a file:// repo, no network.
+    use crate::platform::PlatformIgnore;
+    use crate::update::{resolve_for_lockfile, ResolutionStrategy};
+
+    let tmp = TempDir::new().unwrap();
+    let paths = paths_in(tmp.path());
+
+    // The dependency's git origin (one tagged version, no requires so the
+    // solve needs nothing from Packagist).
+    let origin = tmp.path().join("origin");
+    std::fs::create_dir_all(&origin).unwrap();
+    let git = |args: &[&str]| {
+        let st = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&origin)
+            .args(["-c", "user.email=t@e", "-c", "user.name=t", "-c", "commit.gpgsign=false"])
+            .args(args)
+            .status()
+            .unwrap();
+        assert!(st.success(), "git {args:?}");
+    };
+    git(&["init", "-q", "-b", "main"]);
+    std::fs::write(origin.join("composer.json"), r#"{"name":"acme/lib","require":{}}"#).unwrap();
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "v1"]);
+    git(&["tag", "v1.2.0"]);
+    let tag_sha = {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&origin)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).trim().to_owned()
+    };
+    let url = format!("file://{}", origin.display());
+
+    // The consuming project requires it from the vcs repo.
+    let proj = tmp.path().join("proj");
+    std::fs::create_dir_all(&proj).unwrap();
+    let composer_json = format!(
+        r#"{{
+            "name": "acme/app",
+            "repositories": [{{ "type": "vcs", "url": "{url}" }}],
+            "require": {{ "acme/lib": "^1.0" }}
+        }}"#
+    );
+    std::fs::write(proj.join("composer.json"), composer_json).unwrap();
+
+    // Packagist repo is unused (acme/lib is seeded and has no deps).
+    let packagist = crate::metadata::Repo::from_url("http://127.0.0.1:9/");
+    let (_composer_json_bytes, outcome) = resolve_for_lockfile(
+        &paths,
+        &proj,
+        packagist,
+        ResolutionStrategy::Highest,
+        &PlatformIgnore::default(),
+    )
+    .expect("resolve must succeed");
+
+    // The resolved packages land in the outcome (the lock writer's input).
+    let pkg = outcome
+        .packages
+        .iter()
+        .find(|p| p.name == "acme/lib")
+        .expect("acme/lib resolved from the vcs repo");
+    assert_eq!(pkg.version, "1.2.0", "tag version resolved (leading v stripped)");
+    assert!(pkg.dist.is_none(), "vcs package has no dist");
+    let src = pkg.source.as_ref().expect("source block written");
+    assert_eq!(src.kind, "git");
+    assert_eq!(src.url, url);
+    assert_eq!(src.reference, tag_sha);
 }
 
 #[test]

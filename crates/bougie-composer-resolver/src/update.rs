@@ -106,10 +106,11 @@ use crate::metadata::{
     fetch_package_metadata_optional, fetch_package_metadata_optional_async,
     fetch_package_metadata_v1_optional, fetch_package_metadata_v1_optional_async,
     load_v1_provider_table, load_v1_provider_table_async, probe_protocol, PathRepoConfig,
-    ReferenceMode, Repo, RepoKind, RepoProtocol, Variant,
+    ReferenceMode, Repo, RepoKind, RepoProtocol, Variant, VcsRepoConfig,
 };
 
 mod path_repo;
+mod vcs_repo;
 use crate::verify::{is_platform, to_range, ComposerRange, ProviderError, PubGrubPackage};
 
 /// Cache key: `(repo url, package name, stable/dev variant)` — the exact
@@ -343,15 +344,15 @@ pub struct ResolveProvider {
     /// preference to. Built from `root_deps` so the membership test uses the
     /// same [`PackageName`] normalization the solver feeds `choose_version`.
     direct_deps: FxHashSet<PackageName>,
-    /// Package names owned by a `type: path` repository — seeded into
-    /// [`Self::cache`] from disk before the solve. These names are
-    /// *canonical* to the path repo: they are never fetched from
-    /// Packagist (the prefetch BFS pre-marks them visited, and
-    /// `load_real_candidates` short-circuits them), so a path repo
-    /// shadows any same-named Packagist package, matching Composer's
-    /// repository-priority semantics. Empty unless the root
-    /// composer.json declares a path repo.
-    path_owned_names: FxHashSet<PackageName>,
+    /// Package names owned by a locally-seeded repository — a `type: path`
+    /// repo (read from disk) or a `type: vcs` git repo (read from a clone)
+    /// — inserted into [`Self::cache`] before the solve. These names are
+    /// *canonical* to that repo: they are never fetched from Packagist
+    /// (the prefetch BFS pre-marks them visited, and `load_real_candidates`
+    /// short-circuits them), so the repo shadows any same-named Packagist
+    /// package, matching Composer's repository-priority semantics. Empty
+    /// unless the root composer.json declares a path or vcs repo.
+    seeded_names: FxHashSet<PackageName>,
 }
 
 /// One entry in the virtual provider index — "real package
@@ -570,7 +571,7 @@ impl ResolveProvider {
             platform,
             resolution: ResolutionStrategy::default(),
             direct_deps,
-            path_owned_names: FxHashSet::default(),
+            seeded_names: FxHashSet::default(),
         })
     }
 
@@ -693,9 +694,9 @@ impl ResolveProvider {
         let original = std::mem::take(&mut self.repos);
         let mut updated = Vec::with_capacity(original.len());
         for repo in original {
-            // Path repos have no `packages.json` to probe — they're
-            // local directories seeded into the cache from disk.
-            if repo.is_path() {
+            // Path/vcs repos have no `packages.json` to probe — their
+            // candidates are seeded into the cache (from disk / a clone).
+            if repo.seeds_candidates() {
                 updated.push(repo);
                 continue;
             }
@@ -750,7 +751,7 @@ impl ResolveProvider {
         // within one name is ignored.
         for (name, version, package) in seeded {
             let interned = name.clone();
-            self.path_owned_names.insert(interned.clone());
+            self.seeded_names.insert(interned.clone());
             // Register provide/replace so a path package that provides
             // a virtual is visible to the solver.
             self.register_virtuals_from(&interned, std::slice::from_ref(&package));
@@ -763,10 +764,61 @@ impl ResolveProvider {
         }
     }
 
-    /// The package names this provider considers owned by a path repo.
-    /// Used by the prefetch BFS to avoid HTTP-fetching them.
-    fn path_owned_names(&self) -> &FxHashSet<PackageName> {
-        &self.path_owned_names
+    /// Read every `type: vcs` git repository's packages and seed them
+    /// into the candidate cache: clone/refresh each repo's mirror, read
+    /// each tag/branch's `composer.json`, and insert one candidate per
+    /// ref (with a `source` block, no dist).
+    ///
+    /// Call once, in the same slot as [`Self::seed_path_candidates`]
+    /// (after [`Self::discover_repos`], before [`Self::pre_fetch_closure`]):
+    /// the prefetch needs the seeded name set so it skips fetching these
+    /// from Packagist, and the seeded entries present so the BFS can crawl
+    /// their transitive requires. A repo that fails to clone or has no
+    /// usable refs is warn-skipped rather than failing the whole resolve.
+    ///
+    /// Unlike path seeding this makes network calls (git clone/fetch), so
+    /// it runs only on resolve paths — never on `install` from a lock.
+    pub fn seed_vcs_candidates(&mut self) {
+        let mut seeded: Vec<(PackageName, Version, LockPackage)> = Vec::new();
+        for repo in &self.repos {
+            let RepoKind::Vcs(cfg) = &repo.kind else { continue };
+            match vcs_repo::read_vcs_packages(&self.paths, cfg) {
+                Ok(pkgs) => {
+                    for sp in pkgs {
+                        let name = PackageName::from(sp.package.name.as_str());
+                        seeded.push((name, sp.version, sp.package));
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        url = %cfg.url, error = %e,
+                        "failed to read vcs repository; skipping",
+                    );
+                }
+            }
+        }
+
+        // First write wins for a name (declaration-order priority); a
+        // duplicate version within one name is ignored. Identical policy
+        // to `seed_path_candidates`.
+        for (name, version, package) in seeded {
+            let interned = name.clone();
+            self.seeded_names.insert(interned.clone());
+            self.register_virtuals_from(&interned, std::slice::from_ref(&package));
+            let mut cache = self.cache.borrow_mut();
+            let entry = cache.entry(interned).or_default();
+            if entry.iter().any(|(v, _)| *v == version) {
+                continue;
+            }
+            entry.push((version, package));
+        }
+    }
+
+    /// The package names this provider considers owned by a locally-seeded
+    /// (path or vcs) repo. Used by the prefetch BFS to avoid HTTP-fetching
+    /// them.
+    fn seeded_names(&self) -> &FxHashSet<PackageName> {
+        &self.seeded_names
     }
 
     /// Inspect what's been fetched so far. Exposed for tests + future
@@ -1113,7 +1165,7 @@ impl ResolveProvider {
         // from disk; never fall through to a Packagist fetch for them.
         // (Normally they're already in `cache` so this path isn't hit,
         // but a cache miss must not leak a network request.)
-        if self.path_owned_names.contains(name) {
+        if self.seeded_names.contains(name) {
             return Ok(Vec::new());
         }
         let mut versions: Vec<LockPackage> = Vec::new();
@@ -1185,11 +1237,11 @@ impl ResolveProvider {
         package: &str,
         variant: Variant,
     ) -> eyre::Result<Option<bougie_composer::metadata::PackageMetadata>> {
-        // Path repos have no network metadata; their candidates are
+        // Path/vcs repos have no network metadata; their candidates are
         // seeded directly into the cache before the solve. A lazy
         // `load_real_candidates` miss must never fall through to HTTP
         // here.
-        if repo.is_path() {
+        if repo.seeds_candidates() {
             return Ok(None);
         }
         match &repo.protocol {
@@ -1517,9 +1569,9 @@ impl ResolveProvider {
         // the initial frontier. (Only runtime `require`; Composer never
         // installs a dependency's `require-dev`.) Path-owned names
         // themselves are filtered below so they're never HTTP-fetched.
-        if !self.path_owned_names.is_empty() {
+        if !self.seeded_names.is_empty() {
             let cache = self.cache.borrow();
-            for owned in &self.path_owned_names {
+            for owned in &self.seeded_names {
                 let Some(versions) = cache.get(owned) else { continue };
                 for (_, pkg) in versions {
                     for req in pkg.require.keys() {
@@ -1603,7 +1655,7 @@ impl ResolveProvider {
                 prefetch_concurrency_limit(),
                 progress,
                 self.meta_cache.clone(),
-                self.path_owned_names().clone(),
+                self.seeded_names().clone(),
             ))?
         };
 
@@ -1871,11 +1923,10 @@ async fn load_real_candidates_isolated(
 ) -> Result<PrefetchOutcome, ProviderError> {
     let mut versions: Vec<LockPackage> = Vec::new();
     for repo in repos {
-        // Path repos contribute nothing over the network — their
-        // candidates are seeded into the cache from disk before the
-        // prefetch runs. Skip so the BFS never tries to HTTP-fetch a
-        // path-owned name.
-        if repo.is_path() {
+        // Path/vcs repos contribute nothing over the network — their
+        // candidates are seeded into the cache before the prefetch runs.
+        // Skip so the BFS never tries to HTTP-fetch a seeded name.
+        if repo.seeds_candidates() {
             continue;
         }
         // Hold the host's permit across this repo's stable+dev fetches,
@@ -2309,6 +2360,23 @@ fn parse_path_repo(
     Ok(PathRepoConfig { url, symlink, relative, reference, versions })
 }
 
+/// Parse a `{"type": "vcs"|"git"|"github"|..., "url": ...}` repository
+/// entry into a [`VcsRepoConfig`]. Only the clone `url` is read here;
+/// git refs are discovered later, when the resolver seeds vcs candidates
+/// ([`ResolveProvider::seed_vcs_candidates`]).
+fn parse_vcs_repo(
+    entry: &serde_json::Map<String, Value>,
+) -> Result<VcsRepoConfig, BuildError> {
+    let url = entry
+        .get("url")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            BuildError::Internal("repository entry of type \"vcs\" is missing `url`".into())
+        })?
+        .to_owned();
+    Ok(VcsRepoConfig { url })
+}
+
 fn parse_repo_entry(
     entry: &serde_json::Map<String, Value>,
     auth: &HashMap<String, crate::metadata::AuthCredentials>,
@@ -2332,13 +2400,19 @@ fn parse_repo_entry(
             repos.push(repo.with_auth(creds));
             Ok(())
         }
-        Some(
-            "vcs" | "github" | "git" | "bitbucket" | "gitlab" | "git-bitbucket" | "hg"
-            | "fossil" | "svn",
-        ) => {
-            // VCS family — not supported yet. Silently ignore so the
-            // resolver can still make progress on packages that
-            // happen to be on Packagist too. Follow-up issue.
+        Some("vcs" | "github" | "git" | "bitbucket" | "gitlab" | "git-bitbucket") => {
+            // Git-family VCS repos: clone the repo and read each tag/branch's
+            // composer.json for candidates (seeded before the solve). A
+            // non-git `url` under `type: vcs` would fail to clone and is
+            // warn-skipped at seed time rather than here.
+            let config = parse_vcs_repo(entry)?;
+            repos.push(Repo::vcs(config));
+            Ok(())
+        }
+        Some("hg" | "fossil" | "svn") => {
+            // Non-git VCS drivers are not supported. Silently ignore so
+            // the resolver can still make progress on packages that also
+            // live on Packagist.
             Ok(())
         }
         Some("path") => {
@@ -3960,8 +4034,10 @@ pub fn dry_run_update_partial(
         repos = provider.repos.len(),
         "discover_repos",
     );
-    // Seed `type: path` repositories from disk before the prefetch.
+    // Seed `type: path` (disk) and `type: vcs` (git clone) repositories
+    // before the prefetch.
     provider.seed_path_candidates(project_root);
+    provider.seed_vcs_candidates();
     let t_prefetch = std::time::Instant::now();
     provider
         .pre_fetch_closure()
@@ -4319,10 +4395,12 @@ fn solve_into_lock_packages(
         no_dev,
         "discover_repos",
     );
-    // Seed `type: path` repositories from disk before the prefetch so
-    // their candidates are present and their transitive requires get
-    // crawled. No-op when the project declares no path repos.
+    // Seed `type: path` (disk) and `type: vcs` (git clone) repositories
+    // before the prefetch so their candidates are present and their
+    // transitive requires get crawled. No-op when the project declares
+    // no path/vcs repos.
     provider.seed_path_candidates(project_root);
+    provider.seed_vcs_candidates();
     // Eager pre-fetch: load every reachable package's metadata
     // before the solver runs so virtual providers are registered.
     // Mirrors Composer's PoolBuilder.
