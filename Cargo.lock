@@ -831,16 +831,25 @@ dependencies = [
 name = "bougie-tunnel"
 version = "0.52.0"
 dependencies = [
+ "bougie-tunnel-protocol",
  "eyre",
  "rustls-pemfile",
- "serde",
- "serde_json",
  "tokio",
  "tokio-rustls",
  "tokio-util",
  "tracing",
  "webpki-roots 0.26.11",
  "yamux",
+]
+
+[[package]]
+name = "bougie-tunnel-protocol"
+version = "0.52.0"
+dependencies = [
+ "eyre",
+ "serde",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]

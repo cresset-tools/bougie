@@ -8,15 +8,13 @@ repository = "https://github.com/cresset-tools/bougie"
 rust-version = "1.95"
 authors.workspace = true
 
+# The client↔relay wire protocol, shared with the (closed) relay so the two
+# ends can't drift.
+[dependencies.bougie-tunnel-protocol]
+workspace = true
+
 [dependencies.eyre]
 version = "0.6"
-
-[dependencies.serde]
-version = "1.0"
-features = ["derive"]
-
-[dependencies.serde_json]
-version = "1.0"
 
 [dependencies.tokio]
 version = "1"
