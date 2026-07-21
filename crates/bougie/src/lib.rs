@@ -126,6 +126,7 @@ fn command_name(cmd: &Command) -> &'static str {
         Command::Projects(_) => "projects",
         Command::Db(_) => "db",
         Command::Doctor(_) => "doctor",
+        Command::Ci(_) => "ci",
         Command::Make { .. } => "make",
         Command::Format { .. } => "format",
         Command::Start { .. } => "start",
@@ -824,6 +825,10 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
             commands::login::ProvisionMode::from_flags(no_provision, composer_json),
         ),
         Command::Format { args } => commands::format::run(&args),
+        #[cfg(unix)]
+        Command::Ci(bougie_cli::CiCommand::Init(args)) => commands::ci::run(format, args),
+        #[cfg(not(unix))]
+        Command::Ci(_) => unsupported_on_windows("bougie ci"),
         #[cfg(unix)]
         Command::Start { no_sync, dry_run, explain, no_builtin, recipe } => {
             commands::start::run(

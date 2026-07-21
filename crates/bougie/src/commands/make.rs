@@ -360,7 +360,7 @@ fn team_task_to_def(task: crate::commands::team::ManifestRecipeTask) -> bougie_r
 /// but a project's own same-named task still wins. `--no-builtin` /
 /// `--no-team` drop a layer. Returns the merged recipe plus, per task, which
 /// layer its winning definition came from (for `--list`).
-fn load_merged_recipe(
+pub(crate) fn load_merged_recipe(
     project_root: &PathBuf,
     opts: &MakeOptions,
 ) -> Result<(String, Recipe, BTreeMap<String, TaskSource>)> {

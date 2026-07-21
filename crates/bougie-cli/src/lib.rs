@@ -604,6 +604,39 @@ pub enum Command {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, value_name = "ARGS")]
         args: Vec<std::ffi::OsString>,
     },
+
+    /// Generate CI that reproduces the local bougie toolchain (parity)
+    #[command(subcommand, display_order = 35, hide = true)]
+    Ci(CiCommand),
+}
+
+#[derive(Subcommand, Debug)]
+pub enum CiCommand {
+    /// Write a CI workflow that composes the first-party setup-bougie action
+    /// (or GitLab component) with this project's recipe tasks — CI runs the
+    /// same `bougie make <task>` commands you run locally, so parity is
+    /// structural, not maintained.
+    Init(CiInitArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct CiInitArgs {
+    /// CI provider. Autodetected from `.gitlab-ci.yml` / `.github/` when unset,
+    /// defaulting to `github`.
+    #[arg(long, value_name = "github|gitlab")]
+    pub provider: Option<String>,
+    /// Opt the generated CI into bougie's anonymous usage telemetry: `true`
+    /// (default), `false`, or `local` (record to disk only). Writing it into
+    /// the workflow is the consent; edit the file to change it later.
+    #[arg(long, default_value = "true")]
+    pub telemetry: String,
+    /// For a team project: the sconce repository (`<org>/<repo>`) whose `read`
+    /// CI policy authorizes the zero-secret `bougie login --ci` step.
+    #[arg(long, value_name = "ORG/REPO")]
+    pub repository: Option<String>,
+    /// Overwrite an existing workflow file.
+    #[arg(long)]
+    pub force: bool,
 }
 
 #[derive(Subcommand, Debug)]
