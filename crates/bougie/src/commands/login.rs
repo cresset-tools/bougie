@@ -211,21 +211,132 @@ pub fn run(format: OutputFormat, url: &str, mode: ProvisionMode) -> Result<ExitC
         }
     };
 
-    // 4. Persist the token where the resolver reads it.
-    let path = bougie_composer_resolver::update::write_bougie_bearer(&host, &token)
+    // 4 + 5: store the token where the resolver reads it, then auto-provision.
+    finish(format, &client, base, &host, &token, mode)
+}
+
+/// Non-interactive **CI** login: exchange the workflow's OIDC JWT for a
+/// short-lived read token via `POST /oauth/ci` (zero stored secret), then store
+/// + provision exactly like the device flow. The registry's `read` CI policy on
+/// `repository` decides the token's scope — an org-scoped policy yields a token
+/// valid for every private repo in the org, which is what `bougie sync` needs.
+pub fn run_ci(
+    format: OutputFormat,
+    url: &str,
+    repository: &str,
+    audience: &str,
+    mode: ProvisionMode,
+) -> Result<ExitCode> {
+    let base = url.trim_end_matches('/');
+    if !(base.starts_with("http://") || base.starts_with("https://")) {
+        return Err(eyre!(
+            "registry URL must start with http:// or https:// (got `{url}`)"
+        ));
+    }
+    if repository.is_empty() {
+        return Err(eyre!("--ci requires --repository <org/repo>"));
+    }
+    let host = bougie_composer_resolver::metadata::auth_origin(base);
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .user_agent(format!("bougie/{}", env!("CARGO_PKG_VERSION")))
+        .build()
+        .wrap_err("building http client")?;
+
+    let jwt = acquire_ci_jwt(&client, audience)?;
+    let token = ci_exchange(&client, base, repository, &jwt)?;
+    finish(format, &client, base, &host, &token, mode)
+}
+
+/// Store the read token where the resolver looks (keyed by origin), then
+/// best-effort auto-provision the project's Composer repositories. Shared by the
+/// device flow and the CI exchange.
+fn finish(
+    format: OutputFormat,
+    client: &reqwest::blocking::Client,
+    base: &str,
+    host: &str,
+    token: &str,
+    mode: ProvisionMode,
+) -> Result<ExitCode> {
+    let path = bougie_composer_resolver::update::write_bougie_bearer(host, token)
         .wrap_err("storing the login token")?;
-
-    // 5. Auto-provision the project's `repositories` (best-effort).
-    let provision = provision(&client, base, &token, mode);
-
+    let provision = provision(client, base, token, mode);
     let result = LoginResult {
         schema_version: 1,
-        host,
+        host: host.to_owned(),
         stored_at: path.display().to_string(),
         provision,
     };
     emit(format, &result)?;
     Ok(ExitCode::SUCCESS)
+}
+
+/// Acquire the CI platform's OIDC JWT for the read exchange. Preference order:
+/// `$SCONCE_ID_TOKEN` (GitLab's `id_tokens:`, or any pre-fetched JWT), then
+/// GitHub Actions' token service (`$ACTIONS_ID_TOKEN_REQUEST_URL/_TOKEN` with
+/// `audience`). Errors with setup guidance when neither is available.
+fn acquire_ci_jwt(client: &reqwest::blocking::Client, audience: &str) -> Result<String> {
+    if let Ok(jwt) = std::env::var("SCONCE_ID_TOKEN") {
+        if !jwt.trim().is_empty() {
+            return Ok(jwt);
+        }
+    }
+    let req_url = std::env::var("ACTIONS_ID_TOKEN_REQUEST_URL").unwrap_or_default();
+    let req_token = std::env::var("ACTIONS_ID_TOKEN_REQUEST_TOKEN").unwrap_or_default();
+    if req_url.is_empty() || req_token.is_empty() {
+        return Err(eyre!(
+            "no CI OIDC token available. On GitHub Actions grant `permissions: id-token: write`; \
+             on GitLab add an `id_tokens:` block exposing $SCONCE_ID_TOKEN. (Or set \
+             $SCONCE_ID_TOKEN to a pre-fetched JWT.)"
+        ));
+    }
+    #[derive(Deserialize)]
+    struct IdTokenResponse {
+        value: String,
+    }
+    let resp: IdTokenResponse = client
+        .get(&req_url)
+        .query(&[("audience", audience)])
+        .bearer_auth(&req_token)
+        .send()
+        .wrap_err("requesting a GitHub Actions OIDC token")?
+        .error_for_status()
+        .wrap_err("the GitHub Actions OIDC token request failed")?
+        .json()
+        .wrap_err("parsing the GitHub Actions OIDC token response")?;
+    Ok(resp.value)
+}
+
+/// Trade the OIDC JWT for a short-lived read token at `POST /oauth/ci`.
+fn ci_exchange(
+    client: &reqwest::blocking::Client,
+    base: &str,
+    repository: &str,
+    jwt: &str,
+) -> Result<String> {
+    let resp = client
+        .post(format!("{base}/oauth/ci"))
+        .json(&serde_json::json!({ "repository": repository, "jwt": jwt }))
+        .send()
+        .wrap_err("contacting the registry for the CI token exchange")?;
+    if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+        return Err(eyre!(
+            "the registry rejected the CI OIDC exchange (401). Check that {repository} has a \
+             `read` CI policy whose issuer/audience/claims match this workflow — an admin adds \
+             one with `sconce ci-policy add {repository} --capability read --scope org …`."
+        ));
+    }
+    let body: serde_json::Value = resp
+        .error_for_status()
+        .wrap_err("the CI token exchange failed")?
+        .json()
+        .wrap_err("parsing the CI token exchange response")?;
+    body.get("access_token")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| eyre!("the exchange returned no access_token"))
 }
 
 /// Discover the repositories the token can access and write them into the
@@ -338,4 +449,25 @@ pub(crate) fn fetch_repo_urls(
     }
     let list: RepoListResponse = resp.json().wrap_err("parsing repository list")?;
     Ok(list.repositories.into_iter().map(|r| r.url).collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ProvisionMode, run_ci};
+    use bougie_cli::OutputFormat;
+
+    #[test]
+    fn run_ci_rejects_bad_url_and_missing_repository() {
+        // Bad scheme is caught before any network I/O.
+        let err = run_ci(OutputFormat::Text, "ftp://x", "acme/app", "sconce", ProvisionMode::Skip)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("http://"), "{err}");
+
+        // A valid URL but no repository → the `--repository` guard, also before I/O.
+        let err = run_ci(OutputFormat::Text, "https://x", "", "sconce", ProvisionMode::Skip)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("--repository"), "{err}");
+    }
 }
