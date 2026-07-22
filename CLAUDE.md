@@ -275,10 +275,11 @@ change up. Examples in `git log`: `feat(composer-resolver): ...`,
 
 ## Plan docs (in-flight)
 
-- `RESOLVER_PLAN.md` — Native pubgrub-based Composer resolver. Largely
-  shipped; ongoing work in `bougie-composer-resolver`.
 - `RESOLVER_TEST_PLAN.md` — Resolver test architecture (composer/semver
-  conformance, fixtures, cross-check, derivation snapshots).
+  conformance, fixtures, cross-check, derivation snapshots). The native
+  resolver itself shipped (its `RESOLVER_PLAN.md` was deleted on
+  completion, incl. Phase D VCS/source support); this covers the test
+  suite's remaining layer.
 - `SERVER_PLAN.md` — `bougie server` engine per upstream `SERVER.md`.
   8-phase bottom-up build (shipped).
 - `SERVER_CLI_PLAN.md` — `bougie server` CLI surface redesign: the
