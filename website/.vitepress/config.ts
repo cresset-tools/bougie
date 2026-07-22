@@ -1,7 +1,82 @@
 import { defineConfig } from 'vitepress'
+import { existsSync, readFileSync, readdirSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import path from 'node:path'
 import { genFeed } from './genFeed'
 
+// --- Draft pages ----------------------------------------------------
+// A page with `draft: true` in its frontmatter is hidden from the
+// production build — no route, no sidebar entry, no blog listing, no
+// feed item — but still renders under `vitepress dev` so it can be
+// previewed and written. Flip everything to draft, publish when ready.
+const srcDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+const HIDE_DRAFTS = process.env.NODE_ENV === 'production'
+
+function walkMarkdown(dir: string): string[] {
+  if (!existsSync(dir)) return []
+  return readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
+    const p = path.join(dir, e.name)
+    if (e.isDirectory()) return walkMarkdown(p)
+    return e.isFile() && p.endsWith('.md') ? [p] : []
+  })
+}
+
+function isDraft(absPath: string): boolean {
+  const m = readFileSync(absPath, 'utf-8').match(/^---\r?\n([\s\S]*?)\r?\n---/)
+  return m ? /^draft:\s*(true|yes)\s*$/m.test(m[1]) : false
+}
+
+// File path (relative to srcDir) → clean route, e.g.
+// docs/guides/foo.md → /docs/guides/foo, docs/guides/index.md → /docs/guides
+function routeOf(rel: string): string {
+  const noExt = rel.replace(/\.md$/, '').replace(/\\/g, '/')
+  return ('/' + noExt.replace(/(^|\/)index$/, '$1')).replace(/\/$/, '') || '/'
+}
+
+const norm = (link: string) =>
+  ('/' + link).replace(/\/{2,}/g, '/').replace(/\.html$/, '').replace(/\/$/, '') ||
+  '/'
+
+const draftFiles: string[] = []
+const draftRoutes = new Set<string>()
+if (HIDE_DRAFTS) {
+  for (const abs of [
+    ...walkMarkdown(path.join(srcDir, 'docs')),
+    ...walkMarkdown(path.join(srcDir, 'blog')),
+  ]) {
+    if (isDraft(abs)) {
+      const rel = path.relative(srcDir, abs)
+      draftFiles.push(rel)
+      draftRoutes.add(routeOf(rel))
+    }
+  }
+}
+
+// Remove draft entries (and any group left empty) from a sidebar object.
+function pruneSidebar(sidebar: Record<string, any[]>) {
+  const prune = (items: any[]): any[] =>
+    items
+      .map((item) => {
+        if (item.items) {
+          const kids = prune(item.items)
+          return kids.length ? { ...item, items: kids } : null
+        }
+        return item.link && draftRoutes.has(norm(item.link)) ? null : item
+      })
+      .filter(Boolean)
+  return Object.fromEntries(
+    Object.entries(sidebar).map(([k, v]) => [k, prune(v)]),
+  )
+}
+
 export default defineConfig({
+  // Draft pages: excluded from the production build; links to them are
+  // ignored so a still-linked draft doesn't fail the build.
+  srcExclude: draftFiles,
+  ignoreDeadLinks: HIDE_DRAFTS
+    ? [(link: string) => draftRoutes.has(norm(link))]
+    : false,
+
   title: 'bougie',
   description:
     'PHP toolchain management, the luxury way. A Composer-compatible package manager, PHP version manager, dev services and web server in one fast binary.',
@@ -94,7 +169,8 @@ export default defineConfig({
 
     // Diátaxis-shaped sidebar: Getting started, then Tutorials (learn),
     // Guides (do), Reference (look up), Concepts (understand).
-    sidebar: {
+    // pruneSidebar() drops any entry whose page is a draft (prod only).
+    sidebar: pruneSidebar({
       '/docs/': [
         {
           text: 'Getting started',
@@ -159,7 +235,7 @@ export default defineConfig({
           ],
         },
       ],
-    },
+    }),
 
     socialLinks: [
       { icon: 'github', link: 'https://github.com/cresset-tools/bougie' },

@@ -27,8 +27,8 @@ export async function genFeed(config: SiteConfig) {
   )
 
   for (const { url, excerpt, frontmatter, html } of posts) {
-    // Skip the listing page itself.
-    if (frontmatter.date === undefined) continue
+    // Skip the listing page itself and any draft.
+    if (frontmatter.date === undefined || frontmatter.draft) continue
     feed.addItem({
       title: frontmatter.title,
       id: `${hostname}${url}`,

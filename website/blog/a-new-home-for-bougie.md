@@ -2,6 +2,7 @@
 title: A new home for bougie
 date: 2026-07-17
 description: Lorem ipsum dolor sit amet, consectetur adipiscing elit.
+draft: true
 sidebar: false
 aside: false
 ---

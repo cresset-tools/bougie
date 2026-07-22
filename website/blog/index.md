@@ -16,7 +16,7 @@ Subscribe via <a href="/blog/feed.xml" target="_blank" rel="noreferrer">RSS</a>.
 
 <ul class="blog-index">
   <li v-for="post of posts" :key="post.url">
-    <h2><a :href="post.url">{{ post.title }}</a></h2>
+    <h2><a :href="post.url">{{ post.title }}</a><span v-if="post.draft" class="draft-tag">draft</span></h2>
     <p class="date">{{ post.date.string }}</p>
     <p v-if="post.description">{{ post.description }}</p>
   </li>
@@ -49,5 +49,16 @@ Subscribe via <a href="/blog/feed.xml" target="_blank" rel="noreferrer">RSS</a>.
 }
 .blog-index p {
   margin: 0;
+}
+/* Dev-only marker: drafts never reach the production listing. */
+.draft-tag {
+  margin-left: 0.6em;
+  padding: 1px 6px;
+  font: 700 10px/1.6 var(--vp-font-family-mono);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--vp-c-bg);
+  background: var(--vp-c-text-1);
+  vertical-align: middle;
 }
 </style>
