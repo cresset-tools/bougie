@@ -1,3 +1,7 @@
+---
+draft: true
+---
+
 # Service catalog
 
 Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod

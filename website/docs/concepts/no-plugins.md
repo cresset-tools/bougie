@@ -1,3 +1,7 @@
+---
+draft: true
+---
+
 # No plugins, opt-in scripts
 
 Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod

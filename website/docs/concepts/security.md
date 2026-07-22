@@ -1,3 +1,7 @@
+---
+draft: true
+---
+
 # Security & supply chain
 
 Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod

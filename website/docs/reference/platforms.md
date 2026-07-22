@@ -1,3 +1,7 @@
+---
+draft: true
+---
+
 # Platform support
 
 Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod

@@ -1,3 +1,7 @@
+---
+draft: true
+---
+
 # Manage dependencies
 
 Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod

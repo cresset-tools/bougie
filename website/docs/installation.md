@@ -1,3 +1,7 @@
+---
+draft: true
+---
+
 # Installation
 
 ## Installer script (macOS and Linux)

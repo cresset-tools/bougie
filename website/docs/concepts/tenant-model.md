@@ -1,3 +1,7 @@
+---
+draft: true
+---
+
 # The tenant model
 
 Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod

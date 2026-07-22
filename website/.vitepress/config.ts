@@ -52,20 +52,23 @@ if (HIDE_DRAFTS) {
   }
 }
 
-// Remove draft entries (and any group left empty) from a sidebar object.
+// Remove draft entries (and any group/dropdown left empty) from nav or
+// sidebar item lists.
+function pruneItems(items: any[]): any[] {
+  return items
+    .map((item) => {
+      if (item.items) {
+        const kids = pruneItems(item.items)
+        return kids.length ? { ...item, items: kids } : null
+      }
+      return item.link && draftRoutes.has(norm(item.link)) ? null : item
+    })
+    .filter(Boolean)
+}
+
 function pruneSidebar(sidebar: Record<string, any[]>) {
-  const prune = (items: any[]): any[] =>
-    items
-      .map((item) => {
-        if (item.items) {
-          const kids = prune(item.items)
-          return kids.length ? { ...item, items: kids } : null
-        }
-        return item.link && draftRoutes.has(norm(item.link)) ? null : item
-      })
-      .filter(Boolean)
   return Object.fromEntries(
-    Object.entries(sidebar).map(([k, v]) => [k, prune(v)]),
+    Object.entries(sidebar).map(([k, v]) => [k, pruneItems(v)]),
   )
 }
 
@@ -83,6 +86,15 @@ export default defineConfig({
   cleanUrls: true,
   lastUpdated: true,
   sitemap: { hostname: 'https://bougie.tools' },
+
+  // The landing's hand-built top-bar/footer link to /docs/, which is a
+  // draft-controlled route the theme nav can't reach. Expose whether the
+  // docs landing is published so those links can hide themselves.
+  vite: {
+    define: {
+      __DOCS_PUBLISHED__: JSON.stringify(!draftRoutes.has('/docs')),
+    },
+  },
 
   // The landing page (index.md) replicates the hand-built bougie.tools
   // page, which uses custom elements (site-wrap, top-bar, …) — tell Vue
@@ -159,13 +171,15 @@ export default defineConfig({
   themeConfig: {
     siteTitle: 'bougie.tools',
 
-    nav: [
+    // pruneItems() drops nav entries whose page is a draft (prod only),
+    // e.g. "Docs" disappears while the docs landing is still a draft.
+    nav: pruneItems([
       // Changelog lives under /docs/, so exclude it from the Docs match
       // (otherwise both light up on the changelog page).
       { text: 'Docs', link: '/docs/', activeMatch: '^/docs/(?!changelog)' },
       { text: 'Blog', link: '/blog/', activeMatch: '^/blog/' },
       { text: 'Changelog', link: '/docs/changelog', activeMatch: '/docs/changelog' },
-    ],
+    ]),
 
     // Diátaxis-shaped sidebar: Getting started, then Tutorials (learn),
     // Guides (do), Reference (look up), Concepts (understand).

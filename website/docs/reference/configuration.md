@@ -1,3 +1,7 @@
+---
+draft: true
+---
+
 # Configuration
 
 Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod

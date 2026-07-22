@@ -1,3 +1,7 @@
+---
+draft: true
+---
+
 # Extensions
 
 Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod

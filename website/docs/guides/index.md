@@ -1,3 +1,7 @@
+---
+draft: true
+---
+
 # How-to guides
 
 Lorem ipsum dolor sit amet, consectetur adipiscing elit. Guides are

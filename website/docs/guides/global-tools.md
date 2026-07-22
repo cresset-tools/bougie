@@ -1,3 +1,7 @@
+---
+draft: true
+---
+
 # Global tools
 
 Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod

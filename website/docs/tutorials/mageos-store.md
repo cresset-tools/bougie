@@ -1,3 +1,7 @@
+---
+draft: true
+---
+
 # A Mage-OS store in one command
 
 Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod

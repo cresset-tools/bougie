@@ -1,3 +1,7 @@
+---
+draft: true
+---
+
 # Diagnose a failure
 
 Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod

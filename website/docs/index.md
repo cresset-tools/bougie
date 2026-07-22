@@ -1,3 +1,7 @@
+---
+draft: true
+---
+
 # What is bougie?
 
 Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod

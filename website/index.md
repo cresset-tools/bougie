@@ -18,12 +18,19 @@ head:
       content: https://bougie.tools/
 ---
 
+<script setup>
+// __DOCS_PUBLISHED__ is a Vite define (config.ts): false while the docs
+// landing (/docs/) is a draft, so the Docs links hide themselves rather
+// than 404. They reappear automatically once docs are published.
+const docsPublished = __DOCS_PUBLISHED__
+</script>
+
 <div class="landing">
 <site-wrap>
 <top-bar>
 <a class="main-link" href="/">bougie.tools</a>
 <nav>
-<a href="/docs/">Docs</a>
+<a v-if="docsPublished" href="/docs/">Docs</a>
 <a href="/blog/">Blog</a>
 <a href="/docs/changelog">Changelog</a>
 </nav>
@@ -102,7 +109,7 @@ When you have installed bougie, try this command to get a Mage-OS demo:
 
 <footer>
 <a href="https://github.com/cresset-tools/bougie">GitHub</a>
-<a href="/docs/">Docs</a>
+<a v-if="docsPublished" href="/docs/">Docs</a>
 <layout-spacer></layout-spacer>
 <span>a <a href="https://cresset.tools">cresset.tools</a> project</span>
 </footer>

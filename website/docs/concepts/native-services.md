@@ -1,3 +1,7 @@
+---
+draft: true
+---
+
 # Native services, not Docker
 
 Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod

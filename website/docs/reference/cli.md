@@ -1,3 +1,7 @@
+---
+draft: true
+---
+
 # CLI reference
 
 Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod

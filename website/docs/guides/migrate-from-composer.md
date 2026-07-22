@@ -1,3 +1,7 @@
+---
+draft: true
+---
+
 # Migrate from Composer
 
 Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod

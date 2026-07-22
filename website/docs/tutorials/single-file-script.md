@@ -1,3 +1,7 @@
+---
+draft: true
+---
+
 # Single-file scripts
 
 Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod

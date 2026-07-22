@@ -1,3 +1,7 @@
+---
+draft: true
+---
+
 # Environment variables
 
 Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod
