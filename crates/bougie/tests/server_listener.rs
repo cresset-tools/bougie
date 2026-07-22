@@ -32,11 +32,21 @@ struct ServerHandle {
     child: std::process::Child,
     addr: String,
     stderr: Option<std::thread::JoinHandle<Vec<String>>>,
+    // Per-server XDG_RUNTIME_DIR, matching server_fastcgi.rs /
+    // server_control.rs. Owns the TempDir so each server's pool conf +
+    // sockets live in an isolated `$XDG_RUNTIME_DIR/bougie/server/…` root.
+    // Without it every parallel server lands in the shared ambient
+    // `/run/user/<uid>` root, where peers' `prune_project_dirs` can delete
+    // each other's live dirs and — on CI — the runner garbage-collects the
+    // dir mid-test (a flaky "No such file or directory" writing the pool
+    // conf). Kept for the server's lifetime.
+    _runtime_dir: TempDir,
 }
 
 impl ServerHandle {
     fn spawn(env: &TestEnv, config_path: &std::path::Path) -> Self {
         let bin = assert_cmd::cargo::cargo_bin("bougie");
+        let runtime_dir = TempDir::new().expect("tempdir for XDG_RUNTIME_DIR");
         let mut child = StdCommand::new(bin)
             .args([
                 "server",
@@ -48,6 +58,7 @@ impl ServerHandle {
             ])
             .env("BOUGIE_HOME", env.home_path())
             .env("BOUGIE_CACHE", env.cache_path())
+            .env("XDG_RUNTIME_DIR", runtime_dir.path())
             .env_remove("RUST_LOG")
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
@@ -64,7 +75,7 @@ impl ServerHandle {
             }
             lines
         });
-        Self { child, addr, stderr: Some(stderr_thread) }
+        Self { child, addr, stderr: Some(stderr_thread), _runtime_dir: runtime_dir }
     }
 
     fn url(&self, path: &str) -> String {
