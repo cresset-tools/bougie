@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.53.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.52.0...bougie-v0.53.0) (2026-07-23)
+
+
+### Features
+
+* **login:** default `bougie login` (no URL) to Bougie Cloud ([#550](https://github.com/cresset-tools/bougie/issues/550)) ([dda7621](https://github.com/cresset-tools/bougie/commit/dda76211929a3eb6828462691f6b247d58ab9abe))
+* **login:** discover the registry endpoint via a DNS SRV record ([#549](https://github.com/cresset-tools/bougie/issues/549)) ([5349f5c](https://github.com/cresset-tools/bougie/commit/5349f5cf2e078c68f567dff1e6c8356265bbe86b))
+* **tunnel:** extract the wire protocol into a shared bougie-tunnel-protocol crate ([#545](https://github.com/cresset-tools/bougie/issues/545)) ([102c402](https://github.com/cresset-tools/bougie/commit/102c402d20b8a55bd97e27414d7dc41fcc608937))
+
 ## [0.52.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.51.0...bougie-v0.52.0) (2026-07-21)
 
 
