@@ -550,11 +550,12 @@ pub enum Command {
     /// Authenticate against a Composer registry
     #[command(display_order = 6, hide = true)]
     Login {
-        /// Registry URL or domain. A bare domain (e.g. `bougie.cloud`) is
-        /// resolved via its `_bougie-login._tcp` SRV record; a full URL
-        /// (e.g. `https://packages.acme.com`) is used as-is.
+        /// Registry URL or domain. Omit to sign in to Bougie Cloud
+        /// (`bougie.cloud`, or `$BOUGIE_LOGIN_URL`). A bare domain (e.g.
+        /// `bougie.cloud`) is resolved via its `_bougie-login._tcp` SRV record;
+        /// a full URL (e.g. `https://packages.acme.com`) is used as-is.
         #[arg(value_name = "URL")]
-        url: String,
+        url: Option<String>,
         /// Non-interactive CI login: exchange the workflow's OIDC JWT for a
         /// short-lived read token (zero stored secret) instead of the device
         /// flow. The JWT comes from `$SCONCE_ID_TOKEN` (GitLab, or pre-fetched)
@@ -1999,13 +2000,16 @@ mod tests {
     }
 
     #[test]
-    fn login_takes_a_required_url() {
+    fn login_url_is_optional() {
         let Command::Login { url, .. } = cmd(&["bougie", "login", "https://packages.acme.com"]) else {
             panic!("expected login");
         };
-        assert_eq!(url, "https://packages.acme.com");
-        // The URL is required.
-        assert!(Cli::try_parse_from(["bougie", "login"]).is_err());
+        assert_eq!(url.as_deref(), Some("https://packages.acme.com"));
+        // No URL is valid — dispatch defaults it to Bougie Cloud.
+        let Command::Login { url, .. } = cmd(&["bougie", "login"]) else {
+            panic!("expected login");
+        };
+        assert_eq!(url, None);
     }
 
     #[test]
