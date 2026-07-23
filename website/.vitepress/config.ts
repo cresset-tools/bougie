@@ -126,6 +126,25 @@ export default defineConfig({
         }
         return fallback(tokens, idx, options, env, self)
       }
+
+      // Links to a draft page are rendered as plain text in the
+      // production build, so a published page never links into an
+      // unpublished one. In dev (HIDE_DRAFTS off) links stay live.
+      const linkOpen =
+        md.renderer.rules.link_open ||
+        ((t, i, o, _e, s) => s.renderToken(t, i, o))
+      const linkClose =
+        md.renderer.rules.link_close ||
+        ((t, i, o, _e, s) => s.renderToken(t, i, o))
+      const draftLink: boolean[] = []
+      md.renderer.rules.link_open = (tokens, idx, options, env, self) => {
+        const href = tokens[idx].attrGet('href') || ''
+        const isDraft = HIDE_DRAFTS && draftRoutes.has(norm(href))
+        draftLink.push(isDraft)
+        return isDraft ? '' : linkOpen(tokens, idx, options, env, self)
+      }
+      md.renderer.rules.link_close = (tokens, idx, options, env, self) =>
+        draftLink.pop() ? '' : linkClose(tokens, idx, options, env, self)
     },
   },
 
