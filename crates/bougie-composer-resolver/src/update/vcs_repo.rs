@@ -12,7 +12,9 @@
 //!
 //! - a git **tag** becomes the package version (a leading `v` stripped,
 //!   Composer-style), skipped if it isn't a valid version;
-//! - a git **branch** becomes `dev-<branch>`;
+//! - a git **branch** becomes `dev-<branch>`, except a version-like
+//!   branch (`2.4`, `v7`, `1.2.x`) which aliases to an `x-dev` version
+//!   (`2.4.x-dev`, …) so ordinary constraints reach it;
 //! - each version carries a `source: {type: git, url, reference}` block
 //!   (the ref's commit sha) and no `dist`, so the install path clones it.
 
@@ -82,12 +84,13 @@ fn read_ref_package(
     let name = name.to_owned();
 
     // Version comes from the ref: a tag (leading `v` stripped) or a
-    // `dev-<branch>`. An explicit `version` in composer.json is ignored —
-    // Composer derives VCS versions from the ref.
+    // branch (a version-like branch such as `2.4` aliases to `2.4.x-dev`,
+    // else `dev-<branch>`). An explicit `version` in composer.json is
+    // ignored — Composer derives VCS versions from the ref.
     let version_str = if git_ref.is_tag {
         tag_to_version(&git_ref.name)
     } else {
-        format!("dev-{}", git_ref.name)
+        normalize_branch(&git_ref.name)
     };
     let version = match Version::parse(&version_str) {
         Ok(v) => v,
@@ -136,6 +139,52 @@ fn read_ref_package(
         funding: Vec::new(),
     };
     Ok(Some(SeededVcsPackage { version, package }))
+}
+
+/// Composer's branch→version guess (a port of
+/// `VersionParser::normalizeBranch`'s pretty form). A branch whose name
+/// looks like a version series becomes an `x-dev` version so ordinary
+/// constraints reach it:
+///
+/// - `2.4` → `2.4.x-dev`, `7` → `7.x-dev`, `1.2.3` → `1.2.3.x-dev`,
+///   `1.2.x` / `1.2.*` → `1.2.x-dev` (so `^2.4` / `2.4.*` match the branch);
+/// - anything else (`main`, `feature/x`, `2.4-develop`) → `dev-<branch>`.
+///
+/// A version-like branch matches `v?N(.(N|x|X|*)){0,3}` with a numeric
+/// first component; a leading `v` is dropped (the `x-dev` normalized form
+/// is what the solver compares on, so the cosmetic prefix is immaterial —
+/// and bougie locks are semantic-, not byte-, equal to Composer's).
+fn normalize_branch(branch: &str) -> String {
+    let b = branch.trim();
+    let core = b.strip_prefix(['v', 'V']).unwrap_or(b);
+    let parts: Vec<&str> = core.split('.').collect();
+
+    let is_version_branch = (1..=4).contains(&parts.len())
+        && parts.iter().enumerate().all(|(i, p)| {
+            if i == 0 {
+                !p.is_empty() && p.bytes().all(|c| c.is_ascii_digit())
+            } else {
+                (!p.is_empty() && p.bytes().all(|c| c.is_ascii_digit()))
+                    || matches!(*p, "x" | "X" | "*")
+            }
+        });
+    if !is_version_branch {
+        return format!("dev-{b}");
+    }
+
+    // Pad to four components (`.x` for each missing one, `*`/`X` → `x`),
+    // then collapse consecutive `x` components into one — Composer's
+    // `(\.9999999)+ → .x` step. E.g. [2,4,x,x] → 2.4.x, [2,x,x,x] → 2.x,
+    // [2,4,1,x] → 2.4.1.x, [2,4,1,5] → 2.4.1.5.
+    let mut comps: Vec<String> = (0..4)
+        .map(|i| match parts.get(i) {
+            Some(&("x" | "X" | "*")) | None => "x".to_owned(),
+            Some(p) => (*p).to_owned(),
+        })
+        .collect();
+    // Drop trailing/adjacent duplicate `x` runs.
+    comps.dedup_by(|a, b| a.as_str() == "x" && b.as_str() == "x");
+    format!("{}-dev", comps.join("."))
 }
 
 /// Composer's tag→version guess: strip a single leading `v`/`V` when it

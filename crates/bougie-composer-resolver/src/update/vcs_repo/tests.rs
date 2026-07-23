@@ -9,7 +9,7 @@ use std::process::Command;
 use bougie_paths::Paths;
 use tempfile::TempDir;
 
-use super::read_vcs_packages;
+use super::{normalize_branch, read_vcs_packages};
 use crate::metadata::VcsRepoConfig;
 
 fn git_ok(dir: &Path, args: &[&str]) {
@@ -77,4 +77,56 @@ fn reads_tag_and_branch_versions_with_source() {
     // Branch → dev-main, source pinned to the branch head.
     let main_pkg = by_version.get("dev-main").expect("branch version present");
     assert_eq!(main_pkg.package.source.as_ref().unwrap().reference, main_sha);
+}
+
+#[test]
+fn normalize_branch_aliases_version_like_names() {
+    // Version-like branches → x-dev (so `^2.4` / `2.4.*` reach them).
+    for (branch, want) in [
+        ("2.4", "2.4.x-dev"),
+        ("7", "7.x-dev"),
+        ("v7", "7.x-dev"),   // leading v dropped
+        ("1.2.3", "1.2.3.x-dev"),
+        ("1.2.x", "1.2.x-dev"),
+        ("1.2.*", "1.2.x-dev"),
+        ("2.x", "2.x-dev"),
+        ("2.4.1.5", "2.4.1.5-dev"), // four numeric components: no trailing x
+    ] {
+        assert_eq!(normalize_branch(branch), want, "branch {branch}");
+        // Whatever we produce must parse, or the ref would be silently dropped.
+        assert!(
+            composer_semver::Version::parse(want).is_ok(),
+            "produced unparseable version {want}",
+        );
+    }
+    // Non-version branches stay dev-<branch>.
+    for branch in ["main", "feature/x", "2.4-develop", "release-2020"] {
+        assert_eq!(normalize_branch(branch), format!("dev-{branch}"), "branch {branch}");
+    }
+}
+
+#[test]
+fn version_like_branch_resolves_from_git() {
+    let tmp = TempDir::new().unwrap();
+    let origin = tmp.path().join("origin");
+    std::fs::create_dir_all(&origin).unwrap();
+    git_ok(&origin, &["init", "-q", "-b", "main"]);
+    std::fs::write(origin.join("composer.json"), r#"{"name":"acme/lib"}"#).unwrap();
+    git_ok(&origin, &["add", "-A"]);
+    git_ok(&origin, &["commit", "-q", "-m", "c"]);
+    git_ok(&origin, &["branch", "2.4"]); // a version-like release branch
+    let head = rev_parse(&origin, "HEAD");
+
+    let paths = paths_in(tmp.path());
+    let url = format!("file://{}", origin.display());
+    let pkgs = read_vcs_packages(&paths, &VcsRepoConfig { url }).unwrap();
+
+    let by_version: HashMap<String, _> =
+        pkgs.iter().map(|p| (p.package.version.clone(), p)).collect();
+    // The 2.4 branch aliases to 2.4.x-dev (not dev-2.4), pinned to its head.
+    let aliased = by_version.get("2.4.x-dev").expect("2.4 branch aliased to x-dev");
+    assert_eq!(aliased.package.source.as_ref().unwrap().reference, head);
+    assert!(aliased.package.version_normalized.is_some());
+    assert!(by_version.contains_key("dev-main"), "main stays dev-main");
+    assert!(!by_version.contains_key("dev-2.4"), "2.4 must not stay dev-2.4");
 }
