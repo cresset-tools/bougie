@@ -27,6 +27,22 @@ use std::io::{self, Write};
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
+/// The identity `bougie login` targets when run with no argument — the hosted
+/// Bougie Cloud. `bougie login` → `bougie.cloud` → SRV → the registry.
+pub const DEFAULT_LOGIN_URL: &str = "bougie.cloud";
+
+/// Resolve the login target when the user gave no URL: `$BOUGIE_LOGIN_URL` if
+/// set (lets a self-hoster make their own sconce the default), else
+/// [`DEFAULT_LOGIN_URL`].
+#[must_use]
+pub fn default_login_url() -> String {
+    std::env::var("BOUGIE_LOGIN_URL")
+        .ok()
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| DEFAULT_LOGIN_URL.to_owned())
+}
+
 /// Where `bougie login` writes the discovered `repositories`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProvisionMode {

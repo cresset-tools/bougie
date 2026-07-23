@@ -828,6 +828,8 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
             composer_json,
         } => {
             let mode = commands::login::ProvisionMode::from_flags(no_provision, composer_json);
+            // No URL given → sign in to Bougie Cloud (or `$BOUGIE_LOGIN_URL`).
+            let url = url.unwrap_or_else(commands::login::default_login_url);
             if ci {
                 commands::login::run_ci(
                     format,
