@@ -6,3 +6,8 @@
 
 # Visual Studio workspace state (per-user; not project config).
 .vs/
+
+# VitePress site (website/).
+/website/node_modules
+/website/.vitepress/cache
+/website/.vitepress/dist
