@@ -1,10 +1,12 @@
 //! Native Composer dependency resolver + installer for bougie.
 //!
-//! See `RESOLVER_PLAN.md` at the repo root for the full design. The
-//! crate ships the parallel dist downloader/extractor, the pubgrub-based
-//! solver + metadata fetcher, and the `install_from_lock` orchestrator.
-//! Phase D (git `source` installs) adds the [`vcs`] plumbing consumed by
-//! the installer.
+//! The crate ships the parallel dist downloader/extractor, the
+//! pubgrub-based solver + metadata fetcher, the `install_from_lock`
+//! orchestrator, and Phase D git support — resolving versions from a
+//! `{type: vcs}` repository and installing from a git `source` (the
+//! [`vcs`] plumbing). The original `RESOLVER_PLAN.md` design doc was
+//! removed once the resolver shipped (it lives in git history); ongoing
+//! test work is tracked in `RESOLVER_TEST_PLAN.md`.
 
 pub mod audit;
 pub mod hash;
