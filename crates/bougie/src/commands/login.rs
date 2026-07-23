@@ -131,10 +131,14 @@ impl Render for LoginResult {
 }
 
 pub fn run(format: OutputFormat, url: &str, mode: ProvisionMode) -> Result<ExitCode> {
-    let base = url.trim_end_matches('/');
+    let base = resolve_login_base(url);
+    let base = base.as_str();
+    // `resolve_login_base` always returns an `http(s)://` base; this guards
+    // against a future regression rather than user input (bare domains are now
+    // valid input and are resolved above).
     if !(base.starts_with("http://") || base.starts_with("https://")) {
         return Err(eyre!(
-            "registry URL must start with http:// or https:// (got `{url}`)"
+            "could not derive a registry URL from `{url}` (resolved to `{base}`)"
         ));
     }
     let host = bougie_composer_resolver::metadata::auth_origin(base);
@@ -227,14 +231,16 @@ pub fn run_ci(
     audience: &str,
     mode: ProvisionMode,
 ) -> Result<ExitCode> {
-    let base = url.trim_end_matches('/');
+    // Cheap guard first, before any DNS resolution.
+    if repository.is_empty() {
+        return Err(eyre!("--ci requires --repository <org/repo>"));
+    }
+    let base = resolve_login_base(url);
+    let base = base.as_str();
     if !(base.starts_with("http://") || base.starts_with("https://")) {
         return Err(eyre!(
             "registry URL must start with http:// or https:// (got `{url}`)"
         ));
-    }
-    if repository.is_empty() {
-        return Err(eyre!("--ci requires --repository <org/repo>"));
     }
     let host = bougie_composer_resolver::metadata::auth_origin(base);
 
@@ -451,10 +457,185 @@ pub(crate) fn fetch_repo_urls(
     Ok(list.repositories.into_iter().map(|r| r.url).collect())
 }
 
+/// Resolve the registry base URL for `bougie login <input>`.
+///
+/// `input` may be a bare brand domain (`bougie.cloud`) or a full URL
+/// (`https://packages.acme.com/…`). We first try a DNS **SRV** lookup for
+/// `_bougie-login._tcp.<host>`: a hit points the user at the real registry
+/// (`https://<target>[:port]`), so typing the brand domain "just works". If
+/// there's no record — or any DNS trouble — we fall back to treating the input
+/// as the URL itself, preserving today's behavior for self-hosted sconce.
+///
+/// This is best-effort: DNS never fails a login. The returned string always
+/// begins with `http://`/`https://` unless the caller passed an explicit
+/// non-http(s) scheme (which the caller's guard then rejects).
+fn resolve_login_base(input: &str) -> String {
+    let trimmed = input.trim();
+
+    // An explicit non-http(s) scheme (`ftp://…`) is never a domain we can
+    // SRV-resolve; skip the lookup and let the caller's http(s) guard reject it.
+    let has_other_scheme = trimmed.contains("://")
+        && !trimmed.starts_with("http://")
+        && !trimmed.starts_with("https://");
+    if has_other_scheme {
+        return fallback_base(trimmed);
+    }
+
+    let host = extract_srv_host(trimmed);
+    if let Some(base) = srv_lookup_base(host) {
+        tracing::debug!(input = %trimmed, host = %host, %base, "login: SRV → registry endpoint");
+        base
+    } else {
+        let base = fallback_base(trimmed);
+        tracing::debug!(input = %trimmed, host = %host, %base, "login: no SRV, using URL fallback");
+        base
+    }
+}
+
+/// Extract the DNS host to build the SRV query name from — strip scheme, any
+/// userinfo, the path, and a `:port` suffix. (Login registries are DNS names,
+/// not bracketed IPv6 literals, so a naive `:` split is fine.)
+fn extract_srv_host(input: &str) -> &str {
+    let s = input
+        .strip_prefix("https://")
+        .or_else(|| input.strip_prefix("http://"))
+        .unwrap_or(input);
+    let authority = s.split('/').next().unwrap_or(s);
+    let hostport = authority.rsplit('@').next().unwrap_or(authority);
+    hostport.split(':').next().unwrap_or(hostport).trim()
+}
+
+/// Build the registry base from a resolved SRV target + port. Always `https`;
+/// the port is elided when it's the standard 443 and the trailing root dot is
+/// stripped from the SRV target name.
+fn build_base_from_srv(target: &str, port: u16) -> String {
+    let target = target.trim_end_matches('.');
+    if port == 443 {
+        format!("https://{target}")
+    } else {
+        format!("https://{target}:{port}")
+    }
+}
+
+/// Treat `input` as the registry URL directly (the no-SRV path). A full
+/// `http(s)://` URL is used as-is (trailing slash trimmed, path preserved); a
+/// bare domain gets an `https://` prefix. Any other explicit scheme is returned
+/// untouched so the caller's http(s) guard can reject it.
+fn fallback_base(input: &str) -> String {
+    let trimmed = input.trim().trim_end_matches('/');
+    if trimmed.starts_with("http://")
+        || trimmed.starts_with("https://")
+        || trimmed.contains("://")
+    {
+        trimmed.to_string()
+    } else {
+        format!("https://{trimmed}")
+    }
+}
+
+/// Query `_bougie-login._tcp.<host>` for SRV records and return the base URL of
+/// the lowest-priority target, or `None` on no record / any DNS error / timeout.
+///
+/// `bougie login` is blocking, so the async hickory lookup runs on a scoped
+/// current-thread Tokio runtime with a short timeout (a slow or blocked resolver
+/// degrades quickly to the URL fallback rather than stalling login).
+fn srv_lookup_base(host: &str) -> Option<String> {
+    use hickory_resolver::TokioResolver;
+    use hickory_resolver::proto::rr::RData;
+
+    if host.is_empty() {
+        return None;
+    }
+    let query = format!("_bougie-login._tcp.{host}");
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .ok()?;
+
+    runtime.block_on(async {
+        let resolver = TokioResolver::builder_tokio().ok()?.build().ok()?;
+        let lookup = tokio::time::timeout(
+            Duration::from_secs(4),
+            resolver.srv_lookup(query.as_str()),
+        )
+        .await
+        .ok()? // timed out
+        .ok()?; // NXDOMAIN / DNS error
+
+        let best = lookup
+            .answers()
+            .iter()
+            .filter_map(|record| match &record.data {
+                RData::SRV(srv) => Some(srv),
+                _ => None,
+            })
+            .min_by_key(|srv| srv.priority)?;
+
+        Some(build_base_from_srv(&best.target.to_string(), best.port))
+    })
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{ProvisionMode, run_ci};
+    use super::{
+        ProvisionMode, build_base_from_srv, extract_srv_host, fallback_base, resolve_login_base,
+        run_ci,
+    };
     use bougie_cli::OutputFormat;
+
+    #[test]
+    fn extract_srv_host_strips_scheme_path_and_port() {
+        assert_eq!(extract_srv_host("bougie.cloud"), "bougie.cloud");
+        assert_eq!(extract_srv_host("https://packages.acme.com"), "packages.acme.com");
+        assert_eq!(extract_srv_host("https://packages.acme.com/"), "packages.acme.com");
+        assert_eq!(
+            extract_srv_host("http://packages.acme.com:8080/repo/path"),
+            "packages.acme.com"
+        );
+        assert_eq!(extract_srv_host("user@packages.acme.com:443"), "packages.acme.com");
+    }
+
+    #[test]
+    fn build_base_from_srv_elides_443_and_trims_root_dot() {
+        assert_eq!(build_base_from_srv("bougierepo.com.", 443), "https://bougierepo.com");
+        assert_eq!(build_base_from_srv("bougierepo.com", 443), "https://bougierepo.com");
+        assert_eq!(
+            build_base_from_srv("registry.example.", 8443),
+            "https://registry.example:8443"
+        );
+    }
+
+    #[test]
+    fn fallback_base_preserves_full_urls_and_https_prefixes_bare_domains() {
+        // A full URL passes through, trailing slash trimmed, path preserved.
+        assert_eq!(
+            fallback_base("https://packages.acme.com/"),
+            "https://packages.acme.com"
+        );
+        assert_eq!(
+            fallback_base("https://packages.acme.com/sub/"),
+            "https://packages.acme.com/sub"
+        );
+        assert_eq!(fallback_base("http://localhost:8080"), "http://localhost:8080");
+        // A bare domain gets an https:// prefix.
+        assert_eq!(fallback_base("packages.acme.com"), "https://packages.acme.com");
+        // A foreign scheme is left untouched (caller's guard rejects it).
+        assert_eq!(fallback_base("ftp://x"), "ftp://x");
+    }
+
+    #[test]
+    fn resolve_login_base_passes_through_full_url_and_foreign_scheme() {
+        // A full https URL for a host with no `_bougie-login._tcp` SRV record
+        // falls back to the URL itself (may attempt a quick DNS lookup that
+        // NXDOMAINs; the .invalid TLD guarantees no record exists).
+        assert_eq!(
+            resolve_login_base("https://packages.no-srv.invalid/"),
+            "https://packages.no-srv.invalid"
+        );
+        // A foreign scheme short-circuits DNS entirely and is returned as-is.
+        assert_eq!(resolve_login_base("ftp://x"), "ftp://x");
+    }
 
     #[test]
     fn run_ci_rejects_bad_url_and_missing_repository() {

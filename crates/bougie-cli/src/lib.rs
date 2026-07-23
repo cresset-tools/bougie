@@ -550,7 +550,9 @@ pub enum Command {
     /// Authenticate against a Composer registry
     #[command(display_order = 6, hide = true)]
     Login {
-        /// Base URL of the registry, e.g. `https://packages.acme.com`
+        /// Registry URL or domain. A bare domain (e.g. `bougie.cloud`) is
+        /// resolved via its `_bougie-login._tcp` SRV record; a full URL
+        /// (e.g. `https://packages.acme.com`) is used as-is.
         #[arg(value_name = "URL")]
         url: String,
         /// Non-interactive CI login: exchange the workflow's OIDC JWT for a

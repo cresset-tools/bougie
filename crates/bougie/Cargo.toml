@@ -101,6 +101,19 @@ bougie-version = { workspace = true }
 composer-semver = { workspace = true }
 spdx = "0.10"
 
+# SRV-record discovery for `bougie login <domain>`: resolve
+# `_bougie-login._tcp.<domain>` to the real registry endpoint before the
+# device flow. Default features (`system-config` + `tokio`) honor the
+# host's `/etc/resolv.conf` (or the Windows registry) and drive the async
+# lookup on a Tokio runtime; no TLS/DNSSEC transports are pulled in.
+hickory-resolver = { version = "0.26", default-features = false, features = ["system-config", "tokio"] }
+
+# `bougie login` is a blocking (`reqwest::blocking`) command, so the async
+# SRV lookup runs on a scoped current-thread Tokio runtime. Declared here
+# (not only in the Unix-only block below) because `login` is cross-platform;
+# on Unix cargo unions these features with the daemon/share block's.
+tokio = { version = "1", default-features = false, features = ["rt", "time"] }
+
 # `bougied` (process supervisor) and the recipe engine rely on Unix-only
 # APIs (domain sockets, POSIX signals, sandbox-run's Landlock/SBPL
 # backends, utimensat, /bin/sh). Gating the deps means Windows builds
