@@ -49,32 +49,44 @@ jobs:
           name: site
           path: website/.vitepress/dist
 
-  # Deploys to the box behind bougie.tools over rsync. Inert until the
-  # repo is configured with:
-  #   vars.WEBSITE_DEPLOY_TARGET    e.g. deploy@bougie.tools:/var/www/bougie.tools/site/
-  #   secrets.WEBSITE_DEPLOY_KEY    private SSH key for that user
-  #   secrets.WEBSITE_DEPLOY_KNOWN_HOSTS  `ssh-keyscan <host>` output
-  #
-  # The target directory must be dedicated to this site: rsync runs with
-  # --delete. Keep install.sh out of it — serve it from its own nginx
-  # location (or its current path) so a site deploy can never clobber it.
+  # Publishes the built site to bougie.tools by rsyncing into /srv/site
+  # on the origin box, which nginx serves at the apex (see the infra repo
+  # cresset-tools/infra, hosts/origin/nginx.nix). Reuses the same
+  # `deploy` user + PUBLISH_SSH_KEY / PUBLISH_KNOWN_HOSTS the release
+  # mirror already uses (release environment). install.sh is unaffected:
+  # it's an nginx 301 redirect, not a file under /srv/site, so --delete
+  # can never touch it.
   deploy:
     name: deploy to bougie.tools
-    if: github.event_name == 'push' && vars.WEBSITE_DEPLOY_TARGET != ''
+    if: github.event_name != 'pull_request'
     needs: build
     runs-on: ubuntu-latest
+    environment: release
+    env:
+      DEPLOY_HOST: origin.bougie.tools
+      DEPLOY_USER: deploy
+      DEPLOY_PATH: /srv/site/
     steps:
       - uses: actions/download-artifact@v4
         with:
           name: site
           path: dist
 
-      - name: Install SSH key
+      - name: SSH agent + known_hosts
+        env:
+          PUBLISH_SSH_KEY: ${{ secrets.PUBLISH_SSH_KEY }}
+          PUBLISH_KNOWN_HOSTS: ${{ secrets.PUBLISH_KNOWN_HOSTS }}
         run: |
-          mkdir -p ~/.ssh
-          printf '%s\n' "${{ secrets.WEBSITE_DEPLOY_KEY }}" > ~/.ssh/id_ed25519
-          chmod 600 ~/.ssh/id_ed25519
-          printf '%s\n' "${{ secrets.WEBSITE_DEPLOY_KNOWN_HOSTS }}" >> ~/.ssh/known_hosts
+          mkdir -m 700 -p ~/.ssh
+          echo "$PUBLISH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+          eval "$(ssh-agent -s)"
+          ssh-add - <<< "$PUBLISH_SSH_KEY"
+          echo "SSH_AUTH_SOCK=$SSH_AUTH_SOCK" >> "$GITHUB_ENV"
 
-      - name: rsync site
-        run: rsync -az --delete dist/ "${{ vars.WEBSITE_DEPLOY_TARGET }}"
+      - name: rsync site to /srv/site
+        run: |
+          rsync -az --delete \
+            -e "ssh -o BatchMode=yes" \
+            dist/ \
+            "${DEPLOY_USER}@${DEPLOY_HOST}:${DEPLOY_PATH}"
