@@ -18,7 +18,7 @@ Bougie is the one tool that does it all.
 
 ## How it fits together
 
-You still define your project using a `composer.json`, or you can add bougie specific config in your `bougie.toml` if you prefer.
+You still define your project using a `composer.json`, where bougie config lives in `extra`, or you can add bougie specific config in your `bougie.toml` if you prefer.
 This makes sure that other people also get the right PHP version, extensions, dependencies and services.
 Any settings for bougie can be placed in either `composer.json` or `bougie.toml`, it doesn't need to clutter up your project if you don't want to.
 
