@@ -9,6 +9,7 @@ use bougie_installer::install::{
     backend_for, install_baseline_into_with_backend, install_extension_with_bar,
     install_php_with_backend, preinstall_into_with_backend, InstalledExt, InstalledPhp,
 };
+use bougie_output::changelog::{fmt_elapsed as fmt_ms, plural};
 use bougie_output::output::{emit, Render};
 use bougie_paths::Paths;
 use composer_semver::Constraint;
@@ -204,27 +205,6 @@ impl Render for SyncResult {
             writeln_dim(w, &format!("  shims at {}", self.shims_dir.display()))?;
         }
         Ok(())
-    }
-}
-
-/// Format an elapsed millisecond count uv-style: sub-millisecond keeps
-/// two decimals (`0.55ms`), whole milliseconds print as integers
-/// (`14ms`), and a second or more switches to `1.23s`.
-fn fmt_ms(ms: f64) -> String {
-    if ms >= 1000.0 {
-        format!("{:.2}s", ms / 1000.0)
-    } else if ms >= 1.0 {
-        format!("{ms:.0}ms")
-    } else {
-        format!("{ms:.2}ms")
-    }
-}
-
-fn plural(n: u64, one: &'static str, many: &'static str) -> &'static str {
-    if n == 1 {
-        one
-    } else {
-        many
     }
 }
 
