@@ -169,7 +169,8 @@ fn install_then_list_then_find_then_uninstall() {
         .args(["php", "install", "8.3.12"])
         .assert()
         .success()
-        .stdout(contains("installed php 8.3.12-nts"));
+        .stdout(contains("Installed PHP 8.3.12 in "))
+        .stdout(contains(format!(" + php-8.3.12-{}-nts", host_target())));
 
     // list shows it
     env.bougie()
@@ -203,7 +204,7 @@ fn install_then_list_then_find_then_uninstall() {
         .args(["php", "install", "8.3.12"])
         .assert()
         .success()
-        .stdout(contains("already php 8.3.12-nts"));
+        .stdout(contains("8.3.12 is already installed"));
 
     // uninstall
     env.bougie()

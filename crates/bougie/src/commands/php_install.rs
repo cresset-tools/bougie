@@ -1,29 +1,44 @@
-use bougie_installer::baseline::{parse_without, BaselineFilter};
 use bougie_cli::OutputFormat;
+use bougie_installer::baseline::{BaselineFilter, parse_without};
 use bougie_installer::install::{
-    install_baseline_into, install_php, preinstall_into, BaselineReport, InstalledPhp,
-    PreinstallReport,
+    BaselineReport, InstalledPhp, PreinstallReport, install_baseline_into, install_php,
+    preinstall_into,
 };
-use bougie_output::output::{emit, Render};
+use bougie_output::changelog::{
+    ChangeKind, plural, write_change, write_change_detail, write_summary,
+};
+use bougie_output::list_format::writeln_dim;
+use bougie_output::output::{Render, emit, verbose};
 use bougie_paths::Paths;
-use composer_semver::Constraint;
-use bougie_version::request::{parse_request, Flavor, Request, VersionLike};
+use bougie_platform::target::Triple;
 use bougie_resolver::ResolveOptions;
+use bougie_version::request::{Flavor, Request, VersionLike, parse_request};
 use bougie_version::version::PartialVersion;
-use eyre::{eyre, Result};
+use composer_semver::Constraint;
+use eyre::{Result, eyre};
 use serde::Serialize;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::time::Instant;
 
 #[derive(Debug, Serialize)]
 pub struct InstallResult {
     pub schema_version: u32,
+    /// The requests as the user typed them, in order. Empty when
+    /// `bougie php install` ran bare (install the latest). Drives the
+    /// uv-style "already installed" wording when nothing changed.
+    pub requests: Vec<String>,
     pub installed: Vec<InstallEntry>,
+    /// Wall-clock of the whole install batch, in milliseconds.
+    pub elapsed_ms: f64,
 }
 
 #[derive(Debug, Serialize)]
 pub struct InstallEntry {
+    /// The index tag identifying this installation —
+    /// `php-<version>-<target>-<flavor>`. uv's installation key.
+    pub key: String,
     pub version: String,
     pub flavor: String,
     pub path: PathBuf,
@@ -48,41 +63,105 @@ pub struct BaselineFailure {
     pub reason: String,
 }
 
+impl InstallEntry {
+    /// Anything worth printing under this entry's row: the two failure
+    /// lists always, the installed-set listings only under `--verbose`.
+    fn has_details(&self) -> bool {
+        !self.baseline_failed.is_empty()
+            || !self.preinstall_failed.is_empty()
+            || (verbose() && (!self.baseline.is_empty() || !self.preinstalled.is_empty()))
+    }
+
+    fn write_details(&self, w: &mut dyn Write) -> io::Result<()> {
+        // The baseline set is ~two dozen names and is re-affirmed on
+        // every install, so it's `--verbose` detail rather than news.
+        // Failures are always news: the interpreter is usable but
+        // incomplete until the next `bougie sync` retries.
+        if verbose() && !self.baseline.is_empty() {
+            write_change_detail(w, &format!("baseline: {}", self.baseline.join(", ")))?;
+        }
+        for failure in &self.baseline_failed {
+            write_change_detail(
+                w,
+                &format!(
+                    "baseline failed: {} — {} (next `bougie sync` will retry)",
+                    failure.name, failure.reason
+                ),
+            )?;
+        }
+        if verbose() && !self.preinstalled.is_empty() {
+            write_change_detail(
+                w,
+                &format!(
+                    "pre-downloaded (inactive): {}",
+                    self.preinstalled.join(", ")
+                ),
+            )?;
+        }
+        for failure in &self.preinstall_failed {
+            write_change_detail(
+                w,
+                &format!(
+                    "preinstall failed: {} — {} (next `bougie sync` will retry)",
+                    failure.name, failure.reason
+                ),
+            )?;
+        }
+        Ok(())
+    }
+}
+
+/// uv's `python install` shape: one dimmed summary line, then a green
+/// `+` row per installation that actually landed. Versions that were
+/// already on disk aren't news, so they get no row — only the
+/// "already installed" message when *nothing* changed.
 impl Render for InstallResult {
     fn render_text(&self, w: &mut dyn Write) -> io::Result<()> {
-        for entry in &self.installed {
-            let verb = if entry.already_present { "already" } else { "installed" };
-            writeln!(
+        let added: Vec<&InstallEntry> = self
+            .installed
+            .iter()
+            .filter(|e| !e.already_present)
+            .collect();
+
+        if let [only] = added.as_slice() {
+            write_summary(
                 w,
-                "{verb} php {}-{} at {}",
-                entry.version,
-                entry.flavor,
-                entry.path.display()
+                "Installed",
+                &format!("PHP {}", only.version),
+                self.elapsed_ms,
             )?;
-            if !entry.baseline.is_empty() {
-                writeln!(w, "  baseline: {}", entry.baseline.join(", "))?;
-            }
-            for failure in &entry.baseline_failed {
-                writeln!(
+        } else if added.is_empty() {
+            match self.requests.as_slice() {
+                [] => writeln_dim(
                     w,
-                    "  baseline failed: {} — {} (next `bougie sync` will retry)",
-                    failure.name, failure.reason
-                )?;
+                    "PHP is already installed. Use `bougie php install <request>` to install another version.",
+                )?,
+                [one] => writeln_dim(w, &format!("{one} is already installed"))?,
+                _ => writeln_dim(w, "All requested versions already installed")?,
             }
-            if !entry.preinstalled.is_empty() {
-                writeln!(
-                    w,
-                    "  pre-downloaded (inactive): {}",
-                    entry.preinstalled.join(", ")
-                )?;
+        } else {
+            let n = added.len();
+            write_summary(
+                w,
+                "Installed",
+                &format!("{n} {}", plural(n as u64, "version", "versions")),
+                self.elapsed_ms,
+            )?;
+        }
+
+        for entry in &self.installed {
+            if entry.already_present {
+                // No `+` row for an untouched interpreter — but if its
+                // baseline reported something, anchor that detail to a
+                // key so the reader knows which install it belongs to.
+                if !entry.has_details() {
+                    continue;
+                }
+                writeln_dim(w, &format!(" = {} (already installed)", entry.key))?;
+            } else {
+                write_change(w, ChangeKind::Added, &entry.key, None)?;
             }
-            for failure in &entry.preinstall_failed {
-                writeln!(
-                    w,
-                    "  preinstall failed: {} — {} (next `bougie sync` will retry)",
-                    failure.name, failure.reason
-                )?;
-            }
+            entry.write_details(w)?;
         }
         Ok(())
     }
@@ -90,7 +169,7 @@ impl Render for InstallResult {
 
 pub fn run(
     format: OutputFormat,
-        request_strs: &[String],
+    request_strs: &[String],
     flavor_arg: Option<&str>,
     bare: bool,
     without: &[String],
@@ -111,10 +190,14 @@ pub fn run(
             .collect::<Result<_>>()?
     };
 
+    // Installs always target the host, so one detection covers the
+    // whole batch. The triple is the middle field of the index tag we
+    // report as each entry's key.
+    let target = Triple::detect()?.to_string();
+    let started = Instant::now();
     let mut installed = Vec::with_capacity(requests.len());
     for request in &requests {
-        let info: InstalledPhp =
-            install_php(&paths, request, flavor, ResolveOptions::default())?;
+        let info: InstalledPhp = install_php(&paths, request, flavor, ResolveOptions::default())?;
         let php_minor = PartialVersion {
             major: info.version.major,
             minor: Some(info.version.minor),
@@ -136,19 +219,19 @@ pub fn run(
         // the first server-side debug request doesn't stall on a
         // download. Skipped under `--bare` so that flag still
         // produces a minimal install.
-        let preinstall: PreinstallReport =
-            if matches!(baseline_filter, BaselineFilter::None) {
-                PreinstallReport::default()
-            } else {
-                preinstall_into(
-                    &paths,
-                    &info.install_path,
-                    php_minor,
-                    info.flavor,
-                    ResolveOptions::default(),
-                )
-            };
+        let preinstall: PreinstallReport = if matches!(baseline_filter, BaselineFilter::None) {
+            PreinstallReport::default()
+        } else {
+            preinstall_into(
+                &paths,
+                &info.install_path,
+                php_minor,
+                info.flavor,
+                ResolveOptions::default(),
+            )
+        };
         installed.push(InstallEntry {
+            key: install_key(&info.version.to_string(), &target, &info.flavor.to_string()),
             version: info.version.to_string(),
             flavor: info.flavor.to_string(),
             path: info.install_path,
@@ -168,15 +251,25 @@ pub fn run(
         });
     }
 
-    let result = InstallResult { schema_version: 1, installed };
+    let result = InstallResult {
+        schema_version: 1,
+        requests: request_strs.to_vec(),
+        installed,
+        elapsed_ms: started.elapsed().as_secs_f64() * 1000.0,
+    };
     emit(format, &result)?;
     Ok(ExitCode::SUCCESS)
 }
 
-fn resolve_baseline_filter(
-    bare: bool,
-    without: &[String],
-) -> Result<BaselineFilter> {
+/// The index tag for one interpreter — `php-8.3.12-<target>-nts`. Same
+/// shape the index publishes (`manifest.tag`) and what `bougie php list`
+/// shows in its multi-target mode, so the key a user sees on install is
+/// the key they can look up afterwards.
+fn install_key(version: &str, target: &str, flavor: &str) -> String {
+    format!("php-{version}-{target}-{flavor}")
+}
+
+fn resolve_baseline_filter(bare: bool, without: &[String]) -> Result<BaselineFilter> {
     if bare && !without.is_empty() {
         // clap's conflicts_with usually catches this, but the resolver
         // is the second line of defense — callers pass slices directly
@@ -214,6 +307,138 @@ fn parse_flavor(s: &str) -> Result<Flavor> {
 mod tests {
     use super::*;
 
+    fn entry(version: &str, already_present: bool) -> InstallEntry {
+        InstallEntry {
+            key: install_key(version, "x86_64-unknown-linux-gnu", "nts"),
+            version: version.into(),
+            flavor: "nts".into(),
+            path: PathBuf::from(format!("/store/php/{version}-nts")),
+            already_present,
+            baseline: vec!["bcmath".into(), "intl".into()],
+            baseline_failed: Vec::new(),
+            preinstalled: vec!["xdebug".into()],
+            preinstall_failed: Vec::new(),
+        }
+    }
+
+    fn result(requests: &[&str], installed: Vec<InstallEntry>) -> InstallResult {
+        InstallResult {
+            schema_version: 1,
+            requests: requests.iter().map(|s| (*s).to_string()).collect(),
+            installed,
+            elapsed_ms: 3420.0,
+        }
+    }
+
+    /// Render to text with the SGR codes dropped — what a user sees on
+    /// a non-color terminal, where `emit`'s `AutoStream` strips them.
+    fn render(result: &InstallResult) -> String {
+        let mut buf = Vec::new();
+        result.render_text(&mut buf).unwrap();
+        let styled = String::from_utf8(buf).unwrap();
+        let mut out = String::with_capacity(styled.len());
+        let mut in_escape = false;
+        for c in styled.chars() {
+            match c {
+                '\u{1b}' => in_escape = true,
+                'm' if in_escape => in_escape = false,
+                _ if in_escape => {}
+                _ => out.push(c),
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn multiple_installs_render_uv_style() {
+        let out = render(&result(
+            &["8.2", "8.3", "8.4"],
+            vec![
+                entry("8.2.29", false),
+                entry("8.3.24", false),
+                entry("8.4.11", false),
+            ],
+        ));
+        assert_eq!(
+            out,
+            "Installed 3 versions in 3.42s\n \
+             + php-8.2.29-x86_64-unknown-linux-gnu-nts\n \
+             + php-8.3.24-x86_64-unknown-linux-gnu-nts\n \
+             + php-8.4.11-x86_64-unknown-linux-gnu-nts\n"
+        );
+    }
+
+    #[test]
+    fn single_install_names_the_version() {
+        let out = render(&result(&["8.3"], vec![entry("8.3.24", false)]));
+        assert_eq!(
+            out,
+            "Installed PHP 8.3.24 in 3.42s\n + php-8.3.24-x86_64-unknown-linux-gnu-nts\n"
+        );
+    }
+
+    #[test]
+    fn already_present_versions_get_no_row() {
+        let out = render(&result(
+            &["8.2", "8.3"],
+            vec![entry("8.2.29", true), entry("8.3.24", false)],
+        ));
+        assert_eq!(
+            out,
+            "Installed PHP 8.3.24 in 3.42s\n + php-8.3.24-x86_64-unknown-linux-gnu-nts\n"
+        );
+    }
+
+    #[test]
+    fn nothing_to_do_wording_follows_the_request_count() {
+        let bare = render(&result(&[], vec![entry("8.3.24", true)]));
+        assert_eq!(
+            bare,
+            "PHP is already installed. Use `bougie php install <request>` to install another version.\n"
+        );
+
+        let one = render(&result(&["8.3"], vec![entry("8.3.24", true)]));
+        assert_eq!(one, "8.3 is already installed\n");
+
+        let many = render(&result(
+            &["8.2", "8.3"],
+            vec![entry("8.2.29", true), entry("8.3.24", true)],
+        ));
+        assert_eq!(many, "All requested versions already installed\n");
+    }
+
+    #[test]
+    fn baseline_failures_stay_visible_under_their_row() {
+        let mut fresh = entry("8.3.24", false);
+        fresh.baseline_failed.push(BaselineFailure {
+            name: "intl".into(),
+            reason: "download failed".into(),
+        });
+        let mut stale = entry("8.2.29", true);
+        stale.baseline_failed.push(BaselineFailure {
+            name: "gd".into(),
+            reason: "no manifest".into(),
+        });
+
+        let out = render(&result(&["8.2", "8.3"], vec![stale, fresh]));
+        assert_eq!(
+            out,
+            "Installed PHP 8.3.24 in 3.42s\n\
+             \x20= php-8.2.29-x86_64-unknown-linux-gnu-nts (already installed)\n\
+             \x20  baseline failed: gd — no manifest (next `bougie sync` will retry)\n\
+             \x20+ php-8.3.24-x86_64-unknown-linux-gnu-nts\n\
+             \x20  baseline failed: intl — download failed (next `bougie sync` will retry)\n"
+        );
+    }
+
+    #[test]
+    fn install_key_matches_the_index_tag() {
+        assert_eq!(
+            install_key("8.3.24", "aarch64-apple-darwin", "zts"),
+            "php-8.3.24-aarch64-apple-darwin-zts"
+        );
+    }
+
     #[test]
     fn baseline_filter_defaults_to_all() {
         match resolve_baseline_filter(false, &[]).unwrap() {
@@ -232,9 +457,7 @@ mod tests {
 
     #[test]
     fn without_excludes_named() {
-        match resolve_baseline_filter(false, &["opcache".into(), "readline".into()])
-            .unwrap()
-        {
+        match resolve_baseline_filter(false, &["opcache".into(), "readline".into()]).unwrap() {
             BaselineFilter::Without(set) => {
                 assert!(set.contains("opcache"));
                 assert!(set.contains("readline"));

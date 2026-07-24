@@ -1,3 +1,4 @@
+pub mod changelog;
 pub mod list_format;
 pub mod output;
 
