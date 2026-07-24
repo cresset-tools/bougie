@@ -4,20 +4,19 @@ draft: true
 
 # A Mage-OS store in one command
 
-Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod
-tempor incididunt ut labore et dolore magna aliqua.
+Bougie is set up really well to work with Mage-OS and Magento.
+Setting up a new store is as simple as one command:
 
 ```sh
 bougie new bougie-store --starter mageos --start
 ```
 
-Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi
-ut aliquip ex ea commodo consequat.
+This will start all the services you need to run Mage-OS and make sure the store is fully installed.
+After this single command you will be able to visit your store at http://bougie-store.bougie.run:7080
 
 ## Related projects
 
-Lorem ipsum dolor sit amet, consectetur adipiscing elit:
+That one command pulls together a few separate projects. If you want to understand what happens under the hood, or contribute to any part of it, here is where each piece lives:
 
 - The starter pack is produced by [mageos-maker](https://github.com/cresset-tools/mageos-maker).
 - Modules come from the [Modulargento composer repo](https://modulargento.cresset.tools).
-- For CI, see the [setup-bougie GitHub Action](https://github.com/cresset-tools/setup-bougie) and the [bougie-demo](https://github.com/cresset-tools/bougie-demo) workflow.
