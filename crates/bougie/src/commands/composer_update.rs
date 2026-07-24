@@ -308,6 +308,17 @@ pub fn resolve_and_write_lock_partial(
             resolution,
             ignore_platform,
         )?;
+
+    // Surface repositories bougie parsed but can't resolve (`svn`/`hg`/
+    // `fossil`/`package`/`artifact`) so a package available only there
+    // doesn't fail later with a mysterious "not found". Matches the
+    // install path's stderr warnings (sync.rs).
+    if let Ok(cj) = serde_json::from_slice::<serde_json::Value>(&composer_json_bytes) {
+        for w in bougie_composer_resolver::unsupported_repo_warnings(&cj) {
+            eprintln!("warning: {w}");
+        }
+    }
+
     let lock_path = project_root.join("composer.lock");
 
     let t_hash = std::time::Instant::now();
