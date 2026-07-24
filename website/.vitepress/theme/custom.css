@@ -1,0 +1,455 @@
+/**
+ * bougie brand over the default VitePress theme, matched to the
+ * bougie.tools landing page: Archivo + JetBrains Mono, ink black,
+ * ultramarine accent (#2f27ff), lime pop (#caff00).
+ *
+ * Note on `#app` prefixes: VitePress ships its theme components with
+ * scoped CSS (`.Foo[data-v-*]`) and some multi-`:not()` selectors,
+ * which outrank plain single-class selectors. Rather than reach for
+ * `!important`, the structural overrides below are prefixed with the
+ * app root id `#app` — an id (1,0,0) beats any stack of classes, so
+ * these win deterministically without `!important`.
+ */
+:root {
+  --bougie-ink: #000000;
+  --bougie-accent: #2f27ff;
+  --bougie-pop: #caff00;
+
+  --vp-font-family-base: 'Archivo', ui-sans-serif, system-ui, sans-serif;
+  --vp-font-family-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular,
+    Menlo, monospace;
+
+  --vp-c-brand-1: #2f27ff;
+  --vp-c-brand-2: #241dd6;
+  --vp-c-brand-3: #2f27ff;
+  --vp-c-brand-soft: rgba(47, 39, 255, 0.14);
+
+  --vp-button-brand-bg: #2f27ff;
+  --vp-button-brand-hover-bg: #241dd6;
+  --vp-button-brand-active-bg: #1c16b8;
+  --vp-button-brand-text: #ffffff;
+
+  /* The wordmark is ink, like the landing page — not gradient-tinted. */
+  --vp-home-hero-name-color: var(--vp-c-text-1);
+}
+
+/* Full black text in light mode — override VitePress's default
+   dark-slate greys (text-1 rgba(60,60,67), text-2 lighter). Scoped
+   to :not(.dark) so dark mode keeps the theme's light-on-dark text. */
+:root:not(.dark) {
+  --vp-c-text-1: #000000;
+  --vp-c-text-2: #000000;
+}
+
+.dark {
+  /* Ultramarine is too dark against the dark bg; lift it for text and
+     links, keep buttons closer to the brand hue. */
+  --vp-c-brand-1: #918bff;
+  --vp-c-brand-2: #7a73ff;
+  --vp-c-brand-3: #4740ff;
+  --vp-c-brand-soft: rgba(122, 115, 255, 0.16);
+
+  --vp-button-brand-bg: #4740ff;
+  --vp-button-brand-hover-bg: #5a54ff;
+  --vp-button-brand-active-bg: #3a33e6;
+}
+
+/* Landing-page `key-token` treatment: lime pop behind inline marks. */
+mark {
+  background: var(--bougie-pop);
+  color: var(--bougie-ink);
+  padding: 1px 4px;
+}
+
+/**
+ * Swiss-poster treatment for the theme pages (docs/blog/changelog),
+ * carrying the landing page's language: hard ink rules, squared
+ * corners, heavy tight headings, mono uppercase micro-labels.
+ * Structural borders use --vp-c-text-1 so they invert in dark mode.
+ */
+:root {
+  /* All dividers become ink rules (tables, h2 rules, hr, nav).
+     The gutter color drives the navbar rule and layout edges — the
+     theme's scoped rules win on specificity, so recolor the variable. */
+  --vp-c-divider: var(--vp-c-text-1);
+  --vp-c-gutter: var(--vp-c-text-1);
+  /* Landing top-bar geometry: 34px above the chip + 22px chip +
+     12px below + 3px rule = 71px total; 68px + the 3px divider. */
+  --vp-nav-height: 68px;
+  /* Code blocks: paper background, the border does the work. */
+  --vp-code-block-bg: var(--vp-c-bg);
+  --vp-sidebar-bg-color: var(--vp-c-bg);
+}
+
+/* Navbar rule: 3px ink line. */
+.VPNavBar .divider-line {
+  height: 3px;
+  background-color: var(--vp-c-text-1);
+}
+
+.VPNavBar .content-body {
+  align-items: center;
+  gap: 16px;
+}
+
+/* No vertical separator lines in the header — the landing has none. */
+#app .VPNavBar .content-body > .translations::before,
+#app .VPNavBar .content-body > .appearance::before,
+#app .VPNavBar .content-body > .social-links::before {
+  content: none;
+}
+
+/* Fully opaque header background on every page so scrolled content
+   never shows through the fixed bar (VitePress leaves the has-sidebar
+   navbar transparent, and elsewhere uses a translucent nav bg). */
+#app .VPNav,
+#app .VPNavBar {
+  background-color: var(--vp-c-bg);
+  backdrop-filter: none;
+}
+
+@media (min-width: 960px) {
+  /* Header contents + rule live in a landing-style centered container
+     (site-wrap: 940px, 36px side padding); the page below stays wide. */
+  #app .VPNavBar .wrapper {
+    max-width: 940px;
+    margin: 0 auto;
+    padding: 0 36px;
+  }
+
+  /* Center the bar's items on a shared axis 45px down — the same
+     center-aligned arrangement as the landing top-bar, where the
+     chip and the shorter nav text share a baseline. padding-top
+     22px seats that center: (68 + 22) / 2 = 45. */
+  .VPNavBar .wrapper > .container {
+    align-items: center;
+    padding-top: 22px;
+  }
+
+  /* The theme pins .title, .content, and the menu links to the full
+     nav height (line-height:var(--vp-nav-height)), so they overflow
+     the bar and sit at the top. Collapse them to content height so the
+     container's center alignment can seat them on the shared baseline. */
+  #app .VPNavBar .container > .title,
+  #app .VPNavBar .content,
+  #app .VPNavBar .content-body {
+    height: auto;
+  }
+
+  /* Center the content-body items (links, search, github) on the same
+     axis as the chip, matching the landing top-bar. */
+  .VPNavBar .content-body {
+    align-items: center;
+  }
+
+  /* Centered rule; transparent wrapper so only the .divider-line shows
+     (non-sidebar pages otherwise paint the wrapper with the gutter
+     color, drawing an extra, wider line under the blog header). */
+  #app .VPNavBar .divider {
+    max-width: 940px;
+    margin: 0 auto;
+    padding: 0 36px;
+    background: transparent;
+  }
+
+  #app .VPNavBar.has-sidebar > .wrapper > .container > .title {
+    position: static;
+    width: auto;
+    padding: 0;
+  }
+
+  /* 16px chip->nav gap on every page (docs and blog alike), matching
+     the landing top-bar; overrides the has-sidebar sidebar-width pad. */
+  #app .VPNavBar .wrapper > .container > .content {
+    padding-left: 16px;
+    padding-right: 0;
+  }
+
+  /* Align the first sidebar group with the content heading and the
+     "on this page" outline. */
+  #app .VPSidebar {
+    padding-top: 106px;
+  }
+
+  /* Scroll-masking curtain from the full-height layout — obsolete here. */
+  .VPSidebar .curtain {
+    display: none;
+  }
+}
+
+.VPNavBar .content-body > .VPNavBarMenu {
+  order: -1;
+}
+
+.VPNavBar .content-body > .VPNavBarSearch {
+  flex-grow: 0;
+  margin-left: auto;
+}
+
+/* Nav links: text-hugging accent underline on hover, like the
+   landing top-bar/footer links. */
+.VPNavBarMenu {
+  gap: 18px;
+}
+
+#app .VPNavBarMenuLink {
+  /* Match the landing nav link box exactly: 12px text + 2px bottom
+     padding + 2px border = 16px, bottom-only (no top padding). */
+  height: auto;
+  line-height: 1;
+  padding: 0 0 2px;
+  margin: 0;
+  font-weight: 500;
+  border-bottom: 2px solid transparent;
+}
+
+/* #app prefix so these outrank the id-specificity base rule above
+   (whose transparent border would otherwise win the hover/active
+   underline, like the landing top-bar links). */
+#app .VPNavBarMenuLink:hover,
+#app .VPNavBarMenuLink.active {
+  color: var(--vp-c-brand-1);
+  border-bottom-color: var(--vp-c-brand-1);
+}
+
+/* The social-links group carries a theme -8px right margin to offset
+   icon padding we no longer render; zero it so GitHub's right edge
+   lands on the container edge like the landing top-bar. */
+.VPNavBar .social-links {
+  margin-right: 0;
+}
+
+/* GitHub: mono text link instead of the icon, as on the landing. */
+.VPSocialLink[aria-label*='github' i] {
+  width: auto;
+  height: auto;
+  border-bottom: 2px solid transparent;
+  padding-bottom: 2px;
+}
+
+.VPSocialLink[aria-label*='github' i]:hover {
+  color: var(--vp-c-brand-1);
+  border-bottom-color: var(--vp-c-brand-1);
+}
+
+/* The icon renders as an svg or a masked span depending on version —
+   hide any element child; the ::after text below replaces it. */
+.VPSocialLink[aria-label*='github' i] > * {
+  display: none;
+}
+
+.VPSocialLink[aria-label*='github' i]::after {
+  content: 'GitHub';
+  font: 500 12px/1 var(--vp-font-family-mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.VPNavBarTitle {
+  display: flex;
+}
+
+/* A tight chip like the landing top-bar, not a full-height slab.
+   Pin the height to exactly 22px (box-border) with flex-centered
+   text so it matches the landing chip to the pixel, rather than
+   letting the font line box round it to 23px. */
+/* #app: the theme's `.VPNavBarTitle.has-sidebar .title` (which colors
+   the chip's border-bottom with the divider ink) outranks a plain
+   selector, so keep the border-bottom transparent here. */
+#app .VPNavBarTitle .title {
+  display: inline-flex;
+  align-items: center;
+  box-sizing: border-box;
+  height: 22px;
+  width: fit-content;
+  background: var(--vp-c-text-1);
+  color: var(--vp-c-bg);
+  padding: 0 10px;
+  font: 500 12px/1 var(--vp-font-family-mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  border-bottom-color: transparent;
+}
+
+/* #app so it outranks the id-specificity base chip rule above. */
+#app .VPNavBarTitle .title:hover {
+  background: var(--vp-c-brand-1);
+  color: #fff;
+}
+
+#app .VPNavBarMenuLink,
+#app .VPNavBarMenuGroup > button {
+  font-family: var(--vp-font-family-mono);
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.DocSearch-Button {
+  border: none;
+  border-radius: 0;
+  background: transparent;
+}
+
+/* Square the "Ctrl K" key-hint boxes. */
+#app .DocSearch-Button-Key {
+  border-radius: 0;
+}
+
+/* Search modal: square every corner and give the shell + search bar an
+   ink border, matching the neo-brutalist boxes. */
+#app .VPLocalSearchBox .shell {
+  border-radius: 0;
+  border: 2.5px solid var(--vp-c-text-1);
+}
+
+#app .VPLocalSearchBox .search-bar {
+  border: 2px solid var(--vp-c-text-1);
+}
+
+#app .VPLocalSearchBox .search-bar,
+#app .VPLocalSearchBox .result,
+#app .VPLocalSearchBox kbd,
+#app .VPLocalSearchBox .titles mark,
+#app .VPLocalSearchBox .excerpt mark,
+#app .VPLocalSearchBox [class*='language-'] {
+  border-radius: 0;
+}
+
+/* Squared corners across the board. */
+.vp-doc div[class*='language-'],
+.vp-doc .custom-block,
+.vp-doc :not(pre) > code,
+.VPButton,
+.VPDocAsideOutline .outline-marker,
+.vp-doc img {
+  border-radius: 0;
+}
+
+/* Light/dark toggle: square the track and knob (ink track border) to
+   match the neo-brutalist chip/code-box treatment, while keeping the
+   default light knob so the sun/moon glyph stays visible. The theme's
+   scoped .VPSwitch rules need the #app prefix to override. */
+#app .VPSwitch {
+  border-radius: 0;
+  /* 1px to match the Ctrl+K key hint — and it's the width the knob's
+     top:1px/left:1px position is calibrated for, so the glyph stays
+     centered (a 2px border shifted it 1px down and right). */
+  border: 1px solid var(--vp-c-text-1);
+  background-color: var(--vp-c-bg);
+}
+
+#app .VPSwitch .check,
+#app .VPSwitch .icon {
+  border-radius: 0;
+}
+
+/* Knob background = page background (dark gray in dark mode) instead
+   of the theme's pure black, so it matches the page. */
+#app .VPSwitch .check {
+  background-color: var(--vp-c-bg);
+}
+
+/* Code blocks: bordered boxes like the landing's install-box. */
+.vp-doc div[class*='language-'] {
+  border: 2.5px solid var(--vp-c-text-1);
+}
+
+.vp-doc [class*='language-'] > button.copy {
+  border-radius: 0;
+}
+
+/* The "Copied" tooltip that pops left of the copy button (#app to
+   outrank the theme's scoped-specificity ::before rule). */
+#app .vp-doc [class*='language-'] > button.copy.copied::before {
+  border-radius: 0;
+}
+
+/* Inline code: plain mono ink, like the landing's inline <code>. */
+.vp-doc :not(pre) > code {
+  background: transparent;
+  color: var(--vp-c-text-1);
+  padding: 0;
+  font-weight: 600;
+}
+
+/* Headings: heavy and tight, h2 sections opened by a hard rule. */
+.vp-doc h1 {
+  font-weight: 900;
+  letter-spacing: -0.03em;
+}
+
+.vp-doc h2 {
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  border-top: 2.5px solid var(--vp-c-text-1);
+}
+
+.vp-doc h3,
+.vp-doc h4 {
+  font-weight: 800;
+  letter-spacing: -0.01em;
+}
+
+/* Sidebar: paper background, mono uppercase group titles. */
+.VPSidebar {
+  background-color: var(--vp-c-bg);
+}
+
+.VPSidebarItem.level-0 > .item > .text {
+  font: 700 11px/1.6 var(--vp-font-family-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+/* "On this page": same micro-label treatment. Keep the theme's 32px
+   line-height — the outline marker is positioned by JS as
+   activeLink.offsetTop + 39, a constant calibrated to that title
+   height; shrinking it drops the marker out of line with the text. */
+.VPDocAsideOutline .outline-title {
+  font-family: var(--vp-font-family-mono);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 32px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+/* Blog (and any no-sidebar doc): center the article in the same
+   940px / 36px container as the header, instead of the theme's
+   narrower default doc width, so the two edges line up. */
+@media (min-width: 960px) {
+  #app .VPDoc:not(.has-sidebar) .container {
+    max-width: 940px;
+  }
+
+  #app .VPDoc:not(.has-sidebar) .content {
+    max-width: 100%;
+    padding-left: 36px;
+    padding-right: 36px;
+  }
+}
+
+/* Custom containers: hard boxes, no tint wash. */
+.vp-doc .custom-block {
+  border: 2.5px solid var(--vp-c-text-1);
+  background: var(--vp-c-bg);
+}
+
+/* Prev/next pager links: square the rounded border box. */
+#app .VPDocFooter .pager-link {
+  border-radius: 0;
+}
+
+/* ShellBox in docs flow: same vertical rhythm as a code block. */
+.vp-doc .shell-box {
+  margin: 16px 0;
+}
+
+/* Page footer: mono uppercase over a hard rule, like the landing. */
+#app .VPFooter {
+  border-top: 3px solid var(--vp-c-text-1);
+  font: 500 12px/1.8 var(--vp-font-family-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}

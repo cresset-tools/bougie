@@ -1,0 +1,15 @@
+---
+draft: true
+---
+
+# Diagnose a failure
+
+Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod
+tempor incididunt ut labore et dolore magna aliqua.
+
+```sh
+bougie diagnose
+```
+
+Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi
+ut aliquip ex ea commodo consequat.

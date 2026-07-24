@@ -1,9 +1,17 @@
 name: CI
 
+# Website-only changes are handled by website.yml — don't burn the
+# three-OS Rust matrix on them.
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - 'website/**'
+      - '.github/workflows/website.yml'
   pull_request:
+    paths-ignore:
+      - 'website/**'
+      - '.github/workflows/website.yml'
 
 # Cancel an in-flight run when the same ref gets a newer push.
 concurrency:
