@@ -40,6 +40,6 @@ pub use query::{
 };
 pub use update::{
     dry_run_update, dry_run_update_partial, resolve_for_lockfile, resolve_for_lockfile_partial,
-    DryRunOptions, LockfileSolveOutcome, PartialUpdate, ResolutionStrategy, ResolvedPackage,
-    UpdateSummary,
+    unsupported_repo_warnings, DryRunOptions, LockfileSolveOutcome, PartialUpdate,
+    ResolutionStrategy, ResolvedPackage, UpdateSummary,
 };

@@ -2042,6 +2042,45 @@ fn vcs_repo_resolves_from_git_source() {
 }
 
 #[test]
+fn unsupported_repo_warnings_names_dropped_repos() {
+    use crate::update::unsupported_repo_warnings;
+
+    // Array form: svn + package are dropped (warned); composer/path/git are not.
+    let cj = json!({
+        "repositories": [
+            {"type": "composer", "url": "https://repo.example/"},
+            {"type": "svn", "url": "https://svn.example/acme"},
+            {"type": "path", "url": "../pkgs/*"},
+            {"type": "package", "package": {"name": "a/b", "version": "1.0.0"}},
+            {"type": "vcs", "url": "https://github.com/acme/foo.git"},
+            {"packagist.org": false},
+        ],
+    });
+    let warnings = unsupported_repo_warnings(&cj);
+    assert_eq!(warnings.len(), 2, "only svn + package are dropped: {warnings:?}");
+    assert!(
+        warnings.iter().any(|w| w.contains("`svn`") && w.contains("svn.example/acme")),
+        "{warnings:?}",
+    );
+    assert!(warnings.iter().any(|w| w.contains("`package`")), "{warnings:?}");
+
+    // Named-object form is honored too.
+    let obj = json!({
+        "repositories": { "internal": {"type": "hg", "url": "https://hg.example/x"} },
+    });
+    let warnings = unsupported_repo_warnings(&obj);
+    assert_eq!(warnings.len(), 1);
+    assert!(warnings[0].contains("`hg`"), "{}", warnings[0]);
+
+    // No repositories, or only supported ones → nothing.
+    assert!(unsupported_repo_warnings(&json!({})).is_empty());
+    assert!(unsupported_repo_warnings(&json!({
+        "repositories": [{"type": "composer", "url": "https://x/"}],
+    }))
+    .is_empty());
+}
+
+#[test]
 fn path_repo_entry_parses_into_path_kind() {
     use crate::metadata::{ReferenceMode, RepoKind};
     let composer_json = json!({

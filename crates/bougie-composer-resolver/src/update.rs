@@ -2434,6 +2434,51 @@ fn parse_repo_entry(
     }
 }
 
+/// Repository `type`s bougie parses but does not resolve — declared in
+/// composer.json yet dropped. MUST stay in sync with the ignore arms in
+/// [`parse_repo_entry`] (`hg`/`fossil`/`svn` non-git VCS, `package`,
+/// `artifact`). Surfaced to the user by [`unsupported_repo_warnings`] so a
+/// later "not found in any repository" isn't a mystery.
+fn is_unsupported_repo_type(kind: &str) -> bool {
+    matches!(kind, "hg" | "fossil" | "svn" | "package" | "artifact")
+}
+
+/// One warning per `repositories` entry whose type bougie parses but
+/// can't resolve (see [`is_unsupported_repo_type`]). Empty when every
+/// declared repo is a `composer`, `path`, or git `vcs` repo. Honors both
+/// wire shapes Composer accepts (array and named-object map); the
+/// `{"packagist.org": false}` disable sentinel and non-object entries are
+/// skipped. Pure — the CLI prints the result on stderr.
+pub fn unsupported_repo_warnings(composer_json: &Value) -> Vec<String> {
+    let Some(repos) = composer_json.get("repositories") else {
+        return Vec::new();
+    };
+    let entries: Vec<&Value> = match repos {
+        Value::Array(a) => a.iter().collect(),
+        Value::Object(o) => o.values().collect(),
+        _ => return Vec::new(),
+    };
+    let mut out = Vec::new();
+    for entry in entries {
+        let Some(obj) = entry.as_object() else { continue };
+        let Some(kind) = obj.get("type").and_then(Value::as_str) else { continue };
+        if !is_unsupported_repo_type(kind) {
+            continue;
+        }
+        let at = obj
+            .get("url")
+            .and_then(Value::as_str)
+            .filter(|u| !u.is_empty())
+            .map_or_else(String::new, |u| format!(" ({u})"));
+        out.push(format!(
+            "ignoring unsupported `{kind}` repository{at}: bougie resolves `composer`, \
+             `path`, and git (`vcs`) repositories — a package available only here won't \
+             be found",
+        ));
+    }
+    out
+}
+
 /// Composer's repository ordering: declarations come first (highest
 /// priority), with the implicit public Packagist appended last
 /// unless disabled. Mirrors `Composer\Repository\
