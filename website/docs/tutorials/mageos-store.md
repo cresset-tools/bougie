@@ -1,7 +1,3 @@
----
-draft: true
----
-
 # A Mage-OS store in one command
 
 Bougie is set up really well to work with Mage-OS and Magento.
