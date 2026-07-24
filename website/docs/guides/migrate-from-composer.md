@@ -1,7 +1,3 @@
----
-draft: true
----
-
 # Migrate from Composer
 
 Bougie mirrors many composer commands under the `bougie composer` command.
