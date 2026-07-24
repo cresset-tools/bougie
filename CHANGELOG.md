@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.53.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.52.0...bougie-v0.53.0) (2026-07-24)
+
+
+### Features
+
+* **composer-resolver:** alias version-like vcs branches to x-dev ([#551](https://github.com/cresset-tools/bougie/issues/551)) ([21469b6](https://github.com/cresset-tools/bougie/commit/21469b6f44695c0b15d516685a8536f713b6eb08))
+* **composer-resolver:** warn when a declared repository is unsupported ([#553](https://github.com/cresset-tools/bougie/issues/553)) ([807df5b](https://github.com/cresset-tools/bougie/commit/807df5b949818ece9e784d364f1feacf2b404e0e))
+* **login:** default `bougie login` (no URL) to Bougie Cloud ([#550](https://github.com/cresset-tools/bougie/issues/550)) ([dda7621](https://github.com/cresset-tools/bougie/commit/dda76211929a3eb6828462691f6b247d58ab9abe))
+* **login:** discover the registry endpoint via a DNS SRV record ([#549](https://github.com/cresset-tools/bougie/issues/549)) ([5349f5c](https://github.com/cresset-tools/bougie/commit/5349f5cf2e078c68f567dff1e6c8356265bbe86b))
+* **php:** render `php install` output like uv's `python install` ([#552](https://github.com/cresset-tools/bougie/issues/552)) ([c953309](https://github.com/cresset-tools/bougie/commit/c953309e0d86897332ccbb1074f7345dd95534ed))
+* **tunnel:** extract the wire protocol into a shared bougie-tunnel-protocol crate ([#545](https://github.com/cresset-tools/bougie/issues/545)) ([102c402](https://github.com/cresset-tools/bougie/commit/102c402d20b8a55bd97e27414d7dc41fcc608937))
+
 ## [0.52.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.51.0...bougie-v0.52.0) (2026-07-21)
 
 
