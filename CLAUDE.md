@@ -280,8 +280,6 @@ change up. Examples in `git log`: `feat(composer-resolver): ...`,
   resolver itself shipped (its `RESOLVER_PLAN.md` was deleted on
   completion, incl. Phase D VCS/source support); this covers the test
   suite's remaining layer.
-- `SERVER_PLAN.md` — `bougie server` engine per upstream `SERVER.md`.
-  8-phase bottom-up build (shipped).
 - `SERVER_CLI_PLAN.md` — `bougie server` CLI surface redesign: the
   project verb over the shared daemon + `status`/`open`/`stop`/`logs`,
   plus a standalone foreground fallback for Windows. All phases shipped
