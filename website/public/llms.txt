@@ -27,8 +27,8 @@ and the common paths.
   (composer/installers paths, Symfony Flex recipes, Laravel package discovery)
   are reimplemented natively. Don't expect plugin side effects.
 - **Implicit sync.** Many verbs (`run`, `make`/`start`, `server`, `share`,
-  `ext add`) run `bougie sync` first. Pass `--no-sync` to skip when the env
-  is known good.
+  `ext add`/`remove`, `patches add`) run `bougie sync` first. Pass `--no-sync`
+  to skip when the env is known good.
 - Exit code `0` = success; non-zero maps to a domain error taxonomy.
 
 ## Install
@@ -278,7 +278,10 @@ All listed subcommands are **native** reimplementations (byte-equivalent to
 Composer 2.8.12 where applicable). bougie does **not** bundle or execute the
 Composer phar. An unrecognized subcommand (`create-project`, `archive`,
 `bump`, …) errors with a pointer to `bougie tool install composer/composer`
-for the full upstream Composer.
+for the full upstream Composer. bougie does not seed a global `composer` on
+`PATH`; inside a synced project, `vendor/bougie/bin/composer` is a shim that
+routes to these native subcommands, so bare `composer …` calls from a recipe
+or `bougie run` resolve to bougie's own implementation.
 
 - `install [-d|--working-dir DIR] [--no-dev] [--frozen] [--lock-verify] [--ignore-platform-reqs] [--ignore-platform-req REQ] [--scripts | --no-scripts] [--patches | --no-patches]`
   — install `vendor/` from `composer.lock` (content-hash verified).
