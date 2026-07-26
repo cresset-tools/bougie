@@ -7,6 +7,9 @@
 # Visual Studio workspace state (per-user; not project config).
 .vs/
 
+# Claude Code local state (worktrees for background agents, etc.).
+/.claude/
+
 # VitePress site (website/).
 /website/node_modules
 /website/.vitepress/cache
