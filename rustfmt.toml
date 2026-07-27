@@ -1,0 +1,10 @@
+# Pin the formatting rules so a toolchain bump can't silently reflow the
+# tree.
+#
+# The crates are edition 2024, so rustfmt already *defaults* style_edition
+# to 2024 — but a default is not a pin. Stating it explicitly means a
+# future edition's style changes land as a deliberate opt-in commit rather
+# than as a surprise several-hundred-file diff for whoever upgrades Rust
+# first. That is exactly how this tree ended up 312 files out of date: the
+# default moved to 2024 and nothing was checking.
+style_edition = "2024"

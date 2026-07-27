@@ -234,6 +234,14 @@ Global flags: `--quiet`, `--verbose`, `--format {text,json-v1}`.
 - **Release profile:** `codegen-units = 1`, `lto = "fat"`,
   `panic = "abort"`, `strip = "symbols"`.
 - **`profiling` profile:** inherits `release` with line tables, no strip.
+- **Formatting is CI-enforced.** `rustfmt.toml` pins `style_edition =
+  "2024"` and the `fmt` job in `ci.yml` runs `cargo fmt --all -- --check`
+  on every push and PR. Run `cargo fmt --all` before committing. The pin
+  matters: rustfmt *defaults* style_edition to the crate edition, so
+  without it a toolchain bump silently reflows the tree — which is how it
+  drifted to 312 unformatted files before the check existed. Note rustfmt
+  is not always idempotent in one pass; if `--check` still complains after
+  formatting, run it twice.
 - **No Justfile / Makefile.** Plain Cargo + shell scripts.
 - **Edition 2024**, MSRV 1.95.
 

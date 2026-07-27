@@ -23,6 +23,28 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
+  # Formatting is platform-independent, so one cheap Linux job guards it
+  # for the whole matrix. Deliberately no Swatinem/rust-cache: `cargo fmt`
+  # compiles nothing, so a cargo cache would cost more to restore than the
+  # job takes to run.
+  #
+  # `rustfmt.toml` pins style_edition, and rust-toolchain.toml pins the
+  # channel + the rustfmt component, so this check is reproducible: it
+  # can only start failing because someone changed code, not because the
+  # runner picked up a newer rustfmt.
+  fmt:
+    name: cargo fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache-bin: false
+
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+
   test:
     name: cargo test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
