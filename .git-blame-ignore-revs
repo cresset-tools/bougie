@@ -1,0 +1,23 @@
+# Revisions to skip when running `git blame` — bulk mechanical rewrites
+# that would otherwise attribute every touched line to a reformat.
+#
+# Enable it once per clone:
+#
+#     git config blame.ignoreRevsFile .git-blame-ignore-revs
+#
+# (GitHub honours this file automatically in its blame view.)
+#
+# Only add commits that changed formatting and nothing else. A commit
+# listed here still shows up in `git log`; blame just looks through it to
+# the revision that last changed the line's substance.
+#
+# CAVEAT for the cresset monorepo: these are the **monorepo's** commit ids.
+# The canonical tree lives at ~/cresset, whose history was rewritten
+# beneath each project path on import, so the same change carries a
+# different id in `cresset-tools/bougie`. `git blame` fails hard on a rev
+# it cannot resolve, so if this file is ever synced downstream the entries
+# must be translated to that repo's ids — not copied verbatim. Likewise, a
+# rebase of an unpushed entry changes its id; re-record it if that happens.
+
+# style: cargo fmt the whole tree under rustfmt's 2024 style edition
+634c6691c4d1384717e0c62e18dfc4f23b1f618a
