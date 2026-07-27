@@ -96,6 +96,17 @@ pub enum OutputFormat {
     JsonV1,
 }
 
+/// Which semver component `bougie version --bump` increments.
+#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VersionBump {
+    /// `1.2.3` → `2.0.0`
+    Major,
+    /// `1.2.3` → `1.3.0`
+    Minor,
+    /// `1.2.3` → `1.2.4`
+    Patch,
+}
+
 /// Version-preference policy for a resolve, mirroring uv's
 /// `--resolution`. Maps onto `bougie-composer-resolver`'s
 /// `ResolutionStrategy` in the dispatch layer.
@@ -315,6 +326,31 @@ pub enum Command {
         /// Exit non-zero if any package is outdated
         #[arg(long = "strict")]
         strict: bool,
+        /// Run in this directory instead of CWD (`-d`)
+        #[arg(short = 'd', long = "working-dir", value_name = "DIR")]
+        working_dir: Option<std::path::PathBuf>,
+    },
+
+    /// Read or set the project's version in `composer.json`
+    ///
+    /// With no arguments it reports the current version. Pass a VERSION to
+    /// set one, or `--bump` to increment a semver component. Distinct from
+    /// `bougie self version`, which reports the bougie binary's version.
+    #[command(display_order = 17)]
+    Version {
+        /// Set the version to this exact value (e.g. `1.4.0`), stored verbatim
+        #[arg(value_name = "VERSION", conflicts_with = "bump")]
+        version: Option<String>,
+        /// Increment a component of the current version, zeroing the ones
+        /// to its right and dropping any pre-release suffix
+        #[arg(long = "bump", value_name = "COMPONENT")]
+        bump: Option<VersionBump>,
+        /// Print just the bare version, for capture in scripts
+        #[arg(long = "short")]
+        short: bool,
+        /// Report what would change without writing `composer.json`
+        #[arg(long = "dry-run")]
+        dry_run: bool,
         /// Run in this directory instead of CWD (`-d`)
         #[arg(short = 'd', long = "working-dir", value_name = "DIR")]
         working_dir: Option<std::path::PathBuf>,

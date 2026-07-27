@@ -74,3 +74,4 @@ pub mod telemetry_flush;
 pub mod team;
 pub mod tenant;
 pub mod unzip;
+pub mod version;

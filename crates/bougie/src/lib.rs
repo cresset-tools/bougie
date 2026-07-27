@@ -107,6 +107,7 @@ fn command_name(cmd: &Command) -> &'static str {
         Command::Lock { .. } => "lock",
         Command::Tree { .. } => "tree",
         Command::Outdated { .. } => "outdated",
+        Command::Version { .. } => "version",
         Command::Sync { .. } => "sync",
         Command::Run { .. } => "run",
         Command::Php(_) => "php",
@@ -842,6 +843,13 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
                 commands::login::run(format, &url, mode)
             }
         }
+        Command::Version {
+            version,
+            bump,
+            short,
+            dry_run,
+            working_dir,
+        } => commands::version::run(format, version, bump, short, dry_run, working_dir),
         Command::Format { args } => commands::format::run(&args),
         #[cfg(unix)]
         Command::Ci(bougie_cli::CiCommand::Init(args)) => commands::ci::run(format, args),

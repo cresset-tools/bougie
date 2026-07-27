@@ -143,6 +143,16 @@ Top-level subcommands (from `bougie-cli`):
   delegates to the `composer show --tree` renderer.
 - `outdated [pkgs] [--direct] [--major/minor/patch-only] [--strict]` —
   native outdated check; same engine as `composer outdated`.
+- `version [VERSION] [--bump major|minor|patch] [--short] [--dry-run]` —
+  Read or set the project's own version in `composer.json` (uv's `uv
+  version`). Distinct from `self version` (the binary's version). Composer
+  projects usually omit `version` (Packagist derives it from the tag), so a
+  missing field is reported as a fact, not an error, and is only written
+  when asked for. Set values are stored **verbatim** (`1.4.0`, not the
+  normalized `1.4.0.0`); `--bump` zeroes the components to the right, drops
+  any pre-release suffix, pads to three segments, and preserves a `v`
+  prefix. A newly-added key is spliced after `description`/`name` rather
+  than appended, so it doesn't land below `require`.
 - `sync [--offline] [--dry-run]` — Install everything the project requires.
 - `up [names...]` / `down [names...] [--purge]` — Start / stop declared
   services.
