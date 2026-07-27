@@ -77,8 +77,11 @@ fn restart_replaces_the_process_and_preserves_the_tenant() {
         .success();
 
     let pid_before = read_pid(&env, proj.path(), "redis").expect("redis should be running");
-    let ledger_before =
-        fs::read_to_string(env.home_path().join("state/services/redis/8.6.3/tenants.json")).unwrap();
+    let ledger_before = fs::read_to_string(
+        env.home_path()
+            .join("state/services/redis/8.6.3/tenants.json"),
+    )
+    .unwrap();
 
     let output = env
         .bougie()
@@ -106,15 +109,19 @@ fn restart_replaces_the_process_and_preserves_the_tenant() {
     );
 
     // New PID means the supervisor really cycled the child.
-    let pid_after = read_pid(&env, proj.path(), "redis").expect("redis should be running after restart");
+    let pid_after =
+        read_pid(&env, proj.path(), "redis").expect("redis should be running after restart");
     assert_ne!(
         pid_after, pid_before,
         "restart should have produced a new pid (was {pid_before}, still {pid_after})"
     );
 
     // Tenant ledger byte-identical: no re-provision happened.
-    let ledger_after =
-        fs::read_to_string(env.home_path().join("state/services/redis/8.6.3/tenants.json")).unwrap();
+    let ledger_after = fs::read_to_string(
+        env.home_path()
+            .join("state/services/redis/8.6.3/tenants.json"),
+    )
+    .unwrap();
     assert_eq!(
         ledger_before, ledger_after,
         "tenant ledger must be preserved across restart"

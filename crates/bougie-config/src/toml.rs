@@ -6,7 +6,11 @@ use eyre::Result;
 
 pub fn read_bougie_toml(text: &str) -> Result<BougieConfig> {
     toml_edit::de::from_str(text).map_err(|e| {
-        BougieError::Config { path: "bougie.toml".into(), detail: e.to_string() }.into()
+        BougieError::Config {
+            path: "bougie.toml".into(),
+            detail: e.to_string(),
+        }
+        .into()
     })
 }
 
@@ -84,7 +88,9 @@ mysqli = false
         )
         .unwrap();
         assert_eq!(
-            cfg.extensions.get("xdebug").and_then(super::super::ExtensionPin::as_version),
+            cfg.extensions
+                .get("xdebug")
+                .and_then(super::super::ExtensionPin::as_version),
             Some("3.5.1")
         );
         assert!(cfg.extensions.get("mysqli").unwrap().is_disabled());
@@ -123,7 +129,9 @@ tenant = "myapp"
         .unwrap();
         assert_eq!(cfg.services.len(), 2);
         assert_eq!(
-            cfg.services.get("redis").and_then(super::super::ServicePin::version),
+            cfg.services
+                .get("redis")
+                .and_then(super::super::ServicePin::version),
             Some("8.6")
         );
         let m = cfg.services.get("mariadb").unwrap();

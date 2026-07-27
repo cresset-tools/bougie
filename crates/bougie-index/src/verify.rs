@@ -81,7 +81,10 @@ pub fn describe_trust() -> TrustDescription {
             .map_or_else(|| "(unreadable)".into(), |b| sha256_hex(&b));
         return TrustDescription {
             kind: "detached-ecdsa",
-            detail: format!("BOUGIE_TRUST_ROOT_PATH={} sha256:{fingerprint}", path.to_string_lossy()),
+            detail: format!(
+                "BOUGIE_TRUST_ROOT_PATH={} sha256:{fingerprint}",
+                path.to_string_lossy()
+            ),
         };
     }
     TrustDescription {
@@ -192,18 +195,27 @@ impl DetachedEcdsa {
                 url: "(unknown)".into(),
                 trust_root_fingerprint: String::new(),
                 reason: "trust root PEM is empty".into(),
-                hint: "set BOUGIE_TRUST_ROOT_PATH to a valid PEM-encoded ECDSA P-256 public key".into(),
+                hint: "set BOUGIE_TRUST_ROOT_PATH to a valid PEM-encoded ECDSA P-256 public key"
+                    .into(),
             }
             .into());
         }
-        let key = CosignVerificationKey::from_pem(pem_bytes, &SigningScheme::ECDSA_P256_SHA256_ASN1)
-            .map_err(|e| BougieError::IndexSignature {
-                url: "(unknown)".into(),
-                trust_root_fingerprint: sha256_hex(pem_bytes),
-                reason: format!("trust root is not a valid PEM ECDSA P-256 key: {e}"),
-                hint: "regenerate the test key via `openssl ec -in priv.pem -pubout -out trust-root.pub`".into(),
-            })?;
-        Ok(Self { key, fingerprint: sha256_hex(pem_bytes) })
+        let key =
+            CosignVerificationKey::from_pem(pem_bytes, &SigningScheme::ECDSA_P256_SHA256_ASN1)
+                .map_err(|e| {
+                    BougieError::IndexSignature {
+            url: "(unknown)".into(),
+            trust_root_fingerprint: sha256_hex(pem_bytes),
+            reason: format!("trust root is not a valid PEM ECDSA P-256 key: {e}"),
+            hint:
+                "regenerate the test key via `openssl ec -in priv.pem -pubout -out trust-root.pub`"
+                    .into(),
+        }
+                })?;
+        Ok(Self {
+            key,
+            fingerprint: sha256_hex(pem_bytes),
+        })
     }
 
     pub fn fingerprint(&self) -> &str {
@@ -221,7 +233,10 @@ impl Verifier for DetachedEcdsa {
         let attempt = self
             .key
             .verify_signature(SigstoreSignature::Base64Encoded(&trimmed), payload)
-            .or_else(|_| self.key.verify_signature(SigstoreSignature::Raw(signature), payload));
+            .or_else(|_| {
+                self.key
+                    .verify_signature(SigstoreSignature::Raw(signature), payload)
+            });
         attempt.map_err(|e| {
             BougieError::IndexSignature {
                 url: url.to_owned(),
@@ -272,7 +287,8 @@ mod tests {
         let sig_b64 = base64::engine::general_purpose::STANDARD.encode(&sig);
 
         let v = DetachedEcdsa::from_pem(kp.pub_pem.as_bytes()).unwrap();
-        v.verify("https://test/index.json", payload, sig_b64.as_bytes()).unwrap();
+        v.verify("https://test/index.json", payload, sig_b64.as_bytes())
+            .unwrap();
     }
 
     #[test]
@@ -284,7 +300,11 @@ mod tests {
 
         let v = DetachedEcdsa::from_pem(kp.pub_pem.as_bytes()).unwrap();
         let err = v
-            .verify("https://test/index.json", b"hello WORLD ", sig_b64.as_bytes())
+            .verify(
+                "https://test/index.json",
+                b"hello WORLD ",
+                sig_b64.as_bytes(),
+            )
             .unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("could not verify index signature"));
@@ -300,7 +320,10 @@ mod tests {
         let sig_b64 = base64::engine::general_purpose::STANDARD.encode(&sig);
 
         let v = DetachedEcdsa::from_pem(kp_b.pub_pem.as_bytes()).unwrap();
-        assert!(v.verify("https://test/index.json", payload, sig_b64.as_bytes()).is_err());
+        assert!(
+            v.verify("https://test/index.json", payload, sig_b64.as_bytes())
+                .is_err()
+        );
     }
 
     #[test]
@@ -316,7 +339,10 @@ mod tests {
         let v = DetachedEcdsa::from_pem(EMBEDDED_TRUST_ROOT).expect("embedded key parses");
         let fp = v.fingerprint();
         assert_eq!(fp.len(), 64);
-        assert!(fp.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+        assert!(
+            fp.chars()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+        );
     }
 
     #[test]

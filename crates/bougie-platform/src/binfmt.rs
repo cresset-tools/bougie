@@ -6,7 +6,7 @@
 //! [`crate::macho`]; this module just sniffs the first four magic
 //! bytes and routes to the right `detect_from_bytes`.
 
-use eyre::{eyre, Result, WrapErr};
+use eyre::{Result, WrapErr, eyre};
 use std::path::Path;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -21,13 +21,14 @@ pub struct DetectedExt {
 }
 
 pub fn detect_php_extension(path: &Path) -> Result<DetectedExt> {
-    let bytes = std::fs::read(path)
-        .wrap_err_with(|| format!("reading {}", path.display()))?;
+    let bytes = std::fs::read(path).wrap_err_with(|| format!("reading {}", path.display()))?;
     detect_from_bytes(&bytes)
 }
 
 pub fn detect_from_bytes(buf: &[u8]) -> Result<DetectedExt> {
-    let head = buf.get(..4).ok_or_else(|| eyre!("file too small to identify"))?;
+    let head = buf
+        .get(..4)
+        .ok_or_else(|| eyre!("file too small to identify"))?;
     match head {
         b"\x7fELF" => crate::elf::detect_from_bytes(buf),
         // MH_MAGIC_64 (little-endian on disk): 0xfeedfacf
@@ -38,9 +39,7 @@ pub fn detect_from_bytes(buf: &[u8]) -> Result<DetectedExt> {
              are universally 64-bit"
         )),
         // Big-endian Mach-O (MH_CIGAM_64 on disk = 0xcffaedfe BE).
-        [0xfe, 0xed, 0xfa, 0xcf | 0xce] => Err(eyre!(
-            "big-endian Mach-O is not supported"
-        )),
+        [0xfe, 0xed, 0xfa, 0xcf | 0xce] => Err(eyre!("big-endian Mach-O is not supported")),
         // FAT/universal binaries (big-endian magic on disk = 0xCAFEBABE).
         // The 64-bit variant uses 0xCAFEBABF.
         [0xca, 0xfe, 0xba, 0xbe | 0xbf] => Err(eyre!(

@@ -81,10 +81,10 @@ use bougie_paths::Paths;
 use composer_semver::constraint::Constraint;
 use composer_semver::stability::Stability;
 use composer_semver::version::Version;
-use eyre::{eyre, Result, WrapErr};
+use eyre::{Result, WrapErr, eyre};
 use pubgrub::{
-    resolve, DefaultStringReporter, Dependencies, DependencyConstraints, DependencyProvider,
-    PackageResolutionStatistics, PubGrubError, Reporter,
+    DefaultStringReporter, Dependencies, DependencyConstraints, DependencyProvider,
+    PackageResolutionStatistics, PubGrubError, Reporter, resolve,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -103,15 +103,15 @@ enum ProgressMode {
 }
 
 use crate::metadata::{
+    PathRepoConfig, ReferenceMode, Repo, RepoKind, RepoProtocol, Variant, VcsRepoConfig,
     fetch_package_metadata_optional, fetch_package_metadata_optional_async,
     fetch_package_metadata_v1_optional, fetch_package_metadata_v1_optional_async,
-    load_v1_provider_table, load_v1_provider_table_async, probe_protocol, PathRepoConfig,
-    ReferenceMode, Repo, RepoKind, RepoProtocol, Variant, VcsRepoConfig,
+    load_v1_provider_table, load_v1_provider_table_async, probe_protocol,
 };
 
 mod path_repo;
 mod vcs_repo;
-use crate::verify::{is_platform, to_range, ComposerRange, ProviderError, PubGrubPackage};
+use crate::verify::{ComposerRange, ProviderError, PubGrubPackage, is_platform, to_range};
 
 /// Cache key: `(repo url, package name, stable/dev variant)` — the exact
 /// granularity of a single `/p2/` document fetch.
@@ -305,9 +305,8 @@ pub struct ResolveProvider {
     /// of CPU on a Laravel-sized resolve; magento2's deeper graph
     /// makes constraint re-parsing the next-worst hot spot for the
     /// same structural reason.
-    parsed_deps: RefCell<
-        FxHashMap<(PubGrubPackage, Version), Arc<Vec<(PubGrubPackage, ComposerRange)>>>,
-    >,
+    parsed_deps:
+        RefCell<FxHashMap<(PubGrubPackage, Version), Arc<Vec<(PubGrubPackage, ComposerRange)>>>>,
     /// Spinner ticked on every `versions_for` call so the pubgrub
     /// `resolve` phase has visible progress. Defaults to hidden;
     /// orchestrators flip it on with `begin_solve_progress` around
@@ -473,7 +472,10 @@ impl std::fmt::Debug for ResolveProvider {
                 &self.repos.iter().map(|r| &r.url).collect::<Vec<_>>(),
             )
             .field("root_deps", &self.root_deps)
-            .field("cache_keys", &self.cache.borrow().keys().collect::<Vec<_>>())
+            .field(
+                "cache_keys",
+                &self.cache.borrow().keys().collect::<Vec<_>>(),
+            )
             .finish()
     }
 }
@@ -642,8 +644,12 @@ impl ResolveProvider {
         let mc = self.merged_cache.borrow();
         let mut violations = Vec::new();
         for (pkg, version) in solution {
-            let PubGrubPackage::Package(name) = pkg else { continue };
-            let Some(cached) = mc.get(name.as_str()) else { continue };
+            let PubGrubPackage::Package(name) = pkg else {
+                continue;
+            };
+            let Some(cached) = mc.get(name.as_str()) else {
+                continue;
+            };
             let Some((_, entry)) = cached.iter().find(|(v, _)| v == *version) else {
                 continue;
             };
@@ -728,7 +734,9 @@ impl ResolveProvider {
         // across filesystem + git work.
         let mut seeded: Vec<(PackageName, Version, LockPackage)> = Vec::new();
         for repo in &self.repos {
-            let RepoKind::Path(cfg) = &repo.kind else { continue };
+            let RepoKind::Path(cfg) = &repo.kind else {
+                continue;
+            };
             for dir in path_repo::expand_url(&cfg.url, project_root) {
                 match path_repo::read_path_package(&dir, cfg, project_root) {
                     Ok(Some(sp)) => {
@@ -781,7 +789,9 @@ impl ResolveProvider {
     pub fn seed_vcs_candidates(&mut self) {
         let mut seeded: Vec<(PackageName, Version, LockPackage)> = Vec::new();
         for repo in &self.repos {
-            let RepoKind::Vcs(cfg) = &repo.kind else { continue };
+            let RepoKind::Vcs(cfg) = &repo.kind else {
+                continue;
+            };
             match vcs_repo::read_vcs_packages(&self.paths, cfg) {
                 Ok(pkgs) => {
                     for sp in pkgs {
@@ -897,8 +907,7 @@ impl ResolveProvider {
 
             match &versions {
                 Some(vs) if !vs.is_empty() => {
-                    let available =
-                        format_version_list(vs.iter().map(|(v, _)| v.to_string()));
+                    let available = format_version_list(vs.iter().map(|(v, _)| v.to_string()));
                     problems.push(format!(
                         "  Problem {}\n    \
                          - Root composer.json requires {name} {constraint}, \
@@ -971,8 +980,7 @@ impl ResolveProvider {
             let Some(versions) = self.peek_cached_versions(name.as_str()) else {
                 continue;
             };
-            let Some((version, entry)) = versions.iter().find(|(v, _)| range.contains(v))
-            else {
+            let Some((version, entry)) = versions.iter().find(|(v, _)| range.contains(v)) else {
                 continue;
             };
             for (dep_name, dep_constraint_str) in &entry.require {
@@ -1170,31 +1178,28 @@ impl ResolveProvider {
         }
         let mut versions: Vec<LockPackage> = Vec::new();
         for repo in &self.repos {
-            let stable_md = self
-                .fetch_one(repo, name, Variant::Stable)
-                .map_err(|e| {
-                    ProviderError(format!(
-                        "fetching metadata for {name} from {}: {e:#}",
-                        repo.url,
-                    ))
-                })?;
+            let stable_md = self.fetch_one(repo, name, Variant::Stable).map_err(|e| {
+                ProviderError(format!(
+                    "fetching metadata for {name} from {}: {e:#}",
+                    repo.url,
+                ))
+            })?;
             let Some(md) = stable_md else { continue };
             if let Some(entries) = md.packages.get(name) {
                 versions.extend(entries.iter().cloned());
             }
             if floor == Stability::Dev {
-                let dev_md = self
-                    .fetch_one(repo, name, Variant::Dev)
-                    .map_err(|e| {
-                        ProviderError(format!(
-                            "fetching dev metadata for {name} from {}: {e:#}",
-                            repo.url,
-                        ))
-                    })?;
+                let dev_md = self.fetch_one(repo, name, Variant::Dev).map_err(|e| {
+                    ProviderError(format!(
+                        "fetching dev metadata for {name} from {}: {e:#}",
+                        repo.url,
+                    ))
+                })?;
                 if let Some(md) = dev_md
-                    && let Some(extra) = md.packages.get(name) {
-                        versions.extend(extra.iter().cloned());
-                    }
+                    && let Some(extra) = md.packages.get(name)
+                {
+                    versions.extend(extra.iter().cloned());
+                }
             }
         }
 
@@ -1253,12 +1258,7 @@ impl ResolveProvider {
                     return Ok(None);
                 }
                 if !self.v1_provider_tables.borrow().contains_key(&repo.url) {
-                    let table = load_v1_provider_table(
-                        &self.client,
-                        &self.paths,
-                        repo,
-                        discovery,
-                    )?;
+                    let table = load_v1_provider_table(&self.client, &self.paths, repo, discovery)?;
                     self.v1_provider_tables
                         .borrow_mut()
                         .insert(repo.url.clone(), table);
@@ -1274,13 +1274,7 @@ impl ResolveProvider {
                     package,
                 )
             }
-            _ => fetch_package_metadata_optional(
-                &self.client,
-                &self.paths,
-                repo,
-                package,
-                variant,
-            ),
+            _ => fetch_package_metadata_optional(&self.client, &self.paths, repo, package, variant),
         }
     }
 
@@ -1302,11 +1296,14 @@ impl ResolveProvider {
                 provider_version,
                 provided_version,
             } = e;
-            index.entry(virtual_name.clone()).or_default().push(VirtualProvider {
-                provider_name: provider_name.clone(),
-                provider_version: provider_version.clone(),
-                provided_version: provided_version.clone(),
-            });
+            index
+                .entry(virtual_name.clone())
+                .or_default()
+                .push(VirtualProvider {
+                    provider_name: provider_name.clone(),
+                    provider_version: provider_version.clone(),
+                    provided_version: provided_version.clone(),
+                });
             selections
                 .entry((virtual_name, provided_version))
                 .or_default()
@@ -1319,11 +1316,14 @@ impl ResolveProvider {
                 provider_version,
                 provided_range,
             } = w;
-            wildcards.entry(virtual_name).or_default().push(WildcardProvider {
-                provider_name,
-                provider_version,
-                provided_range,
-            });
+            wildcards
+                .entry(virtual_name)
+                .or_default()
+                .push(WildcardProvider {
+                    provider_name,
+                    provider_version,
+                    provided_range,
+                });
         }
     }
 
@@ -1438,7 +1438,9 @@ impl ResolveProvider {
         floor: Stability,
     ) -> Vec<(Version, LockPackage)> {
         let index = self.virtual_providers.borrow();
-        let Some(entries) = index.get(name) else { return Vec::new() };
+        let Some(entries) = index.get(name) else {
+            return Vec::new();
+        };
         let mut seen: std::collections::HashSet<Version> = std::collections::HashSet::new();
         let mut out: Vec<(Version, LockPackage)> = Vec::new();
         for entry in entries {
@@ -1552,10 +1554,7 @@ impl ResolveProvider {
         self.pre_fetch_closure_inner(ClosureProgress::hidden())
     }
 
-    fn pre_fetch_closure_inner(
-        &self,
-        progress: ClosureProgress,
-    ) -> Result<(), ProviderError> {
+    fn pre_fetch_closure_inner(&self, progress: ClosureProgress) -> Result<(), ProviderError> {
         let mut initial: Vec<PackageName> = self
             .root_deps
             .iter()
@@ -1572,7 +1571,9 @@ impl ResolveProvider {
         if !self.seeded_names.is_empty() {
             let cache = self.cache.borrow();
             for owned in &self.seeded_names {
-                let Some(versions) = cache.get(owned) else { continue };
+                let Some(versions) = cache.get(owned) else {
+                    continue;
+                };
                 for (_, pkg) in versions {
                     for req in pkg.require.keys() {
                         if !is_platform(req) {
@@ -1618,12 +1619,9 @@ impl ResolveProvider {
                         discovery,
                     ))
                 }
-                    .map_err(|e| {
-                        ProviderError(format!(
-                            "loading v1 provider table for {}: {e:#}",
-                            repo.url,
-                        ))
-                    })?;
+                .map_err(|e| {
+                    ProviderError(format!("loading v1 provider table for {}: {e:#}", repo.url,))
+                })?;
                 self.v1_provider_tables
                     .borrow_mut()
                     .insert(repo.url.clone(), table);
@@ -1873,8 +1871,8 @@ async fn run_prefetch_fanout(
     }
 
     while let Some(joined) = tasks.join_next().await {
-        let outcome = joined
-            .map_err(|e| ProviderError(format!("prefetch task join error: {e}")))??;
+        let outcome =
+            joined.map_err(|e| ProviderError(format!("prefetch task join error: {e}")))??;
         // Tick on completion (not on spawn) so the count reflects
         // packages whose metadata has actually landed. Displayed
         // name flickers across in-flight tasks; users only see the
@@ -1942,15 +1940,22 @@ async fn load_real_candidates_isolated(
             ),
             None => None,
         };
-        let stable_md =
-            fetch_one_isolated(client, paths, repo, v1_tables, name, Variant::Stable, meta_cache)
-                .await
-                .map_err(|e| {
-                    ProviderError(format!(
-                        "fetching metadata for {name} from {}: {e:#}",
-                        repo.url,
-                    ))
-                })?;
+        let stable_md = fetch_one_isolated(
+            client,
+            paths,
+            repo,
+            v1_tables,
+            name,
+            Variant::Stable,
+            meta_cache,
+        )
+        .await
+        .map_err(|e| {
+            ProviderError(format!(
+                "fetching metadata for {name} from {}: {e:#}",
+                repo.url,
+            ))
+        })?;
         // Union across every repo's hit rather than stopping at the
         // first non-404 — matches the synchronous `load_real_candidates`
         // path (see commit 126d0c6 / PR #135). Magento-style setups
@@ -1963,19 +1968,27 @@ async fn load_real_candidates_isolated(
             versions.extend(entries.iter().cloned());
         }
         if floor == Stability::Dev {
-            let dev_md =
-                fetch_one_isolated(client, paths, repo, v1_tables, name, Variant::Dev, meta_cache)
-                    .await
-                    .map_err(|e| {
-                        ProviderError(format!(
-                            "fetching dev metadata for {name} from {}: {e:#}",
-                            repo.url,
-                        ))
-                    })?;
+            let dev_md = fetch_one_isolated(
+                client,
+                paths,
+                repo,
+                v1_tables,
+                name,
+                Variant::Dev,
+                meta_cache,
+            )
+            .await
+            .map_err(|e| {
+                ProviderError(format!(
+                    "fetching dev metadata for {name} from {}: {e:#}",
+                    repo.url,
+                ))
+            })?;
             if let Some(md) = dev_md
-                && let Some(extra) = md.packages.get(name) {
-                    versions.extend(extra.iter().cloned());
-                }
+                && let Some(extra) = md.packages.get(name)
+            {
+                versions.extend(extra.iter().cloned());
+            }
         }
     }
     // Pre-parse provide/replace clauses while we're already off the
@@ -2000,7 +2013,11 @@ async fn load_real_candidates_isolated(
         })
         .collect();
     filtered.sort_by(|a, b| b.0.cmp(&a.0));
-    Ok(PrefetchOutcome { name: interned, contributions, filtered })
+    Ok(PrefetchOutcome {
+        name: interned,
+        contributions,
+        filtered,
+    })
 }
 
 /// Stateless v1/v2 dispatch — same shape as
@@ -2044,10 +2061,7 @@ async fn fetch_one_isolated(
                 .await?
             }
         }
-        _ => {
-            fetch_package_metadata_optional_async(client, paths, repo, package, variant)
-                .await?
-        }
+        _ => fetch_package_metadata_optional_async(client, paths, repo, package, variant).await?,
     };
 
     let arc = fetched.map(Arc::new);
@@ -2198,9 +2212,15 @@ fn read_root_requires(
         .as_object()
         .ok_or_else(|| BuildError::Internal("composer.json top-level is not an object".into()))?;
 
-    let keys: &[&str] = if no_dev { &["require"] } else { &["require", "require-dev"] };
+    let keys: &[&str] = if no_dev {
+        &["require"]
+    } else {
+        &["require", "require-dev"]
+    };
     for key in keys {
-        let Some(reqs) = obj.get(*key).and_then(Value::as_object) else { continue };
+        let Some(reqs) = obj.get(*key).and_then(Value::as_object) else {
+            continue;
+        };
         for (dep_name, raw) in reqs {
             // Platform packages bougie models (e.g. `php`) become real
             // edges so their constraint is validated against the runtime
@@ -2208,15 +2228,14 @@ fn read_root_requires(
             if is_platform(dep_name) && !platform.models(dep_name) {
                 continue;
             }
-            let raw_constraint = raw.as_str().ok_or_else(|| {
-                BuildError::Internal(format!("{key}.{dep_name} is not a string"))
-            })?;
+            let raw_constraint = raw
+                .as_str()
+                .ok_or_else(|| BuildError::Internal(format!("{key}.{dep_name} is not a string")))?;
             let (cleaned, flag) = split_stability_flag(raw_constraint);
             if let Some(stability) = flag {
                 flags.insert(dep_name.clone(), stability);
             } else if composer_semver::version::is_branch_alias(cleaned)
-                || (cleaned.len() >= 4
-                    && cleaned.as_bytes()[..4].eq_ignore_ascii_case(b"dev-"))
+                || (cleaned.len() >= 4 && cleaned.as_bytes()[..4].eq_ignore_ascii_case(b"dev-"))
             {
                 // The constraint itself targets a dev branch — either
                 // the numeric form (`"pdepend/pdepend": "3.x-dev"`)
@@ -2229,13 +2248,12 @@ fn read_root_requires(
                 // `'-dev' === substr($v, -4)` to `'dev'`.
                 flags.insert(dep_name.clone(), Stability::Dev);
             }
-            let constraint = Constraint::parse(cleaned).map_err(|e| {
-                BuildError::ParseConstraint {
+            let constraint =
+                Constraint::parse(cleaned).map_err(|e| BuildError::ParseConstraint {
                     dep: dep_name.clone(),
                     constraint: raw_constraint.to_owned(),
                     reason: e.to_string(),
-                }
-            })?;
+                })?;
             raw_constraints.insert(dep_name.clone(), raw_constraint.to_owned());
             out.push((PackageName::from(dep_name.as_str()), to_range(&constraint)));
         }
@@ -2247,15 +2265,15 @@ fn read_root_requires(
 /// is `Stability::Stable` (Composer's own default). Unknown values
 /// surface as a `BuildError`.
 fn read_minimum_stability(composer_json: &Value) -> Result<Stability, BuildError> {
-    let obj = composer_json.as_object().ok_or_else(|| {
-        BuildError::Internal("composer.json top-level is not an object".into())
-    })?;
+    let obj = composer_json
+        .as_object()
+        .ok_or_else(|| BuildError::Internal("composer.json top-level is not an object".into()))?;
     let Some(value) = obj.get("minimum-stability") else {
         return Ok(Stability::Stable);
     };
-    let s = value.as_str().ok_or_else(|| {
-        BuildError::Internal("`minimum-stability` is not a string".into())
-    })?;
+    let s = value
+        .as_str()
+        .ok_or_else(|| BuildError::Internal("`minimum-stability` is not a string".into()))?;
     Stability::parse(s).ok_or_else(|| {
         BuildError::Internal(format!(
             "`minimum-stability` value {s:?} is not a recognised Composer stability \
@@ -2267,16 +2285,14 @@ fn read_minimum_stability(composer_json: &Value) -> Result<Stability, BuildError
 /// Read `prefer-stable` from composer.json's top-level. Composer's
 /// default is `false`. Non-boolean values surface as a `BuildError`.
 fn read_prefer_stable(composer_json: &Value) -> Result<bool, BuildError> {
-    let obj = composer_json.as_object().ok_or_else(|| {
-        BuildError::Internal("composer.json top-level is not an object".into())
-    })?;
+    let obj = composer_json
+        .as_object()
+        .ok_or_else(|| BuildError::Internal("composer.json top-level is not an object".into()))?;
     let Some(value) = obj.get("prefer-stable") else {
         return Ok(false);
     };
     value.as_bool().ok_or_else(|| {
-        BuildError::Internal(format!(
-            "`prefer-stable` must be a boolean (got {value:?})",
-        ))
+        BuildError::Internal(format!("`prefer-stable` must be a boolean (got {value:?})",))
     })
 }
 
@@ -2321,9 +2337,7 @@ fn entry_is_disable_packagist(entry: &serde_json::Map<String, Value>) -> bool {
 /// entry into a [`PathRepoConfig`]. Only the JSON is read here — the
 /// `url` glob is resolved against the project root later, when the
 /// resolver seeds path candidates ([`ResolveProvider::seed_path_candidates`]).
-fn parse_path_repo(
-    entry: &serde_json::Map<String, Value>,
-) -> Result<PathRepoConfig, BuildError> {
+fn parse_path_repo(entry: &serde_json::Map<String, Value>) -> Result<PathRepoConfig, BuildError> {
     let url = entry
         .get("url")
         .and_then(Value::as_str)
@@ -2338,7 +2352,10 @@ fn parse_path_repo(
     let relative = options
         .and_then(|o| o.get("relative"))
         .and_then(Value::as_bool);
-    let reference = match options.and_then(|o| o.get("reference")).and_then(Value::as_str) {
+    let reference = match options
+        .and_then(|o| o.get("reference"))
+        .and_then(Value::as_str)
+    {
         Some("config") => ReferenceMode::Config,
         Some("none") => ReferenceMode::None,
         // Default and the explicit "auto" spelling.
@@ -2350,23 +2367,30 @@ fn parse_path_repo(
         }
     };
     let mut versions = FxHashMap::default();
-    if let Some(v) = options.and_then(|o| o.get("versions")).and_then(Value::as_object) {
+    if let Some(v) = options
+        .and_then(|o| o.get("versions"))
+        .and_then(Value::as_object)
+    {
         for (name, val) in v {
             if let Some(ver) = val.as_str() {
                 versions.insert(name.clone(), ver.to_owned());
             }
         }
     }
-    Ok(PathRepoConfig { url, symlink, relative, reference, versions })
+    Ok(PathRepoConfig {
+        url,
+        symlink,
+        relative,
+        reference,
+        versions,
+    })
 }
 
 /// Parse a `{"type": "vcs"|"git"|"github"|..., "url": ...}` repository
 /// entry into a [`VcsRepoConfig`]. Only the clone `url` is read here;
 /// git refs are discovered later, when the resolver seeds vcs candidates
 /// ([`ResolveProvider::seed_vcs_candidates`]).
-fn parse_vcs_repo(
-    entry: &serde_json::Map<String, Value>,
-) -> Result<VcsRepoConfig, BuildError> {
+fn parse_vcs_repo(entry: &serde_json::Map<String, Value>) -> Result<VcsRepoConfig, BuildError> {
     let url = entry
         .get("url")
         .and_then(Value::as_str)
@@ -2385,14 +2409,11 @@ fn parse_repo_entry(
     let r#type = entry.get("type").and_then(Value::as_str);
     match r#type {
         Some("composer") => {
-            let url = entry
-                .get("url")
-                .and_then(Value::as_str)
-                .ok_or_else(|| {
-                    BuildError::Internal(
-                        "repository entry of type \"composer\" is missing `url`".into(),
-                    )
-                })?;
+            let url = entry.get("url").and_then(Value::as_str).ok_or_else(|| {
+                BuildError::Internal(
+                    "repository entry of type \"composer\" is missing `url`".into(),
+                )
+            })?;
             let repo = Repo::from_url(url);
             // Key by Composer's origin (host + explicit port), NOT the
             // port-stripped `cache_namespace` — see `auth_origin`.
@@ -2460,8 +2481,12 @@ pub fn unsupported_repo_warnings(composer_json: &Value) -> Vec<String> {
     };
     let mut out = Vec::new();
     for entry in entries {
-        let Some(obj) = entry.as_object() else { continue };
-        let Some(kind) = obj.get("type").and_then(Value::as_str) else { continue };
+        let Some(obj) = entry.as_object() else {
+            continue;
+        };
+        let Some(kind) = obj.get("type").and_then(Value::as_str) else {
+            continue;
+        };
         if !is_unsupported_repo_type(kind) {
             continue;
         }
@@ -2500,16 +2525,18 @@ pub(crate) fn read_repositories(
     auth: &HashMap<String, crate::metadata::AuthCredentials>,
     overlay: &[Value],
 ) -> Result<Vec<Repo>, BuildError> {
-    let obj = composer_json.as_object().ok_or_else(|| {
-        BuildError::Internal("composer.json top-level is not an object".into())
-    })?;
+    let obj = composer_json
+        .as_object()
+        .ok_or_else(|| BuildError::Internal("composer.json top-level is not an object".into()))?;
     let mut repos: Vec<Repo> = Vec::new();
     let mut keep_default_packagist = true;
     if let Some(entry) = obj.get("repositories") {
         match entry {
             Value::Array(entries) => {
                 for entry in entries {
-                    let Some(entry_obj) = entry.as_object() else { continue };
+                    let Some(entry_obj) = entry.as_object() else {
+                        continue;
+                    };
                     if entry_is_disable_packagist(entry_obj) {
                         keep_default_packagist = false;
                         continue;
@@ -2532,7 +2559,9 @@ pub(crate) fn read_repositories(
                         }
                         continue;
                     }
-                    let Some(entry_obj) = value.as_object() else { continue };
+                    let Some(entry_obj) = value.as_object() else {
+                        continue;
+                    };
                     parse_repo_entry(entry_obj, auth, &mut repos)?;
                 }
             }
@@ -2554,7 +2583,9 @@ pub(crate) fn read_repositories(
         let mut seen: std::collections::HashSet<String> =
             repos.iter().map(|r| r.url.clone()).collect();
         for entry in overlay {
-            let Some(entry_obj) = entry.as_object() else { continue };
+            let Some(entry_obj) = entry.as_object() else {
+                continue;
+            };
             if entry_is_disable_packagist(entry_obj) {
                 continue;
             }
@@ -2572,7 +2603,9 @@ pub(crate) fn read_repositories(
         // credentials for repo.packagist.org (rare but valid for
         // private-packagist.com / similar hosted mirrors that share
         // the same host).
-        let creds = auth.get(&crate::metadata::auth_origin(&default_packagist.url)).cloned();
+        let creds = auth
+            .get(&crate::metadata::auth_origin(&default_packagist.url))
+            .cloned();
         repos.push(default_packagist.with_auth(creds));
     }
     if repos.is_empty() {
@@ -2687,11 +2720,14 @@ fn parse_auth_object(
     if let Some(bearer) = obj.get("bearer").and_then(Value::as_object) {
         for (host, val) in bearer {
             let token = val.as_str().ok_or_else(|| {
-                BuildError::Internal(format!(
-                    "{source}: bearer.{host} must be a string token",
-                ))
+                BuildError::Internal(format!("{source}: bearer.{host} must be a string token",))
             })?;
-            out.insert(host.clone(), AuthCredentials::Bearer { token: token.to_owned() });
+            out.insert(
+                host.clone(),
+                AuthCredentials::Bearer {
+                    token: token.to_owned(),
+                },
+            );
         }
     }
     if let Some(github) = obj.get("github-oauth").and_then(Value::as_object) {
@@ -2701,7 +2737,12 @@ fn parse_auth_object(
                     "{source}: github-oauth.{host} must be a string token",
                 ))
             })?;
-            out.insert(host.clone(), AuthCredentials::GitHubToken { token: token.to_owned() });
+            out.insert(
+                host.clone(),
+                AuthCredentials::GitHubToken {
+                    token: token.to_owned(),
+                },
+            );
         }
     }
     if let Some(gitlab) = obj.get("gitlab-oauth").and_then(Value::as_object) {
@@ -2711,7 +2752,12 @@ fn parse_auth_object(
                     "{source}: gitlab-oauth.{host} must be a string token",
                 ))
             })?;
-            out.insert(host.clone(), AuthCredentials::Bearer { token: token.to_owned() });
+            out.insert(
+                host.clone(),
+                AuthCredentials::Bearer {
+                    token: token.to_owned(),
+                },
+            );
         }
     }
     if let Some(gitlab) = obj.get("gitlab-token").and_then(Value::as_object) {
@@ -2805,12 +2851,10 @@ pub(crate) fn read_auth_json_at(
     if !path.is_file() {
         return Ok(HashMap::new());
     }
-    let bytes = std::fs::read(path).map_err(|e| {
-        BuildError::Internal(format!("reading {}: {e}", path.display()))
-    })?;
-    let value: Value = serde_json::from_slice(&bytes).map_err(|e| {
-        BuildError::Internal(format!("parsing {}: {e}", path.display()))
-    })?;
+    let bytes = std::fs::read(path)
+        .map_err(|e| BuildError::Internal(format!("reading {}: {e}", path.display())))?;
+    let value: Value = serde_json::from_slice(&bytes)
+        .map_err(|e| BuildError::Internal(format!("parsing {}: {e}", path.display())))?;
     let Some(obj) = value.as_object() else {
         return Ok(HashMap::new());
     };
@@ -2839,7 +2883,12 @@ pub(crate) fn global_auth_json_candidates(env: impl Fn(&str) -> Option<String>) 
     if let Some(h) = env("HOME") {
         // XDG default and the historical Composer location, in
         // Composer's own preference order.
-        out.push(PathBuf::from(&h).join(".config").join("composer").join("auth.json"));
+        out.push(
+            PathBuf::from(&h)
+                .join(".config")
+                .join("composer")
+                .join("auth.json"),
+        );
         out.push(PathBuf::from(&h).join(".composer").join("auth.json"));
     }
     out
@@ -2854,8 +2903,8 @@ pub(crate) fn global_auth_json_candidates(env: impl Fn(&str) -> Option<String>) 
 /// `~/.config/composer/auth.json` for Composer itself. Reading the
 /// same file for free means bougie inherits a working credential
 /// store without any reconfiguration.
-pub fn read_global_auth_json() -> Result<HashMap<String, crate::metadata::AuthCredentials>, BuildError>
-{
+pub fn read_global_auth_json()
+-> Result<HashMap<String, crate::metadata::AuthCredentials>, BuildError> {
     for candidate in global_auth_json_candidates(|k| std::env::var(k).ok()) {
         if candidate.is_file() {
             return read_auth_json_at(&candidate);
@@ -2881,7 +2930,12 @@ pub(crate) fn bougie_auth_json_candidates(env: impl Fn(&str) -> Option<String>) 
         out.push(PathBuf::from(x).join("bougie").join("auth.json"));
     }
     if let Some(h) = env("HOME") {
-        out.push(PathBuf::from(h).join(".config").join("bougie").join("auth.json"));
+        out.push(
+            PathBuf::from(h)
+                .join(".config")
+                .join("bougie")
+                .join("auth.json"),
+        );
     }
     out
 }
@@ -2889,8 +2943,8 @@ pub(crate) fn bougie_auth_json_candidates(env: impl Fn(&str) -> Option<String>) 
 /// Read auth from bougie's own credential store, if present. Returns an
 /// empty map when no candidate file exists. See
 /// [`bougie_auth_json_candidates`] for the lookup order.
-pub fn read_bougie_auth_json() -> Result<HashMap<String, crate::metadata::AuthCredentials>, BuildError>
-{
+pub fn read_bougie_auth_json()
+-> Result<HashMap<String, crate::metadata::AuthCredentials>, BuildError> {
     for candidate in bougie_auth_json_candidates(|k| std::env::var(k).ok()) {
         if candidate.is_file() {
             return read_auth_json_at(&candidate);
@@ -2966,9 +3020,9 @@ pub(crate) fn write_http_basic_at(
     } else {
         Value::Object(serde_json::Map::new())
     };
-    let obj = doc.as_object_mut().ok_or_else(|| {
-        BuildError::Internal(format!("{}: not a JSON object", path.display()))
-    })?;
+    let obj = doc
+        .as_object_mut()
+        .ok_or_else(|| BuildError::Internal(format!("{}: not a JSON object", path.display())))?;
     let http_basic = obj
         .entry("http-basic")
         .or_insert_with(|| Value::Object(serde_json::Map::new()));
@@ -3032,9 +3086,9 @@ pub(crate) fn write_bearer_at(path: &Path, host: &str, token: &str) -> Result<()
     } else {
         Value::Object(serde_json::Map::new())
     };
-    let obj = doc.as_object_mut().ok_or_else(|| {
-        BuildError::Internal(format!("{}: not a JSON object", path.display()))
-    })?;
+    let obj = doc
+        .as_object_mut()
+        .ok_or_else(|| BuildError::Internal(format!("{}: not a JSON object", path.display())))?;
     let bearer = obj
         .entry("bearer")
         .or_insert_with(|| Value::Object(serde_json::Map::new()));
@@ -3073,9 +3127,8 @@ pub fn parse_composer_auth_env(
     if trimmed.is_empty() {
         return Ok(HashMap::new());
     }
-    let value: Value = serde_json::from_str(trimmed).map_err(|e| {
-        BuildError::Internal(format!("COMPOSER_AUTH is not valid JSON: {e}"))
-    })?;
+    let value: Value = serde_json::from_str(trimmed)
+        .map_err(|e| BuildError::Internal(format!("COMPOSER_AUTH is not valid JSON: {e}")))?;
     let Some(obj) = value.as_object() else {
         return Err(BuildError::Internal(
             "COMPOSER_AUTH must decode to a JSON object".into(),
@@ -3088,8 +3141,8 @@ pub fn parse_composer_auth_env(
 /// canonical way to inject Composer credentials in CI without
 /// committing an `auth.json` to the repo. Returns an empty map when
 /// the variable is unset or empty.
-pub fn read_composer_auth_env() -> Result<HashMap<String, crate::metadata::AuthCredentials>, BuildError>
-{
+pub fn read_composer_auth_env()
+-> Result<HashMap<String, crate::metadata::AuthCredentials>, BuildError> {
     match std::env::var("COMPOSER_AUTH") {
         Ok(s) => parse_composer_auth_env(&s),
         Err(_) => Ok(HashMap::new()),
@@ -3191,7 +3244,11 @@ pub enum BuildError {
 impl std::fmt::Display for BuildError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::ParseConstraint { dep, constraint, reason } => write!(
+            Self::ParseConstraint {
+                dep,
+                constraint,
+                reason,
+            } => write!(
                 f,
                 "constraint {constraint:?} on `{dep}` is invalid: {reason}",
             ),
@@ -3498,10 +3555,7 @@ impl ResolveProvider {
     /// asked; close enough for an ordering heuristic.
     fn priority_count(&self, name: &str, range: &ComposerRange) -> Option<u32> {
         if let Some(entries) = self.merged_cache.borrow().get(name) {
-            let n = entries
-                .iter()
-                .filter(|(v, _)| range.contains(v))
-                .count();
+            let n = entries.iter().filter(|(v, _)| range.contains(v)).count();
             return Some(u32::try_from(n).unwrap_or(u32::MAX));
         }
         let real_count = self
@@ -3550,9 +3604,7 @@ impl ResolveProvider {
         }
         let parsed = self.compute_parsed_deps(package, version)?;
         let arc = Arc::new(parsed);
-        self.parsed_deps
-            .borrow_mut()
-            .insert(key, Arc::clone(&arc));
+        self.parsed_deps.borrow_mut().insert(key, Arc::clone(&arc));
         Ok(arc)
     }
 
@@ -3615,14 +3667,13 @@ impl ResolveProvider {
         // `virtual_selections` still contains a stale registration.
         let versions = self.versions_for(name.as_str())?;
         let cached_entry = versions.iter().find(|(v, _)| v == version);
-        let is_real = cached_entry
-            .is_some_and(|(_, e)| e.dist.is_some() || e.package_type.as_deref() != Some("metapackage"));
+        let is_real = cached_entry.is_some_and(|(_, e)| {
+            e.dist.is_some() || e.package_type.as_deref() != Some("metapackage")
+        });
 
         if !is_real {
             let virtual_key = (name.clone(), version.clone());
-            if let Some(providers) =
-                self.virtual_selections.borrow().get(&virtual_key).cloned()
-            {
+            if let Some(providers) = self.virtual_selections.borrow().get(&virtual_key).cloned() {
                 let mut by_name: std::collections::BTreeMap<PackageName, Vec<Version>> =
                     std::collections::BTreeMap::new();
                 for (pname, pver) in &providers {
@@ -4018,7 +4069,14 @@ pub fn dry_run_update(
     opts: DryRunOptions,
     ignore_platform: &PlatformIgnore,
 ) -> Result<UpdateSummary> {
-    dry_run_update_partial(paths, project_root, default_packagist, opts, None, ignore_platform)
+    dry_run_update_partial(
+        paths,
+        project_root,
+        default_packagist,
+        opts,
+        None,
+        ignore_platform,
+    )
 }
 
 /// Like [`dry_run_update`], but with an optional [`PartialUpdate`] so
@@ -4042,7 +4100,10 @@ pub fn dry_run_update_partial(
     let composer_json_bytes = std::fs::read(&composer_json_path)
         .wrap_err_with(|| format!("reading {}", composer_json_path.display()))?;
     let composer_json: Value = serde_json::from_slice(&composer_json_bytes).map_err(|e| {
-        bougie_errors::BougieError::Config { path: "composer.json".into(), detail: e.to_string() }
+        bougie_errors::BougieError::Config {
+            path: "composer.json".into(),
+            detail: e.to_string(),
+        }
     })?;
 
     let client = build_client()?;
@@ -4185,7 +4246,10 @@ pub fn dry_run_update_partial(
                 .collect();
             packages.sort_by(|a, b| a.name.cmp(&b.name));
             drop(virtual_selections);
-            UpdateSummary { packages, no_dev: opts.no_dev }
+            UpdateSummary {
+                packages,
+                no_dev: opts.no_dev,
+            }
         }
         Err(PubGrubError::NoSolution(tree)) => {
             let detail = provider
@@ -4308,7 +4372,10 @@ pub fn resolve_for_lockfile_partial(
     let composer_json_bytes = std::fs::read(&composer_json_path)
         .wrap_err_with(|| format!("reading {}", composer_json_path.display()))?;
     let composer_json: Value = serde_json::from_slice(&composer_json_bytes).map_err(|e| {
-        bougie_errors::BougieError::Config { path: "composer.json".into(), detail: e.to_string() }
+        bougie_errors::BougieError::Config {
+            path: "composer.json".into(),
+            detail: e.to_string(),
+        }
     })?;
 
     let auth = read_all_auth(&composer_json, project_root).map_err(|e| eyre!(e))?;
@@ -4472,7 +4539,9 @@ fn solve_into_lock_packages(
     let solve_guard = tracing::info_span!("pubgrub_solve", no_dev).entered();
     let mut solve_result = resolve(&provider, PubGrubPackage::Root, root.clone());
     for _retry in 0..10 {
-        let Ok(ref solution) = solve_result else { break };
+        let Ok(ref solution) = solve_result else {
+            break;
+        };
         let pairs: Vec<_> = solution.iter().collect();
         let violations = provider.check_conflict_violations(&pairs);
         if violations.is_empty() {
@@ -4532,9 +4601,11 @@ fn solve_into_lock_packages(
     let mut packages: Vec<LockPackage> = Vec::new();
     let virtual_selections = provider.virtual_selections.borrow();
     let solution_pairs: Vec<_> = solution.iter().collect();
-            let replaced_names = collect_active_replaces(&provider, &solution_pairs);
+    let replaced_names = collect_active_replaces(&provider, &solution_pairs);
     for (pkg, version) in solution {
-        let PubGrubPackage::Package(name) = pkg else { continue };
+        let PubGrubPackage::Package(name) = pkg else {
+            continue;
+        };
         // Platform packages (`php`, …) are runtime facts the solver
         // validated against, not installable packages — Composer never
         // writes them to composer.lock, and we have no metadata entry
@@ -4628,8 +4699,12 @@ fn collect_active_replaces(
     let mut replaced: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mc = provider.merged_cache.borrow();
     for (pkg, version) in solution {
-        let PubGrubPackage::Package(name) = pkg else { continue };
-        let Some(cached) = mc.get(name.as_str()) else { continue };
+        let PubGrubPackage::Package(name) = pkg else {
+            continue;
+        };
+        let Some(cached) = mc.get(name.as_str()) else {
+            continue;
+        };
         let Some((_, entry)) = cached.iter().find(|(v, _)| v == *version) else {
             continue;
         };

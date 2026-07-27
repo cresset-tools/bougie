@@ -30,7 +30,12 @@ impl UtcHour {
         let days = secs.div_euclid(86_400);
         let hour = u32::try_from(secs.rem_euclid(86_400) / 3_600).unwrap_or(0);
         let (year, month, day) = civil_from_days(days);
-        Self { year, month, day, hour }
+        Self {
+            year,
+            month,
+            day,
+            hour,
+        }
     }
 
     /// `2026-07-03` — the spool-file date. Lexical order == chronological

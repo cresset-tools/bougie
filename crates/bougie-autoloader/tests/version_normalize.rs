@@ -91,7 +91,8 @@ fn matches_composer_for_normalizable_inputs() {
             )),
         }
     }
-    assert!(failures.is_empty(), 
+    assert!(
+        failures.is_empty(),
         "{} version inputs diverge from Composer's normalize() output:\n  {}",
         failures.len(),
         failures.join("\n  ")
@@ -114,7 +115,8 @@ fn errors_on_inputs_composer_rejects() {
             )),
         }
     }
-    assert!(failures.is_empty(), 
+    assert!(
+        failures.is_empty(),
         "{} inputs Composer rejects, bougie accepted:\n  {}",
         failures.len(),
         failures.join("\n  ")

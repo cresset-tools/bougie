@@ -23,21 +23,21 @@ use std::path::{Path, PathBuf};
 
 use rustc_hash::FxHasher;
 
-use bougie_autoloader::{dump_autoload, DumpRequest};
+use bougie_autoloader::{DumpRequest, dump_autoload};
 use bougie_composer::lockfile::{self, Lock, LockPackage};
 use bougie_fetch::{ArchiveKind, DownloadBar};
 use bougie_patches::{ApplyOptions, FailureMode, MaterializedPatch, PatchPlan, apply_patch_text};
 use bougie_paths::Paths;
-use eyre::{eyre, Context, Result};
+use eyre::{Context, Result, eyre};
 use serde_json::Value;
 
 use crate::metadata::AuthCredentials;
 use crate::update::read_all_auth;
 
 use super::downloader::{
-    fetch_and_extract_dists_with_progress, DistCandidate, DistOutcome, DistRequest,
+    DistCandidate, DistOutcome, DistRequest, fetch_and_extract_dists_with_progress,
 };
-use super::source::{materialize_sources, SourceRequest};
+use super::source::{SourceRequest, materialize_sources};
 
 /// Caller-supplied install options. Mirrors the subset of Composer's
 /// `install` flags we honor in Phase A.
@@ -172,7 +172,12 @@ pub fn install_from_lock_with_patches(
     // same as Composer. Surface it first so it leads the warning list.
     let mut warnings = Vec::new();
     warnings.extend(content_hash_warning(&composer_json_bytes, &lock)?);
-    warnings.extend(preflight(&composer_json_bytes, &lock, opts.no_dev, hooks.is_some())?);
+    warnings.extend(preflight(
+        &composer_json_bytes,
+        &lock,
+        opts.no_dev,
+        hooks.is_some(),
+    )?);
 
     // Assemble per-host auth from every source bougie understands —
     // composer.json `config`, global `$COMPOSER_HOME/auth.json`,
@@ -182,7 +187,10 @@ pub fn install_from_lock_with_patches(
     // `/archives/...`, private satis, GitLab CI Composer ZIPs) need
     // the header; public-CDN dists from Packagist do not.
     let composer_json_value: Value = serde_json::from_slice(&composer_json_bytes).map_err(|e| {
-        bougie_errors::BougieError::Config { path: "composer.json".into(), detail: e.to_string() }
+        bougie_errors::BougieError::Config {
+            path: "composer.json".into(),
+            detail: e.to_string(),
+        }
     })?;
     let auth: HashMap<String, AuthCredentials> =
         read_all_auth(&composer_json_value, project_root).map_err(|e| eyre!(e))?;
@@ -213,10 +221,9 @@ pub fn install_from_lock_with_patches(
     } else {
         lock.all_packages().collect()
     };
-    let plugin_hooks_skipped = u32::try_from(
-        candidates.iter().filter(|p| p.is_composer_plugin()).count(),
-    )
-    .unwrap_or(u32::MAX);
+    let plugin_hooks_skipped =
+        u32::try_from(candidates.iter().filter(|p| p.is_composer_plugin()).count())
+            .unwrap_or(u32::MAX);
 
     // Drift guard for native Laravel discovery. bougie substitutes its own
     // package:discover + clearCompiled for Laravel's `post-autoload-dump`
@@ -231,7 +238,10 @@ pub fn install_from_lock_with_patches(
     // the real `post-autoload-dump` entries run via the hook, so there's
     // nothing to reproduce and nothing to drift from.
     if hooks.is_none() && candidates.iter().any(|p| p.name == "laravel/framework") {
-        let scripts = composer_json_value.get("scripts").cloned().unwrap_or(Value::Null);
+        let scripts = composer_json_value
+            .get("scripts")
+            .cloned()
+            .unwrap_or(Value::Null);
         let blocking = bougie_installers::blocking_post_autoload_dump(&scripts);
         if !blocking.is_empty() {
             return Err(eyre!(
@@ -257,8 +267,11 @@ pub fn install_from_lock_with_patches(
     // downloaded. Collect them up front so the stale-sweep in
     // `diff_install_set` knows to keep their vendor directories.
     let installer_paths = bougie_installers::InstallerPaths::parse(&composer_json_value);
-    let path_packages: Vec<&LockPackage> =
-        candidates.iter().copied().filter(|p| p.is_path_dist()).collect();
+    let path_packages: Vec<&LockPackage> = candidates
+        .iter()
+        .copied()
+        .filter(|p| p.is_path_dist())
+        .collect();
     let path_dests: Vec<PathBuf> = path_packages
         .iter()
         .map(|p| {
@@ -270,8 +283,7 @@ pub fn install_from_lock_with_patches(
             project_root.join(rel)
         })
         .collect();
-    let path_keep_names: HashSet<&str> =
-        path_packages.iter().map(|p| p.name.as_str()).collect();
+    let path_keep_names: HashSet<&str> = path_packages.iter().map(|p| p.name.as_str()).collect();
 
     // Diff against the existing installed state to skip packages whose
     // dist reference hasn't changed and whose vendor dir is still present.
@@ -286,14 +298,13 @@ pub fn install_from_lock_with_patches(
     let force_patch: HashSet<&str> = patches
         .map(|plan| compute_force_set(plan, &installable, &installed_state, project_root))
         .unwrap_or_default();
-    let (install_set, packages_up_to_date, packages_removed) =
-        diff_install_set_with_force(
-            &installable,
-            &installed_state,
-            project_root,
-            &path_keep_names,
-            &force_patch,
-        );
+    let (install_set, packages_up_to_date, packages_removed) = diff_install_set_with_force(
+        &installable,
+        &installed_state,
+        project_root,
+        &path_keep_names,
+        &force_patch,
+    );
 
     // Each DistRequest borrows from the LockPackage; build the
     // ancillary owned data (vendor dest paths, archive enums) in a
@@ -351,10 +362,12 @@ pub fn install_from_lock_with_patches(
     // `install_set`; both channels populate the same destinations, and the
     // rest of the pipeline (patches, deploy, autoload, bins) treats a
     // source checkout exactly like an extracted dist.
-    let dist_indices: Vec<usize> =
-        (0..install_set.len()).filter(|&i| install_set[i].dist.is_some()).collect();
-    let source_indices: Vec<usize> =
-        (0..install_set.len()).filter(|&i| install_set[i].is_source_install()).collect();
+    let dist_indices: Vec<usize> = (0..install_set.len())
+        .filter(|&i| install_set[i].dist.is_some())
+        .collect();
+    let source_indices: Vec<usize> = (0..install_set.len())
+        .filter(|&i| install_set[i].is_source_install())
+        .collect();
 
     let candidate_sets: Vec<Vec<DistCandidate>> = dist_indices
         .iter()
@@ -384,8 +397,9 @@ pub fn install_from_lock_with_patches(
             // `dist_urls()` yields at least the dist's own URL for
             // every package with a dist, and preflight filtered the
             // rest out of the install set.
-            let (primary, fallbacks) =
-                candidates.split_first().expect("non-empty dist_urls for a dist package");
+            let (primary, fallbacks) = candidates
+                .split_first()
+                .expect("non-empty dist_urls for a dist package");
             DistRequest {
                 package_name: &p.name,
                 url: &primary.url,
@@ -408,8 +422,10 @@ pub fn install_from_lock_with_patches(
 
     // Git-source installs: ordered clone URLs per package (preferred
     // mirror first), stored in a sibling vec so `SourceRequest` can borrow.
-    let source_url_sets: Vec<Vec<String>> =
-        source_indices.iter().map(|&i| install_set[i].source_urls()).collect();
+    let source_url_sets: Vec<Vec<String>> = source_indices
+        .iter()
+        .map(|&i| install_set[i].source_urls())
+        .collect();
     let source_reqs: Vec<SourceRequest<'_>> = source_indices
         .iter()
         .zip(source_url_sets.iter())
@@ -500,7 +516,13 @@ pub fn install_from_lock_with_patches(
             resolved = p;
             &resolved
         };
-        apply_patch_plan(plan, &install_set, &vendor_dirs, project_root, &mut warnings)?;
+        apply_patch_plan(
+            plan,
+            &install_set,
+            &vendor_dirs,
+            project_root,
+            &mut warnings,
+        )?;
     }
 
     // Native `magento/magento-composer-installer`: for every
@@ -533,7 +555,8 @@ pub fn install_from_lock_with_patches(
         .join("vendor/composer")
         .join(AUTOLOAD_FRESH_MARKER);
     let lock_bytes = std::fs::read(&composer_lock_path).unwrap_or_default();
-    let fingerprint = autoload_fingerprint(&composer_json_bytes, &lock_bytes, opts.no_dev).to_string();
+    let fingerprint =
+        autoload_fingerprint(&composer_json_bytes, &lock_bytes, opts.no_dev).to_string();
     let autoload_fresh = hooks.is_none()
         && install_set.is_empty()
         && packages_removed == 0
@@ -567,8 +590,7 @@ pub fn install_from_lock_with_patches(
             ));
         }
     }
-    let autoload_ms =
-        u64::try_from(autoload_started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let autoload_ms = u64::try_from(autoload_started.elapsed().as_millis()).unwrap_or(u64::MAX);
 
     match hooks {
         // Scripts ON: run the project's real `post-autoload-dump` entries.
@@ -768,7 +790,10 @@ fn apply_patch_plan(
         .map(|(p, dir)| (p.name.as_str(), dir))
         .collect();
     for rp in &plan.root_patches {
-        let all_pristine = rp.packages.iter().all(|p| install_names.contains(p.as_str()));
+        let all_pristine = rp
+            .packages
+            .iter()
+            .all(|p| install_names.contains(p.as_str()));
         if !all_pristine {
             continue;
         }
@@ -781,7 +806,10 @@ fn apply_patch_plan(
                     if let Some(dir) = vendor_by_name.get(pkg.as_str())
                         && let Err(e) = bougie_patches::append_patches_txt(dir, &[&rp.patch])
                     {
-                        warnings.push(format!("could not update PATCHES.txt in `{}`: {e}", dir.display()));
+                        warnings.push(format!(
+                            "could not update PATCHES.txt in `{}`: {e}",
+                            dir.display()
+                        ));
                     }
                 }
             }
@@ -828,7 +856,10 @@ fn apply_root_patch(
 ) -> Result<bool> {
     let text = std::fs::read_to_string(&patch.local_path)
         .with_context(|| format!("reading patch `{}`", patch.local_path.display()))?;
-    let opts = ApplyOptions { depth: patch.depth, ..ApplyOptions::default() };
+    let opts = ApplyOptions {
+        depth: patch.depth,
+        ..ApplyOptions::default()
+    };
     match apply_patch_text(project_root, &text, &opts) {
         Ok(_) => Ok(true),
         Err(e) => match failure_mode {
@@ -893,13 +924,14 @@ fn deploy_components(
     // one of magento2-base's mapped files); Magento's bootstrap reads it
     // to locate `vendor/`. Emit it once whenever a component laid down
     // the root skeleton.
-    if deployed_component
-        && let Err(e) = write_vendor_path_php(project_root)
-    {
+    if deployed_component && let Err(e) = write_vendor_path_php(project_root) {
         warnings.push(format!("writing app/etc/vendor_path.php failed: {e}"));
     }
 
-    DeploySummary { files_deployed, warnings }
+    DeploySummary {
+        files_deployed,
+        warnings,
+    }
 }
 
 /// Reproduce Laravel's package discovery: rebuild
@@ -911,9 +943,11 @@ fn run_laravel_discovery(project_root: &Path, composer_json_value: &Value) -> Re
     let installed_path = project_root.join("vendor/composer/installed.json");
     let bytes = std::fs::read(&installed_path)
         .wrap_err_with(|| format!("reading {}", installed_path.display()))?;
-    let installed: Value =
-        serde_json::from_slice(&bytes).wrap_err("parsing installed.json")?;
-    let root_extra = composer_json_value.get("extra").cloned().unwrap_or(Value::Null);
+    let installed: Value = serde_json::from_slice(&bytes).wrap_err("parsing installed.json")?;
+    let root_extra = composer_json_value
+        .get("extra")
+        .cloned()
+        .unwrap_or(Value::Null);
 
     let manifest = bougie_installers::build_package_manifest(&installed, &root_extra);
     let php = bougie_installers::render_packages_php(&manifest);
@@ -941,8 +975,11 @@ fn run_laravel_discovery(project_root: &Path, composer_json_value: &Value) -> Re
 fn write_vendor_path_php(project_root: &Path) -> Result<()> {
     let dir = project_root.join("app/etc");
     std::fs::create_dir_all(&dir).wrap_err_with(|| format!("creating {}", dir.display()))?;
-    std::fs::write(dir.join("vendor_path.php"), bougie_installers::VENDOR_PATH_PHP)
-        .wrap_err("writing vendor_path.php")?;
+    std::fs::write(
+        dir.join("vendor_path.php"),
+        bougie_installers::VENDOR_PATH_PHP,
+    )
+    .wrap_err("writing vendor_path.php")?;
     Ok(())
 }
 
@@ -1121,7 +1158,11 @@ fn new_package_bar(total: u64) -> indicatif::ProgressBar {
 fn auth_origin_from_url(url: &str) -> Option<&str> {
     let after_scheme = url.split_once("://")?.1;
     let host_and_port = after_scheme.split('/').next()?;
-    if host_and_port.is_empty() { None } else { Some(host_and_port) }
+    if host_and_port.is_empty() {
+        None
+    } else {
+        Some(host_and_port)
+    }
 }
 
 /// Check the lock's `content-hash` field against the current
@@ -1292,15 +1333,27 @@ fn preflight(
 
     if !plugin_packages.is_empty() {
         let names = plugin_packages.join(", ");
-        let noun = if plugin_packages.len() == 1 { "package" } else { "packages" };
+        let noun = if plugin_packages.len() == 1 {
+            "package"
+        } else {
+            "packages"
+        };
         warnings.push(format!(
             "{noun} {names} {verb} Composer plugins (type `composer-plugin`); \
              {pronoun} files install like any other package's, but bougie \
              does not run plugin install-time hooks. Run \
              `bougie run -- composer install` if the hook behavior is \
              required.",
-            verb = if plugin_packages.len() == 1 { "is a" } else { "are" },
-            pronoun = if plugin_packages.len() == 1 { "its" } else { "their" },
+            verb = if plugin_packages.len() == 1 {
+                "is a"
+            } else {
+                "are"
+            },
+            pronoun = if plugin_packages.len() == 1 {
+                "its"
+            } else {
+                "their"
+            },
         ));
     }
 

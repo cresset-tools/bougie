@@ -95,7 +95,10 @@ mod tests {
     fn h(cookie: Option<&str>, force: Option<&str>) -> HeaderMap {
         let mut hm = HeaderMap::new();
         if let Some(c) = cookie {
-            hm.insert(axum::http::header::COOKIE, HeaderValue::from_str(c).unwrap());
+            hm.insert(
+                axum::http::header::COOKIE,
+                HeaderValue::from_str(c).unwrap(),
+            );
         }
         if let Some(v) = force {
             hm.insert(FORCE_HEADER, HeaderValue::from_str(v).unwrap());
@@ -111,7 +114,10 @@ mod tests {
 
     #[test]
     fn xdebug_session_cookie_triggers() {
-        assert!(is_xdebug_request(&h(Some("XDEBUG_SESSION=phpstorm"), None), ""));
+        assert!(is_xdebug_request(
+            &h(Some("XDEBUG_SESSION=phpstorm"), None),
+            ""
+        ));
     }
 
     #[test]
@@ -132,12 +138,18 @@ mod tests {
 
     #[test]
     fn query_param_xdebug_session_start_triggers() {
-        assert!(is_xdebug_request(&HeaderMap::new(), "XDEBUG_SESSION_START=1"));
+        assert!(is_xdebug_request(
+            &HeaderMap::new(),
+            "XDEBUG_SESSION_START=1"
+        ));
     }
 
     #[test]
     fn query_param_xdebug_trigger_triggers() {
-        assert!(is_xdebug_request(&HeaderMap::new(), "page=1&XDEBUG_TRIGGER=1"));
+        assert!(is_xdebug_request(
+            &HeaderMap::new(),
+            "page=1&XDEBUG_TRIGGER=1"
+        ));
     }
 
     #[test]

@@ -26,17 +26,19 @@
 use crate::daemon::catalog::CatalogEntry;
 use crate::daemon::store_layout;
 use bougie_errors::BougieError;
-use bougie_fetch::{fetch_blob, ArchiveKind, BlobSpec, DownloadBar, Hash};
+use bougie_fetch::{ArchiveKind, BlobSpec, DownloadBar, Hash, fetch_blob};
+use bougie_fs::lock::ExclusiveGuard;
 use bougie_index::{
     build_verifier,
-    fetch::{fetch_manifest, fetch_root, fetch_section, FetchedRoot},
+    fetch::{FetchedRoot, fetch_manifest, fetch_root, fetch_section},
     wire::{Artifact, Manifest, RequiresTool, Section},
 };
-use bougie_installer::install::{host_to_dirname, install_closure_peers, plan_closure_bytes, DEFAULT_INDEX_URL};
-use bougie_fs::lock::ExclusiveGuard;
+use bougie_installer::install::{
+    DEFAULT_INDEX_URL, host_to_dirname, install_closure_peers, plan_closure_bytes,
+};
 use bougie_paths::Paths;
 use bougie_platform::target::Triple;
-use eyre::{eyre, Result, WrapErr};
+use eyre::{Result, WrapErr, eyre};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -270,8 +272,11 @@ fn install_into(
     // Adapt wire closures to the backend-neutral shape the install
     // helpers now take. Cheap clone — closure lists are small (≤ a
     // dozen entries for the heaviest tools).
-    let closure: Vec<bougie_backend::ClosureRef> =
-        manifest.closure.iter().map(bougie_backend::ClosureRef::from).collect();
+    let closure: Vec<bougie_backend::ClosureRef> = manifest
+        .closure
+        .iter()
+        .map(bougie_backend::ClosureRef::from)
+        .collect();
 
     // The bar's planned total is grown once, up front, by
     // `plan_install_bytes` in `fetch_blocking` — covering this blob, its
@@ -294,7 +299,15 @@ fn install_into(
     };
     fetch_blob(client, &spec, bar)?;
 
-    install_closure_peers(client, paths, &closure, &manifest.name, &manifest.tag, install_root, bar)?;
+    install_closure_peers(
+        client,
+        paths,
+        &closure,
+        &manifest.name,
+        &manifest.tag,
+        install_root,
+        bar,
+    )?;
 
     for rt in &manifest.requires_tools {
         let inner_root = install_required_tool(
@@ -363,8 +376,7 @@ fn install_required_tool(
         ));
     }
 
-    let inner_manifest =
-        resolve_required_manifest(client, rt, fetched, host, cache_root, target)?;
+    let inner_manifest = resolve_required_manifest(client, rt, fetched, host, cache_root, target)?;
 
     install_into(
         client,
@@ -476,8 +488,11 @@ fn plan_install_bytes(
     target: &str,
     visited: &mut HashSet<(String, String)>,
 ) -> Result<()> {
-    let closure: Vec<bougie_backend::ClosureRef> =
-        manifest.closure.iter().map(bougie_backend::ClosureRef::from).collect();
+    let closure: Vec<bougie_backend::ClosureRef> = manifest
+        .closure
+        .iter()
+        .map(bougie_backend::ClosureRef::from)
+        .collect();
     bar.add_planned(manifest.blob.size);
     plan_closure_bytes(paths, &closure, bar);
 
@@ -494,7 +509,9 @@ fn plan_install_bytes(
             continue;
         }
         let inner = resolve_required_manifest(client, rt, fetched, host, cache_root, target)?;
-        plan_install_bytes(client, paths, &inner, bar, fetched, host, cache_root, target, visited)?;
+        plan_install_bytes(
+            client, paths, &inner, bar, fetched, host, cache_root, target, visited,
+        )?;
     }
     Ok(())
 }
@@ -678,7 +695,7 @@ mod tests {
     #[test]
     fn pick_keeps_first_frozen_against_later_unfrozen() {
         let arts = vec![
-            art("8.6.3", false, true),  // frozen first
+            art("8.6.3", false, true), // frozen first
             art("8.6.3", false, false),
         ];
         let pick = pick_pinned_artifact(&arts, "8.6.3").unwrap();
@@ -699,7 +716,10 @@ mod tests {
             "targets": {}
         }"#;
         let root: Root = serde_json::from_str(json).unwrap();
-        FetchedRoot { root, outcome: FetchOutcome::Cached }
+        FetchedRoot {
+            root,
+            outcome: FetchOutcome::Cached,
+        }
     }
 
     fn valid_requires_tool() -> RequiresTool {
@@ -827,8 +847,7 @@ mod tests {
             "tag":"jdk-21.0.11_10-x86_64-unknown-linux-gnu-default",
             "manifest_url":"https://example.invalid/jdk.json","link_into":"jdk"
         }]);
-        let manifest =
-            sized_tool_manifest("opensearch", 5000, serde_json::json!([]), requires);
+        let manifest = sized_tool_manifest("opensearch", 5000, serde_json::json!([]), requires);
 
         let bar = DownloadBar::hidden();
         let mut visited = HashSet::new();
@@ -876,10 +895,7 @@ mod tests {
         .unwrap()
     }
 
-    fn synthetic_entry(
-        name: &'static str,
-        runtime_deps: &'static [&'static str],
-    ) -> CatalogEntry {
+    fn synthetic_entry(name: &'static str, runtime_deps: &'static [&'static str]) -> CatalogEntry {
         use crate::daemon::catalog::{Binding, SandboxKind, Tenancy};
         CatalogEntry {
             name,

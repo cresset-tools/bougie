@@ -48,7 +48,12 @@ impl Env {
     fn record_failure(&self) {
         let dir = self.home.path().join("empty");
         std::fs::create_dir_all(&dir).unwrap();
-        let out = self.bougie().arg("tree").current_dir(&dir).output().unwrap();
+        let out = self
+            .bougie()
+            .arg("tree")
+            .current_dir(&dir)
+            .output()
+            .unwrap();
         assert!(!out.status.success(), "tree in an empty dir should fail");
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(
@@ -77,8 +82,16 @@ impl Env {
         let proj = self.home.path().join("proj");
         std::fs::create_dir_all(&proj).unwrap();
         std::fs::write(proj.join("bougie.toml"), "[services]\nrabbitmq = \"*\"\n").unwrap();
-        let out = self.bougie().arg("tree").current_dir(&proj).output().unwrap();
-        assert!(!out.status.success(), "tree without composer.json should fail");
+        let out = self
+            .bougie()
+            .arg("tree")
+            .current_dir(&proj)
+            .output()
+            .unwrap();
+        assert!(
+            !out.status.success(),
+            "tree without composer.json should fail"
+        );
         proj
     }
 
@@ -101,9 +114,18 @@ impl Env {
     /// collectors surface its relocated port instead of the catalog default.
     fn plant_endpoint(&self, service: &str, primary: u16) {
         let version = bougie_daemon::daemon::catalog::default_version(service);
-        let dir = self.home.path().join("state/services").join(service).join(version);
+        let dir = self
+            .home
+            .path()
+            .join("state/services")
+            .join(service)
+            .join(version);
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("endpoint.json"), format!(r#"{{"primary":{primary}}}"#)).unwrap();
+        std::fs::write(
+            dir.join("endpoint.json"),
+            format!(r#"{{"primary":{primary}}}"#),
+        )
+        .unwrap();
     }
 
     /// A fake $EDITOR: a shell script receiving the draft path as $1.
@@ -131,7 +153,12 @@ fn read_issue_file(dir: &Path) -> String {
 #[test]
 fn nothing_recorded_yet_is_a_clear_failure() {
     let env = Env::new();
-    let out = env.bougie().arg("diagnose").arg("--issue").output().unwrap();
+    let out = env
+        .bougie()
+        .arg("diagnose")
+        .arg("--issue")
+        .output()
+        .unwrap();
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("nothing to report"));
 }
@@ -142,8 +169,17 @@ fn issue_lane_writes_report_file_without_any_network() {
     env.record_failure();
 
     let dir = env.home.path().join("empty");
-    let out = env.bougie().args(["diagnose", "--issue"]).current_dir(&dir).output().unwrap();
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = env
+        .bougie()
+        .args(["diagnose", "--issue"])
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     // Non-tty → no editor; the stdout print is the review …
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("# bougie diagnostic report"));
@@ -186,10 +222,17 @@ async fn yes_uploads_markdown_envelope_and_prints_id() {
     let out = env
         .bougie()
         .args(["diagnose", "--yes"])
-        .env("BOUGIE_DIAGNOSE_URL", format!("{}/v1/diagnose", server.uri()))
+        .env(
+            "BOUGIE_DIAGNOSE_URL",
+            format!("{}/v1/diagnose", server.uri()),
+        )
         .output()
         .unwrap();
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     assert!(String::from_utf8_lossy(&out.stderr).contains("diag-a1b2c3"));
 
     let requests = server.received_requests().await.unwrap();
@@ -197,7 +240,9 @@ async fn yes_uploads_markdown_envelope_and_prints_id() {
     // Schema-2 envelope: fixed machine facts + the markdown report.
     assert_eq!(body["schema_version"], 2);
     assert!(body["os"].is_string());
-    let report = body["report_md"].as_str().expect("report_md is the payload");
+    let report = body["report_md"]
+        .as_str()
+        .expect("report_md is the payload");
     assert!(report.contains("## last failure"));
     assert!(report.contains("category:"), "full error chain ships");
     // Home directory folded to ~ as the courtesy pass — nowhere in
@@ -229,10 +274,17 @@ async fn diagnose_works_with_telemetry_hard_off() {
         .bougie()
         .args(["diagnose", "--yes"])
         .env("DO_NOT_TRACK", "1")
-        .env("BOUGIE_DIAGNOSE_URL", format!("{}/v1/diagnose", server.uri()))
+        .env(
+            "BOUGIE_DIAGNOSE_URL",
+            format!("{}/v1/diagnose", server.uri()),
+        )
         .output()
         .unwrap();
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 #[test]
@@ -246,7 +298,11 @@ fn rerun_lane_captures_debug_stderr() {
         .current_dir(&dir)
         .output()
         .unwrap();
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let report = read_issue_file(&dir);
     assert!(report.contains("## re-run with debug logging"), "{report}");
     assert!(report.contains("exit:    0"), "{report}");
@@ -263,17 +319,32 @@ fn report_carries_service_log_tail_and_ports_offline() {
         "starting broker\nBOOT FAILED: Address already in use — 127.0.0.1:5672\n",
     );
 
-    let out = env.bougie().args(["diagnose", "--issue"]).current_dir(&proj).output().unwrap();
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = env
+        .bougie()
+        .args(["diagnose", "--issue"])
+        .current_dir(&proj)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let report = read_issue_file(&proj);
 
     // Project + declared services in the environment section.
     assert!(report.contains("declared services: rabbitmq *"), "{report}");
     // The service section shipped the log tail — the motivating case.
     assert!(report.contains("### rabbitmq (declared: *)"), "{report}");
-    assert!(report.contains("BOOT FAILED: Address already in use"), "{report}");
+    assert!(
+        report.contains("BOOT FAILED: Address already in use"),
+        "{report}"
+    );
     // No daemon → state is honest about it.
-    assert!(report.contains("state unknown (daemon not running)"), "{report}");
+    assert!(
+        report.contains("state unknown (daemon not running)"),
+        "{report}"
+    );
     assert!(report.contains("bougied: not running"), "{report}");
     // Ports table probes the catalog binding + the epmd sidecar.
     assert!(report.contains("| 5672 | rabbitmq |"), "{report}");
@@ -291,16 +362,31 @@ fn ports_section_reports_the_relocated_port_offline() {
     // catalog default.
     env.plant_endpoint("rabbitmq", 5673);
 
-    let out = env.bougie().args(["diagnose", "--issue"]).current_dir(&proj).output().unwrap();
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = env
+        .bougie()
+        .args(["diagnose", "--issue"])
+        .current_dir(&proj)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let report = read_issue_file(&proj);
 
     // The binding line surfaces the relocated port and names where it moved
     // from, so a reader chasing a stale config still recognises the service.
-    assert!(report.contains("tcp 127.0.0.1:5673 (relocated from 5672)"), "{report}");
+    assert!(
+        report.contains("tcp 127.0.0.1:5673 (relocated from 5672)"),
+        "{report}"
+    );
     // The ports table probes the relocated port, not the stale default.
     assert!(report.contains("| 5673 | rabbitmq |"), "{report}");
-    assert!(!report.contains("| 5672 | rabbitmq |"), "stale default must not appear: {report}");
+    assert!(
+        !report.contains("| 5672 | rabbitmq |"),
+        "stale default must not appear: {report}"
+    );
     // epmd is a fixed sidecar — it doesn't relocate with the primary.
     assert!(report.contains("| 4369 | rabbitmq (epmd) |"), "{report}");
 
@@ -331,9 +417,17 @@ fn diagnose_finds_project_from_last_failure_when_run_elsewhere() {
     // Run diagnose from a completely unrelated directory.
     let elsewhere = env.home.path().join("elsewhere");
     std::fs::create_dir_all(&elsewhere).unwrap();
-    let out =
-        env.bougie().args(["diagnose", "--issue"]).current_dir(&elsewhere).output().unwrap();
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = env
+        .bougie()
+        .args(["diagnose", "--issue"])
+        .current_dir(&elsewhere)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let report = read_issue_file(&elsewhere);
     assert!(report.contains("distinctive-rabbitmq-line"), "{report}");
 }
@@ -353,12 +447,27 @@ fn tenant_secrets_are_scrubbed_from_log_tails() {
         r#"{"schema_version":1,"tenant":"proj","project":"/p","created_at":"t","secrets":{"password":"sup3rs3cretpw"}}"#,
     )
     .unwrap();
-    env.plant_service_log("rabbitmq", "auth attempt for proj with sup3rs3cretpw failed\n");
+    env.plant_service_log(
+        "rabbitmq",
+        "auth attempt for proj with sup3rs3cretpw failed\n",
+    );
 
-    let out = env.bougie().args(["diagnose", "--issue"]).current_dir(&proj).output().unwrap();
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = env
+        .bougie()
+        .args(["diagnose", "--issue"])
+        .current_dir(&proj)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let report = read_issue_file(&proj);
-    assert!(!report.contains("sup3rs3cretpw"), "secret must not ship: {report}");
+    assert!(
+        !report.contains("sup3rs3cretpw"),
+        "secret must not ship: {report}"
+    );
     assert!(report.contains("«redacted:tenant-secret»"), "{report}");
 }
 
@@ -390,17 +499,27 @@ echo "note-from-the-editor" >> "$1""#,
         .args(["diagnose", "--yes", "--edit"])
         .current_dir(&proj)
         .env("EDITOR", &editor)
-        .env("BOUGIE_DIAGNOSE_URL", format!("{}/v1/diagnose", server.uri()))
+        .env(
+            "BOUGIE_DIAGNOSE_URL",
+            format!("{}/v1/diagnose", server.uri()),
+        )
         .output()
         .unwrap();
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     let requests = server.received_requests().await.unwrap();
     let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
     let report = body["report_md"].as_str().unwrap();
     assert!(report.contains("keep-this-line"), "{report}");
     assert!(report.contains("note-from-the-editor"), "{report}");
-    assert!(!report.contains("PRIVATE-THING"), "in-editor redaction is authoritative");
+    assert!(
+        !report.contains("PRIVATE-THING"),
+        "in-editor redaction is authoritative"
+    );
     // The instruction header never ships.
     assert!(!report.contains("review before sending"), "{report}");
     assert!(!report.contains(">8"), "{report}");
@@ -408,7 +527,11 @@ echo "note-from-the-editor" >> "$1""#,
     let leftover: Vec<_> = std::fs::read_dir(env.cache.path().join("telemetry"))
         .unwrap()
         .flatten()
-        .filter(|e| e.file_name().to_string_lossy().starts_with("diagnose-draft-"))
+        .filter(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .starts_with("diagnose-draft-")
+        })
         .collect();
     assert!(leftover.is_empty(), "draft cleaned up: {leftover:?}");
 }
@@ -431,10 +554,17 @@ async fn saving_an_empty_report_aborts_without_a_request() {
         .bougie()
         .args(["diagnose", "--yes", "--edit"])
         .env("EDITOR", &editor)
-        .env("BOUGIE_DIAGNOSE_URL", format!("{}/v1/diagnose", server.uri()))
+        .env(
+            "BOUGIE_DIAGNOSE_URL",
+            format!("{}/v1/diagnose", server.uri()),
+        )
         .output()
         .unwrap();
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     assert!(String::from_utf8_lossy(&out.stderr).contains("empty report"));
 }
 
@@ -456,7 +586,11 @@ fn failing_editor_keeps_the_draft() {
     let drafts: Vec<_> = std::fs::read_dir(env.cache.path().join("telemetry"))
         .unwrap()
         .flatten()
-        .filter(|e| e.file_name().to_string_lossy().starts_with("diagnose-draft-"))
+        .filter(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .starts_with("diagnose-draft-")
+        })
         .collect();
     assert_eq!(drafts.len(), 1, "draft survives an editor failure");
 }

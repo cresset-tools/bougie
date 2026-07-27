@@ -192,7 +192,10 @@ impl Render for VersionResult {
 pub fn version(format: OutputFormat) -> Result<ExitCode> {
     let paths = Paths::from_env()?;
     let daemon: DaemonVersion = client::call(&paths, "daemon.version", Value::Null)?;
-    let result = VersionResult { schema_version: 1, daemon };
+    let result = VersionResult {
+        schema_version: 1,
+        daemon,
+    };
     emit(format, &result)?;
     Ok(ExitCode::SUCCESS)
 }

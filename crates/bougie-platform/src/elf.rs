@@ -26,11 +26,11 @@
 #![allow(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
-    clippy::cast_possible_wrap,
+    clippy::cast_possible_wrap
 )]
 
 use crate::binfmt::DetectedExt;
-use eyre::{eyre, Result};
+use eyre::{Result, eyre};
 
 const ELFMAG: &[u8; 4] = b"\x7fELF";
 const ELFCLASS64: u8 = 2;
@@ -76,12 +76,14 @@ pub fn detect_from_bytes(buf: &[u8]) -> Result<DetectedExt> {
 
     // Prefer .dynsym: it's the dynamic-link symbol table and survives
     // `strip`, while .symtab is routinely removed in release builds.
-    let sym_section = sections.iter()
+    let sym_section = sections
+        .iter()
         .find(|s| s.sh_type == SHT_DYNSYM)
         .or_else(|| sections.iter().find(|s| s.sh_type == SHT_SYMTAB))
         .ok_or_else(|| eyre!("no .dynsym or .symtab section found"))?;
 
-    let strtab = sections.get(sym_section.sh_link as usize)
+    let strtab = sections
+        .get(sym_section.sh_link as usize)
         .filter(|s| s.sh_type == SHT_STRTAB)
         .ok_or_else(|| {
             eyre!(
@@ -133,12 +135,8 @@ pub fn detect_from_bytes(buf: &[u8]) -> Result<DetectedExt> {
     // full disassembly of get_module(), and the alternatives are
     // typically support structs that wouldn't be valid module entries.
     if let Some((_, sym)) = module_entries.into_iter().next() {
-        let name = read_indirect_string(
-            buf,
-            &sections,
-            sym.st_value,
-            ZEND_MODULE_ENTRY_NAME_OFFSET,
-        )?;
+        let name =
+            read_indirect_string(buf, &sections, sym.st_value, ZEND_MODULE_ENTRY_NAME_OFFSET)?;
         return Ok(DetectedExt { name, zend: false });
     }
     Err(eyre!(
@@ -186,9 +184,12 @@ fn read_pointer_at_vaddr(buf: &[u8], sections: &[Section], ptr_vaddr: u64) -> Re
     let end = ptr_off
         .checked_add(8)
         .ok_or_else(|| eyre!("pointer file offset {ptr_off} overflows"))?;
-    let bytes = buf
-        .get(ptr_off..end)
-        .ok_or_else(|| eyre!("pointer at file offset {ptr_off} out of range (buf={})", buf.len()))?;
+    let bytes = buf.get(ptr_off..end).ok_or_else(|| {
+        eyre!(
+            "pointer at file offset {ptr_off} out of range (buf={})",
+            buf.len()
+        )
+    })?;
     let mut p = [0u8; 8];
     p.copy_from_slice(bytes);
     let direct = u64::from_le_bytes(p);
@@ -222,7 +223,7 @@ fn find_relative_reloc(buf: &[u8], sections: &[Section], ptr_vaddr: u64) -> Resu
             if r_offset != ptr_vaddr {
                 continue;
             }
-            let r_info   = u64::from_le_bytes(chunk[8..16].try_into().unwrap());
+            let r_info = u64::from_le_bytes(chunk[8..16].try_into().unwrap());
             let r_addend = i64::from_le_bytes(chunk[16..24].try_into().unwrap());
             // ELF64_R_TYPE: low 32 bits of r_info.
             let r_type = (r_info & 0xffff_ffff) as u32;
@@ -265,12 +266,14 @@ fn vaddr_to_file_off(sections: &[Section], vaddr: u64, len: u64) -> Result<usize
 }
 
 fn read_cstring(buf: &[u8], off: usize) -> Result<&str> {
-    let slice = buf.get(off..)
+    let slice = buf
+        .get(off..)
         .ok_or_else(|| eyre!("string offset {off} out of range"))?;
-    let nul = slice.iter().position(|&b| b == 0)
+    let nul = slice
+        .iter()
+        .position(|&b| b == 0)
         .ok_or_else(|| eyre!("unterminated string at offset {off}"))?;
-    std::str::from_utf8(&slice[..nul])
-        .map_err(|e| eyre!("non-UTF8 string at offset {off}: {e}"))
+    std::str::from_utf8(&slice[..nul]).map_err(|e| eyre!("non-UTF8 string at offset {off}: {e}"))
 }
 
 #[derive(Debug)]
@@ -292,24 +295,33 @@ impl ElfHeader {
             return Err(eyre!("only ELF64 is supported (got EI_CLASS={})", buf[4]));
         }
         if buf[5] != ELFDATA2LSB {
-            return Err(eyre!("only little-endian ELF is supported (got EI_DATA={})", buf[5]));
+            return Err(eyre!(
+                "only little-endian ELF is supported (got EI_DATA={})",
+                buf[5]
+            ));
         }
-        let e_shoff     = u64::from_le_bytes(buf[40..48].try_into().unwrap());
+        let e_shoff = u64::from_le_bytes(buf[40..48].try_into().unwrap());
         let e_shentsize = u16::from_le_bytes(buf[58..60].try_into().unwrap());
-        let e_shnum     = u16::from_le_bytes(buf[60..62].try_into().unwrap());
+        let e_shnum = u16::from_le_bytes(buf[60..62].try_into().unwrap());
         if e_shentsize != 64 {
             return Err(eyre!("unexpected e_shentsize {e_shentsize} (expected 64)"));
         }
-        Ok(Self { e_shoff, e_shentsize, e_shnum })
+        Ok(Self {
+            e_shoff,
+            e_shentsize,
+            e_shnum,
+        })
     }
 
     fn sections(&self, buf: &[u8]) -> Result<Vec<Section>> {
         let start = self.e_shoff as usize;
         let count = self.e_shnum as usize;
         let stride = self.e_shentsize as usize;
-        let total = stride.checked_mul(count)
+        let total = stride
+            .checked_mul(count)
             .ok_or_else(|| eyre!("section-table size overflow"))?;
-        let end = start.checked_add(total)
+        let end = start
+            .checked_add(total)
             .ok_or_else(|| eyre!("section-table extent overflow"))?;
         if end > buf.len() {
             return Err(eyre!("section table extends past end of file"));
@@ -338,12 +350,12 @@ impl Section {
         Self {
             // sh_name (b[0..4]) is unused — we look up by sh_type, not
             // by name, so .shstrtab parsing isn't needed.
-            sh_type:    u32::from_le_bytes(b[4..8].try_into().unwrap()),
+            sh_type: u32::from_le_bytes(b[4..8].try_into().unwrap()),
             // sh_flags (b[8..16]) unused.
-            sh_addr:    u64::from_le_bytes(b[16..24].try_into().unwrap()),
-            sh_offset:  u64::from_le_bytes(b[24..32].try_into().unwrap()),
-            sh_size:    u64::from_le_bytes(b[32..40].try_into().unwrap()),
-            sh_link:    u32::from_le_bytes(b[40..44].try_into().unwrap()),
+            sh_addr: u64::from_le_bytes(b[16..24].try_into().unwrap()),
+            sh_offset: u64::from_le_bytes(b[24..32].try_into().unwrap()),
+            sh_size: u64::from_le_bytes(b[32..40].try_into().unwrap()),
+            sh_link: u32::from_le_bytes(b[40..44].try_into().unwrap()),
             // sh_info, sh_addralign unused.
             sh_entsize: u64::from_le_bytes(b[56..64].try_into().unwrap()),
         }
@@ -351,7 +363,8 @@ impl Section {
 
     fn data<'a>(&self, buf: &'a [u8]) -> Result<&'a [u8]> {
         let start = self.sh_offset as usize;
-        let end = start.checked_add(self.sh_size as usize)
+        let end = start
+            .checked_add(self.sh_size as usize)
             .ok_or_else(|| eyre!("section size overflow"))?;
         buf.get(start..end)
             .ok_or_else(|| eyre!("section data {start}..{end} out of bounds"))
@@ -367,7 +380,7 @@ struct Symbol {
 impl Symbol {
     fn parse(b: &[u8]) -> Self {
         Self {
-            st_name:  u32::from_le_bytes(b[0..4].try_into().unwrap()),
+            st_name: u32::from_le_bytes(b[0..4].try_into().unwrap()),
             // st_info(1), st_other(1), st_shndx(2) at 4..8 — unused.
             st_value: u64::from_le_bytes(b[8..16].try_into().unwrap()),
             // st_size (16..24) unused.
@@ -467,7 +480,12 @@ mod tests {
             let shoff = buf.len() as u64;
             buf.extend_from_slice(&[0u8; 64]); // shdr[0] all zero
 
-            let mut shdr = |sh_type: u32, sh_addr: u64, sh_offset: u64, sh_size: u64, sh_link: u32, sh_entsize: u64| {
+            let mut shdr = |sh_type: u32,
+                            sh_addr: u64,
+                            sh_offset: u64,
+                            sh_size: u64,
+                            sh_link: u32,
+                            sh_entsize: u64| {
                 let mut e = [0u8; 64];
                 e[4..8].copy_from_slice(&sh_type.to_le_bytes());
                 e[16..24].copy_from_slice(&sh_addr.to_le_bytes());
@@ -479,7 +497,14 @@ mod tests {
             };
 
             // [1] .data — loaded, holds the struct + name string.
-            shdr(1, self.data_vaddr, data_offset, self.data.len() as u64, 0, 0);
+            shdr(
+                1,
+                self.data_vaddr,
+                data_offset,
+                self.data.len() as u64,
+                0,
+                0,
+            );
             // [2] .dynstr — strtab, not loaded.
             shdr(3, 0, dynstr_offset, dynstr_size, 0, 0);
             // [3] .dynsym — dynsym, sh_link points at .dynstr (index 2).
@@ -527,7 +552,13 @@ mod tests {
 
         let bytes = b.build();
         let got = detect_from_bytes(&bytes).unwrap();
-        assert_eq!(got, DetectedExt { name: "redis".into(), zend: false });
+        assert_eq!(
+            got,
+            DetectedExt {
+                name: "redis".into(),
+                zend: false
+            }
+        );
     }
 
     #[test]
@@ -547,7 +578,13 @@ mod tests {
 
         let bytes = b.build();
         let got = detect_from_bytes(&bytes).unwrap();
-        assert_eq!(got, DetectedExt { name: "Xdebug".into(), zend: true });
+        assert_eq!(
+            got,
+            DetectedExt {
+                name: "Xdebug".into(),
+                zend: true
+            }
+        );
     }
 
     #[test]
@@ -574,7 +611,13 @@ mod tests {
         b.add_symbol("xdebug_module_entry", mod_vaddr);
 
         let got = detect_from_bytes(&b.build()).unwrap();
-        assert_eq!(got, DetectedExt { name: "xdebug".into(), zend: true });
+        assert_eq!(
+            got,
+            DetectedExt {
+                name: "xdebug".into(),
+                zend: true
+            }
+        );
     }
 
     #[test]
@@ -594,7 +637,13 @@ mod tests {
         b.add_symbol("zend_extension_entry", struct_vaddr);
 
         let got = detect_from_bytes(&b.build()).unwrap();
-        assert_eq!(got, DetectedExt { name: "Xdebug".into(), zend: true });
+        assert_eq!(
+            got,
+            DetectedExt {
+                name: "Xdebug".into(),
+                zend: true
+            }
+        );
     }
 
     #[test]
@@ -634,7 +683,8 @@ mod tests {
         b.add_symbol("some_unrelated_symbol", v);
         let err = detect_from_bytes(&b.build()).unwrap_err();
         assert!(
-            err.to_string().contains("_module_entry") || err.to_string().contains("zend_extension_entry"),
+            err.to_string().contains("_module_entry")
+                || err.to_string().contains("zend_extension_entry"),
             "got: {err}"
         );
     }

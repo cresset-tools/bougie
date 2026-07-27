@@ -4,10 +4,10 @@ use bougie_installer::install::install_php;
 use bougie_output::output::{Render, emit};
 use bougie_paths::Paths;
 use bougie_resolver::ResolveOptions;
-use composer_semver::Constraint;
 use bougie_tool::receipt::{PhpUpgrade, refresh_php_pin};
 use bougie_version::request::{Flavor, Request, VersionLike};
 use bougie_version::version::PartialVersion;
+use composer_semver::Constraint;
 use eyre::{Result, eyre};
 use serde::Serialize;
 use std::io::{self, Write};
@@ -64,7 +64,8 @@ pub fn run(format: OutputFormat, minor_filter: Option<&str>) -> Result<ExitCode>
         let Ok(v) = bougie_version::version::Version::from_str(&version_str) else {
             continue;
         };
-        let flavor = parse_flavor(&flavor_str).ok_or_else(|| eyre!("unknown flavor: {flavor_str}"))?;
+        let flavor =
+            parse_flavor(&flavor_str).ok_or_else(|| eyre!("unknown flavor: {flavor_str}"))?;
         if let Some(want) = minor_filter {
             let want_pv = PartialVersion::parse(want)?;
             if want_pv.major != v.major || want_pv.minor.is_some_and(|m| m != v.minor) {
@@ -76,9 +77,11 @@ pub fn run(format: OutputFormat, minor_filter: Option<&str>) -> Result<ExitCode>
             Constraint::parse(&format!(">={}.{}", v.major, v.minor))
                 .map_err(|e| eyre!("constructing upgrade constraint: {e}"))?,
         );
-        let request = Request::VersionLike { spec, flavor: Some(flavor) };
-        let installed_now =
-            install_php(&paths, &request, Some(flavor), ResolveOptions::default())?;
+        let request = Request::VersionLike {
+            spec,
+            flavor: Some(flavor),
+        };
+        let installed_now = install_php(&paths, &request, Some(flavor), ResolveOptions::default())?;
         if installed_now.version != v {
             upgraded.push(UpgradeRow {
                 from: v.to_string(),

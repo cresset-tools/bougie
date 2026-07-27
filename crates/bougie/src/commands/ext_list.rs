@@ -1,18 +1,18 @@
 use bougie_cli::OutputFormat;
 use bougie_config::load_project;
 use bougie_errors::BougieError;
+use bougie_fs::state::read_project_resolved;
 use bougie_index::{
     build_verifier,
     fetch::{fetch_root, fetch_section},
     wire::Section,
 };
-use bougie_installer::install::{host_to_dirname, DEFAULT_INDEX_URL};
+use bougie_installer::install::{DEFAULT_INDEX_URL, host_to_dirname};
 use bougie_output::list_format::{
-    pad_spaces, write_styled, FLAVOR_STYLE, SEP_STYLE, Suffix, TARGET_STYLE, VERSION_STYLE,
+    FLAVOR_STYLE, SEP_STYLE, Suffix, TARGET_STYLE, VERSION_STYLE, pad_spaces, write_styled,
 };
-use bougie_output::output::{emit, Render};
+use bougie_output::output::{Render, emit};
 use bougie_paths::Paths;
-use bougie_fs::state::read_project_resolved;
 use bougie_platform::target::Triple;
 use eyre::Result;
 use serde::Serialize;
@@ -256,7 +256,8 @@ pub fn run(format: OutputFormat, opts: Options) -> Result<ExitCode> {
                                 resolved.as_ref(),
                                 &required,
                                 &installed,
-                                opts.show_urls.then(|| build_manifest_url(&url, &art.manifest.path)),
+                                opts.show_urls
+                                    .then(|| build_manifest_url(&url, &art.manifest.path)),
                                 art,
                             );
                         }
@@ -275,7 +276,8 @@ pub fn run(format: OutputFormat, opts: Options) -> Result<ExitCode> {
                             resolved.as_ref(),
                             &required,
                             &installed,
-                            opts.show_urls.then(|| build_manifest_url(&url, &art.manifest.path)),
+                            opts.show_urls
+                                .then(|| build_manifest_url(&url, &art.manifest.path)),
                             art,
                         );
                     }
@@ -366,7 +368,10 @@ pub fn run(format: OutputFormat, opts: Options) -> Result<ExitCode> {
             .then_with(|| a.version.cmp(&b.version))
     });
 
-    let result = ListResult { schema_version: 1, items: rows };
+    let result = ListResult {
+        schema_version: 1,
+        items: rows,
+    };
     emit(format, &result)?;
     Ok(ExitCode::SUCCESS)
 }
@@ -390,9 +395,8 @@ fn push_index_row(
     if required.contains(name) {
         status.push("required");
     }
-    let installed_for_this_row = is_host
-        && installed.contains(name)
-        && resolved_matches(artifact, resolved);
+    let installed_for_this_row =
+        is_host && installed.contains(name) && resolved_matches(artifact, resolved);
     if installed_for_this_row {
         status.push("installed");
     }
@@ -446,8 +450,12 @@ fn resolved_matches(
         return false;
     }
     let mut parts = v.split('.');
-    let Some(major) = parts.next() else { return true };
-    let Some(minor) = parts.next() else { return true };
+    let Some(major) = parts.next() else {
+        return true;
+    };
+    let Some(minor) = parts.next() else {
+        return true;
+    };
     let target_minor = format!("{major}.{minor}");
     art.php_minor.as_deref().is_none_or(|m| m == target_minor)
 }

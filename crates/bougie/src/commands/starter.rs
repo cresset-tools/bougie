@@ -158,18 +158,25 @@ pub(crate) fn apply_project_hints(
     if recipe.is_none() && services.is_empty() {
         return;
     }
-    let Some(root) = composer_json.as_object_mut() else { return };
-    let extra = root
-        .entry("extra")
-        .or_insert_with(|| serde_json::json!({}));
-    let Some(extra) = extra.as_object_mut() else { return };
+    let Some(root) = composer_json.as_object_mut() else {
+        return;
+    };
+    let extra = root.entry("extra").or_insert_with(|| serde_json::json!({}));
+    let Some(extra) = extra.as_object_mut() else {
+        return;
+    };
     let bougie = extra
         .entry("bougie")
         .or_insert_with(|| serde_json::json!({}));
-    let Some(bougie) = bougie.as_object_mut() else { return };
+    let Some(bougie) = bougie.as_object_mut() else {
+        return;
+    };
 
     if let Some(recipe) = recipe {
-        bougie.insert("recipe".to_string(), serde_json::Value::String(recipe.to_string()));
+        bougie.insert(
+            "recipe".to_string(),
+            serde_json::Value::String(recipe.to_string()),
+        );
     }
     if !services.is_empty() {
         let svc = bougie
@@ -200,7 +207,12 @@ pub(crate) fn resolve_placeholders(
     for p in placeholders {
         let label = p.prompt.as_deref().unwrap_or(&p.token);
         let value = if interactive {
-            prompt_placeholder(label, p.description.as_deref(), p.default.as_deref(), p.required)?
+            prompt_placeholder(
+                label,
+                p.description.as_deref(),
+                p.default.as_deref(),
+                p.required,
+            )?
         } else if let Some(def) = &p.default {
             Some(def.clone())
         } else if p.required {
@@ -235,10 +247,15 @@ pub(crate) fn resolve_auth(auth: &[AuthPrompt], interactive: bool) -> Result<()>
     }
     for a in auth {
         if a.host.trim().is_empty() {
-            return Err(eyre!("starter manifest has an `auth` entry with an empty `host`"));
+            return Err(eyre!(
+                "starter manifest has an `auth` entry with an empty `host`"
+            ));
         }
         if already_configured(&a.host) {
-            eprintln!("note: credentials for {} already configured — skipping", a.host);
+            eprintln!(
+                "note: credentials for {} already configured — skipping",
+                a.host
+            );
             continue;
         }
         let username = a.username.as_deref().unwrap_or(DEFAULT_AUTH_USERNAME);
@@ -267,7 +284,11 @@ pub(crate) fn resolve_auth(auth: &[AuthPrompt], interactive: bool) -> Result<()>
                 &a.host, username, &password,
             )
             .map_err(|e| eyre!("storing credentials for {}: {e}", a.host))?;
-            eprintln!("note: stored credentials for {} in {}", a.host, path.display());
+            eprintln!(
+                "note: stored credentials for {} in {}",
+                a.host,
+                path.display()
+            );
         }
     }
     Ok(())
@@ -404,7 +425,9 @@ pub(crate) fn fetch(starter: &str) -> Result<StarterManifest> {
         ));
     }
     if !manifest.composer_json.is_object() {
-        return Err(eyre!("starter manifest `composer-json` must be a JSON object"));
+        return Err(eyre!(
+            "starter manifest `composer-json` must be a JSON object"
+        ));
     }
     if let Some(p) = manifest.placeholders.iter().find(|p| p.token.is_empty()) {
         return Err(eyre!(
@@ -413,7 +436,9 @@ pub(crate) fn fetch(starter: &str) -> Result<StarterManifest> {
         ));
     }
     if manifest.auth.iter().any(|a| a.host.trim().is_empty()) {
-        return Err(eyre!("starter manifest has an `auth` entry with an empty `host`"));
+        return Err(eyre!(
+            "starter manifest has an `auth` entry with an empty `host`"
+        ));
     }
     Ok(manifest)
 }
@@ -508,7 +533,11 @@ mod tests {
     #[test]
     fn apply_project_hints_writes_recipe_and_services() {
         let mut composer = serde_json::json!({"require": {"php": "^8.4"}});
-        apply_project_hints(&mut composer, Some("magento"), &["mariadb".into(), "opensearch".into()]);
+        apply_project_hints(
+            &mut composer,
+            Some("magento"),
+            &["mariadb".into(), "opensearch".into()],
+        );
 
         assert_eq!(composer["extra"]["bougie"]["recipe"], "magento");
         assert_eq!(composer["extra"]["bougie"]["services"]["mariadb"], "*");
@@ -619,10 +648,9 @@ mod tests {
     fn fetch_rejects_empty_placeholder_token() {
         // Parsing alone is fine; the empty-token check lives in `fetch`, so
         // assert it via the same predicate fetch uses.
-        let m = parse(
-            r#"{"schema":1,"composer-json":{"require":{}},"placeholders":[{"token":""}]}"#,
-        )
-        .unwrap();
+        let m =
+            parse(r#"{"schema":1,"composer-json":{"require":{}},"placeholders":[{"token":""}]}"#)
+                .unwrap();
         assert!(m.placeholders.iter().any(|p| p.token.is_empty()));
     }
 

@@ -169,10 +169,7 @@ mod tests {
     fn psr4_matching_path_passes() {
         let f = psr4("Acme\\", "/v/acme/src");
         assert!(f.accepts("Acme\\Foo", Path::new("/v/acme/src/Foo.php")));
-        assert!(f.accepts(
-            "Acme\\Sub\\Bar",
-            Path::new("/v/acme/src/Sub/Bar.php")
-        ));
+        assert!(f.accepts("Acme\\Sub\\Bar", Path::new("/v/acme/src/Sub/Bar.php")));
     }
 
     #[test]

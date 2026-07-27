@@ -34,7 +34,9 @@ impl Env {
 
     fn spooled_lines(&self) -> Vec<String> {
         let dir = self.cache.path().join("telemetry").join("spool");
-        let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return Vec::new();
+        };
         let mut lines = Vec::new();
         for entry in entries.flatten() {
             if entry.path().extension().is_some_and(|e| e == "ndjson") {
@@ -118,7 +120,10 @@ fn same_crash_ships_once_per_day() {
         .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
         .filter(|e| e["event"] == "crash")
         .count();
-    assert_eq!(crashes, 1, "fingerprint dedupe: one event for two identical panics");
+    assert_eq!(
+        crashes, 1,
+        "fingerprint dedupe: one event for two identical panics"
+    );
 }
 
 #[test]

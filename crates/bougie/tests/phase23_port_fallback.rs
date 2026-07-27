@@ -15,7 +15,7 @@
 mod common;
 
 use assert_cmd::cargo::cargo_bin;
-use common::{project_with_composer, TestEnv};
+use common::{TestEnv, project_with_composer};
 use std::fs;
 use std::net::TcpStream;
 use std::os::unix::fs::PermissionsExt;
@@ -104,7 +104,10 @@ fn service_relocates_off_a_squatted_catalog_port() {
             .expect("endpoint.json is valid json");
     let primary = u16::try_from(ep["primary"].as_u64().expect("primary port")).unwrap();
     assert_ne!(primary, 1025, "must relocate off the squatted SMTP port");
-    assert!(primary > 1025, "allocator scans upward from the default: {primary}");
+    assert!(
+        primary > 1025,
+        "allocator scans upward from the default: {primary}"
+    );
 
     // The service genuinely bound the relocated port.
     assert!(

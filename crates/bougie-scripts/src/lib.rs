@@ -22,7 +22,7 @@ mod context;
 mod dispatch;
 
 pub use context::{CallbackHandler, CallbackRegistry, ScriptContext};
-pub use dispatch::{dispatch, EntryOutcome};
+pub use dispatch::{EntryOutcome, dispatch};
 
 /// A single listener entry within a `scripts.<event>` list, classified by
 /// Composer's entry grammar.
@@ -65,7 +65,9 @@ impl Scripts {
     #[must_use]
     pub fn parse(root_composer_json: &serde_json::Value) -> Self {
         let mut out: Vec<(String, Vec<Entry>)> = Vec::new();
-        let Some(obj) = root_composer_json.get("scripts").and_then(serde_json::Value::as_object)
+        let Some(obj) = root_composer_json
+            .get("scripts")
+            .and_then(serde_json::Value::as_object)
         else {
             return Self(out);
         };
@@ -89,7 +91,10 @@ impl Scripts {
     /// Look up the entries for an event or alias name.
     #[must_use]
     pub fn get(&self, name: &str) -> Option<&[Entry]> {
-        self.0.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_slice())
+        self.0
+            .iter()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v.as_slice())
     }
 
     /// Whether the table has no events.
@@ -119,7 +124,10 @@ fn classify(raw: &str) -> Entry {
     {
         let assignment = rest.trim_start();
         let (key, val) = assignment.split_once('=').unwrap_or((assignment, ""));
-        return Entry::PutEnv { key: key.trim().to_string(), val: val.to_string() };
+        return Entry::PutEnv {
+            key: key.trim().to_string(),
+            val: val.to_string(),
+        };
     }
     if let Some(name) = trimmed.strip_prefix('@')
         && !name.is_empty()
@@ -146,8 +154,12 @@ fn as_callback(s: &str) -> Option<(String, String)> {
     if class.is_empty() || method.is_empty() || method.contains("::") {
         return None;
     }
-    let class_ok = class.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '\\');
-    let method_ok = method.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+    let class_ok = class
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '\\');
+    let method_ok = method
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_');
     (class_ok && method_ok).then(|| (class.to_string(), method.to_string()))
 }
 
@@ -158,12 +170,21 @@ mod tests {
 
     #[test]
     fn classifies_each_entry_form() {
-        assert_eq!(classify("@php artisan migrate"), Entry::Php("artisan migrate".into()));
+        assert_eq!(
+            classify("@php artisan migrate"),
+            Entry::Php("artisan migrate".into())
+        );
         assert_eq!(classify("@php"), Entry::Php(String::new()));
-        assert_eq!(classify("@composer dump-autoload"), Entry::Composer("dump-autoload".into()));
+        assert_eq!(
+            classify("@composer dump-autoload"),
+            Entry::Composer("dump-autoload".into())
+        );
         assert_eq!(
             classify("@putenv APP_ENV=testing"),
-            Entry::PutEnv { key: "APP_ENV".into(), val: "testing".into() }
+            Entry::PutEnv {
+                key: "APP_ENV".into(),
+                val: "testing".into()
+            }
         );
         assert_eq!(classify("@build"), Entry::Alias("build".into()));
         assert_eq!(
@@ -173,7 +194,10 @@ mod tests {
                 method: "postAutoloadDump".into(),
             }
         );
-        assert_eq!(classify("phpunit --colors"), Entry::Shell("phpunit --colors".into()));
+        assert_eq!(
+            classify("phpunit --colors"),
+            Entry::Shell("phpunit --colors".into())
+        );
     }
 
     #[test]
@@ -198,9 +222,17 @@ mod tests {
         }));
         assert_eq!(
             scripts.get("post-install-cmd"),
-            Some(&[Entry::Php("artisan migrate".into()), Entry::Shell("phpunit".into())][..])
+            Some(
+                &[
+                    Entry::Php("artisan migrate".into()),
+                    Entry::Shell("phpunit".into())
+                ][..]
+            )
         );
-        assert_eq!(scripts.get("test"), Some(&[Entry::Shell("phpunit".into())][..]));
+        assert_eq!(
+            scripts.get("test"),
+            Some(&[Entry::Shell("phpunit".into())][..])
+        );
         assert!(scripts.get("missing").is_none());
     }
 

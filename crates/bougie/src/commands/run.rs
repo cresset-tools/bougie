@@ -1,12 +1,12 @@
-use bougie_cli::OutputFormat;
 use crate::commands::sync;
-use bougie_installer::conf_d;
+use bougie_cli::OutputFormat;
 #[cfg(unix)]
 use bougie_config::read_composer_json;
 use bougie_errors::BougieError;
-use bougie_paths::Paths;
 use bougie_fs::state::read_project_resolved;
-use eyre::{eyre, Result, WrapErr};
+use bougie_installer::conf_d;
+use bougie_paths::Paths;
+use eyre::{Result, WrapErr, eyre};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::path::Path;
@@ -42,8 +42,7 @@ pub fn run(
     }
     // uv-parity: a path-shaped argv[0] with an inline `# /// script` block
     // runs self-contained even without `--script` (`bougie run ./app.php`).
-    if let Some(result) =
-        try_inline_script(argv, format, php_request, with, xdebug_flag, php_pref)
+    if let Some(result) = try_inline_script(argv, format, php_request, with, xdebug_flag, php_pref)
     {
         return result;
     }
@@ -89,24 +88,25 @@ pub fn run(
     // on Windows in Phase 1. On Windows the argv falls through to the
     // direct-exec path below.
     #[cfg(unix)]
-    if !explicit_passthrough() && !argv[0].contains('/')
-        && let Some(steps) = lookup_composer_script(&project_root, &argv[0])? {
-            return run_composer_script(
-                &project_root,
-                &argv[0],
-                &steps,
-                &argv[1..],
-                xdebug_flag,
-                ephemeral_php.as_deref(),
-            );
-        }
+    if !explicit_passthrough()
+        && !argv[0].contains('/')
+        && let Some(steps) = lookup_composer_script(&project_root, &argv[0])?
+    {
+        return run_composer_script(
+            &project_root,
+            &argv[0],
+            &steps,
+            &argv[1..],
+            xdebug_flag,
+            ephemeral_php.as_deref(),
+        );
+    }
 
     let bougie_bin = bougie_paths::project::bin_dir(&project_root);
     // Needed to locate the durable `conf.d-local/` under `$BOUGIE_HOME`.
     let paths = Paths::from_env()?;
 
-    let env_session_set = std::env::var_os("XDEBUG_SESSION")
-        .is_some_and(|v| !v.is_empty());
+    let env_session_set = std::env::var_os("XDEBUG_SESSION").is_some_and(|v| !v.is_empty());
     let debug_overlay = xdebug_flag || env_session_set;
 
     // Lazy-install xdebug into the debug overlay so `--xdebug` works
@@ -190,11 +190,12 @@ pub fn run(
     // Unix-only: the daemon doesn't run on Windows in Phase 1.
     #[cfg(unix)]
     if let Ok(paths) = Paths::from_env()
-        && paths.bougied_sock().exists() {
-            for (k, v) in super::env::fetch_service_env(&paths, &project_root) {
-                cmd.env(k, v);
-            }
+        && paths.bougied_sock().exists()
+    {
+        for (k, v) in super::env::fetch_service_env(&paths, &project_root) {
+            cmd.env(k, v);
         }
+    }
 
     #[cfg(unix)]
     {
@@ -280,7 +281,14 @@ fn try_inline_script(
     bougie_composer::inline::parse_inline_metadata(&source)
         .ok()
         .flatten()?;
-    Some(super::script::run(argv, format, php_request, with, xdebug_flag, php_pref))
+    Some(super::script::run(
+        argv,
+        format,
+        php_request,
+        with,
+        xdebug_flag,
+        php_pref,
+    ))
 }
 
 /// Heuristic for "argv[0] is a script file, not a command or composer
@@ -421,8 +429,7 @@ fn run_composer_script(
         new_path.push_str(&prev_path);
     }
 
-    let env_session_set = std::env::var_os("XDEBUG_SESSION")
-        .is_some_and(|v| !v.is_empty());
+    let env_session_set = std::env::var_os("XDEBUG_SESSION").is_some_and(|v| !v.is_empty());
     let debug_overlay = xdebug_flag || env_session_set;
     let paths = Paths::from_env()?;
     let scan_dir = conf_d::php_ini_scan_dir(&paths, project_root, debug_overlay);

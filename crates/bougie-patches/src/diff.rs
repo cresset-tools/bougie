@@ -103,7 +103,11 @@ pub fn strip_components(path: &str, n: usize) -> Option<String> {
     while let Some(r) = rest.strip_prefix('/').or_else(|| rest.strip_prefix("./")) {
         rest = r;
     }
-    if rest.is_empty() { None } else { Some(rest.to_string()) }
+    if rest.is_empty() {
+        None
+    } else {
+        Some(rest.to_string())
+    }
 }
 
 #[cfg(test)]
@@ -113,8 +117,14 @@ mod tests {
     #[test]
     fn strip_levels() {
         let p = "a/vendor/foo/src/Bar.php";
-        assert_eq!(strip_components(p, 0).as_deref(), Some("a/vendor/foo/src/Bar.php"));
-        assert_eq!(strip_components(p, 1).as_deref(), Some("vendor/foo/src/Bar.php"));
+        assert_eq!(
+            strip_components(p, 0).as_deref(),
+            Some("a/vendor/foo/src/Bar.php")
+        );
+        assert_eq!(
+            strip_components(p, 1).as_deref(),
+            Some("vendor/foo/src/Bar.php")
+        );
         assert_eq!(strip_components(p, 2).as_deref(), Some("foo/src/Bar.php"));
         assert_eq!(strip_components(p, 4).as_deref(), Some("Bar.php"));
         assert_eq!(strip_components(p, 5), None);

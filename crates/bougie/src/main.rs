@@ -1,4 +1,4 @@
-use bougie::{exit_code_for, shim, Cli};
+use bougie::{Cli, exit_code_for, shim};
 use clap::Parser;
 use std::process::ExitCode;
 
@@ -225,9 +225,9 @@ fn report_error(err: &eyre::Report) {
 /// category has one worth printing.
 fn category_hint(category: &str) -> Option<&'static str> {
     match category {
-        "network" => Some(
-            "check connectivity and proxy settings; `--offline` works where supported",
-        ),
+        "network" => {
+            Some("check connectivity and proxy settings; `--offline` works where supported")
+        }
         "service" => Some(
             "`bougie service status` shows service state; \
              `bougie service logs <name>` has the failing service's log",

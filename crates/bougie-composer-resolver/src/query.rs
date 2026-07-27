@@ -33,8 +33,8 @@ use serde_json::Value;
 
 use crate::hash::FxHashMap;
 use crate::metadata::{
-    build_client, fetch_package_metadata_optional, fetch_package_metadata_v1_optional,
-    load_v1_provider_table, probe_protocol, Repo, RepoProtocol, Variant,
+    Repo, RepoProtocol, Variant, build_client, fetch_package_metadata_optional,
+    fetch_package_metadata_v1_optional, load_v1_provider_table, probe_protocol,
 };
 
 /// A repository with its probed protocol and (for v1) preloaded
@@ -337,12 +337,14 @@ pub fn latest_versions(
     let composer_json_bytes = std::fs::read(&composer_json_path)
         .wrap_err_with(|| format!("reading {}", composer_json_path.display()))?;
     let composer_json: Value = serde_json::from_slice(&composer_json_bytes).map_err(|e| {
-        bougie_errors::BougieError::Config { path: "composer.json".into(), detail: e.to_string() }
+        bougie_errors::BougieError::Config {
+            path: "composer.json".into(),
+            detail: e.to_string(),
+        }
     })?;
 
     let auth = crate::update::read_all_auth(&composer_json, project_root).map_err(|e| eyre!(e))?;
-    let overlay =
-        crate::update::read_repositories_overlay(project_root).map_err(|e| eyre!(e))?;
+    let overlay = crate::update::read_repositories_overlay(project_root).map_err(|e| eyre!(e))?;
     let repos =
         crate::update::read_repositories(&composer_json, Repo::packagist(), &auth, &overlay)
             .map_err(|e| eyre!(e))?;
@@ -373,7 +375,8 @@ pub fn latest_versions(
         // First repo that carries the package wins (Composer repository
         // priority order). Aggregate that repo's stable + dev versions.
         for (repo, protocol, table) in &probed {
-            let mut versions = fetch_versions(&client, paths, repo, protocol, table.as_ref(), name)?;
+            let mut versions =
+                fetch_versions(&client, paths, repo, protocol, table.as_ref(), name)?;
             if include_dev
                 && matches!(protocol, RepoProtocol::V2)
                 && let Some(md) =
@@ -409,7 +412,9 @@ fn fetch_versions(
         RepoProtocol::V1(disc) => {
             // `table` is always Some for a V1 protocol (built in
             // `latest_versions`); guard defensively.
-            let Some(table) = table else { return Ok(versions) };
+            let Some(table) = table else {
+                return Ok(versions);
+            };
             fetch_package_metadata_v1_optional(client, paths, repo, disc, table, name)?
         }
     };
@@ -462,7 +467,10 @@ mod tests {
 
         // Reverse: who depends on psr/log? acme/lib (case-insensitive lookup).
         let deps = g.dependents_of("PSR/Log");
-        assert_eq!(names(deps.iter().map(|(n, _)| *n).collect()), vec!["acme/lib"]);
+        assert_eq!(
+            names(deps.iter().map(|(n, _)| *n).collect()),
+            vec!["acme/lib"]
+        );
         assert_eq!(deps[0].1, "^3.0");
 
         // Platform packages aren't nodes but resolve to empty dependents.
@@ -490,7 +498,10 @@ mod tests {
 
         // Reverse edge reaches monolog via the virtual.
         let deps = g.dependents_of("monolog/monolog");
-        assert_eq!(names(deps.iter().map(|(n, _)| *n).collect()), vec!["acme/app"]);
+        assert_eq!(
+            names(deps.iter().map(|(n, _)| *n).collect()),
+            vec!["acme/app"]
+        );
         assert_eq!(deps[0].1, "^3.0");
     }
 

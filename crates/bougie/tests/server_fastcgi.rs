@@ -32,10 +32,14 @@ fn discover_installed_php() -> Option<(String, PathBuf)> {
 
     for home in candidates {
         let installs = home.join("installs");
-        let Ok(entries) = std::fs::read_dir(&installs) else { continue };
+        let Ok(entries) = std::fs::read_dir(&installs) else {
+            continue;
+        };
         for entry in entries.flatten() {
             let name = entry.file_name();
-            let Some(name_str) = name.to_str() else { continue };
+            let Some(name_str) = name.to_str() else {
+                continue;
+            };
             let fpm = entry.path().join("bin").join("php-fpm");
             if fpm.is_file() {
                 return Some((name_str.to_owned(), home));
@@ -53,7 +57,10 @@ fn wait_for_listening(stderr: &mut Box<dyn BufRead + Send>) -> String {
         if stderr.read_line(&mut line).unwrap() == 0 {
             continue;
         }
-        if let Some(rest) = line.find("http://").and_then(|i| line[i + 7..].split_whitespace().next()) {
+        if let Some(rest) = line
+            .find("http://")
+            .and_then(|i| line[i + 7..].split_whitespace().next())
+        {
             return rest.to_string();
         }
     }
@@ -100,10 +107,10 @@ impl ServerHandle {
             "--listen",
             "127.0.0.1:0",
         ])
-            .env("BOUGIE_HOME", bougie_home)
-            .env("BOUGIE_CACHE", env.cache_path())
-            .env("XDG_RUNTIME_DIR", runtime.path())
-            .env_remove("RUST_LOG");
+        .env("BOUGIE_HOME", bougie_home)
+        .env("BOUGIE_CACHE", env.cache_path())
+        .env("XDG_RUNTIME_DIR", runtime.path())
+        .env_remove("RUST_LOG");
         for (k, v) in extra {
             cmd.env(*k, *v);
         }
@@ -125,7 +132,13 @@ impl ServerHandle {
             }
             lines
         });
-        Self { child, addr, stderr: Some(stderr_thread), live_stderr, _runtime: runtime }
+        Self {
+            child,
+            addr,
+            stderr: Some(stderr_thread),
+            live_stderr,
+            _runtime: runtime,
+        }
     }
 
     fn live_stderr_contains(&self, needle: &str) -> bool {
@@ -168,9 +181,12 @@ impl ServerHandle {
     }
 }
 
-fn http(method: &str, url: &str, host: &str, body: Option<(&str, &[u8])>)
-    -> (u16, std::collections::HashMap<String, String>, Vec<u8>)
-{
+fn http(
+    method: &str,
+    url: &str,
+    host: &str,
+    body: Option<(&str, &[u8])>,
+) -> (u16, std::collections::HashMap<String, String>, Vec<u8>) {
     http_with_headers(method, url, host, &[], body)
 }
 
@@ -185,7 +201,9 @@ fn http_with_headers(
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .unwrap();
-    let mut req = client.request(method.parse().unwrap(), url).header("Host", host);
+    let mut req = client
+        .request(method.parse().unwrap(), url)
+        .header("Host", host);
     for (k, v) in extra {
         req = req.header(*k, *v);
     }
@@ -237,10 +255,17 @@ echo "BODY=" . file_get_contents('php://input') . "\n";
     let server = ServerHandle::spawn(&env, &cfg, &bougie_home);
 
     // GET front-controller fallthrough.
-    let (status, headers, body) =
-        http("GET", &server.url("/users/42?page=1"), "fcgi-test.bougie.run", None);
+    let (status, headers, body) = http(
+        "GET",
+        &server.url("/users/42?page=1"),
+        "fcgi-test.bougie.run",
+        None,
+    );
     assert_eq!(status, 200);
-    assert_eq!(headers.get("x-bougie-pool").map(String::as_str), Some("normal"));
+    assert_eq!(
+        headers.get("x-bougie-pool").map(String::as_str),
+        Some("normal")
+    );
     let body_str = String::from_utf8_lossy(&body);
     assert!(body_str.contains("METHOD=GET"));
     assert!(body_str.contains("SCRIPT=/index.php"));
@@ -283,10 +308,17 @@ fn xdebug_session_cookie_routes_to_xdebug_pool() {
     let server = ServerHandle::spawn(&env, &cfg, &bougie_home);
 
     // No cookie → normal pool.
-    let (status, headers, _) =
-        http("GET", &server.url("/index.php"), "xdebug-test.bougie.run", None);
+    let (status, headers, _) = http(
+        "GET",
+        &server.url("/index.php"),
+        "xdebug-test.bougie.run",
+        None,
+    );
     assert_eq!(status, 200);
-    assert_eq!(headers.get("x-bougie-pool").map(String::as_str), Some("normal"));
+    assert_eq!(
+        headers.get("x-bougie-pool").map(String::as_str),
+        Some("normal")
+    );
 
     // XDEBUG_SESSION cookie → xdebug pool.
     let (status, headers, _) = http_with_headers(
@@ -297,7 +329,10 @@ fn xdebug_session_cookie_routes_to_xdebug_pool() {
         None,
     );
     assert_eq!(status, 200);
-    assert_eq!(headers.get("x-bougie-pool").map(String::as_str), Some("xdebug"));
+    assert_eq!(
+        headers.get("x-bougie-pool").map(String::as_str),
+        Some("xdebug")
+    );
 
     // X-Bougie-Force-Xdebug header path too.
     let (status, headers, _) = http_with_headers(
@@ -308,14 +343,24 @@ fn xdebug_session_cookie_routes_to_xdebug_pool() {
         None,
     );
     assert_eq!(status, 200);
-    assert_eq!(headers.get("x-bougie-pool").map(String::as_str), Some("xdebug"));
+    assert_eq!(
+        headers.get("x-bougie-pool").map(String::as_str),
+        Some("xdebug")
+    );
 
     // Back to no cookie → still routes to the original normal pool
     // (both pools coexist; switching is per-request, no restart).
-    let (status, headers, _) =
-        http("GET", &server.url("/index.php"), "xdebug-test.bougie.run", None);
+    let (status, headers, _) = http(
+        "GET",
+        &server.url("/index.php"),
+        "xdebug-test.bougie.run",
+        None,
+    );
     assert_eq!(status, 200);
-    assert_eq!(headers.get("x-bougie-pool").map(String::as_str), Some("normal"));
+    assert_eq!(
+        headers.get("x-bougie-pool").map(String::as_str),
+        Some("normal")
+    );
 
     let _ = server.shutdown();
 }
@@ -455,7 +500,12 @@ fn preload_fatal_fails_fast_with_fpm_stderr() {
     let server = ServerHandle::spawn(&env, &cfg, &bougie_home);
 
     let start = Instant::now();
-    let (s, _, body) = http("GET", &server.url("/index.php"), "preload-boom.bougie.run", None);
+    let (s, _, body) = http(
+        "GET",
+        &server.url("/index.php"),
+        "preload-boom.bougie.run",
+        None,
+    );
     let elapsed = start.elapsed();
     let body_str = String::from_utf8_lossy(&body);
     assert_eq!(s, 502, "body: {body_str}");
@@ -497,7 +547,12 @@ fn pool_ready_timeout_env_is_honored() {
         &[("BOUGIE_SERVER_POOL_READY_TIMEOUT_MS", "0")],
     );
 
-    let (s, _, body) = http("GET", &server.url("/index.php"), "impatient.bougie.run", None);
+    let (s, _, body) = http(
+        "GET",
+        &server.url("/index.php"),
+        "impatient.bougie.run",
+        None,
+    );
     let body_str = String::from_utf8_lossy(&body);
     assert_eq!(s, 502, "body: {body_str}");
     assert!(
@@ -656,7 +711,10 @@ fn xdebug_query_param_routes_to_xdebug_pool() {
         None,
     );
     assert_eq!(status, 200);
-    assert_eq!(headers.get("x-bougie-pool").map(String::as_str), Some("xdebug"));
+    assert_eq!(
+        headers.get("x-bougie-pool").map(String::as_str),
+        Some("xdebug")
+    );
 
     let _ = server.shutdown();
 }

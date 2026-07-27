@@ -24,7 +24,7 @@ pub mod redis;
 use super::catalog::{CatalogEntry, Tenancy};
 use super::tenants::Tenant;
 use bougie_paths::Paths;
-use eyre::{eyre, Result};
+use eyre::{Result, eyre};
 use std::path::Path;
 
 /// One-shot bootstrap hook. Runs after sandbox setup but before the
@@ -75,9 +75,7 @@ pub async fn provision(
         Tenancy::BougieServer => {
             bougie_server::provision(paths, tenants_path, tenant_name, project).await
         }
-        Tenancy::Rabbitmq => {
-            rabbitmq::provision(paths, tenants_path, tenant_name, project).await
-        }
+        Tenancy::Rabbitmq => rabbitmq::provision(paths, tenants_path, tenant_name, project).await,
         Tenancy::Mailpit => mailpit::provision(tenants_path, tenant_name, project).await,
         Tenancy::None => Err(eyre!("{} has no user-facing tenancy", entry.name)),
     }
@@ -99,7 +97,15 @@ pub async fn deprovision(
             mariadb::deprovision(paths, tenants_path, tenant_name, socket_path, purge).await
         }
         Tenancy::Mysql => {
-            mysql::deprovision(paths, version, tenants_path, tenant_name, socket_path, purge).await
+            mysql::deprovision(
+                paths,
+                version,
+                tenants_path,
+                tenant_name,
+                socket_path,
+                purge,
+            )
+            .await
         }
         Tenancy::Opensearch => {
             let port =
@@ -109,9 +115,7 @@ pub async fn deprovision(
         Tenancy::BougieServer => {
             bougie_server::deprovision(paths, tenants_path, tenant_name, purge).await
         }
-        Tenancy::Rabbitmq => {
-            rabbitmq::deprovision(paths, tenants_path, tenant_name, purge).await
-        }
+        Tenancy::Rabbitmq => rabbitmq::deprovision(paths, tenants_path, tenant_name, purge).await,
         Tenancy::Mailpit => mailpit::deprovision(tenants_path, tenant_name, purge).await,
         Tenancy::None => Ok(()),
     }

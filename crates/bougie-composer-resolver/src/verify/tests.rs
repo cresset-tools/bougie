@@ -73,7 +73,11 @@ fn content_hash_mismatch_is_reported() {
 #[test]
 fn missing_lock_is_reported() {
     let tmp = TempDir::new().unwrap();
-    std::fs::write(tmp.path().join("composer.json"), r#"{"name":"x","require":{}}"#).unwrap();
+    std::fs::write(
+        tmp.path().join("composer.json"),
+        r#"{"name":"x","require":{}}"#,
+    )
+    .unwrap();
     let VerifyOutcome::Invalid { reason } =
         verify_lock(tmp.path(), VerifyOptions::default()).unwrap()
     else {
@@ -117,7 +121,10 @@ fn version_violating_root_require_is_reported() {
     else {
         panic!("expected invalid");
     };
-    assert!(reason.contains("acme/foo"), "must name the package: {reason}");
+    assert!(
+        reason.contains("acme/foo"),
+        "must name the package: {reason}"
+    );
 }
 
 #[test]
@@ -148,7 +155,10 @@ fn missing_transitive_dep_is_reported() {
     else {
         panic!("expected invalid");
     };
-    assert!(reason.contains("acme/bar"), "must name the missing transitive: {reason}");
+    assert!(
+        reason.contains("acme/bar"),
+        "must name the missing transitive: {reason}"
+    );
 }
 
 #[test]

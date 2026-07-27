@@ -11,8 +11,8 @@ use std::process::ExitCode;
 use bougie_cli::OutputFormat;
 use bougie_composer::lockfile::Lock;
 use bougie_composer_resolver::funding;
-use bougie_output::output::{emit, Render};
-use eyre::{eyre, Context, Result};
+use bougie_output::output::{Render, emit};
+use eyre::{Context, Result, eyre};
 use serde::Serialize;
 
 #[derive(Debug, Serialize)]
@@ -60,11 +60,7 @@ impl Render for FundResult {
     clippy::needless_pass_by_value,
     reason = "wired from clap-parsed CLI; ownership crosses the boundary"
 )]
-pub fn run(
-    format: OutputFormat,
-    no_dev: bool,
-    working_dir: Option<PathBuf>,
-) -> Result<ExitCode> {
+pub fn run(format: OutputFormat, no_dev: bool, working_dir: Option<PathBuf>) -> Result<ExitCode> {
     let project_root = match working_dir {
         Some(p) => p,
         None => std::env::current_dir().wrap_err("reading current directory")?,
@@ -76,7 +72,8 @@ pub fn run(
             project_root.display()
         ));
     }
-    let lock = Lock::read(&lock_path).wrap_err_with(|| format!("reading {}", lock_path.display()))?;
+    let lock =
+        Lock::read(&lock_path).wrap_err_with(|| format!("reading {}", lock_path.display()))?;
 
     let pkgs: Vec<_> = if no_dev {
         lock.packages.iter().collect()
@@ -90,7 +87,11 @@ pub fn run(
         if funds.is_empty() {
             continue;
         }
-        let vendor = p.name.split_once('/').map_or(p.name.as_str(), |(v, _)| v).to_string();
+        let vendor = p
+            .name
+            .split_once('/')
+            .map_or(p.name.as_str(), |(v, _)| v)
+            .to_string();
         let urls = funds
             .iter()
             .map(|f| {
@@ -110,6 +111,12 @@ pub fn run(
         entries.sort_by(|a, b| a.package.cmp(&b.package));
     }
 
-    emit(format, &FundResult { schema_version: 1, vendors })?;
+    emit(
+        format,
+        &FundResult {
+            schema_version: 1,
+            vendors,
+        },
+    )?;
     Ok(ExitCode::SUCCESS)
 }

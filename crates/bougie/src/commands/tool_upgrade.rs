@@ -46,7 +46,11 @@ impl Render for ToolUpgradeResult {
             } else {
                 format!(" (php {} → {})", row.previous_php, row.current_php)
             };
-            let mode = if row.reinstalled { " (reinstalled)" } else { "" };
+            let mode = if row.reinstalled {
+                " (reinstalled)"
+            } else {
+                ""
+            };
             writeln!(w, "upgraded {}{php_note}{mode}", row.package)?;
         }
         for fail in &self.failed {
@@ -64,7 +68,12 @@ pub fn run(
 ) -> Result<ExitCode> {
     let paths = Paths::from_env()?;
     let resolve_lock: &bougie_tool::install::LockResolver = &|paths, project_root| {
-        super::composer_update::resolve_and_write_lock(paths, project_root, bougie_composer_resolver::ResolutionStrategy::Highest).map(|_| ())
+        super::composer_update::resolve_and_write_lock(
+            paths,
+            project_root,
+            bougie_composer_resolver::ResolutionStrategy::Highest,
+        )
+        .map(|_| ())
     };
     let php_installer = super::tool_callbacks::php_installer();
     let classifier = super::tool_callbacks::extension_classifier();
@@ -102,7 +111,9 @@ pub fn run(
         }
     } else {
         let Some(pkg) = package else {
-            return Err(eyre::eyre!("internal: upgrade dispatched without a package or --all"));
+            return Err(eyre::eyre!(
+                "internal: upgrade dispatched without a package or --all"
+            ));
         };
         let req = request::parse(pkg)?;
         let outcome = upgrade::upgrade_one(&ctx, &req.package(), reinstall)?;

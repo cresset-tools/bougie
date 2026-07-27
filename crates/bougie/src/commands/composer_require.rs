@@ -29,15 +29,15 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use bougie_cli::OutputFormat;
-use bougie_composer::lockfile::{apply_require_change, Lock, RequireChange};
+use bougie_composer::lockfile::{Lock, RequireChange, apply_require_change};
 use bougie_composer_resolver::latest_versions;
 use bougie_composer_resolver::verify::is_platform;
 use bougie_composer_resolver::{InstallOptions, PartialUpdate, PlatformIgnore, ResolutionStrategy};
-use bougie_output::output::{emit, Render};
+use bougie_output::output::{Render, emit};
 use bougie_paths::Paths;
 use composer_semver::stability::Stability;
 use composer_semver::version::Version;
-use eyre::{eyre, Context, Result};
+use eyre::{Context, Result, eyre};
 use serde::Serialize;
 use std::collections::HashMap;
 
@@ -160,9 +160,7 @@ fn is_adjacent_glob(s: &str) -> bool {
     let b = s.as_bytes();
     let is_word = |c: u8| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'/' | b'-');
     b.iter().enumerate().any(|(i, &c)| {
-        c == b'*'
-            && ((i > 0 && is_word(b[i - 1]))
-                || (i + 1 < b.len() && is_word(b[i + 1])))
+        c == b'*' && ((i > 0 && is_word(b[i - 1])) || (i + 1 < b.len() && is_word(b[i + 1])))
     })
 }
 
@@ -212,7 +210,10 @@ fn transform_version(pretty: &str) -> String {
 }
 
 #[derive(Debug, Serialize)]
-#[allow(clippy::struct_excessive_bools, reason = "mirrors Composer's independent require/remove flags")]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "mirrors Composer's independent require/remove flags"
+)]
 pub struct RequireResult {
     pub schema_version: u32,
     pub action: &'static str,
@@ -247,11 +248,21 @@ impl Render for RequireResult {
             }
         }
         if self.dry_run {
-            writeln!(w, "\n(dry run — composer.json, composer.lock, and vendor/ unchanged)")?;
+            writeln!(
+                w,
+                "\n(dry run — composer.json, composer.lock, and vendor/ unchanged)"
+            )?;
         } else if self.no_update {
-            writeln!(w, "\ncomposer.json updated (composer.lock and vendor/ untouched)")?;
+            writeln!(
+                w,
+                "\ncomposer.json updated (composer.lock and vendor/ untouched)"
+            )?;
         } else if let Some(p) = &self.lock_path {
-            let tail = if self.no_install { " (vendor/ untouched)" } else { "" };
+            let tail = if self.no_install {
+                " (vendor/ untouched)"
+            } else {
+                ""
+            };
             writeln!(w, "\nwrote {}{tail}", p.display())?;
         }
         Ok(())
@@ -397,8 +408,12 @@ fn run_add(
                 .ok_or_else(|| eyre!("no default constraint resolved for {}", p.name))?,
         };
         // Validate the constraint grammar (don't reparse — just check).
-        composer_semver::constraint::Constraint::parse(&constraint)
-            .map_err(|e| eyre!("invalid version constraint {constraint:?} for {}: {e}", p.name))?;
+        composer_semver::constraint::Constraint::parse(&constraint).map_err(|e| {
+            eyre!(
+                "invalid version constraint {constraint:?} for {}: {e}",
+                p.name
+            )
+        })?;
         items.push(RequireItem {
             name: p.name.clone(),
             constraint: Some(constraint.clone()),
@@ -425,8 +440,7 @@ fn run_add(
     }
 
     for change in &changes {
-        apply_require_change(&project_root, change)
-            .wrap_err("updating composer.json")?;
+        apply_require_change(&project_root, change).wrap_err("updating composer.json")?;
     }
 
     let lock_path = if no_update {
@@ -501,7 +515,15 @@ pub fn remove(
 
     if dry_run {
         return finish(
-            format, "remove", project_root, dev, true, no_update, no_install, items, None,
+            format,
+            "remove",
+            project_root,
+            dev,
+            true,
+            no_update,
+            no_install,
+            items,
+            None,
         );
     }
 
@@ -546,7 +568,15 @@ pub fn remove(
     };
 
     finish(
-        format, "remove", project_root, dev, false, no_update, no_install, items, lock_path,
+        format,
+        "remove",
+        project_root,
+        dev,
+        false,
+        no_update,
+        no_install,
+        items,
+        lock_path,
     )
 }
 
@@ -565,8 +595,8 @@ fn relock(
 ) -> Result<PathBuf> {
     let lock_path = project_root.join("composer.lock");
     if lock_path.is_file() {
-        let lock = Lock::read(&lock_path)
-            .wrap_err_with(|| format!("reading {}", lock_path.display()))?;
+        let lock =
+            Lock::read(&lock_path).wrap_err_with(|| format!("reading {}", lock_path.display()))?;
         let root_requires = read_root_require_names(project_root);
         let partial = PartialUpdate {
             names: names.to_vec(),
@@ -646,8 +676,8 @@ pub fn default_constraints_for(
             let versions = latest.get(&name.to_ascii_lowercase()).ok_or_else(|| {
                 eyre!("could not find package {name} in any configured repository")
             })?;
-            let best = best_stable(versions)
-                .ok_or_else(|| eyre!("no stable version of {name} found"))?;
+            let best =
+                best_stable(versions).ok_or_else(|| eyre!("no stable version of {name} found"))?;
             derive_constraint(&best, policy)
         };
         out.insert(name.clone(), constraint);
@@ -726,9 +756,8 @@ mod tests {
         let td = tempfile::TempDir::new().unwrap();
         let paths = Paths::new(td.path().to_path_buf(), td.path().join("cache"));
         let names = vec!["php".to_string(), "ext-gd".to_string()];
-        let map =
-            default_constraints_for(&paths, td.path(), &names, DefaultConstraint::LowerBound)
-                .unwrap();
+        let map = default_constraints_for(&paths, td.path(), &names, DefaultConstraint::LowerBound)
+            .unwrap();
         assert_eq!(map.get("php").map(String::as_str), Some("*"));
         assert_eq!(map.get("ext-gd").map(String::as_str), Some("*"));
     }
@@ -836,21 +865,33 @@ mod tests {
         assert_eq!(derive_constraint("3.5.2", DefaultConstraint::Caret), "^3.5");
         assert_eq!(derive_constraint("1.0.0", DefaultConstraint::Caret), "^1.0");
         // 0.x keeps the minor + patch.
-        assert_eq!(derive_constraint("0.3.2", DefaultConstraint::Caret), "^0.3.2");
+        assert_eq!(
+            derive_constraint("0.3.2", DefaultConstraint::Caret),
+            "^0.3.2"
+        );
         // Two-segment input normalizes to x.y.0.0 → x.y.
         assert_eq!(derive_constraint("3.5", DefaultConstraint::Caret), "^3.5");
     }
 
     #[test]
     fn lower_bound_policy() {
-        assert_eq!(derive_constraint("3.5.2", DefaultConstraint::LowerBound), ">=3.5");
-        assert_eq!(derive_constraint("0.3.2", DefaultConstraint::LowerBound), ">=0.3.2");
+        assert_eq!(
+            derive_constraint("3.5.2", DefaultConstraint::LowerBound),
+            ">=3.5"
+        );
+        assert_eq!(
+            derive_constraint("0.3.2", DefaultConstraint::LowerBound),
+            ">=0.3.2"
+        );
     }
 
     #[test]
     fn non_semver_falls_back_to_pretty() {
         // A dev/branch version isn't transformed; the pretty string
         // is used as-is (caret-prefixed).
-        assert_eq!(derive_constraint("dev-main", DefaultConstraint::Caret), "^dev-main");
+        assert_eq!(
+            derive_constraint("dev-main", DefaultConstraint::Caret),
+            "^dev-main"
+        );
     }
 }

@@ -17,7 +17,7 @@
 //! (`src/Composer/Package/Locker.php:89` in composer/composer).
 
 use crate::php_json::{self, Mode};
-use eyre::{eyre, Result, WrapErr};
+use eyre::{Result, WrapErr, eyre};
 use md5::{Digest, Md5};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Value};
@@ -53,9 +53,7 @@ where
         Value::Array(_) => Err(D::Error::custom(
             "expected a map or an empty array (the PHP empty-object quirk); got a non-empty array",
         )),
-        other => Err(D::Error::custom(format!(
-            "expected a map, got {other:?}",
-        ))),
+        other => Err(D::Error::custom(format!("expected a map, got {other:?}",))),
     }
 }
 
@@ -75,9 +73,7 @@ where
         Value::Array(_) => Err(D::Error::custom(
             "expected a map or an empty array (the PHP empty-object quirk); got a non-empty array",
         )),
-        other => Err(D::Error::custom(format!(
-            "expected a map, got {other:?}",
-        ))),
+        other => Err(D::Error::custom(format!("expected a map, got {other:?}",))),
     }
 }
 
@@ -227,10 +223,8 @@ fn hex_lower(bytes: &[u8]) -> String {
 /// Preserves object key order (`serde_json::preserve_order` feature)
 /// so subsequent re-serialisation mirrors the source layout.
 pub fn read_json_file(path: &Path) -> Result<Value> {
-    let bytes = std::fs::read(path)
-        .wrap_err_with(|| format!("reading {}", path.display()))?;
-    serde_json::from_slice(&bytes)
-        .map_err(|e| eyre!("parsing {}: {e}", path.display()))
+    let bytes = std::fs::read(path).wrap_err_with(|| format!("reading {}", path.display()))?;
+    serde_json::from_slice(&bytes).map_err(|e| eyre!("parsing {}: {e}", path.display()))
 }
 
 /// Write a JSON value to disk in the same format Composer's
@@ -271,8 +265,7 @@ pub fn canonical_readme() -> Vec<String> {
 /// hash the output, log it, or write atomically via a different
 /// strategy.
 pub fn serialize_lock(lock: &Lock) -> Result<Vec<u8>> {
-    let value = serde_json::to_value(lock)
-        .map_err(|e| eyre!("serializing lockfile: {e}"))?;
+    let value = serde_json::to_value(lock).map_err(|e| eyre!("serializing lockfile: {e}"))?;
     Ok(encode_for_disk(&value))
 }
 
@@ -289,9 +282,9 @@ pub fn write_lock(path: &Path, lock: &Lock) -> Result<()> {
 /// on POSIX; concurrent readers see either the old file or the new,
 /// never a torn read.
 fn write_json_bytes(path: &Path, bytes: &[u8]) -> Result<()> {
-    let parent = path.parent().ok_or_else(|| {
-        eyre!("path {} has no parent directory", path.display())
-    })?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| eyre!("path {} has no parent directory", path.display()))?;
     let dir = if parent.as_os_str().is_empty() {
         Path::new(".")
     } else {
@@ -424,7 +417,9 @@ pub fn require_remove(composer_json: &mut Value, key: &str, dev: bool) -> Result
         return Ok(false);
     };
     let Some(map) = entry.as_object_mut() else {
-        return Err(eyre!("composer.json `{map_key}` exists but is not an object"));
+        return Err(eyre!(
+            "composer.json `{map_key}` exists but is not an object"
+        ));
     };
     Ok(map.shift_remove(key).is_some())
 }
@@ -433,12 +428,7 @@ pub fn require_remove(composer_json: &mut Value, key: &str, dev: bool) -> Result
 /// `platform` / `platform-dev` map. Composer writes this when running
 /// `composer require`; replicating it keeps the lockfile in the shape
 /// `composer install` expects.
-pub fn lock_set_platform(
-    lock: &mut Value,
-    key: &str,
-    constraint: &str,
-    dev: bool,
-) -> Result<()> {
+pub fn lock_set_platform(lock: &mut Value, key: &str, constraint: &str, dev: bool) -> Result<()> {
     let obj = lock
         .as_object_mut()
         .ok_or_else(|| eyre!("composer.lock top level must be a JSON object"))?;
@@ -518,22 +508,21 @@ pub struct RequireApplied {
 /// Idempotent: `Add` of an already-present key updates the constraint
 /// (composer's behaviour); `Remove` of an absent key is a no-op with
 /// `change_applied = false`.
-pub fn apply_require_change(
-    project_root: &Path,
-    change: &RequireChange,
-) -> Result<RequireApplied> {
+pub fn apply_require_change(project_root: &Path, change: &RequireChange) -> Result<RequireApplied> {
     let composer_json_path = project_root.join("composer.json");
     let composer_lock_path = project_root.join("composer.lock");
 
     let mut composer_json = read_json_file(&composer_json_path)?;
     let change_applied = match change {
-        RequireChange::Add { key, constraint, dev } => {
+        RequireChange::Add {
+            key,
+            constraint,
+            dev,
+        } => {
             require_add(&mut composer_json, key, constraint, *dev)?;
             true
         }
-        RequireChange::Remove { key, dev } => {
-            require_remove(&mut composer_json, key, *dev)?
-        }
+        RequireChange::Remove { key, dev } => require_remove(&mut composer_json, key, *dev)?,
     };
     // Honor `config.sort-packages`: applied after the edit so the new
     // entry lands in the same position composer would have placed it.
@@ -550,7 +539,11 @@ pub fn apply_require_change(
     let lock_updated = if composer_lock_path.exists() {
         let mut lock = read_json_file(&composer_lock_path)?;
         match change {
-            RequireChange::Add { key, constraint, dev } => {
+            RequireChange::Add {
+                key,
+                constraint,
+                dev,
+            } => {
                 lock_set_platform(&mut lock, key, constraint, *dev)?;
             }
             RequireChange::Remove { key, dev } => {
@@ -662,7 +655,9 @@ fn repositories_add(composer_json: &mut Value, urls: &[String]) -> Result<usize>
 }
 
 /// The set of `url`s already declared among some repository entries.
-fn repo_urls_in<'a, I: Iterator<Item = &'a Value>>(entries: I) -> std::collections::HashSet<String> {
+fn repo_urls_in<'a, I: Iterator<Item = &'a Value>>(
+    entries: I,
+) -> std::collections::HashSet<String> {
     entries
         .filter_map(|e| e.get("url").and_then(Value::as_str).map(str::to_owned))
         .collect()
@@ -686,7 +681,10 @@ fn unique_repo_key(url: &str, existing: &serde_json::Map<String, Value>) -> Stri
     if !existing.contains_key(base) {
         return base.to_owned();
     }
-    (1..).map(|n| format!("{base}-{n}")).find(|k| !existing.contains_key(k)).unwrap()
+    (1..)
+        .map(|n| format!("{base}-{n}"))
+        .find(|k| !existing.contains_key(k))
+        .unwrap()
 }
 
 // -----------------------------------------------------------------
@@ -751,7 +749,11 @@ pub struct Lock {
     /// constraint string.
     #[serde(default, deserialize_with = "map_or_empty_array")]
     pub platform: BTreeMap<String, String>,
-    #[serde(rename = "platform-dev", default, deserialize_with = "map_or_empty_array")]
+    #[serde(
+        rename = "platform-dev",
+        default,
+        deserialize_with = "map_or_empty_array"
+    )]
     pub platform_dev: BTreeMap<String, String>,
     /// `platform-overrides` from composer.json, copied through.
     #[serde(
@@ -804,7 +806,11 @@ pub struct LockPackage {
     /// it). The install-time symlink-or-copy materializer reads them.
     /// Empty `Value::Null` for every non-path package, suppressed from
     /// output so only path packages carry the key.
-    #[serde(rename = "transport-options", default, skip_serializing_if = "Value::is_null")]
+    #[serde(
+        rename = "transport-options",
+        default,
+        skip_serializing_if = "Value::is_null"
+    )]
     pub transport_options: Value,
     /// Transitive runtime dependencies (package name → constraint).
     /// Composer writes this in a stable order; consumers that care
@@ -816,7 +822,11 @@ pub struct LockPackage {
     /// Transitive dev dependencies (rarely populated inside the lock —
     /// dev-only constraints land on the root package's
     /// `composer.json`, not on transitive packages).
-    #[serde(rename = "require-dev", default, deserialize_with = "map_or_empty_array")]
+    #[serde(
+        rename = "require-dev",
+        default,
+        deserialize_with = "map_or_empty_array"
+    )]
     pub require_dev: BTreeMap<String, String>,
     /// Package type: `"library"`, `"composer-plugin"`,
     /// `"metapackage"`, etc. Drives plugin-detection in the eventual
@@ -930,7 +940,11 @@ pub struct LockDist {
     /// level (see [`LockPackage::transport_options`]); this is kept
     /// only so a dist that happens to carry them still round-trips.
     /// Suppressed from output when empty so normal dists stay clean.
-    #[serde(rename = "transport-options", default, skip_serializing_if = "Value::is_null")]
+    #[serde(
+        rename = "transport-options",
+        default,
+        skip_serializing_if = "Value::is_null"
+    )]
     pub transport_options: Value,
 }
 
@@ -981,32 +995,41 @@ pub struct LockAutoload {
     /// shape. `bougie-autoloader` already handles both forms. (Empty
     /// maps arrive as `[]` — the PHP empty-object quirk; round-tripping
     /// normalizes them to `{}`, which Composer also accepts.)
-    #[serde(rename = "psr-4", default, deserialize_with = "value_map_or_empty_array")]
+    #[serde(
+        rename = "psr-4",
+        default,
+        deserialize_with = "value_map_or_empty_array"
+    )]
     pub psr_4: BTreeMap<String, Value>,
-    #[serde(rename = "psr-0", default, deserialize_with = "value_map_or_empty_array")]
+    #[serde(
+        rename = "psr-0",
+        default,
+        deserialize_with = "value_map_or_empty_array"
+    )]
     pub psr_0: BTreeMap<String, Value>,
     #[serde(default, deserialize_with = "string_list_lenient")]
     pub classmap: Vec<String>,
     #[serde(default, deserialize_with = "string_list_lenient")]
     pub files: Vec<String>,
-    #[serde(rename = "exclude-from-classmap", default, deserialize_with = "string_list_lenient")]
+    #[serde(
+        rename = "exclude-from-classmap",
+        default,
+        deserialize_with = "string_list_lenient"
+    )]
     pub exclude_from_classmap: Vec<String>,
 }
 
 impl Lock {
     /// Read and parse a `composer.lock` file from disk.
     pub fn read(path: &Path) -> Result<Self> {
-        let bytes = std::fs::read(path)
-            .wrap_err_with(|| format!("reading {}", path.display()))?;
-        Self::from_bytes(&bytes)
-            .wrap_err_with(|| format!("parsing {}", path.display()))
+        let bytes = std::fs::read(path).wrap_err_with(|| format!("reading {}", path.display()))?;
+        Self::from_bytes(&bytes).wrap_err_with(|| format!("parsing {}", path.display()))
     }
 
     /// Parse from raw bytes. Useful for tests and for callers that
     /// already have the lock in memory (e.g. after staging an edit).
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
-        serde_json::from_slice(bytes)
-            .map_err(|e| eyre!("composer.lock parse: {e}"))
+        serde_json::from_slice(bytes).map_err(|e| eyre!("composer.lock parse: {e}"))
     }
 
     /// Iterate over `packages` then `packages-dev`. Used by the
@@ -1031,7 +1054,10 @@ impl LockPackage {
     /// `composer.phar` for installs that involve plugin packages
     /// (which can register install-time hooks we don't run).
     pub fn is_composer_plugin(&self) -> bool {
-        matches!(self.package_type.as_deref(), Some("composer-plugin" | "composer-installer"))
+        matches!(
+            self.package_type.as_deref(),
+            Some("composer-plugin" | "composer-installer")
+        )
     }
 
     /// Is this a metapackage? Metapackages have no code and no `dist`
@@ -1096,7 +1122,11 @@ impl LockPackage {
                 &source.kind,
             )
         };
-        let first = if source.url.contains('%') { process(&source.url) } else { source.url.clone() };
+        let first = if source.url.contains('%') {
+            process(&source.url)
+        } else {
+            source.url.clone()
+        };
         let mut urls = vec![first];
         for mirror in &source.mirrors {
             let url = process(&mirror.url);
@@ -1153,7 +1183,11 @@ impl LockPackage {
         };
         // Composer only runs the dist's own URL through placeholder
         // substitution when it actually contains one — mirrors always.
-        let first = if dist.url.contains('%') { process(&dist.url) } else { dist.url.clone() };
+        let first = if dist.url.contains('%') {
+            process(&dist.url)
+        } else {
+            dist.url.clone()
+        };
         let mut urls = vec![first];
         for mirror in &dist.mirrors {
             let url = process(&mirror.url);
@@ -1278,10 +1312,9 @@ mod tests {
         // Composer's schema allows `license` to be a bare string; a
         // strict `Vec<String>` deserialize used to fail the whole
         // package with "invalid type: string, expected a sequence".
-        let string_form: LockPackage = serde_json::from_str(
-            r#"{"name": "acme/lib", "version": "1.0.0", "license": "MIT"}"#,
-        )
-        .expect("string license must parse");
+        let string_form: LockPackage =
+            serde_json::from_str(r#"{"name": "acme/lib", "version": "1.0.0", "license": "MIT"}"#)
+                .expect("string license must parse");
         assert_eq!(string_form.license, vec!["MIT".to_string()]);
 
         let array_form: LockPackage = serde_json::from_str(
@@ -1294,10 +1327,9 @@ mod tests {
         );
 
         // null and absent both normalize to empty rather than failing.
-        let null_form: LockPackage = serde_json::from_str(
-            r#"{"name": "acme/lib", "version": "1.0.0", "license": null}"#,
-        )
-        .expect("null license must parse");
+        let null_form: LockPackage =
+            serde_json::from_str(r#"{"name": "acme/lib", "version": "1.0.0", "license": null}"#)
+                .expect("null license must parse");
         assert!(null_form.license.is_empty());
 
         let absent: LockPackage =
@@ -1365,7 +1397,8 @@ mod tests {
         // must not affect the hash, otherwise editing local user prefs
         // would invalidate the lockfile.
         let base = br#"{"name":"a/b"}"#;
-        let with_config = br#"{"name":"a/b","config":{"sort-packages":true,"optimize-autoloader":false}}"#;
+        let with_config =
+            br#"{"name":"a/b","config":{"sort-packages":true,"optimize-autoloader":false}}"#;
         assert_eq!(
             content_hash(base).unwrap(),
             content_hash(with_config).unwrap()
@@ -1376,10 +1409,7 @@ mod tests {
     fn config_platform_participates() {
         let without = br#"{"name":"a/b"}"#;
         let with = br#"{"name":"a/b","config":{"platform":{"php":"8.3"}}}"#;
-        assert_ne!(
-            content_hash(without).unwrap(),
-            content_hash(with).unwrap()
-        );
+        assert_ne!(content_hash(without).unwrap(), content_hash(with).unwrap());
     }
 
     #[test]
@@ -1688,7 +1718,10 @@ mod tests {
         let got: Vec<&str> = repos.iter().map(|r| r["url"].as_str().unwrap()).collect();
         assert_eq!(
             got,
-            ["https://pkgs.example/acme/web", "https://pkgs.example/acme/api"]
+            [
+                "https://pkgs.example/acme/web",
+                "https://pkgs.example/acme/api"
+            ]
         );
         assert!(repos.iter().all(|r| r["type"] == "composer"));
 
@@ -1731,9 +1764,11 @@ mod tests {
         assert!(applied.composer_lock_path.is_none());
         assert!(!proj.join("composer.lock").exists());
         // composer.json was still updated.
-        assert!(std::fs::read_to_string(proj.join("composer.json"))
-            .unwrap()
-            .contains("ext-redis"));
+        assert!(
+            std::fs::read_to_string(proj.join("composer.json"))
+                .unwrap()
+                .contains("ext-redis")
+        );
     }
 
     // ---- sort-packages ------------------------------------------------------
@@ -1891,7 +1926,10 @@ mod tests {
         std::fs::write(proj.join("composer.json"), FIXTURE_DISK_COMPOSER_JSON).unwrap();
         let applied = apply_require_change(
             proj,
-            &RequireChange::Remove { key: "ext-redis".into(), dev: false },
+            &RequireChange::Remove {
+                key: "ext-redis".into(),
+                dev: false,
+            },
         )
         .unwrap();
         assert!(!applied.change_applied);
@@ -1992,7 +2030,10 @@ mod tests {
     #[test]
     fn lock_parses_packagist_shape() {
         let lock = Lock::from_bytes(FIXTURE_PACKAGIST_LOCK.as_bytes()).unwrap();
-        assert_eq!(lock.content_hash.as_deref(), Some("abc123def456abc123def456abc123de"));
+        assert_eq!(
+            lock.content_hash.as_deref(),
+            Some("abc123def456abc123def456abc123de")
+        );
         assert_eq!(lock.packages.len(), 2);
         assert_eq!(lock.packages_dev.len(), 1);
         assert_eq!(lock.minimum_stability.as_deref(), Some("stable"));
@@ -2000,7 +2041,10 @@ mod tests {
         assert!(!lock.prefer_lowest);
         assert_eq!(lock.plugin_api_version.as_deref(), Some("2.6.0"));
         assert_eq!(lock.platform.get("php").map(String::as_str), Some("^8.3"));
-        assert_eq!(lock.platform.get("ext-redis").map(String::as_str), Some("*"));
+        assert_eq!(
+            lock.platform.get("ext-redis").map(String::as_str),
+            Some("*")
+        );
     }
 
     #[test]
@@ -2014,7 +2058,10 @@ mod tests {
         let dist = monolog.dist.as_ref().expect("dist present");
         assert_eq!(dist.kind, "zip");
         assert!(dist.url.contains("Seldaek/monolog/zipball/"));
-        assert_eq!(dist.shasum.as_deref(), Some("0000000000000000000000000000000000000000"));
+        assert_eq!(
+            dist.shasum.as_deref(),
+            Some("0000000000000000000000000000000000000000")
+        );
         assert_eq!(
             dist.reference.as_deref(),
             Some("c915e2634718dbc8a4a15c61b0e62e7a44e14448")
@@ -2035,7 +2082,11 @@ mod tests {
         let plugin = &lock.packages[1];
 
         // psr-4: single dir as string.
-        let psr4 = monolog.autoload.psr_4.get("Monolog\\").expect("psr-4 entry");
+        let psr4 = monolog
+            .autoload
+            .psr_4
+            .get("Monolog\\")
+            .expect("psr-4 entry");
         assert_eq!(psr4.as_str(), Some("src/Monolog/"));
 
         // psr-0 + classmap + files + exclude-from-classmap, all on
@@ -2043,7 +2094,10 @@ mod tests {
         assert!(plugin.autoload.psr_0.contains_key("Acme\\Plugin\\"));
         assert_eq!(plugin.autoload.classmap, vec!["compat/"]);
         assert_eq!(plugin.autoload.files, vec!["bootstrap.php"]);
-        assert_eq!(plugin.autoload.exclude_from_classmap, vec!["compat/legacy/"]);
+        assert_eq!(
+            plugin.autoload.exclude_from_classmap,
+            vec!["compat/legacy/"]
+        );
         assert_eq!(plugin.bin, vec!["bin/acme-plugin"]);
     }
 
@@ -2060,7 +2114,10 @@ mod tests {
         let lock = Lock::from_bytes(FIXTURE_PACKAGIST_LOCK.as_bytes()).unwrap();
         let monolog = &lock.packages[0];
         assert_eq!(
-            monolog.provide.get("psr/log-implementation").map(String::as_str),
+            monolog
+                .provide
+                .get("psr/log-implementation")
+                .map(String::as_str),
             Some("3.0.0")
         );
         assert!(monolog.replace.is_empty());
@@ -2071,7 +2128,10 @@ mod tests {
     fn lock_all_packages_iterates_runtime_then_dev() {
         let lock = Lock::from_bytes(FIXTURE_PACKAGIST_LOCK.as_bytes()).unwrap();
         let names: Vec<&str> = lock.all_packages().map(|p| p.name.as_str()).collect();
-        assert_eq!(names, vec!["monolog/monolog", "acme/plugin", "phpunit/phpunit"]);
+        assert_eq!(
+            names,
+            vec!["monolog/monolog", "acme/plugin", "phpunit/phpunit"]
+        );
     }
 
     #[test]
@@ -2140,7 +2200,10 @@ mod tests {
         std::fs::write(&path, b"not json").unwrap();
         let err = Lock::read(&path).expect_err("must error");
         let msg = format!("{err:#}");
-        assert!(msg.contains("composer.lock"), "error must name the file: {msg}");
+        assert!(
+            msg.contains("composer.lock"),
+            "error must name the file: {msg}"
+        );
     }
 
     #[test]
@@ -2161,9 +2224,7 @@ mod tests {
                 dist: Some(LockDist {
                     kind: "zip".into(),
                     url: "https://example.test/acme-foo.zip".into(),
-                    shasum: Some(
-                        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
-                    ),
+                    shasum: Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into()),
                     reference: Some("abc1234".into()),
                     mirrors: Vec::new(),
                     transport_options: serde_json::Value::default(),
@@ -2414,7 +2475,9 @@ mod tests {
         // placeholder token — it must pass through untouched.
         assert_eq!(
             pkg.dist_urls(),
-            vec!["https://gitlab.example.io/api/v4/projects/x%2Fy/repository/archive.zip?sha=54423c75"],
+            vec![
+                "https://gitlab.example.io/api/v4/projects/x%2Fy/repository/archive.zip?sha=54423c75"
+            ],
         );
     }
 

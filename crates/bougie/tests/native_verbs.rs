@@ -63,7 +63,11 @@ fn add_bare_name_writes_lower_bound_of_latest_stable() {
         .arg(proj.path())
         .output()
         .unwrap();
-    assert!(out.status.success(), "stderr={}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     let cj = std::fs::read_to_string(proj.path().join("composer.json")).unwrap();
     // uv-style lower bound of the latest stable (2.3.0 → >=2.3), NOT a caret.
@@ -89,11 +93,21 @@ fn add_explicit_at_constraint_frozen_is_offline() {
         .arg(proj.path())
         .output()
         .unwrap();
-    assert!(out.status.success(), "stderr={}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     let cj = std::fs::read_to_string(proj.path().join("composer.json")).unwrap();
-    assert!(cj.contains("^1.2"), "explicit @ constraint stored verbatim: {cj}");
-    assert!(!proj.path().join("composer.lock").exists(), "--frozen: no lock");
+    assert!(
+        cj.contains("^1.2"),
+        "explicit @ constraint stored verbatim: {cj}"
+    );
+    assert!(
+        !proj.path().join("composer.lock").exists(),
+        "--frozen: no lock"
+    );
 }
 
 #[test]
@@ -108,7 +122,11 @@ fn add_dev_targets_require_dev() {
         .arg(proj.path())
         .output()
         .unwrap();
-    assert!(out.status.success(), "stderr={}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let cj = std::fs::read_to_string(proj.path().join("composer.json")).unwrap();
     assert!(cj.contains("require-dev"), "{cj}");
     assert!(cj.contains("phpunit/phpunit"), "{cj}");
@@ -133,7 +151,10 @@ fn add_empty_version_after_at_errors() {
 fn tree_renders_project_hierarchy() {
     let env = TestEnv::new();
     let proj = TempDir::new().unwrap();
-    write_composer_json(proj.path(), r#"{"name":"test/p","require":{"acme/lib":"^2.0"}}"#);
+    write_composer_json(
+        proj.path(),
+        r#"{"name":"test/p","require":{"acme/lib":"^2.0"}}"#,
+    );
     std::fs::write(
         proj.path().join("composer.lock"),
         r#"{"content-hash":"x","packages":[
@@ -143,8 +164,17 @@ fn tree_renders_project_hierarchy() {
     )
     .unwrap();
 
-    let out = env.bougie().args(["tree", "-d"]).arg(proj.path()).output().unwrap();
-    assert!(out.status.success(), "stderr={}", String::from_utf8_lossy(&out.stderr));
+    let out = env
+        .bougie()
+        .args(["tree", "-d"])
+        .arg(proj.path())
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let s = String::from_utf8_lossy(&out.stdout);
     assert!(s.contains("test/p"), "{s}");
     assert!(s.contains("acme/lib ^2.0"), "{s}");
@@ -174,14 +204,33 @@ fn tree_dedupes_shared_subtrees() {
     );
     std::fs::write(proj.path().join("composer.lock"), DIAMOND_LOCK).unwrap();
 
-    let out = env.bougie().args(["tree", "-d"]).arg(proj.path()).output().unwrap();
-    assert!(out.status.success(), "stderr={}", String::from_utf8_lossy(&out.stderr));
+    let out = env
+        .bougie()
+        .args(["tree", "-d"])
+        .arg(proj.path())
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let s = String::from_utf8_lossy(&out.stdout);
     // The deepest leaf is rendered exactly once — the second path to
     // shared/c collapses before reaching it.
-    assert_eq!(s.matches("leaf/d ^1.0").count(), 1, "leaf must render once: {s}");
-    assert!(s.contains("shared/c ^1.0 (*)"), "repeat collapses to (*): {s}");
-    assert!(s.contains("(*) Package tree already displayed"), "legend: {s}");
+    assert_eq!(
+        s.matches("leaf/d ^1.0").count(),
+        1,
+        "leaf must render once: {s}"
+    );
+    assert!(
+        s.contains("shared/c ^1.0 (*)"),
+        "repeat collapses to (*): {s}"
+    );
+    assert!(
+        s.contains("(*) Package tree already displayed"),
+        "legend: {s}"
+    );
 }
 
 #[test]
@@ -200,10 +249,18 @@ fn composer_show_tree_keeps_full_repeat() {
         .arg(proj.path())
         .output()
         .unwrap();
-    assert!(out.status.success(), "stderr={}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let s = String::from_utf8_lossy(&out.stdout);
     // Composer-exact: shared/c's subtree is repeated under both paths.
-    assert_eq!(s.matches("leaf/d ^1.0").count(), 2, "must repeat in full: {s}");
+    assert_eq!(
+        s.matches("leaf/d ^1.0").count(),
+        2,
+        "must repeat in full: {s}"
+    );
     assert!(!s.contains("(*)"), "no dedupe marker in compat mode: {s}");
 }
 
@@ -211,7 +268,10 @@ fn composer_show_tree_keeps_full_repeat() {
 fn outdated_reports_newer_version() {
     let env = TestEnv::new();
     let proj = TempDir::new().unwrap();
-    write_composer_json(proj.path(), r#"{"name":"test/p","require":{"acme/foo":"^2.0"}}"#);
+    write_composer_json(
+        proj.path(),
+        r#"{"name":"test/p","require":{"acme/foo":"^2.0"}}"#,
+    );
     std::fs::write(
         proj.path().join("composer.lock"),
         r#"{"content-hash":"x","packages":[
@@ -240,7 +300,10 @@ fn outdated_reports_newer_version() {
         .output()
         .unwrap();
     // --strict → non-zero when something is outdated.
-    assert!(!out.status.success(), "strict outdated should exit non-zero");
+    assert!(
+        !out.status.success(),
+        "strict outdated should exit non-zero"
+    );
     let s = String::from_utf8_lossy(&out.stdout);
     assert!(s.contains("acme/foo"), "{s}");
     assert!(s.contains("2.5.0"), "latest shown: {s}");
@@ -270,11 +333,18 @@ fn lock_already_in_sync_is_offline_noop() {
         .arg(proj.path())
         .output()
         .unwrap();
-    assert!(out.status.success(), "stderr={}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let s = String::from_utf8_lossy(&out.stdout);
     assert!(s.contains("already in sync"), "{s}");
     // Lock unchanged.
-    assert_eq!(std::fs::read_to_string(proj.path().join("composer.lock")).unwrap(), before);
+    assert_eq!(
+        std::fs::read_to_string(proj.path().join("composer.lock")).unwrap(),
+        before
+    );
 }
 
 #[test]
@@ -322,12 +392,22 @@ fn lock_constraint_change_reresolves_only_that_package() {
         .arg(proj.path())
         .output()
         .unwrap();
-    assert!(out.status.success(), "stderr={}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     let after = std::fs::read_to_string(proj.path().join("composer.lock")).unwrap();
     // acme/foo re-resolved to the highest in ^1.5 (1.6.0); acme/bar held.
-    assert!(after.contains("\"1.6.0\""), "foo should move to 1.6.0: {after}");
-    assert!(after.contains("acme/bar") && after.contains("\"2.0.0\""), "bar stays pinned: {after}");
+    assert!(
+        after.contains("\"1.6.0\""),
+        "foo should move to 1.6.0: {after}"
+    );
+    assert!(
+        after.contains("acme/bar") && after.contains("\"2.0.0\""),
+        "bar stays pinned: {after}"
+    );
     // never installs.
     assert!(!proj.path().join("vendor").exists());
 }
@@ -336,7 +416,10 @@ fn lock_constraint_change_reresolves_only_that_package() {
 fn lock_dry_run_writes_nothing() {
     let env = TestEnv::new();
     let proj = TempDir::new().unwrap();
-    write_composer_json(proj.path(), r#"{"name":"test/p","require":{"acme/foo":"^1.5"}}"#);
+    write_composer_json(
+        proj.path(),
+        r#"{"name":"test/p","require":{"acme/foo":"^1.5"}}"#,
+    );
     std::fs::write(
         proj.path().join("composer.lock"),
         r#"{"content-hash":"stale","packages":[
@@ -365,9 +448,16 @@ fn lock_dry_run_writes_nothing() {
         .arg(proj.path())
         .output()
         .unwrap();
-    assert!(out.status.success(), "stderr={}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     // Lock untouched by --dry-run.
-    assert_eq!(std::fs::read_to_string(proj.path().join("composer.lock")).unwrap(), before);
+    assert_eq!(
+        std::fs::read_to_string(proj.path().join("composer.lock")).unwrap(),
+        before
+    );
 }
 
 #[test]
@@ -385,7 +475,11 @@ fn remove_frozen_drops_entry() {
         .arg(proj.path())
         .output()
         .unwrap();
-    assert!(out.status.success(), "stderr={}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let cj = std::fs::read_to_string(proj.path().join("composer.json")).unwrap();
     assert!(!cj.contains("acme/foo"), "{cj}");
     assert!(cj.contains("acme/bar"), "{cj}");

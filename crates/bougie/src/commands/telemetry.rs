@@ -6,11 +6,11 @@
 //! from plain shell; see `bougie_paths::telemetry_mode_file`.
 
 use bougie_cli::{OutputFormat, TelemetryCommand};
-use bougie_output::output::{emit, Render};
+use bougie_output::output::{Render, emit};
 use bougie_paths::Paths;
 use bougie_telemetry::clock::UtcHour;
 use bougie_telemetry::spool::Spool;
-use bougie_telemetry::{ids, mode, Mode};
+use bougie_telemetry::{Mode, ids, mode};
 use eyre::{Result, WrapErr};
 use serde::Serialize;
 use std::io::{self, Write};
@@ -64,7 +64,10 @@ impl Render for StatusResult {
             self.spool_dir.display()
         )?;
         if self.mode == "off" && self.source == "unset" {
-            writeln!(w, "hint:       enable with `bougie telemetry on` (details: TELEMETRY.md)")?;
+            writeln!(
+                w,
+                "hint:       enable with `bougie telemetry on` (details: TELEMETRY.md)"
+            )?;
         }
         Ok(())
     }
@@ -109,7 +112,10 @@ impl Render for SetResult {
                 // everywhere.
                 writeln!(w, "{}", bougie_telemetry::prompt::DISCLOSURE)?;
                 writeln!(w)?;
-                writeln!(w, "telemetry is on — anonymous usage events upload in batches.")?;
+                writeln!(
+                    w,
+                    "telemetry is on — anonymous usage events upload in batches."
+                )?;
                 writeln!(w, "  inspect anytime:  bougie telemetry log")?;
             }
             "local" => {
@@ -119,7 +125,10 @@ impl Render for SetResult {
                 )?;
             }
             _ => {
-                writeln!(w, "telemetry is off. Enable later with: bougie telemetry on")?;
+                writeln!(
+                    w,
+                    "telemetry is off. Enable later with: bougie telemetry on"
+                )?;
             }
         }
         Ok(())
@@ -130,15 +139,18 @@ fn set_mode(format: OutputFormat, mode: Mode) -> Result<ExitCode> {
     let config_dir = bougie_paths::config_dir()?;
     let path = bougie_paths::telemetry_mode_file()?;
     let date = UtcHour::now().date();
-    mode::write_file(&path, mode, &date)
-        .wrap_err_with(|| format!("writing {}", path.display()))?;
+    mode::write_file(&path, mode, &date).wrap_err_with(|| format!("writing {}", path.display()))?;
     let install_id = match mode {
         // Turning on is the consent moment — mint the anonymous id.
         Mode::On => ids::read_or_mint(&config_dir),
         _ => ids::read(&config_dir),
     };
-    let result =
-        SetResult { schema_version: 1, mode: mode.as_str(), mode_file: path, install_id };
+    let result = SetResult {
+        schema_version: 1,
+        mode: mode.as_str(),
+        mode_file: path,
+        install_id,
+    };
     emit(format, &result)?;
     Ok(ExitCode::SUCCESS)
 }
@@ -171,7 +183,11 @@ fn log(format: OutputFormat, lines: usize) -> Result<ExitCode> {
         .iter()
         .filter_map(|l| serde_json::from_str(l).ok())
         .collect();
-    let result = LogResult { schema_version: 1, events, raw };
+    let result = LogResult {
+        schema_version: 1,
+        events,
+        raw,
+    };
     emit(format, &result)?;
     Ok(ExitCode::SUCCESS)
 }
@@ -209,8 +225,11 @@ fn reset(format: OutputFormat) -> Result<ExitCode> {
         Mode::On => ids::mint(&config_dir),
         _ => None,
     };
-    let result =
-        ResetResult { schema_version: 1, install_id, spool_dir: spool.dir().to_path_buf() };
+    let result = ResetResult {
+        schema_version: 1,
+        install_id,
+        spool_dir: spool.dir().to_path_buf(),
+    };
     emit(format, &result)?;
     Ok(ExitCode::SUCCESS)
 }

@@ -33,14 +33,12 @@ pub const MARIADB_TARBALL: &str = "mariadb-11.4.4";
 // runner triple gets added (musl, x86_64-apple-darwin), thread it
 // through here.
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-const BLOB_URL: &str =
-    "https://blobs.bougie.tools/blobs/0b/0b46049fea5e057fc23d639225623fb36a6a7d52969d351823d883f409e4bb1f";
+const BLOB_URL: &str = "https://blobs.bougie.tools/blobs/0b/0b46049fea5e057fc23d639225623fb36a6a7d52969d351823d883f409e4bb1f";
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 const BLOB_SHA256: &str = "0b46049fea5e057fc23d639225623fb36a6a7d52969d351823d883f409e4bb1f";
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-const BLOB_URL: &str =
-    "https://blobs.bougie.tools/blobs/98/98d449051d2e1e155c037e1c03c0aaa34693c5927c0601156eae64e7ead0f1f0";
+const BLOB_URL: &str = "https://blobs.bougie.tools/blobs/98/98d449051d2e1e155c037e1c03c0aaa34693c5927c0601156eae64e7ead0f1f0";
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 const BLOB_SHA256: &str = "98d449051d2e1e155c037e1c03c0aaa34693c5927c0601156eae64e7ead0f1f0";
 
@@ -89,7 +87,10 @@ fn ensure_blob_cached() -> PathBuf {
         return blob_path;
     }
 
-    eprintln!("[mariadb_fixture] downloading {BLOB_URL} -> {}", blob_path.display());
+    eprintln!(
+        "[mariadb_fixture] downloading {BLOB_URL} -> {}",
+        blob_path.display()
+    );
     let client = reqwest::blocking::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(15))
         .timeout(std::time::Duration::from_mins(5))
@@ -131,7 +132,9 @@ fn test_cache_root() -> PathBuf {
 }
 
 fn verify_sha256(path: &Path) -> bool {
-    let Ok(mut f) = fs::File::open(path) else { return false };
+    let Ok(mut f) = fs::File::open(path) else {
+        return false;
+    };
     let mut hasher = Sha256::new();
     let mut buf = vec![0u8; 64 * 1024];
     loop {

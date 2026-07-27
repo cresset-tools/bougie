@@ -1,16 +1,16 @@
 use bougie_cli::OutputFormat;
 use bougie_errors::BougieError;
+use bougie_fs::store::{install_dir, list_installed};
 use bougie_index::{
     build_verifier,
     fetch::{fetch_root, fetch_section},
 };
-use bougie_installer::install::{host_to_dirname, DEFAULT_INDEX_URL};
-use bougie_output::list_format::{write_row, KeyParts, Suffix};
-use bougie_output::output::{emit, Render};
+use bougie_installer::install::{DEFAULT_INDEX_URL, host_to_dirname};
+use bougie_output::list_format::{KeyParts, Suffix, write_row};
+use bougie_output::output::{Render, emit};
 use bougie_paths::Paths;
-use bougie_version::request::{parse_request, Flavor, Request, VersionLike};
-use bougie_fs::store::{install_dir, list_installed};
 use bougie_platform::target::Triple;
+use bougie_version::request::{Flavor, Request, VersionLike, parse_request};
 use bougie_version::version::{PartialVersion, Version};
 use eyre::Result;
 use serde::Serialize;
@@ -57,11 +57,12 @@ impl Render for ListResult {
             return Ok(());
         }
         let host = Triple::detect().ok().map(|t| t.to_string());
-        let multi_target = self
+        let multi_target = self.items.iter().any(|r| Some(&r.target) != host.as_ref());
+        let keys: Vec<KeyParts<'_>> = self
             .items
             .iter()
-            .any(|r| Some(&r.target) != host.as_ref());
-        let keys: Vec<KeyParts<'_>> = self.items.iter().map(|r| row_key(r, multi_target)).collect();
+            .map(|r| row_key(r, multi_target))
+            .collect();
         let pad = keys.iter().map(KeyParts::plain_len).max().unwrap_or(0);
         for (row, key) in self.items.iter().zip(keys.iter()) {
             let suffix = match (&row.path, &row.url) {
@@ -105,10 +106,7 @@ pub fn run(format: OutputFormat, opts: Options<'_>) -> Result<ExitCode> {
     let paths = Paths::from_env()?;
     let host = Triple::detect()?;
     let host_str = host.to_string();
-    let request = opts
-        .request
-        .map(parse_request)
-        .transpose()?;
+    let request = opts.request.map(parse_request).transpose()?;
 
     let mut rows: Vec<Row> = Vec::new();
 
@@ -186,7 +184,10 @@ pub fn run(format: OutputFormat, opts: Options<'_>) -> Result<ExitCode> {
             .then_with(|| a.target.cmp(&b.target))
     });
 
-    let result = ListResult { schema_version: 1, items: rows };
+    let result = ListResult {
+        schema_version: 1,
+        items: rows,
+    };
     emit(format, &result)?;
     Ok(ExitCode::SUCCESS)
 }
@@ -292,7 +293,11 @@ fn matches_request(row: &Row, req: &Request) -> bool {
                 ),
             }
         }
-        Request::FullTag { version, target, flavor } => {
+        Request::FullTag {
+            version,
+            target,
+            flavor,
+        } => {
             if &row.target != target {
                 return false;
             }
@@ -343,8 +348,7 @@ fn collapse_to_latest_per_minor(rows: Vec<Row>) -> Vec<Row> {
         let key = (v.major, v.minor, row.flavor.clone(), row.target.clone());
         match latest.get(&key) {
             Some(existing) => {
-                let existing_v: Version =
-                    existing.version.parse().unwrap_or(Version::new(0, 0, 0));
+                let existing_v: Version = existing.version.parse().unwrap_or(Version::new(0, 0, 0));
                 if v > existing_v {
                     latest.insert(key, row);
                 }
@@ -391,5 +395,10 @@ fn parse_triple(s: &str) -> Option<Triple> {
     } else {
         None
     };
-    Some(Triple { arch, vendor, os, env })
+    Some(Triple {
+        arch,
+        vendor,
+        os,
+        env,
+    })
 }

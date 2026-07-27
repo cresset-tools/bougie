@@ -32,15 +32,17 @@ use std::path::{Path, PathBuf};
 use rayon::prelude::*;
 
 use crate::collect::{
-    build_classmap_tasks, canonical, installed_versions_row, strip_leading_slash, task_path_expr,
-    ClassmapEntry, Entry, FileEntry, Task,
+    ClassmapEntry, Entry, FileEntry, Task, build_classmap_tasks, canonical, installed_versions_row,
+    strip_leading_slash, task_path_expr,
 };
 use crate::emit;
 use crate::installed;
 use crate::lock::{self, RootManifest};
 use crate::scan::{self, ExcludePatterns, NamespaceFilter, ScanWarning};
 use crate::vendored;
-use crate::{format_relative_path, random_hex_chars, write_atomic, DumpError, DumpRequest, PsrWarning};
+use crate::{
+    DumpError, DumpRequest, PsrWarning, format_relative_path, random_hex_chars, write_atomic,
+};
 
 /// Per-task live state. `task` is the immutable scan descriptor.
 /// `per_file` maps a file's path (relative to `task.install_abs`) to
@@ -332,14 +334,8 @@ impl Autoloader {
 
         write_atomic(
             &composer_dir.join("autoload_static.php"),
-            emit::static_loader::emit(
-                &self.suffix,
-                &self.psr4,
-                &self.psr0,
-                &classmap,
-                &self.files,
-            )
-            .as_bytes(),
+            emit::static_loader::emit(&self.suffix, &self.psr4, &self.psr0, &classmap, &self.files)
+                .as_bytes(),
         )?;
 
         vendored::write_runtime_files(&composer_dir, write_atomic)?;
@@ -388,7 +384,8 @@ impl Autoloader {
                 &self.exclude_default
             };
             let rel = canon
-                .strip_prefix(&self.tasks[i].task.install_abs).map_or_else(|_| canon.clone(), Path::to_path_buf);
+                .strip_prefix(&self.tasks[i].task.install_abs)
+                .map_or_else(|_| canon.clone(), Path::to_path_buf);
 
             let new_classes = scan::scan_one(&canon, &self.tasks[i].task.filter, exclude);
             let state = &mut self.tasks[i];
@@ -652,9 +649,9 @@ fn has_php_ext(p: &Path) -> bool {
 /// path-component scan for `generated`, matching `generated/` and
 /// `generated/code/...`.
 fn is_volatile_scan_root(scan_root: &Path) -> bool {
-    scan_root.components().any(|c| {
-        matches!(c, std::path::Component::Normal(n) if n.eq_ignore_ascii_case("generated"))
-    })
+    scan_root.components().any(
+        |c| matches!(c, std::path::Component::Normal(n) if n.eq_ignore_ascii_case("generated")),
+    )
 }
 
 /// Hash of the root manifest's autoload block — covers psr-4, psr-0,
@@ -819,4 +816,3 @@ fn canonicalize_deleted(p: &Path) -> PathBuf {
     }
     p.to_path_buf()
 }
-

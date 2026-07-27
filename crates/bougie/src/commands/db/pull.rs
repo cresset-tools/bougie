@@ -126,7 +126,15 @@ pub fn run(_format: OutputFormat, args: DbPullArgs) -> Result<ExitCode> {
     let (digest, size, path) = download_snapshot(&url, &token, &snap_dir)
         .wrap_err_with(|| format!("pulling the snapshot from {url}"))?;
 
-    write_pointer(&paths, &project_root, &repo_spec, &env, &profile, &digest, &path)?;
+    write_pointer(
+        &paths,
+        &project_root,
+        &repo_spec,
+        &env,
+        &profile,
+        &digest,
+        &path,
+    )?;
 
     println!(
         "bougie db pull: cached {} ({}, sha256 {digest})",
@@ -178,9 +186,7 @@ fn default_profile() -> String {
 pub(crate) fn parse_repo(spec: &str) -> Result<(String, String)> {
     let mut parts = spec.splitn(2, '/');
     match (parts.next(), parts.next()) {
-        (Some(org), Some(repo))
-            if !org.is_empty() && !repo.is_empty() && !repo.contains('/') =>
-        {
+        (Some(org), Some(repo)) if !org.is_empty() && !repo.is_empty() && !repo.contains('/') => {
             Ok((org.to_string(), repo.to_string()))
         }
         _ => Err(eyre!(
@@ -241,7 +247,8 @@ fn download_snapshot(url: &str, token: &str, snap_dir: &Path) -> Result<(String,
             break;
         }
         hasher.update(&buf[..n]);
-        tmp.write_all(&buf[..n]).wrap_err("writing the snapshot to cache")?;
+        tmp.write_all(&buf[..n])
+            .wrap_err("writing the snapshot to cache")?;
         size += n as u64;
     }
     tmp.flush().wrap_err("flushing the snapshot to cache")?;
@@ -285,7 +292,9 @@ fn write_pointer(
 /// was cleared). Carries the digest so `bougie db seed` can record what it
 /// loaded. Read by `bougie db seed` when given no `--from`.
 pub(crate) fn pulled_snapshot(paths: &Paths, project_root: &Path) -> Option<PulledSnapshot> {
-    let file = paths.project_state_dir(project_root).join("pulled-snapshot.json");
+    let file = paths
+        .project_state_dir(project_root)
+        .join("pulled-snapshot.json");
     let bytes = fs::read(&file).ok()?;
     let record: PulledSnapshot = serde_json::from_slice(&bytes).ok()?;
     Path::new(&record.path).is_file().then_some(record)

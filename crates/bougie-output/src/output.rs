@@ -88,9 +88,7 @@ pub fn emit_paged<R: Render>(format: OutputFormat, result: &R) -> Result<()> {
     let args: Vec<&str> = parts.collect();
 
     let mut child_cmd = std::process::Command::new(cmd);
-    child_cmd
-        .args(&args)
-        .stdin(std::process::Stdio::piped());
+    child_cmd.args(&args).stdin(std::process::Stdio::piped());
     // Match git's defaults: quit-if-one-screen, raw-control-chars,
     // no-init. Only set LESS if the user hasn't already.
     if std::env::var_os("LESS").is_none() {
@@ -127,11 +125,7 @@ pub fn emit_paged<R: Render>(format: OutputFormat, result: &R) -> Result<()> {
     Ok(())
 }
 
-fn write_result<W: Write, R: Render>(
-    w: &mut W,
-    format: OutputFormat,
-    result: &R,
-) -> Result<()> {
+fn write_result<W: Write, R: Render>(w: &mut W, format: OutputFormat, result: &R) -> Result<()> {
     match format {
         OutputFormat::Text => result.render_text(w)?,
         OutputFormat::JsonV1 => {
@@ -202,7 +196,10 @@ fn write_event_text<W: Write>(w: &mut W, event: &Event<'_>) -> io::Result<()> {
 }
 
 fn write_event_json<W: Write>(w: &mut W, event: &Event<'_>) -> io::Result<()> {
-    let envelope = EventEnvelope { schema_version: 1, event };
+    let envelope = EventEnvelope {
+        schema_version: 1,
+        event,
+    };
     serde_json::to_writer(&mut *w, &envelope)?;
     writeln!(w)
 }

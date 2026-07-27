@@ -10,11 +10,11 @@ use std::process::ExitCode;
 use bougie_cli::OutputFormat;
 use bougie_composer::lockfile::{Lock, LockPackage};
 use bougie_composer_resolver::latest_versions;
-use bougie_output::output::{emit, Render};
+use bougie_output::output::{Render, emit};
 use bougie_paths::Paths;
 use composer_semver::stability::Stability;
 use composer_semver::version::Version;
-use eyre::{eyre, Context, Result};
+use eyre::{Context, Result, eyre};
 use serde::Serialize;
 
 /// Severity of a version gap, used by the `--major/minor/patch-only`
@@ -28,7 +28,10 @@ pub enum Bump {
 }
 
 #[derive(Debug, Clone)]
-#[allow(clippy::struct_excessive_bools, reason = "mirrors Composer's independent outdated flags")]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "mirrors Composer's independent outdated flags"
+)]
 pub struct OutdatedOptions {
     pub packages: Vec<String>,
     pub direct: bool,
@@ -132,7 +135,8 @@ pub fn run(format: OutputFormat, opts: OutdatedOptions) -> Result<ExitCode> {
             project_root.display()
         ));
     }
-    let lock = Lock::read(&lock_path).wrap_err_with(|| format!("reading {}", lock_path.display()))?;
+    let lock =
+        Lock::read(&lock_path).wrap_err_with(|| format!("reading {}", lock_path.display()))?;
 
     let mut packages: Vec<&LockPackage> = if opts.no_dev {
         lock.packages.iter().collect()
@@ -147,7 +151,11 @@ pub fn run(format: OutputFormat, opts: OutdatedOptions) -> Result<ExitCode> {
     }
     // Positional package filters.
     if !opts.packages.is_empty() {
-        packages.retain(|p| opts.packages.iter().any(|n| n.eq_ignore_ascii_case(&p.name)));
+        packages.retain(|p| {
+            opts.packages
+                .iter()
+                .any(|n| n.eq_ignore_ascii_case(&p.name))
+        });
     }
 
     let names: Vec<String> = packages.iter().map(|p| p.name.clone()).collect();
@@ -197,7 +205,13 @@ pub fn run(format: OutputFormat, opts: OutdatedOptions) -> Result<ExitCode> {
     rows.sort_by(|a, b| a.name.cmp(&b.name));
 
     let any = !rows.is_empty();
-    emit(format, &OutdatedResult { schema_version: 1, rows })?;
+    emit(
+        format,
+        &OutdatedResult {
+            schema_version: 1,
+            rows,
+        },
+    )?;
     Ok(if opts.strict && any {
         ExitCode::FAILURE
     } else {
@@ -213,7 +227,11 @@ fn root_require_names(project_root: &std::path::Path, include_dev: bool) -> Vec<
         return Vec::new();
     };
     let mut names = Vec::new();
-    let keys: &[&str] = if include_dev { &["require", "require-dev"] } else { &["require"] };
+    let keys: &[&str] = if include_dev {
+        &["require", "require-dev"]
+    } else {
+        &["require"]
+    };
     for key in keys {
         if let Some(obj) = json.get(*key).and_then(serde_json::Value::as_object) {
             names.extend(obj.keys().cloned());

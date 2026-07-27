@@ -1,6 +1,6 @@
 use bougie_cli::OutputFormat;
 use bougie_config::write_bougie_toml_skeleton;
-use bougie_output::output::{emit, Render};
+use bougie_output::output::{Render, emit};
 use eyre::{Result, WrapErr};
 use serde::Serialize;
 use std::io::{self, Write};
@@ -16,7 +16,12 @@ pub struct PinResult {
 
 impl Render for PinResult {
     fn render_text(&self, w: &mut dyn Write) -> io::Result<()> {
-        writeln!(w, "pinned php to {} in {}", self.written, self.target.display())
+        writeln!(
+            w,
+            "pinned php to {} in {}",
+            self.written,
+            self.target.display()
+        )
     }
 }
 
@@ -27,19 +32,15 @@ pub enum PinTarget {
     Composer,
 }
 
-pub fn run(
-    format: OutputFormat,
-        request: &str,
-    pin_target: PinTarget,
-) -> Result<ExitCode> {
+pub fn run(format: OutputFormat, request: &str, pin_target: PinTarget) -> Result<ExitCode> {
     let project_root = std::env::current_dir()?;
     let toml_path = project_root.join("bougie.toml");
     let composer_path = project_root.join("composer.json");
 
     let dest = match (pin_target, toml_path.exists(), composer_path.exists()) {
-        (PinTarget::Toml, _, _)
-        | (PinTarget::Auto, true, _)
-        | (PinTarget::Auto, false, false) => Target::Toml(toml_path),
+        (PinTarget::Toml, _, _) | (PinTarget::Auto, true, _) | (PinTarget::Auto, false, false) => {
+            Target::Toml(toml_path)
+        }
         (PinTarget::Composer, _, true) | (PinTarget::Auto, false, true) => {
             Target::Composer(composer_path)
         }
@@ -47,7 +48,7 @@ pub fn run(
             return Err(eyre::eyre!(
                 "no composer.json in {}",
                 project_root.display()
-            ))
+            ));
         }
     };
 
@@ -88,8 +89,7 @@ enum Target {
 
 fn write_toml_pin(path: &std::path::Path, version: &str) -> Result<PathBuf> {
     let body = if path.exists() {
-        std::fs::read_to_string(path)
-            .wrap_err_with(|| format!("reading {}", path.display()))?
+        std::fs::read_to_string(path).wrap_err_with(|| format!("reading {}", path.display()))?
     } else {
         write_bougie_toml_skeleton()
     };
@@ -109,8 +109,8 @@ fn write_toml_pin(path: &std::path::Path, version: &str) -> Result<PathBuf> {
 }
 
 fn write_composer_pin(path: &std::path::Path, version: &str) -> Result<PathBuf> {
-    let body = std::fs::read_to_string(path)
-        .wrap_err_with(|| format!("reading {}", path.display()))?;
+    let body =
+        std::fs::read_to_string(path).wrap_err_with(|| format!("reading {}", path.display()))?;
     let mut v: serde_json::Value =
         serde_json::from_str(&body).wrap_err_with(|| format!("parsing {}", path.display()))?;
     let extra = v

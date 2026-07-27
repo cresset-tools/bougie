@@ -28,8 +28,17 @@ fn licenses_lists_each_package() {
     let proj = TempDir::new().unwrap();
     stage(proj.path(), COMPOSER_JSON, LOCK);
 
-    let out = env.bougie().args(["composer", "licenses", "-d"]).arg(proj.path()).output().unwrap();
-    assert!(out.status.success(), "stderr={}", String::from_utf8_lossy(&out.stderr));
+    let out = env
+        .bougie()
+        .args(["composer", "licenses", "-d"])
+        .arg(proj.path())
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let s = String::from_utf8_lossy(&out.stdout);
     assert!(s.contains("test/proj"), "{s}");
     assert!(s.contains("acme/lib") && s.contains("MIT"), "{s}");
@@ -69,7 +78,13 @@ fn licenses_json_format() {
         .unwrap();
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("valid JSON");
     assert_eq!(v.get("project").and_then(|p| p.as_str()), Some("test/proj"));
-    assert!(v.get("dependencies").and_then(|d| d.as_array()).unwrap().len() >= 3);
+    assert!(
+        v.get("dependencies")
+            .and_then(|d| d.as_array())
+            .unwrap()
+            .len()
+            >= 3
+    );
 }
 
 #[test]
@@ -78,7 +93,12 @@ fn fund_groups_by_vendor() {
     let proj = TempDir::new().unwrap();
     stage(proj.path(), COMPOSER_JSON, LOCK);
 
-    let out = env.bougie().args(["composer", "fund", "-d"]).arg(proj.path()).output().unwrap();
+    let out = env
+        .bougie()
+        .args(["composer", "fund", "-d"])
+        .arg(proj.path())
+        .output()
+        .unwrap();
     assert!(out.status.success());
     let s = String::from_utf8_lossy(&out.stdout);
     assert!(s.contains("acme"), "vendor group: {s}");
@@ -95,7 +115,12 @@ fn fund_empty_when_no_funding() {
     let lock = r#"{"content-hash":"x","packages":[{"name":"psr/log","version":"3.0.0"}],"packages-dev":[]}"#;
     stage(proj.path(), COMPOSER_JSON, lock);
 
-    let out = env.bougie().args(["composer", "fund", "-d"]).arg(proj.path()).output().unwrap();
+    let out = env
+        .bougie()
+        .args(["composer", "fund", "-d"])
+        .arg(proj.path())
+        .output()
+        .unwrap();
     let s = String::from_utf8_lossy(&out.stdout);
     assert!(s.contains("No funding links"), "{s}");
 }
@@ -106,7 +131,12 @@ fn status_reports_no_local_changes_for_dist_installs() {
     let proj = TempDir::new().unwrap();
     stage(proj.path(), COMPOSER_JSON, LOCK);
 
-    let out = env.bougie().args(["composer", "status", "-d"]).arg(proj.path()).output().unwrap();
+    let out = env
+        .bougie()
+        .args(["composer", "status", "-d"])
+        .arg(proj.path())
+        .output()
+        .unwrap();
     assert!(out.status.success());
     let s = String::from_utf8_lossy(&out.stdout);
     assert!(s.contains("No local changes"), "{s}");
@@ -122,8 +152,16 @@ fn status_lists_path_packages() {
     ],"packages-dev":[]}"#;
     stage(proj.path(), COMPOSER_JSON, lock);
 
-    let out = env.bougie().args(["composer", "status", "-d"]).arg(proj.path()).output().unwrap();
+    let out = env
+        .bougie()
+        .args(["composer", "status", "-d"])
+        .arg(proj.path())
+        .output()
+        .unwrap();
     let s = String::from_utf8_lossy(&out.stdout);
-    assert!(s.contains("acme/local"), "path-dist package should be listed: {s}");
+    assert!(
+        s.contains("acme/local"),
+        "path-dist package should be listed: {s}"
+    );
     assert!(s.contains("local path"), "{s}");
 }

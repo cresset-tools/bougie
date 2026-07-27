@@ -81,10 +81,9 @@ fn magento_default(composer_json: &str) -> Option<(Constraint, &'static str, Str
     let require = v.get("require").and_then(Value::as_object)?;
 
     // Try upstream Magento names first.
-    if let Some((pkg, raw)) =
-        ["magento/product-community-edition", "magento/magento2-base"]
-            .iter()
-            .find_map(|k| require.get(*k).and_then(Value::as_str).map(|s| (*k, s)))
+    if let Some((pkg, raw)) = ["magento/product-community-edition", "magento/magento2-base"]
+        .iter()
+        .find_map(|k| require.get(*k).and_then(Value::as_str).map(|s| (*k, s)))
     {
         let (major, minor, patch) = extract_first_version(raw)?;
         let php = magento_php_for(major, minor, patch)?;
@@ -97,10 +96,9 @@ fn magento_default(composer_json: &str) -> Option<(Constraint, &'static str, Str
     }
 
     // Fall through to Mage-OS fork names.
-    if let Some((pkg, raw)) =
-        ["mage-os/product-community-edition", "mage-os/magento2-base"]
-            .iter()
-            .find_map(|k| require.get(*k).and_then(Value::as_str).map(|s| (*k, s)))
+    if let Some((pkg, raw)) = ["mage-os/product-community-edition", "mage-os/magento2-base"]
+        .iter()
+        .find_map(|k| require.get(*k).and_then(Value::as_str).map(|s| (*k, s)))
     {
         let (major, minor, _patch) = extract_first_version(raw)?;
         let php = mageos_php_for(major, minor)?;
@@ -181,7 +179,11 @@ fn extract_first_version(s: &str) -> Option<(u64, u64, Option<u64>)> {
     if count < 2 {
         return None;
     }
-    Some((nums[0], nums[1], if count >= 3 { Some(nums[2]) } else { None }))
+    Some((
+        nums[0],
+        nums[1],
+        if count >= 3 { Some(nums[2]) } else { None },
+    ))
 }
 
 /// AND together `platform.php` and every locked package's `require.php`
@@ -476,8 +478,7 @@ mod tests {
 
     #[test]
     fn mageos_1x_picks_81_to_83() {
-        let composer =
-            r#"{"require":{"mage-os/product-community-edition":"1.0.0"}}"#;
+        let composer = r#"{"require":{"mage-os/product-community-edition":"1.0.0"}}"#;
         let (c, _raw, src) = magento_default(composer).unwrap();
         assert!(src.contains("mage-os/product-community-edition"));
         assert!(c.matches(&parses("8.1.10")));
@@ -489,8 +490,7 @@ mod tests {
 
     #[test]
     fn mageos_2x_picks_82_to_84() {
-        let composer =
-            r#"{"require":{"mage-os/product-community-edition":"2.0.0"}}"#;
+        let composer = r#"{"require":{"mage-os/product-community-edition":"2.0.0"}}"#;
         let (c, _raw, src) = magento_default(composer).unwrap();
         assert!(src.contains("2.0"));
         assert!(c.matches(&parses("8.2.10")));
@@ -502,8 +502,7 @@ mod tests {
 
     #[test]
     fn mageos_3x_picks_83_to_85() {
-        let composer =
-            r#"{"require":{"mage-os/product-community-edition":"3.0.0"}}"#;
+        let composer = r#"{"require":{"mage-os/product-community-edition":"3.0.0"}}"#;
         let (c, _raw, src) = magento_default(composer).unwrap();
         assert!(src.contains("3.0"));
         assert!(c.matches(&parses("8.3.5")));
@@ -514,8 +513,7 @@ mod tests {
 
     #[test]
     fn mageos_base_alias_works() {
-        let composer =
-            r#"{"require":{"mage-os/magento2-base":"~1.0.0"}}"#;
+        let composer = r#"{"require":{"mage-os/magento2-base":"~1.0.0"}}"#;
         let (c, _raw, src) = magento_default(composer).unwrap();
         assert!(src.contains("mage-os/magento2-base"));
         assert!(c.matches(&parses("8.1.20")));
@@ -523,8 +521,7 @@ mod tests {
 
     #[test]
     fn mageos_extensions_returns_recommended_set() {
-        let composer =
-            r#"{"require":{"mage-os/product-community-edition":"3.0.0"}}"#;
+        let composer = r#"{"require":{"mage-os/product-community-edition":"3.0.0"}}"#;
         let (exts, src) = magento_extensions(composer).unwrap();
         assert!(src.contains("3.0"));
         assert!(exts.contains(&"pdo_mysql"));

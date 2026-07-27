@@ -8,7 +8,6 @@ use macos_sandbox_sys::create_sandbox_with_parameters;
 
 #[test]
 fn deny_default_profile_initialises() {
-    let res =
-        create_sandbox_with_parameters("(version 1)\n(deny default)\n".to_string(), 0, &[]);
+    let res = create_sandbox_with_parameters("(version 1)\n(deny default)\n".to_string(), 0, &[]);
     assert!(res.is_ok(), "deny-default profile failed: {res:?}");
 }

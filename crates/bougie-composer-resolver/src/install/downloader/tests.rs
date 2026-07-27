@@ -67,7 +67,8 @@ fn build_fixture_tar_gz(top: &str) -> Vec<u8> {
             h.set_size(body.len() as u64);
             h.set_mode(0o644);
             h.set_cksum();
-            b.append_data(&mut h, format!("{top}/{name}"), body).unwrap();
+            b.append_data(&mut h, format!("{top}/{name}"), body)
+                .unwrap();
         }
         b.finish().unwrap();
     }
@@ -118,9 +119,9 @@ fn downloads_single_zip_and_extracts_with_strip_prefix() {
         strip_prefix: Some("acme-foo-abc1234"),
         vendor_dest: &vendor_dest,
         auth_header: None,
-            auth_header_name: None,
-            project_root: tmp.path(),
-            fallbacks: &[],
+        auth_header_name: None,
+        project_root: tmp.path(),
+        fallbacks: &[],
     }];
 
     fetch_and_extract_dists(&client, &paths, &dists, &bar).unwrap();
@@ -139,7 +140,11 @@ fn downloads_tar_dist_and_extracts_with_detected_prefix() {
     // Tar arm sniffs the codec.
     let tmp = TempDir::new().unwrap();
     let paths = paths_in(tmp.path());
-    let vendor_dest = tmp.path().join("vendor").join("mirasvit").join("module-email");
+    let vendor_dest = tmp
+        .path()
+        .join("vendor")
+        .join("mirasvit")
+        .join("module-email");
 
     let top = "mirasvit-module-email-abc1234";
     let body = build_fixture_tar_gz(top);
@@ -178,9 +183,15 @@ fn downloads_tar_dist_and_extracts_with_detected_prefix() {
 
     assert!(vendor_dest.join("composer.json").is_file());
     assert!(vendor_dest.join("src/Foo.php").is_file());
-    assert!(!vendor_dest.join(top).exists(), "wrapper dir should be stripped");
+    assert!(
+        !vendor_dest.join(top).exists(),
+        "wrapper dir should be stripped"
+    );
     let cached = paths.cache_composer_dist().join(format!("{hash}.tar"));
-    assert!(cached.is_file(), "tar dist should be cached under a .tar key");
+    assert!(
+        cached.is_file(),
+        "tar dist should be cached under a .tar key"
+    );
 }
 
 #[test]
@@ -290,8 +301,8 @@ fn all_candidates_failing_surfaces_candidate_count() {
         fallbacks: &fallbacks,
     }];
 
-    let err = fetch_and_extract_dists(&client, &paths, &dists, &bar)
-        .expect_err("every candidate 404s");
+    let err =
+        fetch_and_extract_dists(&client, &paths, &dists, &bar).expect_err("every candidate 404s");
     let msg = format!("{err:#}");
     assert!(
         msg.contains("all 2 candidate URLs failed"),
@@ -341,9 +352,9 @@ fn cache_hit_short_circuits_network() {
         strip_prefix: Some("acme-foo-deadbeef"),
         vendor_dest: &vendor_dest,
         auth_header: None,
-            auth_header_name: None,
-            project_root: tmp.path(),
-            fallbacks: &[],
+        auth_header_name: None,
+        project_root: tmp.path(),
+        fallbacks: &[],
     }];
 
     let outcomes = fetch_and_extract_dists(&client, &paths, &dists, &bar).unwrap();
@@ -386,9 +397,9 @@ fn hash_mismatch_aborts_install_cleanly() {
         strip_prefix: Some("acme-foo-aaaa"),
         vendor_dest: &vendor_dest,
         auth_header: None,
-            auth_header_name: None,
-            project_root: tmp.path(),
-            fallbacks: &[],
+        auth_header_name: None,
+        project_root: tmp.path(),
+        fallbacks: &[],
     }];
 
     let err = fetch_and_extract_dists(&client, &paths, &dists, &bar)
@@ -443,7 +454,12 @@ fn parallel_four_dists_share_one_bar() {
     let urls: Vec<String> = (0..4).map(|i| format!("{uri}/p{i}.zip")).collect();
     let names: Vec<String> = (0..4).map(|i| format!("acme/pkg{i}")).collect();
     let dests: Vec<PathBuf> = (0..4)
-        .map(|i| tmp.path().join("vendor").join("acme").join(format!("pkg{i}")))
+        .map(|i| {
+            tmp.path()
+                .join("vendor")
+                .join("acme")
+                .join(format!("pkg{i}"))
+        })
         .collect();
 
     let dists: Vec<DistRequest<'_>> = (0..4)
@@ -510,9 +526,9 @@ fn extract_strips_top_level_directory_via_auto_detect() {
         strip_prefix: None,
         vendor_dest: &vendor_dest,
         auth_header: None,
-            auth_header_name: None,
-            project_root: tmp.path(),
-            fallbacks: &[],
+        auth_header_name: None,
+        project_root: tmp.path(),
+        fallbacks: &[],
     }];
     let outcomes = fetch_and_extract_dists(&client, &paths, &dists, &bar).unwrap();
     assert_eq!(outcomes.len(), 1);
@@ -584,8 +600,8 @@ fn dist_request_auth_header_is_sent_on_get() {
         vendor_dest: &vendor_dest,
         auth_header: Some(auth),
         auth_header_name: None,
-            project_root: tmp.path(),
-            fallbacks: &[],
+        project_root: tmp.path(),
+        fallbacks: &[],
     }];
 
     fetch_and_extract_dists(&client, &paths, &dists, &bar)
@@ -634,9 +650,9 @@ fn dist_request_without_auth_fails_when_server_requires_it() {
         strip_prefix: Some("acme-foo-abc"),
         vendor_dest: &vendor_dest,
         auth_header: None,
-            auth_header_name: None,
-            project_root: tmp.path(),
-            fallbacks: &[],
+        auth_header_name: None,
+        project_root: tmp.path(),
+        fallbacks: &[],
     }];
 
     let err = fetch_and_extract_dists(&client, &paths, &dists, &bar)
@@ -686,7 +702,11 @@ fn rewrite_handles_org_scoped_repos() {
 fn local_artifact_dist_is_copied_and_extracted() {
     let tmp = TempDir::new().unwrap();
     let paths = paths_in(tmp.path());
-    let vendor_dest = tmp.path().join("vendor").join("vsourz").join("imagegallery");
+    let vendor_dest = tmp
+        .path()
+        .join("vendor")
+        .join("vsourz")
+        .join("imagegallery");
 
     let body = build_fixture_zip("acme-foo-abc1234");
     let hash = sha1_hex(&body);
@@ -721,7 +741,11 @@ fn local_artifact_dist_is_copied_and_extracted() {
     assert!(vendor_dest.join("composer.json").is_file());
     assert!(vendor_dest.join("src/Foo.php").is_file());
     let cached = paths.cache_composer_dist().join(format!("{hash}.zip"));
-    assert!(cached.is_file(), "expected cached copy at {}", cached.display());
+    assert!(
+        cached.is_file(),
+        "expected cached copy at {}",
+        cached.display()
+    );
 }
 
 #[test]
@@ -849,7 +873,10 @@ fn cache_key_distinguishes_dists_without_shasum_or_reference() {
     );
 
     // A shasum still content-addresses (and wins over the url fallback).
-    let hashed = DistRequest { sha1: "abc123def456", ..js };
+    let hashed = DistRequest {
+        sha1: "abc123def456",
+        ..js
+    };
     assert_eq!(
         cache_path_for(cache_root, &hashed),
         cache_root.join("abc123def456.zip")

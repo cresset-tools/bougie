@@ -8,8 +8,8 @@ mod composer;
 mod merge;
 mod toml;
 
-pub use composer::{read_composer_json, ComposerJson};
-pub use merge::{load_project, merge, ProjectConfig};
+pub use composer::{ComposerJson, read_composer_json};
+pub use merge::{ProjectConfig, load_project, merge};
 pub use toml::{read_bougie_toml, write_bougie_toml_skeleton};
 
 use serde::Deserialize;

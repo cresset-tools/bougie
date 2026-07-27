@@ -10,7 +10,7 @@ use super::config_mut::locate_project_root;
 use bougie_cli::OutputFormat;
 use bougie_config::load_project;
 use bougie_paths::Paths;
-use eyre::{eyre, Result};
+use eyre::{Result, eyre};
 use serde_json::json;
 use std::io::IsTerminal;
 use std::process::ExitCode;

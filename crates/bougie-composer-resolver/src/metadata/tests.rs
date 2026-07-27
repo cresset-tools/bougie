@@ -63,7 +63,14 @@ fn fetches_and_parses_fully_expanded_response() {
     });
 
     let client = build_client().unwrap();
-    let md = fetch_package_metadata(&client, &paths, &Repo::from_url(&uri), "acme/foo", Variant::Stable).unwrap();
+    let md = fetch_package_metadata(
+        &client,
+        &paths,
+        &Repo::from_url(&uri),
+        "acme/foo",
+        Variant::Stable,
+    )
+    .unwrap();
     assert_eq!(md.packages["acme/foo"][0].version, "3.0.0");
 }
 
@@ -104,7 +111,14 @@ fn fetches_minified_response_and_expands_inheritance() {
     });
 
     let client = build_client().unwrap();
-    let md = fetch_package_metadata(&client, &paths, &Repo::from_url(&uri), "acme/bar", Variant::Stable).unwrap();
+    let md = fetch_package_metadata(
+        &client,
+        &paths,
+        &Repo::from_url(&uri),
+        "acme/bar",
+        Variant::Stable,
+    )
+    .unwrap();
     let v = &md.packages["acme/bar"];
     assert_eq!(v.len(), 2);
     // Second entry inherits `name`, `type`, and `require` from first.
@@ -134,9 +148,21 @@ fn writes_etag_sidecar_after_200() {
     });
 
     let client = build_client().unwrap();
-    fetch_package_metadata(&client, &paths, &Repo::from_url(&uri), "acme/sidecar", Variant::Stable).unwrap();
+    fetch_package_metadata(
+        &client,
+        &paths,
+        &Repo::from_url(&uri),
+        "acme/sidecar",
+        Variant::Stable,
+    )
+    .unwrap();
 
-    let (_json, etag) = cache_paths(&paths, &Repo::from_url(&uri), "acme/sidecar", Variant::Stable);
+    let (_json, etag) = cache_paths(
+        &paths,
+        &Repo::from_url(&uri),
+        "acme/sidecar",
+        Variant::Stable,
+    );
     let on_disk = std::fs::read_to_string(&etag).unwrap();
     assert_eq!(on_disk, "\"xyz-tag\"");
 }
@@ -174,13 +200,25 @@ fn conditional_get_returns_cached_body_on_304() {
     });
 
     let client = build_client().unwrap();
-    let first =
-        fetch_package_metadata(&client, &paths, &Repo::from_url(&uri), "acme/condget", Variant::Stable).unwrap();
+    let first = fetch_package_metadata(
+        &client,
+        &paths,
+        &Repo::from_url(&uri),
+        "acme/condget",
+        Variant::Stable,
+    )
+    .unwrap();
     assert_eq!(first.packages["acme/condget"][0].version, "2.5.0");
     // Second call: server returns 304, fetcher reads the cached body
     // and re-parses it.
-    let second =
-        fetch_package_metadata(&client, &paths, &Repo::from_url(&uri), "acme/condget", Variant::Stable).unwrap();
+    let second = fetch_package_metadata(
+        &client,
+        &paths,
+        &Repo::from_url(&uri),
+        "acme/condget",
+        Variant::Stable,
+    )
+    .unwrap();
     assert_eq!(second.packages["acme/condget"][0].version, "2.5.0");
 }
 
@@ -202,8 +240,14 @@ fn dev_variant_hits_tilde_dev_url() {
     });
 
     let client = build_client().unwrap();
-    let md =
-        fetch_package_metadata(&client, &paths, &Repo::from_url(&uri), "acme/branch", Variant::Dev).unwrap();
+    let md = fetch_package_metadata(
+        &client,
+        &paths,
+        &Repo::from_url(&uri),
+        "acme/branch",
+        Variant::Dev,
+    )
+    .unwrap();
     assert_eq!(md.packages["acme/branch"][0].version, "dev-main");
 
     // Cache paths reflect the ~dev suffix.
@@ -229,8 +273,14 @@ fn server_error_is_surfaced() {
     });
 
     let client = build_client().unwrap();
-    let err = fetch_package_metadata(&client, &paths, &Repo::from_url(&uri), "acme/missing", Variant::Stable)
-        .unwrap_err();
+    let err = fetch_package_metadata(
+        &client,
+        &paths,
+        &Repo::from_url(&uri),
+        "acme/missing",
+        Variant::Stable,
+    )
+    .unwrap_err();
     let msg = format!("{err:#}");
     assert!(msg.contains("404"), "{msg}");
 }
@@ -267,11 +317,13 @@ fn non_json_2xx_body_is_treated_as_miss_not_parse_error() {
 
     let client = build_client().unwrap();
     let repo = Repo::from_url(&uri);
-    let got = fetch_package_metadata_optional(
-        &client, &paths, &repo, "acme/notmine", Variant::Stable,
-    )
-    .unwrap();
-    assert!(got.is_none(), "non-JSON body should be Ok(None), got {got:?}");
+    let got =
+        fetch_package_metadata_optional(&client, &paths, &repo, "acme/notmine", Variant::Stable)
+            .unwrap();
+    assert!(
+        got.is_none(),
+        "non-JSON body should be Ok(None), got {got:?}"
+    );
 
     let (json_path, _etag_path) = cache_paths(&paths, &repo, "acme/notmine", Variant::Stable);
     assert!(
@@ -306,7 +358,10 @@ fn probe_protocol_classifies_v2_repo_by_metadata_url() {
     let client = build_client().unwrap();
     let (protocol, mirrors) = probe_protocol(&client, &Repo::from_url(&uri)).unwrap();
     assert!(matches!(protocol, RepoProtocol::V2), "got {protocol:?}");
-    assert!(mirrors.is_empty(), "no `mirrors` key → no dist mirrors, got {mirrors:?}");
+    assert!(
+        mirrors.is_empty(),
+        "no `mirrors` key → no dist mirrors, got {mirrors:?}"
+    );
 }
 
 #[test]
@@ -346,7 +401,10 @@ fn probe_protocol_extracts_dist_mirrors() {
         "https://mirror.test/dists/%package%/%version%/r%reference%.%type%",
     );
     assert!(mirrors[0].preferred);
-    assert_eq!(mirrors[1].url, format!("{uri}/local-dists/%package%.%type%"));
+    assert_eq!(
+        mirrors[1].url,
+        format!("{uri}/local-dists/%package%.%type%")
+    );
     assert!(!mirrors[1].preferred);
 }
 
@@ -439,8 +497,14 @@ fn outbound_request_carries_bougie_user_agent() {
     });
 
     let client = build_client().unwrap();
-    let md =
-        fetch_package_metadata(&client, &paths, &Repo::from_url(&uri), "acme/ua", Variant::Stable).unwrap();
+    let md = fetch_package_metadata(
+        &client,
+        &paths,
+        &Repo::from_url(&uri),
+        "acme/ua",
+        Variant::Stable,
+    )
+    .unwrap();
     assert_eq!(md.packages["acme/ua"][0].version, "1.0.0");
 }
 

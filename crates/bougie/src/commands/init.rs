@@ -1,6 +1,6 @@
 use bougie_cli::OutputFormat;
 use bougie_config::write_bougie_toml_skeleton;
-use bougie_output::output::{emit, Render};
+use bougie_output::output::{Render, emit};
 use eyre::{Result, WrapErr, eyre};
 use serde::Serialize;
 use std::fs;
@@ -66,8 +66,7 @@ pub fn run_new(
             return Err(eyre!("`{directory}` already exists and is not empty"));
         }
     } else {
-        fs::create_dir_all(&root)
-            .wrap_err_with(|| format!("creating {}", root.display()))?;
+        fs::create_dir_all(&root).wrap_err_with(|| format!("creating {}", root.display()))?;
     }
     scaffold(
         &root,
@@ -166,8 +165,7 @@ fn scaffold(
                 // Fill in any per-user placeholder tokens (e.g. a Hyvä repo
                 // slug the producer can't bake into a shared manifest) before
                 // rendering. Prompts read stdin, so only when interactive.
-                let interactive =
-                    matches!(format, OutputFormat::Text) && io::stdin().is_terminal();
+                let interactive = matches!(format, OutputFormat::Text) && io::stdin().is_terminal();
                 super::starter::resolve_placeholders(
                     &mut manifest.composer_json,
                     &manifest.placeholders,
@@ -196,8 +194,7 @@ fn scaffold(
     for sub in ["conf.d", "bin", "state"] {
         let p = bougie_dir.join(sub);
         if !p.exists() {
-            fs::create_dir_all(&p)
-                .wrap_err_with(|| format!("creating {}", p.display()))?;
+            fs::create_dir_all(&p).wrap_err_with(|| format!("creating {}", p.display()))?;
             created.push(rel(bougie_rel.join(sub)));
         }
     }
@@ -216,8 +213,7 @@ fn scaffold(
         if toml_path.exists() {
             already.push(rel(PathBuf::from("bougie.toml")));
         } else {
-            fs::write(&toml_path, write_bougie_toml_skeleton())
-                .wrap_err("writing bougie.toml")?;
+            fs::write(&toml_path, write_bougie_toml_skeleton()).wrap_err("writing bougie.toml")?;
             created.push(rel(PathBuf::from("bougie.toml")));
         }
     }
@@ -343,7 +339,12 @@ fn run_installer_starter(package: &str, root: &Path, format: OutputFormat) -> Re
     let plan = run::prepare(&ctx, &req, None, &[], None)?;
     let receipt = receipt::read(&plan.tool_dir.join("receipt.toml"))?;
     let declared = bougie_tool::install::read_default_bin(&plan.tool_dir, &plan.package)?;
-    let entry = run::pick_bin(&receipt.entrypoints, &plan.package, None, declared.as_deref())?;
+    let entry = run::pick_bin(
+        &receipt.entrypoints,
+        &plan.package,
+        None,
+        declared.as_deref(),
+    )?;
     let wrapper = plan.tool_dir.join("bin").join(&entry.name);
     if !wrapper.is_file() {
         return Err(eyre!(
@@ -470,7 +471,10 @@ fn set_name(composer_json: &mut serde_json::Value, name: &str) -> Result<()> {
     let obj = composer_json
         .as_object_mut()
         .ok_or_else(|| eyre!("starter composer-json is not a JSON object"))?;
-    obj.insert("name".to_string(), serde_json::Value::String(name.to_string()));
+    obj.insert(
+        "name".to_string(),
+        serde_json::Value::String(name.to_string()),
+    );
     Ok(())
 }
 
@@ -480,10 +484,16 @@ mod tests {
 
     #[test]
     fn laravel_is_an_installer_starter() {
-        assert_eq!(installer_starter_package("laravel"), Some("laravel/installer"));
+        assert_eq!(
+            installer_starter_package("laravel"),
+            Some("laravel/installer")
+        );
         // Manifest aliases / URLs are not installer starters.
         assert_eq!(installer_starter_package("mageos"), None);
-        assert_eq!(installer_starter_package("https://example.com/starter.json"), None);
+        assert_eq!(
+            installer_starter_package("https://example.com/starter.json"),
+            None
+        );
     }
 
     #[test]
@@ -516,7 +526,12 @@ mod tests {
         assert_eq!(value["name"], "acme/blog");
         // Other fields survive and `name` stays first (preserve_order).
         assert_eq!(value["type"], "project");
-        let keys: Vec<&str> = value.as_object().unwrap().keys().map(String::as_str).collect();
+        let keys: Vec<&str> = value
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
         assert_eq!(keys, vec!["name", "type"]);
     }
 }

@@ -30,13 +30,10 @@
 // supported targets (Linux/macOS/Windows on x86_64 / aarch64) are all
 // 64-bit, so `u64 as usize` is lossless. Symbol/string-table sizes
 // we write back are our own buffers — never approach 4 GB.
-#![allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-)]
+#![allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 
 use crate::binfmt::DetectedExt;
-use eyre::{eyre, Result};
+use eyre::{Result, eyre};
 
 const MH_MAGIC_64: [u8; 4] = [0xcf, 0xfa, 0xed, 0xfe];
 
@@ -92,12 +89,8 @@ pub fn detect_from_bytes(buf: &[u8]) -> Result<DetectedExt> {
         return Ok(DetectedExt { name, zend: true });
     }
     if let Some((_, sym)) = module_entries.into_iter().next() {
-        let name = read_indirect_string(
-            buf,
-            &segments,
-            sym.n_value,
-            ZEND_MODULE_ENTRY_NAME_OFFSET,
-        )?;
+        let name =
+            read_indirect_string(buf, &segments, sym.n_value, ZEND_MODULE_ENTRY_NAME_OFFSET)?;
         return Ok(DetectedExt { name, zend: false });
     }
     Err(eyre!(
@@ -119,9 +112,12 @@ fn read_indirect_string(
     let end = ptr_off
         .checked_add(8)
         .ok_or_else(|| eyre!("pointer file offset {ptr_off} overflows"))?;
-    let bytes = buf
-        .get(ptr_off..end)
-        .ok_or_else(|| eyre!("pointer at file offset {ptr_off} out of range (buf={})", buf.len()))?;
+    let bytes = buf.get(ptr_off..end).ok_or_else(|| {
+        eyre!(
+            "pointer at file offset {ptr_off} out of range (buf={})",
+            buf.len()
+        )
+    })?;
     let mut p = [0u8; 8];
     p.copy_from_slice(bytes);
     let name_vmaddr = u64::from_le_bytes(p);
@@ -152,7 +148,8 @@ fn vmaddr_to_file_off(segments: &[Segment], vmaddr: u64, len: u64) -> Result<usi
                 return Err(eyre!(
                     "vmaddr {vmaddr:#x} falls into segment `{}` but past its \
                      on-disk extent (delta {delta}, filesize {})",
-                    seg.name, seg.filesize
+                    seg.name,
+                    seg.filesize
                 ));
             }
             let off = seg
@@ -169,17 +166,20 @@ fn vmaddr_to_file_off(segments: &[Segment], vmaddr: u64, len: u64) -> Result<usi
 }
 
 fn read_cstring(buf: &[u8], off: usize) -> Result<&str> {
-    let slice = buf.get(off..)
+    let slice = buf
+        .get(off..)
         .ok_or_else(|| eyre!("string offset {off} out of range"))?;
-    let nul = slice.iter().position(|&b| b == 0)
+    let nul = slice
+        .iter()
+        .position(|&b| b == 0)
         .ok_or_else(|| eyre!("unterminated string at offset {off}"))?;
-    std::str::from_utf8(&slice[..nul])
-        .map_err(|e| eyre!("non-UTF8 string at offset {off}: {e}"))
+    std::str::from_utf8(&slice[..nul]).map_err(|e| eyre!("non-UTF8 string at offset {off}: {e}"))
 }
 
 fn read_slice(buf: &[u8], off: u32, len: u32) -> Result<&[u8]> {
     let start = off as usize;
-    let end = start.checked_add(len as usize)
+    let end = start
+        .checked_add(len as usize)
         .ok_or_else(|| eyre!("range overflow"))?;
     buf.get(start..end)
         .ok_or_else(|| eyre!("range {start}..{end} out of bounds (buf={})", buf.len()))
@@ -201,15 +201,12 @@ impl MachHeader {
         if buf[0..4] != MH_MAGIC_64 {
             return Err(eyre!("not an MH_MAGIC_64 Mach-O file"));
         }
-        let ncmds      = u32::from_le_bytes(buf[16..20].try_into().unwrap());
+        let ncmds = u32::from_le_bytes(buf[16..20].try_into().unwrap());
         let sizeofcmds = u32::from_le_bytes(buf[20..24].try_into().unwrap());
         Ok(Self { ncmds, sizeofcmds })
     }
 
-    fn scan_load_commands(
-        &self,
-        buf: &[u8],
-    ) -> Result<(Vec<Segment>, Option<Symtab>)> {
+    fn scan_load_commands(&self, buf: &[u8]) -> Result<(Vec<Segment>, Option<Symtab>)> {
         let mut segments = Vec::new();
         let mut symtab = None;
         let mut cursor: usize = 32; // load commands start right after the header
@@ -224,7 +221,8 @@ impl MachHeader {
                 return Err(eyre!("load command at {cursor} runs off end"));
             }
             let cmd = u32::from_le_bytes(buf[cursor..cursor + 4].try_into().unwrap());
-            let cmdsize = u32::from_le_bytes(buf[cursor + 4..cursor + 8].try_into().unwrap()) as usize;
+            let cmdsize =
+                u32::from_le_bytes(buf[cursor + 4..cursor + 8].try_into().unwrap()) as usize;
             if cmdsize < 8 || cursor + cmdsize > cmd_end {
                 return Err(eyre!(
                     "load command at {cursor} has invalid cmdsize {cmdsize}"
@@ -272,9 +270,9 @@ impl Segment {
             .to_owned();
         Ok(Self {
             name,
-            vmaddr:   u64::from_le_bytes(body[24..32].try_into().unwrap()),
-            vmsize:   u64::from_le_bytes(body[32..40].try_into().unwrap()),
-            fileoff:  u64::from_le_bytes(body[40..48].try_into().unwrap()),
+            vmaddr: u64::from_le_bytes(body[24..32].try_into().unwrap()),
+            vmsize: u64::from_le_bytes(body[32..40].try_into().unwrap()),
+            fileoff: u64::from_le_bytes(body[40..48].try_into().unwrap()),
             filesize: u64::from_le_bytes(body[48..56].try_into().unwrap()),
         })
     }
@@ -301,9 +299,9 @@ impl Symtab {
             return Err(eyre!("LC_SYMTAB body too small"));
         }
         Ok(Self {
-            symoff:  u32::from_le_bytes(body[8..12].try_into().unwrap()),
-            nsyms:   u32::from_le_bytes(body[12..16].try_into().unwrap()),
-            stroff:  u32::from_le_bytes(body[16..20].try_into().unwrap()),
+            symoff: u32::from_le_bytes(body[8..12].try_into().unwrap()),
+            nsyms: u32::from_le_bytes(body[12..16].try_into().unwrap()),
+            stroff: u32::from_le_bytes(body[16..20].try_into().unwrap()),
             strsize: u32::from_le_bytes(body[20..24].try_into().unwrap()),
         })
     }
@@ -318,7 +316,7 @@ struct NList {
 impl NList {
     fn parse(b: &[u8]) -> Self {
         Self {
-            n_strx:  u32::from_le_bytes(b[0..4].try_into().unwrap()),
+            n_strx: u32::from_le_bytes(b[0..4].try_into().unwrap()),
             // n_type(1), n_sect(1), n_desc(2) at 4..8 — unused.
             n_value: u64::from_le_bytes(b[8..16].try_into().unwrap()),
         }
@@ -441,7 +439,13 @@ mod tests {
 
         b.add_symbol("_redis_module_entry", struct_vmaddr);
         let got = detect_from_bytes(&b.build()).unwrap();
-        assert_eq!(got, DetectedExt { name: "redis".into(), zend: false });
+        assert_eq!(
+            got,
+            DetectedExt {
+                name: "redis".into(),
+                zend: false
+            }
+        );
     }
 
     #[test]
@@ -456,7 +460,13 @@ mod tests {
 
         b.add_symbol("_zend_extension_entry", struct_vmaddr);
         let got = detect_from_bytes(&b.build()).unwrap();
-        assert_eq!(got, DetectedExt { name: "Xdebug".into(), zend: true });
+        assert_eq!(
+            got,
+            DetectedExt {
+                name: "Xdebug".into(),
+                zend: true
+            }
+        );
     }
 
     #[test]
@@ -478,7 +488,13 @@ mod tests {
         b.add_symbol("_zend_extension_entry", zend_vmaddr);
         b.add_symbol("_xdebug_module_entry", mod_vmaddr);
         let got = detect_from_bytes(&b.build()).unwrap();
-        assert_eq!(got, DetectedExt { name: "xdebug".into(), zend: true });
+        assert_eq!(
+            got,
+            DetectedExt {
+                name: "xdebug".into(),
+                zend: true
+            }
+        );
     }
 
     #[test]

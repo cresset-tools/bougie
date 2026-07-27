@@ -2,8 +2,8 @@
 //! mutations on `composer.json` / `bougie.toml`.
 
 use bougie_composer::lockfile::{content_hash, read_json_file, write_json_file};
-use eyre::{eyre, Result, WrapErr};
-use serde_json::{json, Value};
+use eyre::{Result, WrapErr, eyre};
+use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
 /// Which config file the mutation should target.
@@ -69,9 +69,12 @@ pub fn remove_service(target: &ConfigTarget, name: &str) -> Result<bool> {
 fn add_to_composer_json(path: &Path, name: &str, version: &str) -> Result<bool> {
     let mut v = read_or_init_composer_json(path)?;
     let services = ensure_extra_bougie_services(&mut v);
-    let map = services
-        .as_object_mut()
-        .ok_or_else(|| eyre!("extra.bougie.services in {} is not an object", path.display()))?;
+    let map = services.as_object_mut().ok_or_else(|| {
+        eyre!(
+            "extra.bougie.services in {} is not an object",
+            path.display()
+        )
+    })?;
     let new_value = Value::String(version.into());
     let was_new = match map.get(name) {
         Some(existing) if existing == &new_value => return Ok(false),
@@ -130,8 +133,8 @@ fn resync_lock_content_hash(composer_json_path: &Path) -> Result<()> {
     }
     let composer_bytes = std::fs::read(composer_json_path)
         .wrap_err_with(|| format!("reading {}", composer_json_path.display()))?;
-    let new_hash = content_hash(&composer_bytes)
-        .wrap_err("recomputing composer.json content-hash")?;
+    let new_hash =
+        content_hash(&composer_bytes).wrap_err("recomputing composer.json content-hash")?;
     let lock_text = std::fs::read_to_string(&lock_path)
         .wrap_err_with(|| format!("reading {}", lock_path.display()))?;
     let old_hash = serde_json::from_str::<Value>(&lock_text)
@@ -177,9 +180,7 @@ fn ensure_extra_bougie_services(v: &mut Value) -> &mut Value {
         *v = json!({});
     }
     let root = v.as_object_mut().expect("just made it an object");
-    let extra = root
-        .entry("extra")
-        .or_insert_with(|| json!({}));
+    let extra = root.entry("extra").or_insert_with(|| json!({}));
     if !extra.is_object() {
         *extra = json!({});
     }
@@ -199,8 +200,8 @@ fn ensure_extra_bougie_services(v: &mut Value) -> &mut Value {
 // -------------------- bougie.toml --------------------
 
 fn add_to_bougie_toml(path: &Path, name: &str, version: &str) -> Result<bool> {
-    let text = std::fs::read_to_string(path)
-        .wrap_err_with(|| format!("reading {}", path.display()))?;
+    let text =
+        std::fs::read_to_string(path).wrap_err_with(|| format!("reading {}", path.display()))?;
     let mut doc: toml_edit::DocumentMut = text
         .parse()
         .wrap_err_with(|| format!("parsing {} as TOML", path.display()))?;
@@ -217,9 +218,7 @@ fn add_to_bougie_toml(path: &Path, name: &str, version: &str) -> Result<bool> {
     // write. (Detail-form entries are always overwritten — the table
     // form's structural complexity makes "is it identical" not worth
     // the careful compare for a UX detail.)
-    let already_same = services
-        .get(name)
-        .and_then(toml_edit::Item::as_str) == Some(version);
+    let already_same = services.get(name).and_then(toml_edit::Item::as_str) == Some(version);
     if already_same {
         return Ok(false);
     }
@@ -235,12 +234,15 @@ fn remove_from_bougie_toml(path: &Path, name: &str) -> Result<bool> {
     if !path.exists() {
         return Ok(false);
     }
-    let text = std::fs::read_to_string(path)
-        .wrap_err_with(|| format!("reading {}", path.display()))?;
+    let text =
+        std::fs::read_to_string(path).wrap_err_with(|| format!("reading {}", path.display()))?;
     let mut doc: toml_edit::DocumentMut = text
         .parse()
         .wrap_err_with(|| format!("parsing {} as TOML", path.display()))?;
-    let Some(services) = doc.get_mut("services").and_then(toml_edit::Item::as_table_mut) else {
+    let Some(services) = doc
+        .get_mut("services")
+        .and_then(toml_edit::Item::as_table_mut)
+    else {
         return Ok(false);
     };
     if services.remove(name).is_none() {
@@ -299,8 +301,7 @@ mod tests {
         assert!(add_service(&target, "redis", "*").unwrap());
 
         let want = content_hash(&std::fs::read(&cj).unwrap()).unwrap();
-        let lock_v: Value =
-            serde_json::from_str(&std::fs::read_to_string(&lock).unwrap()).unwrap();
+        let lock_v: Value = serde_json::from_str(&std::fs::read_to_string(&lock).unwrap()).unwrap();
         let got = lock_v.get("content-hash").and_then(Value::as_str).unwrap();
         assert_eq!(got, want, "lock content-hash should match composer.json");
         assert_ne!(got, "staaaaaaaaaaaaaaaaaaaaaaaaaaaale0");

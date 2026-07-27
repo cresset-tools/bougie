@@ -26,7 +26,7 @@
 
 use bougie_composer::lockfile::{DistMirror, LockPackage};
 use bougie_composer::metadata::PackageMetadata;
-use bougie_errors::{error_chain, BougieError};
+use bougie_errors::{BougieError, error_chain};
 use bougie_paths::Paths;
 use eyre::{Result, WrapErr};
 use std::collections::BTreeMap;
@@ -184,19 +184,21 @@ pub enum AuthCredentials {
 impl std::fmt::Debug for AuthCredentials {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Basic { username, .. } => {
-                f.debug_struct("Basic")
-                    .field("username", username)
-                    .field("password", &"<redacted>")
-                    .finish()
-            }
-            Self::Bearer { .. } => f.debug_struct("Bearer")
+            Self::Basic { username, .. } => f
+                .debug_struct("Basic")
+                .field("username", username)
+                .field("password", &"<redacted>")
+                .finish(),
+            Self::Bearer { .. } => f
+                .debug_struct("Bearer")
                 .field("token", &"<redacted>")
                 .finish(),
-            Self::GitHubToken { .. } => f.debug_struct("GitHubToken")
+            Self::GitHubToken { .. } => f
+                .debug_struct("GitHubToken")
                 .field("token", &"<redacted>")
                 .finish(),
-            Self::GitLabToken { .. } => f.debug_struct("GitLabToken")
+            Self::GitLabToken { .. } => f
+                .debug_struct("GitLabToken")
                 .field("token", &"<redacted>")
                 .finish(),
         }
@@ -534,7 +536,10 @@ pub fn probe_protocol(
         })?
         .to_owned();
     let mut provider_includes: Vec<ProviderInclude> = Vec::new();
-    if let Some(includes) = root.get("provider-includes").and_then(serde_json::Value::as_object) {
+    if let Some(includes) = root
+        .get("provider-includes")
+        .and_then(serde_json::Value::as_object)
+    {
         for (path_template, entry) in includes {
             let sha256 = entry
                 .get("sha256")
@@ -581,7 +586,10 @@ fn parse_dist_mirrors(root: &serde_json::Value, repo_url: &str) -> Vec<DistMirro
                 Some(serde_json::Value::Number(n)) => n.as_f64().is_some_and(|f| f != 0.0),
                 _ => false,
             };
-            Some(DistMirror { url: canonicalize_mirror_url(repo_url, url), preferred })
+            Some(DistMirror {
+                url: canonicalize_mirror_url(repo_url, url),
+                preferred,
+            })
         })
         .collect()
 }
@@ -637,16 +645,10 @@ pub fn fetch_package_metadata(
 ) -> Result<PackageMetadata> {
     let (json_path, etag_path) = cache_paths(paths, repo, package_name, variant);
     if let Some(parent) = json_path.parent() {
-        fs::create_dir_all(parent)
-            .wrap_err_with(|| format!("creating {}", parent.display()))?;
+        fs::create_dir_all(parent).wrap_err_with(|| format!("creating {}", parent.display()))?;
     }
 
-    let url = format!(
-        "{}/p2/{}{}.json",
-        repo.url,
-        package_name,
-        variant.suffix(),
-    );
+    let url = format!("{}/p2/{}{}.json", repo.url, package_name, variant.suffix(),);
     let mut req = client.get(&url);
     if let Some(auth) = &repo.auth {
         req = req.header(auth.header_name(), auth.header_value());
@@ -732,16 +734,10 @@ pub fn fetch_package_metadata_optional(
 ) -> Result<Option<PackageMetadata>> {
     let (json_path, etag_path) = cache_paths(paths, repo, package_name, variant);
     if let Some(parent) = json_path.parent() {
-        fs::create_dir_all(parent)
-            .wrap_err_with(|| format!("creating {}", parent.display()))?;
+        fs::create_dir_all(parent).wrap_err_with(|| format!("creating {}", parent.display()))?;
     }
 
-    let url = format!(
-        "{}/p2/{}{}.json",
-        repo.url,
-        package_name,
-        variant.suffix(),
-    );
+    let url = format!("{}/p2/{}{}.json", repo.url, package_name, variant.suffix(),);
     let mut req = client.get(&url);
     if let Some(auth) = &repo.auth {
         req = req.header(auth.header_name(), auth.header_value());
@@ -829,16 +825,20 @@ fn response_is_html(resp: &reqwest::blocking::Response) -> bool {
     else {
         return false;
     };
-    let mime = raw.split(';').next().unwrap_or("").trim().to_ascii_lowercase();
+    let mime = raw
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
     mime == "text/html" || mime == "application/xhtml+xml"
 }
 
 fn read_cached(json_path: &Path) -> Result<PackageMetadata> {
     let bytes = fs::read(json_path)
         .wrap_err_with(|| format!("reading cached metadata at {}", json_path.display()))?;
-    PackageMetadata::parse(&bytes).wrap_err_with(|| {
-        format!("re-parsing cached metadata at {}", json_path.display())
-    })
+    PackageMetadata::parse(&bytes)
+        .wrap_err_with(|| format!("re-parsing cached metadata at {}", json_path.display()))
 }
 
 /// Stamp the repo's discovered dist-mirror templates onto every
@@ -886,8 +886,7 @@ pub fn cache_paths(
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .wrap_err_with(|| format!("creating {}", parent.display()))?;
+        fs::create_dir_all(parent).wrap_err_with(|| format!("creating {}", parent.display()))?;
     }
     let tmp = path.with_extension("partial");
     fs::write(&tmp, bytes).wrap_err_with(|| format!("writing {}", tmp.display()))?;
@@ -946,14 +945,15 @@ pub fn load_v1_provider_table(
     let mut table: FxHashMap<String, String> = FxHashMap::default();
     for include in &discovery.provider_includes {
         let body = fetch_v1_include_cached(client, paths, repo, include)?;
-        let parsed: serde_json::Value = serde_json::from_slice(&body)
-            .wrap_err_with(|| {
-                format!(
-                    "parsing v1 provider-include from {} (sha256 {})",
-                    include.path_template, include.sha256,
-                )
-            })?;
-        let Some(providers) = parsed.get("providers").and_then(serde_json::Value::as_object)
+        let parsed: serde_json::Value = serde_json::from_slice(&body).wrap_err_with(|| {
+            format!(
+                "parsing v1 provider-include from {} (sha256 {})",
+                include.path_template, include.sha256,
+            )
+        })?;
+        let Some(providers) = parsed
+            .get("providers")
+            .and_then(serde_json::Value::as_object)
         else {
             // A `provider-includes` file with no `providers` map is
             // structurally degenerate; treat as empty rather than
@@ -961,10 +961,7 @@ pub fn load_v1_provider_table(
             continue;
         };
         for (name, entry) in providers {
-            let Some(sha) = entry
-                .get("sha256")
-                .and_then(serde_json::Value::as_str)
-            else {
+            let Some(sha) = entry.get("sha256").and_then(serde_json::Value::as_str) else {
                 continue;
             };
             table.insert(name.clone(), sha.to_owned());
@@ -1093,13 +1090,9 @@ fn parse_v1_per_package(bytes: &[u8], package_name: &str) -> Result<PackageMetad
         };
         let mut list: Vec<LockPackage> = Vec::with_capacity(versions_obj.len());
         for (_version_key, entry) in versions_obj {
-            let pkg: LockPackage = serde_json::from_value(entry.clone()).wrap_err_with(
-                || {
-                    format!(
-                        "deserializing v1 per-package entry for {name} version {_version_key}",
-                    )
-                },
-            )?;
+            let pkg: LockPackage = serde_json::from_value(entry.clone()).wrap_err_with(|| {
+                format!("deserializing v1 per-package entry for {name} version {_version_key}",)
+            })?;
             list.push(pkg);
         }
         packages.insert(name.clone(), list);
@@ -1161,16 +1154,10 @@ pub async fn fetch_package_metadata_optional_async(
 ) -> Result<Option<PackageMetadata>> {
     let (json_path, etag_path) = cache_paths(paths, repo, package_name, variant);
     if let Some(parent) = json_path.parent() {
-        fs::create_dir_all(parent)
-            .wrap_err_with(|| format!("creating {}", parent.display()))?;
+        fs::create_dir_all(parent).wrap_err_with(|| format!("creating {}", parent.display()))?;
     }
 
-    let url = format!(
-        "{}/p2/{}{}.json",
-        repo.url,
-        package_name,
-        variant.suffix(),
-    );
+    let url = format!("{}/p2/{}{}.json", repo.url, package_name, variant.suffix(),);
     let mut req = client.get(&url);
     if let Some(auth) = &repo.auth {
         req = req.header(auth.header_name(), auth.header_value());
@@ -1245,7 +1232,12 @@ fn response_is_html_async(resp: &reqwest::Response) -> bool {
     else {
         return false;
     };
-    let mime = raw.split(';').next().unwrap_or("").trim().to_ascii_lowercase();
+    let mime = raw
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
     mime == "text/html" || mime == "application/xhtml+xml"
 }
 
@@ -1263,22 +1255,20 @@ pub async fn load_v1_provider_table_async(
     let mut table: FxHashMap<String, String> = FxHashMap::default();
     for include in &discovery.provider_includes {
         let body = fetch_v1_include_cached_async(client, paths, repo, include).await?;
-        let parsed: serde_json::Value = serde_json::from_slice(&body)
-            .wrap_err_with(|| {
-                format!(
-                    "parsing v1 provider-include from {} (sha256 {})",
-                    include.path_template, include.sha256,
-                )
-            })?;
-        let Some(providers) = parsed.get("providers").and_then(serde_json::Value::as_object)
+        let parsed: serde_json::Value = serde_json::from_slice(&body).wrap_err_with(|| {
+            format!(
+                "parsing v1 provider-include from {} (sha256 {})",
+                include.path_template, include.sha256,
+            )
+        })?;
+        let Some(providers) = parsed
+            .get("providers")
+            .and_then(serde_json::Value::as_object)
         else {
             continue;
         };
         for (name, entry) in providers {
-            let Some(sha) = entry
-                .get("sha256")
-                .and_then(serde_json::Value::as_str)
-            else {
+            let Some(sha) = entry.get("sha256").and_then(serde_json::Value::as_str) else {
                 continue;
             };
             table.insert(name.clone(), sha.to_owned());

@@ -9,7 +9,7 @@
 
 use std::io::Read;
 use std::os::fd::AsRawFd;
-use std::os::unix::fs::{symlink, PermissionsExt};
+use std::os::unix::fs::{PermissionsExt, symlink};
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
@@ -30,7 +30,12 @@ fn babysit_shim(td: &TempDir) -> PathBuf {
 
 /// Spawn the babysit shim with one end of a `socketpair` dup2'd onto
 /// fd 3 in the child. Returns (child, `parent_end_of_socketpair`).
-fn spawn_babysit(shim: &PathBuf, grace_secs: u64, exec: &str, exec_args: &[&str]) -> (std::process::Child, UnixStream) {
+fn spawn_babysit(
+    shim: &PathBuf,
+    grace_secs: u64,
+    exec: &str,
+    exec_args: &[&str],
+) -> (std::process::Child, UnixStream) {
     let (parent, child_end) = UnixStream::pair().expect("socketpair");
     let child_raw = child_end.as_raw_fd();
 
@@ -184,7 +189,8 @@ fn libc_dup2(src: i32, dst: i32) -> i32 {
 /// Read byte-by-byte instead so the kernel buffer keeps any
 /// subsequent lines visible to the next reader on this socket.
 fn read_pgid_line(sock: &mut UnixStream) -> i32 {
-    sock.set_read_timeout(Some(Duration::from_secs(15))).unwrap();
+    sock.set_read_timeout(Some(Duration::from_secs(15)))
+        .unwrap();
     let mut line = Vec::new();
     let mut byte = [0u8; 1];
     loop {
@@ -195,9 +201,8 @@ fn read_pgid_line(sock: &mut UnixStream) -> i32 {
         line.push(byte[0]);
     }
     let line = std::str::from_utf8(&line).expect("pgid line is utf-8");
-    
-    line
-        .strip_prefix("pgid=")
+
+    line.strip_prefix("pgid=")
         .unwrap_or_else(|| panic!("expected pgid= line, got {line:?}"))
         .parse::<i32>()
         .expect("parsing pgid")
@@ -250,7 +255,8 @@ fn babysit_reports_pgid_then_exit_on_clean_service_exit() {
     // GHA runner doesn't EOF us before the babysit's tokio runtime
     // sees child.wait() return and emits the `exited=` line. (issue #34)
     let mut rest = String::new();
-    sock.set_read_timeout(Some(Duration::from_secs(15))).unwrap();
+    sock.set_read_timeout(Some(Duration::from_secs(15)))
+        .unwrap();
     sock.read_to_string(&mut rest).ok();
     assert!(
         rest.contains("exited="),
@@ -258,7 +264,10 @@ fn babysit_reports_pgid_then_exit_on_clean_service_exit() {
     );
 
     let status = child.wait().expect("waiting on babysit");
-    assert!(status.success(), "babysit should exit 0 on clean service exit, got {status:?}");
+    assert!(
+        status.success(),
+        "babysit should exit 0 on clean service exit, got {status:?}"
+    );
 }
 
 #[test]
@@ -272,8 +281,7 @@ fn babysit_kills_group_on_socket_close() {
     //
     // We `exec sleep` so the shell stays alive (otherwise its child
     // becomes the entire group and the shell exiting reaps too early).
-    let (mut child, mut sock) =
-        spawn_babysit(&shim, 2, "/bin/sh", &["-c", "exec /bin/sleep 60"]);
+    let (mut child, mut sock) = spawn_babysit(&shim, 2, "/bin/sh", &["-c", "exec /bin/sleep 60"]);
 
     let pgid = read_pgid_line(&mut sock);
     assert!(pgrp_alive(pgid), "group should be alive after spawn");
@@ -288,18 +296,23 @@ fn babysit_kills_group_on_socket_close() {
     // bounds correctness — a real regression (deadlocked babysit,
     // missing killpg) won't sneak past 30s. (issue #34)
     let died = wait_until(|| !pgrp_alive(pgid), Duration::from_secs(30));
-    assert!(died, "process group {pgid} still alive after socket close + grace");
+    assert!(
+        died,
+        "process group {pgid} still alive after socket close + grace"
+    );
 
     let status = child.wait().expect("waiting on babysit");
-    assert!(status.success(), "babysit should exit 0 after socket-close cleanup, got {status:?}");
+    assert!(
+        status.success(),
+        "babysit should exit 0 after socket-close cleanup, got {status:?}"
+    );
 }
 
 #[test]
 fn babysit_kills_group_on_sigterm() {
     let td = TempDir::new().unwrap();
     let shim = babysit_shim(&td);
-    let (mut child, mut sock) =
-        spawn_babysit(&shim, 2, "/bin/sh", &["-c", "exec /bin/sleep 60"]);
+    let (mut child, mut sock) = spawn_babysit(&shim, 2, "/bin/sh", &["-c", "exec /bin/sleep 60"]);
 
     let pgid = read_pgid_line(&mut sock);
     assert!(pgrp_alive(pgid));
@@ -314,7 +327,10 @@ fn babysit_kills_group_on_sigterm() {
     assert!(died, "process group {pgid} still alive after SIGTERM");
 
     let status = child.wait().expect("waiting on babysit");
-    assert!(status.success(), "babysit should exit 0 after SIGTERM cleanup, got {status:?}");
+    assert!(
+        status.success(),
+        "babysit should exit 0 after SIGTERM cleanup, got {status:?}"
+    );
 }
 
 /// A fake "service" that forks a grandchild which OUTLIVES the leader —
@@ -344,7 +360,10 @@ fn babysit_reaps_forked_escapee_on_sigterm() {
     assert_eq!(kill_pid(bpid, 15), 0, "kill(babysit, SIGTERM) failed");
 
     let died = wait_until(|| !pgrp_alive(pgid), Duration::from_secs(30));
-    assert!(died, "forked escapee in group {pgid} survived SIGTERM cleanup");
+    assert!(
+        died,
+        "forked escapee in group {pgid} survived SIGTERM cleanup"
+    );
     let _ = child.wait();
 }
 
@@ -394,10 +413,12 @@ fn babysit_sigkill_takes_service_down_via_pdeathsig() {
     // Keep `sock` (the bougied end) alive for the whole test so the
     // socket-EOF cleanup path can't fire — that way the ONLY thing that
     // can kill the service is PR_SET_PDEATHSIG.
-    let (mut child, mut sock) =
-        spawn_babysit(&shim, 2, "/bin/sh", &["-c", "exec /bin/sleep 60"]);
+    let (mut child, mut sock) = spawn_babysit(&shim, 2, "/bin/sh", &["-c", "exec /bin/sleep 60"]);
     let pgid = read_pgid_line(&mut sock);
-    assert!(pgrp_alive(pgid), "service group should be alive after spawn");
+    assert!(
+        pgrp_alive(pgid),
+        "service group should be alive after spawn"
+    );
 
     // SIGKILL the babysit: none of its cleanup handlers can run (SIGKILL
     // is uncatchable, and we hold `sock` open so there's no EOF to act
@@ -440,14 +461,21 @@ fn babysit_sidecar_runs_in_group_and_is_reaped() {
     let pgid = read_pgid_line(&mut sock);
     // The sidecar created the group, so pgid == the sidecar's pid: that
     // process is alive and the group has members (sidecar + main).
-    assert_eq!(kill0(pgid), 0, "sidecar (group leader {pgid}) should be alive");
+    assert_eq!(
+        kill0(pgid),
+        0,
+        "sidecar (group leader {pgid}) should be alive"
+    );
     assert!(pgrp_alive(pgid), "group should be alive after spawn");
 
     // bougied "dies": babysit `killpg`s the whole group — the sidecar
     // included — with no cgroup/pdeathsig in play (the macOS scenario).
     drop(sock);
     let died = wait_until(|| !pgrp_alive(pgid), Duration::from_secs(30));
-    assert!(died, "group {pgid} (incl. sidecar) still alive after teardown");
+    assert!(
+        died,
+        "group {pgid} (incl. sidecar) still alive after teardown"
+    );
     // `pgrp_alive` going false means the kernel dropped the leader from
     // the *group* — but the leader pid lingers as a zombie (child of
     // babysit) until reaped, and on macOS that reap can trail the group
@@ -460,7 +488,10 @@ fn babysit_sidecar_runs_in_group_and_is_reaped() {
     );
 
     let status = child.wait().expect("waiting on babysit");
-    assert!(status.success(), "babysit should exit 0 after cleanup, got {status:?}");
+    assert!(
+        status.success(),
+        "babysit should exit 0 after cleanup, got {status:?}"
+    );
 }
 
 #[test]
@@ -503,7 +534,10 @@ fn babysit_keeps_service_when_sidecar_exits_but_port_still_served() {
         !wait_until(|| !pgrp_alive(pgid), Duration::from_secs(2)),
         "service group {pgid} was torn down despite the ready-port still being served"
     );
-    assert!(pgrp_alive(pgid), "service group {pgid} should still be alive");
+    assert!(
+        pgrp_alive(pgid),
+        "service group {pgid} should still be alive"
+    );
     assert!(
         child.try_wait().unwrap().is_none(),
         "babysit exited despite a benign sidecar exit"
@@ -515,15 +549,17 @@ fn babysit_keeps_service_when_sidecar_exits_but_port_still_served() {
     let died = wait_until(|| !pgrp_alive(pgid), Duration::from_secs(30));
     assert!(died, "group {pgid} still alive after teardown");
     let status = child.wait().expect("waiting on babysit");
-    assert!(status.success(), "babysit should exit 0 after clean teardown, got {status:?}");
+    assert!(
+        status.success(),
+        "babysit should exit 0 after clean teardown, got {status:?}"
+    );
 }
 
 #[test]
 fn babysit_service_runs_in_its_own_pgid() {
     let td = TempDir::new().unwrap();
     let shim = babysit_shim(&td);
-    let (mut child, mut sock) =
-        spawn_babysit(&shim, 2, "/bin/sh", &["-c", "exec /bin/sleep 60"]);
+    let (mut child, mut sock) = spawn_babysit(&shim, 2, "/bin/sh", &["-c", "exec /bin/sleep 60"]);
     let pgid = read_pgid_line(&mut sock);
 
     // The reported pgid must NOT equal the babysit's own pid: the

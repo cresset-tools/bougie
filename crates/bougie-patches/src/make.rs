@@ -77,8 +77,13 @@ pub fn make_patch(files: &[FileEntry], path_prefix: &str) -> MakeOutcome {
                 }
                 match (std::str::from_utf8(p), std::str::from_utf8(e)) {
                     (Ok(po), Ok(eo)) => {
-                        out.patch_text
-                            .push_str(&file_diff(path_prefix, &f.path, po, eo, Side::Modify));
+                        out.patch_text.push_str(&file_diff(
+                            path_prefix,
+                            &f.path,
+                            po,
+                            eo,
+                            Side::Modify,
+                        ));
                         out.modified.push(f.path.clone());
                     }
                     _ => out.binary_skipped.push(f.path.clone()),
@@ -167,8 +172,9 @@ mod tests {
             }
         }
         if !out.patch_text.is_empty() {
-            apply_patch_text(dir.path(), &out.patch_text, &ApplyOptions::default())
-                .unwrap_or_else(|e| panic!("generated patch failed to apply:\n{}\n{e}", out.patch_text));
+            apply_patch_text(dir.path(), &out.patch_text, &ApplyOptions::default()).unwrap_or_else(
+                |e| panic!("generated patch failed to apply:\n{}\n{e}", out.patch_text),
+            );
         }
         for f in files {
             if out.binary_skipped.contains(&f.path) {
@@ -176,7 +182,12 @@ mod tests {
             }
             let abs = dir.path().join(&f.path);
             match &f.edited {
-                Some(e) => assert_eq!(fs::read(&abs).unwrap(), *e, "content mismatch for {}", f.path),
+                Some(e) => assert_eq!(
+                    fs::read(&abs).unwrap(),
+                    *e,
+                    "content mismatch for {}",
+                    f.path
+                ),
                 None => assert!(!abs.exists(), "{} should have been deleted", f.path),
             }
         }
@@ -209,9 +220,20 @@ mod tests {
             ],
         );
         // Headers carry the install prefix.
-        let out = make_patch(&[entry("src/Foo.php", Some("a\n"), Some("b\n"))], "vendor/acme/foo");
-        assert!(out.patch_text.contains("--- a/vendor/acme/foo/src/Foo.php"), "{}", out.patch_text);
-        assert!(out.patch_text.contains("+++ b/vendor/acme/foo/src/Foo.php"), "{}", out.patch_text);
+        let out = make_patch(
+            &[entry("src/Foo.php", Some("a\n"), Some("b\n"))],
+            "vendor/acme/foo",
+        );
+        assert!(
+            out.patch_text.contains("--- a/vendor/acme/foo/src/Foo.php"),
+            "{}",
+            out.patch_text
+        );
+        assert!(
+            out.patch_text.contains("+++ b/vendor/acme/foo/src/Foo.php"),
+            "{}",
+            out.patch_text
+        );
         // …but the reported file list stays package-relative.
         assert_eq!(out.modified, ["src/Foo.php"]);
     }
@@ -248,7 +270,11 @@ mod tests {
     fn binary_files_are_skipped_not_emitted() {
         // 0x9f is not valid UTF-8.
         let out = make_patch(
-            &[entry_bytes("img.bin", Some(&[0, 159, 146, 150]), Some(&[1, 2, 3]))],
+            &[entry_bytes(
+                "img.bin",
+                Some(&[0, 159, 146, 150]),
+                Some(&[1, 2, 3]),
+            )],
             "",
         );
         assert!(out.patch_text.is_empty());

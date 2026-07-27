@@ -15,7 +15,7 @@
 //! `ZipArchive::extract` — which handles mode bits, symlinks, and
 //! traversal-safety — and rejects unknown flags loudly.
 
-use eyre::{eyre, Result};
+use eyre::{Result, eyre};
 use std::ffi::OsString;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
@@ -108,11 +108,14 @@ fn extract(file: &std::path::Path, dest: &std::path::Path) -> Result<ExitCode> {
     let fh = File::open(file).map_err(|e| eyre!("unzip: opening {}: {e}", file.display()))?;
     let mut archive =
         zip::ZipArchive::new(fh).map_err(|e| eyre!("unzip: reading {}: {e}", file.display()))?;
-    std::fs::create_dir_all(dest)
-        .map_err(|e| eyre!("unzip: creating {}: {e}", dest.display()))?;
-    archive
-        .extract(dest)
-        .map_err(|e| eyre!("unzip: extracting {} -> {}: {e}", file.display(), dest.display()))?;
+    std::fs::create_dir_all(dest).map_err(|e| eyre!("unzip: creating {}: {e}", dest.display()))?;
+    archive.extract(dest).map_err(|e| {
+        eyre!(
+            "unzip: extracting {} -> {}: {e}",
+            file.display(),
+            dest.display()
+        )
+    })?;
     Ok(ExitCode::SUCCESS)
 }
 

@@ -35,8 +35,5 @@ fn version_flag_works() {
 #[test]
 fn unknown_subcommand_errors() {
     let env = TestEnv::new();
-    env.bougie()
-        .arg("nonsense")
-        .assert()
-        .failure();
+    env.bougie().arg("nonsense").assert().failure();
 }

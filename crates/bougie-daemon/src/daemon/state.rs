@@ -19,6 +19,10 @@ pub struct DaemonState {
 impl DaemonState {
     pub fn new(paths: Paths, shutdown_tx: ShutdownTx) -> Self {
         let supervisor = Arc::new(Mutex::new(Supervisor::new(paths.clone())));
-        Self { paths, shutdown_tx, supervisor }
+        Self {
+            paths,
+            shutdown_tx,
+            supervisor,
+        }
     }
 }

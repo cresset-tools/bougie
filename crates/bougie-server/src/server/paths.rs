@@ -37,7 +37,9 @@ impl ServerPaths {
     pub fn from_env() -> Result<Self> {
         #[cfg(unix)]
         {
-            Ok(Self::from_xdg_runtime_dir(std::env::var_os("XDG_RUNTIME_DIR")))
+            Ok(Self::from_xdg_runtime_dir(std::env::var_os(
+                "XDG_RUNTIME_DIR",
+            )))
         }
         #[cfg(windows)]
         {
@@ -50,7 +52,9 @@ impl ServerPaths {
     #[cfg(unix)]
     pub fn from_xdg_runtime_dir(xdg: Option<std::ffi::OsString>) -> Self {
         let root = xdg.map_or_else(fallback_root, PathBuf::from);
-        Self { runtime_root: root.join("bougie").join("server") }
+        Self {
+            runtime_root: root.join("bougie").join("server"),
+        }
     }
 
     /// Pure resolver for the Windows code path. Falls back to `%TEMP%`
@@ -58,15 +62,15 @@ impl ServerPaths {
     /// by the standard user profile setup).
     #[cfg(windows)]
     pub fn from_local_app_data(lad: Option<std::ffi::OsString>) -> Self {
-        let root = lad
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                std::env::var_os("TEMP")
-                    .map(PathBuf::from)
-                    .unwrap_or_else(|| PathBuf::from(r"C:\Windows\Temp"))
-                    .join("bougie")
-            });
-        Self { runtime_root: root.join("bougie").join("server") }
+        let root = lad.map(PathBuf::from).unwrap_or_else(|| {
+            std::env::var_os("TEMP")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from(r"C:\Windows\Temp"))
+                .join("bougie")
+        });
+        Self {
+            runtime_root: root.join("bougie").join("server"),
+        }
     }
 
     /// Construct with an explicit root. For tests.
@@ -168,7 +172,10 @@ impl ServerPaths {
 }
 
 fn is_project_hash_name(name: &str) -> bool {
-    name.len() == 12 && name.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+    name.len() == 12
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
 }
 
 #[cfg(unix)]
@@ -220,8 +227,7 @@ pub fn create_dir_0700(path: &Path) -> Result<()> {
     }
     #[cfg(windows)]
     {
-        std::fs::create_dir_all(path)
-            .wrap_err_with(|| format!("creating {}", path.display()))?;
+        std::fs::create_dir_all(path).wrap_err_with(|| format!("creating {}", path.display()))?;
     }
     Ok(())
 }
@@ -235,7 +241,10 @@ mod tests {
     fn project_hash_is_12_hex_chars() {
         let h = project_hash(Path::new("/tmp"));
         assert_eq!(h.len(), 12);
-        assert!(h.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+        assert!(
+            h.chars()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+        );
     }
 
     #[test]
@@ -359,10 +368,12 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn xdg_runtime_dir_is_honored() {
-        let p = ServerPaths::from_xdg_runtime_dir(Some(
-            std::ffi::OsString::from("/tmp/xdg-fixture"),
-        ));
-        assert_eq!(p.runtime_root(), Path::new("/tmp/xdg-fixture/bougie/server"));
+        let p =
+            ServerPaths::from_xdg_runtime_dir(Some(std::ffi::OsString::from("/tmp/xdg-fixture")));
+        assert_eq!(
+            p.runtime_root(),
+            Path::new("/tmp/xdg-fixture/bougie/server")
+        );
     }
 
     #[cfg(unix)]
@@ -377,9 +388,9 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn local_app_data_is_honored() {
-        let p = ServerPaths::from_local_app_data(Some(
-            std::ffi::OsString::from(r"C:\Users\test\AppData\Local"),
-        ));
+        let p = ServerPaths::from_local_app_data(Some(std::ffi::OsString::from(
+            r"C:\Users\test\AppData\Local",
+        )));
         assert_eq!(
             p.runtime_root(),
             Path::new(r"C:\Users\test\AppData\Local\bougie\server")

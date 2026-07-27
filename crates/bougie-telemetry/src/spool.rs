@@ -22,7 +22,9 @@ impl Spool {
     /// Spool rooted under the given cache root
     /// (`<cache>/telemetry/spool/`).
     pub fn new(cache_root: &Path) -> Self {
-        Self { dir: cache_root.join("telemetry").join("spool") }
+        Self {
+            dir: cache_root.join("telemetry").join("spool"),
+        }
     }
 
     pub fn dir(&self) -> &Path {
@@ -39,7 +41,10 @@ impl Spool {
     fn try_append(&self, date: &str, line: &str) -> std::io::Result<()> {
         fs::create_dir_all(&self.dir)?;
         let path = self.dir.join(format!("{date}.ndjson"));
-        let mut file = fs::OpenOptions::new().create(true).append(true).open(path)?;
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)?;
         file.write_all(line.as_bytes())?;
         file.write_all(b"\n")?;
         drop(file);

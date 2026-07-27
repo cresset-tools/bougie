@@ -27,9 +27,9 @@
 
 mod common;
 
+use common::TestEnv;
 use common::mariadb_fixture;
 use common::project_with_composer;
-use common::TestEnv;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
@@ -69,7 +69,9 @@ fn instance_socket(env: &TestEnv) -> std::path::PathBuf {
 }
 
 fn versioned_dir(env: &TestEnv) -> std::path::PathBuf {
-    env.home_path().join("state/services/mariadb").join(MARIADB_VERSION)
+    env.home_path()
+        .join("state/services/mariadb")
+        .join(MARIADB_VERSION)
 }
 
 fn wait_for(path: &Path, timeout: Duration) -> bool {
@@ -84,7 +86,14 @@ fn wait_for(path: &Path, timeout: Duration) -> bool {
 }
 
 /// Run one SQL statement as the tenant over its socket; returns trimmed stdout.
-fn run_sql(client: &Path, sock: &Path, user: &str, pw: &str, db: &str, sql: &str) -> std::process::Output {
+fn run_sql(
+    client: &Path,
+    sock: &Path,
+    user: &str,
+    pw: &str,
+    db: &str,
+    sql: &str,
+) -> std::process::Output {
     Command::new(client)
         .arg("--no-defaults")
         .arg(format!("--socket={}", sock.display()))
@@ -135,7 +144,11 @@ fn legacy_flat_install_upgrades_without_data_loss() {
     // Read the provisioned tenant (db == user == tenant name) + password.
     let ledger = versioned_dir(&env).join("tenants.json");
     let row: serde_json::Value = serde_json::from_str(
-        fs::read_to_string(&ledger).expect("tenants.json").lines().next().unwrap(),
+        fs::read_to_string(&ledger)
+            .expect("tenants.json")
+            .lines()
+            .next()
+            .unwrap(),
     )
     .unwrap();
     let tenant = row["tenant"].as_str().unwrap().to_string();
@@ -151,10 +164,16 @@ fn legacy_flat_install_upgrades_without_data_loss() {
         &tenant,
         "CREATE TABLE migration_probe (v INT); INSERT INTO migration_probe VALUES (4242);",
     );
-    assert!(out.status.success(), "seed SQL failed: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "seed SQL failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     // A Magento-style env.php with the OLD flat socket path baked in.
-    let flat_socket = env.home_path().join("state/services/mariadb/run/mariadb.sock");
+    let flat_socket = env
+        .home_path()
+        .join("state/services/mariadb/run/mariadb.sock");
     let env_php_dir = proj.path().join("app/etc");
     fs::create_dir_all(&env_php_dir).unwrap();
     let env_php = env_php_dir.join("env.php");
@@ -188,7 +207,10 @@ fn legacy_flat_install_upgrades_without_data_loss() {
         name_dir.join("data").is_dir() && name_dir.join("tenants.json").is_file(),
         "flatten should leave a legacy marker (data/ + tenants.json under <name>/)"
     );
-    assert!(!versioned.exists(), "the version dir must be gone before the upgrade");
+    assert!(
+        !versioned.exists(),
+        "the version dir must be gone before the upgrade"
+    );
 
     // --- 3. Upgrade: `bougie up` migrates, boots, relinks, rewrites. ---
     up(&env, proj.path());
@@ -198,7 +220,10 @@ fn legacy_flat_install_upgrades_without_data_loss() {
     );
 
     // Datadir was migrated (renamed) under <version>/, not reinitialized.
-    assert!(versioned_dir(&env).join("data").is_dir(), "datadir must be back under <version>/");
+    assert!(
+        versioned_dir(&env).join("data").is_dir(),
+        "datadir must be back under <version>/"
+    );
 
     // The sentinel row survived — proves the *original* datadir migrated,
     // and the login proves the original password migrated with it (a fresh

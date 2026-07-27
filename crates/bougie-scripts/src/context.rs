@@ -83,7 +83,9 @@ impl CallbackRegistry {
 
 impl std::fmt::Debug for CallbackRegistry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("CallbackRegistry").field("keys", &self.0.keys()).finish()
+        f.debug_struct("CallbackRegistry")
+            .field("keys", &self.0.keys())
+            .finish()
     }
 }
 

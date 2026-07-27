@@ -34,8 +34,8 @@ impl PackageMetadata {
         for (name, versions) in expanded {
             let mut typed = Vec::with_capacity(versions.len());
             for version in versions {
-                let pkg: LockPackage =
-                    serde_json::from_value(Value::Object(version)).wrap_err_with(|| {
+                let pkg: LockPackage = serde_json::from_value(Value::Object(version))
+                    .wrap_err_with(|| {
                         format!("deserializing Packagist v2 version entry for {name}")
                     })?;
                 typed.push(pkg);

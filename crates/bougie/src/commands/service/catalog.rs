@@ -71,7 +71,10 @@ impl Render for CatalogResult {
 
 pub fn run(format: OutputFormat) -> Result<ExitCode> {
     let entries: Vec<CatalogRow> = catalog::CATALOG.iter().map(CatalogRow::from).collect();
-    let result = CatalogResult { schema_version: 1, entries };
+    let result = CatalogResult {
+        schema_version: 1,
+        entries,
+    };
     emit(format, &result)?;
     Ok(ExitCode::SUCCESS)
 }

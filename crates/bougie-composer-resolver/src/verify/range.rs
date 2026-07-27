@@ -42,9 +42,11 @@ pub type ComposerRange = Ranges<Version>;
 pub fn to_range(c: &Constraint) -> ComposerRange {
     match c {
         Constraint::Any => Ranges::full(),
-        Constraint::Op { op, version, explicit_lower_bound } => {
-            atom_to_range(*op, version, *explicit_lower_bound)
-        }
+        Constraint::Op {
+            op,
+            version,
+            explicit_lower_bound,
+        } => atom_to_range(*op, version, *explicit_lower_bound),
         Constraint::And(items) => items
             .iter()
             .map(to_range)
@@ -75,8 +77,12 @@ fn atom_to_range(op: CmpOp, target: &Version, explicit_lower: bool) -> ComposerR
         };
     }
 
-    let dev_marker = target.with_suffix(Suffix::Dev).unwrap_or_else(|| target.clone());
-    let stable_marker = target.with_suffix(Suffix::Stable).unwrap_or_else(|| target.clone());
+    let dev_marker = target
+        .with_suffix(Suffix::Dev)
+        .unwrap_or_else(|| target.clone());
+    let stable_marker = target
+        .with_suffix(Suffix::Stable)
+        .unwrap_or_else(|| target.clone());
 
     match op {
         CmpOp::Eq => Ranges::singleton(target.clone()),

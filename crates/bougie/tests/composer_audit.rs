@@ -18,8 +18,11 @@ fn rt() -> tokio::runtime::Runtime {
 }
 
 fn stage(dir: &Path, lock: &str) {
-    std::fs::write(dir.join("composer.json"), r#"{"name":"test/p","require":{"acme/lib":"^2.0"}}"#)
-        .unwrap();
+    std::fs::write(
+        dir.join("composer.json"),
+        r#"{"name":"test/p","require":{"acme/lib":"^2.0"}}"#,
+    )
+    .unwrap();
     std::fs::write(dir.join("composer.lock"), lock).unwrap();
 }
 
@@ -65,7 +68,10 @@ fn audit_reports_matching_advisory_and_fails() {
         .output()
         .unwrap();
     // Findings → non-zero exit.
-    assert!(!out.status.success(), "audit must fail when advisories match");
+    assert!(
+        !out.status.success(),
+        "audit must fail when advisories match"
+    );
     let s = String::from_utf8_lossy(&out.stdout);
     assert!(s.contains("acme/lib"), "{s}");
     assert!(s.contains("PKSA-1"), "{s}");
@@ -93,8 +99,11 @@ fn audit_ignores_advisory_outside_locked_range() {
         .arg(proj.path())
         .output()
         .unwrap();
-    assert!(out.status.success(), "no in-range advisory → success: stderr={}",
-        String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "no in-range advisory → success: stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let s = String::from_utf8_lossy(&out.stdout);
     assert!(s.contains("No security vulnerability"), "{s}");
 }

@@ -21,7 +21,10 @@ fn unmapped_composer_subcommand_errors_with_tool_hint() {
         .output()
         .unwrap();
 
-    assert!(!out.status.success(), "create-project must not succeed (no phar)");
+    assert!(
+        !out.status.success(),
+        "create-project must not succeed (no phar)"
+    );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         stderr.contains("bougie tool install composer/composer"),
@@ -59,5 +62,8 @@ fn native_composer_subcommand_still_dispatches() {
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
-    assert!(!combined.contains("phar"), "validate must be native: {combined}");
+    assert!(
+        !combined.contains("phar"),
+        "validate must be native: {combined}"
+    );
 }

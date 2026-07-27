@@ -39,7 +39,9 @@ pub fn run(
     // clap enforces `required = true`, so `command` is non-empty; keep a
     // defensive check rather than indexing.
     if command.is_empty() {
-        return Err(eyre!("missing tool package — usage: bgx [OPTIONS] <PACKAGE> [ARGS]..."));
+        return Err(eyre!(
+            "missing tool package — usage: bgx [OPTIONS] <PACKAGE> [ARGS]..."
+        ));
     }
     let package_os = command.remove(0);
     let package = package_os
@@ -54,7 +56,12 @@ pub fn run(
         super::tool_project::detect()
     };
     let resolve_lock: &bougie_tool::install::LockResolver = &|paths, project_root| {
-        super::composer_update::resolve_and_write_lock(paths, project_root, bougie_composer_resolver::ResolutionStrategy::Highest).map(|_| ())
+        super::composer_update::resolve_and_write_lock(
+            paths,
+            project_root,
+            bougie_composer_resolver::ResolutionStrategy::Highest,
+        )
+        .map(|_| ())
     };
     let php_installer = super::tool_callbacks::php_installer();
     let classifier = super::tool_callbacks::extension_classifier();

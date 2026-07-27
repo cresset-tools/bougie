@@ -79,12 +79,14 @@ pub type LockResolver = dyn Fn(&Paths, &Path) -> Result<()> + Send + Sync;
 /// `bougie_installer::conf_d::write_ext_fragment_into` — keeping both
 /// calls inside the callback lets `bougie-tool` stay free of the
 /// installer crate.
-pub type ExtInstaller =
-    dyn Fn(&Paths, &str, &PhpChoice, &Path) -> Result<PathBuf> + Send + Sync;
+pub type ExtInstaller = dyn Fn(&Paths, &str, &PhpChoice, &Path) -> Result<PathBuf> + Send + Sync;
 
 /// Bundle of paths + callbacks the install / inject / upgrade flows
 /// all need. Saves passing seven near-identical arguments per call.
-#[allow(missing_debug_implementations, reason = "fields are non-Debug trait objects")]
+#[allow(
+    missing_debug_implementations,
+    reason = "fields are non-Debug trait objects"
+)]
 pub struct InstallContext<'a> {
     pub paths: &'a Paths,
     pub resolve_lock: &'a LockResolver,
@@ -130,7 +132,14 @@ pub fn install(
     with: &[String],
     force: bool,
 ) -> Result<InstallOutcome> {
-    install_into(ctx, request, php_spec, with, force, &InstallTarget::Persistent)
+    install_into(
+        ctx,
+        request,
+        php_spec,
+        with,
+        force,
+        &InstallTarget::Persistent,
+    )
 }
 
 pub fn install_into(
@@ -177,9 +186,8 @@ impl InstallPlan {
     /// computable offline and cache hits skip classification
     /// entirely.
     pub fn extension_names(&self) -> Vec<String> {
-        let mut out: Vec<String> = Vec::with_capacity(
-            self.with_extensions.len() + self.derived_extensions.len(),
-        );
+        let mut out: Vec<String> =
+            Vec::with_capacity(self.with_extensions.len() + self.derived_extensions.len());
         for name in self.with_extensions.iter().chain(&self.derived_extensions) {
             if !out.iter().any(|n| n == name) {
                 out.push(name.clone());
@@ -284,12 +292,10 @@ pub fn install_prepared(
     target: &InstallTarget,
 ) -> Result<InstallOutcome> {
     let paths = ctx.paths;
-    ensure_stable_bougie_symlink(paths)
-        .wrap_err("setting up stable bougie symlink")?;
+    ensure_stable_bougie_symlink(paths).wrap_err("setting up stable bougie symlink")?;
 
-    (ctx.php_baseline)(paths, &plan.php).wrap_err_with(|| {
-        format!("ensuring baseline extensions for PHP {}", plan.php.version)
-    })?;
+    (ctx.php_baseline)(paths, &plan.php)
+        .wrap_err_with(|| format!("ensuring baseline extensions for PHP {}", plan.php.version))?;
 
     // Validate extension names up front so a bad one fails before we
     // touch the tool dir. Explicit `--with` names go through
@@ -333,22 +339,26 @@ pub fn install_prepared(
     std::fs::create_dir_all(&tool_dir)
         .wrap_err_with(|| format!("creating {}", tool_dir.display()))?;
 
-    let _guard = ExclusiveGuard::acquire(&tool_dir.join(".lock"), LOCK_TIMEOUT)
-        .wrap_err_with(|| {
+    let _guard =
+        ExclusiveGuard::acquire(&tool_dir.join(".lock"), LOCK_TIMEOUT).wrap_err_with(|| {
             format!(
                 "acquiring lock on {} (is another `bougie tool` running?)",
                 tool_dir.display()
             )
         })?;
 
-    write_composer_json(&tool_dir, &plan.package, &plan.constraint, &plan.composer_extras)?;
+    write_composer_json(
+        &tool_dir,
+        &plan.package,
+        &plan.constraint,
+        &plan.composer_extras,
+    )?;
     (ctx.resolve_lock)(paths, &tool_dir).wrap_err("resolving composer.lock for tool")?;
     install_from_lock(paths, &tool_dir, InstallOptions { no_dev: true }, None)
         .wrap_err("installing tool dependencies")?;
 
     let conf_d = tool_dir.join("conf.d");
-    std::fs::create_dir_all(&conf_d)
-        .wrap_err_with(|| format!("creating {}", conf_d.display()))?;
+    std::fs::create_dir_all(&conf_d).wrap_err_with(|| format!("creating {}", conf_d.display()))?;
 
     // Install + enable extensions BEFORE emitting PATH symlinks.
     // A failing extension install must not leave a live on-PATH bin that
@@ -491,10 +501,7 @@ pub fn emit_bins(
 
 /// Regenerate `composer.json` from a receipt's current state. Used by
 /// `inject` / `uninject` after they mutate `receipt.with`.
-pub fn write_composer_json_for_receipt(
-    tool_dir: &Path,
-    receipt: &ToolReceipt,
-) -> Result<()> {
+pub fn write_composer_json_for_receipt(tool_dir: &Path, receipt: &ToolReceipt) -> Result<()> {
     write_composer_json(
         tool_dir,
         &receipt.package,
@@ -543,16 +550,12 @@ fn write_composer_json(
          \"config\": {{\n    \"allow-plugins\": false\n  }}\n}}\n",
     );
     let path = tool_dir.join("composer.json");
-    std::fs::write(&path, body)
-        .wrap_err_with(|| format!("writing {}", path.display()))?;
+    std::fs::write(&path, body).wrap_err_with(|| format!("writing {}", path.display()))?;
     Ok(())
 }
 
 fn read_bin_entries(tool_dir: &Path, package: &str) -> Result<Vec<String>> {
-    let package_json = tool_dir
-        .join("vendor")
-        .join(package)
-        .join("composer.json");
+    let package_json = tool_dir.join("vendor").join(package).join("composer.json");
     let bytes = std::fs::read(&package_json).wrap_err_with(|| {
         format!(
             "reading {} (composer install did not place the package)",
@@ -603,10 +606,7 @@ fn bin_filename(vendor_relative: &str) -> String {
 /// to `bricklayer`. A missing or non-string value yields `None`; the
 /// selector then falls back to its heuristics.
 pub fn read_default_bin(tool_dir: &Path, package: &str) -> Result<Option<String>> {
-    let package_json = tool_dir
-        .join("vendor")
-        .join(package)
-        .join("composer.json");
+    let package_json = tool_dir.join("vendor").join(package).join("composer.json");
     let bytes = match std::fs::read(&package_json) {
         Ok(b) => b,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -689,10 +689,7 @@ fn place_symlink(target: &Path, link: &Path, force: bool) -> Result<()> {
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => {
-            return Err(eyre::eyre!(
-                "checking {}: {e}",
-                link.display()
-            ));
+            return Err(eyre::eyre!("checking {}: {e}", link.display()));
         }
     }
     std::os::unix::fs::symlink(target, link)
@@ -740,10 +737,7 @@ mod tests {
 
     #[test]
     fn bin_filename_strips_directories() {
-        assert_eq!(
-            bin_filename("phpstan/phpstan/bin/phpstan"),
-            "phpstan"
-        );
+        assert_eq!(bin_filename("phpstan/phpstan/bin/phpstan"), "phpstan");
         assert_eq!(bin_filename("vendor/pkg/bin/tool.php"), "tool.php");
         assert_eq!(bin_filename(""), "");
     }
@@ -771,9 +765,15 @@ mod tests {
         )
         .unwrap();
         let text = std::fs::read_to_string(td.path().join("composer.json")).unwrap();
-        assert!(text.contains(r#""phpstan/phpstan-strict-rules": "^1.5""#), "{text}");
+        assert!(
+            text.contains(r#""phpstan/phpstan-strict-rules": "^1.5""#),
+            "{text}"
+        );
         // bare extras default to `*`
-        assert!(text.contains(r#""slevomat/coding-standard": "*""#), "{text}");
+        assert!(
+            text.contains(r#""slevomat/coding-standard": "*""#),
+            "{text}"
+        );
     }
 
     #[test]
@@ -803,7 +803,10 @@ mod tests {
         let entries = read_bin_entries(td.path(), "vimeo/psalm").unwrap();
         assert_eq!(
             entries,
-            vec!["vimeo/psalm/psalm".to_string(), "vimeo/psalm/psalter".to_string()]
+            vec![
+                "vimeo/psalm/psalm".to_string(),
+                "vimeo/psalm/psalter".to_string()
+            ]
         );
     }
 

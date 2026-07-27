@@ -41,11 +41,7 @@ pub async fn provision(tenants_path: &Path, tenant_name: &str, project: &Path) -
 /// there's no per-project mail to delete — wiping it would destroy
 /// other projects' caught mail. Clear the shared mailbox from the web
 /// UI's "Delete all" button (or `DELETE /api/v1/messages`) instead.
-pub async fn deprovision(
-    tenants_path: &Path,
-    tenant_name: &str,
-    _purge: bool,
-) -> Result<()> {
+pub async fn deprovision(tenants_path: &Path, tenant_name: &str, _purge: bool) -> Result<()> {
     tenants::rewrite(tenants_path, |t| t.tenant != tenant_name).await?;
     Ok(())
 }
@@ -59,7 +55,9 @@ mod tests {
     async fn provision_records_a_bare_tenant() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("tenants.json");
-        let t = provision(&path, "acme_blog", Path::new("/work/blog")).await.unwrap();
+        let t = provision(&path, "acme_blog", Path::new("/work/blog"))
+            .await
+            .unwrap();
         assert_eq!(t.tenant, "acme_blog");
         // Shared sink: no allocation, no secrets.
         assert!(t.alloc.is_empty(), "{:?}", t.alloc);

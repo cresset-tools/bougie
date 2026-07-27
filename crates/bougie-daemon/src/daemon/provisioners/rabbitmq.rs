@@ -15,9 +15,12 @@
 //! before sourcing the rest of its config, so no separate erlang
 //! install or symlink wiring is needed at the supervisor layer.
 
-use crate::daemon::{store_layout, tenants::{self, Tenant}};
+use crate::daemon::{
+    store_layout,
+    tenants::{self, Tenant},
+};
 use bougie_paths::Paths;
-use eyre::{eyre, Result, WrapErr};
+use eyre::{Result, WrapErr, eyre};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::process::Command;
@@ -149,9 +152,7 @@ pub async fn provision(
     tenant
         .alloc
         .insert("username".into(), serde_json::json!(tenant_name));
-    tenant
-        .secrets
-        .insert("password".into(), password);
+    tenant.secrets.insert("password".into(), password);
     tenants::append(tenants_path, &tenant).await?;
     Ok(tenant)
 }
@@ -239,7 +240,10 @@ async fn run_ctl(ctl: &Path, paths: &Paths, args: &[&str]) -> Result<()> {
     let mut cmd = Command::new(ctl);
     cmd.args(args);
     build_ctl_env(&mut cmd, paths);
-    let output = cmd.output().await.map_err(|e| eyre!("spawning rabbitmqctl: {e}"))?;
+    let output = cmd
+        .output()
+        .await
+        .map_err(|e| eyre!("spawning rabbitmqctl: {e}"))?;
     if !output.status.success() {
         return Err(eyre!(
             "rabbitmqctl {} failed (exit {}): {}",
@@ -264,7 +268,10 @@ async fn run_ctl(ctl: &Path, paths: &Paths, args: &[&str]) -> Result<()> {
 /// wrong broker.
 fn build_ctl_env(cmd: &mut Command, paths: &Paths) {
     cmd.env_clear()
-        .env("HOME", paths.service_data("rabbitmq", svc_version()).join("home"))
+        .env(
+            "HOME",
+            paths.service_data("rabbitmq", svc_version()).join("home"),
+        )
         .env("PATH", ctl_path())
         // Belt-and-suspenders against a dangling cwd: bougied anchors
         // its own cwd to the state root, but pin these out-of-band ctl
@@ -278,7 +285,10 @@ fn build_ctl_env(cmd: &mut Command, paths: &Paths) {
         // rabbitmqctl reaches the node via RABBITMQ_NODENAME (epmd), not
         // the AMQP port, so this value is immaterial to ctl — but keep it
         // consistent with the running broker's effective port.
-        .envs(rabbitmq_env(paths, crate::daemon::endpoint::effective_primary(paths, "rabbitmq", svc_version(), 5672)));
+        .envs(rabbitmq_env(
+            paths,
+            crate::daemon::endpoint::effective_primary(paths, "rabbitmq", svc_version(), 5672),
+        ));
 }
 
 /// PATH for the ctl child: the FHS defaults, plus whatever bougied
@@ -422,17 +432,30 @@ mod tests {
     fn rabbitmq_env_pins_loopback_and_state_paths() {
         let tmp = tempfile::TempDir::new().unwrap();
         let paths = Paths::new(tmp.path().into(), tmp.path().into());
-        let env: std::collections::HashMap<_, _> =
-            rabbitmq_env(&paths, 5672).into_iter().collect();
-        assert_eq!(env.get("RABBITMQ_NODENAME").map(std::string::String::as_str), Some("rabbit@localhost"));
-        assert_eq!(env.get("RABBITMQ_NODE_IP_ADDRESS").map(std::string::String::as_str), Some("127.0.0.1"));
-        assert_eq!(env.get("RABBITMQ_NODE_PORT").map(std::string::String::as_str), Some("5672"));
-        assert!(env
-            .get("RABBITMQ_MNESIA_BASE")
-            .is_some_and(|p| p.contains("mnesia")));
-        assert!(env
-            .get("RABBITMQ_LOG_BASE")
-            .is_some_and(|p| p.contains("rabbitmq") && p.ends_with("/log")));
+        let env: std::collections::HashMap<_, _> = rabbitmq_env(&paths, 5672).into_iter().collect();
+        assert_eq!(
+            env.get("RABBITMQ_NODENAME")
+                .map(std::string::String::as_str),
+            Some("rabbit@localhost")
+        );
+        assert_eq!(
+            env.get("RABBITMQ_NODE_IP_ADDRESS")
+                .map(std::string::String::as_str),
+            Some("127.0.0.1")
+        );
+        assert_eq!(
+            env.get("RABBITMQ_NODE_PORT")
+                .map(std::string::String::as_str),
+            Some("5672")
+        );
+        assert!(
+            env.get("RABBITMQ_MNESIA_BASE")
+                .is_some_and(|p| p.contains("mnesia"))
+        );
+        assert!(
+            env.get("RABBITMQ_LOG_BASE")
+                .is_some_and(|p| p.contains("rabbitmq") && p.ends_with("/log"))
+        );
     }
 
     #[test]

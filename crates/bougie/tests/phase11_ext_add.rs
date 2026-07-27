@@ -109,9 +109,8 @@ async fn build_fixture() -> Fixture {
     // ---- PHP interpreter (for the implicit ensure_synced) ---------------
     let (php_blob, php_sha) = build_php_tarball();
     let php_blob_url = format!("{}/blobs/{php_sha}", server.uri());
-    let php_manifest_path = format!(
-        "/targets/{target}/manifests/php/8.3/php-8.3.12-{target}-nts.json"
-    );
+    let php_manifest_path =
+        format!("/targets/{target}/manifests/php/8.3/php-8.3.12-{target}-nts.json");
     let php_manifest_json = serde_json::json!({
         "schema": 1, "kind": "interpreter", "name": "php",
         "tag": format!("php-8.3.12-{target}-nts"),
@@ -139,9 +138,8 @@ async fn build_fixture() -> Fixture {
     let (redis_blob, redis_blob_sha, so_path, so_sha) = build_ext_tarball("redis");
     let redis_blob_sha8: String = redis_blob_sha.chars().take(8).collect();
     let redis_blob_url = format!("{}/blobs/{redis_blob_sha}", server.uri());
-    let redis_manifest_path = format!(
-        "/targets/{target}/manifests/extension/redis/redis-6.0.2+php83-{target}-nts.json"
-    );
+    let redis_manifest_path =
+        format!("/targets/{target}/manifests/extension/redis/redis-6.0.2+php83-{target}-nts.json");
     let redis_manifest_json = serde_json::json!({
         "schema": 1, "kind": "extension", "name": "redis",
         "tag": format!("redis-6.0.2+php83-{target}-nts"),
@@ -299,7 +297,10 @@ fn ext_add_redis_installs_so_and_edits_composer_json_no_composer_subprocess() {
     let frag = proj.path().join("vendor/bougie/conf.d/20-redis.ini");
     let body = std::fs::read_to_string(&frag).expect("20-redis.ini should exist");
     assert!(body.contains("extension="));
-    assert!(!body.contains("zend_extension"), "redis is a regular ext, not zend");
+    assert!(
+        !body.contains("zend_extension"),
+        "redis is a regular ext, not zend"
+    );
 
     // The .so itself was extracted into the content-addressed store
     // at the path the conf.d fragment points to. We can't assert the
@@ -310,8 +311,10 @@ fn ext_add_redis_installs_so_and_edits_composer_json_no_composer_subprocess() {
         .lines()
         .find(|l| l.starts_with("extension="))
         .expect("extension= line");
-    let so_path: std::path::PathBuf =
-        extension_line.trim_start_matches("extension=").trim().into();
+    let so_path: std::path::PathBuf = extension_line
+        .trim_start_matches("extension=")
+        .trim()
+        .into();
     assert!(
         so_path.exists(),
         "the .so the fragment names should exist on disk at {}",

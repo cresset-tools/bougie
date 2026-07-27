@@ -155,12 +155,11 @@ pub(crate) fn read_path_package(
         return Ok(None);
     }
     let bytes = std::fs::read(&composer_path)?;
-    let json: Value = serde_json::from_slice(&bytes).map_err(|e| {
-        bougie_errors::BougieError::Config {
+    let json: Value =
+        serde_json::from_slice(&bytes).map_err(|e| bougie_errors::BougieError::Config {
             path: composer_path.display().to_string(),
             detail: e.to_string(),
-        }
-    })?;
+        })?;
     let Some(obj) = json.as_object() else {
         tracing::warn!(path = %composer_path.display(), "composer.json is not an object; skipping");
         return Ok(None);
@@ -201,7 +200,10 @@ pub(crate) fn read_path_package(
 
     let package = LockPackage {
         name,
-        description: obj.get("description").and_then(Value::as_str).map(str::to_owned),
+        description: obj
+            .get("description")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
         version: version_str,
         version_normalized: Some(version.normalized.clone()),
         dist: Some(dist),

@@ -26,10 +26,7 @@ use super::paths::create_dir_0700;
 /// caller can order them most-stable-first (the project's `conf.d/`
 /// before the debug overlay). Idempotent: any prior `.confd/` is
 /// replaced.
-pub fn build_variant_confd(
-    target_dir: &Path,
-    source_dirs: &[&Path],
-) -> Result<Vec<PathBuf>> {
+pub fn build_variant_confd(target_dir: &Path, source_dirs: &[&Path]) -> Result<Vec<PathBuf>> {
     // Drop any stale variant directory so prefix changes between
     // bougie releases don't leave orphans. `remove_dir_all` returns
     // NotFound on a fresh tree; ignore.
@@ -37,10 +34,7 @@ pub fn build_variant_confd(
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => {
-            return Err(eyre::eyre!(
-                "removing stale {}: {e}",
-                target_dir.display()
-            ));
+            return Err(eyre::eyre!("removing stale {}: {e}", target_dir.display()));
         }
     }
     create_dir_0700(target_dir)?;
@@ -67,9 +61,8 @@ pub fn build_variant_confd(
                 continue;
             }
             let link = target_dir.join(fname);
-            link_fragment(&path, &link).wrap_err_with(|| {
-                format!("linking {} -> {}", link.display(), path.display())
-            })?;
+            link_fragment(&path, &link)
+                .wrap_err_with(|| format!("linking {} -> {}", link.display(), path.display()))?;
             linked.push(link);
         }
     }
@@ -165,10 +158,8 @@ pub fn write_pool_conf(path: &Path, conf: &PoolConf<'_>) -> Result<()> {
         .ok_or_else(|| eyre::eyre!("pool conf path has no parent: {}", path.display()))?;
     create_dir_0700(parent)?;
     let tmp = path.with_extension("conf.tmp");
-    std::fs::write(&tmp, conf.render())
-        .wrap_err_with(|| format!("writing {}", tmp.display()))?;
-    std::fs::rename(&tmp, path)
-        .wrap_err_with(|| format!("renaming {}", path.display()))?;
+    std::fs::write(&tmp, conf.render()).wrap_err_with(|| format!("writing {}", tmp.display()))?;
+    std::fs::rename(&tmp, path).wrap_err_with(|| format!("renaming {}", path.display()))?;
     Ok(())
 }
 
@@ -230,7 +221,10 @@ mod tests {
             .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
             .collect();
         names.sort();
-        assert_eq!(names, vec!["20-redis.ini".to_string(), "30-xdebug.ini".to_string()]);
+        assert_eq!(
+            names,
+            vec!["20-redis.ini".to_string(), "30-xdebug.ini".to_string()]
+        );
     }
 
     /// Unix-only: the assertion uses `read_link` which is meaningful

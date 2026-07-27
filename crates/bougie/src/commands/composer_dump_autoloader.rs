@@ -15,9 +15,9 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use bougie_autoloader::{dump_autoload, DumpRequest, PsrWarning};
+use bougie_autoloader::{DumpRequest, PsrWarning, dump_autoload};
 use bougie_cli::OutputFormat;
-use bougie_output::output::{emit, Render};
+use bougie_output::output::{Render, emit};
 use eyre::{Context, Result};
 use serde::Serialize;
 
@@ -182,10 +182,7 @@ fn installed_dev_mode(project_root: &Path) -> Option<bool> {
 fn require_file(dir: &Path, name: &str) -> Result<()> {
     let path = dir.join(name);
     if !path.is_file() {
-        return Err(eyre::eyre!(
-            "{name} not found in {}",
-            dir.display()
-        ));
+        return Err(eyre::eyre!("{name} not found in {}", dir.display()));
     }
     Ok(())
 }

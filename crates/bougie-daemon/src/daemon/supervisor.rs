@@ -12,7 +12,7 @@ use super::logs::LogWriter;
 use super::sandbox;
 use super::store_layout;
 use bougie_paths::Paths;
-use eyre::{eyre, Context, Result};
+use eyre::{Context, Result, eyre};
 use serde::Serialize;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::process::Stdio;
@@ -337,7 +337,11 @@ impl Supervisor {
             svc_root = backend.svc_root().map(|p| p.display().to_string()),
             "bougied: supervision backend"
         );
-        Self { services, paths, backend }
+        Self {
+            services,
+            paths,
+            backend,
+        }
     }
 
     /// The detected supervision backend (process-group fallback or a
@@ -365,7 +369,10 @@ impl Supervisor {
         .await
         .unwrap_or_default();
         if !reaped.is_empty() {
-            tracing::warn!(?reaped, "reaped leftover service cgroups from a dead bougied");
+            tracing::warn!(
+                ?reaped,
+                "reaped leftover service cgroups from a dead bougied"
+            );
         }
     }
 
@@ -451,7 +458,10 @@ impl Supervisor {
         version: &str,
         port_in_use: impl Fn(u16) -> bool,
     ) -> Result<Option<endpoint::ServiceEndpoint>> {
-        let Binding::Tcp { port: default_primary } = entry.binding else {
+        let Binding::Tcp {
+            port: default_primary,
+        } = entry.binding
+        else {
             return Ok(None);
         };
         let ep_path = self.paths.service_endpoint(entry.name, version);
@@ -526,8 +536,8 @@ impl Supervisor {
     /// Returns [`SpawnOutcome::AlreadyRunning`] if the instance was already
     /// Starting/HealthChecking/Running.
     pub async fn spawn_service(&mut self, inst: &Instance) -> Result<SpawnOutcome> {
-        let entry = catalog::find(&inst.name)
-            .ok_or_else(|| eyre!("unknown service `{}`", inst.name))?;
+        let entry =
+            catalog::find(&inst.name).ok_or_else(|| eyre!("unknown service `{}`", inst.name))?;
         let version = inst.version.as_str();
         let id = inst.id();
         // Lazy creation: the first `up` for this (name, version) instance
@@ -580,8 +590,8 @@ impl Supervisor {
         // read+exec on it, since it usually lives under $HOME
         // (`~/.local/...`) which `ProtectHome::Yes` otherwise denies —
         // without the carve-in the child can't even `execve` babysit.
-        let bougie_bin = std::env::current_exe()
-            .wrap_err("locating current_exe for bougie-babysit")?;
+        let bougie_bin =
+            std::env::current_exe().wrap_err("locating current_exe for bougie-babysit")?;
         let policy = sandbox::build_policy(entry, version, &self.paths, &bougie_bin)
             .wrap_err_with(|| format!("compiling sandbox policy for {}", entry.name))?;
         let binary = self.binary_path(entry, version)?;
@@ -605,8 +615,8 @@ impl Supervisor {
         // socketpair gives the babysit a death-detection signal —
         // when bougied exits, the parent end EOFs and the babysit
         // tears its group down.
-        let (parent_sock, child_sock) = std::os::unix::net::UnixStream::pair()
-            .wrap_err("creating babysit socketpair")?;
+        let (parent_sock, child_sock) =
+            std::os::unix::net::UnixStream::pair().wrap_err("creating babysit socketpair")?;
         let child_sock_fd = {
             use std::os::fd::AsRawFd;
             child_sock.as_raw_fd()
@@ -739,31 +749,29 @@ impl Supervisor {
             .wrap_err("setting parent socket non-blocking")?;
         let mut control_sock = tokio::net::UnixStream::from_std(parent_sock)
             .wrap_err("wrapping parent socket as tokio stream")?;
-        let service_pgid = match tokio::time::timeout(
-            BABYSIT_READY_TIMEOUT,
-            read_pgid_line(&mut control_sock),
-        )
-        .await
-        {
-            Ok(Ok(pgid)) => pgid,
-            Ok(Err(e)) => {
-                let _ = child.start_kill();
-                let _ = child.wait().await;
-                return Err(eyre!(
-                    "babysit for `{}` failed before reporting pgid: {e}",
-                    entry.name
-                ));
-            }
-            Err(_) => {
-                let _ = child.start_kill();
-                let _ = child.wait().await;
-                return Err(eyre!(
-                    "babysit for `{}` did not report pgid within {:?}",
-                    entry.name,
-                    BABYSIT_READY_TIMEOUT
-                ));
-            }
-        };
+        let service_pgid =
+            match tokio::time::timeout(BABYSIT_READY_TIMEOUT, read_pgid_line(&mut control_sock))
+                .await
+            {
+                Ok(Ok(pgid)) => pgid,
+                Ok(Err(e)) => {
+                    let _ = child.start_kill();
+                    let _ = child.wait().await;
+                    return Err(eyre!(
+                        "babysit for `{}` failed before reporting pgid: {e}",
+                        entry.name
+                    ));
+                }
+                Err(_) => {
+                    let _ = child.start_kill();
+                    let _ = child.wait().await;
+                    return Err(eyre!(
+                        "babysit for `{}` did not report pgid within {:?}",
+                        entry.name,
+                        BABYSIT_READY_TIMEOUT
+                    ));
+                }
+            };
         // Take the piped fds before we hand the child to the
         // supervisor map; spawn a forwarder per stream so writes land
         // in the LogWriter (which handles rotation). Forwarders exit
@@ -881,8 +889,8 @@ impl Supervisor {
     /// that only this path can kill. Both are handled by running the full
     /// teardown below and clearing the crash-backoff bookkeeping.
     pub async fn stop(&mut self, inst: &Instance) -> Result<bool> {
-        let entry = catalog::find(&inst.name)
-            .ok_or_else(|| eyre!("unknown service `{}`", inst.name))?;
+        let entry =
+            catalog::find(&inst.name).ok_or_else(|| eyre!("unknown service `{}`", inst.name))?;
         let id = inst.id();
         // An unknown / never-upped instance has no slot — nothing to stop.
         let Some(svc) = self.services.get_mut(&id) else {
@@ -932,9 +940,7 @@ impl Supervisor {
         // SIGKILLs the group out from under it. Without this a service
         // stopped during its first-boot probe (e.g. mariadb initializing
         // its datadir) is killed with ~no grace, risking corruption.
-        if !had_child
-            && let Some(pgid) = service_pgid
-        {
+        if !had_child && let Some(pgid) = service_pgid {
             wait_for_group_drain(pgid, STOP_GRACE).await;
         }
 
@@ -1093,8 +1099,7 @@ impl Supervisor {
             .services
             .values()
             .filter(|s| {
-                s.state == ServiceState::Failed
-                    && s.restart_at.is_some_and(|d| d <= due_now)
+                s.state == ServiceState::Failed && s.restart_at.is_some_and(|d| d <= due_now)
             })
             .map(ManagedService::instance)
             .collect();
@@ -1184,7 +1189,10 @@ impl Supervisor {
             svc.last_health_ok = Some(now);
             if svc.state == ServiceState::Unhealthy {
                 svc.state = ServiceState::Running;
-                tracing::info!(service = name, "service recovered; health checks passing again");
+                tracing::info!(
+                    service = name,
+                    "service recovered; health checks passing again"
+                );
             }
             return HealthOutcome::Healthy;
         }
@@ -1304,7 +1312,11 @@ fn compute_backoff(failure_count: u32) -> Duration {
 ///   to the child and BEAM aborts with `invalid_current_directory`
 ///   ("cannot start loader") before it can read its boot script.
 ///   Anchor CWD to the service data dir, which is in the RW set.
-fn render_exec_cwd(entry: &CatalogEntry, version: &str, paths: &Paths) -> Option<std::path::PathBuf> {
+fn render_exec_cwd(
+    entry: &CatalogEntry,
+    version: &str,
+    paths: &Paths,
+) -> Option<std::path::PathBuf> {
     match entry.name {
         "opensearch" => Some(paths.service_data("opensearch", version)),
         "rabbitmq" => Some(paths.service_data("rabbitmq", version)),
@@ -1372,7 +1384,11 @@ fn render_exec_env(
             let mut env = super::provisioners::rabbitmq::rabbitmq_env(paths, node_port);
             env.push((
                 "HOME".into(),
-                paths.service_data("rabbitmq", version).join("home").display().to_string(),
+                paths
+                    .service_data("rabbitmq", version)
+                    .join("home")
+                    .display()
+                    .to_string(),
             ));
             env
         }
@@ -1391,7 +1407,10 @@ fn render_exec_env(
                 .map(|p| p.join("jdk"))
                 .unwrap_or_default();
             vec![
-                ("OPENSEARCH_JAVA_HOME".into(), java_home.display().to_string()),
+                (
+                    "OPENSEARCH_JAVA_HOME".into(),
+                    java_home.display().to_string(),
+                ),
                 // JNA native-lib extraction + `java.io.tmpdir` write
                 // here. `/tmp` is hidden by `ProtectSystem::Strict`.
                 ("OPENSEARCH_TMPDIR".into(), tmp.display().to_string()),
@@ -1448,7 +1467,8 @@ fn db_dev_tuning_args(svc: &str) -> Vec<String> {
 fn db_dev_tuning_args_from(profile: Option<&str>, buffer_pool: Option<&str>) -> Vec<String> {
     // Opt back into production durability: append nothing, inheriting the
     // server's stock defaults.
-    if profile.is_some_and(|p| p.eq_ignore_ascii_case("prod") || p.eq_ignore_ascii_case("production"))
+    if profile
+        .is_some_and(|p| p.eq_ignore_ascii_case("prod") || p.eq_ignore_ascii_case("production"))
     {
         return Vec::new();
     }
@@ -1472,7 +1492,11 @@ fn render_exec_args(
 ) -> Vec<String> {
     match entry.name {
         "redis" => {
-            let sock = paths.service_run("redis", version).join("redis.sock").display().to_string();
+            let sock = paths
+                .service_run("redis", version)
+                .join("redis.sock")
+                .display()
+                .to_string();
             let dir = paths.service_data("redis", version).display().to_string();
             vec![
                 "--port".into(),
@@ -1517,8 +1541,14 @@ fn render_exec_args(
             ]
         }
         "opensearch" => {
-            let data = paths.service_data("opensearch", version).display().to_string();
-            let log = paths.service_log("opensearch", version).display().to_string();
+            let data = paths
+                .service_data("opensearch", version)
+                .display()
+                .to_string();
+            let log = paths
+                .service_log("opensearch", version)
+                .display()
+                .to_string();
             // OpenSearch writes JNA-extracted native libs + assorted
             // temporaries under `OPENSEARCH_TMPDIR`. The sandbox hides
             // /tmp (ProtectSystem::Strict), so pin it under the data
@@ -1528,8 +1558,9 @@ fn render_exec_args(
             // so two search engines — or opensearch beside elasticsearch —
             // coexist.
             let http_port = endpoint.map_or(9200, |e| e.primary);
-            let transport_port =
-                endpoint.and_then(|e| e.extra_port("transport")).unwrap_or(OPENSEARCH_TRANSPORT_PORT);
+            let transport_port = endpoint
+                .and_then(|e| e.extra_port("transport"))
+                .unwrap_or(OPENSEARCH_TRANSPORT_PORT);
             vec![
                 format!("-Epath.data={data}"),
                 format!("-Epath.logs={log}"),
@@ -1549,7 +1580,11 @@ fn render_exec_args(
         "mariadb" => {
             let data_path = paths.service_data("mariadb", version);
             let datadir = data_path.display().to_string();
-            let sock = paths.service_run("mariadb", version).join("mariadb.sock").display().to_string();
+            let sock = paths
+                .service_run("mariadb", version)
+                .join("mariadb.sock")
+                .display()
+                .to_string();
             // InnoDB writes temporaries during startup. The sandbox
             // hides /tmp (default systemd-style ProtectSystem), so
             // pin them under the already-RW datadir. Best-effort
@@ -1592,7 +1627,11 @@ fn render_exec_args(
         "mysql" => {
             let data_path = paths.service_data("mysql", version);
             let datadir = data_path.display().to_string();
-            let sock = paths.service_run("mysql", version).join("mysql.sock").display().to_string();
+            let sock = paths
+                .service_run("mysql", version)
+                .join("mysql.sock")
+                .display()
+                .to_string();
             // InnoDB temporaries, same reasoning as mariadb: the sandbox
             // hides /tmp, so pin them under the already-RW datadir.
             let tmpdir = data_path.join("tmp");
@@ -1626,7 +1665,10 @@ fn render_exec_args(
             // service data dir so it survives restarts — the dir is
             // created (and made RW) by the sandbox before spawn, and
             // Mailpit creates the SQLite file + its WAL siblings there.
-            let smtp = format!("127.0.0.1:{}", endpoint.map_or(catalog::MAILPIT_SMTP_PORT, |e| e.primary));
+            let smtp = format!(
+                "127.0.0.1:{}",
+                endpoint.map_or(catalog::MAILPIT_SMTP_PORT, |e| e.primary)
+            );
             let http = format!(
                 "127.0.0.1:{}",
                 endpoint
@@ -1737,8 +1779,11 @@ const STARTUP_LOG_EXCERPT_BYTES: usize = 4 * 1024;
 /// diagnose` instead of staying buried on the daemon host). Empty
 /// string when there is no log to quote.
 fn startup_log_excerpt(name: &str, version: &str, paths: &Paths) -> String {
-    let lines = super::logs::tail_lines(&paths.service_log_file(name, version), STARTUP_LOG_EXCERPT_LINES)
-        .unwrap_or_default();
+    let lines = super::logs::tail_lines(
+        &paths.service_log_file(name, version),
+        STARTUP_LOG_EXCERPT_LINES,
+    )
+    .unwrap_or_default();
     let mut excerpt = String::new();
     for line in &lines {
         let line = line.trim_end_matches(['\n', '\r']);
@@ -1875,7 +1920,8 @@ fn reap_orphan_group(service: &str, pgid: i32, leader_starttime: Option<u64>) {
         let _ = rustix::process::kill_process_group(pgrp, rustix::process::Signal::TERM);
         std::thread::sleep(Duration::from_millis(250));
         let _ = rustix::process::kill_process_group(pgrp, rustix::process::Signal::KILL);
-    } else { /* group already empty — normal path */ }
+    } else { /* group already empty — normal path */
+    }
 }
 
 async fn stop_child(child: &mut Child, pid: Option<u32>) {
@@ -1892,7 +1938,8 @@ async fn stop_child(child: &mut Child, pid: Option<u32>) {
         }
     }
     // Wait up to the grace window. If still running, SIGKILL.
-    if let Ok(Ok(_)) = tokio::time::timeout(STOP_GRACE, child.wait()).await {} else {
+    if let Ok(Ok(_)) = tokio::time::timeout(STOP_GRACE, child.wait()).await {
+    } else {
         let _ = child.start_kill();
         let _ = child.wait().await;
     }
@@ -1937,8 +1984,7 @@ pub fn compute_start_order(target: &[&str]) -> Result<Vec<&'static str>> {
     }
 
     // Build in-degree map.
-    let mut indeg: BTreeMap<&'static str, usize> =
-        wanted.iter().map(|n| (*n, 0)).collect();
+    let mut indeg: BTreeMap<&'static str, usize> = wanted.iter().map(|n| (*n, 0)).collect();
     let mut edges: BTreeMap<&'static str, Vec<&'static str>> =
         wanted.iter().map(|n| (*n, Vec::new())).collect();
     for &name in &wanted {
@@ -1975,15 +2021,16 @@ pub fn compute_start_order(target: &[&str]) -> Result<Vec<&'static str>> {
     if out.len() != wanted.len() {
         return Err(eyre!(
             "cycle in service dependency graph involving {:?}",
-            wanted.difference(&out.iter().copied().collect()).collect::<Vec<_>>()
+            wanted
+                .difference(&out.iter().copied().collect())
+                .collect::<Vec<_>>()
         ));
     }
     Ok(out)
 }
 
 fn add_with_deps(name: &str, set: &mut HashSet<&'static str>) -> Result<()> {
-    let entry = catalog::find(name)
-        .ok_or_else(|| eyre!("unknown service `{name}`"))?;
+    let entry = catalog::find(name).ok_or_else(|| eyre!("unknown service `{name}`"))?;
     if set.insert(entry.name) {
         for &dep in entry.requires.iter().chain(entry.after.iter()) {
             add_with_deps(dep, set)?;
@@ -2065,9 +2112,19 @@ mod tests {
     #[test]
     fn db_dev_tuning_default_relaxes_durability() {
         let args = db_dev_tuning_args_from(None, None);
-        assert!(args.iter().any(|a| a == "--innodb-flush-log-at-trx-commit=0"), "{args:?}");
-        assert!(args.iter().any(|a| a == "--innodb-doublewrite=OFF"), "{args:?}");
-        assert!(args.iter().any(|a| a == "--innodb-buffer-pool-size=256M"), "{args:?}");
+        assert!(
+            args.iter()
+                .any(|a| a == "--innodb-flush-log-at-trx-commit=0"),
+            "{args:?}"
+        );
+        assert!(
+            args.iter().any(|a| a == "--innodb-doublewrite=OFF"),
+            "{args:?}"
+        );
+        assert!(
+            args.iter().any(|a| a == "--innodb-buffer-pool-size=256M"),
+            "{args:?}"
+        );
     }
 
     #[test]
@@ -2081,10 +2138,16 @@ mod tests {
     #[test]
     fn db_dev_tuning_honours_buffer_pool_override() {
         let args = db_dev_tuning_args_from(Some("test"), Some("1G"));
-        assert!(args.iter().any(|a| a == "--innodb-buffer-pool-size=1G"), "{args:?}");
+        assert!(
+            args.iter().any(|a| a == "--innodb-buffer-pool-size=1G"),
+            "{args:?}"
+        );
         // An empty override falls back to the default.
         let args = db_dev_tuning_args_from(None, Some(""));
-        assert!(args.iter().any(|a| a == "--innodb-buffer-pool-size=256M"), "{args:?}");
+        assert!(
+            args.iter().any(|a| a == "--innodb-buffer-pool-size=256M"),
+            "{args:?}"
+        );
     }
 
     #[test]
@@ -2094,10 +2157,18 @@ mod tests {
         let paths = Paths::new(tmp.path().into(), tmp.path().into());
         let entry = catalog::find("mariadb").unwrap();
         let args = render_exec_args(entry, entry.version, &paths, None);
-        assert!(args.iter().any(|a| a == "--innodb-flush-log-at-trx-commit=0"), "{args:?}");
-        assert!(args.iter().any(|a| a == "--innodb-doublewrite=OFF"), "{args:?}");
         assert!(
-            args.iter().any(|a| a.starts_with("--innodb-buffer-pool-size=")),
+            args.iter()
+                .any(|a| a == "--innodb-flush-log-at-trx-commit=0"),
+            "{args:?}"
+        );
+        assert!(
+            args.iter().any(|a| a == "--innodb-doublewrite=OFF"),
+            "{args:?}"
+        );
+        assert!(
+            args.iter()
+                .any(|a| a.starts_with("--innodb-buffer-pool-size=")),
             "{args:?}"
         );
     }
@@ -2108,8 +2179,15 @@ mod tests {
         let paths = Paths::new(tmp.path().into(), tmp.path().into());
         let entry = catalog::find("mysql").unwrap();
         let args = render_exec_args(entry, entry.version, &paths, None);
-        assert!(args.iter().any(|a| a == "--innodb-flush-log-at-trx-commit=0"), "{args:?}");
-        assert!(args.iter().any(|a| a == "--innodb-doublewrite=OFF"), "{args:?}");
+        assert!(
+            args.iter()
+                .any(|a| a == "--innodb-flush-log-at-trx-commit=0"),
+            "{args:?}"
+        );
+        assert!(
+            args.iter().any(|a| a == "--innodb-doublewrite=OFF"),
+            "{args:?}"
+        );
     }
 
     #[test]
@@ -2143,7 +2221,11 @@ mod tests {
         let paths = Paths::new(tmp.path().into(), tmp.path().into());
         // Hash-suffixed tarball, as the index would produce.
         std::fs::create_dir_all(paths.store().join("redis-8.6.3-abc123/bin")).unwrap();
-        std::fs::write(paths.store().join("redis-8.6.3-abc123/bin/redis-server"), "fake").unwrap();
+        std::fs::write(
+            paths.store().join("redis-8.6.3-abc123/bin/redis-server"),
+            "fake",
+        )
+        .unwrap();
         let supervisor = Supervisor::new(paths);
         let entry = catalog::find("redis").unwrap();
         let path = supervisor.binary_path(entry, entry.version).unwrap();
@@ -2202,7 +2284,11 @@ mod tests {
         assert!(!snap.is_empty(), "seeded instances present");
         for s in &snap {
             assert_eq!(s.failure_count, 0, "{}: failure_count should be 0", s.name);
-            assert!(s.next_restart_ms.is_none(), "{}: no respawn pending", s.name);
+            assert!(
+                s.next_restart_ms.is_none(),
+                "{}: no respawn pending",
+                s.name
+            );
         }
     }
 
@@ -2241,11 +2327,17 @@ mod tests {
             .unwrap()
             .expect("a tcp service has an endpoint");
         assert_ne!(ep.primary, 5672, "must relocate off the squatted port");
-        assert!(ep.primary > 5672, "scans upward from the default: {}", ep.primary);
+        assert!(
+            ep.primary > 5672,
+            "scans upward from the default: {}",
+            ep.primary
+        );
         // Persisted so exec args / health / offline consumers agree.
-        let back = endpoint::ServiceEndpoint::load(&sup.paths.service_endpoint("rabbitmq", &entry.version))
-            .unwrap()
-            .unwrap();
+        let back = endpoint::ServiceEndpoint::load(
+            &sup.paths.service_endpoint("rabbitmq", &entry.version),
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(back, ep);
     }
 
@@ -2257,12 +2349,17 @@ mod tests {
         // the host: with the live-socket probe a transient bind of 1025
         // between a pre-check and the resolve relocated us to 1026 on macOS
         // CI. Deterministic probe → the defaults are always chosen here.
-        let ep = sup.resolve_endpoint_with(entry, entry.version, |_| false).unwrap().unwrap();
+        let ep = sup
+            .resolve_endpoint_with(entry, entry.version, |_| false)
+            .unwrap()
+            .unwrap();
         assert_eq!(ep.primary, 1025);
         assert_eq!(ep.extra_port("http"), Some(8025));
         // Sticky: a second resolve reuses the recorded ports verbatim.
         assert_eq!(
-            sup.resolve_endpoint_with(entry, entry.version, |_| false).unwrap().unwrap(),
+            sup.resolve_endpoint_with(entry, entry.version, |_| false)
+                .unwrap()
+                .unwrap(),
             ep
         );
     }
@@ -2271,7 +2368,11 @@ mod tests {
     fn resolve_endpoint_is_none_for_socket_services() {
         let sup = test_supervisor();
         let entry = catalog::find("redis").unwrap();
-        assert!(sup.resolve_endpoint(entry, entry.version).unwrap().is_none());
+        assert!(
+            sup.resolve_endpoint(entry, entry.version)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
@@ -2322,7 +2423,9 @@ mod tests {
             .spawn()
             .expect("spawn sh");
         let inst = Instance::new("redis", catalog::default_version("redis"));
-        let err = wait_for_health(&inst, &paths, &mut child).await.unwrap_err();
+        let err = wait_for_health(&inst, &paths, &mut child)
+            .await
+            .unwrap_err();
         let msg = format!("{err:#}");
         assert!(msg.contains("exited during startup"), "{msg}");
         assert!(msg.contains("BOOT FAILED: Address already in use"), "{msg}");
@@ -2358,7 +2461,15 @@ mod tests {
         let svc = sup.services.get(&redis.id()).unwrap();
         assert_eq!(svc.state, ServiceState::Running);
         assert!(svc.child.is_some(), "child put back in the map");
-        reap(sup.services.get_mut(&redis.id()).unwrap().child.take().unwrap()).await;
+        reap(
+            sup.services
+                .get_mut(&redis.id())
+                .unwrap()
+                .child
+                .take()
+                .unwrap(),
+        )
+        .await;
     }
 
     #[tokio::test]
@@ -2373,7 +2484,15 @@ mod tests {
         assert_eq!(svc.state, ServiceState::Failed);
         // The (dead/wedged) child is kept so the next check_all tick reaps it.
         assert!(svc.child.is_some());
-        reap(sup.services.get_mut(&redis.id()).unwrap().child.take().unwrap()).await;
+        reap(
+            sup.services
+                .get_mut(&redis.id())
+                .unwrap()
+                .child
+                .take()
+                .unwrap(),
+        )
+        .await;
     }
 
     #[tokio::test]
@@ -2392,7 +2511,10 @@ mod tests {
         };
         let svc = sup.services.get(&redis.id()).unwrap();
         assert_eq!(svc.state, ServiceState::Stopped, "honor the newer state");
-        assert!(svc.child.is_none(), "do not stash the stale child in the map");
+        assert!(
+            svc.child.is_none(),
+            "do not stash the stale child in the map"
+        );
         reap(stale).await;
     }
 
@@ -2407,7 +2529,10 @@ mod tests {
             svc.restart_at = Some(Instant::now());
         }
         let due = sup.check_all().await;
-        assert!(due.iter().any(|i| i.name == "redis"), "overdue Failed service is due");
+        assert!(
+            due.iter().any(|i| i.name == "redis"),
+            "overdue Failed service is due"
+        );
         let svc = sup.services.get(&redis.id()).unwrap();
         // Deadline cleared so the next tick won't double-issue the restart
         // that's now in flight off-lock.
@@ -2430,7 +2555,10 @@ mod tests {
         }
         let due = sup.check_all().await;
         assert!(due.is_empty(), "not-yet-due restart is left alone");
-        assert_eq!(sup.services.get(&redis.id()).unwrap().restart_at, Some(deadline));
+        assert_eq!(
+            sup.services.get(&redis.id()).unwrap().restart_at,
+            Some(deadline)
+        );
     }
 
     #[test]
@@ -2547,7 +2675,10 @@ mod tests {
         let redis = seed(&mut sup, "redis"); // seeded Stopped
         let out = sup.record_health(&redis, false);
         assert_eq!(out, HealthOutcome::Gone);
-        assert_eq!(sup.services.get(&redis.id()).unwrap().state, ServiceState::Stopped);
+        assert_eq!(
+            sup.services.get(&redis.id()).unwrap().state,
+            ServiceState::Stopped
+        );
     }
 
     #[test]
@@ -2574,8 +2705,14 @@ mod tests {
             j.next_health_at = Some(Instant::now());
         }
         let due = sup.health_due();
-        assert!(!due.iter().any(|i| i.name == "redis"), "stopped service not probed");
-        assert!(!due.iter().any(|i| i.name == "jdk"), "Binding::None never probed");
+        assert!(
+            !due.iter().any(|i| i.name == "redis"),
+            "stopped service not probed"
+        );
+        assert!(
+            !due.iter().any(|i| i.name == "jdk"),
+            "Binding::None never probed"
+        );
     }
 
     #[tokio::test]
@@ -2675,7 +2812,10 @@ mod tests {
 
         // The restart pass must not bring it back — its state is Stopped now.
         let due = sup.check_all().await;
-        assert!(!due.iter().any(|i| i.name == "redis"), "an explicitly stopped service is not restarted");
+        assert!(
+            !due.iter().any(|i| i.name == "redis"),
+            "an explicitly stopped service is not restarted"
+        );
     }
 
     #[tokio::test]

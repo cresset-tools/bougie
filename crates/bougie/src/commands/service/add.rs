@@ -1,10 +1,10 @@
 //! `bougie service add <name>[@<version>]…`. CLI.md §3.8.1.
 
-use super::config_mut::{add_service, choose_config_target, locate_project_root, ConfigTarget};
+use super::config_mut::{ConfigTarget, add_service, choose_config_target, locate_project_root};
 use bougie_cli::OutputFormat;
 use bougie_daemon::daemon::catalog;
 use bougie_output::output::{Render, emit};
-use eyre::{eyre, Result};
+use eyre::{Result, eyre};
 use serde::Serialize;
 use std::io::{self, Write};
 use std::process::ExitCode;
@@ -37,7 +37,10 @@ impl Render for ServicesAddResult {
     }
 }
 
-#[allow(clippy::needless_pass_by_value, reason = "owned strings from clap-parsed CLI")]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "owned strings from clap-parsed CLI"
+)]
 pub fn run(format: OutputFormat, names: Vec<String>) -> Result<ExitCode> {
     if names.is_empty() {
         return Err(eyre!("no services specified"));
@@ -88,7 +91,11 @@ pub fn run(format: OutputFormat, names: Vec<String>) -> Result<ExitCode> {
             "a project can run only one of `{a}` and `{b}` — they're mutually \
              exclusive relational databases. Keep one; `bougie service remove {other}` \
              the other first.",
-            other = if parsed.iter().any(|(n, _)| n == a) { b } else { a },
+            other = if parsed.iter().any(|(n, _)| n == a) {
+                b
+            } else {
+                a
+            },
         ));
     }
 
@@ -109,7 +116,11 @@ pub fn run(format: OutputFormat, names: Vec<String>) -> Result<ExitCode> {
         });
     }
 
-    let result = ServicesAddResult { schema_version: 1, items, target: target_label };
+    let result = ServicesAddResult {
+        schema_version: 1,
+        items,
+        target: target_label,
+    };
     emit(format, &result)?;
 
     // Materialize the new services' client-tool shims (mysqldump,

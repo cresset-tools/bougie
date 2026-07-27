@@ -18,7 +18,7 @@
 
 use super::catalog::{self, Binding, CatalogEntry};
 use bougie_paths::Paths;
-use eyre::{eyre, Result};
+use eyre::{Result, eyre};
 use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -62,8 +62,7 @@ async fn probe_inner(name: &str, version: &str, paths: &Paths) -> Result<()> {
             super::provisioners::mysql::health(paths, version, &sock).await
         }
         "opensearch" => {
-            let port =
-                super::endpoint::effective_primary(paths, "opensearch", version, 9200);
+            let port = super::endpoint::effective_primary(paths, "opensearch", version, 9200);
             super::provisioners::opensearch::health(port).await
         }
         "rabbitmq" => super::provisioners::rabbitmq::health(paths).await,
@@ -126,7 +125,9 @@ async fn connect(entry: &CatalogEntry, version: &str, paths: &Paths) -> Result<(
 
 fn socket_path(entry: &CatalogEntry, version: &str, paths: &Paths) -> Result<PathBuf> {
     match entry.binding {
-        Binding::UnixSocket { sockname } => Ok(paths.service_run(entry.name, version).join(sockname)),
+        Binding::UnixSocket { sockname } => {
+            Ok(paths.service_run(entry.name, version).join(sockname))
+        }
         _ => Err(eyre!("{} is not a unix-socket service", entry.name)),
     }
 }
@@ -179,8 +180,24 @@ mod tests {
     async fn runtime_only_dep_is_trivially_healthy() {
         // jdk/erlang have `Binding::None` — the connect fallback treats
         // them as healthy (they're never reachable as services).
-        assert!(probe("jdk", crate::daemon::catalog::default_version("jdk"), &test_paths()).await.is_ok());
-        assert!(probe("erlang", crate::daemon::catalog::default_version("erlang"), &test_paths()).await.is_ok());
+        assert!(
+            probe(
+                "jdk",
+                crate::daemon::catalog::default_version("jdk"),
+                &test_paths()
+            )
+            .await
+            .is_ok()
+        );
+        assert!(
+            probe(
+                "erlang",
+                crate::daemon::catalog::default_version("erlang"),
+                &test_paths()
+            )
+            .await
+            .is_ok()
+        );
     }
 
     #[tokio::test]
@@ -188,7 +205,9 @@ mod tests {
         // Drive the binding-connect fallback (used for any service without
         // a richer probe) against a real listener at redis's socket path.
         let paths = test_paths();
-        let sock = paths.service_run("redis", crate::daemon::catalog::default_version("redis")).join("redis.sock");
+        let sock = paths
+            .service_run("redis", crate::daemon::catalog::default_version("redis"))
+            .join("redis.sock");
         std::fs::create_dir_all(sock.parent().unwrap()).unwrap();
         let listener = tokio::net::UnixListener::bind(&sock).unwrap();
         let entry = catalog::find("redis").unwrap();

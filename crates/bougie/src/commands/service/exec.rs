@@ -25,7 +25,7 @@ use bougie_daemon::daemon::provisioners::rabbitmq::rabbitmq_env;
 use bougie_daemon::daemon::tenants::{self, Tenant};
 use bougie_daemon::daemon::{credentials, store_layout};
 use bougie_paths::Paths;
-use eyre::{eyre, Result, WrapErr};
+use eyre::{Result, WrapErr, eyre};
 use std::ffi::OsString;
 use std::io::Write as _;
 use std::os::unix::fs::OpenOptionsExt;
@@ -276,7 +276,9 @@ pub(super) fn no_tenant_err(service: &str) -> eyre::Report {
 /// non-default instance (mysql 8.0) resolves to its own socket.
 fn socket_path(paths: &Paths, entry: &CatalogEntry, version: &str) -> Option<PathBuf> {
     match entry.binding {
-        Binding::UnixSocket { sockname } => Some(paths.service_run(entry.name, version).join(sockname)),
+        Binding::UnixSocket { sockname } => {
+            Some(paths.service_run(entry.name, version).join(sockname))
+        }
         Binding::Tcp { .. } | Binding::None => None,
     }
 }
@@ -333,7 +335,12 @@ fn manages_own_defaults(args: &[OsString]) -> bool {
 /// so it can never go stale against the ledger, and works for tenants
 /// provisioned before this feature existed.
 fn write_client_cnf(paths: &Paths, tenant: &str, socket: &Path, password: &str) -> Result<PathBuf> {
-    let dir = paths.service_conf("mariadb", bougie_daemon::daemon::catalog::default_version("mariadb")).join("clients");
+    let dir = paths
+        .service_conf(
+            "mariadb",
+            bougie_daemon::daemon::catalog::default_version("mariadb"),
+        )
+        .join("clients");
     std::fs::create_dir_all(&dir).wrap_err_with(|| format!("creating {}", dir.display()))?;
     let path = dir.join(format!("{tenant}.cnf"));
     let content = client_cnf_content(socket, tenant, password);
@@ -434,7 +441,8 @@ fn apply_rabbitmq_env(cmd: &mut Command, paths: &Paths) {
     cmd.env("HOME", paths.service_data("rabbitmq", version).join("home"));
     // ctl reaches the node via nodename, not the AMQP port; pass the
     // broker's effective port anyway so the two never disagree.
-    let node_port = bougie_daemon::daemon::endpoint::effective_primary(paths, "rabbitmq", version, 5672);
+    let node_port =
+        bougie_daemon::daemon::endpoint::effective_primary(paths, "rabbitmq", version, 5672);
     cmd.envs(rabbitmq_env(paths, node_port));
 }
 
@@ -546,7 +554,10 @@ mod tests {
         let proj = td.path().join("proj");
         std::fs::create_dir_all(&proj).unwrap();
 
-        let ledger = paths.service_tenants("redis", bougie_daemon::daemon::catalog::default_version("redis"));
+        let ledger = paths.service_tenants(
+            "redis",
+            bougie_daemon::daemon::catalog::default_version("redis"),
+        );
         std::fs::create_dir_all(ledger.parent().unwrap()).unwrap();
         let row = format!(
             "{}\n",
@@ -561,7 +572,10 @@ mod tests {
         std::fs::write(&ledger, row).unwrap();
 
         let (version, t) = find_tenant(&paths, "redis", &proj).unwrap().unwrap();
-        assert_eq!(version, bougie_daemon::daemon::catalog::default_version("redis"));
+        assert_eq!(
+            version,
+            bougie_daemon::daemon::catalog::default_version("redis")
+        );
         assert_eq!(t.tenant, "proj");
         assert_eq!(t.alloc["db_number"], 5);
         // A different project resolves to no tenant.

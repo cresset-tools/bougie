@@ -43,7 +43,12 @@ pub fn run(format: OutputFormat, args: DoctorArgs) -> Result<ExitCode> {
     checks.push(services_check(&paths, project.as_ref().ok()));
     let (team_check, session) = login_check(&project_root, args.offline);
     checks.push(team_check);
-    checks.push(snapshot_check(&paths, &project_root, session.as_ref(), args.offline));
+    checks.push(snapshot_check(
+        &paths,
+        &project_root,
+        session.as_ref(),
+        args.offline,
+    ));
 
     let report = DoctorReport {
         schema_version: 1,
@@ -69,7 +74,10 @@ fn project_check(project: &Result<ProjectConfig>) -> Check {
     match project {
         Ok(p) => {
             let services = p.bougie.services.len();
-            Check::ok("project", format!("config loads ({services} service(s) declared)"))
+            Check::ok(
+                "project",
+                format!("config loads ({services} service(s) declared)"),
+            )
         }
         Err(e) => Check::fail("project", format!("config doesn't load: {e}"))
             .hint("fix bougie.toml / composer.json, then re-run"),
@@ -102,7 +110,10 @@ fn php_check(project_root: &Path, project: Option<&ProjectConfig>) -> Check {
             _ => {}
         }
     }
-    Check::ok("php", format!("php {version} ({flavor}) installed, matches the pin"))
+    Check::ok(
+        "php",
+        format!("php {version} ({flavor}) installed, matches the pin"),
+    )
 }
 
 /// Does the resolved `major.minor.patch` still satisfy the pinned spec?
@@ -145,7 +156,10 @@ fn services_check(paths: &Paths, project: Option<&ProjectConfig>) -> Check {
     else {
         return Check::warn(
             "services",
-            format!("bougied isn't running ({} service(s) declared)", declared.len()),
+            format!(
+                "bougied isn't running ({} service(s) declared)",
+                declared.len()
+            ),
         )
         .hint("run `bougie up`");
     };
@@ -193,10 +207,16 @@ fn login_check(project_root: &Path, offline: bool) -> (Check, Option<Session>) {
             None,
         );
     };
-    let session = Session { base: base.clone(), token };
+    let session = Session {
+        base: base.clone(),
+        token,
+    };
     if offline {
         return (
-            Check::ok("team", format!("login recorded for {host} (freshness not checked offline)")),
+            Check::ok(
+                "team",
+                format!("login recorded for {host} (freshness not checked offline)"),
+            ),
             Some(session),
         );
     }
@@ -211,8 +231,11 @@ fn login_check(project_root: &Path, offline: bool) -> (Check, Option<Session>) {
                 || status == reqwest::StatusCode::FORBIDDEN =>
         {
             (
-                Check::fail("team", format!("the registry rejected the login token ({status})"))
-                    .hint(format!("run `bougie login {base}`")),
+                Check::fail(
+                    "team",
+                    format!("the registry rejected the login token ({status})"),
+                )
+                .hint(format!("run `bougie login {base}`")),
                 None,
             )
         }
@@ -269,9 +292,10 @@ fn snapshot_check(
         None
     };
     match (staleness, marker.digest.as_deref()) {
-        (Some(info), Some(d)) if d == info.digest => {
-            Check::ok("snapshot", format!("seeded {age}, up to date with the registry"))
-        }
+        (Some(info), Some(d)) if d == info.digest => Check::ok(
+            "snapshot",
+            format!("seeded {age}, up to date with the registry"),
+        ),
         (Some(info), Some(_)) => Check::warn(
             "snapshot",
             format!(
@@ -334,7 +358,12 @@ impl Check {
         Self::new(name, Verdict::Skip, detail)
     }
     fn new(name: &'static str, verdict: Verdict, detail: impl Into<String>) -> Self {
-        Check { name, verdict, detail: detail.into(), hint: None }
+        Check {
+            name,
+            verdict,
+            detail: detail.into(),
+            hint: None,
+        }
     }
     fn hint(mut self, hint: impl Into<String>) -> Self {
         self.hint = Some(hint.into());
@@ -360,8 +389,14 @@ impl Render for DoctorReport {
                 writeln!(w, "         {:<9} → {hint}", "")?;
             }
         }
-        let ok = self.checks.len() - self.warned - self.failed
-            - self.checks.iter().filter(|c| c.verdict == Verdict::Skip).count();
+        let ok = self.checks.len()
+            - self.warned
+            - self.failed
+            - self
+                .checks
+                .iter()
+                .filter(|c| c.verdict == Verdict::Skip)
+                .count();
         writeln!(
             w,
             "{ok} ok, {} warning(s), {} failure(s)",

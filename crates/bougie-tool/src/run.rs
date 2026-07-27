@@ -26,12 +26,12 @@
 //! [`ProjectContext`] and lands in the cache key, so the same tool run
 //! from two differently-shaped projects gets two slots.
 
+use crate::exec;
 use crate::install::{InstallContext, InstallPlan, InstallTarget, install_prepared, plan_install};
 use crate::list::{ListedTool, ToolStatus, list};
 use crate::receipt::{ToolEntrypoint, ToolReceipt};
 use crate::request::ToolRequest;
 use crate::resolve::{PhpChoice, PhpSource, ProjectContext};
-use crate::exec;
 use bougie_paths::Paths;
 use eyre::{Result, WrapErr, bail};
 use sha2::{Digest, Sha256};
@@ -66,7 +66,12 @@ pub fn run(
 
     let receipt = crate::receipt::read(&plan.tool_dir.join("receipt.toml"))?;
     let declared = crate::install::read_default_bin(&plan.tool_dir, &plan.package)?;
-    let entry = pick_bin(&receipt.entrypoints, &plan.package, bin, declared.as_deref())?;
+    let entry = pick_bin(
+        &receipt.entrypoints,
+        &plan.package,
+        bin,
+        declared.as_deref(),
+    )?;
     let Some(wrapper) = entry_to_wrapper(&plan.tool_dir, entry) else {
         bail!(
             "tool dir {} is missing the wrapper for bin `{}`",
@@ -216,7 +221,9 @@ fn find_persistent_match(paths: &Paths, plan: &InstallPlan) -> Result<Option<Pat
     let mut sorted_ext = plan.extension_names();
     sorted_ext.sort();
     for tool in list(paths)? {
-        let ListedTool { status, tool_dir, .. } = tool;
+        let ListedTool {
+            status, tool_dir, ..
+        } = tool;
         let ToolStatus::Healthy(receipt) = status else {
             continue;
         };
@@ -245,8 +252,7 @@ fn receipt_matches(
     if their_with.as_slice() != sorted_with {
         return false;
     }
-    let mut their_ext: Vec<String> =
-        receipt.extensions.iter().map(|e| e.name.clone()).collect();
+    let mut their_ext: Vec<String> = receipt.extensions.iter().map(|e| e.name.clone()).collect();
     their_ext.sort();
     their_ext.as_slice() == sorted_ext
 }
@@ -410,7 +416,9 @@ mod tests {
     #[test]
     fn pick_bin_errors_on_ambiguous_multi() {
         let entries = [ep("a"), ep("b"), ep("c")];
-        let err = pick_bin(&entries, "v/x", None, None).unwrap_err().to_string();
+        let err = pick_bin(&entries, "v/x", None, None)
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("exposes 3 bins"), "{err}");
         assert!(err.contains("--bin"), "{err}");
         assert!(err.contains("tool install"), "{err}");
@@ -425,9 +433,13 @@ mod tests {
     #[test]
     fn pick_bin_selects_explicit_bin_among_many() {
         let entries = [ep("bricklayer"), ep("bricklayer-mcp")];
-        let chosen =
-            pick_bin(&entries, "inchoo/magento-bricklayer", Some("bricklayer-mcp"), None)
-                .unwrap();
+        let chosen = pick_bin(
+            &entries,
+            "inchoo/magento-bricklayer",
+            Some("bricklayer-mcp"),
+            None,
+        )
+        .unwrap();
         assert_eq!(chosen.name, "bricklayer-mcp");
     }
 
@@ -483,8 +495,7 @@ mod tests {
         // break the run — fall through to the heuristics (here: the
         // package-name match).
         let entries = [ep("phpstan"), ep("phpstan.phar")];
-        let chosen =
-            pick_bin(&entries, "phpstan/phpstan", None, Some("gone")).unwrap();
+        let chosen = pick_bin(&entries, "phpstan/phpstan", None, Some("gone")).unwrap();
         assert_eq!(chosen.name, "phpstan");
     }
 

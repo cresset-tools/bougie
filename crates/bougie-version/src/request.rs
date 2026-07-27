@@ -6,7 +6,7 @@
 
 use crate::version::PartialVersion;
 use composer_semver::Constraint;
-use eyre::{eyre, Result};
+use eyre::{Result, eyre};
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -120,7 +120,8 @@ pub fn parse_request(input: &str) -> Result<Request> {
 
 fn parse_versionlike_with_flavor(s: &str) -> Result<Request> {
     let (head, flavor) = strip_flavor_suffix(s);
-    let spec = if head.starts_with(is_constraint_lead) || head.contains(',') || head.contains("||") {
+    let spec = if head.starts_with(is_constraint_lead) || head.contains(',') || head.contains("||")
+    {
         VersionLike::Constraint(
             Constraint::parse(head).map_err(|e| eyre!("invalid constraint: {e}"))?,
         )
@@ -141,8 +142,15 @@ fn parse_full_tag(rest: &str) -> Result<Request> {
     // Detect trailing flavor: either single-word (nts|zts) or two-word
     // (nts-debug|zts-debug).
     let len = parts.len();
-    let (target_parts, flavor) = if len >= 6 && parts[len - 1] == "debug" && (parts[len - 2] == "nts" || parts[len - 2] == "zts") {
-        let f = if parts[len - 2] == "nts" { Flavor::NtsDebug } else { Flavor::ZtsDebug };
+    let (target_parts, flavor) = if len >= 6
+        && parts[len - 1] == "debug"
+        && (parts[len - 2] == "nts" || parts[len - 2] == "zts")
+    {
+        let f = if parts[len - 2] == "nts" {
+            Flavor::NtsDebug
+        } else {
+            Flavor::ZtsDebug
+        };
         (&parts[1..len - 2], Some(f))
     } else if let Some(f) = parse_flavor_word(parts[len - 1]) {
         (&parts[1..len - 1], Some(f))
@@ -154,7 +162,11 @@ fn parse_full_tag(rest: &str) -> Result<Request> {
         return Err(eyre!("full tag target has too few components: {rest}"));
     }
     let target = target_parts.join("-");
-    Ok(Request::FullTag { version, target, flavor })
+    Ok(Request::FullTag {
+        version,
+        target,
+        flavor,
+    })
 }
 
 /// "8" → "8", "83" → "8.3", "84" → "8.4". For PHP, the major is always
@@ -168,7 +180,9 @@ fn expand_compact_digits(s: &str) -> String {
 }
 
 fn first_non_digit(s: &str) -> Option<usize> {
-    s.char_indices().find(|(_, c)| !c.is_ascii_digit()).map(|(i, _)| i)
+    s.char_indices()
+        .find(|(_, c)| !c.is_ascii_digit())
+        .map(|(i, _)| i)
 }
 
 fn is_constraint_lead(c: char) -> bool {
@@ -233,7 +247,11 @@ mod tests {
     use super::*;
 
     fn pv(major: u32, minor: Option<u32>, patch: Option<u32>) -> PartialVersion {
-        PartialVersion { major, minor, patch }
+        PartialVersion {
+            major,
+            minor,
+            patch,
+        }
     }
 
     fn version_request(spec: VersionLike, flavor: Option<Flavor>) -> Request {
@@ -268,7 +286,10 @@ mod tests {
         let req = parse_request(">=8.3,<8.5").unwrap();
         assert!(matches!(
             req,
-            Request::VersionLike { spec: VersionLike::Constraint(Constraint::And(_)), flavor: None }
+            Request::VersionLike {
+                spec: VersionLike::Constraint(Constraint::And(_)),
+                flavor: None
+            }
         ));
     }
 
@@ -279,10 +300,7 @@ mod tests {
         for s in ["~8.3", "~8.3.0", "~8"] {
             assert_eq!(
                 parse_request(s).unwrap(),
-                version_request(
-                    VersionLike::Constraint(Constraint::parse(s).unwrap()),
-                    None,
-                ),
+                version_request(VersionLike::Constraint(Constraint::parse(s).unwrap()), None,),
                 "{s} should parse as a constraint",
             );
         }
@@ -304,15 +322,24 @@ mod tests {
     fn short_variant_suffixes() {
         assert_eq!(
             parse_request("8.3z").unwrap(),
-            version_request(VersionLike::Version(pv(8, Some(3), None)), Some(Flavor::Zts))
+            version_request(
+                VersionLike::Version(pv(8, Some(3), None)),
+                Some(Flavor::Zts)
+            )
         );
         assert_eq!(
             parse_request("8.3d").unwrap(),
-            version_request(VersionLike::Version(pv(8, Some(3), None)), Some(Flavor::NtsDebug))
+            version_request(
+                VersionLike::Version(pv(8, Some(3), None)),
+                Some(Flavor::NtsDebug)
+            )
         );
         assert_eq!(
             parse_request("8.3zd").unwrap(),
-            version_request(VersionLike::Version(pv(8, Some(3), None)), Some(Flavor::ZtsDebug))
+            version_request(
+                VersionLike::Version(pv(8, Some(3), None)),
+                Some(Flavor::ZtsDebug)
+            )
         );
     }
 
@@ -320,7 +347,10 @@ mod tests {
     fn plus_variants() {
         assert_eq!(
             parse_request("8.3+zts").unwrap(),
-            version_request(VersionLike::Version(pv(8, Some(3), None)), Some(Flavor::Zts))
+            version_request(
+                VersionLike::Version(pv(8, Some(3), None)),
+                Some(Flavor::Zts)
+            )
         );
         assert_eq!(
             parse_request("8.3.12+debug").unwrap(),
@@ -331,7 +361,10 @@ mod tests {
         );
         assert_eq!(
             parse_request("8.3+zts-debug").unwrap(),
-            version_request(VersionLike::Version(pv(8, Some(3), None)), Some(Flavor::ZtsDebug))
+            version_request(
+                VersionLike::Version(pv(8, Some(3), None)),
+                Some(Flavor::ZtsDebug)
+            )
         );
     }
 
@@ -364,7 +397,10 @@ mod tests {
         use composer_semver::version::CmpOp;
         let req = parse_request("php>=8.3,<8.4").unwrap();
         match req {
-            Request::VersionLike { spec: VersionLike::Constraint(Constraint::And(parts)), .. } => {
+            Request::VersionLike {
+                spec: VersionLike::Constraint(Constraint::And(parts)),
+                ..
+            } => {
                 assert_eq!(parts.len(), 2);
                 assert!(matches!(parts[0], Constraint::Op { op: CmpOp::Ge, .. }));
                 assert!(matches!(parts[1], Constraint::Op { op: CmpOp::Lt, .. }));
@@ -417,7 +453,9 @@ mod tests {
         );
         assert_eq!(
             parse_request("~/.local/share/bougie/installs/8.3.12-nts/bin/php").unwrap(),
-            Request::Path(PathBuf::from("~/.local/share/bougie/installs/8.3.12-nts/bin/php"))
+            Request::Path(PathBuf::from(
+                "~/.local/share/bougie/installs/8.3.12-nts/bin/php"
+            ))
         );
     }
 

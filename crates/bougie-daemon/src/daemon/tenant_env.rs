@@ -60,9 +60,9 @@ pub fn tenant_service_env(
     // taken, read from the instance's endpoint.json; falls back to the
     // catalog default when unrecorded (works offline, no daemon needed).
     let tcp_port = match entry.binding {
-        Binding::Tcp { port } => {
-            Some(crate::daemon::endpoint::effective_primary(paths, entry.name, version, port))
-        }
+        Binding::Tcp { port } => Some(crate::daemon::endpoint::effective_primary(
+            paths, entry.name, version, port,
+        )),
         Binding::UnixSocket { .. } | Binding::None => None,
     };
     if let Some(port) = tcp_port {
@@ -190,7 +190,16 @@ pub fn tenant_service_env(
             // it explicitly so `bougie run` users can open it.
             vars.insert(
                 format!("{prefix}DASHBOARD_URL"),
-                Value::String(format!("http://{LOOPBACK}:{}", crate::daemon::endpoint::effective_extra(paths, "mailpit", version, "http", catalog::MAILPIT_HTTP_PORT))),
+                Value::String(format!(
+                    "http://{LOOPBACK}:{}",
+                    crate::daemon::endpoint::effective_extra(
+                        paths,
+                        "mailpit",
+                        version,
+                        "http",
+                        catalog::MAILPIT_HTTP_PORT
+                    )
+                )),
             );
         }
         _ => {}
@@ -278,20 +287,23 @@ mod tests {
         let mut t = tenant("acme");
         t.secrets.insert("password".into(), "deadbeef".into());
 
-        let sock_80 = tenant_service_env(&paths, entry, "8.0.46", &t)
-            ["BOUGIE_SERVICE_MYSQL_SOCKET"]
-            .as_str()
-            .unwrap()
-            .to_string();
-        let sock_84 = tenant_service_env(&paths, entry, "8.4.10", &t)
-            ["BOUGIE_SERVICE_MYSQL_SOCKET"]
-            .as_str()
-            .unwrap()
-            .to_string();
+        let sock_80 =
+            tenant_service_env(&paths, entry, "8.0.46", &t)["BOUGIE_SERVICE_MYSQL_SOCKET"]
+                .as_str()
+                .unwrap()
+                .to_string();
+        let sock_84 =
+            tenant_service_env(&paths, entry, "8.4.10", &t)["BOUGIE_SERVICE_MYSQL_SOCKET"]
+                .as_str()
+                .unwrap()
+                .to_string();
         assert_eq!(sock_80, sock_84, "socket must not depend on the DB version");
         assert_eq!(
             sock_80,
-            paths.project_conn_socket(&t.project, "mysql.sock").display().to_string()
+            paths
+                .project_conn_socket(&t.project, "mysql.sock")
+                .display()
+                .to_string()
         );
         assert!(sock_80.ends_with("mysql.sock"), "{sock_80}");
 

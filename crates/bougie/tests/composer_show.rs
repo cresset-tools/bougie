@@ -14,8 +14,7 @@ fn stage(dir: &Path, composer_json: &str, composer_lock: &str) {
     std::fs::write(dir.join("composer.lock"), composer_lock).unwrap();
 }
 
-const COMPOSER_JSON: &str =
-    r#"{"name":"test/proj","require":{"acme/lib":"^2.0","php":"^8.1"}}"#;
+const COMPOSER_JSON: &str = r#"{"name":"test/proj","require":{"acme/lib":"^2.0","php":"^8.1"}}"#;
 const LOCK: &str = r#"{
     "content-hash":"x",
     "packages":[
@@ -39,7 +38,11 @@ fn show_lists_installed_packages() {
         .arg(proj.path())
         .output()
         .unwrap();
-    assert!(out.status.success(), "stderr={}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let s = String::from_utf8_lossy(&out.stdout);
     assert!(s.contains("acme/lib") && s.contains("2.3.0"), "{s}");
     assert!(s.contains("psr/log"), "{s}");
@@ -61,7 +64,10 @@ fn show_no_dev_excludes_dev_packages() {
         .unwrap();
     let s = String::from_utf8_lossy(&out.stdout);
     assert!(s.contains("acme/lib"), "{s}");
-    assert!(!s.contains("phpunit/phpunit"), "dev pkg should be hidden: {s}");
+    assert!(
+        !s.contains("phpunit/phpunit"),
+        "dev pkg should be hidden: {s}"
+    );
 }
 
 #[test]
@@ -79,7 +85,10 @@ fn show_direct_only_root_requires() {
     let s = String::from_utf8_lossy(&out.stdout);
     assert!(s.contains("acme/lib"), "{s}");
     // psr/log is transitive, not a direct require.
-    assert!(!s.contains("psr/log"), "transitive dep should be excluded: {s}");
+    assert!(
+        !s.contains("psr/log"),
+        "transitive dep should be excluded: {s}"
+    );
 }
 
 #[test]
@@ -132,10 +141,20 @@ fn show_format_json_emits_structured_payload() {
         .arg(proj.path())
         .output()
         .unwrap();
-    assert!(out.status.success(), "stderr={}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("valid JSON");
-    let rows = v.get("rows").and_then(|r| r.as_array()).expect("rows array");
-    assert!(rows.iter().any(|r| r.get("name").and_then(|n| n.as_str()) == Some("acme/lib")));
+    let rows = v
+        .get("rows")
+        .and_then(|r| r.as_array())
+        .expect("rows array");
+    assert!(
+        rows.iter()
+            .any(|r| r.get("name").and_then(|n| n.as_str()) == Some("acme/lib"))
+    );
 }
 
 #[test]
@@ -197,7 +216,11 @@ fn why_not_reports_conflict() {
         ],
         "packages-dev":[]
     }"#;
-    stage(proj.path(), r#"{"name":"test/proj","require":{"acme/lib":"^2.0"}}"#, lock);
+    stage(
+        proj.path(),
+        r#"{"name":"test/proj","require":{"acme/lib":"^2.0"}}"#,
+        lock,
+    );
 
     let out = env
         .bougie()
@@ -225,7 +248,11 @@ fn why_not_reports_require_excluding_version() {
         ],
         "packages-dev":[]
     }"#;
-    stage(proj.path(), r#"{"name":"test/proj","require":{"acme/lib":"^2.0"}}"#, lock);
+    stage(
+        proj.path(),
+        r#"{"name":"test/proj","require":{"acme/lib":"^2.0"}}"#,
+        lock,
+    );
 
     let out = env
         .bougie()

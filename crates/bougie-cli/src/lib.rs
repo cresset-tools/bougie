@@ -214,7 +214,11 @@ pub enum Command {
         #[arg(long = "frozen")]
         frozen: bool,
         /// Version-preference policy when resolving
-        #[arg(long = "resolution", value_name = "STRATEGY", default_value = "highest")]
+        #[arg(
+            long = "resolution",
+            value_name = "STRATEGY",
+            default_value = "highest"
+        )]
         resolution: ResolutionStrategy,
         /// Run in this directory instead of CWD (`-d`)
         #[arg(short = 'd', long = "working-dir", value_name = "DIR")]
@@ -271,7 +275,11 @@ pub enum Command {
         #[arg(long = "script", value_name = "FILE")]
         script: Option<std::path::PathBuf>,
         /// Version-preference policy when re-resolving changed requires
-        #[arg(long = "resolution", value_name = "STRATEGY", default_value = "highest")]
+        #[arg(
+            long = "resolution",
+            value_name = "STRATEGY",
+            default_value = "highest"
+        )]
         resolution: ResolutionStrategy,
         /// Run in this directory instead of CWD (`-d`)
         #[arg(short = 'd', long = "working-dir", value_name = "DIR")]
@@ -375,7 +383,11 @@ pub enum Command {
         no_scripts: bool,
         /// Version-preference policy when a fresh lock must be resolved.
         /// No effect when a `composer.lock` already exists
-        #[arg(long = "resolution", value_name = "STRATEGY", default_value = "highest")]
+        #[arg(
+            long = "resolution",
+            value_name = "STRATEGY",
+            default_value = "highest"
+        )]
         resolution: ResolutionStrategy,
         /// Apply patches for this sync, overriding `[patches] enable`.
         /// On by default when patches are declared
@@ -654,7 +666,11 @@ pub enum Command {
     Format {
         /// Arguments forwarded verbatim to `wick` (paths, `--check`,
         /// `--diff`, `-` for stdin, …)
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true, value_name = "ARGS")]
+        #[arg(
+            trailing_var_arg = true,
+            allow_hyphen_values = true,
+            value_name = "ARGS"
+        )]
         args: Vec<std::ffi::OsString>,
     },
 
@@ -757,16 +773,18 @@ pub enum ServiceCommand {
         /// Tool name (e.g. mysqldump, redis-cli, opensearch-plugin)
         tool: String,
         /// Arguments forwarded to the tool verbatim
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true, value_name = "ARGS")]
+        #[arg(
+            trailing_var_arg = true,
+            allow_hyphen_values = true,
+            value_name = "ARGS"
+        )]
         args: Vec<std::ffi::OsString>,
     },
     /// Restart the named services (or every declared service). Stops
     /// then starts the underlying global process; the tenant ledger
     /// is preserved, so generated passwords / DB numbers survive.
     /// Affects every project sharing the same service
-    Restart {
-        names: Vec<String>,
-    },
+    Restart { names: Vec<String> },
     /// Per-service status for the current project
     Status {
         /// Limit to a single service
@@ -1430,7 +1448,11 @@ pub enum ComposerCommand {
         #[arg(long = "no-dev")]
         no_dev: bool,
         /// Version-preference policy when resolving
-        #[arg(long = "resolution", value_name = "STRATEGY", default_value = "highest")]
+        #[arg(
+            long = "resolution",
+            value_name = "STRATEGY",
+            default_value = "highest"
+        )]
         resolution: ResolutionStrategy,
         /// Prefer the lowest matching versions. Equivalent to
         /// `--resolution lowest`; when set it overrides `--resolution`
@@ -1997,15 +2019,24 @@ mod tests {
         assert!(matches!(cmd(&["bougie", "start"]), Command::Start { .. }));
         assert!(matches!(
             cmd(&["bougie", "start", "--no-sync", "--dry-run"]),
-            Command::Start { no_sync: true, dry_run: true, .. }
+            Command::Start {
+                no_sync: true,
+                dry_run: true,
+                ..
+            }
         ));
     }
 
     #[test]
     fn tool_run_bin_before_package_is_a_bougie_flag() {
         let Command::Tool(ToolCommand::Run(args)) = cmd(&[
-            "bougie", "tool", "run", "--bin", "bricklayer-mcp",
-            "inchoo/magento-bricklayer", "serve",
+            "bougie",
+            "tool",
+            "run",
+            "--bin",
+            "bricklayer-mcp",
+            "inchoo/magento-bricklayer",
+            "serve",
         ]) else {
             panic!("expected tool run");
         };
@@ -2017,9 +2048,14 @@ mod tests {
     fn tool_run_bin_after_package_is_forwarded() {
         // `trailing_var_arg`: everything from the package onward goes to
         // the tool verbatim, so a `--bin` there is the tool's own flag.
-        let Command::Tool(ToolCommand::Run(args)) =
-            cmd(&["bougie", "tool", "run", "inchoo/magento-bricklayer", "--bin", "x"])
-        else {
+        let Command::Tool(ToolCommand::Run(args)) = cmd(&[
+            "bougie",
+            "tool",
+            "run",
+            "inchoo/magento-bricklayer",
+            "--bin",
+            "x",
+        ]) else {
             panic!("expected tool run");
         };
         assert_eq!(args.bin, None);
@@ -2037,7 +2073,8 @@ mod tests {
 
     #[test]
     fn login_url_is_optional() {
-        let Command::Login { url, .. } = cmd(&["bougie", "login", "https://packages.acme.com"]) else {
+        let Command::Login { url, .. } = cmd(&["bougie", "login", "https://packages.acme.com"])
+        else {
             panic!("expected login");
         };
         assert_eq!(url.as_deref(), Some("https://packages.acme.com"));

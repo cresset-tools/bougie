@@ -8,7 +8,7 @@
 //! layout use — every bougie artifact version is `<u32>.<u32>.<u32>`
 //! by construction, and there's no need for the wider grammar here.
 
-use eyre::{eyre, Result};
+use eyre::{Result, eyre};
 use std::fmt;
 use std::str::FromStr;
 
@@ -45,7 +45,11 @@ impl PartialVersion {
         } else {
             None
         };
-        Ok(Self { major, minor, patch })
+        Ok(Self {
+            major,
+            minor,
+            patch,
+        })
     }
 }
 
@@ -89,7 +93,11 @@ pub struct Version {
 
 impl Version {
     pub fn new(major: u32, minor: u32, patch: u32) -> Self {
-        Self { major, minor, patch }
+        Self {
+            major,
+            minor,
+            patch,
+        }
     }
 }
 
@@ -115,7 +123,11 @@ mod tests {
     use super::*;
 
     fn pv(major: u32, minor: Option<u32>, patch: Option<u32>) -> PartialVersion {
-        PartialVersion { major, minor, patch }
+        PartialVersion {
+            major,
+            minor,
+            patch,
+        }
     }
 
     #[test]

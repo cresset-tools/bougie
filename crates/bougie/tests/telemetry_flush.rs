@@ -74,7 +74,10 @@ async fn flush_uploads_gzip_ndjson_and_empties_spool() {
 
     let env = Env::new();
     env.bougie().args(["telemetry", "on"]).assert().success();
-    env.seed_spool("2026-07-01", &[r#"{"schema":1,"n":1}"#, r#"{"schema":1,"n":2}"#]);
+    env.seed_spool(
+        "2026-07-01",
+        &[r#"{"schema":1,"n":1}"#, r#"{"schema":1,"n":2}"#],
+    );
 
     env.bougie()
         .arg("__telemetry-flush")
@@ -94,7 +97,12 @@ async fn flush_uploads_gzip_ndjson_and_empties_spool() {
     assert_eq!(lines.len(), 2);
     assert!(lines[0].contains(r#""n":1"#));
     // User agent carries only the bougie version.
-    let ua = requests[0].headers.get("user-agent").unwrap().to_str().unwrap();
+    let ua = requests[0]
+        .headers
+        .get("user-agent")
+        .unwrap()
+        .to_str()
+        .unwrap();
     assert!(ua.starts_with("bougie/"), "{ua}");
 }
 

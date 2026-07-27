@@ -84,9 +84,9 @@ pub fn load_all_tenants(paths: &Paths) -> Vec<(String, Tenant)> {
         // Scan every instance ledger so a project on a non-default
         // version (mysql 8.0) still counts toward default-tenant
         // uniqueness (INSTANCES_PLAN §6).
-        for version in bougie_daemon::daemon::tenants::instance_versions(
-            &paths.service_name_dir(entry.name),
-        ) {
+        for version in
+            bougie_daemon::daemon::tenants::instance_versions(&paths.service_name_dir(entry.name))
+        {
             let Ok(text) = std::fs::read_to_string(paths.service_tenants(entry.name, &version))
             else {
                 continue;

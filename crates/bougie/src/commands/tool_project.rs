@@ -150,7 +150,11 @@ fn project_constraint(
             ),
         }
     }
-    if let Some(req) = config.composer.as_ref().and_then(|c| c.require_php.as_deref()) {
+    if let Some(req) = config
+        .composer
+        .as_ref()
+        .and_then(|c| c.require_php.as_deref())
+    {
         match Constraint::parse(req) {
             Ok(c) => {
                 parts.push(c);
@@ -170,7 +174,11 @@ fn project_constraint(
 
     if parts.is_empty() {
         if let Some(inferred) = super::infer_php::infer_raw(root) {
-            return (Some(inferred.constraint), inferred.raw, Some(inferred.source));
+            return (
+                Some(inferred.constraint),
+                inferred.raw,
+                Some(inferred.source),
+            );
         }
         return (None, None, None);
     }
@@ -236,7 +244,11 @@ mod tests {
         assert_eq!(ctx.extensions, vec!["intl".to_string(), "zip".to_string()]);
         assert!(ctx.php.constraint.is_some());
         assert_eq!(ctx.php.constraint_raw.as_deref(), Some("^8.2"));
-        assert!(ctx.php.source.ends_with("composer.json"), "{}", ctx.php.source);
+        assert!(
+            ctx.php.source.ends_with("composer.json"),
+            "{}",
+            ctx.php.source
+        );
         assert!(ctx.php.resolved.is_none());
     }
 
@@ -254,26 +266,42 @@ mod tests {
         assert_eq!(ctx.php.constraint_raw.as_deref(), Some("~8.2.0 || ~8.3.0"));
         assert!(ctx.php.source.contains("magento/product-community-edition"));
         // Recommended set flows in, filtered of baseline/builtins.
-        assert!(ctx.extensions.iter().any(|e| e == "intl"), "{:?}", ctx.extensions);
-        assert!(ctx.extensions.iter().any(|e| e == "pdo_mysql"), "{:?}", ctx.extensions);
-        assert!(ctx.extensions.iter().any(|e| e == "zip"), "{:?}", ctx.extensions);
+        assert!(
+            ctx.extensions.iter().any(|e| e == "intl"),
+            "{:?}",
+            ctx.extensions
+        );
+        assert!(
+            ctx.extensions.iter().any(|e| e == "pdo_mysql"),
+            "{:?}",
+            ctx.extensions
+        );
+        assert!(
+            ctx.extensions.iter().any(|e| e == "zip"),
+            "{:?}",
+            ctx.extensions
+        );
         // mbstring is baseline for every tool PHP → filtered even
         // though Magento's recommended set lists it.
-        assert!(!ctx.extensions.iter().any(|e| e == "mbstring"), "{:?}", ctx.extensions);
+        assert!(
+            !ctx.extensions.iter().any(|e| e == "mbstring"),
+            "{:?}",
+            ctx.extensions
+        );
     }
 
     #[test]
     fn bougie_toml_pin_wins_raw_and_ands_with_require_php() {
         let td = tempfile::TempDir::new().unwrap();
-        write(
-            td.path(),
-            "composer.json",
-            r#"{"require":{"php":"^8.2"}}"#,
-        );
+        write(td.path(), "composer.json", r#"{"require":{"php":"^8.2"}}"#);
         write(td.path(), "bougie.toml", "[php]\nversion = \"8.3\"\n");
         let ctx = detect_at(td.path()).unwrap();
         assert_eq!(ctx.php.constraint_raw.as_deref(), Some("8.3"));
-        assert!(ctx.php.source.ends_with("bougie.toml"), "{}", ctx.php.source);
+        assert!(
+            ctx.php.source.ends_with("bougie.toml"),
+            "{}",
+            ctx.php.source
+        );
         let c = ctx.php.constraint.unwrap();
         // The AND of both: 8.3.x satisfies, 8.2.x doesn't.
         let v83 = composer_semver::Version::parse("8.3.12").unwrap();

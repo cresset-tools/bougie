@@ -12,10 +12,10 @@
 use super::client;
 use super::config_mut::locate_project_root;
 use bougie_cli::OutputFormat;
-use bougie_config::{load_project, ServicePin};
+use bougie_config::{ServicePin, load_project};
 use bougie_output::output::{Render, emit};
 use bougie_paths::Paths;
-use eyre::{eyre, Result};
+use eyre::{Result, eyre};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::io::{self, Write};
@@ -78,10 +78,13 @@ pub fn run(format: OutputFormat, names: Vec<String>) -> Result<ExitCode> {
         out
     };
     if selected.is_empty() {
-        emit(format, &ServicesRestartResult {
-            schema_version: 1,
-            restarted: vec![],
-        })?;
+        emit(
+            format,
+            &ServicesRestartResult {
+                schema_version: 1,
+                restarted: vec![],
+            },
+        )?;
         return Ok(ExitCode::SUCCESS);
     }
 

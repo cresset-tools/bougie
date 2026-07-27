@@ -539,9 +539,7 @@ fn build_base_from_srv(target: &str, port: u16) -> String {
 /// untouched so the caller's http(s) guard can reject it.
 fn fallback_base(input: &str) -> String {
     let trimmed = input.trim().trim_end_matches('/');
-    if trimmed.starts_with("http://")
-        || trimmed.starts_with("https://")
-        || trimmed.contains("://")
+    if trimmed.starts_with("http://") || trimmed.starts_with("https://") || trimmed.contains("://")
     {
         trimmed.to_string()
     } else {
@@ -571,13 +569,11 @@ fn srv_lookup_base(host: &str) -> Option<String> {
 
     runtime.block_on(async {
         let resolver = TokioResolver::builder_tokio().ok()?.build().ok()?;
-        let lookup = tokio::time::timeout(
-            Duration::from_secs(4),
-            resolver.srv_lookup(query.as_str()),
-        )
-        .await
-        .ok()? // timed out
-        .ok()?; // NXDOMAIN / DNS error
+        let lookup =
+            tokio::time::timeout(Duration::from_secs(4), resolver.srv_lookup(query.as_str()))
+                .await
+                .ok()? // timed out
+                .ok()?; // NXDOMAIN / DNS error
 
         let best = lookup
             .answers()
@@ -603,19 +599,34 @@ mod tests {
     #[test]
     fn extract_srv_host_strips_scheme_path_and_port() {
         assert_eq!(extract_srv_host("bougie.cloud"), "bougie.cloud");
-        assert_eq!(extract_srv_host("https://packages.acme.com"), "packages.acme.com");
-        assert_eq!(extract_srv_host("https://packages.acme.com/"), "packages.acme.com");
+        assert_eq!(
+            extract_srv_host("https://packages.acme.com"),
+            "packages.acme.com"
+        );
+        assert_eq!(
+            extract_srv_host("https://packages.acme.com/"),
+            "packages.acme.com"
+        );
         assert_eq!(
             extract_srv_host("http://packages.acme.com:8080/repo/path"),
             "packages.acme.com"
         );
-        assert_eq!(extract_srv_host("user@packages.acme.com:443"), "packages.acme.com");
+        assert_eq!(
+            extract_srv_host("user@packages.acme.com:443"),
+            "packages.acme.com"
+        );
     }
 
     #[test]
     fn build_base_from_srv_elides_443_and_trims_root_dot() {
-        assert_eq!(build_base_from_srv("bougierepo.com.", 443), "https://bougierepo.com");
-        assert_eq!(build_base_from_srv("bougierepo.com", 443), "https://bougierepo.com");
+        assert_eq!(
+            build_base_from_srv("bougierepo.com.", 443),
+            "https://bougierepo.com"
+        );
+        assert_eq!(
+            build_base_from_srv("bougierepo.com", 443),
+            "https://bougierepo.com"
+        );
         assert_eq!(
             build_base_from_srv("registry.example.", 8443),
             "https://registry.example:8443"
@@ -633,9 +644,15 @@ mod tests {
             fallback_base("https://packages.acme.com/sub/"),
             "https://packages.acme.com/sub"
         );
-        assert_eq!(fallback_base("http://localhost:8080"), "http://localhost:8080");
+        assert_eq!(
+            fallback_base("http://localhost:8080"),
+            "http://localhost:8080"
+        );
         // A bare domain gets an https:// prefix.
-        assert_eq!(fallback_base("packages.acme.com"), "https://packages.acme.com");
+        assert_eq!(
+            fallback_base("packages.acme.com"),
+            "https://packages.acme.com"
+        );
         // A foreign scheme is left untouched (caller's guard rejects it).
         assert_eq!(fallback_base("ftp://x"), "ftp://x");
     }
@@ -656,15 +673,27 @@ mod tests {
     #[test]
     fn run_ci_rejects_bad_url_and_missing_repository() {
         // Bad scheme is caught before any network I/O.
-        let err = run_ci(OutputFormat::Text, "ftp://x", "acme/app", "sconce", ProvisionMode::Skip)
-            .unwrap_err()
-            .to_string();
+        let err = run_ci(
+            OutputFormat::Text,
+            "ftp://x",
+            "acme/app",
+            "sconce",
+            ProvisionMode::Skip,
+        )
+        .unwrap_err()
+        .to_string();
         assert!(err.contains("http://"), "{err}");
 
         // A valid URL but no repository → the `--repository` guard, also before I/O.
-        let err = run_ci(OutputFormat::Text, "https://x", "", "sconce", ProvisionMode::Skip)
-            .unwrap_err()
-            .to_string();
+        let err = run_ci(
+            OutputFormat::Text,
+            "https://x",
+            "",
+            "sconce",
+            ProvisionMode::Skip,
+        )
+        .unwrap_err()
+        .to_string();
         assert!(err.contains("--repository"), "{err}");
     }
 }

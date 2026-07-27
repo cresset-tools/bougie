@@ -124,7 +124,9 @@ pub(crate) fn emit(
             out,
             "        $filesToLoad = \\Composer\\Autoload\\ComposerStaticInit{content_hash}::$files;"
         );
-        out.push_str("        $requireFile = \\Closure::bind(static function ($fileIdentifier, $file) {\n");
+        out.push_str(
+            "        $requireFile = \\Closure::bind(static function ($fileIdentifier, $file) {\n",
+        );
         out.push_str(
             "            if (empty($GLOBALS['__composer_autoload_files'][$fileIdentifier])) {\n",
         );

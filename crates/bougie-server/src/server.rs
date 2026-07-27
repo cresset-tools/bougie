@@ -6,8 +6,8 @@
 //! the listener.
 
 pub mod autoloader_manager;
-pub mod config;
 pub mod conf_d;
+pub mod config;
 pub mod control;
 pub mod fastcgi;
 pub mod helpers;
@@ -23,12 +23,12 @@ pub mod pool;
 pub mod router;
 pub mod run;
 pub mod static_files;
-pub mod watch_registry;
 /// `bougie server tls install` — installs a dev CA into the system
 /// trust store. Unix-only: macOS uses `security`, Linux uses
 /// `update-ca-trust`/`update-ca-certificates`. Windows certmgr work
 /// is a phase-2+ effort.
 #[cfg(unix)]
 pub mod tls;
+pub mod watch_registry;
 pub mod watcher;
 pub mod xdebug;

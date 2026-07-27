@@ -15,14 +15,14 @@ use std::process::ExitCode;
 
 use bougie_cli::OutputFormat;
 use bougie_composer::lockfile::Lock;
-use bougie_composer_resolver::verify::{verify_lock, VerifyOptions, VerifyOutcome};
+use bougie_composer_resolver::verify::{VerifyOptions, VerifyOutcome, verify_lock};
 use bougie_composer_resolver::{InstallOptions, InstallSummary, PlatformIgnore};
 use bougie_installer::baseline;
-use bougie_output::output::{emit, Render};
+use bougie_output::output::{Render, emit};
 use bougie_paths::Paths;
 use composer_semver::constraint::Constraint;
 use composer_semver::version::Version;
-use eyre::{eyre, Context, Result};
+use eyre::{Context, Result, eyre};
 use serde::Serialize;
 
 #[derive(Debug, Serialize)]
@@ -72,9 +72,8 @@ impl Render for InstallResult {
         for warning in &self.warnings {
             eprintln!("warning: {warning}");
         }
-        let total = self.packages_installed
-            + self.packages_already_present
-            + self.packages_up_to_date;
+        let total =
+            self.packages_installed + self.packages_already_present + self.packages_up_to_date;
         let mode = if self.no_dev { " (no-dev)" } else { "" };
 
         // When everything is up-to-date, emit a short "nothing to install" line.
@@ -142,7 +141,11 @@ pub struct LockVerifyResult {
 impl Render for LockVerifyResult {
     fn render_text(&self, w: &mut dyn Write) -> io::Result<()> {
         if self.valid {
-            writeln!(w, "composer.lock is valid → {}", self.project_root.display())
+            writeln!(
+                w,
+                "composer.lock is valid → {}",
+                self.project_root.display()
+            )
         } else {
             writeln!(w, "composer.lock is INVALID")?;
             if let Some(r) = &self.reason {
@@ -182,7 +185,11 @@ pub fn run(
             reason,
         };
         emit(format, &result)?;
-        return Ok(if valid { ExitCode::SUCCESS } else { ExitCode::FAILURE });
+        return Ok(if valid {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::FAILURE
+        });
     }
     let paths = Paths::from_env()?;
 
@@ -236,7 +243,9 @@ pub fn run(
         &paths,
         &project_root,
         InstallOptions { no_dev },
-        hooks.as_ref().map(|h| h as &dyn bougie_composer_resolver::ScriptHooks),
+        hooks
+            .as_ref()
+            .map(|h| h as &dyn bougie_composer_resolver::ScriptHooks),
         patch_plan.as_ref(),
     )?;
     // Telemetry enrichment (TELEMETRY.md): counts + perf, no names.
@@ -312,12 +321,18 @@ fn check_platform_requirements(
     let composer_json_path = project_root.join("composer.json");
     if let Ok(bytes) = std::fs::read(&composer_json_path) {
         if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) {
-            for key in if no_dev { &["require"][..] } else { &["require", "require-dev"] } {
+            for key in if no_dev {
+                &["require"][..]
+            } else {
+                &["require", "require-dev"]
+            } {
                 let Some(reqs) = value.get(key).and_then(|v| v.as_object()) else {
                     continue;
                 };
                 for (dep_name, raw) in reqs {
-                    let Some(raw_str) = raw.as_str() else { continue };
+                    let Some(raw_str) = raw.as_str() else {
+                        continue;
+                    };
                     if dep_name == "php" {
                         if ignore.is_ignored("php") {
                             continue;

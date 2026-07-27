@@ -156,8 +156,10 @@ pub fn run(format: OutputFormat, name: Option<String>, env: bool) -> Result<Exit
 /// deriving it — the same function the provisioners use, so the values
 /// agree (mirrors the mariadb wiring in `exec.rs`).
 fn resolve_password(paths: &Paths, entry: &CatalogEntry, tenant: &mut Tenant) -> Result<()> {
-    if !matches!(entry.tenancy, Tenancy::Mariadb | Tenancy::Mysql | Tenancy::Rabbitmq)
-        || tenant.secrets.contains_key("password")
+    if !matches!(
+        entry.tenancy,
+        Tenancy::Mariadb | Tenancy::Mysql | Tenancy::Rabbitmq
+    ) || tenant.secrets.contains_key("password")
     {
         return Ok(());
     }

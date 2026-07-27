@@ -59,7 +59,10 @@ fn inaccessible_paths_denies_reads() {
         .no_new_privileges(true)
         .build()
         .unwrap();
-    assert!(!can_read(&secret, policy), "inaccessible_paths must deny the read");
+    assert!(
+        !can_read(&secret, policy),
+        "inaccessible_paths must deny the read"
+    );
 
     // Control: the same file is readable with no sandbox restrictions.
     let open = Sandbox::new()
@@ -68,7 +71,10 @@ fn inaccessible_paths_denies_reads() {
         .no_new_privileges(true)
         .build()
         .unwrap();
-    assert!(can_read(&secret, open), "sanity: file is readable when granted");
+    assert!(
+        can_read(&secret, open),
+        "sanity: file is readable when granted"
+    );
 }
 
 /// The daemon's exact shape: a sensitive tree is carved out, but the
@@ -106,7 +112,10 @@ fn carve_in_under_denied_subtree_is_reachable() {
         .no_new_privileges(true)
         .build()
         .unwrap();
-    assert!(can_read(&allowed, policy), "carved-in data dir must stay readable");
+    assert!(
+        can_read(&allowed, policy),
+        "carved-in data dir must stay readable"
+    );
     assert!(
         can_write(&allowed, again),
         "carved-in data dir must stay writable"
@@ -146,7 +155,10 @@ fn read_only_paths_deny_writes() {
         .no_new_privileges(true)
         .build()
         .unwrap();
-    assert!(can_read(&file, read_policy), "read_only_paths must allow reads");
+    assert!(
+        can_read(&file, read_policy),
+        "read_only_paths must allow reads"
+    );
 
     let write_policy = Sandbox::new()
         .protect_system(ProtectSystem::No)
@@ -228,7 +240,10 @@ fn protect_home_yes_denies_home_content() {
         // ProtectHome=yes denies the standard /home, /root, /run/user
         // trees; if the test user's HOME is elsewhere there's nothing to
         // assert against.
-        eprintln!("skipping: HOME ({}) is outside the protected trees", home.display());
+        eprintln!(
+            "skipping: HOME ({}) is outside the protected trees",
+            home.display()
+        );
         return;
     }
     let secret = home.join(format!(".sandbox_run_test_secret_{}", std::process::id()));

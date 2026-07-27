@@ -31,14 +31,12 @@ pub const RABBITMQ_TARBALL: &str = "rabbitmq-4.2.6";
 // — bump both URL and sha together when the index publishes a new tag.
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-const BLOB_URL: &str =
-    "https://blobs.bougie.tools/blobs/c6/c65bd2548ad642726ec9a57b754e6134a40390407b520ee38d94ffb602a0edfa";
+const BLOB_URL: &str = "https://blobs.bougie.tools/blobs/c6/c65bd2548ad642726ec9a57b754e6134a40390407b520ee38d94ffb602a0edfa";
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 const BLOB_SHA256: &str = "c65bd2548ad642726ec9a57b754e6134a40390407b520ee38d94ffb602a0edfa";
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-const BLOB_URL: &str =
-    "https://blobs.bougie.tools/blobs/6c/6c0debc455c45d647b9cb7ca5f278d93bc853be6ea290ff54fee732927b5762a";
+const BLOB_URL: &str = "https://blobs.bougie.tools/blobs/6c/6c0debc455c45d647b9cb7ca5f278d93bc853be6ea290ff54fee732927b5762a";
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 const BLOB_SHA256: &str = "6c0debc455c45d647b9cb7ca5f278d93bc853be6ea290ff54fee732927b5762a";
 
@@ -85,7 +83,10 @@ fn ensure_blob_cached() -> PathBuf {
         return blob_path;
     }
 
-    eprintln!("[rabbitmq_fixture] downloading {BLOB_URL} -> {}", blob_path.display());
+    eprintln!(
+        "[rabbitmq_fixture] downloading {BLOB_URL} -> {}",
+        blob_path.display()
+    );
     let client = reqwest::blocking::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(15))
         .timeout(std::time::Duration::from_mins(5))
@@ -125,7 +126,9 @@ fn test_cache_root() -> PathBuf {
 }
 
 fn verify_sha256(path: &Path) -> bool {
-    let Ok(mut f) = fs::File::open(path) else { return false };
+    let Ok(mut f) = fs::File::open(path) else {
+        return false;
+    };
     let mut hasher = Sha256::new();
     let mut buf = vec![0u8; 64 * 1024];
     loop {

@@ -21,7 +21,10 @@ fn wait_for_listening(stderr: &mut Box<dyn BufRead + Send>) -> String {
         if stderr.read_line(&mut line).unwrap() == 0 {
             continue;
         }
-        if let Some(rest) = line.find("http://").and_then(|i| line[i + 7..].split_whitespace().next()) {
+        if let Some(rest) = line
+            .find("http://")
+            .and_then(|i| line[i + 7..].split_whitespace().next())
+        {
             return rest.to_string();
         }
     }
@@ -75,7 +78,12 @@ impl ServerHandle {
             }
             lines
         });
-        Self { child, addr, stderr: Some(stderr_thread), _runtime_dir: runtime_dir }
+        Self {
+            child,
+            addr,
+            stderr: Some(stderr_thread),
+            _runtime_dir: runtime_dir,
+        }
     }
 
     fn url(&self, path: &str) -> String {
@@ -146,7 +154,9 @@ fn seed_server_toml(
 ) -> std::path::PathBuf {
     std::fs::create_dir_all(dir).expect("mkdir config dir");
     let project = std::fs::canonicalize(project).expect("canonicalize project");
-    let root_line = root.map(|r| format!("root = \"{r}\"\n")).unwrap_or_default();
+    let root_line = root
+        .map(|r| format!("root = \"{r}\"\n"))
+        .unwrap_or_default();
     let body = format!(
         "[server]\nlisten = \"127.0.0.1:7080\"\nlog_format = \"text\"\n\n[[host]]\nhostname = \"{hostname}\"\nproject = \"{project}\"\n{root_line}",
         project = project.display(),
@@ -181,20 +191,34 @@ fn static_file_round_trip() {
     let proj = TempDir::new().unwrap();
     write_fixture(proj.path());
 
-    let cfg = seed_server_toml(cfg_dir.path(), "myapp.bougie.run", proj.path(), Some("public"));
+    let cfg = seed_server_toml(
+        cfg_dir.path(),
+        "myapp.bougie.run",
+        proj.path(),
+        Some("public"),
+    );
 
     let server = ServerHandle::spawn(&env, &cfg);
 
     let (status, headers, body) = http_get(&server.url("/"), "myapp.bougie.run");
     assert_eq!(status, 200);
     assert!(String::from_utf8_lossy(&body).contains("hello"));
-    assert_eq!(headers.get("content-type").map(String::as_str), Some("text/html"));
-    assert_eq!(headers.get("cache-control").map(String::as_str), Some("no-cache"));
+    assert_eq!(
+        headers.get("content-type").map(String::as_str),
+        Some("text/html")
+    );
+    assert_eq!(
+        headers.get("cache-control").map(String::as_str),
+        Some("no-cache")
+    );
 
     let (status, headers, body) = http_get(&server.url("/style.css"), "myapp.bougie.run");
     assert_eq!(status, 200);
     assert!(String::from_utf8_lossy(&body).contains("color: red"));
-    assert_eq!(headers.get("content-type").map(String::as_str), Some("text/css"));
+    assert_eq!(
+        headers.get("content-type").map(String::as_str),
+        Some("text/css")
+    );
 
     let _ = server.shutdown();
 }
@@ -205,7 +229,12 @@ fn missing_file_is_404() {
     let cfg_dir = TempDir::new().unwrap();
     let proj = TempDir::new().unwrap();
     write_fixture(proj.path());
-    let cfg = seed_server_toml(cfg_dir.path(), "myapp.bougie.run", proj.path(), Some("public"));
+    let cfg = seed_server_toml(
+        cfg_dir.path(),
+        "myapp.bougie.run",
+        proj.path(),
+        Some("public"),
+    );
     let server = ServerHandle::spawn(&env, &cfg);
     let (status, _, body) = http_get(&server.url("/nope.txt"), "myapp.bougie.run");
     assert_eq!(status, 404);
@@ -237,7 +266,12 @@ fn php_request_without_resolved_php_returns_502() {
     let cfg_dir = TempDir::new().unwrap();
     let proj = TempDir::new().unwrap();
     write_fixture(proj.path());
-    let cfg = seed_server_toml(cfg_dir.path(), "myapp.bougie.run", proj.path(), Some("public"));
+    let cfg = seed_server_toml(
+        cfg_dir.path(),
+        "myapp.bougie.run",
+        proj.path(),
+        Some("public"),
+    );
     let server = ServerHandle::spawn(&env, &cfg);
     let (status, _, body) = http_get(&server.url("/script.php"), "myapp.bougie.run");
     assert_eq!(status, 502);
@@ -265,7 +299,11 @@ fn php_fpm_startup_failure_surfaces_stderr() {
     let state_dir = proj.path().join("vendor/bougie/state");
     std::fs::create_dir_all(&state_dir).unwrap();
     std::fs::write(state_dir.join("resolved"), "9.9.9-nts\n").unwrap();
-    let bin_dir = env.home_path().join("installs").join("9.9.9-nts").join("bin");
+    let bin_dir = env
+        .home_path()
+        .join("installs")
+        .join("9.9.9-nts")
+        .join("bin");
     std::fs::create_dir_all(&bin_dir).unwrap();
     let fpm = bin_dir.join("php-fpm");
     std::fs::write(
@@ -275,15 +313,26 @@ fn php_fpm_startup_failure_surfaces_stderr() {
     .unwrap();
     std::fs::set_permissions(&fpm, std::fs::Permissions::from_mode(0o755)).unwrap();
 
-    let cfg = seed_server_toml(cfg_dir.path(), "myapp.bougie.run", proj.path(), Some("public"));
+    let cfg = seed_server_toml(
+        cfg_dir.path(),
+        "myapp.bougie.run",
+        proj.path(),
+        Some("public"),
+    );
     let server = ServerHandle::spawn(&env, &cfg);
 
     // The 502 body carries php-fpm's own words, not a bare timeout.
     let (status, _, body) = http_get(&server.url("/script.php"), "myapp.bougie.run");
     assert_eq!(status, 502);
     let body_str = String::from_utf8_lossy(&body);
-    assert!(body_str.contains("exited during startup"), "got: {body_str}");
-    assert!(body_str.contains("simulated fpm startup failure"), "got: {body_str}");
+    assert!(
+        body_str.contains("exited during startup"),
+        "got: {body_str}"
+    );
+    assert!(
+        body_str.contains("simulated fpm startup failure"),
+        "got: {body_str}"
+    );
 
     let stderr = server.shutdown();
     let joined = stderr.join("\n");
@@ -321,7 +370,11 @@ fn chatty_fpm_startup_does_not_deadlock_on_full_pipe() {
     let state_dir = proj.path().join("vendor/bougie/state");
     std::fs::create_dir_all(&state_dir).unwrap();
     std::fs::write(state_dir.join("resolved"), "9.9.9-nts\n").unwrap();
-    let bin_dir = env.home_path().join("installs").join("9.9.9-nts").join("bin");
+    let bin_dir = env
+        .home_path()
+        .join("installs")
+        .join("9.9.9-nts")
+        .join("bin");
     std::fs::create_dir_all(&bin_dir).unwrap();
     let fpm = bin_dir.join("php-fpm");
     // ~1.1MB of warnings >> the 64KB pipe buffer, then a fatal line.
@@ -339,7 +392,12 @@ fn chatty_fpm_startup_does_not_deadlock_on_full_pipe() {
     .unwrap();
     std::fs::set_permissions(&fpm, std::fs::Permissions::from_mode(0o755)).unwrap();
 
-    let cfg = seed_server_toml(cfg_dir.path(), "myapp.bougie.run", proj.path(), Some("public"));
+    let cfg = seed_server_toml(
+        cfg_dir.path(),
+        "myapp.bougie.run",
+        proj.path(),
+        Some("public"),
+    );
     let server = ServerHandle::spawn(&env, &cfg);
 
     let (status, _, body) = http_get(&server.url("/script.php"), "myapp.bougie.run");
@@ -347,7 +405,10 @@ fn chatty_fpm_startup_does_not_deadlock_on_full_pipe() {
     let body_str = String::from_utf8_lossy(&body);
     // The old code deadlocked here and reported "didn't create its
     // listen socket ... within 2s" with no output at all.
-    assert!(body_str.contains("exited during startup"), "got: {body_str}");
+    assert!(
+        body_str.contains("exited during startup"),
+        "got: {body_str}"
+    );
     assert!(
         body_str.contains("FATAL: preload emitted too much noise"),
         "got: {body_str}"
@@ -367,7 +428,12 @@ fn sigint_drains_and_exits_cleanly() {
     let cfg_dir = TempDir::new().unwrap();
     let proj = TempDir::new().unwrap();
     write_fixture(proj.path());
-    let cfg = seed_server_toml(cfg_dir.path(), "myapp.bougie.run", proj.path(), Some("public"));
+    let cfg = seed_server_toml(
+        cfg_dir.path(),
+        "myapp.bougie.run",
+        proj.path(),
+        Some("public"),
+    );
     let server = ServerHandle::spawn(&env, &cfg);
     // Serve one request before shutting down so we exercise the drain
     // path with real in-flight state.
@@ -375,5 +441,8 @@ fn sigint_drains_and_exits_cleanly() {
     assert_eq!(status, 200);
     let stderr = server.shutdown();
     let joined = stderr.join("\n");
-    assert!(joined.contains("SIGINT") || joined.contains("shutting down"), "{joined}");
+    assert!(
+        joined.contains("SIGINT") || joined.contains("shutting down"),
+        "{joined}"
+    );
 }

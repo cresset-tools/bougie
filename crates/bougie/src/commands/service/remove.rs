@@ -7,11 +7,11 @@
 //! their declarations.
 
 use super::client;
-use super::config_mut::{choose_config_target, locate_project_root, remove_service, ConfigTarget};
+use super::config_mut::{ConfigTarget, choose_config_target, locate_project_root, remove_service};
 use bougie_cli::OutputFormat;
 use bougie_output::output::{Render, emit};
 use bougie_paths::Paths;
-use eyre::{eyre, Result};
+use eyre::{Result, eyre};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::io::{self, Write};
@@ -59,12 +59,11 @@ impl Render for ServicesRemoveResult {
     }
 }
 
-#[allow(clippy::needless_pass_by_value, reason = "owned strings from clap-parsed CLI")]
-pub fn run(
-    format: OutputFormat,
-        names: Vec<String>,
-    purge: bool,
-) -> Result<ExitCode> {
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "owned strings from clap-parsed CLI"
+)]
+pub fn run(format: OutputFormat, names: Vec<String>, purge: bool) -> Result<ExitCode> {
     if names.is_empty() {
         return Err(eyre!("no services specified"));
     }
@@ -95,7 +94,10 @@ pub fn run(
     let mut items = Vec::with_capacity(names.len());
     for name in &names {
         let removed = remove_service(&target, name)?;
-        items.push(RemoveItem { name: name.clone(), removed });
+        items.push(RemoveItem {
+            name: name.clone(),
+            removed,
+        });
     }
 
     let result = ServicesRemoveResult {

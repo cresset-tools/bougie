@@ -188,7 +188,10 @@ fn tampered_body_fails_signature_check() {
     )
     .unwrap_err();
     let msg = err.to_string();
-    assert!(msg.contains("could not verify index signature"), "msg: {msg}");
+    assert!(
+        msg.contains("could not verify index signature"),
+        "msg: {msg}"
+    );
     assert!(msg.contains(&fx.server.uri()), "msg: {msg}");
 }
 
@@ -215,4 +218,3 @@ fn http_error_maps_to_network_failure() {
     .unwrap_err();
     assert!(err.to_string().contains("500"));
 }
-

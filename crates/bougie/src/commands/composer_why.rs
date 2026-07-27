@@ -22,10 +22,10 @@ use std::process::ExitCode;
 use bougie_cli::OutputFormat;
 use bougie_composer::lockfile::Lock;
 use bougie_composer_resolver::DependencyGraph;
-use bougie_output::output::{emit, Render};
+use bougie_output::output::{Render, emit};
 use composer_semver::constraint::Constraint;
 use composer_semver::version::Version;
-use eyre::{eyre, Context, Result};
+use eyre::{Context, Result, eyre};
 use serde::Serialize;
 
 /// A require/conflict source row: `(name, version, require-map,
@@ -68,12 +68,7 @@ impl Render for WhyResult {
                 ),
             };
         }
-        let name_w = self
-            .reasons
-            .iter()
-            .map(|r| r.from.len())
-            .max()
-            .unwrap_or(0);
+        let name_w = self.reasons.iter().map(|r| r.from.len()).max().unwrap_or(0);
         for r in &self.reasons {
             writeln!(
                 w,
@@ -100,7 +95,8 @@ fn load(project_root: &std::path::Path) -> Result<(Lock, serde_json::Value)> {
             project_root.display()
         ));
     }
-    let lock = Lock::read(&lock_path).wrap_err_with(|| format!("reading {}", lock_path.display()))?;
+    let lock =
+        Lock::read(&lock_path).wrap_err_with(|| format!("reading {}", lock_path.display()))?;
     let root = std::fs::read(project_root.join("composer.json"))
         .ok()
         .and_then(|b| serde_json::from_slice(&b).ok())
@@ -203,7 +199,12 @@ pub fn why_not(
     // Build a unified list of sources (each package + the root project).
     let mut sources: Vec<Source<'_>> = Vec::new();
     for pkg in lock.all_packages() {
-        sources.push((pkg.name.clone(), pkg.version.clone(), &pkg.require, &pkg.conflict));
+        sources.push((
+            pkg.name.clone(),
+            pkg.version.clone(),
+            &pkg.require,
+            &pkg.conflict,
+        ));
     }
     let root_require = json_map(&root, "require");
     let root_require_dev = json_map(&root, "require-dev");

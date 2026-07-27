@@ -65,12 +65,15 @@ pub fn write_phpstorm_datasources(
 
     let password =
         bougie_daemon::daemon::credentials::derive_password(paths, service, project_root)
-            .wrap_err_with(|| format!("deriving the {service} password for the PhpStorm data source"))?;
+            .wrap_err_with(|| {
+                format!("deriving the {service} password for the PhpStorm data source")
+            })?;
     // Key the socket on the version this project actually runs (a
     // non-default mysql 8.0 lives under its own dir), falling back to the
     // catalog default when no ledger owns it yet.
-    let version = bougie_daemon::daemon::tenants::project_instance_version(paths, service, project_root)
-        .unwrap_or_else(|| bougie_daemon::daemon::catalog::default_version(service).to_owned());
+    let version =
+        bougie_daemon::daemon::tenants::project_instance_version(paths, service, project_root)
+            .unwrap_or_else(|| bougie_daemon::daemon::catalog::default_version(service).to_owned());
     let socket = paths.service_run(service, &version).join(sockname);
 
     let ds = datasource_block(tenant, &socket.to_string_lossy(), &password, project_root);

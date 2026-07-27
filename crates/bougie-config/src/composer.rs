@@ -30,8 +30,9 @@ pub struct ComposerJson {
 }
 
 pub fn read_composer_json(text: &str) -> Result<ComposerJson> {
-    let v: serde_json::Value = serde_json::from_str(text).map_err(|e| {
-        BougieError::Config { path: "composer.json".into(), detail: e.to_string() }
+    let v: serde_json::Value = serde_json::from_str(text).map_err(|e| BougieError::Config {
+        path: "composer.json".into(),
+        detail: e.to_string(),
     })?;
     let require = v.get("require").and_then(serde_json::Value::as_object);
 
@@ -141,10 +142,7 @@ mod tests {
 
     #[test]
     fn scripts_array_form_preserves_order() {
-        let c = read_composer_json(
-            r#"{"scripts":{"check":["phpcs","phpstan analyse"]}}"#,
-        )
-        .unwrap();
+        let c = read_composer_json(r#"{"scripts":{"check":["phpcs","phpstan analyse"]}}"#).unwrap();
         assert_eq!(
             c.scripts.get("check"),
             Some(&vec!["phpcs".to_string(), "phpstan analyse".to_string()])
@@ -168,10 +166,9 @@ mod tests {
 
     #[test]
     fn require_php_and_ext_keys_are_extracted() {
-        let c = read_composer_json(
-            r#"{"require":{"php":"^8.3","ext-xdebug":"*","ext-redis":"*"}}"#,
-        )
-        .unwrap();
+        let c =
+            read_composer_json(r#"{"require":{"php":"^8.3","ext-xdebug":"*","ext-redis":"*"}}"#)
+                .unwrap();
         assert_eq!(c.require_php.as_deref(), Some("^8.3"));
         assert!(c.require_extensions.contains("xdebug"));
         assert!(c.require_extensions.contains("redis"));
@@ -179,10 +176,8 @@ mod tests {
 
     #[test]
     fn non_ext_require_keys_are_ignored() {
-        let c = read_composer_json(
-            r#"{"require":{"php":"^8.3","monolog/monolog":"^3.0"}}"#,
-        )
-        .unwrap();
+        let c =
+            read_composer_json(r#"{"require":{"php":"^8.3","monolog/monolog":"^3.0"}}"#).unwrap();
         assert_eq!(c.require_extensions.len(), 0);
     }
 
@@ -264,11 +259,15 @@ mod tests {
         let cfg = c.extra_bougie.unwrap();
         assert_eq!(cfg.services.len(), 2);
         assert_eq!(
-            cfg.services.get("redis").and_then(crate::ServicePin::version),
+            cfg.services
+                .get("redis")
+                .and_then(crate::ServicePin::version),
             Some("8.6")
         );
         assert_eq!(
-            cfg.services.get("mariadb").and_then(crate::ServicePin::version),
+            cfg.services
+                .get("mariadb")
+                .and_then(crate::ServicePin::version),
             Some("*")
         );
     }

@@ -29,7 +29,10 @@ const LICENSE: &[u8] = include_bytes!("../vendored/composer-2.8.12/LICENSE");
 const _: () = {
     let pinned = crate::REFERENCE_COMPOSER_VERSION;
     let expected = "2.8.12";
-    assert!(str_eq(pinned, expected), "REFERENCE_COMPOSER_VERSION moved away from the vendored bytes; update src/vendored.rs and crates/bougie-autoloader/vendored/composer-<version>/");
+    assert!(
+        str_eq(pinned, expected),
+        "REFERENCE_COMPOSER_VERSION moved away from the vendored bytes; update src/vendored.rs and crates/bougie-autoloader/vendored/composer-<version>/"
+    );
     // Keep the path constant honest too — silences dead-code warnings
     // and surfaces the relationship at the call site.
     let _ = VENDORED_DIR;
@@ -56,7 +59,10 @@ pub(crate) fn write_runtime_files(
     write: impl Fn(&Path, &[u8]) -> std::io::Result<()>,
 ) -> std::io::Result<()> {
     write(&composer_dir.join("ClassLoader.php"), CLASSLOADER_PHP)?;
-    write(&composer_dir.join("InstalledVersions.php"), INSTALLED_VERSIONS_PHP)?;
+    write(
+        &composer_dir.join("InstalledVersions.php"),
+        INSTALLED_VERSIONS_PHP,
+    )?;
     write(&composer_dir.join("LICENSE"), LICENSE)?;
     Ok(())
 }

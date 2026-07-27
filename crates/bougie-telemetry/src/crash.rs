@@ -45,7 +45,9 @@ fn record_crash(info: BinInfo, panic_info: &std::panic::PanicHookInfo<'_>) {
     if consent.mode == Mode::Off {
         return;
     }
-    let Ok(paths) = bougie_paths::Paths::from_env() else { return };
+    let Ok(paths) = bougie_paths::Paths::from_env() else {
+        return;
+    };
 
     // Frame capture is the heavy part: bounded by MAX_FRAMES before
     // any formatting happens (the panicking thread has a 16 MiB stack,
@@ -135,8 +137,14 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         assert!(mark_seen(tmp.path(), "abcd", "2026-07-03"));
         assert!(!mark_seen(tmp.path(), "abcd", "2026-07-03"));
-        assert!(mark_seen(tmp.path(), "abcd", "2026-07-04"), "new day, ship again");
-        assert!(mark_seen(tmp.path(), "beef", "2026-07-03"), "different crash ships");
+        assert!(
+            mark_seen(tmp.path(), "abcd", "2026-07-04"),
+            "new day, ship again"
+        );
+        assert!(
+            mark_seen(tmp.path(), "beef", "2026-07-03"),
+            "different crash ships"
+        );
     }
 
     #[test]

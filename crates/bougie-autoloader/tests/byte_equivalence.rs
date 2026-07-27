@@ -13,7 +13,7 @@
 //! pre-existing and only emits the autoload metadata).
 //! Re-run the fixture script + commit when bumping the pin.
 
-use bougie_autoloader::{dump_autoload, DumpRequest};
+use bougie_autoloader::{DumpRequest, dump_autoload};
 use std::path::{Path, PathBuf};
 
 const FIXTURES_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
@@ -122,7 +122,8 @@ fn byte_equivalence_against_composer() {
         }
     }
 
-    assert!(failures.is_empty(), 
+    assert!(
+        failures.is_empty(),
         "{} byte-equivalence failures:\n\n{}",
         failures.len(),
         failures.join("\n\n")
@@ -212,9 +213,10 @@ fn walk_into(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) {
         if p.is_dir() {
             walk_into(root, &p, out);
         } else if p.is_file()
-            && let Ok(rel) = p.strip_prefix(root) {
-                out.push(rel.to_path_buf());
-            }
+            && let Ok(rel) = p.strip_prefix(root)
+        {
+            out.push(rel.to_path_buf());
+        }
     }
 }
 
@@ -253,7 +255,10 @@ impl TempDir {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let path = base.join(format!("bougie-autoloader-fx-{nanos}-{}", std::process::id()));
+        let path = base.join(format!(
+            "bougie-autoloader-fx-{nanos}-{}",
+            std::process::id()
+        ));
         std::fs::create_dir(&path)?;
         Ok(Self { path })
     }

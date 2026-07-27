@@ -35,16 +35,16 @@
 //! `*.dll`s land where the shim already looks for them via
 //! `install/bin/php.exe`.
 
-use super::{build_http_client, BlobRef, ExtRecipe, PhpRecipe};
-use bougie_errors::{error_chain, BougieError};
-use bougie_fetch::{fetch_blob, ArchiveKind, BlobOutcome, DownloadBar};
+use super::{BlobRef, ExtRecipe, PhpRecipe, build_http_client};
+use bougie_errors::{BougieError, error_chain};
+use bougie_fetch::{ArchiveKind, BlobOutcome, DownloadBar, fetch_blob};
 use bougie_index::wire::LoadDirective;
 use bougie_paths::Paths;
-use bougie_version::request::{Flavor, VersionLike};
-use bougie_resolver::ResolveOptions;
 use bougie_platform::target::{Arch, Triple};
+use bougie_resolver::ResolveOptions;
+use bougie_version::request::{Flavor, VersionLike};
 use bougie_version::version::{PartialVersion, Version};
-use eyre::{eyre, Result, WrapErr};
+use eyre::{Result, WrapErr, eyre};
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::fs;
@@ -207,11 +207,7 @@ impl super::Backend for WindowsPhpNetBackend {
                 // sizeless bar that ticks bytes received but can't
                 // fill — same behaviour as a pre-`size` bougie-index
                 // publisher.
-                size: zip
-                    .size
-                    .as_deref()
-                    .and_then(parse_human_size)
-                    .unwrap_or(0),
+                size: zip.size.as_deref().and_then(parse_human_size).unwrap_or(0),
                 archive: ArchiveKind::Zip,
                 strip_prefix: String::new(),
             },
@@ -277,17 +273,21 @@ impl MinorEntry {
 fn pick_minor_key(spec: &VersionLike) -> Result<String> {
     let anchor = match spec {
         VersionLike::Version(pv) => *pv,
-        VersionLike::Constraint(c) => constraint_anchor(c).ok_or_else(|| eyre!(
-            "constraint `{c:?}` doesn't reduce to a single PHP minor, which is all \
+        VersionLike::Constraint(c) => constraint_anchor(c).ok_or_else(|| {
+            eyre!(
+                "constraint `{c:?}` doesn't reduce to a single PHP minor, which is all \
              windows.php.net can resolve against (releases.json exposes only the \
              latest patch per minor). Try specifying a minor (`8.4`) or exact patch \
              (`8.4.21`) instead, or open an issue describing the use case."
-        ))?,
+            )
+        })?,
     };
-    let minor = anchor.minor.ok_or_else(|| eyre!(
-        "windows.php.net needs at least <major>.<minor> (e.g. `8.4`); got `{anchor}`. \
+    let minor = anchor.minor.ok_or_else(|| {
+        eyre!(
+            "windows.php.net needs at least <major>.<minor> (e.g. `8.4`); got `{anchor}`. \
          Specify the minor — windows.php.net only ships the latest patch per minor."
-    ))?;
+        )
+    })?;
     Ok(format!("{}.{minor}", anchor.major))
 }
 
@@ -387,9 +387,7 @@ fn parse_human_size(s: &str) -> Option<u64> {
     // Split at the first ASCII alphabetic character so "33.31MB"
     // becomes ("33.31", "MB"). A pure-numeric input ("12345") falls
     // through to bytes via the empty-suffix arm below.
-    let split_at = s
-        .find(|c: char| c.is_ascii_alphabetic())
-        .unwrap_or(s.len());
+    let split_at = s.find(|c: char| c.is_ascii_alphabetic()).unwrap_or(s.len());
     let (num_part, unit_part) = s.split_at(split_at);
     let num: f64 = num_part.trim().parse().ok()?;
     if !num.is_finite() || num < 0.0 {
@@ -496,8 +494,7 @@ fn fetch_releases(client: &reqwest::blocking::Client, cache_root: &Path) -> Resu
         detail: error_chain(&e),
     })?;
 
-    fs::write(&body_path, &body)
-        .wrap_err_with(|| format!("writing {}", body_path.display()))?;
+    fs::write(&body_path, &body).wrap_err_with(|| format!("writing {}", body_path.display()))?;
     if let Some(etag) = new_etag.as_deref() {
         let _ = fs::write(&etag_path, etag);
     }
@@ -718,12 +715,9 @@ impl WindowsPhpNetBackend {
     ) -> Result<WindowsPeclArtifact> {
         let arch = self.arch_suffix()?;
         let flavor_tag = flavor_tag(flavor)?;
-        let minor = php_minor.minor.ok_or_else(|| {
-            eyre!(
-                "PECL resolution needs <major>.<minor>; got `{}`",
-                php_minor
-            )
-        })?;
+        let minor = php_minor
+            .minor
+            .ok_or_else(|| eyre!("PECL resolution needs <major>.<minor>; got `{}`", php_minor))?;
         let php_minor_str = format!("{}.{minor}", php_minor.major);
         let vc = vc_for_minor(&php_minor_str)?;
 
@@ -792,14 +786,23 @@ mod tests {
 
     #[test]
     fn pick_minor_key_requires_minor_component() {
-        let just_major =
-            VersionLike::Version(PartialVersion { major: 8, minor: None, patch: None });
+        let just_major = VersionLike::Version(PartialVersion {
+            major: 8,
+            minor: None,
+            patch: None,
+        });
         assert!(pick_minor_key(&just_major).is_err());
-        let with_minor =
-            VersionLike::Version(PartialVersion { major: 8, minor: Some(4), patch: None });
+        let with_minor = VersionLike::Version(PartialVersion {
+            major: 8,
+            minor: Some(4),
+            patch: None,
+        });
         assert_eq!(pick_minor_key(&with_minor).unwrap(), "8.4");
-        let with_patch =
-            VersionLike::Version(PartialVersion { major: 8, minor: Some(4), patch: Some(21) });
+        let with_patch = VersionLike::Version(PartialVersion {
+            major: 8,
+            minor: Some(4),
+            patch: Some(21),
+        });
         assert_eq!(pick_minor_key(&with_patch).unwrap(), "8.4");
     }
 
@@ -866,8 +869,11 @@ mod tests {
             minor: Some(4),
             patch: Some(20),
         });
-        let no_patch =
-            VersionLike::Version(PartialVersion { major: 8, minor: Some(4), patch: None });
+        let no_patch = VersionLike::Version(PartialVersion {
+            major: 8,
+            minor: Some(4),
+            patch: None,
+        });
         let available = Version::new(8, 4, 21);
         assert!(check_patch_pin(&pin_match, available).is_ok());
         assert!(check_patch_pin(&pin_drift, available).is_err());
@@ -988,7 +994,9 @@ mod tests {
             // sha256 should be 64 lowercase hex chars.
             assert_eq!(e.sha256.len(), 64, "{}: bad sha256 length", e.name);
             assert!(
-                e.sha256.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+                e.sha256
+                    .chars()
+                    .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
                 "{}: sha256 must be lowercase hex",
                 e.name
             );
@@ -1004,7 +1012,11 @@ mod tests {
             let (maj, min) = parse_minor(e.php_minor).unwrap_or_else(|err| {
                 panic!("{}: php_minor `{}` malformed: {err}", e.name, e.php_minor)
             });
-            assert!(maj >= 8, "{}: php_minor major {maj} pre-bougie-support", e.name);
+            assert!(
+                maj >= 8,
+                "{}: php_minor major {maj} pre-bougie-support",
+                e.name
+            );
             let _ = min;
         }
     }
@@ -1026,14 +1038,20 @@ mod tests {
         let art = backend
             .resolve_pecl(
                 "xdebug",
-                PartialVersion { major: 8, minor: Some(4), patch: None },
+                PartialVersion {
+                    major: 8,
+                    minor: Some(4),
+                    patch: None,
+                },
                 Flavor::Nts,
             )
             .unwrap();
         assert_eq!(art.name, "xdebug");
         assert_eq!(art.version, Version::new(3, 5, 1));
-        assert_eq!(art.url,
-            "https://windows.php.net/downloads/pecl/releases/xdebug/3.5.1/php_xdebug-3.5.1-8.4-nts-vs17-x64.zip");
+        assert_eq!(
+            art.url,
+            "https://windows.php.net/downloads/pecl/releases/xdebug/3.5.1/php_xdebug-3.5.1-8.4-nts-vs17-x64.zip"
+        );
         assert_eq!(art.load, LoadDirective::ZendExtension);
         assert!(!art.needs_store_on_path);
         assert_eq!(
@@ -1056,14 +1074,21 @@ mod tests {
         let art = backend
             .resolve_pecl(
                 "imagick",
-                PartialVersion { major: 8, minor: Some(4), patch: None },
+                PartialVersion {
+                    major: 8,
+                    minor: Some(4),
+                    patch: None,
+                },
                 Flavor::Nts,
             )
             .unwrap();
         assert_eq!(art.name, "imagick");
         assert_eq!(art.version, Version::new(3, 8, 1));
         assert_eq!(art.load, LoadDirective::Extension);
-        assert!(art.needs_store_on_path, "imagick must set needs_store_on_path");
+        assert!(
+            art.needs_store_on_path,
+            "imagick must set needs_store_on_path"
+        );
     }
 
     /// Trait surface: `Backend::resolve_extension` must wrap the
@@ -1085,7 +1110,11 @@ mod tests {
         let recipe = backend
             .resolve_extension(
                 "imagick",
-                PartialVersion { major: 8, minor: Some(4), patch: None },
+                PartialVersion {
+                    major: 8,
+                    minor: Some(4),
+                    patch: None,
+                },
                 Flavor::Nts,
                 None,
                 bougie_resolver::ResolveOptions::default(),
@@ -1093,11 +1122,20 @@ mod tests {
             .unwrap();
         assert_eq!(recipe.name, "imagick");
         assert_eq!(recipe.version, Version::new(3, 8, 1));
-        assert_eq!(recipe.artifact_rel, std::path::PathBuf::from("php_imagick.dll"));
+        assert_eq!(
+            recipe.artifact_rel,
+            std::path::PathBuf::from("php_imagick.dll")
+        );
         assert_eq!(recipe.blob.archive, ArchiveKind::Zip);
         assert_eq!(recipe.blob.strip_prefix, "");
-        assert!(recipe.closure.is_empty(), "windows.php.net PECL has no closure entries");
-        assert!(recipe.needs_store_on_path, "imagick must signal needs_store_on_path");
+        assert!(
+            recipe.closure.is_empty(),
+            "windows.php.net PECL has no closure entries"
+        );
+        assert!(
+            recipe.needs_store_on_path,
+            "imagick must signal needs_store_on_path"
+        );
         assert!(!recipe.frozen_warning);
     }
 
@@ -1124,7 +1162,11 @@ mod tests {
         let recipe = backend
             .resolve_extension(
                 "xdebug",
-                PartialVersion { major: 8, minor: Some(4), patch: None },
+                PartialVersion {
+                    major: 8,
+                    minor: Some(4),
+                    patch: None,
+                },
                 Flavor::Nts,
                 Some("99.99.99"),
                 bougie_resolver::ResolveOptions::default(),
@@ -1148,10 +1190,17 @@ mod tests {
         let err = backend
             .resolve_pecl(
                 "redis",
-                PartialVersion { major: 8, minor: Some(4), patch: None },
+                PartialVersion {
+                    major: 8,
+                    minor: Some(4),
+                    patch: None,
+                },
                 Flavor::Nts,
             )
             .unwrap_err();
-        assert!(err.to_string().contains("WINDOWS_PECL_VERSIONS"), "got: {err}");
+        assert!(
+            err.to_string().contains("WINDOWS_PECL_VERSIONS"),
+            "got: {err}"
+        );
     }
 }

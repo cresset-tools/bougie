@@ -89,9 +89,7 @@ fn compile_one(install: &Path, raw: &str) -> Option<String> {
     let escaped = regex::escape(&normalized);
 
     // (3) glob → regex
-    let translated = escaped
-        .replace("\\*\\*", ".+?")
-        .replace("\\*", "[^/]+?");
+    let translated = escaped.replace("\\*\\*", ".+?").replace("\\*", "[^/]+?");
 
     // (4) peel leading \\./ and \\.\\./ chunks into updir
     let (updir, body) = split_updir(&translated);
@@ -209,11 +207,7 @@ mod tests {
     fn double_star_spans_segments() {
         let root = TmpRoot::new("dstar");
         std::fs::create_dir_all(root.path.join("deeply/nested/fixtures")).unwrap();
-        std::fs::write(
-            root.path.join("deeply/nested/fixtures/X.php"),
-            b"<?php",
-        )
-        .unwrap();
+        std::fs::write(root.path.join("deeply/nested/fixtures/X.php"), b"<?php").unwrap();
         std::fs::create_dir_all(root.path.join("src")).unwrap();
         std::fs::write(root.path.join("src/Y.php"), b"<?php").unwrap();
 

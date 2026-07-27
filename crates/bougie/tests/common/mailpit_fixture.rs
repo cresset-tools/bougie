@@ -85,7 +85,10 @@ fn ensure_blob_cached() -> PathBuf {
         return blob_path;
     }
 
-    eprintln!("[mailpit_fixture] downloading {ASSET_URL} -> {}", blob_path.display());
+    eprintln!(
+        "[mailpit_fixture] downloading {ASSET_URL} -> {}",
+        blob_path.display()
+    );
     let client = reqwest::blocking::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(15))
         .timeout(std::time::Duration::from_mins(5))
@@ -117,13 +120,17 @@ fn test_cache_root() -> PathBuf {
         return PathBuf::from(dir);
     }
     if let Ok(home) = std::env::var("HOME") {
-        return PathBuf::from(home).join(".cache").join("bougie-test-fixtures");
+        return PathBuf::from(home)
+            .join(".cache")
+            .join("bougie-test-fixtures");
     }
     PathBuf::from("/tmp/bougie-test-fixtures")
 }
 
 fn verify_sha256(path: &Path) -> bool {
-    let Ok(mut f) = fs::File::open(path) else { return false };
+    let Ok(mut f) = fs::File::open(path) else {
+        return false;
+    };
     let mut hasher = Sha256::new();
     let mut buf = vec![0u8; 64 * 1024];
     loop {

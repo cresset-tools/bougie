@@ -25,14 +25,12 @@ use std::path::{Path, PathBuf};
 pub const OPENSEARCH_TARBALL: &str = "opensearch-2.19.5";
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-const BLOB_URL: &str =
-    "https://blobs.bougie.tools/blobs/b6/b676137a1be546ffb9a2045827ee3223ff4bf64b34c3284c14d01e8448ca06c6";
+const BLOB_URL: &str = "https://blobs.bougie.tools/blobs/b6/b676137a1be546ffb9a2045827ee3223ff4bf64b34c3284c14d01e8448ca06c6";
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 const BLOB_SHA256: &str = "b676137a1be546ffb9a2045827ee3223ff4bf64b34c3284c14d01e8448ca06c6";
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-const BLOB_URL: &str =
-    "https://blobs.bougie.tools/blobs/cb/cbb115841d51fe247e57a41c8d48ee6549a4432c5658cf551d9e99d093b07ac0";
+const BLOB_URL: &str = "https://blobs.bougie.tools/blobs/cb/cbb115841d51fe247e57a41c8d48ee6549a4432c5658cf551d9e99d093b07ac0";
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 const BLOB_SHA256: &str = "cbb115841d51fe247e57a41c8d48ee6549a4432c5658cf551d9e99d093b07ac0";
 
@@ -122,7 +120,9 @@ fn test_cache_root() -> PathBuf {
 }
 
 fn verify_sha256(path: &Path) -> bool {
-    let Ok(mut f) = fs::File::open(path) else { return false };
+    let Ok(mut f) = fs::File::open(path) else {
+        return false;
+    };
     let mut hasher = Sha256::new();
     let mut buf = vec![0u8; 64 * 1024];
     loop {

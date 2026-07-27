@@ -50,7 +50,13 @@ pub fn run(format: OutputFormat, args: ShareArgs) -> Result<ExitCode> {
     use bougie_config::load_project;
     use bougie_paths::Paths;
 
-    let ShareArgs { name, slug, public, password, no_sync } = args;
+    let ShareArgs {
+        name,
+        slug,
+        public,
+        password,
+        no_sync,
+    } = args;
 
     let project_root = locate_project_root()?;
     // Validate it's a real project early (surfaces a bad composer.json before
@@ -108,9 +114,15 @@ pub fn run(format: OutputFormat, args: ShareArgs) -> Result<ExitCode> {
     // serves byte-identically (including Magento's `/static` rewrites).
     let server_toml = bougie_daemon::daemon::provisioners::bougie_server::server_toml_path(&paths);
     let cfg = bougie_server::server::config::load(&server_toml)?;
-    let base = cfg.hosts.iter().find(|h| h.hostname == tenant_host).ok_or_else(|| {
-        eyre!("the dev server did not provision a host for {tenant_host} — is the server running?")
-    })?;
+    let base = cfg
+        .hosts
+        .iter()
+        .find(|h| h.hostname == tenant_host)
+        .ok_or_else(|| {
+            eyre!(
+                "the dev server did not provision a host for {tenant_host} — is the server running?"
+            )
+        })?;
     let root = base.root.clone();
     let rewrites = base.rewrites.clone();
 
@@ -139,14 +151,24 @@ pub fn run(format: OutputFormat, args: ShareArgs) -> Result<ExitCode> {
         resume: None,
     };
 
-    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
     rt.block_on(async move {
         let (handle, serving) = TunnelClient::new(tunnel_cfg).open().await?;
 
         // Register the relay-assigned `<slug>.bougie.show` as a `[[host]]`
         // mirroring the tenant (same project/root/rewrites), then reload the
         // live server so its router accepts the new Host.
-        add_share_host(&server_toml, &handle.host, &project_root, &root, &rewrites, &paths).await?;
+        add_share_host(
+            &server_toml,
+            &handle.host,
+            &project_root,
+            &root,
+            &rewrites,
+            &paths,
+        )
+        .await?;
         banner(format, &project_root, &handle)?;
 
         // Drive the tunnel until the relay closes it or the user hits Ctrl-C.
@@ -175,12 +197,18 @@ fn resolve_token() -> Option<String> {
     }
     let creds = bougie_composer_resolver::update::read_bougie_auth_json().ok()?;
     let mut bearers = creds.values().filter_map(|c| match c {
-        bougie_composer_resolver::metadata::AuthCredentials::Bearer { token } => Some(token.clone()),
+        bougie_composer_resolver::metadata::AuthCredentials::Bearer { token } => {
+            Some(token.clone())
+        }
         _ => None,
     });
     let first = bearers.next()?;
     // Only auto-select when it's unambiguous.
-    if bearers.next().is_some() { None } else { Some(first) }
+    if bearers.next().is_some() {
+        None
+    } else {
+        Some(first)
+    }
 }
 
 /// Add `<slug>.bougie.show` to `server.toml` mirroring the tenant, then reload
@@ -235,19 +263,25 @@ impl bougie_output::output::Render for ShareResult {
         writeln!(w, "sharing {} at {}", self.project.display(), self.url)?;
         match &self.view_password {
             Some(pw) => writeln!(w, "  view password: {pw}")?,
-            None => writeln!(w, "  \u{26a0} PUBLIC — no view password; anyone with the URL can view")?,
+            None => writeln!(
+                w,
+                "  \u{26a0} PUBLIC — no view password; anyone with the URL can view"
+            )?,
         }
         writeln!(w, "  Ctrl-C to stop the share")
     }
 }
 
 fn banner(format: OutputFormat, project: &Path, handle: &ShareHandle) -> Result<()> {
-    bougie_output::output::emit(format, &ShareResult {
-        schema_version: 1,
-        project: project.to_path_buf(),
-        url: handle.url.clone(),
-        host: handle.host.clone(),
-        view_password: handle.view_password.clone(),
-    })?;
+    bougie_output::output::emit(
+        format,
+        &ShareResult {
+            schema_version: 1,
+            project: project.to_path_buf(),
+            url: handle.url.clone(),
+            host: handle.host.clone(),
+            view_password: handle.view_password.clone(),
+        },
+    )?;
     Ok(())
 }

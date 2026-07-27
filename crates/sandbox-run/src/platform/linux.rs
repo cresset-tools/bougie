@@ -5,8 +5,8 @@ use crate::{
     sandbox::{ProtectHome, ProtectSystem, SandboxPolicy},
 };
 use landlock::{
-    Access, AccessFs, AccessNet, BitFlags, CompatLevel, Compatible, PathBeneath, PathFd, Ruleset,
-    RulesetAttr, RulesetCreated, RulesetCreatedAttr, ABI,
+    ABI, Access, AccessFs, AccessNet, BitFlags, CompatLevel, Compatible, PathBeneath, PathFd,
+    Ruleset, RulesetAttr, RulesetCreated, RulesetCreatedAttr,
 };
 
 // libc's setrlimit takes the resource argument as

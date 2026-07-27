@@ -16,7 +16,14 @@ fn git_ok(dir: &Path, args: &[&str]) {
     let status = Command::new("git")
         .arg("-C")
         .arg(dir)
-        .args(["-c", "user.email=t@e", "-c", "user.name=Test", "-c", "commit.gpgsign=false"])
+        .args([
+            "-c",
+            "user.email=t@e",
+            "-c",
+            "user.name=Test",
+            "-c",
+            "commit.gpgsign=false",
+        ])
         .args(args)
         .status()
         .expect("run git");
@@ -24,7 +31,12 @@ fn git_ok(dir: &Path, args: &[&str]) {
 }
 
 fn rev_parse(dir: &Path, rev: &str) -> String {
-    let out = Command::new("git").arg("-C").arg(dir).args(["rev-parse", rev]).output().unwrap();
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["rev-parse", rev])
+        .output()
+        .unwrap();
     assert!(out.status.success());
     String::from_utf8_lossy(&out.stdout).trim().to_owned()
 }
@@ -61,8 +73,10 @@ fn reads_tag_and_branch_versions_with_source() {
     let url = format!("file://{}", origin.display());
     let pkgs = read_vcs_packages(&paths, &VcsRepoConfig { url: url.clone() }).unwrap();
 
-    let by_version: HashMap<String, _> =
-        pkgs.iter().map(|p| (p.package.version.clone(), p)).collect();
+    let by_version: HashMap<String, _> = pkgs
+        .iter()
+        .map(|p| (p.package.version.clone(), p))
+        .collect();
 
     // Tag → 1.0.0 (leading `v` stripped), source pinned to the tag commit.
     let tag_pkg = by_version.get("1.0.0").expect("tag version present");
@@ -72,11 +86,17 @@ fn reads_tag_and_branch_versions_with_source() {
     assert_eq!(src.kind, "git");
     assert_eq!(src.url, url);
     assert_eq!(src.reference, tag_sha);
-    assert_eq!(tag_pkg.package.require.get("psr/log").map(String::as_str), Some("^1.0"));
+    assert_eq!(
+        tag_pkg.package.require.get("psr/log").map(String::as_str),
+        Some("^1.0")
+    );
 
     // Branch → dev-main, source pinned to the branch head.
     let main_pkg = by_version.get("dev-main").expect("branch version present");
-    assert_eq!(main_pkg.package.source.as_ref().unwrap().reference, main_sha);
+    assert_eq!(
+        main_pkg.package.source.as_ref().unwrap().reference,
+        main_sha
+    );
 }
 
 #[test]
@@ -85,7 +105,7 @@ fn normalize_branch_aliases_version_like_names() {
     for (branch, want) in [
         ("2.4", "2.4.x-dev"),
         ("7", "7.x-dev"),
-        ("v7", "7.x-dev"),   // leading v dropped
+        ("v7", "7.x-dev"), // leading v dropped
         ("1.2.3", "1.2.3.x-dev"),
         ("1.2.x", "1.2.x-dev"),
         ("1.2.*", "1.2.x-dev"),
@@ -101,7 +121,11 @@ fn normalize_branch_aliases_version_like_names() {
     }
     // Non-version branches stay dev-<branch>.
     for branch in ["main", "feature/x", "2.4-develop", "release-2020"] {
-        assert_eq!(normalize_branch(branch), format!("dev-{branch}"), "branch {branch}");
+        assert_eq!(
+            normalize_branch(branch),
+            format!("dev-{branch}"),
+            "branch {branch}"
+        );
     }
 }
 
@@ -121,12 +145,19 @@ fn version_like_branch_resolves_from_git() {
     let url = format!("file://{}", origin.display());
     let pkgs = read_vcs_packages(&paths, &VcsRepoConfig { url }).unwrap();
 
-    let by_version: HashMap<String, _> =
-        pkgs.iter().map(|p| (p.package.version.clone(), p)).collect();
+    let by_version: HashMap<String, _> = pkgs
+        .iter()
+        .map(|p| (p.package.version.clone(), p))
+        .collect();
     // The 2.4 branch aliases to 2.4.x-dev (not dev-2.4), pinned to its head.
-    let aliased = by_version.get("2.4.x-dev").expect("2.4 branch aliased to x-dev");
+    let aliased = by_version
+        .get("2.4.x-dev")
+        .expect("2.4 branch aliased to x-dev");
     assert_eq!(aliased.package.source.as_ref().unwrap().reference, head);
     assert!(aliased.package.version_normalized.is_some());
     assert!(by_version.contains_key("dev-main"), "main stays dev-main");
-    assert!(!by_version.contains_key("dev-2.4"), "2.4 must not stay dev-2.4");
+    assert!(
+        !by_version.contains_key("dev-2.4"),
+        "2.4 must not stay dev-2.4"
+    );
 }

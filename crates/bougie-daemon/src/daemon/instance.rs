@@ -29,7 +29,10 @@ pub struct Instance {
 
 impl Instance {
     pub fn new(name: impl Into<String>, version: impl Into<String>) -> Self {
-        Self { name: name.into(), version: version.into() }
+        Self {
+            name: name.into(),
+            version: version.into(),
+        }
     }
 
     /// Store tarball / canonical id: `<name>-<version>`
@@ -109,7 +112,11 @@ mod tests {
         let mut map: HashMap<InstanceId, u16> = HashMap::new();
         map.insert(a.id(), 9200);
         map.insert(b.id(), 9201);
-        assert_eq!(map.len(), 2, "two versions of one service are distinct keys");
+        assert_eq!(
+            map.len(),
+            2,
+            "two versions of one service are distinct keys"
+        );
         assert_eq!(map[&a.id()], 9200);
         assert_eq!(map[&b.id()], 9201);
         // Same (name, version) → same key.

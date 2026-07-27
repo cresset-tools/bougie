@@ -30,9 +30,18 @@ use eyre::{Result, WrapErr};
 /// The bundled `Bougie_Share` module sources, embedded at build time and written
 /// into `app/code/Bougie/Share/` on deploy.
 const MODULE_FILES: &[(&str, &str)] = &[
-    ("registration.php", include_str!("share_assets/magento/registration.php")),
-    ("etc/module.xml", include_str!("share_assets/magento/etc/module.xml")),
-    ("etc/di.xml", include_str!("share_assets/magento/etc/di.xml")),
+    (
+        "registration.php",
+        include_str!("share_assets/magento/registration.php"),
+    ),
+    (
+        "etc/module.xml",
+        include_str!("share_assets/magento/etc/module.xml"),
+    ),
+    (
+        "etc/di.xml",
+        include_str!("share_assets/magento/etc/di.xml"),
+    ),
     (
         "Plugin/RequestRelativeBaseUrl.php",
         include_str!("share_assets/magento/Plugin/RequestRelativeBaseUrl.php"),
@@ -208,7 +217,11 @@ mod magento {
             .wrap_err("spawning bin/magento cache:flush")?;
         if !out.status.success() {
             let stderr = String::from_utf8_lossy(&out.stderr);
-            return Err(eyre!("bin/magento cache:flush {}: {}", out.status, stderr.trim()));
+            return Err(eyre!(
+                "bin/magento cache:flush {}: {}",
+                out.status,
+                stderr.trim()
+            ));
         }
         Ok(())
     }
@@ -228,7 +241,9 @@ mod tests {
         let out = with_module_enabled(ENV_WITH_MODULES).expect("should modify");
         assert!(out.contains("'Bougie_Share' => 1,"));
         // Inserted as the first element of the modules map, four-space indented.
-        assert!(out.contains("array (\n    'Bougie_Share' => 1,\n    'Magento_TwoFactorAuth' => 0,"));
+        assert!(
+            out.contains("array (\n    'Bougie_Share' => 1,\n    'Magento_TwoFactorAuth' => 0,")
+        );
         // Still valid: only the modules map grew.
         assert!(out.contains("'Magento_TwoFactorAuth' => 0,"));
     }
@@ -260,7 +275,8 @@ mod tests {
 
     #[test]
     fn handles_short_array_syntax() {
-        let short = "<?php\nreturn [\n  'modules' => [\n    'Magento_TwoFactorAuth' => 0,\n  ],\n];\n";
+        let short =
+            "<?php\nreturn [\n  'modules' => [\n    'Magento_TwoFactorAuth' => 0,\n  ],\n];\n";
         let out = with_module_enabled(short).expect("should modify");
         assert!(out.contains("'Bougie_Share' => 1,"));
         assert!(out.contains("'Magento_TwoFactorAuth' => 0,"));

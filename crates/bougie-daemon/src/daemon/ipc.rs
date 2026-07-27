@@ -192,7 +192,12 @@ pub struct ProgressFrame<'a> {
 
 impl<'a> ProgressFrame<'a> {
     pub fn new(stream: &'a str, data: &'a str) -> Self {
-        Self { schema_version: SCHEMA_VERSION, typ: "progress", stream, data }
+        Self {
+            schema_version: SCHEMA_VERSION,
+            typ: "progress",
+            stream,
+            data,
+        }
     }
 }
 
@@ -228,7 +233,14 @@ pub struct DownloadFrame<'a> {
 
 impl<'a> DownloadFrame<'a> {
     pub fn new(pos: u64, total: u64, label: &'a str, extracting: bool) -> Self {
-        Self { schema_version: SCHEMA_VERSION, typ: "download", pos, total, label, extracting }
+        Self {
+            schema_version: SCHEMA_VERSION,
+            typ: "download",
+            pos,
+            total,
+            label,
+            extracting,
+        }
     }
 }
 
@@ -261,7 +273,10 @@ impl ResultFrame {
             typ: "result",
             ok: false,
             result: None,
-            error: Some(ErrorBody { code: code.into(), message: message.into() }),
+            error: Some(ErrorBody {
+                code: code.into(),
+                message: message.into(),
+            }),
         }
     }
 }
@@ -324,10 +339,7 @@ pub async fn handle_connection(stream: UnixStream, state: Arc<DaemonState>) {
     }
 }
 
-async fn write_terminal(
-    write_half: &mut tokio::net::unix::OwnedWriteHalf,
-    frame: &ResultFrame,
-) {
+async fn write_terminal(write_half: &mut tokio::net::unix::OwnedWriteHalf, frame: &ResultFrame) {
     let bytes = match serde_json::to_vec(frame) {
         Ok(b) => b,
         Err(e) => {
@@ -347,8 +359,8 @@ async fn write_terminal(
 }
 
 fn parse_request(line: &str) -> Result<Request, String> {
-    let env: RequestEnvelope = serde_json::from_str(line)
-        .map_err(|e| format!("malformed request envelope: {e}"))?;
+    let env: RequestEnvelope =
+        serde_json::from_str(line).map_err(|e| format!("malformed request envelope: {e}"))?;
     // Accept both v1 and v2. v2 added the per-service `version` on
     // `service.up`; the two control probes (`daemon.version`,
     // `daemon.shutdown`) still speak v1 so a *newer* CLI can query and
@@ -389,8 +401,7 @@ async fn dispatch(req: Request, state: &Arc<DaemonState>) -> ResultFrame {
         Request::Status => {
             let snap = state.supervisor.lock().await.snapshot();
             ResultFrame::ok(
-                serde_json::to_value(serde_json::json!({"services": snap}))
-                    .unwrap_or(Value::Null),
+                serde_json::to_value(serde_json::json!({"services": snap})).unwrap_or(Value::Null),
             )
         }
         Request::DaemonVersion => ResultFrame::ok(serde_json::json!({
@@ -528,8 +539,7 @@ async fn dispatch_logs(
     let mut targets: Vec<(&'static str, std::path::PathBuf)> = Vec::with_capacity(names.len());
     for name in &names {
         let Some(entry) = catalog::find(name) else {
-            let frame =
-                ResultFrame::err("unknown_service", format!("`{name}` not in catalog"));
+            let frame = ResultFrame::err("unknown_service", format!("`{name}` not in catalog"));
             write_terminal(write_half, &frame).await;
             return;
         };
@@ -539,8 +549,14 @@ async fn dispatch_logs(
 
     if targets.len() == 1 {
         let (_, log_path) = &targets[0];
-        dispatch_logs_single(write_half, log_path, args.lines, args.follow, args.host.as_deref())
-            .await;
+        dispatch_logs_single(
+            write_half,
+            log_path,
+            args.lines,
+            args.follow,
+            args.host.as_deref(),
+        )
+        .await;
     } else {
         dispatch_logs_multi(write_half, &targets, args.lines, args.follow, args.color).await;
     }
@@ -582,10 +598,9 @@ async fn dispatch_logs_single(
         None => tail,
     };
     let joined = tail.concat();
-    if !joined.is_empty()
-        && !write_progress(write_half, "stdout", &joined).await {
-            return;
-        }
+    if !joined.is_empty() && !write_progress(write_half, "stdout", &joined).await {
+        return;
+    }
 
     if !follow {
         let frame = ResultFrame::ok(serde_json::json!({"lines_tailed": tail.len()}));
@@ -595,7 +610,11 @@ async fn dispatch_logs_single(
 
     // 2. Follow: seek to current end-of-file, poll for growth, stream
     // new bytes. Buffer reused across iterations to avoid alloc churn.
-    let mut f = match tokio::fs::OpenOptions::new().read(true).open(log_path).await {
+    let mut f = match tokio::fs::OpenOptions::new()
+        .read(true)
+        .open(log_path)
+        .await
+    {
         Ok(f) => f,
         Err(e) => {
             let frame = ResultFrame::err("log_open_failed", e.to_string());
@@ -664,7 +683,11 @@ async fn reopen_if_rotated(
     if (cur.dev(), cur.ino()) == (on_disk.dev(), on_disk.ino()) {
         return None;
     }
-    tokio::fs::OpenOptions::new().read(true).open(path).await.ok()
+    tokio::fs::OpenOptions::new()
+        .read(true)
+        .open(path)
+        .await
+        .ok()
 }
 
 /// ANSI 16-color foreground codes cycled across services in the
@@ -706,9 +729,8 @@ async fn dispatch_logs_multi(
 
     let width = targets.iter().map(|(n, _)| n.len()).max().unwrap_or(0);
     // Assign each service a stable color by its position in the list.
-    let color_for = |idx: usize| -> Option<u8> {
-        color.then(|| PREFIX_COLORS[idx % PREFIX_COLORS.len()])
-    };
+    let color_for =
+        |idx: usize| -> Option<u8> { color.then(|| PREFIX_COLORS[idx % PREFIX_COLORS.len()]) };
 
     // 1. Tail each service in turn, prefixing every line.
     let mut tailed = 0usize;
@@ -752,9 +774,7 @@ async fn dispatch_logs_multi(
                 // Newly-started services may not have created their log
                 // yet; retry next tick. Seek to EOF on first open so we
                 // only stream output that lands after we attach.
-                if let Ok(mut f) =
-                    tokio::fs::OpenOptions::new().read(true).open(&t.path).await
-                {
+                if let Ok(mut f) = tokio::fs::OpenOptions::new().read(true).open(&t.path).await {
                     let _ = f.seek(std::io::SeekFrom::End(0)).await;
                     t.file = Some(f);
                 } else {
@@ -989,9 +1009,7 @@ async fn preflight_port_warnings(
             .filter(|s| {
                 matches!(
                     s.state,
-                    ServiceState::Running
-                        | ServiceState::HealthChecking
-                        | ServiceState::Starting
+                    ServiceState::Running | ServiceState::HealthChecking | ServiceState::Starting
                 )
             })
             .map(|s| s.name)
@@ -1029,7 +1047,12 @@ async fn dispatch_up_streaming(
         std::sync::Arc::new(IpcDownloadSink { tx });
     let bar = std::sync::Arc::new(bougie_fetch::DownloadBar::hidden_with_sink(sink));
 
-    let mut up_fut = Box::pin(dispatch_up(state, args.project, args.services, Some(bar.clone())));
+    let mut up_fut = Box::pin(dispatch_up(
+        state,
+        args.project,
+        args.services,
+        Some(bar.clone()),
+    ));
     let mut ticker = tokio::time::interval(Duration::from_millis(50));
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
@@ -1098,12 +1121,26 @@ async fn dispatch_up_streaming(
     // its local bar when the terminal arrives).
     while let Ok(ev) = rx.try_recv() {
         match ev {
-            DownloadEvent::Plan { bytes } => { total = total.saturating_add(bytes); dirty = true; }
-            DownloadEvent::Current { name } => {
-                if name != label || extracting { label = name; extracting = false; dirty = true; }
+            DownloadEvent::Plan { bytes } => {
+                total = total.saturating_add(bytes);
+                dirty = true;
             }
-            DownloadEvent::Inc { bytes } => { pos = pos.saturating_add(bytes); dirty = true; }
-            DownloadEvent::Extracting { name } => { label = name; extracting = true; dirty = true; }
+            DownloadEvent::Current { name } => {
+                if name != label || extracting {
+                    label = name;
+                    extracting = false;
+                    dirty = true;
+                }
+            }
+            DownloadEvent::Inc { bytes } => {
+                pos = pos.saturating_add(bytes);
+                dirty = true;
+            }
+            DownloadEvent::Extracting { name } => {
+                label = name;
+                extracting = true;
+                dirty = true;
+            }
             DownloadEvent::Finish => {}
         }
     }
@@ -1280,7 +1317,9 @@ async fn dispatch_up(
     let mut dependencies = serde_json::Map::new();
     for name in order {
         // Skip transitive runtime deps; not all are real services.
-        let Some(entry) = catalog::find(name) else { continue };
+        let Some(entry) = catalog::find(name) else {
+            continue;
+        };
         // The requested instance runs at the version the CLI resolved for
         // it (from the project's `[services]` pin). Transitive deps ordered
         // in but not explicitly requested run at their catalog default.
@@ -1326,10 +1365,7 @@ async fn dispatch_up(
         // opensearch is natively async.
         let pre_res = provisioners::pre_start(entry, &state.paths, &version).await;
         if let Err(e) = pre_res {
-            return ResultFrame::err(
-                "pre_start_failed",
-                format!("{name}: {e}"),
-            );
+            return ResultFrame::err("pre_start_failed", format!("{name}: {e}"));
         }
         // Start (idempotent). The health probe runs off the supervisor
         // lock, so a slow service (opensearch/rabbitmq, up to 90s) doesn't
@@ -1339,10 +1375,7 @@ async fn dispatch_up(
             Ok(true) => started.push(name.to_string()),
             Ok(false) => {}
             Err(e) => {
-                return ResultFrame::err(
-                    "service_start_failed",
-                    format!("{name}: {e}"),
-                );
+                return ResultFrame::err("service_start_failed", format!("{name}: {e}"));
             }
         }
         // Provision the tenant for this project (only for user_facing
@@ -1371,10 +1404,7 @@ async fn dispatch_up(
                     tenants_map.insert(name.to_string(), Value::String(t.tenant));
                 }
                 Err(e) => {
-                    return ResultFrame::err(
-                        "provision_failed",
-                        format!("{name}: {e:#}"),
-                    );
+                    return ResultFrame::err("provision_failed", format!("{name}: {e:#}"));
                 }
             }
         }
@@ -1426,7 +1456,10 @@ async fn dispatch_down(
                 .ok()
                 .and_then(|all| all.into_iter().find(|t| t.project == project));
             if let Some(t) = project_tenant {
-                let sock_default = state.paths.service_run(entry.name, version).join(format!("{}.sock", entry.name));
+                let sock_default = state
+                    .paths
+                    .service_run(entry.name, version)
+                    .join(format!("{}.sock", entry.name));
                 let sock_opt = sock_default.exists().then_some(sock_default);
                 let deprov_res = provisioners::deprovision(
                     entry,
@@ -1491,7 +1524,11 @@ mod tests {
             conn.symlink_metadata().unwrap().file_type().is_symlink(),
             "conn socket must be a symlink"
         );
-        assert_eq!(std::fs::read_link(&conn).unwrap(), real_80, "must point at the 8.0 instance");
+        assert_eq!(
+            std::fs::read_link(&conn).unwrap(),
+            real_80,
+            "must point at the 8.0 instance"
+        );
 
         // Switching the project to 8.4 repoints the SAME stable path — an
         // app's baked env.php host doesn't change across the bump.
@@ -1499,8 +1536,16 @@ mod tests {
         std::fs::create_dir_all(real_84.parent().unwrap()).unwrap();
         std::fs::write(&real_84, b"").unwrap();
         link_project_conn_socket(&paths, entry, "8.4.10", project);
-        assert_eq!(std::fs::read_link(&conn).unwrap(), real_84, "must repoint at 8.4");
-        assert_eq!(conn, paths.project_conn_socket(project, "mysql.sock"), "path is stable");
+        assert_eq!(
+            std::fs::read_link(&conn).unwrap(),
+            real_84,
+            "must repoint at 8.4"
+        );
+        assert_eq!(
+            conn,
+            paths.project_conn_socket(project, "mysql.sock"),
+            "path is stable"
+        );
     }
 
     #[test]
@@ -1528,7 +1573,10 @@ mod tests {
         // legitimately ours, so a re-run of `up` isn't a conflict.
         let active: HashSet<String> = ["opensearch".to_string()].into_iter().collect();
         let order = ["opensearch", "rabbitmq"];
-        assert_eq!(ports_to_preflight(&order, &active), vec![("rabbitmq", 5672)]);
+        assert_eq!(
+            ports_to_preflight(&order, &active),
+            vec![("rabbitmq", 5672)]
+        );
     }
 
     #[test]
@@ -1613,7 +1661,10 @@ mod tests {
             panic!("expected ServiceRestart");
         };
         assert_eq!(args.project, std::path::Path::new("/p"));
-        assert_eq!(args.services, vec!["redis".to_string(), "mariadb".to_string()]);
+        assert_eq!(
+            args.services,
+            vec!["redis".to_string(), "mariadb".to_string()]
+        );
     }
 
     #[test]
@@ -1628,10 +1679,7 @@ mod tests {
         assert!(frame.ok);
         let val = frame.result.unwrap();
         let entries = val["catalog"].as_array().expect("catalog array");
-        let names: Vec<&str> = entries
-            .iter()
-            .filter_map(|e| e["name"].as_str())
-            .collect();
+        let names: Vec<&str> = entries.iter().filter_map(|e| e["name"].as_str()).collect();
         assert!(names.contains(&"redis"), "{names:?}");
         assert!(names.contains(&"mariadb"), "{names:?}");
         assert!(names.contains(&"rabbitmq"), "{names:?}");
@@ -1718,7 +1766,10 @@ mod tests {
         let Request::ServiceLogs(args) = r else {
             panic!("expected ServiceLogs");
         };
-        assert_eq!(args.service_names(), vec!["redis".to_string(), "mariadb".to_string()]);
+        assert_eq!(
+            args.service_names(),
+            vec!["redis".to_string(), "mariadb".to_string()]
+        );
         assert_eq!(args.lines, 10);
     }
 
@@ -1738,8 +1789,8 @@ mod tests {
 
     #[test]
     fn drain_keeps_only_matching_complete_lines() {
-        let mut p = b"a shop.bougie.run x\nb other.bougie.run y\nc shop.bougie.run z\ntrailing"
-            .to_vec();
+        let mut p =
+            b"a shop.bougie.run x\nb other.bougie.run y\nc shop.bougie.run z\ntrailing".to_vec();
         let out = drain_matching_lines(&mut p, Some("shop.bougie.run"));
         assert_eq!(out, "a shop.bougie.run x\nc shop.bougie.run z\n");
         // The partial (newline-less) tail is retained for the next read.
@@ -1795,7 +1846,11 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("svc.log");
         std::fs::write(&path, b"one\n").unwrap();
-        let f = tokio::fs::OpenOptions::new().read(true).open(&path).await.unwrap();
+        let f = tokio::fs::OpenOptions::new()
+            .read(true)
+            .open(&path)
+            .await
+            .unwrap();
 
         // Same inode, just idle → no reopen.
         assert!(reopen_if_rotated(&path, &f).await.is_none());

@@ -14,10 +14,12 @@ use bougie_composer::lockfile::{Lock, LockPackage};
 use crate::hash::FxHashMap;
 use composer_semver::constraint::Constraint;
 use composer_semver::version::Version;
-use pubgrub::{Dependencies, DependencyConstraints, DependencyProvider, PackageResolutionStatistics};
+use pubgrub::{
+    Dependencies, DependencyConstraints, DependencyProvider, PackageResolutionStatistics,
+};
 use serde_json::Value;
 
-use super::range::{to_range, ComposerRange};
+use super::range::{ComposerRange, to_range};
 use crate::package_name::PackageName;
 use crate::platform::PlatformEnv;
 
@@ -91,12 +93,11 @@ impl LockVerifyProvider {
             Box::new(lock.all_packages())
         };
         for p in pkg_iter {
-            let version = Version::parse(&p.version)
-                .map_err(|e| BuildError::ParseVersion {
-                    package: p.name.clone(),
-                    version: p.version.clone(),
-                    reason: e.to_string(),
-                })?;
+            let version = Version::parse(&p.version).map_err(|e| BuildError::ParseVersion {
+                package: p.name.clone(),
+                version: p.version.clone(),
+                reason: e.to_string(),
+            })?;
             // Intern once at the `LockPackage` boundary; this single
             // `PackageName` lives in both the `locked` and `deps`
             // entries, plus every `PubGrubPackage::Package` clone
@@ -112,14 +113,13 @@ impl LockVerifyProvider {
                 if is_platform(dep_name) && !platform.models(dep_name) {
                     continue;
                 }
-                let constraint = Constraint::parse(raw_constraint).map_err(|e| {
-                    BuildError::ParseConstraint {
+                let constraint =
+                    Constraint::parse(raw_constraint).map_err(|e| BuildError::ParseConstraint {
                         package: p.name.clone(),
                         dep: dep_name.clone(),
                         constraint: raw_constraint.clone(),
                         reason: e.to_string(),
-                    }
-                })?;
+                    })?;
                 pkg_deps.push((PackageName::from(dep_name.as_str()), to_range(&constraint)));
             }
             deps.insert(owner, pkg_deps);
@@ -143,7 +143,12 @@ impl LockVerifyProvider {
         let root_version =
             Version::parse("0.0.0.0").map_err(|e| BuildError::Internal(e.to_string()))?;
 
-        Ok(Self { locked, deps, root_deps, root_version })
+        Ok(Self {
+            locked,
+            deps,
+            root_deps,
+            root_version,
+        })
     }
 
     /// The synthetic root version pubgrub should `resolve` against.
@@ -162,8 +167,14 @@ fn read_root_requires(
         .as_object()
         .ok_or_else(|| BuildError::Internal("composer.json top-level is not an object".into()))?;
 
-    for key in if no_dev { &["require"][..] } else { &["require", "require-dev"][..] } {
-        let Some(reqs) = obj.get(*key).and_then(Value::as_object) else { continue };
+    for key in if no_dev {
+        &["require"][..]
+    } else {
+        &["require", "require-dev"][..]
+    } {
+        let Some(reqs) = obj.get(*key).and_then(Value::as_object) else {
+            continue;
+        };
         for (dep_name, raw) in reqs {
             // Modeled platform packages (e.g. `php`) become real edges
             // validated against the runtime candidate (#118); others
@@ -174,14 +185,13 @@ fn read_root_requires(
             let raw_constraint = raw
                 .as_str()
                 .ok_or_else(|| BuildError::Internal(format!("{key}.{dep_name} is not a string")))?;
-            let constraint = Constraint::parse(raw_constraint).map_err(|e| {
-                BuildError::ParseConstraint {
+            let constraint =
+                Constraint::parse(raw_constraint).map_err(|e| BuildError::ParseConstraint {
                     package: "<root>".into(),
                     dep: dep_name.clone(),
                     constraint: raw_constraint.to_owned(),
                     reason: e.to_string(),
-                }
-            })?;
+                })?;
             out.push((PackageName::from(dep_name.as_str()), to_range(&constraint)));
         }
     }
@@ -223,11 +233,20 @@ pub enum BuildError {
 impl std::fmt::Display for BuildError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::ParseVersion { package, version, reason } => write!(
+            Self::ParseVersion {
+                package,
+                version,
+                reason,
+            } => write!(
                 f,
                 "lock package `{package}` has unparseable version {version:?}: {reason}",
             ),
-            Self::ParseConstraint { package, dep, constraint, reason } => write!(
+            Self::ParseConstraint {
+                package,
+                dep,
+                constraint,
+                reason,
+            } => write!(
                 f,
                 "constraint {constraint:?} on `{dep}` (from `{package}`) is invalid: {reason}",
             ),
@@ -284,11 +303,7 @@ impl DependencyProvider for LockVerifyProvider {
     ) -> Result<Dependencies<Self::P, Self::VS, Self::M>, Self::Err> {
         let deps: &[(PackageName, ComposerRange)] = match package {
             PubGrubPackage::Root => &self.root_deps,
-            PubGrubPackage::Package(name) => self
-                .deps
-                .get(name)
-                .map(Vec::as_slice)
-                .unwrap_or(&[]),
+            PubGrubPackage::Package(name) => self.deps.get(name).map(Vec::as_slice).unwrap_or(&[]),
         };
         let constraints: DependencyConstraints<Self::P, Self::VS> = deps
             .iter()

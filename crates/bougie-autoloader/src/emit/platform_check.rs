@@ -198,7 +198,11 @@ mod tests {
         // Leak two empty maps with 'static lifetime for the borrow.
         static EMPTY: std::sync::OnceLock<BTreeMap<String, String>> = std::sync::OnceLock::new();
         let empty = EMPTY.get_or_init(BTreeMap::new);
-        PkgLinks { require, replace: empty, provide: empty }
+        PkgLinks {
+            require,
+            replace: empty,
+            provide: empty,
+        }
     }
 
     #[test]

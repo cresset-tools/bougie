@@ -6,9 +6,9 @@
 //!   - `index.json.etag`    the matching `ETag` header value
 //!   - `index.json.sig`     the matching signature sidecar
 
-use bougie_errors::{error_chain, BougieError};
 use crate::verify::Verifier;
 use crate::wire::{Manifest, Root, Section};
+use bougie_errors::{BougieError, error_chain};
 use eyre::{Result, WrapErr};
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -68,7 +68,10 @@ where
         let bytes = fs::read(&root_path)
             .wrap_err_with(|| format!("reading cached {}", root_path.display()))?;
         let root: Root = serde_json::from_slice(&bytes).wrap_err("parsing cached index.json")?;
-        return Ok(FetchedRoot { root, outcome: FetchOutcome::Cached });
+        return Ok(FetchedRoot {
+            root,
+            outcome: FetchOutcome::Cached,
+        });
     }
 
     if !resp.status().is_success() {
@@ -106,7 +109,10 @@ where
     }
 
     let root: Root = serde_json::from_slice(&body).wrap_err("parsing fetched index.json")?;
-    Ok(FetchedRoot { root, outcome: FetchOutcome::Refreshed })
+    Ok(FetchedRoot {
+        root,
+        outcome: FetchOutcome::Refreshed,
+    })
 }
 
 /// Fetch a section file, verifying its sha256 against the value the
@@ -183,7 +189,9 @@ pub fn fetch_manifest(
     manifest_path: &str,
     expected_sha256: &str,
 ) -> Result<Manifest> {
-    let cache_path = cache_root.join("manifests").join(format!("{expected_sha256}.json"));
+    let cache_path = cache_root
+        .join("manifests")
+        .join(format!("{expected_sha256}.json"));
     if let Ok(bytes) = fs::read(&cache_path)
         && hex_sha256(&bytes) == expected_sha256
     {
@@ -228,7 +236,10 @@ pub fn fetch_manifest(
 }
 
 fn net_io(operation: String, e: &impl std::error::Error) -> BougieError {
-    BougieError::Network { operation, detail: error_chain(e) }
+    BougieError::Network {
+        operation,
+        detail: error_chain(e),
+    }
 }
 
 fn net_http(operation: String, status: reqwest::StatusCode) -> BougieError {
@@ -252,10 +263,7 @@ fn atomic_write(dest: &Path, bytes: &[u8]) -> Result<()> {
         .parent()
         .ok_or_else(|| eyre::eyre!("destination has no parent: {}", dest.display()))?;
     let mut tmp = PathBuf::from(parent);
-    let stem = dest
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("tmp");
+    let stem = dest.file_name().and_then(|s| s.to_str()).unwrap_or("tmp");
     tmp.push(format!(".{stem}.partial"));
     fs::write(&tmp, bytes).wrap_err_with(|| format!("writing {}", tmp.display()))?;
     fs::rename(&tmp, dest).wrap_err_with(|| format!("rename → {}", dest.display()))?;

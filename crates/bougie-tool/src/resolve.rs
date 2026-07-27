@@ -69,8 +69,7 @@ pub struct ToolRequires {
 /// requirements. An unknown package yields the empty default; `Err`
 /// is reserved for network / parse failures (callers warn and fall
 /// back).
-pub type ToolRequiresFetcher =
-    dyn Fn(&Paths, &str, &str) -> Result<ToolRequires> + Send + Sync;
+pub type ToolRequiresFetcher = dyn Fn(&Paths, &str, &str) -> Result<ToolRequires> + Send + Sync;
 
 /// PHP-selection inputs derived from the project the user is standing
 /// in. Assembled by the bougie binary (this crate stays
@@ -133,8 +132,7 @@ pub enum PhpSource {
 ///
 /// Hosted by the bougie binary so this crate stays free of
 /// `bougie-installer::install::install_baseline_into`.
-pub type BaselineEnsurer =
-    dyn Fn(&Paths, &PhpChoice) -> Result<()> + Send + Sync;
+pub type BaselineEnsurer = dyn Fn(&Paths, &PhpChoice) -> Result<()> + Send + Sync;
 
 /// Pick a PHP that satisfies `php_constraint` (a composer-style
 /// constraint string, typically a package's `require.php`). Prefers
@@ -151,9 +149,8 @@ pub fn pick_php_for_constraint(
     if let Some(choice) = best_installed_nts(paths, &[&parsed])? {
         return Ok(choice);
     }
-    installer(paths, php_constraint).wrap_err_with(|| {
-        format!("auto-installing PHP for tool require.php `{php_constraint}`")
-    })
+    installer(paths, php_constraint)
+        .wrap_err_with(|| format!("auto-installing PHP for tool require.php `{php_constraint}`"))
 }
 
 /// Highest installed NTS PHP matching *every* constraint in `preds`,
@@ -162,8 +159,8 @@ fn best_installed_nts(
     paths: &Paths,
     preds: &[&composer_semver::Constraint],
 ) -> Result<Option<PhpChoice>> {
-    let on_disk = store::list_installed(paths)
-        .map_err(|e| eyre::eyre!("listing installed PHPs: {e}"))?;
+    let on_disk =
+        store::list_installed(paths).map_err(|e| eyre::eyre!("listing installed PHPs: {e}"))?;
     let best = on_disk
         .into_iter()
         .filter(|(_, flavor)| flavor == "nts")
@@ -309,18 +306,12 @@ pub fn select_php(
 
 /// Pick a PHP for a new tool install. `spec` is the user's
 /// `--php <ver>` argument or `None` for the default.
-pub fn pick_php(
-    paths: &Paths,
-    spec: Option<&str>,
-    installer: &PhpInstaller,
-) -> Result<PhpChoice> {
-    let on_disk = store::list_installed(paths)
-        .map_err(|e| eyre::eyre!("listing installed PHPs: {e}"))?;
+pub fn pick_php(paths: &Paths, spec: Option<&str>, installer: &PhpInstaller) -> Result<PhpChoice> {
+    let on_disk =
+        store::list_installed(paths).map_err(|e| eyre::eyre!("listing installed PHPs: {e}"))?;
 
     let parsed_spec = match spec {
-        Some(s) => Some(
-            parse_request(s).wrap_err_with(|| format!("parsing --php value `{s}`"))?,
-        ),
+        Some(s) => Some(parse_request(s).wrap_err_with(|| format!("parsing --php value `{s}`"))?),
         None => None,
     };
     let (target_flavor, version_filter) = match &parsed_spec {
@@ -341,10 +332,7 @@ pub fn pick_php(
         .filter(|(v, _)| version_filter.is_none_or(|spec| version_satisfies(v, spec)))
         .collect();
 
-    if let Some((version, flavor)) = candidates
-        .drain(..)
-        .max_by(|a, b| a.0.cmp(&b.0))
-    {
+    if let Some((version, flavor)) = candidates.drain(..).max_by(|a, b| a.0.cmp(&b.0)) {
         let version_str = version.to_string();
         let bin = paths
             .installs()
@@ -359,8 +347,9 @@ pub fn pick_php(
     }
 
     match spec {
-        Some(s) => installer(paths, s)
-            .wrap_err_with(|| format!("auto-installing PHP for --php {s}")),
+        Some(s) => {
+            installer(paths, s).wrap_err_with(|| format!("auto-installing PHP for --php {s}"))
+        }
         None => bail!(
             "no NTS PHP installed. Install one with `bougie php install <version>` \
              (e.g. `bougie php install 8.3`), or rerun with `--php <ver>` to \
@@ -506,14 +495,10 @@ mod tests {
         std::fs::write(bin.join("php"), "").unwrap();
     }
 
-    fn project_php(
-        resolved: Option<(&str, &str)>,
-        constraint: Option<&str>,
-    ) -> ProjectPhp {
+    fn project_php(resolved: Option<(&str, &str)>, constraint: Option<&str>) -> ProjectPhp {
         ProjectPhp {
             resolved: resolved.map(|(v, f)| (v.to_string(), f.to_string())),
-            constraint: constraint
-                .map(|c| composer_semver::Constraint::parse(c).unwrap()),
+            constraint: constraint.map(|c| composer_semver::Constraint::parse(c).unwrap()),
             constraint_raw: constraint.map(str::to_string),
             source: "./composer.json".into(),
         }
@@ -528,7 +513,12 @@ mod tests {
         let inst = fail_installer();
         let proj = project_php(Some(("8.4.0", "nts")), Some("~8.4.0"));
         let (choice, source) = select_php(
-            &p, "v/p", Some("8.3"), Some(">=8.0"), Some(&proj), inst.as_ref(),
+            &p,
+            "v/p",
+            Some("8.3"),
+            Some(">=8.0"),
+            Some(&proj),
+            inst.as_ref(),
         )
         .unwrap();
         assert_eq!(choice.version, "8.3.12");
@@ -543,10 +533,8 @@ mod tests {
         install_fake_with_bin(&p, "8.5.0", "nts");
         let inst = fail_installer();
         let proj = project_php(Some(("8.4.2", "nts")), Some("~8.4.0"));
-        let (choice, source) = select_php(
-            &p, "v/p", None, Some(">=8.0.0"), Some(&proj), inst.as_ref(),
-        )
-        .unwrap();
+        let (choice, source) =
+            select_php(&p, "v/p", None, Some(">=8.0.0"), Some(&proj), inst.as_ref()).unwrap();
         // Exact project interpreter, not the higher installed 8.5.
         assert_eq!(choice.version, "8.4.2");
         assert_eq!(source, PhpSource::ProjectResolved);
@@ -561,7 +549,10 @@ mod tests {
         let proj = project_php(Some(("8.4.2", "zts")), None);
         let (choice, source) =
             select_php(&p, "v/p", None, None, Some(&proj), inst.as_ref()).unwrap();
-        assert_eq!((choice.version.as_str(), choice.flavor.as_str()), ("8.4.2", "zts"));
+        assert_eq!(
+            (choice.version.as_str(), choice.flavor.as_str()),
+            ("8.4.2", "zts")
+        );
         assert_eq!(source, PhpSource::ProjectResolved);
     }
 
@@ -575,10 +566,8 @@ mod tests {
         let inst = fail_installer();
         // Project allows 8.3/8.4; tool wants >=8.4 — intersection is 8.4.
         let proj = project_php(None, Some("~8.3.0 || ~8.4.0"));
-        let (choice, source) = select_php(
-            &p, "v/p", None, Some(">=8.4"), Some(&proj), inst.as_ref(),
-        )
-        .unwrap();
+        let (choice, source) =
+            select_php(&p, "v/p", None, Some(">=8.4"), Some(&proj), inst.as_ref()).unwrap();
         assert_eq!(choice.version, "8.4.0");
         assert_eq!(source, PhpSource::ProjectIntersection);
     }
@@ -593,10 +582,8 @@ mod tests {
         // Resolved 8.1 violates the tool's ^8.2; the broader project
         // constraint still intersects at 8.3.
         let proj = project_php(Some(("8.1.30", "nts")), Some(">=8.1"));
-        let (choice, source) = select_php(
-            &p, "v/p", None, Some("^8.2"), Some(&proj), inst.as_ref(),
-        )
-        .unwrap();
+        let (choice, source) =
+            select_php(&p, "v/p", None, Some("^8.2"), Some(&proj), inst.as_ref()).unwrap();
         assert_eq!(choice.version, "8.3.12");
         assert_eq!(source, PhpSource::ProjectIntersection);
     }
@@ -613,10 +600,8 @@ mod tests {
         // the tool rejects — so selection falls to the tool lane.
         let inst = dummy_installer("8.1.32", "nts");
         let proj = project_php(None, Some("~8.1.0"));
-        let (choice, source) = select_php(
-            &p, "v/p", None, Some(">=8.3"), Some(&proj), inst.as_ref(),
-        )
-        .unwrap();
+        let (choice, source) =
+            select_php(&p, "v/p", None, Some(">=8.3"), Some(&proj), inst.as_ref()).unwrap();
         assert_eq!(choice.version, "8.4.0");
         assert_eq!(source, PhpSource::ToolRequire);
     }
@@ -630,10 +615,8 @@ mod tests {
         // installer can't provide one either → tool lane.
         let inst = fail_installer();
         let proj = project_php(None, Some("~7.4.0"));
-        let (choice, source) = select_php(
-            &p, "v/p", None, Some(">=8.0"), Some(&proj), inst.as_ref(),
-        )
-        .unwrap();
+        let (choice, source) =
+            select_php(&p, "v/p", None, Some(">=8.0"), Some(&proj), inst.as_ref()).unwrap();
         assert_eq!(choice.version, "8.4.0");
         assert_eq!(source, PhpSource::ToolRequire);
     }
@@ -645,8 +628,7 @@ mod tests {
         install_fake(&p, "8.3.12", "nts");
         install_fake(&p, "8.4.0", "nts");
         let inst = fail_installer();
-        let (choice, source) =
-            select_php(&p, "v/p", None, None, None, inst.as_ref()).unwrap();
+        let (choice, source) = select_php(&p, "v/p", None, None, None, inst.as_ref()).unwrap();
         assert_eq!(choice.version, "8.4.0");
         assert_eq!(source, PhpSource::DefaultHighest);
     }
@@ -660,10 +642,8 @@ mod tests {
         install_fake(&p, "8.4.3", "nts");
         let inst = fail_installer();
         let proj = project_php(Some(("8.4.1", "nts")), Some("~8.4.0"));
-        let (choice, source) = select_php(
-            &p, "v/p", None, Some(">=8.0"), Some(&proj), inst.as_ref(),
-        )
-        .unwrap();
+        let (choice, source) =
+            select_php(&p, "v/p", None, Some(">=8.0"), Some(&proj), inst.as_ref()).unwrap();
         assert_eq!(choice.version, "8.4.3");
         assert_eq!(source, PhpSource::ProjectIntersection);
     }

@@ -7,7 +7,7 @@
 //! Ignored by default — it downloads a real release artifact. Run with
 //! `cargo test -p bougie --test native_prefetch_live -- --ignored`.
 
-use bougie_tool::prefetch::{plan, NativeBinarySpec, PlanDecision};
+use bougie_tool::prefetch::{NativeBinarySpec, PlanDecision, plan};
 
 /// A wick release with published binaries for every declared target.
 /// NOTE: released before archive signing existed, so it has NO `.sig`

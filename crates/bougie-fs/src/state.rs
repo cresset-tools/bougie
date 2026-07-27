@@ -1,17 +1,21 @@
 //! Per-project `vendor/bougie/state/resolved` and the global
 //! `$BOUGIE_HOME/state/state.json` (CLI.md §2.1, §3.6.2).
 
-use bougie_paths::{project, Paths};
+use bougie_paths::{Paths, project};
 use bougie_version::request::Flavor;
 use bougie_version::version::Version;
-use eyre::{eyre, Result, WrapErr};
+use eyre::{Result, WrapErr, eyre};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 
 /// Atomically write the per-project resolved-version marker to
 /// `<project>/vendor/bougie/state/resolved`. Format: `"<version>-<flavor>"`.
-pub fn write_project_resolved(project_root: &Path, version: Version, flavor: Flavor) -> Result<PathBuf> {
+pub fn write_project_resolved(
+    project_root: &Path,
+    version: Version,
+    flavor: Flavor,
+) -> Result<PathBuf> {
     let dir = project::state_dir(project_root);
     fs::create_dir_all(&dir).wrap_err_with(|| format!("creating {}", dir.display()))?;
     let dest = dir.join("resolved");
@@ -28,8 +32,7 @@ pub fn write_project_resolved(project_root: &Path, version: Version, flavor: Fla
 /// version + Request modules into its hot path.
 pub fn read_project_resolved(project_root: &Path) -> Result<(String, String)> {
     let path = project::resolved(project_root);
-    let body = fs::read_to_string(&path)
-        .wrap_err_with(|| format!("reading {}", path.display()))?;
+    let body = fs::read_to_string(&path).wrap_err_with(|| format!("reading {}", path.display()))?;
     let line = body.trim();
     // Split on the FIRST '-' so "8.3.12-zts-debug" splits correctly.
     let idx = line
@@ -116,7 +119,10 @@ impl GlobalState {
     pub fn load(paths: &Paths) -> Result<Self> {
         let path = paths.state_json();
         if !path.exists() {
-            return Ok(Self { schema_version: 1, ..Default::default() });
+            return Ok(Self {
+                schema_version: 1,
+                ..Default::default()
+            });
         }
         let bytes = fs::read(&path).wrap_err_with(|| format!("reading {}", path.display()))?;
         let mut s: Self = serde_json::from_slice(&bytes)
@@ -130,7 +136,8 @@ impl GlobalState {
     pub fn save(&self, paths: &Paths) -> Result<()> {
         let path = paths.state_json();
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).wrap_err_with(|| format!("creating {}", parent.display()))?;
+            fs::create_dir_all(parent)
+                .wrap_err_with(|| format!("creating {}", parent.display()))?;
         }
         let tmp = path.with_extension("json.partial");
         let bytes = serde_json::to_vec_pretty(self).wrap_err("encoding state.json")?;
@@ -158,8 +165,7 @@ mod tests {
     #[test]
     fn round_trip_resolved() {
         let proj = TempDir::new().unwrap();
-        let p =
-            write_project_resolved(proj.path(), Version::new(8, 3, 12), Flavor::Nts).unwrap();
+        let p = write_project_resolved(proj.path(), Version::new(8, 3, 12), Flavor::Nts).unwrap();
         assert!(p.exists());
         let (v, f) = read_project_resolved(proj.path()).unwrap();
         assert_eq!(v, "8.3.12");
@@ -210,7 +216,10 @@ mod tests {
         // Homebrew / stock `--prefix` layout: fpm in the sibling sbin/.
         let sbin_fpm = sbin.join("php-fpm");
         std::fs::write(&sbin_fpm, "").unwrap();
-        assert_eq!(system_fpm_for_php(&php).as_deref(), Some(sbin_fpm.as_path()));
+        assert_eq!(
+            system_fpm_for_php(&php).as_deref(),
+            Some(sbin_fpm.as_path())
+        );
 
         // bin/php-fpm (Debian-style) wins when both exist.
         let bin_fpm = bin.join("php-fpm");
@@ -230,7 +239,10 @@ mod tests {
         s.save(&paths).unwrap();
 
         let loaded = GlobalState::load(&paths).unwrap();
-        assert_eq!(loaded.host_target.as_deref(), Some("x86_64-unknown-linux-gnu"));
+        assert_eq!(
+            loaded.host_target.as_deref(),
+            Some("x86_64-unknown-linux-gnu")
+        );
         assert_eq!(loaded.projects.len(), 1);
     }
 }

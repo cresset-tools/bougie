@@ -11,9 +11,9 @@
 //! `bougied` argv[0] override.
 
 use crate::commands::unzip;
-use bougie_paths::Paths;
 use bougie_fs::state::read_project_resolved;
-use eyre::{eyre, Result, WrapErr};
+use bougie_paths::Paths;
+use eyre::{Result, WrapErr, eyre};
 use std::ffi::OsStr;
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
@@ -95,11 +95,12 @@ pub fn role_from_argv0(argv0: &OsStr) -> Option<Role> {
         // here and gets wired to the project's tenant. Unix-only, like
         // the services stack itself.
         #[cfg(unix)]
-        other => bougie_daemon::daemon::catalog::find_client(other)
-            .map(|(entry, tool)| Role::ServiceClient {
+        other => bougie_daemon::daemon::catalog::find_client(other).map(|(entry, tool)| {
+            Role::ServiceClient {
                 service: entry.name,
                 tool: tool.name,
-            }),
+            }
+        }),
         #[cfg(not(unix))]
         _ => None,
     }
@@ -378,9 +379,7 @@ fn run_and_propagate(mut cmd: std::process::Command, label: &str) -> Result<Exit
     }
     #[cfg(not(unix))]
     {
-        let status = cmd
-            .status()
-            .wrap_err_with(|| format!("spawning {label}"))?;
+        let status = cmd.status().wrap_err_with(|| format!("spawning {label}"))?;
         let code = status.code().unwrap_or(1);
         let code = u8::try_from(code).unwrap_or(1);
         Ok(ExitCode::from(code))
@@ -411,9 +410,7 @@ fn locate_project_root_inner(
     }
 
     let p = Path::new(argv0);
-    let has_dir_part = p
-        .parent()
-        .is_some_and(|q| !q.as_os_str().is_empty());
+    let has_dir_part = p.parent().is_some_and(|q| !q.as_os_str().is_empty());
     if has_dir_part {
         let abs = if p.is_absolute() {
             p.to_path_buf()
@@ -478,7 +475,10 @@ mod tests {
             role_from_argv0(&OsString::from("/usr/local/bin/bougie-run")),
             Some(Role::ScriptRun)
         );
-        assert_eq!(role_from_argv0(&OsString::from("bougie-run")), Some(Role::ScriptRun));
+        assert_eq!(
+            role_from_argv0(&OsString::from("bougie-run")),
+            Some(Role::ScriptRun)
+        );
     }
 
     #[test]
@@ -498,8 +498,14 @@ mod tests {
         // Stripping is the shim's job on every OS — there's no harm
         // in trimming `.exe` on a Unix invocation, and the cross-
         // platform test surface stays uniform.
-        assert_eq!(role_from_argv0(&OsString::from("unzip.exe")), Some(Role::Unzip));
-        assert_eq!(role_from_argv0(&OsString::from("unzip.EXE")), Some(Role::Unzip));
+        assert_eq!(
+            role_from_argv0(&OsString::from("unzip.exe")),
+            Some(Role::Unzip)
+        );
+        assert_eq!(
+            role_from_argv0(&OsString::from("unzip.EXE")),
+            Some(Role::Unzip)
+        );
         assert_eq!(role_from_argv0(&OsString::from("php.Exe")), Some(Role::Php));
         // The backslash-path assertion only works on Windows, where
         // `Path::file_name` recognises `\` as a separator. On Unix
@@ -514,7 +520,10 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn detects_bougied_role() {
-        assert_eq!(role_from_argv0(&OsString::from("bougied")), Some(Role::Bougied));
+        assert_eq!(
+            role_from_argv0(&OsString::from("bougied")),
+            Some(Role::Bougied)
+        );
         assert_eq!(
             role_from_argv0(&OsString::from("/usr/local/bin/bougied")),
             Some(Role::Bougied)
@@ -526,15 +535,24 @@ mod tests {
     fn detects_service_client_roles() {
         assert_eq!(
             role_from_argv0(&OsString::from("/proj/vendor/bougie/bin/mysqldump")),
-            Some(Role::ServiceClient { service: "mariadb", tool: "mysqldump" })
+            Some(Role::ServiceClient {
+                service: "mariadb",
+                tool: "mysqldump"
+            })
         );
         assert_eq!(
             role_from_argv0(&OsString::from("redis-cli")),
-            Some(Role::ServiceClient { service: "redis", tool: "redis-cli" })
+            Some(Role::ServiceClient {
+                service: "redis",
+                tool: "redis-cli"
+            })
         );
         assert_eq!(
             role_from_argv0(&OsString::from("rabbitmqctl")),
-            Some(Role::ServiceClient { service: "rabbitmq", tool: "rabbitmqctl" })
+            Some(Role::ServiceClient {
+                service: "rabbitmq",
+                tool: "rabbitmqctl"
+            })
         );
         // Server binaries are not client tools — a `mariadbd` argv[0]
         // must not resolve to a role.

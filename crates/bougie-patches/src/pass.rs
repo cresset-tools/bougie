@@ -46,9 +46,8 @@ pub fn apply_package_patches(
     let mut all_ok = true;
 
     for patch in patches {
-        let text = std::fs::read_to_string(&patch.local_path).map_err(|e| {
-            eyre::eyre!("reading patch `{}`: {e}", patch.local_path.display())
-        })?;
+        let text = std::fs::read_to_string(&patch.local_path)
+            .map_err(|e| eyre::eyre!("reading patch `{}`: {e}", patch.local_path.display()))?;
         let opts = ApplyOptions {
             depth: patch.depth,
             ..ApplyOptions::default()
@@ -179,7 +178,10 @@ mod tests {
         let res = apply_package_patches(&base, "vendor/pkg", &[patch], FailureMode::Abort, false)
             .unwrap();
         assert!(res.fingerprint.is_some());
-        assert_eq!(fs::read_to_string(base.join("src/Foo.php")).unwrap(), "a\nB\nc\n");
+        assert_eq!(
+            fs::read_to_string(base.join("src/Foo.php")).unwrap(),
+            "a\nB\nc\n"
+        );
         let report = fs::read_to_string(base.join("PATCHES.txt")).unwrap();
         assert!(report.contains("Source: fix.patch"));
     }
@@ -204,7 +206,10 @@ mod tests {
             false,
         )
         .unwrap();
-        assert!(res.fingerprint.is_none(), "partial apply earns no fingerprint");
+        assert!(
+            res.fingerprint.is_none(),
+            "partial apply earns no fingerprint"
+        );
         assert_eq!(res.warnings.len(), 1);
     }
 
@@ -220,7 +225,8 @@ mod tests {
             "--- a/missing.txt\n+++ b/missing.txt\n@@ -1 +1 @@\n-x\n+y\n",
         );
         assert!(
-            apply_package_patches(&base, "vendor/pkg", &[patch], FailureMode::Abort, false).is_err()
+            apply_package_patches(&base, "vendor/pkg", &[patch], FailureMode::Abort, false)
+                .is_err()
         );
     }
 
@@ -264,7 +270,11 @@ mod tests {
         let root = write_patch(pdir.path(), "top.patch", "");
         append_patches_txt(&base, &[&root]).unwrap();
         let report = fs::read_to_string(base.join("PATCHES.txt")).unwrap();
-        assert_eq!(report.matches("automatically generated").count(), 1, "{report}");
+        assert_eq!(
+            report.matches("automatically generated").count(),
+            1,
+            "{report}"
+        );
         assert!(report.contains("Source: fix.patch") && report.contains("Source: top.patch"));
     }
 

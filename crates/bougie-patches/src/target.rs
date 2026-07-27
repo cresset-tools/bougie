@@ -142,8 +142,14 @@ mod tests {
     fn paths() -> Vec<(String, String)> {
         vec![
             ("acme/widget".into(), "vendor/acme/widget".into()),
-            ("acme/widget-extra".into(), "vendor/acme/widget-extra".into()),
-            ("magento/theme".into(), "app/design/frontend/Magento/theme".into()),
+            (
+                "acme/widget-extra".into(),
+                "vendor/acme/widget-extra".into(),
+            ),
+            (
+                "magento/theme".into(),
+                "app/design/frontend/Magento/theme".into(),
+            ),
         ]
     }
 
@@ -225,7 +231,10 @@ mod tests {
     #[test]
     fn root_patch_with_mixed_prefixes_falls_back_to_auto() {
         let t = infer_target(
-            &["a/vendor/acme/widget/x.php", "vendor/acme/widget-extra/y.php"],
+            &[
+                "a/vendor/acme/widget/x.php",
+                "vendor/acme/widget-extra/y.php",
+            ],
             &paths(),
         )
         .unwrap();

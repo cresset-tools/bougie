@@ -71,9 +71,7 @@ struct DaemonReply {
 impl Render for ServicesStatusResult {
     fn render_text(&self, w: &mut dyn Write) -> io::Result<()> {
         for row in &self.services {
-            let pid = row
-                .pid
-                .map_or_else(|| "-".into(), |p| p.to_string());
+            let pid = row.pid.map_or_else(|| "-".into(), |p| p.to_string());
             let uptime = row.uptime_ms.map_or_else(
                 || "-".into(),
                 |ms| {
@@ -112,7 +110,10 @@ fn status_note(row: &ServiceRow) -> String {
             } else {
                 row.health_misses
             };
-            format!("  ⚠ health check failing ({}/{threshold})", row.health_misses)
+            format!(
+                "  ⚠ health check failing ({}/{threshold})",
+                row.health_misses
+            )
         }
         "failed" => {
             if let Some(ms) = row.next_restart_ms {
@@ -128,7 +129,10 @@ fn status_note(row: &ServiceRow) -> String {
                     row.failure_count, row.name
                 )
             } else {
-                format!("  ✗ failed to start — see `bougie service logs {}`", row.name)
+                format!(
+                    "  ✗ failed to start — see `bougie service logs {}`",
+                    row.name
+                )
             }
         }
         _ => String::new(),
@@ -158,8 +162,9 @@ fn format_binding(paths: &Paths, name: &str, version: &str, binding: &Value) -> 
                     // an occupied port. Keyed by the *running* instance's
                     // version so a non-default instance reads its own
                     // endpoint, not the catalog default's.
-                    let port =
-                        bougie_daemon::daemon::endpoint::effective_primary(paths, name, version, default);
+                    let port = bougie_daemon::daemon::endpoint::effective_primary(
+                        paths, name, version, default,
+                    );
                     if port == default {
                         format!("tcp 127.0.0.1:{port}")
                     } else {
@@ -167,13 +172,15 @@ fn format_binding(paths: &Paths, name: &str, version: &str, binding: &Value) -> 
                     }
                 },
             ),
-        Some("unix_socket") => binding
-            .get("sockname")
-            .and_then(Value::as_str)
-            .map_or_else(
-                || "-".into(),
-                |s| format!("socket {}", paths.service_run(name, version).join(s).display()),
-            ),
+        Some("unix_socket") => binding.get("sockname").and_then(Value::as_str).map_or_else(
+            || "-".into(),
+            |s| {
+                format!(
+                    "socket {}",
+                    paths.service_run(name, version).join(s).display()
+                )
+            },
+        ),
         _ => "-".into(),
     }
 }
@@ -181,12 +188,8 @@ fn format_binding(paths: &Paths, name: &str, version: &str, binding: &Value) -> 
 pub fn run(format: OutputFormat, name: Option<String>) -> Result<ExitCode> {
     let project_root = locate_project_root()?;
     let project = load_project(&project_root)?;
-    let declared: std::collections::BTreeSet<&str> = project
-        .bougie
-        .services
-        .keys()
-        .map(String::as_str)
-        .collect();
+    let declared: std::collections::BTreeSet<&str> =
+        project.bougie.services.keys().map(String::as_str).collect();
 
     let paths = Paths::from_env()?;
     let reply: DaemonReply = client::call(&paths, "status", Value::Null)?;
@@ -227,7 +230,10 @@ pub fn run(format: OutputFormat, name: Option<String>) -> Result<ExitCode> {
                 failure_count: v.get("failure_count").and_then(Value::as_u64).unwrap_or(0),
                 next_restart_ms: v.get("next_restart_ms").and_then(Value::as_u64),
                 health_misses: v.get("health_misses").and_then(Value::as_u64).unwrap_or(0),
-                health_threshold: v.get("health_threshold").and_then(Value::as_u64).unwrap_or(0),
+                health_threshold: v
+                    .get("health_threshold")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0),
                 name,
             })
         })
@@ -355,19 +361,41 @@ mod tests {
         use bougie_daemon::daemon::catalog::default_version as dv;
         let paths = test_paths();
         assert_eq!(
-            format_binding(&paths, "opensearch", dv("opensearch"), &json!({"kind": "tcp", "port": 9200})),
+            format_binding(
+                &paths,
+                "opensearch",
+                dv("opensearch"),
+                &json!({"kind": "tcp", "port": 9200})
+            ),
             "tcp 127.0.0.1:9200"
         );
         // Unix sockets resolve to the absolute per-instance run path
         // (short, flat `state/run/<token>/` — macOS `sun_path` headroom).
         assert_eq!(
-            format_binding(&paths, "redis", dv("redis"), &json!({"kind": "unix_socket", "sockname": "redis.sock"})),
-            format!("socket {}", paths.service_run("redis", dv("redis")).join("redis.sock").display())
+            format_binding(
+                &paths,
+                "redis",
+                dv("redis"),
+                &json!({"kind": "unix_socket", "sockname": "redis.sock"})
+            ),
+            format!(
+                "socket {}",
+                paths
+                    .service_run("redis", dv("redis"))
+                    .join("redis.sock")
+                    .display()
+            )
         );
         // `none`, a bare null, and unknown shapes all degrade to `-`.
-        assert_eq!(format_binding(&paths, "x", "1.0", &json!({"kind": "none"})), "-");
+        assert_eq!(
+            format_binding(&paths, "x", "1.0", &json!({"kind": "none"})),
+            "-"
+        );
         assert_eq!(format_binding(&paths, "x", "1.0", &Value::Null), "-");
-        assert_eq!(format_binding(&paths, "x", "1.0", &json!({"kind": "tcp"})), "-");
+        assert_eq!(
+            format_binding(&paths, "x", "1.0", &json!({"kind": "tcp"})),
+            "-"
+        );
     }
 
     #[test]
@@ -383,13 +411,23 @@ mod tests {
             .save(&paths.service_endpoint("opensearch", version))
             .unwrap();
         assert_eq!(
-            format_binding(&paths, "opensearch", version, &json!({"kind": "tcp", "port": 9200})),
+            format_binding(
+                &paths,
+                "opensearch",
+                version,
+                &json!({"kind": "tcp", "port": 9200})
+            ),
             "tcp 127.0.0.1:9207 (relocated from 9200)"
         );
 
         // A service with no endpoint.json still shows the catalog default.
         assert_eq!(
-            format_binding(&paths, "rabbitmq", catalog::default_version("rabbitmq"), &json!({"kind": "tcp", "port": 5672})),
+            format_binding(
+                &paths,
+                "rabbitmq",
+                catalog::default_version("rabbitmq"),
+                &json!({"kind": "tcp", "port": 5672})
+            ),
             "tcp 127.0.0.1:5672"
         );
     }
@@ -401,7 +439,11 @@ mod tests {
             schema_version: 1,
             project: "/proj".into(),
             services: vec![
-                binding_row(&paths, "mariadb", json!({"kind": "unix_socket", "sockname": "mariadb.sock"})),
+                binding_row(
+                    &paths,
+                    "mariadb",
+                    json!({"kind": "unix_socket", "sockname": "mariadb.sock"}),
+                ),
                 binding_row(&paths, "opensearch", json!({"kind": "tcp", "port": 9200})),
             ],
         };
@@ -409,7 +451,10 @@ mod tests {
         result.render_text(&mut buf).unwrap();
         let text = String::from_utf8(buf).unwrap();
         let mariadb_sock = paths
-            .service_run("mariadb", bougie_daemon::daemon::catalog::default_version("mariadb"))
+            .service_run(
+                "mariadb",
+                bougie_daemon::daemon::catalog::default_version("mariadb"),
+            )
             .join("mariadb.sock");
         assert!(
             text.contains(&format!("socket {}", mariadb_sock.display())),
@@ -437,7 +482,10 @@ mod tests {
         // The resolved display string is for humans only; JSON keeps the
         // machine-readable `binding` and never the host-specific path.
         assert!(!json.contains("binding_display"), "json: {json}");
-        assert!(!json.contains("/h/state/services"), "json leaked path: {json}");
+        assert!(
+            !json.contains("/h/state/services"),
+            "json leaked path: {json}"
+        );
         assert!(json.contains("\"sockname\":\"redis.sock\""), "json: {json}");
     }
 }

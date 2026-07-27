@@ -44,18 +44,17 @@ pub struct UninjectOutcome {
     pub removed_extensions: Vec<String>,
 }
 
-pub fn inject(
-    ctx: &InstallContext<'_>,
-    package: &str,
-    extras: &[String],
-) -> Result<InjectOutcome> {
+pub fn inject(ctx: &InstallContext<'_>, package: &str, extras: &[String]) -> Result<InjectOutcome> {
     let tool_dir = ctx.paths.tool_dir(package);
     if !tool_dir.exists() {
         bail!("tool `{package}` is not installed");
     }
-    let guard = ExclusiveGuard::acquire(&tool_dir.join(".lock"), LOCK_TIMEOUT)
-        .wrap_err_with(|| {
-            format!("acquiring lock on {} (is another `bougie tool` running?)", tool_dir.display())
+    let guard =
+        ExclusiveGuard::acquire(&tool_dir.join(".lock"), LOCK_TIMEOUT).wrap_err_with(|| {
+            format!(
+                "acquiring lock on {} (is another `bougie tool` running?)",
+                tool_dir.display()
+            )
         })?;
 
     let mut receipt = receipt::read(&tool_dir.join("receipt.toml"))?;
@@ -89,8 +88,7 @@ pub fn inject(
     receipt.with.extend(added_composer.iter().cloned());
     if !added_composer.is_empty() {
         regenerate_and_install(ctx.paths, &tool_dir, &receipt)?;
-        (ctx.resolve_lock)(ctx.paths, &tool_dir)
-            .wrap_err("resolving composer.lock for tool")?;
+        (ctx.resolve_lock)(ctx.paths, &tool_dir).wrap_err("resolving composer.lock for tool")?;
         install_from_lock(ctx.paths, &tool_dir, InstallOptions { no_dev: true }, None)
             .wrap_err("installing tool dependencies")?;
     }
@@ -101,8 +99,7 @@ pub fn inject(
     // returned ini path lands in the receipt for uninject /
     // uninstall.
     let conf_d = tool_dir.join("conf.d");
-    std::fs::create_dir_all(&conf_d)
-        .wrap_err_with(|| format!("creating {}", conf_d.display()))?;
+    std::fs::create_dir_all(&conf_d).wrap_err_with(|| format!("creating {}", conf_d.display()))?;
     for ext in &added_extensions {
         let ini_path = (ctx.ext_installer)(ctx.paths, ext, &php, &conf_d)
             .wrap_err_with(|| format!("installing extension `{ext}`"))?;
@@ -132,9 +129,12 @@ pub fn uninject(
     if !tool_dir.exists() {
         bail!("tool `{package}` is not installed");
     }
-    let guard = ExclusiveGuard::acquire(&tool_dir.join(".lock"), LOCK_TIMEOUT)
-        .wrap_err_with(|| {
-            format!("acquiring lock on {} (is another `bougie tool` running?)", tool_dir.display())
+    let guard =
+        ExclusiveGuard::acquire(&tool_dir.join(".lock"), LOCK_TIMEOUT).wrap_err_with(|| {
+            format!(
+                "acquiring lock on {} (is another `bougie tool` running?)",
+                tool_dir.display()
+            )
         })?;
 
     let mut receipt = receipt::read(&tool_dir.join("receipt.toml"))?;
@@ -179,8 +179,7 @@ pub fn uninject(
 
     if !removed_composer.is_empty() {
         regenerate_and_install(ctx.paths, &tool_dir, &receipt)?;
-        (ctx.resolve_lock)(ctx.paths, &tool_dir)
-            .wrap_err("resolving composer.lock for tool")?;
+        (ctx.resolve_lock)(ctx.paths, &tool_dir).wrap_err("resolving composer.lock for tool")?;
         install_from_lock(ctx.paths, &tool_dir, InstallOptions { no_dev: true }, None)
             .wrap_err("installing tool dependencies after uninject")?;
     }

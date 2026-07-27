@@ -1,10 +1,10 @@
 use bougie_cli::OutputFormat;
 use bougie_errors::BougieError;
-use bougie_output::output::{emit, Render};
-use bougie_paths::Paths;
-use bougie_version::request::{parse_request, Flavor, Request, VersionLike};
 use bougie_fs::store::install_dir;
-use eyre::{eyre, Result};
+use bougie_output::output::{Render, emit};
+use bougie_paths::Paths;
+use bougie_version::request::{Flavor, Request, VersionLike, parse_request};
+use eyre::{Result, eyre};
 use serde::Serialize;
 use std::io::{self, Write};
 use std::path::PathBuf;
@@ -32,7 +32,7 @@ impl Render for UninstallResult {
 
 pub fn run(
     format: OutputFormat,
-        request_strs: &[String],
+    request_strs: &[String],
     flavor_arg: Option<&str>,
 ) -> Result<ExitCode> {
     let paths = Paths::from_env()?;
@@ -60,7 +60,10 @@ pub fn run(
         removed.push(RemovedEntry { path: dest });
     }
 
-    let result = UninstallResult { schema_version: 1, removed };
+    let result = UninstallResult {
+        schema_version: 1,
+        removed,
+    };
     emit(format, &result)?;
     Ok(ExitCode::SUCCESS)
 }

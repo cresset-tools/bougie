@@ -31,8 +31,11 @@ fn p2_body(name: &str, versions: &[&str]) -> String {
 }
 
 fn stage(dir: &Path, lock: &str) {
-    std::fs::write(dir.join("composer.json"), r#"{"name":"test/p","require":{"acme/lib":"^2.0"}}"#)
-        .unwrap();
+    std::fs::write(
+        dir.join("composer.json"),
+        r#"{"name":"test/p","require":{"acme/lib":"^2.0"}}"#,
+    )
+    .unwrap();
     std::fs::write(dir.join("composer.lock"), lock).unwrap();
 }
 
@@ -69,7 +72,11 @@ fn outdated_reports_newer_version() {
         .arg(proj.path())
         .output()
         .unwrap();
-    assert!(out.status.success(), "stderr={}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let s = String::from_utf8_lossy(&out.stdout);
     assert!(s.contains("acme/lib"), "{s}");
     assert!(s.contains("2.0.0"), "{s}");
@@ -111,7 +118,10 @@ fn outdated_major_only_filters_minor_bumps() {
         .output()
         .unwrap();
     let s = String::from_utf8_lossy(&out.stdout);
-    assert!(s.contains("up to date"), "minor bump hidden by --major-only: {s}");
+    assert!(
+        s.contains("up to date"),
+        "minor bump hidden by --major-only: {s}"
+    );
 }
 
 #[test]
@@ -128,7 +138,10 @@ fn outdated_strict_exits_non_zero() {
         .arg(proj.path())
         .output()
         .unwrap();
-    assert!(!out.status.success(), "--strict must fail when outdated packages exist");
+    assert!(
+        !out.status.success(),
+        "--strict must fail when outdated packages exist"
+    );
 }
 
 #[test]

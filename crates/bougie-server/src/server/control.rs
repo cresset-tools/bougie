@@ -30,10 +30,10 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 
-#[cfg(unix)]
-use tokio::net::{UnixListener, UnixStream};
 #[cfg(windows)]
 use tokio::net::windows::named_pipe::{ClientOptions, NamedPipeServer, ServerOptions};
+#[cfg(unix)]
+use tokio::net::{UnixListener, UnixStream};
 
 use super::router::AppState;
 
@@ -46,7 +46,9 @@ const MAX_REQUEST_BYTES: usize = 4096;
 #[serde(tag = "method", rename_all = "kebab-case")]
 pub enum Request {
     Status,
-    Reload { project: PathBuf },
+    Reload {
+        project: PathBuf,
+    },
     /// Re-read `server.toml` from disk and rebuild the in-memory
     /// hostname → host map. Called by `bougied` after it mutates
     /// `server.toml` to provision or de-provision a project's
@@ -98,7 +100,11 @@ pub struct ErrorResponse {
 
 impl ErrorResponse {
     fn new(error: impl Into<String>) -> Self {
-        Self { schema_version: 1, ok: false, error: error.into() }
+        Self {
+            schema_version: 1,
+            ok: false,
+            error: error.into(),
+        }
     }
 }
 
@@ -269,10 +275,8 @@ where
 
     let resp_json = match serde_json::from_str::<Request>(line.trim()) {
         Ok(req) => dispatch(req, &state).await,
-        Err(e) => serde_json::to_string(&ErrorResponse::new(format!(
-            "invalid request: {e}"
-        )))
-        .unwrap_or_else(|_| r#"{"schema_version":1,"ok":false,"error":"serialize"}"#.into()),
+        Err(e) => serde_json::to_string(&ErrorResponse::new(format!("invalid request: {e}")))
+            .unwrap_or_else(|_| r#"{"schema_version":1,"ok":false,"error":"serialize"}"#.into()),
     };
     write_half.write_all(resp_json.as_bytes()).await?;
     write_half.write_all(b"\n").await?;
@@ -349,11 +353,8 @@ fn reload_config(state: &Arc<AppState>) -> Result<usize> {
         if !seen.insert(host.project.as_path()) {
             continue;
         }
-        let armed = super::watcher::arm_project(
-            &state.registry,
-            state.pools.bougie_paths(),
-            &host.project,
-        );
+        let armed =
+            super::watcher::arm_project(&state.registry, state.pools.bougie_paths(), &host.project);
         if !armed.is_empty() {
             eprintln!(
                 "[watch_arm] project={} paths={} reason=reload-config",
@@ -479,10 +480,8 @@ mod tests {
 
     #[test]
     fn request_reload_parses() {
-        let r: Request = serde_json::from_str(
-            r#"{"v":1,"method":"reload","project":"/tmp/p"}"#,
-        )
-        .unwrap();
+        let r: Request =
+            serde_json::from_str(r#"{"v":1,"method":"reload","project":"/tmp/p"}"#).unwrap();
         match r {
             Request::Reload { project } => assert_eq!(project, PathBuf::from("/tmp/p")),
             other => panic!("expected Reload, got {other:?}"),
@@ -532,8 +531,15 @@ mod tests {
             hosts: Vec::new(),
         };
         let state = Arc::new(
-            AppState::build(&empty, config_path, pools, autoloader, Arc::clone(&registry), 0)
-                .unwrap(),
+            AppState::build(
+                &empty,
+                config_path,
+                pools,
+                autoloader,
+                Arc::clone(&registry),
+                0,
+            )
+            .unwrap(),
         );
         assert!(!registry.path_map().contains_project(&project));
 
@@ -544,7 +550,10 @@ mod tests {
         // A second ping must not double-arm.
         reload_config(&state).unwrap();
         let map = registry.path_map();
-        assert_eq!(map.version_input.iter().filter(|p| **p == project).count(), 1);
+        assert_eq!(
+            map.version_input.iter().filter(|p| **p == project).count(),
+            1
+        );
         assert_eq!(map.confd.iter().filter(|(_, p)| p == &project).count(), 1);
     }
 

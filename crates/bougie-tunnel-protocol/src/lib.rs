@@ -185,14 +185,28 @@ mod tests {
 
     #[test]
     fn password_mode_serializes_lowercase() {
-        assert_eq!(serde_json::to_string(&PasswordMode::Auto).unwrap(), "\"auto\"");
-        assert_eq!(serde_json::to_string(&PasswordMode::None).unwrap(), "\"none\"");
-        assert_eq!(serde_json::to_string(&PasswordMode::Custom).unwrap(), "\"custom\"");
+        assert_eq!(
+            serde_json::to_string(&PasswordMode::Auto).unwrap(),
+            "\"auto\""
+        );
+        assert_eq!(
+            serde_json::to_string(&PasswordMode::None).unwrap(),
+            "\"none\""
+        );
+        assert_eq!(
+            serde_json::to_string(&PasswordMode::Custom).unwrap(),
+            "\"custom\""
+        );
     }
 
     #[test]
     fn response_constructors() {
-        let ok = HelloResponse::ok("h.bougie.show".into(), "https://h.bougie.show".into(), None, 3600);
+        let ok = HelloResponse::ok(
+            "h.bougie.show".into(),
+            "https://h.bougie.show".into(),
+            None,
+            3600,
+        );
         assert!(ok.ok);
         assert_eq!(ok.ttl_secs, Some(3600));
         let err = HelloResponse::error("nope");

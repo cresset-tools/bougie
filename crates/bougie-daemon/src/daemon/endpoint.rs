@@ -68,7 +68,10 @@ impl ServiceEndpoint {
     /// A single-port endpoint.
     #[must_use]
     pub fn new(primary: u16) -> Self {
-        Self { primary, extra: BTreeMap::new() }
+        Self {
+            primary,
+            extra: BTreeMap::new(),
+        }
     }
 
     /// Record a named secondary port (builder-style).

@@ -23,7 +23,7 @@
 
 use super::catalog::CatalogEntry;
 use bougie_paths::Paths;
-use eyre::{eyre, Result, WrapErr};
+use eyre::{Result, WrapErr, eyre};
 use std::path::{Path, PathBuf};
 
 /// Locate the service's basedir under `$BOUGIE_HOME/store/`. Prefers
@@ -94,9 +94,12 @@ pub fn create_link_into(outer_root: &Path, link_into: &str, inner_root: &Path) -
     if link_into.is_empty() {
         return Ok(());
     }
-    let inner_name = inner_root
-        .file_name()
-        .ok_or_else(|| eyre!("inner_root has no file name component: {}", inner_root.display()))?;
+    let inner_name = inner_root.file_name().ok_or_else(|| {
+        eyre!(
+            "inner_root has no file name component: {}",
+            inner_root.display()
+        )
+    })?;
 
     // Climb out of `link_into`'s segments and back into the shared
     // store. For `link_into = "jdk"`, depth=1 → target = `../<inner>`.
@@ -120,9 +123,8 @@ pub fn create_link_into(outer_root: &Path, link_into: &str, inner_root: &Path) -
             link.display()
         )),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            std::os::unix::fs::symlink(&target, &link).wrap_err_with(|| {
-                format!("symlinking {} → {}", link.display(), target.display())
-            })
+            std::os::unix::fs::symlink(&target, &link)
+                .wrap_err_with(|| format!("symlinking {} → {}", link.display(), target.display()))
         }
         Err(e) => Err(eyre!("stat {}: {e}", link.display())),
     }
@@ -131,8 +133,8 @@ pub fn create_link_into(outer_root: &Path, link_into: &str, inner_root: &Path) -
 /// Locate the main binary inside the service's store directory.
 pub fn binary(paths: &Paths, entry: &CatalogEntry, version: &str) -> Result<PathBuf> {
     if entry.tarball.is_empty() {
-        let exe = std::env::current_exe()
-            .map_err(|e| eyre!("locating current bougie binary: {e}"))?;
+        let exe =
+            std::env::current_exe().map_err(|e| eyre!("locating current bougie binary: {e}"))?;
         return Ok(exe);
     }
     Ok(basedir(paths, entry, version)?.join(entry.binary))

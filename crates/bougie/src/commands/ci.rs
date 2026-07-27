@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use bougie_cli::{CiInitArgs, OutputFormat};
-use eyre::{eyre, Result, WrapErr};
+use eyre::{Result, WrapErr, eyre};
 
 use super::make::{self, MakeOptions};
 use super::service::config_mut::locate_project_root;

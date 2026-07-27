@@ -63,7 +63,11 @@ impl Env {
 
 fn json_stdout(cmd: &mut Command) -> serde_json::Value {
     let out = cmd.arg("--format").arg("json-v1").output().unwrap();
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     serde_json::from_slice(&out.stdout).expect("stdout is pure JSON")
 }
 
@@ -122,7 +126,10 @@ fn env_var_overrides_file_and_do_not_track_beats_env() {
     assert_eq!(status["source"], "BOUGIE_TELEMETRY");
 
     let status = json_stdout(
-        env.bougie().arg("telemetry").env("BOUGIE_TELEMETRY", "on").env("DO_NOT_TRACK", "1"),
+        env.bougie()
+            .arg("telemetry")
+            .env("BOUGIE_TELEMETRY", "on")
+            .env("DO_NOT_TRACK", "1"),
     );
     assert_eq!(status["mode"], "off");
     assert_eq!(status["source"], "DO_NOT_TRACK");
@@ -137,7 +144,11 @@ fn env_var_overrides_file_and_do_not_track_beats_env() {
 fn do_not_track_stops_recording_even_in_local_mode() {
     let env = Env::new();
     env.bougie().args(["telemetry", "local"]).assert().success();
-    env.bougie().args(["cache", "dir"]).env("DO_NOT_TRACK", "1").assert().success();
+    env.bougie()
+        .args(["cache", "dir"])
+        .env("DO_NOT_TRACK", "1")
+        .assert()
+        .success();
     assert!(env.spooled_lines().is_empty());
 }
 
@@ -145,7 +156,10 @@ fn do_not_track_stops_recording_even_in_local_mode() {
 fn on_mints_install_id_and_reset_rotates_it() {
     let env = Env::new();
     let set = json_stdout(env.bougie().args(["telemetry", "on"]));
-    let first = set["install_id"].as_str().expect("on mints an id").to_owned();
+    let first = set["install_id"]
+        .as_str()
+        .expect("on mints an id")
+        .to_owned();
     assert_eq!(first.len(), 36);
 
     // Events recorded under `on` carry the id.
@@ -155,7 +169,9 @@ fn on_mints_install_id_and_reset_rotates_it() {
     assert_eq!(event["install_id"], first.as_str());
 
     let reset = json_stdout(env.bougie().args(["telemetry", "reset"]));
-    let rotated = reset["install_id"].as_str().expect("reset under `on` re-mints");
+    let rotated = reset["install_id"]
+        .as_str()
+        .expect("reset under `on` re-mints");
     assert_ne!(rotated, first);
     assert!(env.spooled_lines().is_empty(), "reset purges the spool");
 }
@@ -210,7 +226,11 @@ fn parse_failure_spools_a_usage_event_named_after_the_verb() {
     let env = Env::new();
     env.bougie().args(["telemetry", "local"]).assert().success();
 
-    let out = env.bougie().args(["sync", "--definitely-not-a-flag"]).output().unwrap();
+    let out = env
+        .bougie()
+        .args(["sync", "--definitely-not-a-flag"])
+        .output()
+        .unwrap();
     assert_eq!(out.status.code(), Some(2));
 
     let lines = env.spooled_lines();
@@ -243,5 +263,9 @@ fn typoed_verb_records_unknown_and_help_records_nothing() {
     let event: serde_json::Value = serde_json::from_str(&lines[0]).unwrap();
     assert_eq!(event["name"], "unknown");
     assert_eq!(event["outcome"], "usage");
-    assert!(!lines[0].contains("sylc"), "typo must not reach the wire: {}", lines[0]);
+    assert!(
+        !lines[0].contains("sylc"),
+        "typo must not reach the wire: {}",
+        lines[0]
+    );
 }

@@ -213,7 +213,11 @@ fn dont_discover(laravel: Option<&Value>) -> Vec<String> {
     laravel
         .and_then(|l| l.get("dont-discover"))
         .and_then(Value::as_array)
-        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -377,9 +381,12 @@ mod tests {
         });
         assert!(blocking_post_autoload_dump(&scripts).is_empty());
         // Without flags + single-string form also recognized.
-        assert!(blocking_post_autoload_dump(
-            &json!({"post-autoload-dump": "@php artisan package:discover"})
-        ).is_empty());
+        assert!(
+            blocking_post_autoload_dump(
+                &json!({"post-autoload-dump": "@php artisan package:discover"})
+            )
+            .is_empty()
+        );
         // Missing scripts / section → nothing to reproduce.
         assert!(blocking_post_autoload_dump(&json!({})).is_empty());
         assert!(blocking_post_autoload_dump(&Value::Null).is_empty());

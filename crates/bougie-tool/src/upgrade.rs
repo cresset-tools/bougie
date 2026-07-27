@@ -55,17 +55,19 @@ pub fn upgrade_one(
         return reinstall_one(ctx, package, &tool_dir);
     }
 
-    let guard = ExclusiveGuard::acquire(&tool_dir.join(".lock"), LOCK_TIMEOUT)
-        .wrap_err_with(|| {
-            format!("acquiring lock on {} (is another `bougie tool` running?)", tool_dir.display())
+    let guard =
+        ExclusiveGuard::acquire(&tool_dir.join(".lock"), LOCK_TIMEOUT).wrap_err_with(|| {
+            format!(
+                "acquiring lock on {} (is another `bougie tool` running?)",
+                tool_dir.display()
+            )
         })?;
 
     let mut receipt = receipt::read(&tool_dir.join("receipt.toml"))?;
     let previous_php = receipt.php_version.clone();
 
     install_mod::write_composer_json_for_receipt(&tool_dir, &receipt)?;
-    (ctx.resolve_lock)(ctx.paths, &tool_dir)
-        .wrap_err("resolving composer.lock for tool")?;
+    (ctx.resolve_lock)(ctx.paths, &tool_dir).wrap_err("resolving composer.lock for tool")?;
     install_from_lock(ctx.paths, &tool_dir, InstallOptions { no_dev: true }, None)
         .wrap_err("installing tool dependencies during upgrade")?;
 
@@ -178,7 +180,10 @@ fn prune_dropped_entrypoints(
         match std::fs::read_link(&old_ep.install_path) {
             Ok(target) if target.starts_with(tool_dir) => {
                 std::fs::remove_file(&old_ep.install_path).wrap_err_with(|| {
-                    format!("removing dropped entrypoint {}", old_ep.install_path.display())
+                    format!(
+                        "removing dropped entrypoint {}",
+                        old_ep.install_path.display()
+                    )
                 })?;
             }
             // Reclaimed by another tool, missing, or not a symlink — skip.
@@ -207,4 +212,3 @@ pub fn upgrade_all(
     }
     Ok(out)
 }
-

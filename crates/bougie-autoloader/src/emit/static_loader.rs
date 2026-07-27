@@ -167,7 +167,11 @@ fn emit_prefix_lengths_psr4(out: &mut String, psr4: &[&Entry]) {
             if current_letter.is_some() {
                 out.push_str("        ),\n");
             }
-            let _ = writeln!(out, "        {} => ", php_single_quoted(&letter.to_string()));
+            let _ = writeln!(
+                out,
+                "        {} => ",
+                php_single_quoted(&letter.to_string())
+            );
             out.push_str("        array (\n");
             current_letter = Some(letter);
         }
@@ -208,7 +212,11 @@ fn emit_prefixes_psr0(out: &mut String, psr0: &[&Entry]) {
             if current_letter.is_some() {
                 out.push_str("        ),\n");
             }
-            let _ = writeln!(out, "        {} => ", php_single_quoted(&letter.to_string()));
+            let _ = writeln!(
+                out,
+                "        {} => ",
+                php_single_quoted(&letter.to_string())
+            );
             out.push_str("        array (\n");
             current_letter = Some(letter);
         }
@@ -344,10 +352,7 @@ mod tests {
             to_dir_expr("$baseDir . '/Thing.php'"),
             "__DIR__ . '/../..' . '/Thing.php'"
         );
-        assert_eq!(
-            to_dir_expr("$baseDir . '/'"),
-            "__DIR__ . '/../..' . '/'"
-        );
+        assert_eq!(to_dir_expr("$baseDir . '/'"), "__DIR__ . '/../..' . '/'");
     }
 
     #[test]
@@ -358,7 +363,13 @@ mod tests {
             class: "Composer\\InstalledVersions".to_string(),
             path_expr: "$vendorDir . '/composer/InstalledVersions.php'".to_string(),
         };
-        let s = emit("deadbeef", &[], &[], std::slice::from_ref(&installed_versions), &[]);
+        let s = emit(
+            "deadbeef",
+            &[],
+            &[],
+            std::slice::from_ref(&installed_versions),
+            &[],
+        );
         assert!(s.contains("public static $classMap = array (\n"));
         assert!(!s.contains("$prefixLengthsPsr4"));
         assert!(!s.contains("$prefixesPsr0"));

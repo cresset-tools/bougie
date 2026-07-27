@@ -74,10 +74,7 @@ fn visit(
 /// Partition a task's deps into named-task deps (resolved by name) and
 /// file-path deps (everything else). Named-task-first resolution per
 /// RECIPES.md §3.
-pub fn split_deps<'a>(
-    recipe: &Recipe,
-    deps: &'a [String],
-) -> (Vec<&'a str>, Vec<&'a str>) {
+pub fn split_deps<'a>(recipe: &Recipe, deps: &'a [String]) -> (Vec<&'a str>, Vec<&'a str>) {
     let mut named = Vec::new();
     let mut files = Vec::new();
     for d in deps {

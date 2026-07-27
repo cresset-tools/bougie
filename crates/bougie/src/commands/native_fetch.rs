@@ -13,7 +13,7 @@ use std::io::Read as _;
 use std::path::Path;
 use std::time::Duration;
 
-use eyre::{eyre, Result, WrapErr};
+use eyre::{Result, WrapErr, eyre};
 use flate2::read::GzDecoder;
 use sha2::{Digest, Sha256};
 

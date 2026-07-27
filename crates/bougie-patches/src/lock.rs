@@ -134,7 +134,10 @@ mod tests {
         let raw = std::fs::read_to_string(dir.path().join(LOCK_FILE_NAME)).unwrap();
         assert!(raw.contains("\"patches\""), "human view embedded: {raw}");
         // read() still returns only the fingerprint map (source of truth).
-        assert_eq!(read(dir.path()).get("vendor/a").map(String::as_str), Some("abc"));
+        assert_eq!(
+            read(dir.path()).get("vendor/a").map(String::as_str),
+            Some("abc")
+        );
     }
 
     #[test]
@@ -144,7 +147,10 @@ mod tests {
         fps.insert("vendor/a".to_string(), "abc".to_string());
         write(dir.path(), &fps).unwrap();
         let raw = std::fs::read_to_string(dir.path().join(LOCK_FILE_NAME)).unwrap();
-        assert!(!raw.contains("\"patches\""), "no human view unless opted in: {raw}");
+        assert!(
+            !raw.contains("\"patches\""),
+            "no human view unless opted in: {raw}"
+        );
     }
 
     #[test]

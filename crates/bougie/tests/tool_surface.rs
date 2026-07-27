@@ -260,10 +260,7 @@ fn cache_prune_dry_run_lists_old_tool_run_slots() {
     use std::time::{Duration, SystemTime};
     let env = TestEnv::new();
     // Hand-build a stale cache slot.
-    let slot = env
-        .cache_path()
-        .join("tool-run")
-        .join("deadbeefdeadbeef");
+    let slot = env.cache_path().join("tool-run").join("deadbeefdeadbeef");
     std::fs::create_dir_all(&slot).unwrap();
     let receipt = slot.join("receipt.toml");
     std::fs::write(&receipt, "package = \"v/p\"\n").unwrap();
@@ -291,10 +288,7 @@ fn cache_prune_dry_run_lists_old_tool_run_slots() {
 fn cache_prune_actually_removes_stale_slots() {
     use std::time::{Duration, SystemTime};
     let env = TestEnv::new();
-    let slot = env
-        .cache_path()
-        .join("tool-run")
-        .join("01234567abcdef");
+    let slot = env.cache_path().join("tool-run").join("01234567abcdef");
     std::fs::create_dir_all(&slot).unwrap();
     let receipt = slot.join("receipt.toml");
     std::fs::write(&receipt, "package = \"v/p\"\n").unwrap();
@@ -318,10 +312,7 @@ fn cache_prune_actually_removes_stale_slots() {
 #[test]
 fn cache_prune_keeps_fresh_tool_run_slots() {
     let env = TestEnv::new();
-    let slot = env
-        .cache_path()
-        .join("tool-run")
-        .join("fresh1234567890");
+    let slot = env.cache_path().join("tool-run").join("fresh1234567890");
     std::fs::create_dir_all(&slot).unwrap();
     std::fs::write(slot.join("receipt.toml"), "package = \"v/p\"\n").unwrap();
     env.bougie()
@@ -394,10 +385,7 @@ fn tool_upgrade_all_with_no_tools_is_noop() {
 #[test]
 fn tool_upgrade_requires_package_or_all() {
     let env = TestEnv::new();
-    env.bougie()
-        .args(["tool", "upgrade"])
-        .assert()
-        .failure();
+    env.bougie().args(["tool", "upgrade"]).assert().failure();
 }
 
 #[test]
@@ -413,7 +401,13 @@ fn tool_upgrade_rejects_package_and_all_together() {
 fn tool_inject_errors_for_unknown_tool() {
     let env = TestEnv::new();
     env.bougie()
-        .args(["tool", "inject", "phpstan/phpstan", "--with", "vendor/extra"])
+        .args([
+            "tool",
+            "inject",
+            "phpstan/phpstan",
+            "--with",
+            "vendor/extra",
+        ])
         .assert()
         .failure()
         .stderr(contains("not installed"));

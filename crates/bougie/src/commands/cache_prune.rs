@@ -67,7 +67,11 @@ impl PruneResult {
         if pruned.is_empty() {
             writeln!(w, "{label}: nothing to prune")?;
         } else {
-            let verb = if self.dry_run { "would remove" } else { "removed" };
+            let verb = if self.dry_run {
+                "would remove"
+            } else {
+                "removed"
+            };
             writeln!(w, "{label}: {verb} {} slot(s)", pruned.len())?;
             for slot in pruned {
                 writeln!(w, "  {}", slot.display())?;
@@ -130,8 +134,6 @@ fn is_stale(slot: &Path, marker: &str, now: SystemTime) -> Result<bool> {
     let modified = meta
         .modified()
         .wrap_err_with(|| format!("reading mtime of {}", marker_path.display()))?;
-    let age = now
-        .duration_since(modified)
-        .unwrap_or(Duration::ZERO);
+    let age = now.duration_since(modified).unwrap_or(Duration::ZERO);
     Ok(age > EPHEMERAL_TTL)
 }

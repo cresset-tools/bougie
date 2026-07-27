@@ -80,8 +80,7 @@ fn build_strict(
     let log = paths.service_log(entry.name, version);
     let conf = paths.service_conf(entry.name, version);
     for p in [&data, &run, &log, &conf] {
-        std::fs::create_dir_all(p)
-            .wrap_err_with(|| format!("creating {}", p.display()))?;
+        std::fs::create_dir_all(p).wrap_err_with(|| format!("creating {}", p.display()))?;
     }
 
     let limit_nofile = nofile_for(entry.name);
@@ -190,8 +189,7 @@ fn build_light_home(
         paths.service_log(entry.name, version),
         paths.service_conf(entry.name, version),
     ] {
-        std::fs::create_dir_all(&p)
-            .wrap_err_with(|| format!("creating {}", p.display()))?;
+        std::fs::create_dir_all(&p).wrap_err_with(|| format!("creating {}", p.display()))?;
     }
     Ok(None)
 }
@@ -208,8 +206,7 @@ fn build_light_home(
         paths.service_log(entry.name, version),
         paths.service_conf(entry.name, version),
     ] {
-        std::fs::create_dir_all(&p)
-            .wrap_err_with(|| format!("creating {}", p.display()))?;
+        std::fs::create_dir_all(&p).wrap_err_with(|| format!("creating {}", p.display()))?;
     }
     let home = std::env::var_os("HOME")
         .map(std::path::PathBuf::from)
@@ -265,11 +262,28 @@ mod tests {
         let paths = Paths::new(tmp.path().into(), tmp.path().into());
         let entry = catalog::find("redis").unwrap();
         let babysit_bin = std::env::current_exe().unwrap();
-        let _policy = build_policy(entry, entry.version, &paths, &babysit_bin).expect("policy build");
-        assert!(paths.service_data("redis", crate::daemon::catalog::default_version("redis")).is_dir());
-        assert!(paths.service_run("redis", crate::daemon::catalog::default_version("redis")).is_dir());
-        assert!(paths.service_log("redis", crate::daemon::catalog::default_version("redis")).is_dir());
-        assert!(paths.service_conf("redis", crate::daemon::catalog::default_version("redis")).is_dir());
+        let _policy =
+            build_policy(entry, entry.version, &paths, &babysit_bin).expect("policy build");
+        assert!(
+            paths
+                .service_data("redis", crate::daemon::catalog::default_version("redis"))
+                .is_dir()
+        );
+        assert!(
+            paths
+                .service_run("redis", crate::daemon::catalog::default_version("redis"))
+                .is_dir()
+        );
+        assert!(
+            paths
+                .service_log("redis", crate::daemon::catalog::default_version("redis"))
+                .is_dir()
+        );
+        assert!(
+            paths
+                .service_conf("redis", crate::daemon::catalog::default_version("redis"))
+                .is_dir()
+        );
     }
 
     #[test]

@@ -30,8 +30,8 @@
 //! start.
 
 use std::env;
-use std::fs;
 use std::fmt::Write as _;
+use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -146,7 +146,12 @@ pub fn run(force: bool) -> Result<ExitCode> {
 
     let bin_dir = current_exe
         .parent()
-        .ok_or_else(|| eyre!("current bougie path has no parent dir: {}", current_exe.display()))?
+        .ok_or_else(|| {
+            eyre!(
+                "current bougie path has no parent dir: {}",
+                current_exe.display()
+            )
+        })?
         .to_path_buf();
 
     // On Windows, clear any leftover `*.old.exe` siblings from a prior update
@@ -269,10 +274,7 @@ fn install_provenance(current_exe: &Path) -> Provenance {
         Provenance::External(format!(
             "this binary runs from {} but bougie's installer manages {} (per {}) — looks like it \
              was installed by a package manager, cargo, or nix",
-            current_exe
-                .parent()
-                .unwrap_or(current_exe)
-                .display(),
+            current_exe.parent().unwrap_or(current_exe).display(),
             receipt.install_prefix,
             receipt_path.display(),
         ))
@@ -541,7 +543,10 @@ fn replace_unix(new: &Path, target: &Path) -> Result<()> {
         .ok_or_else(|| eyre!("target {} has no parent", target.display()))?
         .join(format!(
             ".{}.new",
-            target.file_name().and_then(|s| s.to_str()).unwrap_or("bougie")
+            target
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("bougie")
         ));
 
     fs::copy(new, &staging)
@@ -614,9 +619,15 @@ fn parse_version(s: &str) -> Result<(u64, u64, u64)> {
         return Err(eyre!("too many version components in {s}"));
     }
     Ok((
-        major.parse().wrap_err_with(|| format!("parsing major in {s}"))?,
-        minor.parse().wrap_err_with(|| format!("parsing minor in {s}"))?,
-        patch.parse().wrap_err_with(|| format!("parsing patch in {s}"))?,
+        major
+            .parse()
+            .wrap_err_with(|| format!("parsing major in {s}"))?,
+        minor
+            .parse()
+            .wrap_err_with(|| format!("parsing minor in {s}"))?,
+        patch
+            .parse()
+            .wrap_err_with(|| format!("parsing patch in {s}"))?,
     ))
 }
 
@@ -847,8 +858,7 @@ mod tests {
     fn gh_release_without_assets_field_defaults_empty() {
         // Older / partial API payloads may omit `assets`; serde default
         // keeps deserialization from failing.
-        let release: GhRelease =
-            serde_json::from_str(r#"{"tag_name": "bougie-v0.21.0"}"#).unwrap();
+        let release: GhRelease = serde_json::from_str(r#"{"tag_name": "bougie-v0.21.0"}"#).unwrap();
         assert!(release.assets.is_empty());
     }
 

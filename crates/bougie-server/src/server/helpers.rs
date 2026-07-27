@@ -11,7 +11,7 @@
 //! validation-warning helper shared with `server run`.
 
 use bougie_cli::OutputFormat;
-use bougie_output::output::{emit, Render};
+use bougie_output::output::{Render, emit};
 use eyre::Result;
 use serde::Serialize;
 use std::io::{self, Write};
@@ -64,7 +64,13 @@ impl Render for ListResult {
             writeln!(w, "no hosts configured ({})", self.config.display())?;
         } else {
             for h in &self.hosts {
-                writeln!(w, "{}  {}  root={}", h.hostname, h.project.display(), h.root)?;
+                writeln!(
+                    w,
+                    "{}  {}  root={}",
+                    h.hostname,
+                    h.project.display(),
+                    h.root
+                )?;
                 for alias in &h.aliases {
                     writeln!(w, "  alias {alias}")?;
                 }

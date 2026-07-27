@@ -2,7 +2,7 @@
 
 use super::dag::split_deps;
 use super::parser::{Recipe, TaskDef};
-use super::run::{build_sh, RunOptions};
+use super::run::{RunOptions, build_sh};
 use eyre::{Result, WrapErr};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -76,7 +76,10 @@ pub fn evaluate(
         let p = project_root.join(file);
         match newest_mtime(&p)? {
             Some(t) if t > our_mtime => {
-                return Ok(Verdict::Run(format!("{file} newer than {}", display_creates(creates))));
+                return Ok(Verdict::Run(format!(
+                    "{file} newer than {}",
+                    display_creates(creates)
+                )));
             }
             // None: a non-existent file dep is "infinitely old"; treat
             // as clean rather than re-running endlessly.
@@ -99,12 +102,13 @@ pub fn evaluate(
             )));
         }
         if let Some(Some(dep_mtime)) = state.task_mtime.get(dep_name)
-            && *dep_mtime > our_mtime {
-                return Ok(Verdict::Run(format!(
-                    "task `{dep_name}` newer than {}",
-                    display_creates(creates)
-                )));
-            }
+            && *dep_mtime > our_mtime
+        {
+            return Ok(Verdict::Run(format!(
+                "task `{dep_name}` newer than {}",
+                display_creates(creates)
+            )));
+        }
     }
 
     Ok(Verdict::Skip(format!(
@@ -158,8 +162,7 @@ fn newest_mtime(path: &Path) -> Result<Option<SystemTime>> {
         Ok(m) => m,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => {
-            return Err(eyre::Report::new(e)
-                .wrap_err(format!("stat {}", path.display())));
+            return Err(eyre::Report::new(e).wrap_err(format!("stat {}", path.display())));
         }
     };
     Ok(Some(meta.modified().wrap_err_with(|| {
@@ -168,8 +171,8 @@ fn newest_mtime(path: &Path) -> Result<Option<SystemTime>> {
 }
 
 fn touch(path: &Path) -> Result<()> {
-    use rustix::fs::{utimensat, AtFlags, Timestamps};
     use rustix::fs::CWD;
+    use rustix::fs::{AtFlags, Timestamps, utimensat};
     let now = rustix::fs::Timespec {
         tv_sec: 0,
         tv_nsec: rustix::fs::UTIME_NOW,

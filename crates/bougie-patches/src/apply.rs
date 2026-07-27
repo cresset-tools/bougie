@@ -163,16 +163,14 @@ fn commit(ops: &[PlannedOp<'_>]) -> Result<()> {
         match &op.new_content {
             Some(content) => {
                 if let Some(parent) = op.abs_path.parent() {
-                    fs::create_dir_all(parent).wrap_err_with(|| {
-                        format!("cannot create `{}`", parent.display())
-                    })?;
+                    fs::create_dir_all(parent)
+                        .wrap_err_with(|| format!("cannot create `{}`", parent.display()))?;
                 }
                 atomic_write(&op.abs_path, content.as_bytes())?;
             }
             None => {
-                fs::remove_file(&op.abs_path).wrap_err_with(|| {
-                    format!("cannot delete `{}`", op.abs_path.display())
-                })?;
+                fs::remove_file(&op.abs_path)
+                    .wrap_err_with(|| format!("cannot delete `{}`", op.abs_path.display()))?;
             }
         }
     }
@@ -224,7 +222,11 @@ mod tests {
     #[test]
     fn modify_at_p1() {
         let dir = tempdir().unwrap();
-        write(dir.path(), "src/Foo.php", "line one\nline two\nline three\n");
+        write(
+            dir.path(),
+            "src/Foo.php",
+            "line one\nline two\nline three\n",
+        );
         let patch = "\
 --- a/src/Foo.php
 +++ b/src/Foo.php

@@ -138,7 +138,10 @@ impl PlatformEnv {
     /// Construct with an explicit PHP version. `None` models no
     /// platform packages.
     pub fn new(php: Option<Version>) -> Self {
-        Self { php, ignore: PlatformIgnore::default() }
+        Self {
+            php,
+            ignore: PlatformIgnore::default(),
+        }
     }
 
     /// Attach an ignore filter (from `--ignore-platform-req(s)`). Ignored
@@ -161,13 +164,19 @@ impl PlatformEnv {
     /// that models nothing — never an error.
     pub fn detect(project_root: &Path, composer_json: &Value) -> Self {
         let php = read_resolved_pin(project_root).or_else(|| read_declared_pin(composer_json));
-        Self { php, ignore: PlatformIgnore::default() }
+        Self {
+            php,
+            ignore: PlatformIgnore::default(),
+        }
     }
 
     /// Like [`Self::detect`] but reads only the resolved marker — used
     /// where the parsed composer.json isn't on hand.
     pub fn from_project(project_root: &Path) -> Self {
-        Self { php: read_resolved_pin(project_root), ignore: PlatformIgnore::default() }
+        Self {
+            php: read_resolved_pin(project_root),
+            ignore: PlatformIgnore::default(),
+        }
     }
 
     /// The single candidate version for platform package `name`, or
@@ -202,8 +211,7 @@ impl PlatformEnv {
 /// dependency). The marker is `<version>-<flavor>`, e.g. `8.3.31-nts`;
 /// we keep the version up to the first `-`.
 fn read_resolved_pin(project_root: &Path) -> Option<Version> {
-    let body =
-        std::fs::read_to_string(bougie_paths::project::resolved(project_root)).ok()?;
+    let body = std::fs::read_to_string(bougie_paths::project::resolved(project_root)).ok()?;
     let line = body.trim();
     let version = line.split('-').next().unwrap_or(line);
     Version::parse(version).ok()
@@ -241,7 +249,13 @@ mod tests {
     #[test]
     fn unmodeled_platform_packages_have_no_candidate() {
         let env = PlatformEnv::new(Some(v("8.3.31")));
-        for name in ["ext-intl", "lib-curl", "composer-runtime-api", "hhvm", "php-zts"] {
+        for name in [
+            "ext-intl",
+            "lib-curl",
+            "composer-runtime-api",
+            "hhvm",
+            "php-zts",
+        ] {
             assert_eq!(env.candidate(name), None, "{name} must stay unmodeled");
             assert!(!env.models(name), "{name} must stay unmodeled");
         }

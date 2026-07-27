@@ -211,7 +211,9 @@ fn second_bougied_fails_to_acquire_singleton_lock() {
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawning second bougied");
-    let status = child.wait_with_output().expect("waiting for second bougied");
+    let status = child
+        .wait_with_output()
+        .expect("waiting for second bougied");
     assert!(
         !status.status.success(),
         "second bougied must exit non-zero; got {status:?}"

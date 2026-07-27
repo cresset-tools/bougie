@@ -19,9 +19,9 @@
 mod common;
 
 use assert_cmd::cargo::cargo_bin;
+use common::TestEnv;
 use common::mailpit_fixture;
 use common::project_with_composer;
-use common::TestEnv;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;
@@ -116,7 +116,9 @@ fn wait_for_http_ok(path: &str, timeout: Duration) -> bool {
 fn read_reply(reader: &mut impl BufRead) -> Result<u16, String> {
     loop {
         let mut line = String::new();
-        let n = reader.read_line(&mut line).map_err(|e| format!("read: {e}"))?;
+        let n = reader
+            .read_line(&mut line)
+            .map_err(|e| format!("read: {e}"))?;
         if n == 0 {
             return Err("server closed connection".into());
         }
@@ -124,7 +126,9 @@ fn read_reply(reader: &mut impl BufRead) -> Result<u16, String> {
         if line.len() < 4 {
             return Err(format!("short SMTP reply: {line:?}"));
         }
-        let code: u16 = line[..3].parse().map_err(|_| format!("bad code: {line:?}"))?;
+        let code: u16 = line[..3]
+            .parse()
+            .map_err(|_| format!("bad code: {line:?}"))?;
         // A '-' in the 4th column marks a continuation line; ' ' is the
         // final line of the reply.
         if line.as_bytes()[3] == b' ' {
@@ -159,9 +163,7 @@ fn smtp_send(from: &str, to: &str, subject: &str, body: &str) -> Result<(), Stri
     cmd(&mut w, &mut reader, &format!("MAIL FROM:<{from}>"), 250)?;
     cmd(&mut w, &mut reader, &format!("RCPT TO:<{to}>"), 250)?;
     cmd(&mut w, &mut reader, "DATA", 354)?;
-    let message = format!(
-        "From: <{from}>\r\nTo: <{to}>\r\nSubject: {subject}\r\n\r\n{body}\r\n.",
-    );
+    let message = format!("From: <{from}>\r\nTo: <{to}>\r\nSubject: {subject}\r\n\r\n{body}\r\n.",);
     cmd(&mut w, &mut reader, &message, 250)?;
     let _ = cmd(&mut w, &mut reader, "QUIT", 221);
     Ok(())
@@ -193,15 +195,25 @@ fn up_binds_smtp_and_ui_and_provisions_a_bare_tenant() {
 
     // A bare ledger row: the project is present, with no alloc/secrets
     // (shared sink — every project shares one instance).
-    let tenants = env.home_path().join("state/services/mailpit/1.30.2/tenants.json");
+    let tenants = env
+        .home_path()
+        .join("state/services/mailpit/1.30.2/tenants.json");
     let ledger = fs::read_to_string(&tenants).expect("tenants.json should exist");
     let line = ledger.lines().next().expect("one tenant line");
     let v: serde_json::Value = serde_json::from_str(line).unwrap();
     assert_eq!(v["tenant"], "acme_blog");
     let expected = fs::canonicalize(proj.path()).unwrap();
     assert_eq!(v["project"], expected.to_str().unwrap());
-    assert_eq!(v["alloc"], serde_json::json!({}), "shared sink has no alloc");
-    assert_eq!(v["secrets"], serde_json::json!({}), "shared sink has no secrets");
+    assert_eq!(
+        v["alloc"],
+        serde_json::json!({}),
+        "shared sink has no alloc"
+    );
+    assert_eq!(
+        v["secrets"],
+        serde_json::json!({}),
+        "shared sink has no secrets"
+    );
 
     stop_daemon(&env);
 }
@@ -292,7 +304,10 @@ fn bougie_run_exports_mailpit_env_vars() {
         "BOUGIE_SERVICE_MAILPIT_DSN=smtp://127.0.0.1:1025",
         "BOUGIE_SERVICE_MAILPIT_DASHBOARD_URL=http://127.0.0.1:8025",
     ] {
-        assert!(stdout.contains(expected), "missing `{expected}`; env was:\n{stdout}");
+        assert!(
+            stdout.contains(expected),
+            "missing `{expected}`; env was:\n{stdout}"
+        );
     }
 
     stop_daemon(&env);
@@ -312,7 +327,10 @@ fn down_drops_tenant_and_stops_when_last_goes_away() {
     for p in [&a, &b] {
         add_and_up(&env, p.path());
     }
-    assert!(wait_for_tcp(SMTP_ADDR, Duration::from_secs(20)), "mailpit never bound");
+    assert!(
+        wait_for_tcp(SMTP_ADDR, Duration::from_secs(20)),
+        "mailpit never bound"
+    );
 
     // First project goes down — the shared instance must stay up for b.
     env.bougie()
@@ -353,7 +371,9 @@ fn down_drops_tenant_and_stops_when_last_goes_away() {
     assert_eq!(mailpit["state"], "stopped");
 
     // Ledger emptied.
-    let tenants = env.home_path().join("state/services/mailpit/1.30.2/tenants.json");
+    let tenants = env
+        .home_path()
+        .join("state/services/mailpit/1.30.2/tenants.json");
     let after = fs::read_to_string(&tenants).unwrap_or_default();
     assert!(
         after.lines().all(|l| l.trim().is_empty()),

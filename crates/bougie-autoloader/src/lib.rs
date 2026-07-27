@@ -28,7 +28,7 @@ mod scan;
 mod vendored;
 mod version;
 
-pub use autoloader::{user_code_roots, AutoloadHeader, Autoloader, HeaderFlags};
+pub use autoloader::{AutoloadHeader, Autoloader, HeaderFlags, user_code_roots};
 
 /// Internal entry points exposed only so the in-tree
 /// `benches/scan.rs` criterion harness can call them. Not a stable
@@ -238,4 +238,3 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     std::fs::rename(&tmp, path)?;
     Ok(())
 }
-

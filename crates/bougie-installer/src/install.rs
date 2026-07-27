@@ -1,26 +1,26 @@
 //! Orchestrates a PHP interpreter installation: refresh index, resolve,
 //! fetch + extract. Shared by `bougie php install` and `bougie sync`.
 
+use crate::baseline::{BASELINE_EXTENSIONS, BaselineFilter};
+#[cfg(not(target_os = "windows"))]
+use crate::baseline::{PREINSTALLED_EXTENSIONS, skip_for_php_minor, skip_for_platform};
 use bougie_backend;
 use bougie_backend::Backend;
-use crate::baseline::{BaselineFilter, BASELINE_EXTENSIONS};
-#[cfg(not(target_os = "windows"))]
-use crate::baseline::{skip_for_php_minor, skip_for_platform, PREINSTALLED_EXTENSIONS};
 use bougie_errors::BougieError;
-use bougie_fetch::{fetch_blob, BlobSpec, DownloadBar, Hash};
+use bougie_fetch::{BlobSpec, DownloadBar, Hash, fetch_blob};
 // Closure-peer tarballs are bougie-index-only; the consuming code is
 // `cfg(not(target_os = "windows"))` so the import has to match.
 #[cfg(not(target_os = "windows"))]
 use bougie_fetch::ArchiveKind;
-use bougie_index::wire::LoadDirective;
 use bougie_fs::lock::ExclusiveGuard;
-use bougie_paths::Paths;
-use bougie_version::request::{Flavor, Request};
-use bougie_resolver::ResolveOptions;
 use bougie_fs::store::install_dir;
+use bougie_index::wire::LoadDirective;
+use bougie_paths::Paths;
 use bougie_platform::target::Triple;
+use bougie_resolver::ResolveOptions;
+use bougie_version::request::{Flavor, Request};
 use bougie_version::version::{PartialVersion, Version};
-use eyre::{eyre, Result, WrapErr};
+use eyre::{Result, WrapErr, eyre};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -200,7 +200,16 @@ pub fn install_extension_with_bar(
 ) -> Result<InstalledExt> {
     let _guard = ExclusiveGuard::acquire(&paths.global_lock(), LOCK_TIMEOUT)?;
     let backend = backend_for(paths)?;
-    install_extension_resolved(&*backend, paths, name, version_pin, php_minor, flavor, opts, bar)
+    install_extension_resolved(
+        &*backend,
+        paths,
+        name,
+        version_pin,
+        php_minor,
+        flavor,
+        opts,
+        bar,
+    )
 }
 
 /// Core of [`install_extension_with_bar`] against a caller-provided
@@ -355,12 +364,15 @@ pub fn install_local_so(
 ) -> Result<InstalledLocalExt> {
     let _guard = ExclusiveGuard::acquire(&paths.global_lock(), LOCK_TIMEOUT)?;
 
-    let bytes = std::fs::read(source_so)
-        .wrap_err_with(|| format!("reading {}", source_so.display()))?;
+    let bytes =
+        std::fs::read(source_so).wrap_err_with(|| format!("reading {}", source_so.display()))?;
     let sha = {
         use sha2::{Digest, Sha256};
         let digest = Sha256::digest(&bytes);
-        digest.iter().map(|b| format!("{b:02x}")).collect::<String>()
+        digest
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
     };
     let sha8: String = sha.chars().take(8).collect();
 
@@ -387,11 +399,9 @@ pub fn install_local_so(
     // complete install.
     let tmp = paths.store().join(format!(".{dirname}.incoming"));
     let _ = std::fs::remove_dir_all(&tmp);
-    std::fs::create_dir_all(&tmp)
-        .wrap_err_with(|| format!("creating {}", tmp.display()))?;
+    std::fs::create_dir_all(&tmp).wrap_err_with(|| format!("creating {}", tmp.display()))?;
     let tmp_so = tmp.join(&canonical_basename);
-    std::fs::write(&tmp_so, &bytes)
-        .wrap_err_with(|| format!("writing {}", tmp_so.display()))?;
+    std::fs::write(&tmp_so, &bytes).wrap_err_with(|| format!("writing {}", tmp_so.display()))?;
     // If a prior run left an empty/partial dest_dir behind (e.g. a
     // basename mismatch from an older bougie that keyed dirs only on
     // sha), clear it so the atomic rename can land. Same global lock
@@ -774,7 +784,14 @@ pub fn preinstall_into(
                 return report;
             }
         };
-        preinstall_into_with_backend(&*backend, paths, install_root, php_minor, flavor, resolve_opts)
+        preinstall_into_with_backend(
+            &*backend,
+            paths,
+            install_root,
+            php_minor,
+            flavor,
+            resolve_opts,
+        )
     }
 }
 
@@ -832,7 +849,14 @@ pub fn preinstall_into_with_backend(
     flavor: Flavor,
     resolve_opts: ResolveOptions,
 ) -> PreinstallReport {
-    let _ = (backend, paths, _install_root, php_minor, flavor, resolve_opts);
+    let _ = (
+        backend,
+        paths,
+        _install_root,
+        php_minor,
+        flavor,
+        resolve_opts,
+    );
     PreinstallReport::default()
 }
 
@@ -972,8 +996,7 @@ pub fn install_closure_peers(
     bar: &DownloadBar,
 ) -> Result<()> {
     for entry in closure {
-        let store_path =
-            store_dir_for_closure(paths, &entry.name, &entry.version, &entry.hash);
+        let store_path = store_dir_for_closure(paths, &entry.name, &entry.version, &entry.hash);
         if !store_path.exists() {
             // Closure tarballs wrap their contents in `<storeName>/`
             // per shared/tarball-store-path.nix; strip it so the
@@ -990,7 +1013,7 @@ pub fn install_closure_peers(
                 strip_prefix: &storename,
                 archive: ArchiveKind::TarZst,
                 auth_header: None,
-            auth_header_name: None,
+                auth_header_name: None,
             };
             bar.set_current(format!("{label} ({})", entry.name));
             fetch_blob(client, &blob_spec, bar).wrap_err_with(|| {
@@ -1022,8 +1045,7 @@ pub fn plan_closure_bytes(
     bar: &DownloadBar,
 ) {
     for entry in closure {
-        let store_path =
-            store_dir_for_closure(paths, &entry.name, &entry.version, &entry.hash);
+        let store_path = store_dir_for_closure(paths, &entry.name, &entry.version, &entry.hash);
         if !store_path.exists() {
             bar.add_planned(entry.size);
         }
@@ -1120,7 +1142,11 @@ pub fn resolved_php_for_ext_install(project_root: &Path) -> Result<(PartialVersi
         "nts-debug" => Flavor::NtsDebug,
         "zts" => Flavor::Zts,
         "zts-debug" => Flavor::ZtsDebug,
-        other => return Err(eyre!("malformed vendor/bougie/state/resolved flavor: {other:?}")),
+        other => {
+            return Err(eyre!(
+                "malformed vendor/bougie/state/resolved flavor: {other:?}"
+            ));
+        }
     };
     let php_minor = PartialVersion {
         major: version.major,
@@ -1140,10 +1166,7 @@ mod tests {
             pick_flavor(Some(Flavor::Zts), Some(Flavor::Zts)).unwrap(),
             Flavor::Zts
         );
-        assert_eq!(
-            pick_flavor(Some(Flavor::Zts), None).unwrap(),
-            Flavor::Zts
-        );
+        assert_eq!(pick_flavor(Some(Flavor::Zts), None).unwrap(), Flavor::Zts);
         assert_eq!(
             pick_flavor(None, Some(Flavor::ZtsDebug)).unwrap(),
             Flavor::ZtsDebug
@@ -1155,7 +1178,6 @@ mod tests {
     fn pick_flavor_rejects_conflict() {
         assert!(pick_flavor(Some(Flavor::Nts), Some(Flavor::Zts)).is_err());
     }
-
 
     #[test]
     fn conf_d_prefix_handles_pdo_drivers_and_db_drivers() {
@@ -1226,7 +1248,11 @@ mod tests {
         // Resolves to the real shared-store entry.
         let target = std::fs::read_link(&link).unwrap();
         assert_eq!(target, PathBuf::from("../../libcurl-8.20.0-abcdef01"));
-        assert!(std::fs::canonicalize(&link).unwrap().ends_with("libcurl-8.20.0-abcdef01"));
+        assert!(
+            std::fs::canonicalize(&link)
+                .unwrap()
+                .ends_with("libcurl-8.20.0-abcdef01")
+        );
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -1313,19 +1339,35 @@ mod tests {
 
         let client = reqwest::blocking::Client::new();
         let bar = DownloadBar::hidden();
-        install_closure_peers(&client, &paths, &closure, "mariadb", "mariadb-11.4.10", &install_root, &bar)
-            .unwrap();
+        install_closure_peers(
+            &client,
+            &paths,
+            &closure,
+            "mariadb",
+            "mariadb-11.4.10",
+            &install_root,
+            &bar,
+        )
+        .unwrap();
 
         for (n, v, h) in &entries {
             let link = install_root.join("store").join(format!("{n}-{v}-{h}"));
             let meta = std::fs::symlink_metadata(&link)
                 .unwrap_or_else(|e| panic!("expected symlink at {}: {e}", link.display()));
-            assert!(meta.file_type().is_symlink(), "{} not a symlink", link.display());
+            assert!(
+                meta.file_type().is_symlink(),
+                "{} not a symlink",
+                link.display()
+            );
             let target = std::fs::read_link(&link).unwrap();
             assert_eq!(target, PathBuf::from("../..").join(format!("{n}-{v}-{h}")));
             // And it actually resolves into the global store.
             let canon = std::fs::canonicalize(&link).unwrap();
-            assert!(canon.ends_with(format!("{n}-{v}-{h}")), "canon = {}", canon.display());
+            assert!(
+                canon.ends_with(format!("{n}-{v}-{h}")),
+                "canon = {}",
+                canon.display()
+            );
         }
     }
 
@@ -1344,10 +1386,26 @@ mod tests {
         std::fs::create_dir_all(&install_root).unwrap();
         let client = reqwest::blocking::Client::new();
         let bar = DownloadBar::hidden();
-        install_closure_peers(&client, &paths, &closure, "redis", "redis-8.6.3", &install_root, &bar)
-            .unwrap();
-        install_closure_peers(&client, &paths, &closure, "redis", "redis-8.6.3", &install_root, &bar)
-            .unwrap();
+        install_closure_peers(
+            &client,
+            &paths,
+            &closure,
+            "redis",
+            "redis-8.6.3",
+            &install_root,
+            &bar,
+        )
+        .unwrap();
+        install_closure_peers(
+            &client,
+            &paths,
+            &closure,
+            "redis",
+            "redis-8.6.3",
+            &install_root,
+            &bar,
+        )
+        .unwrap();
 
         // Exactly one entry under store/, still a symlink.
         let entries: Vec<_> = std::fs::read_dir(install_root.join("store"))
@@ -1372,8 +1430,16 @@ mod tests {
 
         let client = reqwest::blocking::Client::new();
         let bar = DownloadBar::hidden();
-        install_closure_peers(&client, &paths, &closure, "mariadb", "mariadb-11.4.10", &install_root, &bar)
-            .unwrap();
+        install_closure_peers(
+            &client,
+            &paths,
+            &closure,
+            "mariadb",
+            "mariadb-11.4.10",
+            &install_root,
+            &bar,
+        )
+        .unwrap();
         // No `store/` subdir is created when there's nothing to link.
         assert!(!install_root.join("store").exists());
     }
@@ -1416,6 +1482,10 @@ mod tests {
         plan_closure_bytes(&paths, &closure, &bar);
         // openssl (1000) is on disk → skipped. zlib (500) is missing →
         // counted. So planned == 500.
-        assert_eq!(bar.planned(), 500, "expected only the missing entry to be counted");
+        assert_eq!(
+            bar.planned(),
+            500,
+            "expected only the missing entry to be counted"
+        );
     }
 }

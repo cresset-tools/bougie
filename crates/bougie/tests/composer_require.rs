@@ -79,7 +79,10 @@ fn require_bare_name_writes_caret_of_latest_stable() {
     let env = TestEnv::new();
     let proj = TempDir::new().unwrap();
 
-    let foo = p2_body("acme/foo", &[("2.0.0", "{}"), ("1.5.0", "{}"), ("1.0.0", "{}")]);
+    let foo = p2_body(
+        "acme/foo",
+        &[("2.0.0", "{}"), ("1.5.0", "{}"), ("1.0.0", "{}")],
+    );
 
     let rt = rt();
     let (uri, _server) = rt.block_on(async {
@@ -130,13 +133,7 @@ fn require_explicit_constraint_no_update_is_offline_json_edit() {
     // touches only composer.json, never the network.
     let output = env
         .bougie()
-        .args([
-            "composer",
-            "require",
-            "acme/foo:^1.2",
-            "--no-update",
-            "-d",
-        ])
+        .args(["composer", "require", "acme/foo:^1.2", "--no-update", "-d"])
         .arg(proj.path())
         .output()
         .expect("run bougie");
@@ -149,8 +146,14 @@ fn require_explicit_constraint_no_update_is_offline_json_edit() {
 
     let cj = std::fs::read_to_string(proj.path().join("composer.json")).unwrap();
     assert!(cj.contains("\"acme/foo\""), "composer.json: {cj}");
-    assert!(cj.contains("^1.2"), "explicit constraint stored verbatim: {cj}");
-    assert!(!proj.path().join("composer.lock").exists(), "--no-update: no lock");
+    assert!(
+        cj.contains("^1.2"),
+        "explicit constraint stored verbatim: {cj}"
+    );
+    assert!(
+        !proj.path().join("composer.lock").exists(),
+        "--no-update: no lock"
+    );
     assert!(!proj.path().join("vendor").exists());
 }
 
@@ -175,10 +178,17 @@ fn require_dev_targets_require_dev() {
         .output()
         .expect("run bougie");
 
-    assert!(output.status.success(), "stderr={}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 
     let cj = std::fs::read_to_string(proj.path().join("composer.json")).unwrap();
-    assert!(cj.contains("require-dev"), "should add a require-dev block: {cj}");
+    assert!(
+        cj.contains("require-dev"),
+        "should add a require-dev block: {cj}"
+    );
     assert!(cj.contains("phpunit/phpunit"), "{cj}");
 }
 
@@ -271,8 +281,14 @@ fn require_with_install_materializes_vendor() {
     // The dist was actually downloaded, extracted (wrapping dir
     // stripped), and the autoloader emitted.
     let vendor_foo = proj.path().join("vendor").join("acme").join("foo");
-    assert!(vendor_foo.join("src/Foo.php").is_file(), "vendor not materialized");
-    assert!(!vendor_foo.join(top).exists(), "wrapping dir should be stripped");
+    assert!(
+        vendor_foo.join("src/Foo.php").is_file(),
+        "vendor not materialized"
+    );
+    assert!(
+        !vendor_foo.join(top).exists(),
+        "wrapping dir should be stripped"
+    );
     assert!(proj.path().join("vendor/autoload.php").is_file());
     assert!(proj.path().join("vendor/composer/installed.json").is_file());
 }
@@ -309,8 +325,7 @@ fn require_partial_relock_keeps_other_packages_pinned() {
     // Existing project: foo required at ^1.0 and locked at 1.0.0.
     let composer_json = r#"{"name":"test/p","require":{"acme/foo":"^1.0"}}"#;
     write_composer_json(proj.path(), composer_json);
-    let content_hash =
-        bougie_composer::lockfile::content_hash(composer_json.as_bytes()).unwrap();
+    let content_hash = bougie_composer::lockfile::content_hash(composer_json.as_bytes()).unwrap();
     let lock = format!(
         r#"{{
         "content-hash": "{content_hash}",
@@ -339,10 +354,15 @@ fn require_partial_relock_keeps_other_packages_pinned() {
         String::from_utf8_lossy(&output.stderr),
     );
 
-    let lock_after =
-        std::fs::read_to_string(proj.path().join("composer.lock")).unwrap();
-    assert!(lock_after.contains("acme/bar"), "bar should be added: {lock_after}");
-    assert!(lock_after.contains("acme/foo"), "foo should remain: {lock_after}");
+    let lock_after = std::fs::read_to_string(proj.path().join("composer.lock")).unwrap();
+    assert!(
+        lock_after.contains("acme/bar"),
+        "bar should be added: {lock_after}"
+    );
+    assert!(
+        lock_after.contains("acme/foo"),
+        "foo should remain: {lock_after}"
+    );
     // The crux: foo stays pinned at 1.0.0 (partial update), NOT bumped
     // to the available 1.5.0.
     assert!(
@@ -372,7 +392,11 @@ fn remove_no_update_drops_the_require_entry() {
         .output()
         .expect("run bougie");
 
-    assert!(output.status.success(), "stderr={}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 
     let cj = std::fs::read_to_string(proj.path().join("composer.json")).unwrap();
     assert!(!cj.contains("acme/foo"), "acme/foo should be gone: {cj}");

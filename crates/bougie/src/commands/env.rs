@@ -78,9 +78,18 @@ pub fn project_script_env(project_root: &Path, dev_mode: bool) -> Vec<(String, S
         Ok(paths) => conf_d::php_ini_scan_dir(&paths, project_root, false),
         Err(_) => conf_d::project_confd_dir(project_root).into_os_string(),
     };
-    env.push(("PHP_INI_SCAN_DIR".into(), scan_dir.to_string_lossy().into_owned()));
-    env.push(("BOUGIE_PROJECT_ROOT".into(), project_root.display().to_string()));
-    env.push(("COMPOSER_DEV_MODE".into(), if dev_mode { "1" } else { "0" }.into()));
+    env.push((
+        "PHP_INI_SCAN_DIR".into(),
+        scan_dir.to_string_lossy().into_owned(),
+    ));
+    env.push((
+        "BOUGIE_PROJECT_ROOT".into(),
+        project_root.display().to_string(),
+    ));
+    env.push((
+        "COMPOSER_DEV_MODE".into(),
+        if dev_mode { "1" } else { "0" }.into(),
+    ));
     if let Ok(exe) = std::env::current_exe() {
         env.push(("COMPOSER_BINARY".into(), exe.display().to_string()));
     }

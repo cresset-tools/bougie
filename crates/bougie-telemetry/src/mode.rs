@@ -120,9 +120,7 @@ pub fn resolve(
         // `on` under an older consent version behaves as unset:
         // uploads stop and the next interactive command re-prompts
         // with the delta. Narrowing never bumps, so off/local keep.
-        if parsed.mode == Mode::On
-            && parsed.consent_version.is_none_or(|v| v < CONSENT_VERSION)
-        {
+        if parsed.mode == Mode::On && parsed.consent_version.is_none_or(|v| v < CONSENT_VERSION) {
             return ModeState {
                 mode: Mode::Off,
                 source: Source::Unset,
@@ -153,7 +151,12 @@ fn parse_file_line(contents: &str) -> Option<ModeState> {
     let mode = Mode::parse(parts.next()?)?;
     let consent_date = parts.next().map(str::to_owned);
     let consent_version = parts.next().and_then(|v| v.parse().ok());
-    Some(ModeState { mode, source: Source::File, consent_date, consent_version })
+    Some(ModeState {
+        mode,
+        source: Source::File,
+        consent_date,
+        consent_version,
+    })
 }
 
 /// Render the single-line mode-file format the installer snippets also
@@ -202,9 +205,9 @@ pub fn is_ci() -> bool {
         "APPVEYOR",
         "TF_BUILD",
     ];
-    MARKERS.iter().any(|m| {
-        std::env::var_os(m).is_some_and(|v| !v.is_empty() && v != "0" && v != "false")
-    })
+    MARKERS
+        .iter()
+        .any(|m| std::env::var_os(m).is_some_and(|v| !v.is_empty() && v != "0" && v != "false"))
 }
 
 #[cfg(test)]

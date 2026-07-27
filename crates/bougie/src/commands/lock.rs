@@ -22,13 +22,13 @@ use bougie_composer::lockfile::{self, Lock};
 use bougie_composer_resolver::metadata::Repo;
 use bougie_composer_resolver::verify::is_platform;
 use bougie_composer_resolver::{
-    dry_run_update_partial, DryRunOptions, PartialUpdate, PlatformIgnore, ResolutionStrategy,
+    DryRunOptions, PartialUpdate, PlatformIgnore, ResolutionStrategy, dry_run_update_partial,
 };
-use bougie_output::output::{emit, Render};
+use bougie_output::output::{Render, emit};
 use bougie_paths::Paths;
 use composer_semver::constraint::Constraint;
 use composer_semver::version::Version;
-use eyre::{eyre, Context, Result};
+use eyre::{Context, Result, eyre};
 use serde::Serialize;
 
 #[derive(Debug, Serialize)]
@@ -122,7 +122,8 @@ pub fn run(
         );
     }
 
-    let lock = Lock::read(&lock_path).wrap_err_with(|| format!("reading {}", lock_path.display()))?;
+    let lock =
+        Lock::read(&lock_path).wrap_err_with(|| format!("reading {}", lock_path.display()))?;
 
     // (2) Content-hash matches → already consistent; nothing to do.
     let content_hash = lockfile::content_hash(&composer_json_bytes)
@@ -161,7 +162,10 @@ pub fn run(
             &paths,
             &project_root,
             Repo::packagist(),
-            DryRunOptions { no_dev: false, resolution },
+            DryRunOptions {
+                no_dev: false,
+                resolution,
+            },
             Some(&partial),
             &ignore_platform,
         )?;
@@ -215,7 +219,10 @@ fn changed_requires(composer_json: &serde_json::Value, lock: &Lock) -> Vec<Strin
     }
     let mut changed = Vec::new();
     for key in ["require", "require-dev"] {
-        let Some(obj) = composer_json.get(key).and_then(serde_json::Value::as_object) else {
+        let Some(obj) = composer_json
+            .get(key)
+            .and_then(serde_json::Value::as_object)
+        else {
             continue;
         };
         for (name, constraint) in obj {
@@ -239,7 +246,10 @@ fn changed_requires(composer_json: &serde_json::Value, lock: &Lock) -> Vec<Strin
 fn read_root_require_names(composer_json: &serde_json::Value) -> Vec<String> {
     let mut names = Vec::new();
     for key in ["require", "require-dev"] {
-        if let Some(obj) = composer_json.get(key).and_then(serde_json::Value::as_object) {
+        if let Some(obj) = composer_json
+            .get(key)
+            .and_then(serde_json::Value::as_object)
+        {
             names.extend(obj.keys().cloned());
         }
     }

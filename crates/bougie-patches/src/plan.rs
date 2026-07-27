@@ -168,7 +168,10 @@ impl PatchPlan {
     }
 
     /// The root patches (if any) that touch `package`.
-    fn root_patches_for<'a>(&'a self, package: &'a str) -> impl Iterator<Item = &'a MaterializedPatch> {
+    fn root_patches_for<'a>(
+        &'a self,
+        package: &'a str,
+    ) -> impl Iterator<Item = &'a MaterializedPatch> {
         self.root_patches
             .iter()
             .filter(move |rp| rp.packages.iter().any(|p| p == package))
@@ -185,14 +188,17 @@ impl PatchPlan {
         if pkg.is_empty() && self.root_patches_for(package).next().is_none() {
             return None;
         }
-        Some(fingerprint_iter(pkg.iter().chain(self.root_patches_for(package))))
+        Some(fingerprint_iter(
+            pkg.iter().chain(self.root_patches_for(package)),
+        ))
     }
 
     /// Whether `package` must be force-re-extracted because its patch set
     /// changed since the applied state (added / removed / edited patches, or
     /// the patch→no-patch transition).
     pub fn fingerprint_changed(&self, package: &str) -> bool {
-        self.desired_fingerprint(package).as_deref() != self.applied.get(package).map(String::as_str)
+        self.desired_fingerprint(package).as_deref()
+            != self.applied.get(package).map(String::as_str)
     }
 
     /// The v2-shaped human view of the plan's patches:
@@ -213,7 +219,10 @@ impl PatchPlan {
         // touches so the view reflects what is applied to that tree.
         let mut grouped: BTreeMap<String, Vec<serde_json::Value>> = BTreeMap::new();
         for (target, patches) in &self.patches {
-            grouped.entry(target.clone()).or_default().extend(patches.iter().map(entry));
+            grouped
+                .entry(target.clone())
+                .or_default()
+                .extend(patches.iter().map(entry));
         }
         for rp in &self.root_patches {
             let e = entry(&rp.patch);
@@ -349,7 +358,10 @@ mod tests {
         };
         // Before resolution: not empty, target surfaced, not yet in `patches`.
         assert!(!plan.is_empty());
-        assert_eq!(plan.deferred_targets().collect::<Vec<_>>(), vec!["acme/widget"]);
+        assert_eq!(
+            plan.deferred_targets().collect::<Vec<_>>(),
+            vec!["acme/widget"]
+        );
         assert!(!plan.patches.contains_key("acme/widget"));
 
         plan.resolve_deferred().unwrap();

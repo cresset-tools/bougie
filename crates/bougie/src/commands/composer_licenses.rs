@@ -10,8 +10,8 @@ use std::process::ExitCode;
 use bougie_cli::OutputFormat;
 use bougie_composer::lockfile::Lock;
 use bougie_composer_resolver::licenses;
-use bougie_output::output::{emit, Render};
-use eyre::{eyre, Context, Result};
+use bougie_output::output::{Render, emit};
+use eyre::{Context, Result, eyre};
 use serde::Serialize;
 
 #[derive(Debug, Serialize)]
@@ -41,8 +41,18 @@ impl Render for LicensesResult {
             writeln!(w, "(none)")?;
             return Ok(());
         }
-        let name_w = self.dependencies.iter().map(|r| r.name.len()).max().unwrap_or(0);
-        let ver_w = self.dependencies.iter().map(|r| r.version.len()).max().unwrap_or(0);
+        let name_w = self
+            .dependencies
+            .iter()
+            .map(|r| r.name.len())
+            .max()
+            .unwrap_or(0);
+        let ver_w = self
+            .dependencies
+            .iter()
+            .map(|r| r.version.len())
+            .max()
+            .unwrap_or(0);
         for r in &self.dependencies {
             writeln!(w, "{:name_w$}  {:ver_w$}  {}", r.name, r.version, r.license)?;
         }
@@ -58,11 +68,7 @@ impl Render for LicensesResult {
     clippy::needless_pass_by_value,
     reason = "wired from clap-parsed CLI; ownership crosses the boundary"
 )]
-pub fn run(
-    format: OutputFormat,
-    no_dev: bool,
-    working_dir: Option<PathBuf>,
-) -> Result<ExitCode> {
+pub fn run(format: OutputFormat, no_dev: bool, working_dir: Option<PathBuf>) -> Result<ExitCode> {
     let project_root = match working_dir {
         Some(p) => p,
         None => std::env::current_dir().wrap_err("reading current directory")?,
@@ -74,7 +80,8 @@ pub fn run(
             project_root.display()
         ));
     }
-    let lock = Lock::read(&lock_path).wrap_err_with(|| format!("reading {}", lock_path.display()))?;
+    let lock =
+        Lock::read(&lock_path).wrap_err_with(|| format!("reading {}", lock_path.display()))?;
     let root = std::fs::read(project_root.join("composer.json"))
         .ok()
         .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())

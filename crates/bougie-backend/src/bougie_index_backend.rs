@@ -11,20 +11,20 @@
 //! cache root path, and a target-triple string. Re-use the same
 //! instance for back-to-back resolves to avoid re-fetching the root.
 
-use super::{build_http_client, BlobRef, ClosureRef, ExtRecipe, PhpRecipe};
+use super::{BlobRef, ClosureRef, ExtRecipe, PhpRecipe, build_http_client};
 use bougie_errors::BougieError;
 use bougie_fetch::ArchiveKind;
+use bougie_index::host_to_dirname;
+use bougie_index::wire::Root;
 use bougie_index::{
     build_verifier,
     fetch::{fetch_manifest, fetch_root, fetch_section},
 };
-use bougie_index::host_to_dirname;
-use bougie_index::wire::Root;
 use bougie_paths::Paths;
+use bougie_resolver::{ResolveOptions, Selected, resolve_extension, resolve_php};
 use bougie_version::request::{Flavor, VersionLike};
-use bougie_resolver::{resolve_extension, resolve_php, ResolveOptions, Selected};
 use bougie_version::version::PartialVersion;
-use eyre::{eyre, Result};
+use eyre::{Result, eyre};
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -159,17 +159,18 @@ impl super::Backend for BougieIndexBackend {
             let available: Vec<String> = root.targets.keys().cloned().collect();
             target_not_served(&self.host, &self.target, &available)
         })?;
-        let section_ref = target_entry
-            .sections
-            .get(&section_name)
-            .ok_or_else(|| BougieError::Resolution {
-                kind: "extension".into(),
-                detail: format!(
-                    "the index at {} has no `{section_name}` section under target {} — \
+        let section_ref =
+            target_entry
+                .sections
+                .get(&section_name)
+                .ok_or_else(|| BougieError::Resolution {
+                    kind: "extension".into(),
+                    detail: format!(
+                        "the index at {} has no `{section_name}` section under target {} — \
                      run `bougie ext list --only-available` to see what's published",
-                    self.host, self.target,
-                ),
-            })?;
+                        self.host, self.target,
+                    ),
+                })?;
         let section = fetch_section(
             &self.client,
             &self.host,
@@ -243,7 +244,10 @@ fn target_not_served(host: &str, target: &str, available: &[String]) -> BougieEr
         "Targets this index ({host}) provides: {}",
         available.join(", "),
     ));
-    BougieError::UnknownTarget { triple: target.to_owned(), hint }
+    BougieError::UnknownTarget {
+        triple: target.to_owned(),
+        hint,
+    }
 }
 
 #[cfg(test)]

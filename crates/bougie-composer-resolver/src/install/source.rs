@@ -8,7 +8,7 @@
 use std::path::Path;
 
 use bougie_paths::Paths;
-use eyre::{eyre, Context, Result};
+use eyre::{Context, Result, eyre};
 use rayon::prelude::*;
 
 use crate::vcs;
@@ -56,7 +56,6 @@ fn install_one(paths: &Paths, req: &SourceRequest<'_>) -> Result<()> {
             Err(e) => last_err = Some(e),
         }
     }
-    Err(last_err.unwrap()).wrap_err_with(|| {
-        format!("installing `{}` from git source", req.package_name)
-    })
+    Err(last_err.unwrap())
+        .wrap_err_with(|| format!("installing `{}` from git source", req.package_name))
 }

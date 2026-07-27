@@ -66,8 +66,7 @@ pub fn run_flush(paths: &bougie_paths::Paths, version: &str) -> Result<FlushStat
     let spool = Spool::new(paths.cache());
     let lock_path = paths.cache().join("telemetry").join("flush.lock");
     // Another live flusher (lock held) means ours has nothing to do.
-    let Ok(_guard) = bougie_fs::lock::ExclusiveGuard::acquire(&lock_path, Duration::ZERO)
-    else {
+    let Ok(_guard) = bougie_fs::lock::ExclusiveGuard::acquire(&lock_path, Duration::ZERO) else {
         return Ok(FlushStats::default());
     };
     crate::spawn::write_attempt_marker(paths.cache());
@@ -81,7 +80,9 @@ pub fn run_flush(paths: &bougie_paths::Paths, version: &str) -> Result<FlushStat
 
     let mut stats = FlushStats::default();
     for file in spool.files() {
-        let Ok(contents) = fs::read_to_string(&file) else { continue };
+        let Ok(contents) = fs::read_to_string(&file) else {
+            continue;
+        };
         let lines: Vec<&str> = contents.lines().filter(|l| !l.is_empty()).collect();
         if lines.is_empty() {
             let _ = fs::remove_file(&file);
@@ -134,9 +135,10 @@ fn batches(lines: &[&str], max: usize) -> Vec<String> {
 }
 
 fn gzip(data: &[u8]) -> Result<Vec<u8>> {
-    let mut encoder =
-        flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
-    encoder.write_all(data).wrap_err("gzipping telemetry batch")?;
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder
+        .write_all(data)
+        .wrap_err("gzipping telemetry batch")?;
     encoder.finish().wrap_err("finishing telemetry gzip stream")
 }
 

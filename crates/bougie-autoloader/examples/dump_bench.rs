@@ -28,7 +28,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-use bougie_autoloader::{dump_autoload, DumpRequest};
+use bougie_autoloader::{DumpRequest, dump_autoload};
 
 fn main() {
     if let Err(e) = run() {
@@ -66,9 +66,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         std::process::id(),
         Instant::now().elapsed().as_nanos()
     ));
-    println!("staging copy of {} → {}", project.display(), work_root.display());
-    copy_dir(&project, &work_root)
-        .map_err(|e| format!("staging copy {} → {} failed: {e}", project.display(), work_root.display()))?;
+    println!(
+        "staging copy of {} → {}",
+        project.display(),
+        work_root.display()
+    );
+    copy_dir(&project, &work_root).map_err(|e| {
+        format!(
+            "staging copy {} → {} failed: {e}",
+            project.display(),
+            work_root.display()
+        )
+    })?;
     let guard = Cleanup(work_root.clone());
 
     println!(
@@ -152,8 +161,7 @@ fn locate_composer() -> Option<ComposerCmd> {
         });
     }
     // Repo's pinned phar — useful when running from inside this checkout.
-    let pinned = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../.cache/composer-2.8.12.phar");
+    let pinned = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.cache/composer-2.8.12.phar");
     if pinned.is_file() {
         return Some(ComposerCmd::Phar(pinned));
     }
@@ -167,17 +175,19 @@ fn run_composer(
     optimize: bool,
 ) -> Result<Summary, Box<dyn std::error::Error>> {
     let (label, mut base) = match cmd {
-        ComposerCmd::Phar(p) => (
-            format!("php {}", p.display()),
-            {
-                let mut c = Command::new("php");
-                c.arg(p);
-                c
-            },
-        ),
+        ComposerCmd::Phar(p) => (format!("php {}", p.display()), {
+            let mut c = Command::new("php");
+            c.arg(p);
+            c
+        }),
         ComposerCmd::Bin(p) => (p.display().to_string(), Command::new(p)),
     };
-    base.args(["dump-autoload", "--no-interaction", "--no-scripts", "--quiet"]);
+    base.args([
+        "dump-autoload",
+        "--no-interaction",
+        "--no-scripts",
+        "--quiet",
+    ]);
     if optimize {
         // `dump-autoload` accepts `--optimize` / `-o`; the
         // `--optimize-autoloader` long form only exists on `install`/
@@ -217,10 +227,7 @@ fn summarize(mut samples: Vec<Duration>) -> Summary {
         samples.remove(0);
     }
     samples.sort();
-    let median = samples
-        .get(samples.len() / 2)
-        .copied()
-        .unwrap_or_default();
+    let median = samples.get(samples.len() / 2).copied().unwrap_or_default();
     let min = samples.first().copied().unwrap_or_default();
     let max = samples.last().copied().unwrap_or_default();
     println!();

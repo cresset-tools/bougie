@@ -21,10 +21,10 @@
 //! path — preserves the pre-split single-root layout for users who
 //! never cared about the distinction.
 
-#[cfg(unix)]
-use etcetera::base_strategy::{BaseStrategy, Xdg};
 #[cfg(windows)]
 use etcetera::base_strategy::{BaseStrategy, Windows};
+#[cfg(unix)]
+use etcetera::base_strategy::{BaseStrategy, Xdg};
 use eyre::{Result, WrapErr};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -428,7 +428,9 @@ impl Paths {
     ///
     /// [`service_dir`]: Paths::service_dir
     pub fn service_run(&self, name: &str, version: &str) -> PathBuf {
-        self.state().join("run").join(instance_run_token(name, version))
+        self.state()
+            .join("run")
+            .join(instance_run_token(name, version))
     }
     /// Per-instance log dir (rotated logs land here).
     pub fn service_log(&self, name: &str, version: &str) -> PathBuf {
@@ -763,10 +765,16 @@ mod tests {
         assert_eq!(p.state_json(), Path::new("/h/state/state.json"));
         assert_eq!(p.public_keys(), Path::new("/h/state/public-keys"));
         // Cache (transient).
-        assert_eq!(p.cache_index("origin.example"), Path::new("/c/index/origin.example"));
+        assert_eq!(
+            p.cache_index("origin.example"),
+            Path::new("/c/index/origin.example")
+        );
         assert_eq!(p.cache_blobs(), Path::new("/c/blobs"));
         assert_eq!(p.cache_composer_dist(), Path::new("/c/composer-dist"));
-        assert_eq!(p.cache_composer_metadata(), Path::new("/c/composer-metadata"));
+        assert_eq!(
+            p.cache_composer_metadata(),
+            Path::new("/c/composer-metadata")
+        );
         assert_eq!(p.cache_tool_run(), Path::new("/c/tool-run"));
         assert_eq!(
             p.cache_tool_run_dir("abc123"),
@@ -805,7 +813,10 @@ mod tests {
     fn project_local_dir_lives_under_vendor() {
         let root = Path::new("/srv/app");
         assert_eq!(project::dir(root), Path::new("/srv/app/vendor/bougie"));
-        assert_eq!(project::bin_dir(root), Path::new("/srv/app/vendor/bougie/bin"));
+        assert_eq!(
+            project::bin_dir(root),
+            Path::new("/srv/app/vendor/bougie/bin")
+        );
         assert_eq!(
             project::resolved(root),
             Path::new("/srv/app/vendor/bougie/state/resolved")
@@ -845,7 +856,10 @@ mod tests {
         );
         // NOT under an instance run dir → a project hash can't collide
         // with an instance run token.
-        assert!(!p.project_conn_socket(root, "mariadb.sock").starts_with(p.state().join("run")));
+        assert!(
+            !p.project_conn_socket(root, "mariadb.sock")
+                .starts_with(p.state().join("run"))
+        );
         // Same project + sockname is stable no matter the running version;
         // a different project gets a different stable socket.
         assert_eq!(
@@ -864,8 +878,14 @@ mod tests {
         assert_eq!(p.bougied_sock(), Path::new("/h/state/bougied.sock"));
         assert_eq!(p.bougied_pid(), Path::new("/h/state/bougied.pid"));
         assert_eq!(p.services_dir(), Path::new("/h/state/services"));
-        assert_eq!(p.service_name_dir("redis"), Path::new("/h/state/services/redis"));
-        assert_eq!(p.service_dir("redis", "8.6.3"), Path::new("/h/state/services/redis/8.6.3"));
+        assert_eq!(
+            p.service_name_dir("redis"),
+            Path::new("/h/state/services/redis")
+        );
+        assert_eq!(
+            p.service_dir("redis", "8.6.3"),
+            Path::new("/h/state/services/redis/8.6.3")
+        );
         assert_eq!(
             p.service_data("redis", "8.6.3"),
             Path::new("/h/state/services/redis/8.6.3/data")
@@ -874,13 +894,27 @@ mod tests {
         // headroom), *not* under the deep versioned service dir.
         assert_eq!(
             p.service_run("redis", "8.6.3"),
-            p.state().join("run").join(instance_run_token("redis", "8.6.3"))
+            p.state()
+                .join("run")
+                .join(instance_run_token("redis", "8.6.3"))
         );
-        assert!(!p.service_run("redis", "8.6.3").starts_with(p.service_dir("redis", "8.6.3")));
+        assert!(
+            !p.service_run("redis", "8.6.3")
+                .starts_with(p.service_dir("redis", "8.6.3"))
+        );
         // Distinct instances get distinct run dirs; same instance is stable.
-        assert_ne!(p.service_run("redis", "8.6.3"), p.service_run("redis", "8.0.0"));
-        assert_ne!(p.service_run("redis", "8.6.3"), p.service_run("mariadb", "8.6.3"));
-        assert_eq!(p.service_run("redis", "8.6.3"), p.service_run("redis", "8.6.3"));
+        assert_ne!(
+            p.service_run("redis", "8.6.3"),
+            p.service_run("redis", "8.0.0")
+        );
+        assert_ne!(
+            p.service_run("redis", "8.6.3"),
+            p.service_run("mariadb", "8.6.3")
+        );
+        assert_eq!(
+            p.service_run("redis", "8.6.3"),
+            p.service_run("redis", "8.6.3")
+        );
         assert_eq!(
             p.service_log("redis", "8.6.3"),
             Path::new("/h/state/services/redis/8.6.3/log")
@@ -904,8 +938,14 @@ mod tests {
         let p = Paths::new(PathBuf::from("/h"), PathBuf::from("/c"));
         // The version argument is ignored for the shared singleton server —
         // its state must survive a bougie upgrade in place.
-        assert_eq!(p.service_dir("server", "0.45.0"), Path::new("/h/state/services/server"));
-        assert_eq!(p.service_dir("server", "0.99.0"), Path::new("/h/state/services/server"));
+        assert_eq!(
+            p.service_dir("server", "0.45.0"),
+            Path::new("/h/state/services/server")
+        );
+        assert_eq!(
+            p.service_dir("server", "0.99.0"),
+            Path::new("/h/state/services/server")
+        );
         assert_eq!(
             p.service_conf("server", "0.45.0"),
             Path::new("/h/state/services/server/conf")
@@ -932,10 +972,14 @@ mod tests {
         std::fs::write(local.join("state").join("state.json"), b"{}").unwrap();
         let paths = Paths::with_local(home.clone(), local.clone(), local.clone());
         migrate_state_to_roaming(&paths);
-        assert!(home.join("state").join("state.json").exists(),
-            "state.json must land under new home");
-        assert!(!local.join("state").exists(),
-            "old state/ must be moved, not copied");
+        assert!(
+            home.join("state").join("state.json").exists(),
+            "state.json must land under new home"
+        );
+        assert!(
+            !local.join("state").exists(),
+            "old state/ must be moved, not copied"
+        );
     }
 
     /// Migration is idempotent: with the new state/ already in place,

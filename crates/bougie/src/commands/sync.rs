@@ -1,32 +1,34 @@
-use bougie_installer::baseline::{self, BaselineFilter};
 use bougie_cli::OutputFormat;
-use bougie_composer_resolver::{InstallOptions, InstallSummary, PlatformIgnore, ResolutionStrategy};
-use bougie_installer::conf_d;
-use bougie_config::{load_project, ExtensionPin, ProjectConfig};
+use bougie_cli::PhpPrefArgs;
+use bougie_composer_resolver::{
+    InstallOptions, InstallSummary, PlatformIgnore, ResolutionStrategy,
+};
+use bougie_config::{ExtensionPin, ProjectConfig, load_project};
 use bougie_errors::BougieError;
 use bougie_fetch::DownloadBar;
-use bougie_installer::install::{
-    backend_for, install_baseline_into_with_backend, install_extension_with_bar,
-    install_php_with_backend, preinstall_into_with_backend, InstalledExt, InstalledPhp,
-};
-use bougie_output::changelog::{fmt_elapsed as fmt_ms, plural};
-use bougie_output::output::{emit, Render};
-use bougie_paths::Paths;
-use composer_semver::Constraint;
-use bougie_version::request::{Flavor, Request, VersionLike};
-use bougie_resolver::{intersect_php, ResolveOptions};
 use bougie_fs::state::{
-    clear_project_resolved_php_path, write_project_resolved, write_project_resolved_php_path,
-    GlobalState,
+    GlobalState, clear_project_resolved_php_path, write_project_resolved,
+    write_project_resolved_php_path,
 };
 use bougie_fs::store::list_installed;
-use bougie_cli::PhpPrefArgs;
+use bougie_installer::baseline::{self, BaselineFilter};
+use bougie_installer::conf_d;
+use bougie_installer::install::{
+    InstalledExt, InstalledPhp, backend_for, install_baseline_into_with_backend,
+    install_extension_with_bar, install_php_with_backend, preinstall_into_with_backend,
+};
+use bougie_output::changelog::{fmt_elapsed as fmt_ms, plural};
+use bougie_output::output::{Render, emit};
+use bougie_paths::Paths;
 use bougie_php_discovery::{
-    discover, probe, select, PhpPreference, Requirement, Selection, SelectionContext, SystemPhp,
+    PhpPreference, Requirement, Selection, SelectionContext, SystemPhp, discover, probe, select,
 };
 use bougie_platform::target::Triple;
+use bougie_resolver::{ResolveOptions, intersect_php};
+use bougie_version::request::{Flavor, Request, VersionLike};
 use bougie_version::version::{PartialVersion, Version};
-use eyre::{eyre, Result, WrapErr};
+use composer_semver::Constraint;
+use eyre::{Result, WrapErr, eyre};
 use serde::Serialize;
 use std::collections::BTreeSet;
 use std::io::{self, Write};
@@ -64,7 +66,11 @@ impl PhpResolution {
         } else {
             cfg.downloads.unwrap_or(true)
         };
-        Ok(Self { preference, downloads, context })
+        Ok(Self {
+            preference,
+            downloads,
+            context,
+        })
     }
 
     /// Force a bougie-managed PHP (installed or downloaded) — used by
@@ -148,7 +154,10 @@ impl Render for SyncResult {
                 fmt_ms(self.resolve_ms),
             ),
         )?;
-        match (self.vendor_packages_installed, self.vendor_packages_up_to_date) {
+        match (
+            self.vendor_packages_installed,
+            self.vendor_packages_up_to_date,
+        ) {
             (Some(installed), _) if installed > 0 => {
                 let removed = self.vendor_packages_removed.unwrap_or(0);
                 let removed_s = if removed > 0 {
@@ -352,7 +361,14 @@ pub fn run(
     // "resolution" phase: a no-op lock read when warm, a full resolve +
     // write when the lock is missing.
     let resolve_started = Instant::now();
-    ensure_lock(&paths, &project_root, offline, dry_run, pkg_resolution, &ignore_platform)?;
+    ensure_lock(
+        &paths,
+        &project_root,
+        offline,
+        dry_run,
+        pkg_resolution,
+        &ignore_platform,
+    )?;
     let resolved_packages = count_lock_packages(&project_root);
     let resolve_ms = elapsed_ms(resolve_started);
 
@@ -371,8 +387,7 @@ pub fn run(
     }
 
     // Step 2 — toolchain (PHP + extensions + composer + shims).
-    let result =
-        ensure_synced_with(&paths, &project_root, &project, spec, flavor, resolution)?;
+    let result = ensure_synced_with(&paths, &project_root, &project, spec, flavor, resolution)?;
 
     // Step 3 — materialize vendor/ from the lock, running opted-in root
     // scripts during the install lifecycle. The toolchain (incl. PHP) is
@@ -423,7 +438,9 @@ fn finish_with_vendor(
     let vendor_summary = install_vendor(
         paths,
         project_root,
-        hooks.as_ref().map(|h| h as &dyn bougie_composer_resolver::ScriptHooks),
+        hooks
+            .as_ref()
+            .map(|h| h as &dyn bougie_composer_resolver::ScriptHooks),
         patch_plan.as_ref(),
     )?;
     result.audit_ms = elapsed_ms(audit_started);
@@ -448,8 +465,7 @@ fn finish_with_vendor(
             u64::from(s.packages_already_present),
             u64::from(s.packages_installed),
         );
-        result.vendor_packages_installed =
-            Some(s.packages_installed + s.packages_already_present);
+        result.vendor_packages_installed = Some(s.packages_installed + s.packages_already_present);
         result.vendor_packages_up_to_date = Some(s.packages_up_to_date);
         result.vendor_packages_removed = Some(s.packages_removed);
     }
@@ -462,15 +478,16 @@ fn finish_with_vendor(
     // machine. No-op unless telemetry is local/on.
     {
         use bougie_telemetry::probe;
-        let mut extensions: Vec<String> =
-            project.bougie.extensions.keys().cloned().collect();
+        let mut extensions: Vec<String> = project.bougie.extensions.keys().cloned().collect();
         if let Some(composer) = &project.composer {
             extensions.extend(composer.require_extensions.iter().cloned());
         }
         extensions.extend(result.installed_extensions.iter().cloned());
         let services: Vec<String> = project.bougie.services.keys().cloned().collect();
         let direct_requires = project.composer.as_ref().map(|c| c.direct_requires);
-        let marker = paths.project_state_dir(project_root).join("telemetry-last-snapshot");
+        let marker = paths
+            .project_state_dir(project_root)
+            .join("telemetry-last-snapshot");
         probe::record(|p| {
             p.enrich.resolve_ms = Some(probe::ms(result.resolve_ms));
             p.enrich.vendor_ms = Some(probe::ms(result.audit_ms));
@@ -486,8 +503,7 @@ fn finish_with_vendor(
                 PhpSourceKind::Managed => "managed",
                 PhpSourceKind::System => "system",
             });
-            p.enrich.extensions =
-                Some(probe::filter_vocab(extensions, probe::EXTENSION_VOCAB));
+            p.enrich.extensions = Some(probe::filter_vocab(extensions, probe::EXTENSION_VOCAB));
             p.enrich.services = Some(probe::filter_vocab(services, probe::SERVICE_VOCAB));
             p.ecosystem_marker = Some(marker);
         });
@@ -513,9 +529,7 @@ pub struct ImplicitSyncOutcome {
 impl ImplicitSyncOutcome {
     fn from_result(result: &SyncResult) -> Self {
         Self {
-            ephemeral_system_php: result
-                .php_ephemeral
-                .then(|| result.install_path.clone()),
+            ephemeral_system_php: result.php_ephemeral.then(|| result.install_path.clone()),
         }
     }
 }
@@ -575,8 +589,7 @@ pub fn run_with_default_fallback(
     }
 
     // Toolchain sync.
-    let result =
-        ensure_synced_with(&paths, &project_root, &project, spec, flavor, resolution)?;
+    let result = ensure_synced_with(&paths, &project_root, &project, spec, flavor, resolution)?;
     let outcome = ImplicitSyncOutcome::from_result(&result);
 
     // Vendor install. Root scripts are config-driven here (no CLI flag on
@@ -649,7 +662,8 @@ pub fn run_with_php_request(
                 Some(f) => *f,
                 None => parse_flavor(project.bougie.php.flavor.as_deref())?,
             };
-            let resolution = PhpResolution::from_args(php_pref, &project, SelectionContext::OneOff)?;
+            let resolution =
+                PhpResolution::from_args(php_pref, &project, SelectionContext::OneOff)?;
             ensure_synced_with(
                 &paths,
                 &project_root,
@@ -734,9 +748,8 @@ pub fn sync_script_slot(
         }
         Some(Request::Path(path)) => {
             let expanded = expand_tilde(path);
-            let system = probe(&expanded).wrap_err_with(|| {
-                format!("probing the PHP binary at {}", expanded.display())
-            })?;
+            let system = probe(&expanded)
+                .wrap_err_with(|| format!("probing the PHP binary at {}", expanded.display()))?;
             ensure_synced_system(paths, slot, &system)?;
         }
         Some(Request::FullTag { .. } | Request::Name(_)) => {
@@ -753,9 +766,7 @@ pub fn sync_script_slot(
             // forgiving default shared with `run_with_default_fallback`.
             let (spec, flavor) = match resolve_php_inputs(slot, &project) {
                 Ok(inputs) => inputs,
-                Err(err) if is_missing_php_constraint(&err) => {
-                    default_php_inputs(paths, &project)?
-                }
+                Err(err) if is_missing_php_constraint(&err) => default_php_inputs(paths, &project)?,
                 Err(err) => return Err(err),
             };
             ensure_synced_with(paths, slot, &project, spec, flavor, resolution)?;
@@ -838,7 +849,7 @@ fn parse_flavor(s: Option<&str>) -> Result<Flavor> {
                     "[php]flavor = {other:?} is not one of nts | nts-debug | zts | zts-debug"
                 ),
             }
-            .into())
+            .into());
         }
     })
 }
@@ -856,7 +867,14 @@ pub fn ensure_synced(
     // Default callers (the implicit `ext add` sync) keep the historical
     // managed-only behavior; `bougie sync`/`bougie run` pass an explicit
     // resolution via `ensure_synced_with`.
-    ensure_synced_with(paths, project_root, project, spec, flavor, PhpResolution::only_managed())
+    ensure_synced_with(
+        paths,
+        project_root,
+        project,
+        spec,
+        flavor,
+        PhpResolution::only_managed(),
+    )
 }
 
 /// [`ensure_synced`] with an explicit [`PhpResolution`]: pick a
@@ -884,11 +902,9 @@ pub fn ensure_synced_with(
         (PhpPreference::OnlyManaged, _) | (PhpPreference::Managed, SelectionContext::Project) => {
             false
         }
-        (PhpPreference::Managed, SelectionContext::OneOff) => {
-            !managed_installed.iter().any(|(v, f)| {
-                *f == flavor && bougie_version::matches::version_satisfies(v, &spec)
-            })
-        }
+        (PhpPreference::Managed, SelectionContext::OneOff) => !managed_installed
+            .iter()
+            .any(|(v, f)| *f == flavor && bougie_version::matches::version_satisfies(v, &spec)),
     };
     let system = if need_system {
         gather_system(resolution.preference)
@@ -1044,15 +1060,23 @@ fn ensure_synced_managed(
     // Drop any stale system-PHP marker so a project switching back to a
     // managed PHP stops resolving the old system binary in the shim.
     clear_project_resolved_php_path(project_root)?;
-    let request = Request::VersionLike { spec, flavor: Some(flavor) };
+    let request = Request::VersionLike {
+        spec,
+        flavor: Some(flavor),
+    };
     // Build one backend for the whole toolchain phase. It memoizes the
     // signed index root on first use, so the interpreter, baseline, and
     // preinstall resolves below share a single conditional GET instead
     // of one per resolve — a warm sync used to stall on ~30 sequential
     // `If-None-Match` round-trips (the "stuck installing exif" symptom).
     let backend = backend_for(paths)?;
-    let installed: InstalledPhp =
-        install_php_with_backend(&*backend, paths, &request, Some(flavor), ResolveOptions::default())?;
+    let installed: InstalledPhp = install_php_with_backend(
+        &*backend,
+        paths,
+        &request,
+        Some(flavor),
+        ResolveOptions::default(),
+    )?;
 
     // Ensure the baseline set is present on this interpreter. Idempotent:
     // already-installed extensions short-circuit at the blob fetch, and
@@ -1095,19 +1119,13 @@ fn ensure_synced_managed(
         eprintln!("warning: pre-download of {name} failed: {reason}");
     }
 
-    let resolved_path =
-        write_project_resolved(project_root, installed.version, installed.flavor)?;
+    let resolved_path = write_project_resolved(project_root, installed.version, installed.flavor)?;
 
     let opt_out = baseline_opt_outs(project);
     replicate_install_conf_d(&installed.install_path, project_root, &opt_out)?;
 
-    let installed_extensions = install_required_extensions(
-        paths,
-        project_root,
-        project,
-        php_minor,
-        installed.flavor,
-    )?;
+    let installed_extensions =
+        install_required_extensions(paths, project_root, project, php_minor, installed.flavor)?;
 
     let shims_dir = write_shims(project_root)?;
     // Make the `bougie-run` shebang shim available on the user's PATH
@@ -1323,7 +1341,9 @@ fn is_ext_enabled_in_project(conf_d: &std::path::Path, name: &str) -> bool {
     let target_suffix = format!("-{name}.ini");
     for entry in entries.flatten() {
         let fname = entry.file_name();
-        let Some(fname) = fname.to_str() else { continue };
+        let Some(fname) = fname.to_str() else {
+            continue;
+        };
         if fname.ends_with(&target_suffix) {
             return true;
         }
@@ -1344,11 +1364,7 @@ fn is_ext_enabled_in_project(conf_d: &std::path::Path, name: &str) -> bool {
 /// Baseline-replicated (`00-*`) fragments point into the install tree and
 /// are regenerated every sync, and core fragments carry no such token —
 /// both read as "not stale" and stay skipped.
-fn ext_fragment_is_stale(
-    conf_d: &std::path::Path,
-    name: &str,
-    php_minor: PartialVersion,
-) -> bool {
+fn ext_fragment_is_stale(conf_d: &std::path::Path, name: &str, php_minor: PartialVersion) -> bool {
     let want = format!("+php{}{}", php_minor.major, php_minor.minor.unwrap_or(0));
     let Ok(entries) = std::fs::read_dir(conf_d) else {
         return false;
@@ -1356,7 +1372,9 @@ fn ext_fragment_is_stale(
     let target_suffix = format!("-{name}.ini");
     for entry in entries.flatten() {
         let fname = entry.file_name();
-        let Some(fname) = fname.to_str() else { continue };
+        let Some(fname) = fname.to_str() else {
+            continue;
+        };
         if !fname.ends_with(&target_suffix) {
             continue;
         }
@@ -1410,12 +1428,19 @@ fn reconcile_system_conf_d(
     );
     for entry in entries.flatten() {
         let fname = entry.file_name();
-        let Some(fname) = fname.to_str() else { continue };
-        if std::path::Path::new(fname).extension().is_none_or(|e| e != "ini") {
+        let Some(fname) = fname.to_str() else {
+            continue;
+        };
+        if std::path::Path::new(fname)
+            .extension()
+            .is_none_or(|e| e != "ini")
+        {
             continue;
         }
         let path = entry.path();
-        let Ok(body) = std::fs::read_to_string(&path) else { continue };
+        let Ok(body) = std::fs::read_to_string(&path) else {
+            continue;
+        };
         // Only ever remove bougie-managed fragments; both the baseline
         // replication and the `ext add` writer open with this header.
         if !body.trim_start().starts_with("; managed by bougie") {
@@ -1466,11 +1491,14 @@ fn resolve_php_inputs(
     project_root: &std::path::Path,
     project: &ProjectConfig,
 ) -> Result<(VersionLike, Flavor)> {
-    let mut public = match project.composer.as_ref().and_then(|c| c.require_php.clone()) {
-        Some(s) => Some(
-            Constraint::parse(&s)
-                .map_err(|e| eyre!("composer.json require.php {s:?}: {e}"))?,
-        ),
+    let mut public = match project
+        .composer
+        .as_ref()
+        .and_then(|c| c.require_php.clone())
+    {
+        Some(s) => {
+            Some(Constraint::parse(&s).map_err(|e| eyre!("composer.json require.php {s:?}: {e}"))?)
+        }
         None => None,
     };
     let override_spec = project
@@ -1537,8 +1565,7 @@ fn replicate_install_conf_d(
         return Ok(());
     }
     let dst = bougie_paths::project::confd(project_root);
-    std::fs::create_dir_all(&dst)
-        .map_err(|e| eyre!("creating {}: {e}", dst.display()))?;
+    std::fs::create_dir_all(&dst).map_err(|e| eyre!("creating {}: {e}", dst.display()))?;
 
     // Drop any existing 00- fragments first so removed-from-install
     // extensions don't linger.
@@ -1547,7 +1574,9 @@ fn replicate_install_conf_d(
             let name = entry.file_name();
             let Some(name) = name.to_str() else { continue };
             if name.starts_with("00-")
-                && std::path::Path::new(name).extension().is_some_and(|e| e == "ini")
+                && std::path::Path::new(name)
+                    .extension()
+                    .is_some_and(|e| e == "ini")
             {
                 let _ = std::fs::remove_file(entry.path());
             }
@@ -1558,7 +1587,10 @@ fn replicate_install_conf_d(
         let entry = entry.map_err(|e| eyre!("dir entry: {e}"))?;
         let name = entry.file_name();
         let Some(name) = name.to_str() else { continue };
-        if std::path::Path::new(name).extension().is_none_or(|e| e != "ini") {
+        if std::path::Path::new(name)
+            .extension()
+            .is_none_or(|e| e != "ini")
+        {
             continue;
         }
         if let Some(ext_name) = ext_name_from_fragment(name)
@@ -1603,7 +1635,9 @@ fn remove_stale_composer_write_fragment(dir: &std::path::Path, name: &str) -> Re
     let target_suffix = format!("-{name}.ini");
     for entry in entries.flatten() {
         let fname = entry.file_name();
-        let Some(fname_str) = fname.to_str() else { continue };
+        let Some(fname_str) = fname.to_str() else {
+            continue;
+        };
         if !fname_str.ends_with(&target_suffix) {
             continue;
         }
@@ -1614,7 +1648,9 @@ fn remove_stale_composer_write_fragment(dir: &std::path::Path, name: &str) -> Re
             continue;
         }
         let path = entry.path();
-        let Ok(body) = std::fs::read_to_string(&path) else { continue };
+        let Ok(body) = std::fs::read_to_string(&path) else {
+            continue;
+        };
         // `write_ext_fragment` always emits the same header prefix; use
         // a substring that doesn't appear in [`replicate_install_conf_d`]'s
         // own `; managed by bougie — do not edit` header so the two are
@@ -1808,8 +1844,7 @@ fn migrate_legacy_layout(paths: &Paths, project_root: &std::path::Path) {
 /// where a plain rename would fail with `EXDEV`. The dir is flat (only
 /// `<NN>-<name>.ini` fragments), so no recursion is needed.
 fn copy_flat_dir(src: &std::path::Path, dst: &std::path::Path) -> Result<()> {
-    std::fs::create_dir_all(dst)
-        .map_err(|e| eyre!("creating {}: {e}", dst.display()))?;
+    std::fs::create_dir_all(dst).map_err(|e| eyre!("creating {}: {e}", dst.display()))?;
     for entry in std::fs::read_dir(src).map_err(|e| eyre!("reading {}: {e}", src.display()))? {
         let entry = entry.map_err(|e| eyre!("reading entry in {}: {e}", src.display()))?;
         if entry.file_type().is_ok_and(|t| t.is_file()) {
@@ -1906,8 +1941,8 @@ pub(crate) fn refresh_service_client_shims(project_root: &std::path::Path) {
     let inner = || -> Result<()> {
         let bin_dir = bougie_paths::project::bin_dir(project_root);
         std::fs::create_dir_all(&bin_dir)?;
-        let bougie_bin = std::env::current_exe()
-            .map_err(|e| eyre!("locating current executable: {e}"))?;
+        let bougie_bin =
+            std::env::current_exe().map_err(|e| eyre!("locating current executable: {e}"))?;
         let declared: BTreeSet<String> = bougie_config::load_project(project_root)
             .map(|p| p.bougie.services.keys().cloned().collect())
             .unwrap_or_default();
@@ -1934,15 +1969,10 @@ pub(crate) fn refresh_service_client_shims(project_root: &std::path::Path) {
 /// on Windows preserves the inode), so the refresh propagates to
 /// every hard link transparently.
 #[cfg(not(unix))]
-fn stage_local_bougie(
-    bin_dir: &std::path::Path,
-    bougie_bin: &std::path::Path,
-) -> Result<PathBuf> {
+fn stage_local_bougie(bin_dir: &std::path::Path, bougie_bin: &std::path::Path) -> Result<PathBuf> {
     let staged = bin_dir.join("_bougie-shim.exe");
     let needs_copy = match (std::fs::metadata(&staged), std::fs::metadata(bougie_bin)) {
-        (Ok(s), Ok(b)) => {
-            s.len() != b.len() || s.modified().ok() < b.modified().ok()
-        }
+        (Ok(s), Ok(b)) => s.len() != b.len() || s.modified().ok() < b.modified().ok(),
         _ => true,
     };
     if needs_copy {
@@ -1980,7 +2010,10 @@ mod tests {
             expand_tilde(Path::new("/opt/php/bin/php")),
             PathBuf::from("/opt/php/bin/php")
         );
-        assert_eq!(expand_tilde(Path::new("~bob/php")), PathBuf::from("~bob/php"));
+        assert_eq!(
+            expand_tilde(Path::new("~bob/php")),
+            PathBuf::from("~bob/php")
+        );
         // Reads ambient HOME rather than mutating it (which would race
         // other tests in this binary). CI always sets HOME.
         if let Some(home) = std::env::var_os("HOME") {
@@ -2097,7 +2130,10 @@ mod tests {
         exts.insert("ctype".into(), ExtensionPin::Version("1.0".into())); // pinned, not disabled
         let project = ProjectConfig {
             composer: None,
-            bougie: BougieConfig { extensions: exts, ..Default::default() },
+            bougie: BougieConfig {
+                extensions: exts,
+                ..Default::default()
+            },
         };
         let out = baseline_opt_outs(&project);
         assert!(out.contains("readline"));
@@ -2116,16 +2152,26 @@ mod tests {
         // disposable state.
         let legacy_local = proj.path().join(".bougie").join("conf.d-local");
         std::fs::create_dir_all(&legacy_local).unwrap();
-        std::fs::write(legacy_local.join("20-tideways.ini"), "extension=/x/tideways.so\n").unwrap();
+        std::fs::write(
+            legacy_local.join("20-tideways.ini"),
+            "extension=/x/tideways.so\n",
+        )
+        .unwrap();
         std::fs::create_dir_all(proj.path().join(".bougie").join("bin")).unwrap();
 
         migrate_legacy_layout(&paths, proj.path());
 
         // conf.d-local moved under $BOUGIE_HOME, keyed by project hash.
         let dest = paths.project_confd_local(proj.path());
-        assert!(dest.join("20-tideways.ini").is_file(), "fragment must survive");
+        assert!(
+            dest.join("20-tideways.ini").is_file(),
+            "fragment must survive"
+        );
         // The stale top-level dir is gone.
-        assert!(!proj.path().join(".bougie").exists(), "legacy .bougie/ must be removed");
+        assert!(
+            !proj.path().join(".bougie").exists(),
+            "legacy .bougie/ must be removed"
+        );
     }
 
     #[test]
@@ -2158,7 +2204,11 @@ mod tests {
     }
 
     fn pv(major: u32, minor: u32) -> PartialVersion {
-        PartialVersion { major, minor: Some(minor), patch: None }
+        PartialVersion {
+            major,
+            minor: Some(minor),
+            patch: None,
+        }
     }
 
     #[test]
@@ -2199,10 +2249,22 @@ mod tests {
 
         reconcile_system_conf_d(td.path(), pv(8, 4)).unwrap();
 
-        assert!(!dir.join("00-20-ffi.ini").exists(), "baseline managed fragment should be dropped");
-        assert!(!dir.join("35-pdo_mysql.ini").exists(), "stale-minor managed ext should be dropped");
-        assert!(dir.join("20-redis.ini").exists(), "matching-minor managed ext should be kept");
-        assert!(dir.join("99-tune.ini").exists(), "user fragment must be left alone");
+        assert!(
+            !dir.join("00-20-ffi.ini").exists(),
+            "baseline managed fragment should be dropped"
+        );
+        assert!(
+            !dir.join("35-pdo_mysql.ini").exists(),
+            "stale-minor managed ext should be dropped"
+        );
+        assert!(
+            dir.join("20-redis.ini").exists(),
+            "matching-minor managed ext should be kept"
+        );
+        assert!(
+            dir.join("99-tune.ini").exists(),
+            "user fragment must be left alone"
+        );
     }
 
     #[test]
@@ -2253,7 +2315,11 @@ mod tests {
         let td = TempDir::new().unwrap();
         let dir = td.path().to_path_buf();
         std::fs::write(dir.join("00-20-mbstring.ini"), "extension=mbstring\n").unwrap();
-        std::fs::write(dir.join("00-20-intl.ini"), "extension=/install/etc/intl.so\n").unwrap();
+        std::fs::write(
+            dir.join("00-20-intl.ini"),
+            "extension=/install/etc/intl.so\n",
+        )
+        .unwrap();
 
         assert!(!ext_fragment_is_stale(&dir, "mbstring", pv(8, 1)));
         assert!(!ext_fragment_is_stale(&dir, "intl", pv(8, 1)));
@@ -2374,11 +2440,7 @@ mod tests {
         .unwrap();
         // A user-authored tunable for ftp at a different prefix —
         // must survive cleanup because it has no bougie header.
-        std::fs::write(
-            dst.join("25-ftp.ini"),
-            "; user-authored\nftp.timeout=120\n",
-        )
-        .unwrap();
+        std::fs::write(dst.join("25-ftp.ini"), "; user-authored\nftp.timeout=120\n").unwrap();
 
         replicate_install_conf_d(install.path(), project.path(), &BTreeSet::new()).unwrap();
 

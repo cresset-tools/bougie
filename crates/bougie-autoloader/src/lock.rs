@@ -288,7 +288,8 @@ pub(crate) fn read_lock(project_root: &Path) -> Result<LockFile, DumpError> {
 pub(crate) fn read_root_manifest(project_root: &Path) -> Result<RootManifest, DumpError> {
     let path = project_root.join("composer.json");
     let bytes = std::fs::read(&path)?;
-    serde_json::from_slice(&bytes).map_err(|e| DumpError::Manifest(format!("{}: {e}", path.display())))
+    serde_json::from_slice(&bytes)
+        .map_err(|e| DumpError::Manifest(format!("{}: {e}", path.display())))
 }
 
 /// Composer's PSR-4 / PSR-0 maps accept either a single string or an

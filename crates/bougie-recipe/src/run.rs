@@ -1,8 +1,8 @@
 //! Recipe execution loop: walk the DAG, evaluate freshness, run.
 
 use super::dag::Dag;
-use super::freshness::{evaluate, read_mtime_of_creates, touch_directories, Verdict, WalkState};
-use eyre::{eyre, Result, WrapErr};
+use super::freshness::{Verdict, WalkState, evaluate, read_mtime_of_creates, touch_directories};
+use eyre::{Result, WrapErr, eyre};
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 
@@ -72,9 +72,7 @@ pub fn run_task(
                     false
                 } else {
                     let Some(script) = task.run.as_deref() else {
-                        return Err(eyre!(
-                            "task `{name}` needs to run but has no `run` script"
-                        ));
+                        return Err(eyre!("task `{name}` needs to run but has no `run` script"));
                     };
                     // Entered across the blocking `/bin/sh` step so a
                     // Ctrl-\ dump shows which recipe task is running when
@@ -241,7 +239,8 @@ mod tests {
     fn runs_phony_task_and_skips_when_creates_present() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().to_path_buf();
-        let r = parse(r#"
+        let r = parse(
+            r#"
 [task.touch]
 creates = "marker"
 run = "touch marker"
@@ -249,7 +248,8 @@ run = "touch marker"
 [task.start]
 deps = ["touch"]
 run = "echo start"
-"#)
+"#,
+        )
         .unwrap();
         let dag = Dag::build(&r, "start").unwrap();
         let opts = RunOptions {
@@ -284,7 +284,11 @@ run = "echo start"
         let bindir = root.join("bin");
         std::fs::create_dir_all(&bindir).unwrap();
         let fake = bindir.join("bougie");
-        std::fs::write(&fake, "#!/bin/sh\ntouch \"$(dirname \"$0\")/ran\"\nexit 0\n").unwrap();
+        std::fs::write(
+            &fake,
+            "#!/bin/sh\ntouch \"$(dirname \"$0\")/ran\"\nexit 0\n",
+        )
+        .unwrap();
         std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
 
         let r = parse(

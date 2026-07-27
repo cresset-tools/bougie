@@ -46,11 +46,11 @@ pub fn build_plan(
     let applied = lock::read(project_root);
 
     // Enablement gate.
-    let config_enable = project
-        .bougie
-        .patches
-        .enable
-        .or_else(|| value.pointer("/extra/enable-patching").and_then(Value::as_bool));
+    let config_enable = project.bougie.patches.enable.or_else(|| {
+        value
+            .pointer("/extra/enable-patching")
+            .and_then(Value::as_bool)
+    });
     let enabled = cli_flag.or(config_enable).unwrap_or(true);
 
     // When patching is off or nothing is declared, we still need a *cleanup*
@@ -103,7 +103,10 @@ pub fn build_plan(
                 grouped.entry(patch.target).or_default().push(materialized);
             }
             PatchScope::Root { packages } => {
-                root_patches.push(RootPatch { patch: materialized, packages });
+                root_patches.push(RootPatch {
+                    patch: materialized,
+                    packages,
+                });
             }
         }
     }
@@ -127,7 +130,10 @@ pub fn build_plan(
 /// patches, present files, and — deliberately — a *missing* file outside
 /// `vendor/`, which stays a hard error at materialize time so a typo'd project
 /// patch fails fast rather than after a full install.
-fn defer_vendor_internal(project_root: &Path, patch: &bougie_patches::Patch) -> Option<DeferredPatch> {
+fn defer_vendor_internal(
+    project_root: &Path,
+    patch: &bougie_patches::Patch,
+) -> Option<DeferredPatch> {
     let PatchSource::Local(rel) = &patch.source else {
         return None;
     };
@@ -371,8 +377,7 @@ fn download_remote(
     std::fs::create_dir_all(&partial)
         .wrap_err_with(|| format!("creating patch cache `{}`", cache_dir.display()))?;
 
-    let key =
-        declared_sha.map_or_else(|| content_sha256(url.as_bytes()), str::to_ascii_lowercase);
+    let key = declared_sha.map_or_else(|| content_sha256(url.as_bytes()), str::to_ascii_lowercase);
     let dest = cache_dir.join(format!("{key}.patch"));
 
     let spec = BlobSpec {
@@ -496,10 +501,7 @@ mod tests {
         assert_eq!(widget.len(), 1);
         assert_eq!(widget[0].description, "widget.patch");
         // a/(1) + vendor/acme/widget(3) = depth 4.
-        assert_eq!(
-            widget[0].depth,
-            bougie_patches::model::DepthSpec::Fixed(4)
-        );
+        assert_eq!(widget[0].depth, bougie_patches::model::DepthSpec::Fixed(4));
     }
 
     #[test]
@@ -542,7 +544,11 @@ mod tests {
         let root = tmp.path();
         std::fs::write(root.join("composer.json"), r#"{ "name": "acme/app" }"#).unwrap();
         let paths = Paths::new(tmp.path().join("home"), tmp.path().join("cache"));
-        assert!(build_plan(&paths, root, &project(None), None).unwrap().is_none());
+        assert!(
+            build_plan(&paths, root, &project(None), None)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]

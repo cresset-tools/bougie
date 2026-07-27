@@ -100,9 +100,10 @@ impl InstallerPaths {
         if let Some(obj) = extra.get("installer-paths").and_then(Value::as_object) {
             for (template, names) in obj {
                 let matchers = match names {
-                    Value::Array(arr) => {
-                        arr.iter().filter_map(|v| v.as_str().map(str::to_string)).collect()
-                    }
+                    Value::Array(arr) => arr
+                        .iter()
+                        .filter_map(|v| v.as_str().map(str::to_string))
+                        .collect(),
                     // A bare string matcher is tolerated for robustness.
                     Value::String(s) => vec![s.clone()],
                     _ => continue,
@@ -115,14 +116,17 @@ impl InstallerPaths {
 
     /// Return the first template whose matcher list selects this package,
     /// in file order, or `None` if no override matches.
-    fn matching_template(&self, name: &str, package_type: Option<&str>, vendor: &str) -> Option<&str> {
+    fn matching_template(
+        &self,
+        name: &str,
+        package_type: Option<&str>,
+        vendor: &str,
+    ) -> Option<&str> {
         let type_matcher = package_type.map(|t| format!("type:{t}"));
         let vendor_matcher = format!("vendor:{vendor}");
         for (template, matchers) in &self.entries {
             let hit = matchers.iter().any(|m| {
-                m == name
-                    || type_matcher.as_deref() == Some(m.as_str())
-                    || *m == vendor_matcher
+                m == name || type_matcher.as_deref() == Some(m.as_str()) || *m == vendor_matcher
             });
             if hit {
                 return Some(template);
@@ -138,7 +142,11 @@ impl InstallerPaths {
 /// override and no built-in location applies — the Composer default and
 /// the Magento 2 module case.
 #[must_use]
-pub fn install_path(name: &str, package_type: Option<&str>, installer_paths: &InstallerPaths) -> String {
+pub fn install_path(
+    name: &str,
+    package_type: Option<&str>,
+    installer_paths: &InstallerPaths,
+) -> String {
     let (vendor, pkg) = split_name(name);
     // composer/installers runs `inflectPackageVars` before templating, so
     // the `{$name}` token can differ from the bare package part (Shopware).
@@ -249,7 +257,12 @@ pub fn install_path_relative_to_repo(install_path: &str) -> String {
 /// Expand `{$name}` / `{$vendor}` / `{$type}` in a path template and
 /// strip the trailing slash so the result matches Composer's normalized
 /// install path (what it records in `installed.json`).
-fn expand_template(template: &str, name_var: &str, vendor: &str, package_type: Option<&str>) -> String {
+fn expand_template(
+    template: &str,
+    name_var: &str,
+    vendor: &str,
+    package_type: Option<&str>,
+) -> String {
     let expanded = template
         .replace("{$name}", name_var)
         .replace("{$vendor}", vendor)
@@ -263,18 +276,102 @@ fn expand_template(template: &str, name_var: &str, vendor: &str, package_type: O
 /// distinguish "a relocatable type bougie doesn't handle yet" from an
 /// ordinary `library` package that genuinely belongs in `vendor/`.
 const INSTALLER_FRAMEWORKS: &[&str] = &[
-    "agl", "akaunting", "annotatecms", "asgard", "attogram", "bitrix", "bonefish", "botble",
-    "cakephp", "ccframework", "chef", "civicrm", "cockpit", "codeigniter", "concrete5",
-    "concretecms", "croogo", "decibel", "dframe", "dokuwiki", "dolibarr", "drupal", "ee2", "ee3",
-    "elgg", "eliasis", "ezplatform", "fork", "fuel", "fuelphp", "grav", "hurad", "imagecms",
-    "itop", "kanboard", "known", "kodicms", "kohana", "laravel", "lavalite", "lithium", "lms",
-    "magento", "majima", "mako", "mantisbt", "matomo", "mautic", "maya", "mediawiki", "miaoxing",
-    "microweber", "modulework", "modx", "modxevo", "moodle", "october", "ontowiki", "osclass",
-    "oxid", "phifty", "phpbb", "piwik", "plentymarkets", "porto", "ppi", "prestashop",
-    "processwire", "puppet", "pxcms", "quicksilver", "radphp", "redaxo", "redaxo5", "reindex",
-    "roundcube", "shopware", "silverstripe", "sitedirect", "smf", "starbug", "sydes", "sylius",
-    "tao", "tastyigniter", "thelia", "tusk", "userfrosting", "vanilla", "whmcs", "winter",
-    "wolfcms", "wordpress", "yawik", "zend", "zikula",
+    "agl",
+    "akaunting",
+    "annotatecms",
+    "asgard",
+    "attogram",
+    "bitrix",
+    "bonefish",
+    "botble",
+    "cakephp",
+    "ccframework",
+    "chef",
+    "civicrm",
+    "cockpit",
+    "codeigniter",
+    "concrete5",
+    "concretecms",
+    "croogo",
+    "decibel",
+    "dframe",
+    "dokuwiki",
+    "dolibarr",
+    "drupal",
+    "ee2",
+    "ee3",
+    "elgg",
+    "eliasis",
+    "ezplatform",
+    "fork",
+    "fuel",
+    "fuelphp",
+    "grav",
+    "hurad",
+    "imagecms",
+    "itop",
+    "kanboard",
+    "known",
+    "kodicms",
+    "kohana",
+    "laravel",
+    "lavalite",
+    "lithium",
+    "lms",
+    "magento",
+    "majima",
+    "mako",
+    "mantisbt",
+    "matomo",
+    "mautic",
+    "maya",
+    "mediawiki",
+    "miaoxing",
+    "microweber",
+    "modulework",
+    "modx",
+    "modxevo",
+    "moodle",
+    "october",
+    "ontowiki",
+    "osclass",
+    "oxid",
+    "phifty",
+    "phpbb",
+    "piwik",
+    "plentymarkets",
+    "porto",
+    "ppi",
+    "prestashop",
+    "processwire",
+    "puppet",
+    "pxcms",
+    "quicksilver",
+    "radphp",
+    "redaxo",
+    "redaxo5",
+    "reindex",
+    "roundcube",
+    "shopware",
+    "silverstripe",
+    "sitedirect",
+    "smf",
+    "starbug",
+    "sydes",
+    "sylius",
+    "tao",
+    "tastyigniter",
+    "thelia",
+    "tusk",
+    "userfrosting",
+    "vanilla",
+    "whmcs",
+    "winter",
+    "wolfcms",
+    "wordpress",
+    "yawik",
+    "zend",
+    "zikula",
 ];
 
 /// If `package_type` is a `composer/installers` framework type that
@@ -308,7 +405,10 @@ mod tests {
 
     #[test]
     fn unknown_type_defaults_to_vendor() {
-        assert_eq!(install_path("acme/foo", Some("library"), &empty()), "vendor/acme/foo");
+        assert_eq!(
+            install_path("acme/foo", Some("library"), &empty()),
+            "vendor/acme/foo"
+        );
         assert_eq!(install_path("acme/foo", None, &empty()), "vendor/acme/foo");
     }
 
@@ -331,7 +431,10 @@ mod tests {
             install_path("acme/skin", Some("magento-skin"), &empty()),
             "skin/frontend/default/skin"
         );
-        assert_eq!(install_path("acme/lib", Some("magento-library"), &empty()), "lib/lib");
+        assert_eq!(
+            install_path("acme/lib", Some("magento-library"), &empty()),
+            "lib/lib"
+        );
     }
 
     #[test]
@@ -340,7 +443,10 @@ mod tests {
             "extra": { "installer-paths": { "custom/{$name}/": ["type:magento-theme"] } }
         });
         let ip = InstallerPaths::parse(&root);
-        assert_eq!(install_path("acme/theme", Some("magento-theme"), &ip), "custom/theme");
+        assert_eq!(
+            install_path("acme/theme", Some("magento-theme"), &ip),
+            "custom/theme"
+        );
     }
 
     #[test]
@@ -353,9 +459,15 @@ mod tests {
         });
         let ip = InstallerPaths::parse(&root);
         // Exact name entry comes first in file order → wins for acme/special.
-        assert_eq!(install_path("acme/special", Some("library"), &ip), "byname/special");
+        assert_eq!(
+            install_path("acme/special", Some("library"), &ip),
+            "byname/special"
+        );
         // A different acme package falls through to the vendor matcher.
-        assert_eq!(install_path("acme/other", Some("library"), &ip), "byvendor/acme/other");
+        assert_eq!(
+            install_path("acme/other", Some("library"), &ip),
+            "byvendor/acme/other"
+        );
     }
 
     #[test]
@@ -367,7 +479,10 @@ mod tests {
             } }
         });
         let ip = InstallerPaths::parse(&root);
-        assert_eq!(install_path("acme/theme", Some("magento-theme"), &ip), "first/theme");
+        assert_eq!(
+            install_path("acme/theme", Some("magento-theme"), &ip),
+            "first/theme"
+        );
     }
 
     #[test]
@@ -385,19 +500,44 @@ mod tests {
     #[test]
     fn malformed_extra_is_empty() {
         assert!(InstallerPaths::parse(&json!({})).entries.is_empty());
-        assert!(InstallerPaths::parse(&json!({"extra": {"installer-paths": 5}})).entries.is_empty());
+        assert!(
+            InstallerPaths::parse(&json!({"extra": {"installer-paths": 5}}))
+                .entries
+                .is_empty()
+        );
     }
 
     #[test]
     fn builtin_wordpress_drupal_prestashop_locations() {
-        assert_eq!(install_path("acme/wp", Some("wordpress-plugin"), &empty()), "wp-content/plugins/wp");
-        assert_eq!(install_path("acme/wp", Some("wordpress-muplugin"), &empty()), "wp-content/mu-plugins/wp");
-        assert_eq!(install_path("acme/views", Some("drupal-module"), &empty()), "modules/views");
-        assert_eq!(install_path("acme/core", Some("drupal-core"), &empty()), "core");
-        assert_eq!(install_path("acme/sync", Some("drupal-config"), &empty()), "config/sync");
+        assert_eq!(
+            install_path("acme/wp", Some("wordpress-plugin"), &empty()),
+            "wp-content/plugins/wp"
+        );
+        assert_eq!(
+            install_path("acme/wp", Some("wordpress-muplugin"), &empty()),
+            "wp-content/mu-plugins/wp"
+        );
+        assert_eq!(
+            install_path("acme/views", Some("drupal-module"), &empty()),
+            "modules/views"
+        );
+        assert_eq!(
+            install_path("acme/core", Some("drupal-core"), &empty()),
+            "core"
+        );
+        assert_eq!(
+            install_path("acme/sync", Some("drupal-config"), &empty()),
+            "config/sync"
+        );
         // drupal-recipe has no trailing slash upstream.
-        assert_eq!(install_path("acme/r", Some("drupal-recipe"), &empty()), "recipes/r");
-        assert_eq!(install_path("acme/mod", Some("prestashop-module"), &empty()), "modules/mod");
+        assert_eq!(
+            install_path("acme/r", Some("drupal-recipe"), &empty()),
+            "recipes/r"
+        );
+        assert_eq!(
+            install_path("acme/mod", Some("prestashop-module"), &empty()),
+            "modules/mod"
+        );
     }
 
     #[test]
@@ -408,7 +548,11 @@ mod tests {
             "custom/plugins/AcmeMyPlugin"
         );
         assert_eq!(
-            install_path("acme/my-cool-plugin", Some("shopware-frontend-plugin"), &empty()),
+            install_path(
+                "acme/my-cool-plugin",
+                Some("shopware-frontend-plugin"),
+                &empty()
+            ),
             "engine/Shopware/Plugins/Local/Frontend/AcmeMyCoolPlugin"
         );
         // Theme: hyphens to underscores, no camel/ucfirst.
@@ -425,9 +569,15 @@ mod tests {
         assert_eq!(unsupported_framework(Some("magento-theme")), None);
         assert_eq!(unsupported_framework(Some("shopware-plugin")), None);
         // composer/installers frameworks we don't relocate → Some(prefix).
-        assert_eq!(unsupported_framework(Some("cakephp-plugin")), Some("cakephp"));
+        assert_eq!(
+            unsupported_framework(Some("cakephp-plugin")),
+            Some("cakephp")
+        );
         assert_eq!(unsupported_framework(Some("typo3-cms-extension")), None); // typo3 not in installers
-        assert_eq!(unsupported_framework(Some("drupal-unknownsuffix")), Some("drupal"));
+        assert_eq!(
+            unsupported_framework(Some("drupal-unknownsuffix")),
+            Some("drupal")
+        );
         // Ordinary packages → None.
         assert_eq!(unsupported_framework(Some("library")), None);
         assert_eq!(unsupported_framework(Some("composer-plugin")), None);
@@ -438,23 +588,38 @@ mod tests {
     fn from_extra_matches_parse() {
         let extra = json!({"installer-paths": {"p/{$name}/": ["type:magento-theme"]}});
         let ip = InstallerPaths::from_extra(&extra);
-        assert_eq!(install_path("a/theme", Some("magento-theme"), &ip), "p/theme");
+        assert_eq!(
+            install_path("a/theme", Some("magento-theme"), &ip),
+            "p/theme"
+        );
     }
 
     #[test]
     fn repo_relative_install_path() {
         // Normal vendor package — identical to the old hardcoded form.
-        assert_eq!(install_path_relative_to_repo("vendor/acme/foo"), "../acme/foo");
+        assert_eq!(
+            install_path_relative_to_repo("vendor/acme/foo"),
+            "../acme/foo"
+        );
         // Relocated outside vendor.
         assert_eq!(
             install_path_relative_to_repo("app/design/frontend/theme"),
             "../../app/design/frontend/theme"
         );
         // Relocated inside vendor but not at vendor/<name>.
-        assert_eq!(install_path_relative_to_repo("vendor/foo/theme"), "../foo/theme");
+        assert_eq!(
+            install_path_relative_to_repo("vendor/foo/theme"),
+            "../foo/theme"
+        );
         // A `composer/*` package is a direct child of the vendor/composer
         // repo dir — Composer emits `./<pkg>`, matching findShortestPath.
-        assert_eq!(install_path_relative_to_repo("vendor/composer/installers"), "./installers");
-        assert_eq!(install_path_relative_to_repo("vendor/composer/ca-bundle"), "./ca-bundle");
+        assert_eq!(
+            install_path_relative_to_repo("vendor/composer/installers"),
+            "./installers"
+        );
+        assert_eq!(
+            install_path_relative_to_repo("vendor/composer/ca-bundle"),
+            "./ca-bundle"
+        );
     }
 }

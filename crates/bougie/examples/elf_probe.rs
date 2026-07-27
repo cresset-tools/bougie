@@ -5,7 +5,9 @@
 //! functionality.
 
 fn main() {
-    let path = std::env::args().nth(1).expect("usage: elf_probe <path-to-.so>");
+    let path = std::env::args()
+        .nth(1)
+        .expect("usage: elf_probe <path-to-.so>");
     match bougie_platform::binfmt::detect_php_extension(std::path::Path::new(&path)) {
         Ok(d) => println!("name={} zend={}", d.name, d.zend),
         Err(e) => {

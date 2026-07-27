@@ -10,7 +10,7 @@
 //! closure of bundled-library store paths. See DISTRIBUTION.md
 //! §Section-index and §Manifests-and-blobs.
 
-use eyre::{eyre, Result};
+use eyre::{Result, eyre};
 use serde::Deserialize;
 use std::collections::{BTreeMap, HashSet};
 
@@ -379,11 +379,15 @@ fn is_kebab_lower(s: &str) -> bool {
 /// already validated, and false positives would just be slightly-too-
 /// permissive on noise the publisher couldn't produce anyway.
 fn is_nix_base32_min(s: &str, n: usize) -> bool {
-    s.len() >= n && s.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+    s.len() >= n
+        && s.chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
 }
 
 fn is_hex_exact(s: &str, n: usize) -> bool {
-    s.len() == n && s.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+    s.len() == n
+        && s.chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
 }
 
 #[cfg(test)]
@@ -532,7 +536,10 @@ mod tests {
         }"#;
         let m: Manifest = serde_json::from_str(json).unwrap();
         assert_eq!(m.kind, SectionKind::Interpreter);
-        assert_eq!(m.sapis.as_deref(), Some(&["cli".to_string(), "fpm".to_string()][..]));
+        assert_eq!(
+            m.sapis.as_deref(),
+            Some(&["cli".to_string(), "fpm".to_string()][..])
+        );
         assert!(m.extension.is_none());
         assert!(m.closure.is_empty());
     }
@@ -619,9 +626,8 @@ mod tests {
                 url: "https://x".into(),
                 size: 0,
             };
-            c.validate().unwrap_or_else(|e| {
-                panic!("rejected real Nix-base32 hash {hash:?}: {e}")
-            });
+            c.validate()
+                .unwrap_or_else(|e| panic!("rejected real Nix-base32 hash {hash:?}: {e}"));
         }
     }
 
@@ -801,11 +807,7 @@ mod tests {
     fn requires_tool_validate_rejects_relative_manifest_url() {
         let mut r = valid_requires_tool();
         r.manifest_url = "/relative/path.json".into();
-        assert!(r
-            .validate()
-            .unwrap_err()
-            .to_string()
-            .contains("absolute"));
+        assert!(r.validate().unwrap_err().to_string().contains("absolute"));
     }
 
     #[test]
@@ -819,11 +821,7 @@ mod tests {
     fn requires_tool_validate_rejects_link_into_absolute() {
         let mut r = valid_requires_tool();
         r.link_into = "/opt/jdk".into();
-        assert!(r
-            .validate()
-            .unwrap_err()
-            .to_string()
-            .contains("relative"));
+        assert!(r.validate().unwrap_err().to_string().contains("relative"));
     }
 
     #[test]

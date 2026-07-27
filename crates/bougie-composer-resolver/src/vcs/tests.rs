@@ -79,7 +79,10 @@ fn install_source_checks_out_exact_reference() {
 
     assert!(dest.join("composer.json").is_file());
     assert!(dest.join("first.php").is_file());
-    assert!(!dest.join("second.php").exists(), "must be at the first commit");
+    assert!(
+        !dest.join("second.php").exists(),
+        "must be at the first commit"
+    );
     assert_eq!(rev_parse(&dest, "HEAD"), first);
     // origin points back at the real url, not the local mirror.
     let origin = Command::new("git")
@@ -124,18 +127,25 @@ fn vcs_parts(report: &eyre::Report) -> (String, String) {
         .downcast_ref::<bougie_errors::BougieError>()
         .expect("a BougieError::Vcs");
     match err {
-        bougie_errors::BougieError::Vcs { operation, hint, .. } => {
-            (operation.clone(), hint.clone())
-        }
+        bougie_errors::BougieError::Vcs {
+            operation, hint, ..
+        } => (operation.clone(), hint.clone()),
         other => panic!("expected Vcs, got {other:?}"),
     }
 }
 
 #[test]
 fn classifier_maps_auth_and_missing_ref_stderr() {
-    let auth = classify_git("clone", "https://host/x.git", "remote: Authentication failed for 'x'");
+    let auth = classify_git(
+        "clone",
+        "https://host/x.git",
+        "remote: Authentication failed for 'x'",
+    );
     let (_op, hint) = vcs_parts(&auth);
-    assert!(hint.contains("credential") || hint.contains("bougie login"), "{hint}");
+    assert!(
+        hint.contains("credential") || hint.contains("bougie login"),
+        "{hint}"
+    );
 
     let missing = classify_git("checkout", "u", "fatal: reference is not a tree: deadbeef");
     let (_op, hint) = vcs_parts(&missing);

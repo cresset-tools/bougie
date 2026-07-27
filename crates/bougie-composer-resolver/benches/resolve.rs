@@ -32,11 +32,11 @@ use std::hint::black_box;
 use std::io::Read;
 use std::sync::Arc;
 
-use bougie_composer_resolver::metadata::{build_client, Repo};
+use bougie_composer_resolver::metadata::{Repo, build_client};
 use bougie_composer_resolver::update::ResolveProvider;
 use bougie_composer_resolver::verify::PubGrubPackage;
 use bougie_paths::Paths;
-use criterion::{criterion_group, criterion_main, BatchSize, Criterion};
+use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
 use pubgrub::resolve;
 use serde_json::Value;
 use tempfile::TempDir;
@@ -46,12 +46,9 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 /// The captured magento2 closure, zstd-compressed. Embedded directly
 /// in the bench binary so the wiremock server can serve every package
 /// without filesystem I/O on the hot path.
-const INDEX_ZST: &[u8] = include_bytes!(
-    "../tests/fixtures/magento2/packagist-index.json.zst"
-);
+const INDEX_ZST: &[u8] = include_bytes!("../tests/fixtures/magento2/packagist-index.json.zst");
 
-const COMPOSER_JSON: &str =
-    include_str!("../tests/fixtures/magento2/composer.json");
+const COMPOSER_JSON: &str = include_str!("../tests/fixtures/magento2/composer.json");
 
 /// Decompress the consolidated fixture into a `name -> /p2 doc body`
 /// map. Each value is the JSON body wiremock will serve at
@@ -64,8 +61,7 @@ fn load_fixture() -> HashMap<String, Vec<u8>> {
         .expect("zstd decoder")
         .read_to_end(&mut raw)
         .expect("decompress fixture");
-    let index: HashMap<String, Value> =
-        serde_json::from_slice(&raw).expect("parse fixture index");
+    let index: HashMap<String, Value> = serde_json::from_slice(&raw).expect("parse fixture index");
 
     // Each entry is a complete /p2/<name>.json document keyed by
     // `<vendor>/<name>`. Serialize each body once so the wiremock
@@ -92,9 +88,7 @@ async fn mount_fixture_server(bodies: &HashMap<String, Vec<u8>>) -> MockServer {
         let route = format!("/p2/{name}.json");
         Mock::given(method("GET"))
             .and(wm_path(route))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_bytes(body.clone()),
-            )
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(body.clone()))
             .mount(&server)
             .await;
     }
@@ -130,8 +124,7 @@ fn build_and_prefetch(
 
 fn resolve_magento2(c: &mut Criterion) {
     let bodies = load_fixture();
-    let composer_json: Value =
-        serde_json::from_str(COMPOSER_JSON).expect("parse composer.json");
+    let composer_json: Value = serde_json::from_str(COMPOSER_JSON).expect("parse composer.json");
 
     // Tokio runtime for wiremock + reqwest's async hooks. Reused
     // across all iterations.
@@ -143,10 +136,7 @@ fn resolve_magento2(c: &mut Criterion) {
     let server_uri = server.uri();
 
     let tmp = TempDir::new().expect("tempdir");
-    let paths = Paths::new(
-        tmp.path().join("home"),
-        tmp.path().join("cache"),
-    );
+    let paths = Paths::new(tmp.path().join("home"), tmp.path().join("cache"));
     std::fs::create_dir_all(tmp.path().join("home")).unwrap();
     std::fs::create_dir_all(tmp.path().join("cache")).unwrap();
     let paths = Arc::new(paths);
@@ -163,14 +153,11 @@ fn resolve_magento2(c: &mut Criterion) {
 
     group.bench_function("resolve", |b| {
         b.iter_batched(
-            || {
-                build_and_prefetch(&server_uri, &composer_json, &paths)
-            },
+            || build_and_prefetch(&server_uri, &composer_json, &paths),
             |provider| {
                 let root = provider.root_version();
                 let solution =
-                    resolve(&provider, PubGrubPackage::Root, root)
-                        .expect("resolve magento2");
+                    resolve(&provider, PubGrubPackage::Root, root).expect("resolve magento2");
                 black_box(solution);
             },
             BatchSize::PerIteration,

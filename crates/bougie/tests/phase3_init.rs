@@ -192,7 +192,11 @@ fn init_json_v1_envelope() {
 fn init_is_idempotent() {
     let env = TestEnv::new();
     let proj = project_dir();
-    env.bougie().current_dir(proj.path()).arg("init").assert().success();
+    env.bougie()
+        .current_dir(proj.path())
+        .arg("init")
+        .assert()
+        .success();
     let first = std::fs::read_to_string(proj.path().join("composer.json")).unwrap();
 
     env.bougie()
@@ -256,7 +260,8 @@ fn init_starter_appends_starter_json_to_a_base_url() {
     // HTML page): bougie fetches `<base>/starter.json`.
     let env = TestEnv::new();
     let proj = project_dir();
-    let manifest = r#"{"schema":1,"composer-json":{"name":"acme/from-base","require":{"php":"^8.4"}}}"#;
+    let manifest =
+        r#"{"schema":1,"composer-json":{"name":"acme/from-base","require":{"php":"^8.4"}}}"#;
 
     let rt = rt();
     let (uri, _server) = rt.block_on(async {

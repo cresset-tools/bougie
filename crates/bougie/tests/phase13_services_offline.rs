@@ -37,8 +37,14 @@ fn catalog_text_lists_user_facing_only() {
     assert!(s.contains("rabbitmq"), "missing rabbitmq: {s}");
     assert!(s.contains("server"), "missing server: {s}");
     // jdk + erlang are runtime-only deps and should NOT appear.
-    assert!(!s.contains("jdk"), "unexpected jdk in user-facing output: {s}");
-    assert!(!s.contains("erlang"), "unexpected erlang in user-facing output: {s}");
+    assert!(
+        !s.contains("jdk"),
+        "unexpected jdk in user-facing output: {s}"
+    );
+    assert!(
+        !s.contains("erlang"),
+        "unexpected erlang in user-facing output: {s}"
+    );
 }
 
 #[test]
@@ -56,12 +62,12 @@ fn catalog_json_v1_contains_every_entry() {
     let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
     assert_eq!(v["schema_version"], 1);
     let entries = v["entries"].as_array().expect("entries array");
-    let names: Vec<_> = entries
-        .iter()
-        .filter_map(|e| e["name"].as_str())
-        .collect();
+    let names: Vec<_> = entries.iter().filter_map(|e| e["name"].as_str()).collect();
     assert!(names.contains(&"redis"));
-    assert!(names.contains(&"jdk"), "JSON output exposes runtime deps too: {names:?}");
+    assert!(
+        names.contains(&"jdk"),
+        "JSON output exposes runtime deps too: {names:?}"
+    );
     assert!(names.contains(&"erlang"));
 
     // Every entry carries a non-empty `versions` list whose first element is
@@ -195,7 +201,10 @@ fn add_mysql_is_rejected_when_mariadb_already_declared() {
     // composer.json still declares only mariadb — the write was refused.
     let composer = fs::read_to_string(proj.path().join("composer.json")).unwrap();
     assert!(composer.contains("mariadb"), "{composer}");
-    assert!(!composer.contains("mysql"), "mysql should not have been written: {composer}");
+    assert!(
+        !composer.contains("mysql"),
+        "mysql should not have been written: {composer}"
+    );
 }
 
 #[test]
@@ -213,9 +222,16 @@ fn add_mariadb_and_mysql_together_is_rejected() {
         .get_output()
         .stderr
         .clone();
-    assert!(String::from_utf8(out).unwrap().contains("mutually exclusive"));
+    assert!(
+        String::from_utf8(out)
+            .unwrap()
+            .contains("mutually exclusive")
+    );
     let composer = fs::read_to_string(proj.path().join("composer.json")).unwrap();
-    assert!(!composer.contains("mariadb") && !composer.contains("mysql"), "{composer}");
+    assert!(
+        !composer.contains("mariadb") && !composer.contains("mysql"),
+        "{composer}"
+    );
 }
 
 #[test]
@@ -253,7 +269,10 @@ fn add_targets_bougie_toml_when_it_exists() {
         "composer.json must not be mutated when bougie.toml exists: {composer}"
     );
     let toml = fs::read_to_string(proj.path().join("bougie.toml")).unwrap();
-    assert!(toml.contains("[services]"), "expected [services] in bougie.toml: {toml}");
+    assert!(
+        toml.contains("[services]"),
+        "expected [services] in bougie.toml: {toml}"
+    );
     assert!(toml.contains("redis = \"*\""), "{toml}");
 }
 

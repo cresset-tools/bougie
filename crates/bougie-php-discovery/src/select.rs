@@ -14,7 +14,7 @@ use crate::SystemPhp;
 use bougie_version::matches::version_satisfies;
 use bougie_version::request::{Flavor, VersionLike};
 use bougie_version::version::Version;
-use eyre::{eyre, Result};
+use eyre::{Result, eyre};
 
 /// How to choose between managed and system PHPs — uv's
 /// `PythonPreference`, three relevant states.
@@ -155,7 +155,10 @@ pub fn select(
 }
 
 /// Highest-versioned installed managed build matching flavor + spec.
-fn best_managed(req: Requirement<'_>, installed: &[(Version, Flavor)]) -> Option<(Version, Flavor)> {
+fn best_managed(
+    req: Requirement<'_>,
+    installed: &[(Version, Flavor)],
+) -> Option<(Version, Flavor)> {
     installed
         .iter()
         .filter(|(_, flavor)| *flavor == req.flavor)
@@ -173,7 +176,10 @@ fn best_system<'a>(req: Requirement<'_>, system: &'a [SystemPhp]) -> Option<&'a 
     system
         .iter()
         .filter(|php| php.flavor == req.flavor)
-        .filter(|php| req.spec.is_none_or(|spec| version_satisfies(&php.version, spec)))
+        .filter(|php| {
+            req.spec
+                .is_none_or(|spec| version_satisfies(&php.version, spec))
+        })
         .filter(|php| req.required_exts.iter().all(|ext| php.has_extension(ext)))
         .max_by(|a, b| a.version.cmp(&b.version))
 }
@@ -250,7 +256,11 @@ mod tests {
     use std::path::PathBuf;
 
     fn spec(major: u32, minor: Option<u32>) -> VersionLike {
-        VersionLike::Version(PartialVersion { major, minor, patch: None })
+        VersionLike::Version(PartialVersion {
+            major,
+            minor,
+            patch: None,
+        })
     }
 
     fn sys(version: Version, flavor: Flavor, exts: &[&str]) -> SystemPhp {
@@ -268,24 +278,43 @@ mod tests {
     }
 
     fn req<'a>(s: &'a VersionLike, exts: &'a [String]) -> Requirement<'a> {
-        Requirement { spec: Some(s), flavor: Flavor::Nts, required_exts: exts }
+        Requirement {
+            spec: Some(s),
+            flavor: Flavor::Nts,
+            required_exts: exts,
+        }
     }
 
     use SelectionContext::{OneOff, Project};
 
     #[test]
     fn resolve_from_flags_and_config() {
-        assert_eq!(PhpPreference::resolve(false, false, None).unwrap(), PhpPreference::Managed);
-        assert_eq!(PhpPreference::resolve(true, false, None).unwrap(), PhpPreference::OnlyManaged);
-        assert_eq!(PhpPreference::resolve(false, true, None).unwrap(), PhpPreference::OnlySystem);
+        assert_eq!(
+            PhpPreference::resolve(false, false, None).unwrap(),
+            PhpPreference::Managed
+        );
+        assert_eq!(
+            PhpPreference::resolve(true, false, None).unwrap(),
+            PhpPreference::OnlyManaged
+        );
+        assert_eq!(
+            PhpPreference::resolve(false, true, None).unwrap(),
+            PhpPreference::OnlySystem
+        );
         // Flags win over config.
         assert_eq!(
             PhpPreference::resolve(true, false, Some(false)).unwrap(),
             PhpPreference::OnlyManaged
         );
         // Config fallback.
-        assert_eq!(PhpPreference::resolve(false, false, Some(true)).unwrap(), PhpPreference::OnlyManaged);
-        assert_eq!(PhpPreference::resolve(false, false, Some(false)).unwrap(), PhpPreference::OnlySystem);
+        assert_eq!(
+            PhpPreference::resolve(false, false, Some(true)).unwrap(),
+            PhpPreference::OnlyManaged
+        );
+        assert_eq!(
+            PhpPreference::resolve(false, false, Some(false)).unwrap(),
+            PhpPreference::OnlySystem
+        );
         // Conflicting flags error.
         assert!(PhpPreference::resolve(true, true, None).is_err());
     }
@@ -297,12 +326,21 @@ mod tests {
         let installed = [(Version::new(8, 3, 12), Flavor::Nts)];
         let system = [sys(Version::new(8, 3, 20), Flavor::Nts, &[])];
         for ctx in [Project, OneOff] {
-            let got =
-                select(PhpPreference::Managed, true, ctx, req(&s, &exts), &installed, &system)
-                    .unwrap();
+            let got = select(
+                PhpPreference::Managed,
+                true,
+                ctx,
+                req(&s, &exts),
+                &installed,
+                &system,
+            )
+            .unwrap();
             assert_eq!(
                 got,
-                Selection::ManagedInstalled { version: Version::new(8, 3, 12), flavor: Flavor::Nts }
+                Selection::ManagedInstalled {
+                    version: Version::new(8, 3, 12),
+                    flavor: Flavor::Nts
+                }
             );
         }
     }
@@ -315,7 +353,15 @@ mod tests {
         let s = spec(8, Some(3));
         let exts: Vec<String> = vec![];
         let system = [sys(Version::new(8, 3, 12), Flavor::Nts, &[])];
-        let got = select(PhpPreference::Managed, true, Project, req(&s, &exts), &[], &system).unwrap();
+        let got = select(
+            PhpPreference::Managed,
+            true,
+            Project,
+            req(&s, &exts),
+            &[],
+            &system,
+        )
+        .unwrap();
         assert_eq!(got, Selection::Download);
     }
 
@@ -327,8 +373,15 @@ mod tests {
         let s = spec(8, Some(3));
         let exts: Vec<String> = vec![];
         let system = [sys(Version::new(8, 3, 12), Flavor::Nts, &[])];
-        let err =
-            select(PhpPreference::Managed, false, Project, req(&s, &exts), &[], &system).unwrap_err();
+        let err = select(
+            PhpPreference::Managed,
+            false,
+            Project,
+            req(&s, &exts),
+            &[],
+            &system,
+        )
+        .unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("bougie php install"), "{msg}");
         assert!(msg.contains("--no-managed-php"), "{msg}");
@@ -339,7 +392,15 @@ mod tests {
         let s = spec(8, Some(3));
         let exts: Vec<String> = vec![];
         let system = [sys(Version::new(8, 3, 12), Flavor::Nts, &[])];
-        let got = select(PhpPreference::Managed, true, OneOff, req(&s, &exts), &[], &system).unwrap();
+        let got = select(
+            PhpPreference::Managed,
+            true,
+            OneOff,
+            req(&s, &exts),
+            &[],
+            &system,
+        )
+        .unwrap();
         assert_eq!(got, Selection::System(system[0].clone()));
     }
 
@@ -358,7 +419,15 @@ mod tests {
         let s = spec(8, Some(3));
         let exts = vec!["redis".to_string()];
         let system = [sys(Version::new(8, 3, 12), Flavor::Nts, &["curl"])];
-        let got = select(PhpPreference::Managed, true, OneOff, req(&s, &exts), &[], &system).unwrap();
+        let got = select(
+            PhpPreference::Managed,
+            true,
+            OneOff,
+            req(&s, &exts),
+            &[],
+            &system,
+        )
+        .unwrap();
         assert_eq!(got, Selection::Download);
     }
 
@@ -367,7 +436,15 @@ mod tests {
         let s = spec(8, Some(3));
         let exts = vec!["redis".to_string()];
         let system = [sys(Version::new(8, 3, 12), Flavor::Nts, &["curl", "redis"])];
-        let got = select(PhpPreference::Managed, true, OneOff, req(&s, &exts), &[], &system).unwrap();
+        let got = select(
+            PhpPreference::Managed,
+            true,
+            OneOff,
+            req(&s, &exts),
+            &[],
+            &system,
+        )
+        .unwrap();
         assert_eq!(got, Selection::System(system[0].clone()));
     }
 
@@ -382,7 +459,15 @@ mod tests {
             sys_fpm(Version::new(8, 4, 1), Flavor::Nts, &[], false),
             sys_fpm(Version::new(8, 3, 12), Flavor::Nts, &[], true),
         ];
-        let got = select(PhpPreference::Managed, true, OneOff, req(&s, &exts), &[], &system).unwrap();
+        let got = select(
+            PhpPreference::Managed,
+            true,
+            OneOff,
+            req(&s, &exts),
+            &[],
+            &system,
+        )
+        .unwrap();
         assert_eq!(got, Selection::System(system[0].clone()));
     }
 
@@ -393,8 +478,15 @@ mod tests {
         let s = spec(8, Some(3));
         let exts: Vec<String> = vec![];
         let system = [sys_fpm(Version::new(8, 3, 12), Flavor::Nts, &[], false)];
-        let got =
-            select(PhpPreference::OnlySystem, true, Project, req(&s, &exts), &[], &system).unwrap();
+        let got = select(
+            PhpPreference::OnlySystem,
+            true,
+            Project,
+            req(&s, &exts),
+            &[],
+            &system,
+        )
+        .unwrap();
         assert_eq!(got, Selection::System(system[0].clone()));
     }
 
@@ -404,8 +496,15 @@ mod tests {
         let exts: Vec<String> = vec![];
         let system = [sys(Version::new(8, 3, 12), Flavor::Nts, &[])];
         for ctx in [Project, OneOff] {
-            let got =
-                select(PhpPreference::OnlyManaged, true, ctx, req(&s, &exts), &[], &system).unwrap();
+            let got = select(
+                PhpPreference::OnlyManaged,
+                true,
+                ctx,
+                req(&s, &exts),
+                &[],
+                &system,
+            )
+            .unwrap();
             assert_eq!(got, Selection::Download);
         }
     }
@@ -415,8 +514,15 @@ mod tests {
         let s = spec(8, Some(3));
         let exts = vec!["redis".to_string()];
         let system = [sys(Version::new(8, 3, 12), Flavor::Nts, &["curl"])];
-        let err =
-            select(PhpPreference::OnlySystem, true, Project, req(&s, &exts), &[], &system).unwrap_err();
+        let err = select(
+            PhpPreference::OnlySystem,
+            true,
+            Project,
+            req(&s, &exts),
+            &[],
+            &system,
+        )
+        .unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("ext-redis"), "{msg}");
     }
@@ -426,7 +532,8 @@ mod tests {
         let s = spec(8, Some(3));
         let exts: Vec<String> = vec![];
         for ctx in [Project, OneOff] {
-            let err = select(PhpPreference::Managed, false, ctx, req(&s, &exts), &[], &[]).unwrap_err();
+            let err =
+                select(PhpPreference::Managed, false, ctx, req(&s, &exts), &[], &[]).unwrap_err();
             assert!(err.to_string().contains("downloads are disabled"), "{err}");
         }
     }
@@ -437,7 +544,15 @@ mod tests {
         let exts: Vec<String> = vec![];
         // ZTS system PHP can't satisfy an NTS requirement.
         let system = [sys(Version::new(8, 3, 12), Flavor::Zts, &[])];
-        let got = select(PhpPreference::Managed, true, OneOff, req(&s, &exts), &[], &system).unwrap();
+        let got = select(
+            PhpPreference::Managed,
+            true,
+            OneOff,
+            req(&s, &exts),
+            &[],
+            &system,
+        )
+        .unwrap();
         assert_eq!(got, Selection::Download);
     }
 }

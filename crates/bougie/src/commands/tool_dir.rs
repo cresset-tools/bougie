@@ -32,6 +32,12 @@ pub fn run(format: OutputFormat, package: Option<String>) -> Result<ExitCode> {
         }
         None => paths.tools(),
     };
-    emit(format, &ToolDirResult { schema_version: 1, path })?;
+    emit(
+        format,
+        &ToolDirResult {
+            schema_version: 1,
+            path,
+        },
+    )?;
     Ok(ExitCode::SUCCESS)
 }

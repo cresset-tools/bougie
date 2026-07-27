@@ -1,5 +1,5 @@
 use bougie_cli::OutputFormat;
-use bougie_output::output::{emit, Render};
+use bougie_output::output::{Render, emit};
 use bougie_paths::Paths;
 use eyre::{Result, WrapErr};
 use serde::Serialize;
@@ -25,7 +25,10 @@ pub fn run(format: OutputFormat) -> Result<ExitCode> {
         std::fs::remove_dir_all(paths.cache())
             .wrap_err_with(|| format!("removing {}", paths.cache().display()))?;
     }
-    let result = CleanResult { schema_version: 1, removed: paths.cache().to_path_buf() };
+    let result = CleanResult {
+        schema_version: 1,
+        removed: paths.cache().to_path_buf(),
+    };
     emit(format, &result)?;
     Ok(ExitCode::SUCCESS)
 }

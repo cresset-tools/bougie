@@ -2,8 +2,8 @@
 //! plus the loader that orchestrates reading both files from disk.
 
 use super::{
-    read_bougie_toml, BougieConfig, ComposerJson, IndexEntry, PatchesConfig, PhpConfig,
-    ScriptsConfig, ServerConfig,
+    BougieConfig, ComposerJson, IndexEntry, PatchesConfig, PhpConfig, ScriptsConfig, ServerConfig,
+    read_bougie_toml,
 };
 #[cfg(test)]
 use super::{ExtensionPin, ServicePin};
@@ -44,26 +44,22 @@ pub fn merge(toml_cfg: BougieConfig, extra_cfg: BougieConfig) -> BougieConfig {
                 .exit_on_failure
                 .or(extra_cfg.patches.exit_on_failure),
             write_lock: toml_cfg.patches.write_lock.or(extra_cfg.patches.write_lock),
-            skip_report: toml_cfg.patches.skip_report.or(extra_cfg.patches.skip_report),
+            skip_report: toml_cfg
+                .patches
+                .skip_report
+                .or(extra_cfg.patches.skip_report),
         },
     }
 }
 
-fn deep_merge_map<V>(
-    base: BTreeMap<String, V>,
-    over: BTreeMap<String, V>,
-) -> BTreeMap<String, V> {
+fn deep_merge_map<V>(base: BTreeMap<String, V>, over: BTreeMap<String, V>) -> BTreeMap<String, V> {
     let mut out = base;
     out.extend(over);
     out
 }
 
 fn replace_if_nonempty(base: Vec<IndexEntry>, over: Vec<IndexEntry>) -> Vec<IndexEntry> {
-    if over.is_empty() {
-        base
-    } else {
-        over
-    }
+    if over.is_empty() { base } else { over }
 }
 
 /// Load both config sources from disk (each optional), merge, and
@@ -104,7 +100,12 @@ mod tests {
 
     fn cfg_with_php_version(v: &str) -> BougieConfig {
         BougieConfig {
-            php: PhpConfig { version: Some(v.into()), flavor: None, managed: None, downloads: None },
+            php: PhpConfig {
+                version: Some(v.into()),
+                flavor: None,
+                managed: None,
+                downloads: None,
+            },
             ..Default::default()
         }
     }
@@ -142,8 +143,20 @@ mod tests {
         };
         let merged = merge(toml_cfg, extra_cfg);
         assert_eq!(merged.extensions.len(), 2);
-        assert_eq!(merged.extensions.get("xdebug").and_then(ExtensionPin::as_version), Some("3.5.1"));
-        assert_eq!(merged.extensions.get("redis").and_then(ExtensionPin::as_version), Some("6.0.2"));
+        assert_eq!(
+            merged
+                .extensions
+                .get("xdebug")
+                .and_then(ExtensionPin::as_version),
+            Some("3.5.1")
+        );
+        assert_eq!(
+            merged
+                .extensions
+                .get("redis")
+                .and_then(ExtensionPin::as_version),
+            Some("6.0.2")
+        );
     }
 
     #[test]
@@ -157,8 +170,14 @@ mod tests {
         let mut extra_exts = BTreeMap::new();
         extra_exts.insert("mysqli".into(), ExtensionPin::Version("ignored".into()));
         let merged = merge(
-            BougieConfig { extensions: toml_exts, ..Default::default() },
-            BougieConfig { extensions: extra_exts, ..Default::default() },
+            BougieConfig {
+                extensions: toml_exts,
+                ..Default::default()
+            },
+            BougieConfig {
+                extensions: extra_exts,
+                ..Default::default()
+            },
         );
         assert!(merged.extensions.get("mysqli").unwrap().is_disabled());
     }
@@ -166,13 +185,22 @@ mod tests {
     #[test]
     fn index_array_replaces_wholesale() {
         let toml_cfg = BougieConfig {
-            index: vec![IndexEntry { host: "https://t".into(), fingerprint: "sha256:t".into() }],
+            index: vec![IndexEntry {
+                host: "https://t".into(),
+                fingerprint: "sha256:t".into(),
+            }],
             ..Default::default()
         };
         let extra_cfg = BougieConfig {
             index: vec![
-                IndexEntry { host: "https://e1".into(), fingerprint: "sha256:e1".into() },
-                IndexEntry { host: "https://e2".into(), fingerprint: "sha256:e2".into() },
+                IndexEntry {
+                    host: "https://e1".into(),
+                    fingerprint: "sha256:e1".into(),
+                },
+                IndexEntry {
+                    host: "https://e2".into(),
+                    fingerprint: "sha256:e2".into(),
+                },
             ],
             ..Default::default()
         };
@@ -185,7 +213,10 @@ mod tests {
     fn empty_toml_index_falls_back_to_extra() {
         let toml_cfg = BougieConfig::default();
         let extra_cfg = BougieConfig {
-            index: vec![IndexEntry { host: "https://e".into(), fingerprint: "sha256:e".into() }],
+            index: vec![IndexEntry {
+                host: "https://e".into(),
+                fingerprint: "sha256:e".into(),
+            }],
             ..Default::default()
         };
         let merged = merge(toml_cfg, extra_cfg);
@@ -204,12 +235,24 @@ mod tests {
         // Shadowed by toml:
         extra_svcs.insert("redis".into(), ServicePin::Version("7.4".into()));
         let merged = merge(
-            BougieConfig { services: toml_svcs, ..Default::default() },
-            BougieConfig { services: extra_svcs, ..Default::default() },
+            BougieConfig {
+                services: toml_svcs,
+                ..Default::default()
+            },
+            BougieConfig {
+                services: extra_svcs,
+                ..Default::default()
+            },
         );
         assert_eq!(merged.services.len(), 2);
-        assert_eq!(merged.services.get("redis").and_then(ServicePin::version), Some("8.6"));
-        assert_eq!(merged.services.get("mariadb").and_then(ServicePin::version), Some("11.4"));
+        assert_eq!(
+            merged.services.get("redis").and_then(ServicePin::version),
+            Some("8.6")
+        );
+        assert_eq!(
+            merged.services.get("mariadb").and_then(ServicePin::version),
+            Some("11.4")
+        );
     }
 
     // -------------------- server merge --------------------
@@ -217,11 +260,15 @@ mod tests {
     #[test]
     fn server_root_toml_wins_over_extra() {
         let toml_cfg = BougieConfig {
-            server: ServerConfig { root: Some("pub".into()) },
+            server: ServerConfig {
+                root: Some("pub".into()),
+            },
             ..Default::default()
         };
         let extra_cfg = BougieConfig {
-            server: ServerConfig { root: Some("web".into()) },
+            server: ServerConfig {
+                root: Some("web".into()),
+            },
             ..Default::default()
         };
         let merged = merge(toml_cfg, extra_cfg);
@@ -232,7 +279,9 @@ mod tests {
     fn server_root_unset_in_toml_falls_back_to_extra() {
         let toml_cfg = BougieConfig::default();
         let extra_cfg = BougieConfig {
-            server: ServerConfig { root: Some("public".into()) },
+            server: ServerConfig {
+                root: Some("public".into()),
+            },
             ..Default::default()
         };
         let merged = merge(toml_cfg, extra_cfg);
@@ -245,8 +294,14 @@ mod tests {
     fn scripts_run_toml_wins_and_falls_back() {
         // toml wins when set...
         let merged = merge(
-            BougieConfig { scripts: super::super::ScriptsConfig { run: Some(false) }, ..Default::default() },
-            BougieConfig { scripts: super::super::ScriptsConfig { run: Some(true) }, ..Default::default() },
+            BougieConfig {
+                scripts: super::super::ScriptsConfig { run: Some(false) },
+                ..Default::default()
+            },
+            BougieConfig {
+                scripts: super::super::ScriptsConfig { run: Some(true) },
+                ..Default::default()
+            },
         );
         assert_eq!(merged.scripts.run, Some(false));
         assert!(!merged.scripts.enabled());
@@ -254,12 +309,19 @@ mod tests {
         // ...and falls back to extra.bougie when unset in toml.
         let merged = merge(
             BougieConfig::default(),
-            BougieConfig { scripts: super::super::ScriptsConfig { run: Some(true) }, ..Default::default() },
+            BougieConfig {
+                scripts: super::super::ScriptsConfig { run: Some(true) },
+                ..Default::default()
+            },
         );
         assert!(merged.scripts.enabled());
 
         // Unset everywhere → disabled.
-        assert!(!merge(BougieConfig::default(), BougieConfig::default()).scripts.enabled());
+        assert!(
+            !merge(BougieConfig::default(), BougieConfig::default())
+                .scripts
+                .enabled()
+        );
     }
 
     #[test]
@@ -277,8 +339,14 @@ mod tests {
         let mut extra_svcs = BTreeMap::new();
         extra_svcs.insert("mariadb".into(), ServicePin::Version("10.6".into()));
         let merged = merge(
-            BougieConfig { services: toml_svcs, ..Default::default() },
-            BougieConfig { services: extra_svcs, ..Default::default() },
+            BougieConfig {
+                services: toml_svcs,
+                ..Default::default()
+            },
+            BougieConfig {
+                services: extra_svcs,
+                ..Default::default()
+            },
         );
         let m = merged.services.get("mariadb").unwrap();
         assert_eq!(m.version(), Some("11.4"));

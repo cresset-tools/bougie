@@ -18,9 +18,9 @@
 mod common;
 
 use assert_cmd::cargo::cargo_bin;
+use common::TestEnv;
 use common::mariadb_fixture;
 use common::project_with_composer;
-use common::TestEnv;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
@@ -92,7 +92,9 @@ fn wait_for(path: &Path, timeout: Duration) -> bool {
 }
 
 fn read_tenant(env: &TestEnv) -> serde_json::Value {
-    let p = env.home_path().join("state/services/mariadb/11.4.4/tenants.json");
+    let p = env
+        .home_path()
+        .join("state/services/mariadb/11.4.4/tenants.json");
     let ledger = fs::read_to_string(&p).expect("tenants.json should exist");
     let line = ledger.lines().next().expect("at least one tenant");
     serde_json::from_str(line).expect("tenant record is JSON")
@@ -134,11 +136,16 @@ fn up_bootstraps_mariadb_and_provisions_a_tenant() {
     assert_eq!(v["tenant"], "acme_blog");
     let expected = fs::canonicalize(proj.path()).unwrap();
     assert_eq!(v["project"], expected.to_str().unwrap());
-    let pw = v["secrets"]["password"].as_str().expect("password recorded");
+    let pw = v["secrets"]["password"]
+        .as_str()
+        .expect("password recorded");
     // Derived (deterministic) password: 48 hex chars, stable across
     // re-provisioning so a captured app/etc/env.php keeps working.
     assert_eq!(pw.len(), 48, "password should be 48-char hex (derived)");
-    assert!(pw.bytes().all(|c| c.is_ascii_hexdigit()), "password must be hex");
+    assert!(
+        pw.bytes().all(|c| c.is_ascii_hexdigit()),
+        "password must be hex"
+    );
 
     // The provisioned user can actually log in and see its database.
     // `--no-defaults` for the same reason the daemon's client uses it:
@@ -199,7 +206,8 @@ fn second_up_is_idempotent_no_duplicate_tenant() {
         .success();
 
     let ledger = fs::read_to_string(
-        env.home_path().join("state/services/mariadb/11.4.4/tenants.json"),
+        env.home_path()
+            .join("state/services/mariadb/11.4.4/tenants.json"),
     )
     .unwrap();
     let n = ledger.lines().filter(|l| !l.trim().is_empty()).count();
@@ -235,7 +243,8 @@ fn two_projects_get_isolated_databases() {
     }
 
     let ledger = fs::read_to_string(
-        env.home_path().join("state/services/mariadb/11.4.4/tenants.json"),
+        env.home_path()
+            .join("state/services/mariadb/11.4.4/tenants.json"),
     )
     .unwrap();
     let lines: Vec<_> = ledger.lines().filter(|l| !l.trim().is_empty()).collect();
@@ -255,7 +264,11 @@ fn two_projects_get_isolated_databases() {
         let v: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
         v["secrets"]["password"].as_str().unwrap().to_string()
     };
-    let other_db = if names[0] == "acme_blog" { "acme_store" } else { "acme_blog" };
+    let other_db = if names[0] == "acme_blog" {
+        "acme_store"
+    } else {
+        "acme_blog"
+    };
     let out = Command::new(mariadb_client(&env))
         .arg("--no-defaults")
         .arg(format!("--socket={}", mariadb_socket(&env).display()))
@@ -315,7 +328,11 @@ fn down_purge_drops_database_and_user() {
         .arg("CREATE TABLE sentinel (id INT); INSERT INTO sentinel VALUES (42);")
         .output()
         .unwrap();
-    assert!(out.status.success(), "create+insert: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "create+insert: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     env.bougie()
         .args(["service", "down", "--purge"])
@@ -325,7 +342,9 @@ fn down_purge_drops_database_and_user() {
         .success();
 
     // Tenant record is gone.
-    let p = env.home_path().join("state/services/mariadb/11.4.4/tenants.json");
+    let p = env
+        .home_path()
+        .join("state/services/mariadb/11.4.4/tenants.json");
     let ledger = fs::read_to_string(&p).unwrap_or_default();
     assert!(
         ledger.lines().all(|l| l.trim().is_empty()),
@@ -363,7 +382,11 @@ fn down_purge_drops_database_and_user() {
         .arg("SHOW DATABASES LIKE 'acme_blog';")
         .output()
         .unwrap();
-    assert!(out.status.success(), "show databases: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "show databases: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stdout = String::from_utf8(out.stdout).unwrap();
     assert!(
         stdout.trim().is_empty(),
@@ -421,7 +444,8 @@ fn tenant_gets_a_scratch_database_namespace() {
     };
 
     // In-namespace scratch database: create + use succeeds.
-    let ok = as_tenant("CREATE DATABASE `acme_blog_t1`; CREATE TABLE `acme_blog_t1`.sentinel (id INT);");
+    let ok =
+        as_tenant("CREATE DATABASE `acme_blog_t1`; CREATE TABLE `acme_blog_t1`.sentinel (id INT);");
     assert!(
         ok.status.success(),
         "tenant should be able to create a `<tenant>_%` scratch DB: stderr={}",
@@ -473,7 +497,11 @@ fn tenant_gets_a_scratch_database_namespace() {
         .arg("SHOW DATABASES;")
         .output()
         .unwrap();
-    assert!(out.status.success(), "show databases: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "show databases: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let dbs = String::from_utf8(out.stdout).unwrap();
     let names: Vec<&str> = dbs.lines().map(str::trim).collect();
     assert!(
@@ -530,7 +558,11 @@ fn mariadb_dev_profile_relaxes_durability() {
             .arg(format!("SELECT @@global.{name};"))
             .output()
             .unwrap();
-        assert!(out.status.success(), "reading {name}: {}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "reading {name}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
         String::from_utf8(out.stdout).unwrap().trim().to_string()
     };
 
@@ -606,7 +638,10 @@ fn bougie_run_exports_mariadb_env_vars() {
         .join(bougie_paths::project_hash(proj.path()))
         .join("mariadb.sock");
     assert!(
-        stdout.contains(&format!("BOUGIE_SERVICE_MARIADB_SOCKET={}", conn_socket.display())),
+        stdout.contains(&format!(
+            "BOUGIE_SERVICE_MARIADB_SOCKET={}",
+            conn_socket.display()
+        )),
         "socket var should be the stable conn socket {}; env was:\n{stdout}",
         conn_socket.display()
     );

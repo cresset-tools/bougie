@@ -11,7 +11,7 @@ mod orchestrate;
 mod path_link;
 mod source;
 
-pub use downloader::{fetch_and_extract_dists, DistOutcome, DistRequest};
+pub use downloader::{DistOutcome, DistRequest, fetch_and_extract_dists};
 pub use orchestrate::{
-    install_from_lock, install_from_lock_with_patches, InstallOptions, InstallSummary, ScriptHooks,
+    InstallOptions, InstallSummary, ScriptHooks, install_from_lock, install_from_lock_with_patches,
 };

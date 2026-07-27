@@ -18,7 +18,10 @@ use std::process::ExitCode;
 /// [`MakeOptions`] — `start` always targets the `start` task and never
 /// lists or prints.
 #[derive(Debug, Default, Clone)]
-#[allow(clippy::struct_excessive_bools, reason = "each is a distinct forwarded CLI flag")]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each is a distinct forwarded CLI flag"
+)]
 pub struct StartOptions {
     pub no_sync: bool,
     pub dry_run: bool,
@@ -47,7 +50,6 @@ pub fn run(format: OutputFormat, opts: StartOptions) -> Result<ExitCode> {
 /// root (a no-op for `init`, where root == cwd) and bring it up. The
 /// single entry point so `init --start` and `bougie start` stay in step.
 pub fn run_in(format: OutputFormat, root: &Path) -> Result<ExitCode> {
-    std::env::set_current_dir(root)
-        .wrap_err_with(|| format!("entering {}", root.display()))?;
+    std::env::set_current_dir(root).wrap_err_with(|| format!("entering {}", root.display()))?;
     run(format, StartOptions::default())
 }

@@ -324,8 +324,9 @@ fn unix_sections(
             for &(port, purpose, label) in extra_ports(name) {
                 // Relocatable sidecars (mailpit's web UI) carry an
                 // endpoint label; fixed ones (epmd) don't move.
-                let eff =
-                    label.map_or(port, |l| endpoint::effective_extra(paths, name, version, l, port));
+                let eff = label.map_or(port, |l| {
+                    endpoint::effective_extra(paths, name, version, l, port)
+                });
                 ports.push(probe_port(eff, name, Some(purpose), holds_binding));
             }
         }
@@ -467,7 +468,12 @@ fn live_note(v: &serde_json::Value) -> Option<String> {
 /// host-filtered tail of the (shared, host-prefixed) server log.
 #[cfg(unix)]
 fn server_info(paths: &Paths, project_root: &Path, scrub: &Scrubber) -> Option<ServerInfo> {
-    let conf = paths.service_conf("server", bougie_daemon::daemon::catalog::default_version("server")).join("server.toml");
+    let conf = paths
+        .service_conf(
+            "server",
+            bougie_daemon::daemon::catalog::default_version("server"),
+        )
+        .join("server.toml");
     let config = bougie_server::server::config::load(&conf).ok()?;
     let canonical = std::fs::canonicalize(project_root).unwrap_or_else(|_| project_root.into());
     let host = config
@@ -476,11 +482,17 @@ fn server_info(paths: &Paths, project_root: &Path, scrub: &Scrubber) -> Option<S
         .find(|h| h.project == project_root || h.project == canonical)?
         .hostname
         .clone();
-    let lines = bougie_daemon::daemon::logs::tail_lines(&paths.service_log_file("server", bougie_daemon::daemon::catalog::default_version("server")), 1000)
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|l| l.contains(&host))
-        .collect();
+    let lines = bougie_daemon::daemon::logs::tail_lines(
+        &paths.service_log_file(
+            "server",
+            bougie_daemon::daemon::catalog::default_version("server"),
+        ),
+        1000,
+    )
+    .unwrap_or_default()
+    .into_iter()
+    .filter(|l| l.contains(&host))
+    .collect();
     Some(ServerInfo {
         host,
         log_tail: cap_lines(lines, scrub),

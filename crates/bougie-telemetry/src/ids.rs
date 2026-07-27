@@ -23,8 +23,7 @@ pub fn read(config_dir: &Path) -> Option<String> {
     let id = raw.trim();
     // 36 chars of hex + hyphens; reject anything mangled rather than
     // uploading garbage.
-    let plausible = id.len() == 36
-        && id.chars().all(|c| c.is_ascii_hexdigit() || c == '-');
+    let plausible = id.len() == 36 && id.chars().all(|c| c.is_ascii_hexdigit() || c == '-');
     plausible.then(|| id.to_owned())
 }
 

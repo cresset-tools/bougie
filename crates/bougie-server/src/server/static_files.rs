@@ -58,7 +58,10 @@ pub fn resolve(host: &HostBlock, request_path: &str, query: &str) -> Resolution 
     // inside the *project* — Magento dev mode symlinks `pub/static`
     // assets out to `vendor/`, `lib/web/`, and `app/`. Falls back to the
     // web root if the project path can't be canonicalized.
-    let boundary = host.project.canonicalize().unwrap_or_else(|_| canonical_root.clone());
+    let boundary = host
+        .project
+        .canonicalize()
+        .unwrap_or_else(|_| canonical_root.clone());
 
     let Some(decoded_cow) = percent_decode_str(request_path).decode_utf8().ok() else {
         return Resolution::Forbidden;
@@ -118,7 +121,12 @@ fn resolve_direct(
 ) -> Option<Resolution> {
     match resolve_candidate(canonical_root, boundary, path, &host.index, path, false) {
         Resolution::NotFound => None,
-        Resolution::Php { script_filename, script_name, path_info, .. } => Some(Resolution::Php {
+        Resolution::Php {
+            script_filename,
+            script_name,
+            path_info,
+            ..
+        } => Some(Resolution::Php {
             script_filename,
             script_name,
             path_info,
@@ -148,13 +156,25 @@ fn run_try_files(
         // `/index.php$is_args$args` don't.
         let candidate_path = expanded.split('?').next().unwrap_or(&expanded);
         let fallthrough = candidate_path != decoded;
-        match resolve_candidate(canonical_root, boundary, &expanded, &host.index, decoded, fallthrough) {
+        match resolve_candidate(
+            canonical_root,
+            boundary,
+            &expanded,
+            &host.index,
+            decoded,
+            fallthrough,
+        ) {
             Resolution::NotFound => {}
             // Surface a rewritten query out to the router. Static
             // resolutions don't carry one because they don't consume
             // queries; Php gets the rewritten string so the FastCGI
             // QUERY_STRING reflects the rewrite.
-            Resolution::Php { script_filename, script_name, path_info, .. } => {
+            Resolution::Php {
+                script_filename,
+                script_name,
+                path_info,
+                ..
+            } => {
                 return Resolution::Php {
                     script_filename,
                     script_name,
@@ -283,15 +303,17 @@ fn resolve_candidate(
     classify(canonical, &rel, original_uri, fallthrough)
 }
 
-fn classify(
-    canonical: PathBuf,
-    rel: &Path,
-    original_uri: &str,
-    fallthrough: bool,
-) -> Resolution {
-    if canonical.extension().is_some_and(|e| e.eq_ignore_ascii_case("php")) {
+fn classify(canonical: PathBuf, rel: &Path, original_uri: &str, fallthrough: bool) -> Resolution {
+    if canonical
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("php"))
+    {
         let script_name = format!("/{}", rel.display());
-        let path_info = if fallthrough { original_uri.to_owned() } else { String::new() };
+        let path_info = if fallthrough {
+            original_uri.to_owned()
+        } else {
+            String::new()
+        };
         return Resolution::Php {
             script_filename: canonical,
             script_name,
@@ -394,7 +416,12 @@ mod tests {
         // `css/styles.css` isn't on disk → version stripped, miss, then
         // the only-if-missing fallback hands it to static.php.
         match resolve(&h, "/static/version123/css/styles.css", "") {
-            Resolution::Php { script_filename, path_info, rewritten_query, .. } => {
+            Resolution::Php {
+                script_filename,
+                path_info,
+                rewritten_query,
+                ..
+            } => {
                 assert!(
                     script_filename.ends_with("static.php"),
                     "wrong script: {script_filename:?}"
@@ -415,7 +442,10 @@ mod tests {
         // the requirejs-config.js regression.
         let d = fixture(&[
             ("pub/static.php", "<?php"),
-            ("pub/static/adminhtml/Theme/en_US/requirejs-config.js", "// generated"),
+            (
+                "pub/static/adminhtml/Theme/en_US/requirejs-config.js",
+                "// generated",
+            ),
         ]);
         let mut h = host(d.path(), "pub", &["$uri", "/static.php$is_args$args"], &[]);
         h.rewrites = magento_rewrites();
@@ -425,7 +455,10 @@ mod tests {
             "",
         ) {
             Resolution::Static { path } => {
-                assert!(path.ends_with("requirejs-config.js"), "wrong file: {path:?}");
+                assert!(
+                    path.ends_with("requirejs-config.js"),
+                    "wrong file: {path:?}"
+                );
             }
             other => panic!("expected Static (served from disk), got {other:?}"),
         }
@@ -473,7 +506,12 @@ mod tests {
     #[test]
     fn magento_media_on_disk_serves_directly() {
         let d = fixture(&[("pub/get.php", "<?php"), ("pub/media/logo.png", "PNG")]);
-        let mut h = host(d.path(), "pub", &["$uri", "/index.php$is_args$args"], &["index.php"]);
+        let mut h = host(
+            d.path(),
+            "pub",
+            &["$uri", "/index.php$is_args$args"],
+            &["index.php"],
+        );
         h.rewrites = magento_rewrites();
         match resolve(&h, "/media/logo.png", "") {
             Resolution::Static { path } => assert!(path.ends_with("logo.png")),
@@ -484,12 +522,27 @@ mod tests {
     #[test]
     fn magento_media_missing_falls_through_to_get_php() {
         let d = fixture(&[("pub/get.php", "<?php")]);
-        let mut h = host(d.path(), "pub", &["$uri", "/index.php$is_args$args"], &["index.php"]);
+        let mut h = host(
+            d.path(),
+            "pub",
+            &["$uri", "/index.php$is_args$args"],
+            &["index.php"],
+        );
         h.rewrites = magento_rewrites();
         match resolve(&h, "/media/catalog/cache/thumb.jpg", "") {
-            Resolution::Php { script_filename, rewritten_query, .. } => {
-                assert!(script_filename.ends_with("get.php"), "wrong script: {script_filename:?}");
-                assert_eq!(rewritten_query.as_deref(), Some("resource=catalog/cache/thumb.jpg"));
+            Resolution::Php {
+                script_filename,
+                rewritten_query,
+                ..
+            } => {
+                assert!(
+                    script_filename.ends_with("get.php"),
+                    "wrong script: {script_filename:?}"
+                );
+                assert_eq!(
+                    rewritten_query.as_deref(),
+                    Some("resource=catalog/cache/thumb.jpg")
+                );
             }
             other => panic!("expected Php, got {other:?}"),
         }
@@ -526,7 +579,10 @@ mod tests {
     fn missing_file_returns_not_found() {
         let d = fixture(&[("public/style.css", "body{}")]);
         let h = host(d.path(), "public", &["$uri"], &[]);
-        assert!(matches!(resolve(&h, "/missing.css", ""), Resolution::NotFound));
+        assert!(matches!(
+            resolve(&h, "/missing.css", ""),
+            Resolution::NotFound
+        ));
     }
 
     #[test]
@@ -543,14 +599,20 @@ mod tests {
     fn traversal_rejected() {
         let d = fixture(&[("public/style.css", "body{}"), ("secret", "shh")]);
         let h = host(d.path(), "public", &["$uri"], &[]);
-        assert!(matches!(resolve(&h, "/../secret", ""), Resolution::Forbidden));
+        assert!(matches!(
+            resolve(&h, "/../secret", ""),
+            Resolution::Forbidden
+        ));
     }
 
     #[test]
     fn encoded_traversal_rejected() {
         let d = fixture(&[("public/style.css", "body{}"), ("secret", "shh")]);
         let h = host(d.path(), "public", &["$uri"], &[]);
-        assert!(matches!(resolve(&h, "/%2E%2E/secret", ""), Resolution::Forbidden));
+        assert!(matches!(
+            resolve(&h, "/%2E%2E/secret", ""),
+            Resolution::Forbidden
+        ));
     }
 
     #[test]
@@ -563,7 +625,12 @@ mod tests {
             &["index.php"],
         );
         match resolve(&h, "/users/42", "page=1") {
-            Resolution::Php { script_filename, script_name, path_info, .. } => {
+            Resolution::Php {
+                script_filename,
+                script_name,
+                path_info,
+                ..
+            } => {
                 assert!(script_filename.ends_with("index.php"));
                 assert_eq!(script_name, "/index.php");
                 assert_eq!(path_info, "/users/42");
@@ -584,7 +651,12 @@ mod tests {
         let d = fixture(&[("public/info.php", "<?php phpinfo();")]);
         let h = host(d.path(), "public", &["$uri"], &[]);
         match resolve(&h, "/info.php", "") {
-            Resolution::Php { script_filename, script_name, path_info, .. } => {
+            Resolution::Php {
+                script_filename,
+                script_name,
+                path_info,
+                ..
+            } => {
                 assert!(script_filename.ends_with("info.php"));
                 assert_eq!(script_name, "/info.php");
                 assert_eq!(path_info, "");

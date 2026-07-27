@@ -24,7 +24,9 @@ impl LogFormat {
         match s {
             "text" => Ok(Self::Text),
             "json-v1" => Ok(Self::JsonV1),
-            other => Err(format!("unknown log format: {other:?} (expected text|json-v1)")),
+            other => Err(format!(
+                "unknown log format: {other:?} (expected text|json-v1)"
+            )),
         }
     }
 }
@@ -216,14 +218,16 @@ fn rfc3339_now() -> String {
     let total_secs = now.as_secs();
     let millis = now.subsec_millis();
     let (year, month, day, hour, min, sec) = epoch_to_components(total_secs);
-    format!(
-        "{year:04}-{month:02}-{day:02}T{hour:02}:{min:02}:{sec:02}.{millis:03}Z"
-    )
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{min:02}:{sec:02}.{millis:03}Z")
 }
 
 /// Mini Gregorian decomposition. Pulled inline rather than adding a
 /// `chrono` / `time` dep purely for logging timestamps. Covers 1970–9999.
-#[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap, clippy::cast_sign_loss)]
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss
+)]
 fn epoch_to_components(secs: u64) -> (u32, u32, u32, u32, u32, u32) {
     let days = (secs / 86_400) as i64;
     let rem = (secs % 86_400) as u32;
@@ -234,7 +238,11 @@ fn epoch_to_components(secs: u64) -> (u32, u32, u32, u32, u32, u32) {
     (year, month, day, hour, min, sec)
 }
 
-#[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap, clippy::cast_sign_loss)]
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss
+)]
 fn days_to_ymd(mut days: i64) -> (u32, u32, u32) {
     // Algorithm from Howard Hinnant's date library, simplified for
     // post-1970 dates.

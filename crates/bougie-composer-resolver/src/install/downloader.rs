@@ -220,7 +220,9 @@ fn download_to_cache(
         };
         match bougie_fetch::fetch_file(client, &spec, bar) {
             Ok(_) => {
-                return Ok(DistOutcome::Downloaded { bytes: file_size(&cache_path) });
+                return Ok(DistOutcome::Downloaded {
+                    bytes: file_size(&cache_path),
+                });
             }
             Err(err) => {
                 if idx + 1 < total {
@@ -280,9 +282,8 @@ fn copy_local_dist(dist: &DistRequest<'_>, cache_path: &Path) -> Result<DistOutc
         ));
     }
     if !dist.sha1.is_empty() {
-        verify_local_sha1(&src, dist.sha1).wrap_err_with(|| {
-            format!("verifying local dist for {}", dist.package_name)
-        })?;
+        verify_local_sha1(&src, dist.sha1)
+            .wrap_err_with(|| format!("verifying local dist for {}", dist.package_name))?;
     }
     std::fs::copy(&src, cache_path).wrap_err_with(|| {
         format!(
@@ -292,7 +293,9 @@ fn copy_local_dist(dist: &DistRequest<'_>, cache_path: &Path) -> Result<DistOutc
             cache_path.display(),
         )
     })?;
-    Ok(DistOutcome::Downloaded { bytes: file_size(cache_path) })
+    Ok(DistOutcome::Downloaded {
+        bytes: file_size(cache_path),
+    })
 }
 
 /// Best-effort on-disk size for the telemetry byte counter.
@@ -302,8 +305,8 @@ fn file_size(path: &Path) -> u64 {
 
 fn verify_local_sha1(path: &Path, expected_hex: &str) -> Result<()> {
     use sha1::Digest as _;
-    let mut file = std::fs::File::open(path)
-        .wrap_err_with(|| format!("opening {}", path.display()))?;
+    let mut file =
+        std::fs::File::open(path).wrap_err_with(|| format!("opening {}", path.display()))?;
     let mut hasher = sha1::Sha1::new();
     std::io::copy(&mut file, &mut hasher)
         .wrap_err_with(|| format!("hashing {}", path.display()))?;
@@ -373,26 +376,28 @@ fn extract_from_cache(cache_root: &Path, dist: &DistRequest<'_>) -> Result<()> {
     match dist.archive {
         ArchiveKind::Zip => {
             let detected: String;
-            let strip = if let Some(s) = dist.strip_prefix { s } else {
-                detected = bougie_fetch::detect_zip_top_level(&cache_path)
-                    .wrap_err_with(|| {
-                        format!(
-                            "detecting top-level dir in dist for {} ({})",
-                            dist.package_name,
-                            cache_path.display(),
-                        )
-                    })?;
+            let strip = if let Some(s) = dist.strip_prefix {
+                s
+            } else {
+                detected = bougie_fetch::detect_zip_top_level(&cache_path).wrap_err_with(|| {
+                    format!(
+                        "detecting top-level dir in dist for {} ({})",
+                        dist.package_name,
+                        cache_path.display(),
+                    )
+                })?;
                 detected.as_str()
             };
-            bougie_fetch::extract_zip(&cache_path, dist.vendor_dest, strip)
-                .wrap_err_with(|| {
+            bougie_fetch::extract_zip(&cache_path, dist.vendor_dest, strip).wrap_err_with(
+                || {
                     format!(
                         "extracting dist for {} ({} → {})",
                         dist.package_name,
                         cache_path.display(),
                         dist.vendor_dest.display(),
                     )
-                })?;
+                },
+            )?;
         }
         ArchiveKind::Tar => {
             // Composer's `tar` dist type. The wrapper dir name isn't

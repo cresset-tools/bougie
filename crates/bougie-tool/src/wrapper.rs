@@ -40,11 +40,7 @@ use std::path::Path;
 /// without the global it silently bails under any require-style
 /// launcher. The value is also truthful: it points at the tool's own
 /// vendor autoloader, which is what convention-aware bins use it for.
-pub fn render_unix(
-    bougie_stable_bin: &Path,
-    bin_name: &str,
-    vendor_relative_bin: &str,
-) -> String {
+pub fn render_unix(bougie_stable_bin: &Path, bin_name: &str, vendor_relative_bin: &str) -> String {
     // Shebang lines have a single-arg limit on Linux; `tool-exec` is one
     // arg, the wrapper path is appended by the kernel. We need the
     // shebang path absolute or PATH-resolvable; render absolute.

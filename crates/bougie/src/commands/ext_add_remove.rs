@@ -18,22 +18,22 @@
 //!
 //! Zero composer subprocess invocations along this path.
 
+use crate::commands::sync::{PhpResolution, ensure_synced_with, project_php_inputs};
 use bougie_cli::{OutputFormat, PhpPrefArgs};
-use crate::commands::sync::{ensure_synced_with, project_php_inputs, PhpResolution};
-use bougie_php_discovery::PhpPreference;
-use bougie_fs::state::read_project_resolved_php_path;
-use bougie_composer::lockfile::{apply_require_change, RequireChange};
-use bougie_installer::conf_d;
+use bougie_composer::lockfile::{RequireChange, apply_require_change};
 use bougie_config::load_project;
-use bougie_index::wire::LoadDirective;
-use bougie_installer::install::{install_extension, install_local_so};
-use bougie_output::output::{emit, Render};
-use bougie_paths::Paths;
-use bougie_version::request::Flavor;
-use bougie_resolver::ResolveOptions;
 use bougie_fs::state::read_project_resolved;
+use bougie_fs::state::read_project_resolved_php_path;
+use bougie_index::wire::LoadDirective;
+use bougie_installer::conf_d;
+use bougie_installer::install::{install_extension, install_local_so};
+use bougie_output::output::{Render, emit};
+use bougie_paths::Paths;
+use bougie_php_discovery::PhpPreference;
+use bougie_resolver::ResolveOptions;
+use bougie_version::request::Flavor;
 use bougie_version::version::PartialVersion;
-use eyre::{eyre, Result, WrapErr};
+use eyre::{Result, WrapErr, eyre};
 use serde::Serialize;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -81,10 +81,13 @@ impl Render for ExtAddRemoveResult {
     }
 }
 
-#[allow(clippy::needless_pass_by_value, reason = "wired from clap-parsed CLI; ownership crosses the function boundary")]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "wired from clap-parsed CLI; ownership crosses the function boundary"
+)]
 pub fn add(
     format: OutputFormat,
-        args: Vec<String>,
+    args: Vec<String>,
     no_sync: bool,
     php_pref: PhpPrefArgs,
 ) -> Result<ExitCode> {
@@ -101,8 +104,11 @@ pub fn add(
     // `ext add` requires managed PHP: under an only-system preference we
     // error with guidance; otherwise we force a managed PHP, switching
     // the project off a system PHP if it was on one.
-    let preference =
-        PhpPreference::resolve(php_pref.managed_php, php_pref.no_managed_php, project.bougie.php.managed)?;
+    let preference = PhpPreference::resolve(
+        php_pref.managed_php,
+        php_pref.no_managed_php,
+        project.bougie.php.managed,
+    )?;
     if preference == PhpPreference::OnlySystem {
         return Err(eyre!(
             "`bougie ext add` needs a bougie-managed PHP to install extensions, but this \
@@ -144,8 +150,17 @@ pub fn add(
         // do not touch composer.json. PHP extension names never
         // contain a dot, so the `.so` suffix is an unambiguous
         // discriminator from index names like `redis` or `redis@6.0.2`.
-        if std::path::Path::new(raw).extension().is_some_and(|e| e == "so") {
-            items.push(install_local_arg(&paths, &project_root, raw, php_minor, flavor)?);
+        if std::path::Path::new(raw)
+            .extension()
+            .is_some_and(|e| e == "so")
+        {
+            items.push(install_local_arg(
+                &paths,
+                &project_root,
+                raw,
+                php_minor,
+                flavor,
+            )?);
             continue;
         }
         let (name, version_pin) = parse_name_with_optional_version(raw)?;
@@ -225,12 +240,11 @@ pub fn add(
     Ok(ExitCode::SUCCESS)
 }
 
-#[allow(clippy::needless_pass_by_value, reason = "wired from clap-parsed CLI; ownership crosses the function boundary")]
-pub fn remove(
-    format: OutputFormat,
-        names: Vec<String>,
-    no_sync: bool,
-) -> Result<ExitCode> {
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "wired from clap-parsed CLI; ownership crosses the function boundary"
+)]
+pub fn remove(format: OutputFormat, names: Vec<String>, no_sync: bool) -> Result<ExitCode> {
     if names.is_empty() {
         return Err(eyre!("no extensions specified"));
     }
@@ -336,12 +350,13 @@ fn install_local_arg(
              local `.so` installs need a path to an existing extension binary"
         ));
     }
-    let detected = bougie_platform::binfmt::detect_php_extension(&source_so).wrap_err_with(|| {
-        format!(
-            "couldn't read PHP extension metadata from {}",
-            source_so.display()
-        )
-    })?;
+    let detected =
+        bougie_platform::binfmt::detect_php_extension(&source_so).wrap_err_with(|| {
+            format!(
+                "couldn't read PHP extension metadata from {}",
+                source_so.display()
+            )
+        })?;
     let load = if detected.zend {
         LoadDirective::ZendExtension
     } else {

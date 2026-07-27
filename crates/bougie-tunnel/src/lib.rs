@@ -110,7 +110,13 @@ impl TunnelClient {
             view_password: c.hello.view_password.clone(),
             resume: c.hello.resume.clone(),
         };
-        Ok((handle, Serving { conn: c.conn, local_port: self.cfg.local_port }))
+        Ok((
+            handle,
+            Serving {
+                conn: c.conn,
+                local_port: self.cfg.local_port,
+            },
+        ))
     }
 
     /// Config accessor (used by the reconnect supervisor).

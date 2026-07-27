@@ -117,7 +117,11 @@ struct GetInvocation<'a> {
 /// first, then the positional `<config>`, then `-- <query>` verbatim — matching
 /// `jibs get [OPTIONS] --host <HOST> <CONFIG> -- <QUERIES>...`.
 fn build_get_argv(inv: &GetInvocation) -> Vec<String> {
-    let mut argv = vec!["get".to_string(), "--host".to_string(), inv.host.to_string()];
+    let mut argv = vec![
+        "get".to_string(),
+        "--host".to_string(),
+        inv.host.to_string(),
+    ];
     if let Some(remote) = inv.remote_mysql {
         argv.push("--remote-mysql".to_string());
         argv.push(remote.to_string());
@@ -166,7 +170,12 @@ fn resolve_config(args: &DbGetArgs, project_root: &Path) -> Result<PathBuf> {
         _ => {
             let names: Vec<String> = found
                 .iter()
-                .map(|p| p.file_name().unwrap_or_default().to_string_lossy().into_owned())
+                .map(|p| {
+                    p.file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .into_owned()
+                })
                 .collect();
             Err(eyre!(
                 "multiple `.jibs` configs in {} ({}); pick one with `--config <path>`",
@@ -182,7 +191,11 @@ fn discover_jibs_configs(dir: &Path) -> Result<Vec<PathBuf>> {
     let mut found = Vec::new();
     for entry in std::fs::read_dir(dir).wrap_err_with(|| format!("reading {}", dir.display()))? {
         let path = entry?.path();
-        if path.is_file() && path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("jibs")) {
+        if path.is_file()
+            && path
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("jibs"))
+        {
             found.push(path);
         }
     }
@@ -265,14 +278,24 @@ mod tests {
             vars: &["limit=100".to_string(), "since=2024".to_string()],
             local_mysql: "mysql://local",
             config: "cfg/shop.jibs",
-            query: &["customer".to_string(), "--email".to_string(), "x@y.z".to_string()],
+            query: &[
+                "customer".to_string(),
+                "--email".to_string(),
+                "x@y.z".to_string(),
+            ],
         });
         // Everything is an option until the positional config, then `-- query`.
         let cfg = argv.iter().position(|a| a == "cfg/shop.jibs").unwrap();
         let sep = argv.iter().position(|a| a == "--").unwrap();
         assert!(cfg < sep, "config must precede the `--` separator");
         assert_eq!(&argv[sep + 1..], &["customer", "--email", "x@y.z"]);
-        for flag in ["--remote-mysql", "--identity", "--port", "--accept-new-host-keys", "--var"] {
+        for flag in [
+            "--remote-mysql",
+            "--identity",
+            "--port",
+            "--accept-new-host-keys",
+            "--var",
+        ] {
             let at = argv.iter().position(|a| a == flag).unwrap();
             assert!(at < cfg, "{flag} must come before the config positional");
         }
@@ -308,7 +331,9 @@ mod tests {
         assert!(err.contains("`prod`"), "{err}");
 
         // No sources at all → the "configure them" message, not a name list.
-        let err = resolve_source(BTreeMap::new(), "production").unwrap_err().to_string();
+        let err = resolve_source(BTreeMap::new(), "production")
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("no team database sources"), "{err}");
     }
 

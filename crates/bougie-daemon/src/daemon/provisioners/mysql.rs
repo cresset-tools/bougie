@@ -25,7 +25,7 @@
 use crate::daemon::store_layout;
 use crate::daemon::tenants::{self, Tenant};
 use bougie_paths::Paths;
-use eyre::{eyre, Result, WrapErr};
+use eyre::{Result, WrapErr, eyre};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::process::Command;
@@ -58,8 +58,8 @@ pub async fn pre_start(paths: &Paths, version: &str) -> Result<()> {
         return Ok(());
     }
 
-    let basedir = store_layout::basedir(paths, entry, version)
-        .wrap_err("resolving mysql basedir")?;
+    let basedir =
+        store_layout::basedir(paths, entry, version).wrap_err("resolving mysql basedir")?;
     let mysqld = basedir.join("bin/mysqld");
     if !tokio::fs::try_exists(&mysqld).await.unwrap_or(false) {
         return Err(eyre!(

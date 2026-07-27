@@ -40,8 +40,7 @@ fn machine_secret(paths: &Paths) -> Result<Vec<u8>> {
         return Ok(bytes);
     }
 
-    std::fs::create_dir_all(&state)
-        .wrap_err_with(|| format!("creating {}", state.display()))?;
+    std::fs::create_dir_all(&state).wrap_err_with(|| format!("creating {}", state.display()))?;
 
     let mut key = [0u8; KEY_LEN];
     std::fs::File::open("/dev/urandom")
@@ -75,7 +74,9 @@ pub fn derive_password(paths: &Paths, service: &str, project: &Path) -> Result<S
     let secret = machine_secret(paths)?;
     // Canonicalize so `/p`, `/p/`, and symlinked spellings of the same
     // project derive the same password.
-    let canon = project.canonicalize().unwrap_or_else(|_| project.to_path_buf());
+    let canon = project
+        .canonicalize()
+        .unwrap_or_else(|_| project.to_path_buf());
 
     let mut h = Sha256::new();
     h.update(&secret);
@@ -117,7 +118,10 @@ mod tests {
 
         let a = derive_password(&paths, "mariadb", &proj).unwrap();
         let b = derive_password(&paths, "mariadb", &proj).unwrap();
-        assert_eq!(a, b, "same machine + service + project must derive the same password");
+        assert_eq!(
+            a, b,
+            "same machine + service + project must derive the same password"
+        );
         assert_eq!(a.len(), 48);
         assert!(a.bytes().all(|c| c.is_ascii_hexdigit()));
     }
@@ -159,7 +163,10 @@ mod tests {
         let proj = td.path().join("p");
         std::fs::create_dir_all(&proj).unwrap();
         let _ = derive_password(&paths, "mariadb", &proj).unwrap();
-        let mode = std::fs::metadata(paths.state().join(KEY_FILE)).unwrap().permissions().mode();
+        let mode = std::fs::metadata(paths.state().join(KEY_FILE))
+            .unwrap()
+            .permissions()
+            .mode();
         assert_eq!(mode & 0o777, 0o600, "credential key must be 0600");
     }
 }

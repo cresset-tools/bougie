@@ -113,7 +113,10 @@ fn read_ref_package(
 
     let package = LockPackage {
         name,
-        description: obj.get("description").and_then(Value::as_str).map(str::to_owned),
+        description: obj
+            .get("description")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
         version: version_str,
         version_normalized: Some(version.normalized.clone()),
         dist: None,

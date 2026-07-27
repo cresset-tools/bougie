@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use bougie_composer_resolver::ScriptHooks;
 use bougie_config::ProjectConfig;
-use bougie_scripts::{dispatch, CallbackRegistry, ScriptContext, Scripts};
+use bougie_scripts::{CallbackRegistry, ScriptContext, Scripts, dispatch};
 use eyre::Result;
 
 /// Composer's default `config.process-timeout` in seconds.
@@ -155,7 +155,10 @@ fn process_timeout(composer: &serde_json::Value) -> Option<Duration> {
             composer
                 .get("config")
                 .and_then(|c| c.get("process-timeout"))
-                .and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse().ok())))
+                .and_then(|v| {
+                    v.as_u64()
+                        .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+                })
         })
         .unwrap_or(DEFAULT_PROCESS_TIMEOUT_SECS);
     (secs > 0).then(|| Duration::from_secs(secs))
@@ -169,7 +172,10 @@ mod tests {
     fn project(run: Option<bool>) -> ProjectConfig {
         ProjectConfig {
             composer: None,
-            bougie: BougieConfig { scripts: ScriptsConfig { run }, ..Default::default() },
+            bougie: BougieConfig {
+                scripts: ScriptsConfig { run },
+                ..Default::default()
+            },
         }
     }
 
@@ -188,16 +194,28 @@ mod tests {
     #[test]
     fn registry_has_native_laravel_callback() {
         let reg = callback_registry();
-        assert!(reg.get("Illuminate\\Foundation\\ComposerScripts", "postAutoloadDump").is_some());
+        assert!(
+            reg.get(
+                "Illuminate\\Foundation\\ComposerScripts",
+                "postAutoloadDump"
+            )
+            .is_some()
+        );
         // disableProcessTimeout is handled inside bougie-scripts, not here.
-        assert!(reg.get("Composer\\Config", "disableProcessTimeout").is_none());
+        assert!(
+            reg.get("Composer\\Config", "disableProcessTimeout")
+                .is_none()
+        );
         assert!(reg.get("Acme\\Thing", "run").is_none());
     }
 
     #[test]
     fn process_timeout_default_and_config_override() {
         // Default 300s when unset.
-        assert_eq!(process_timeout(&serde_json::Value::Null), Some(Duration::from_secs(300)));
+        assert_eq!(
+            process_timeout(&serde_json::Value::Null),
+            Some(Duration::from_secs(300))
+        );
         // config.process-timeout (numeric) overrides; 0 = unlimited.
         assert_eq!(
             process_timeout(&serde_json::json!({"config": {"process-timeout": 600}})),

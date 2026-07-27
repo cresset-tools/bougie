@@ -8,9 +8,9 @@
 
 use bougie_errors::BougieError;
 use bougie_index::wire::{Artifact, Section};
-use composer_semver::Constraint;
 use bougie_version::request::{Flavor, VersionLike};
 use bougie_version::version::{PartialVersion, Version};
+use composer_semver::Constraint;
 use eyre::Result;
 
 /// Lift bougie's exact-triple Version into a Composer-flavor
@@ -111,7 +111,11 @@ where
         kind: kind.to_owned(),
         detail: format!("no candidate satisfies {label}"),
     })?;
-    Ok(Selected { artifact, version, frozen_warning: artifact.frozen })
+    Ok(Selected {
+        artifact,
+        version,
+        frozen_warning: artifact.frozen,
+    })
 }
 
 fn parse_artifact_version(s: &str) -> Result<Version> {
@@ -276,8 +280,7 @@ mod tests {
             vec![art("8.3.12", "zts", "8.3", false, false)],
         );
         let spec = VersionLike::Constraint(Constraint::parse("^8.3").unwrap());
-        let err =
-            resolve_php(&s, &spec, Flavor::Nts, ResolveOptions::default()).unwrap_err();
+        let err = resolve_php(&s, &spec, Flavor::Nts, ResolveOptions::default()).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("php interpreter"), "msg: {msg}");
         assert!(msg.contains("no candidate"), "msg: {msg}");
@@ -305,7 +308,11 @@ mod tests {
                 art("3.5.1", "nts", "8.4", false, false),
             ],
         );
-        let pv = PartialVersion { major: 8, minor: Some(3), patch: None };
+        let pv = PartialVersion {
+            major: 8,
+            minor: Some(3),
+            patch: None,
+        };
         let sel = resolve_extension(&s, pv, Flavor::Nts, None, ResolveOptions::default()).unwrap();
         assert_eq!(sel.artifact.php_minor.as_deref(), Some("8.3"));
     }
@@ -320,19 +327,37 @@ mod tests {
                 art("3.5.1", "nts", "8.3", false, false),
             ],
         );
-        let pv = PartialVersion { major: 8, minor: Some(3), patch: None };
-        let sel = resolve_extension(&s, pv, Flavor::Nts, Some("3.5.0"), ResolveOptions::default())
-            .unwrap();
+        let pv = PartialVersion {
+            major: 8,
+            minor: Some(3),
+            patch: None,
+        };
+        let sel = resolve_extension(
+            &s,
+            pv,
+            Flavor::Nts,
+            Some("3.5.0"),
+            ResolveOptions::default(),
+        )
+        .unwrap();
         assert_eq!(sel.artifact.version, "3.5.0");
     }
 
     #[test]
     fn intersect_override_must_satisfy_public() {
         let public = Constraint::parse("^8.3").unwrap();
-        let bad = VersionLike::Version(PartialVersion { major: 7, minor: Some(4), patch: None });
+        let bad = VersionLike::Version(PartialVersion {
+            major: 7,
+            minor: Some(4),
+            patch: None,
+        });
         assert!(intersect_php(Some(&public), Some(&bad)).is_err());
 
-        let good = VersionLike::Version(PartialVersion { major: 8, minor: Some(3), patch: Some(12) });
+        let good = VersionLike::Version(PartialVersion {
+            major: 8,
+            minor: Some(3),
+            patch: Some(12),
+        });
         let resolved = intersect_php(Some(&public), Some(&good)).unwrap();
         assert!(matches!(resolved, VersionLike::Version(_)));
     }

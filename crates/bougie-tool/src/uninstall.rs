@@ -27,8 +27,8 @@ pub fn uninstall(paths: &Paths, package: &str) -> Result<UninstallOutcome> {
         bail!("tool `{package}` is not installed");
     }
 
-    let guard = ExclusiveGuard::acquire(&tool_dir.join(".lock"), LOCK_TIMEOUT)
-        .wrap_err_with(|| {
+    let guard =
+        ExclusiveGuard::acquire(&tool_dir.join(".lock"), LOCK_TIMEOUT).wrap_err_with(|| {
             format!(
                 "acquiring lock on {} (is another `bougie tool` running?)",
                 tool_dir.display()
@@ -47,9 +47,8 @@ pub fn uninstall(paths: &Paths, package: &str) -> Result<UninstallOutcome> {
             // ours, so deleting it would silently break the other tool.
             match std::fs::read_link(&entry.install_path) {
                 Ok(target) if target.starts_with(&tool_dir) => {
-                    std::fs::remove_file(&entry.install_path).wrap_err_with(|| {
-                        format!("removing {}", entry.install_path.display())
-                    })?;
+                    std::fs::remove_file(&entry.install_path)
+                        .wrap_err_with(|| format!("removing {}", entry.install_path.display()))?;
                     removed_bins.push(entry.install_path.clone());
                 }
                 // Anything else — symlink reclaimed by another tool,

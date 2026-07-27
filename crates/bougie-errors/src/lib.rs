@@ -50,7 +50,11 @@ pub enum BougieError {
          actual:   sha256:{actual}\n  \
          hint:     server-side desync; refetching may not help — surface to the index publisher"
     )]
-    ManifestHashMismatch { url: String, expected: String, actual: String },
+    ManifestHashMismatch {
+        url: String,
+        expected: String,
+        actual: String,
+    },
 
     #[error(
         "blob sha256 mismatch\n  \
@@ -59,7 +63,11 @@ pub enum BougieError {
          actual:   sha256:{actual}\n  \
          hint:     download was retried once and still mismatched; check network for tampering or a stale CDN edge"
     )]
-    BlobHashMismatch { url: String, expected: String, actual: String },
+    BlobHashMismatch {
+        url: String,
+        expected: String,
+        actual: String,
+    },
 
     #[error("resolution failed for {kind}: {detail}")]
     Resolution { kind: String, detail: String },
@@ -119,7 +127,12 @@ pub enum BougieError {
          hint:   {hint}",
         if url.is_empty() { String::new() } else { format!(" for {url}") }
     )]
-    Vcs { operation: String, url: String, detail: String, hint: String },
+    Vcs {
+        operation: String,
+        url: String,
+        detail: String,
+        hint: String,
+    },
 }
 
 impl BougieError {
@@ -159,7 +172,11 @@ mod tests {
     #[test]
     fn each_variant_has_distinct_code() {
         let codes = [
-            BougieError::Network { operation: String::new(), detail: String::new() }.exit_code(),
+            BougieError::Network {
+                operation: String::new(),
+                detail: String::new(),
+            }
+            .exit_code(),
             BougieError::IndexSignature {
                 url: String::new(),
                 trust_root_fingerprint: String::new(),
@@ -179,18 +196,49 @@ mod tests {
                 actual: String::new(),
             }
             .exit_code(),
-            BougieError::Resolution { kind: String::new(), detail: String::new() }.exit_code(),
-            BougieError::UnknownTarget { triple: String::new(), hint: String::new() }
-                .exit_code(),
-            BougieError::YankedSelected { tag: String::new(), reason: String::new() }
-                .exit_code(),
-            BougieError::LockHeld { path: String::new(), pid: 0 }.exit_code(),
-            BougieError::Filesystem { operation: String::new(), detail: String::new() }
-                .exit_code(),
-            BougieError::SelfUpdate { detail: String::new() }.exit_code(),
-            BougieError::NoProject { detail: String::new() }.exit_code(),
-            BougieError::Config { path: String::new(), detail: String::new() }.exit_code(),
-            BougieError::Service { code: String::new(), detail: String::new() }.exit_code(),
+            BougieError::Resolution {
+                kind: String::new(),
+                detail: String::new(),
+            }
+            .exit_code(),
+            BougieError::UnknownTarget {
+                triple: String::new(),
+                hint: String::new(),
+            }
+            .exit_code(),
+            BougieError::YankedSelected {
+                tag: String::new(),
+                reason: String::new(),
+            }
+            .exit_code(),
+            BougieError::LockHeld {
+                path: String::new(),
+                pid: 0,
+            }
+            .exit_code(),
+            BougieError::Filesystem {
+                operation: String::new(),
+                detail: String::new(),
+            }
+            .exit_code(),
+            BougieError::SelfUpdate {
+                detail: String::new(),
+            }
+            .exit_code(),
+            BougieError::NoProject {
+                detail: String::new(),
+            }
+            .exit_code(),
+            BougieError::Config {
+                path: String::new(),
+                detail: String::new(),
+            }
+            .exit_code(),
+            BougieError::Service {
+                code: String::new(),
+                detail: String::new(),
+            }
+            .exit_code(),
             BougieError::Vcs {
                 operation: String::new(),
                 url: String::new(),

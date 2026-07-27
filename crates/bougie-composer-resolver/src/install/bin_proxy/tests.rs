@@ -60,7 +60,12 @@ fn php_bin_generates_php_proxy() {
 fn shell_bin_generates_shell_proxy() {
     let tmp = TempDir::new().unwrap();
     let root = tmp.path();
-    setup_package_bin(root, "acme/tool", "bin/run", b"#!/usr/bin/env bash\necho hi\n");
+    setup_package_bin(
+        root,
+        "acme/tool",
+        "bin/run",
+        b"#!/usr/bin/env bash\necho hi\n",
+    );
 
     let pkg = make_lock_package("acme/tool", &["bin/run"]);
     let pkgs: Vec<&LockPackage> = vec![&pkg];
@@ -235,7 +240,10 @@ fn remove_cleans_up_proxies() {
 
     remove_bin_proxies(root, &pkgs);
     assert!(!root.join("vendor/bin/run").exists());
-    assert!(!root.join("vendor/bin").exists(), "empty bin dir should be removed");
+    assert!(
+        !root.join("vendor/bin").exists(),
+        "empty bin dir should be removed"
+    );
 }
 
 #[test]
@@ -255,7 +263,10 @@ fn php_shebang_generates_stream_wrapper() {
 
     assert_eq!(summary.bins_installed, 1);
     let content = std::fs::read_to_string(root.join("vendor/bin/run")).unwrap();
-    assert!(content.contains("BinProxyWrapper"), "should include stream wrapper class");
+    assert!(
+        content.contains("BinProxyWrapper"),
+        "should include stream wrapper class"
+    );
     assert!(content.contains("PHP_VERSION_ID < 80000"));
     assert!(content.contains("phpvfscomposer://"));
     assert!(content.contains("using a stream wrapper to prevent the shebang"));
@@ -293,7 +304,10 @@ fn plain_php_no_stream_wrapper() {
     install_bin_proxies(root, &pkgs);
 
     let content = std::fs::read_to_string(root.join("vendor/bin/run")).unwrap();
-    assert!(!content.contains("BinProxyWrapper"), "plain PHP should not have stream wrapper");
+    assert!(
+        !content.contains("BinProxyWrapper"),
+        "plain PHP should not have stream wrapper"
+    );
     assert!(!content.contains("phpvfscomposer"));
 }
 

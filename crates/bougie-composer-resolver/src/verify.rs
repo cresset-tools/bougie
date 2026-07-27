@@ -14,16 +14,14 @@ mod range;
 #[cfg(test)]
 mod tests;
 
-pub use provider::{
-    is_platform, BuildError, LockVerifyProvider, ProviderError, PubGrubPackage,
-};
-pub use range::{to_range, ComposerRange};
+pub use provider::{BuildError, LockVerifyProvider, ProviderError, PubGrubPackage, is_platform};
+pub use range::{ComposerRange, to_range};
 
 use std::path::Path;
 
 use bougie_composer::lockfile::{self, Lock};
-use eyre::{eyre, Context, Result};
-use pubgrub::{resolve, DefaultStringReporter, PubGrubError, Reporter};
+use eyre::{Context, Result, eyre};
+use pubgrub::{DefaultStringReporter, PubGrubError, Reporter, resolve};
 
 /// What the verifier produced. Either a clean pass or a derivation
 /// tree (rendered to a string) explaining the inconsistency.
@@ -72,7 +70,10 @@ pub fn verify_lock(project_root: &Path, opts: VerifyOptions) -> Result<VerifyOut
         .wrap_err_with(|| format!("reading {}", composer_json_path.display()))?;
     let composer_json: serde_json::Value =
         serde_json::from_slice(&composer_json_bytes).map_err(|e| {
-            bougie_errors::BougieError::Config { path: "composer.json".into(), detail: e.to_string() }
+            bougie_errors::BougieError::Config {
+                path: "composer.json".into(),
+                detail: e.to_string(),
+            }
         })?;
     let lock = Lock::read(&composer_lock_path)?;
 

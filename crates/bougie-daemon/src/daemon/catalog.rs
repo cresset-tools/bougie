@@ -179,7 +179,9 @@ pub const CATALOG: &[CatalogEntry] = &[
         versions: &["8.6.3"],
         tarball: "redis-8.6.3",
         binary: "bin/redis-server",
-        binding: Binding::UnixSocket { sockname: "redis.sock" },
+        binding: Binding::UnixSocket {
+            sockname: "redis.sock",
+        },
         tenancy: Tenancy::Redis,
         requires: &[],
         after: &[],
@@ -187,7 +189,10 @@ pub const CATALOG: &[CatalogEntry] = &[
         user_facing: true,
         summary: "Redis in-memory data store; one tenant per logical DB (0..15).",
         sandbox: SandboxKind::Strict,
-        clients: &[ClientTool { name: "redis-cli", path: "bin/redis-cli" }],
+        clients: &[ClientTool {
+            name: "redis-cli",
+            path: "bin/redis-cli",
+        }],
     },
     CatalogEntry {
         name: "mariadb",
@@ -197,7 +202,9 @@ pub const CATALOG: &[CatalogEntry] = &[
         versions: &["11.4.4"],
         tarball: "mariadb-11.4.4",
         binary: "bin/mariadbd",
-        binding: Binding::UnixSocket { sockname: "mariadb.sock" },
+        binding: Binding::UnixSocket {
+            sockname: "mariadb.sock",
+        },
         tenancy: Tenancy::Mariadb,
         requires: &[],
         after: &[],
@@ -211,12 +218,30 @@ pub const CATALOG: &[CatalogEntry] = &[
         // day-to-day trio; everything else in `bin/` stays reachable
         // via `bougie service exec`.
         clients: &[
-            ClientTool { name: "mariadb", path: "bin/mariadb" },
-            ClientTool { name: "mysql", path: "bin/mariadb" },
-            ClientTool { name: "mariadb-dump", path: "bin/mariadb-dump" },
-            ClientTool { name: "mysqldump", path: "bin/mariadb-dump" },
-            ClientTool { name: "mariadb-admin", path: "bin/mariadb-admin" },
-            ClientTool { name: "mysqladmin", path: "bin/mariadb-admin" },
+            ClientTool {
+                name: "mariadb",
+                path: "bin/mariadb",
+            },
+            ClientTool {
+                name: "mysql",
+                path: "bin/mariadb",
+            },
+            ClientTool {
+                name: "mariadb-dump",
+                path: "bin/mariadb-dump",
+            },
+            ClientTool {
+                name: "mysqldump",
+                path: "bin/mariadb-dump",
+            },
+            ClientTool {
+                name: "mariadb-admin",
+                path: "bin/mariadb-admin",
+            },
+            ClientTool {
+                name: "mysqladmin",
+                path: "bin/mariadb-admin",
+            },
         ],
     },
     CatalogEntry {
@@ -229,7 +254,9 @@ pub const CATALOG: &[CatalogEntry] = &[
         versions: &["8.4.10", "8.0.46"],
         tarball: "mysql-8.4.10",
         binary: "bin/mysqld",
-        binding: Binding::UnixSocket { sockname: "mysql.sock" },
+        binding: Binding::UnixSocket {
+            sockname: "mysql.sock",
+        },
         tenancy: Tenancy::Mysql,
         requires: &[],
         after: &[],
@@ -287,9 +314,18 @@ pub const CATALOG: &[CatalogEntry] = &[
         summary: "RabbitMQ 4.x AMQP broker; per-tenant vhost + user.",
         sandbox: SandboxKind::Strict,
         clients: &[
-            ClientTool { name: "rabbitmqctl", path: "sbin/rabbitmqctl" },
-            ClientTool { name: "rabbitmq-diagnostics", path: "sbin/rabbitmq-diagnostics" },
-            ClientTool { name: "rabbitmq-plugins", path: "sbin/rabbitmq-plugins" },
+            ClientTool {
+                name: "rabbitmqctl",
+                path: "sbin/rabbitmqctl",
+            },
+            ClientTool {
+                name: "rabbitmq-diagnostics",
+                path: "sbin/rabbitmq-diagnostics",
+            },
+            ClientTool {
+                name: "rabbitmq-plugins",
+                path: "sbin/rabbitmq-plugins",
+            },
         ],
     },
     CatalogEntry {
@@ -302,7 +338,9 @@ pub const CATALOG: &[CatalogEntry] = &[
         binary: "bin/mailpit",
         // SMTP is the service endpoint apps connect to; the web UI on
         // MAILPIT_HTTP_PORT rides alongside (see the port consts).
-        binding: Binding::Tcp { port: MAILPIT_SMTP_PORT },
+        binding: Binding::Tcp {
+            port: MAILPIT_SMTP_PORT,
+        },
         tenancy: Tenancy::Mailpit,
         requires: &[],
         after: &[],
@@ -423,12 +461,9 @@ pub fn default_version(name: &str) -> &'static str {
 /// Client names are unique catalog-wide (asserted in tests) — the
 /// argv[0] shim dispatches on the bare basename.
 pub fn find_client(name: &str) -> Option<(&'static CatalogEntry, &'static ClientTool)> {
-    CATALOG.iter().find_map(|e| {
-        e.clients
-            .iter()
-            .find(|c| c.name == name)
-            .map(|c| (e, c))
-    })
+    CATALOG
+        .iter()
+        .find_map(|e| e.clients.iter().find(|c| c.name == name).map(|c| (e, c)))
 }
 
 /// Subset of the catalog `bougie service add` will accept. Excludes
@@ -439,10 +474,7 @@ pub fn user_facing() -> impl Iterator<Item = &'static CatalogEntry> {
 
 /// Comma-separated list of user-facing names, for error messages.
 pub fn user_facing_names() -> String {
-    user_facing()
-        .map(|e| e.name)
-        .collect::<Vec<_>>()
-        .join(", ")
+    user_facing().map(|e| e.name).collect::<Vec<_>>().join(", ")
 }
 
 #[cfg(test)]
@@ -546,7 +578,10 @@ mod tests {
     fn exclusive_group_members_are_real_catalog_entries() {
         for group in EXCLUSIVE_GROUPS {
             for name in *group {
-                assert!(find(name).is_some(), "exclusive group names unknown `{name}`");
+                assert!(
+                    find(name).is_some(),
+                    "exclusive group names unknown `{name}`"
+                );
             }
         }
     }
@@ -631,7 +666,14 @@ mod tests {
         // vendor/bougie/bin/ already carries the php/composer/unzip
         // shims; a client under one of those names would fight the
         // existing argv[0] roles.
-        for reserved in ["php", "php-fpm", "composer", "unzip", "bougied", "bougie-babysit"] {
+        for reserved in [
+            "php",
+            "php-fpm",
+            "composer",
+            "unzip",
+            "bougied",
+            "bougie-babysit",
+        ] {
             assert!(
                 find_client(reserved).is_none(),
                 "client name `{reserved}` shadows a shim role"

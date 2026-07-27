@@ -18,9 +18,9 @@
 mod common;
 
 use assert_cmd::cargo::cargo_bin;
+use common::TestEnv;
 use common::opensearch_fixture;
 use common::project_with_composer;
-use common::TestEnv;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
@@ -88,7 +88,9 @@ fn services_up_or_dump(env: &TestEnv, proj_path: &Path, extra_args: &[&str]) {
 /// (sandbox denial, JNA extraction failure, etc.) rather than just
 /// the supervisor's "TCP-connect never won" rollup. Best-effort.
 fn dump_opensearch_log(env: &TestEnv, label: &str) {
-    let p = env.home_path().join("state/services/opensearch/2.19.5/log/opensearch.log");
+    let p = env
+        .home_path()
+        .join("state/services/opensearch/2.19.5/log/opensearch.log");
     eprintln!("\n===== opensearch.log [{label}] @ {} =====", p.display());
     match fs::read_to_string(&p) {
         Ok(s) => {
@@ -180,7 +182,9 @@ fn up_starts_opensearch_and_provisions_index_template() {
     assert_eq!(v["version"]["number"], "2.19.5");
 
     // The provisioner persisted a tenant + index_prefix.
-    let tenants = env.home_path().join("state/services/opensearch/2.19.5/tenants.json");
+    let tenants = env
+        .home_path()
+        .join("state/services/opensearch/2.19.5/tenants.json");
     let ledger = fs::read_to_string(&tenants).expect("tenants.json");
     let line = ledger.lines().next().expect("at least one tenant line");
     let t: serde_json::Value = serde_json::from_str(line).unwrap();
@@ -217,7 +221,8 @@ fn second_up_is_idempotent() {
     services_up_or_dump(&env, proj.path(), &[]);
 
     let ledger = fs::read_to_string(
-        env.home_path().join("state/services/opensearch/2.19.5/tenants.json"),
+        env.home_path()
+            .join("state/services/opensearch/2.19.5/tenants.json"),
     )
     .unwrap();
     let n = ledger.lines().filter(|l| !l.trim().is_empty()).count();
@@ -254,9 +259,7 @@ fn two_projects_have_separate_index_prefixes() {
 
     // Two templates exist.
     for tenant in ["acme_blog", "acme_store"] {
-        let (status, _body) = http_get(&format!(
-            "http://127.0.0.1:9200/_index_template/{tenant}"
-        ));
+        let (status, _body) = http_get(&format!("http://127.0.0.1:9200/_index_template/{tenant}"));
         assert_eq!(status, 200, "tenant {tenant} template missing");
     }
 
@@ -266,9 +269,7 @@ fn two_projects_have_separate_index_prefixes() {
         r#"{"title":"hello"}"#,
     );
     assert!(s == 200 || s == 201, "indexing failed ({s}): {b}");
-    let (_, body) = http_get(
-        "http://127.0.0.1:9200/acme_store-*/_search?q=*",
-    );
+    let (_, body) = http_get("http://127.0.0.1:9200/acme_store-*/_search?q=*");
     let v: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert_eq!(
         v["hits"]["total"]["value"], 0,
@@ -317,7 +318,9 @@ fn down_purge_drops_template_and_indices() {
         .success();
 
     // Tenant ledger empty.
-    let p = env.home_path().join("state/services/opensearch/2.19.5/tenants.json");
+    let p = env
+        .home_path()
+        .join("state/services/opensearch/2.19.5/tenants.json");
     let ledger = fs::read_to_string(&p).unwrap_or_default();
     assert!(
         ledger.lines().all(|l| l.trim().is_empty()),

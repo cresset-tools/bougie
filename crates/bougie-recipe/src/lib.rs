@@ -20,10 +20,10 @@ pub mod freshness;
 pub mod parser;
 pub mod run;
 
-pub use builtin::{detect_from_text, merge_with_builtin, BUILTINS};
+pub use builtin::{BUILTINS, detect_from_text, merge_with_builtin};
 pub use dag::{Dag, DagError};
-pub use parser::{parse, Recipe, TaskDef};
-pub use run::{run_task, RunOptions, TaskOutcome, TaskStatus};
+pub use parser::{Recipe, TaskDef, parse};
+pub use run::{RunOptions, TaskOutcome, TaskStatus, run_task};
 
 use std::path::Path;
 use std::sync::OnceLock;

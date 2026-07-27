@@ -113,8 +113,5 @@ fn shim_dispatch_via_argv0_symlink() {
         .unwrap();
     assert!(!out.status.success());
     let stderr = String::from_utf8(out.stderr).unwrap();
-    assert!(
-        stderr.contains("not synced"),
-        "stderr was: {stderr}"
-    );
+    assert!(stderr.contains("not synced"), "stderr was: {stderr}");
 }

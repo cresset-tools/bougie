@@ -44,8 +44,9 @@ impl ExclusiveGuard {
                 Ok(()) => break,
                 Err(TryLockError::WouldBlock) => {}
                 Err(TryLockError::Error(e)) => {
-                    return Err(eyre::Report::new(e)
-                        .wrap_err(format!("acquiring lock {}", path.display())));
+                    return Err(
+                        eyre::Report::new(e).wrap_err(format!("acquiring lock {}", path.display()))
+                    );
                 }
             }
             if Instant::now() >= deadline {
@@ -63,7 +64,10 @@ impl ExclusiveGuard {
         let _ = file.seek(SeekFrom::Start(0));
         let _ = writeln!(&mut file, "{}", std::process::id());
         let _ = file.flush();
-        Ok(Self { file, path: path.to_path_buf() })
+        Ok(Self {
+            file,
+            path: path.to_path_buf(),
+        })
     }
 }
 
@@ -132,8 +136,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("global.lock");
         let _a = ExclusiveGuard::acquire(&path, Duration::from_millis(100)).unwrap();
-        let err =
-            ExclusiveGuard::acquire(&path, Duration::from_millis(150)).unwrap_err();
+        let err = ExclusiveGuard::acquire(&path, Duration::from_millis(150)).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("concurrent operation conflict"), "got: {msg}");
         assert!(msg.contains("held by:  pid"), "got: {msg}");

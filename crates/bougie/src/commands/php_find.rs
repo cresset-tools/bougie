@@ -1,11 +1,11 @@
 use bougie_cli::OutputFormat;
 use bougie_errors::BougieError;
-use bougie_output::output::{emit, Render};
-use bougie_paths::Paths;
-use bougie_version::request::{parse_request, Flavor, Request, VersionLike};
 use bougie_fs::store::{install_dir, list_installed};
+use bougie_output::output::{Render, emit};
+use bougie_paths::Paths;
+use bougie_version::request::{Flavor, Request, VersionLike, parse_request};
 use bougie_version::version::Version;
-use eyre::{eyre, Result};
+use eyre::{Result, eyre};
 use serde::Serialize;
 use std::io::{self, Write};
 use std::path::PathBuf;
@@ -24,16 +24,16 @@ impl Render for FindResult {
     }
 }
 
-pub fn run(
-    format: OutputFormat,
-        request_str: Option<&str>,
-) -> Result<ExitCode> {
+pub fn run(format: OutputFormat, request_str: Option<&str>) -> Result<ExitCode> {
     let paths = Paths::from_env()?;
     let php = match request_str {
         Some(s) => find_for_request(&paths, &parse_request(s)?)?,
         None => find_first_installed(&paths)?,
     };
-    let result = FindResult { schema_version: 1, path: php };
+    let result = FindResult {
+        schema_version: 1,
+        path: php,
+    };
     emit(format, &result)?;
     Ok(ExitCode::SUCCESS)
 }
@@ -54,9 +54,9 @@ fn find_for_request(paths: &Paths, request: &Request) -> Result<PathBuf> {
             VersionLike::Version(pv) if pv.is_exact() => (pv.pad(), *flavor),
             _ => return locate_best_match(paths, request),
         },
-        Request::FullTag { version, flavor, .. } if version.is_exact() => {
-            (version.pad(), *flavor)
-        }
+        Request::FullTag {
+            version, flavor, ..
+        } if version.is_exact() => (version.pad(), *flavor),
         _ => return locate_best_match(paths, request),
     };
     let flavor = in_request_flavor.unwrap_or(Flavor::Nts);

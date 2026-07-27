@@ -3,17 +3,18 @@
 //! `bougie start` runs the `start` task (the project umbrella).
 //! See RECIPES.md.
 
-use bougie_cli::OutputFormat;
 use crate::commands::sync;
-use bougie_output::output::{emit, Render};
+use bougie_cli::OutputFormat;
+use bougie_output::output::{Render, emit};
 use bougie_recipe::{
-    builtin::{detect_from_text, load_builtin, BUILTINS},
+    Recipe, RunOptions, TaskOutcome, TaskStatus,
+    builtin::{BUILTINS, detect_from_text, load_builtin},
     dag::Dag,
     merge_with_builtin, parse,
     run::pinned_bougie_dir,
-    run_task, Recipe, RunOptions, TaskOutcome, TaskStatus,
+    run_task,
 };
-use eyre::{eyre, Result, WrapErr};
+use eyre::{Result, WrapErr, eyre};
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -140,7 +141,11 @@ pub fn run(format: OutputFormat, opts: MakeOptions) -> Result<ExitCode> {
             .collect();
         emit(
             format,
-            &ListResult { schema_version: 1, recipe: recipe_name, tasks },
+            &ListResult {
+                schema_version: 1,
+                recipe: recipe_name,
+                tasks,
+            },
         )?;
         return Ok(ExitCode::SUCCESS);
     }
@@ -168,7 +173,10 @@ pub fn run(format: OutputFormat, opts: MakeOptions) -> Result<ExitCode> {
                     writeln!(
                         buf,
                         "creates = [{}]",
-                        c.iter().map(|p| format!("{p:?}")).collect::<Vec<_>>().join(", ")
+                        c.iter()
+                            .map(|p| format!("{p:?}"))
+                            .collect::<Vec<_>>()
+                            .join(", ")
                     )
                     .expect("writing to String");
                 }
@@ -183,7 +191,11 @@ pub fn run(format: OutputFormat, opts: MakeOptions) -> Result<ExitCode> {
         }
         emit(
             format,
-            &PrintResult { schema_version: 1, recipe: recipe_name, toml: buf },
+            &PrintResult {
+                schema_version: 1,
+                recipe: recipe_name,
+                toml: buf,
+            },
         )?;
         return Ok(ExitCode::SUCCESS);
     }
@@ -216,8 +228,7 @@ pub fn run(format: OutputFormat, opts: MakeOptions) -> Result<ExitCode> {
         );
     }
 
-    let dag = Dag::build(&recipe, &task_name)
-        .map_err(|e| eyre!("recipe error: {e}"))?;
+    let dag = Dag::build(&recipe, &task_name).map_err(|e| eyre!("recipe error: {e}"))?;
 
     // Pin recipe `bougie …` invocations to *this* executable so a recipe
     // never shells out to a different-versioned bougie (which would
@@ -366,9 +377,10 @@ pub(crate) fn load_merged_recipe(
 ) -> Result<(String, Recipe, BTreeMap<String, TaskSource>)> {
     let composer_path = project_root.join("composer.json");
     let composer_text = if composer_path.exists() {
-        Some(std::fs::read_to_string(&composer_path).wrap_err_with(|| {
-            format!("reading {}", composer_path.display())
-        })?)
+        Some(
+            std::fs::read_to_string(&composer_path)
+                .wrap_err_with(|| format!("reading {}", composer_path.display()))?,
+        )
     } else {
         None
     };

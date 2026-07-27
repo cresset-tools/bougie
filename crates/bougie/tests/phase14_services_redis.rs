@@ -28,7 +28,11 @@ const STEP_TIMEOUT: Duration = Duration::from_secs(15);
 /// the supervisor finds it.
 fn install_fake_redis(env: &TestEnv) {
     use std::os::unix::fs::PermissionsExt;
-    let store = env.home_path().join("store").join("redis-8.6.3").join("bin");
+    let store = env
+        .home_path()
+        .join("store")
+        .join("redis-8.6.3")
+        .join("bin");
     fs::create_dir_all(&store).expect("mkdir store");
     let dst = store.join("redis-server");
     fs::copy(cargo_bin("fake-redis"), &dst).expect("copy fake-redis");
@@ -89,7 +93,9 @@ fn up_starts_fake_redis_and_provisions_a_tenant() {
     assert!(sock.exists(), "expected socket at {}", sock.display());
 
     // tenants.json should have one entry for our project with a db_number alloc.
-    let tenants = env.home_path().join("state/services/redis/8.6.3/tenants.json");
+    let tenants = env
+        .home_path()
+        .join("state/services/redis/8.6.3/tenants.json");
     assert!(tenants.exists(), "tenants.json should exist");
     let ledger = fs::read_to_string(&tenants).unwrap();
     let line = ledger.lines().next().unwrap();
@@ -139,8 +145,7 @@ fn daemon_stop_streams_per_service_drain_progress() {
         stderr.contains("stopping redis"),
         "expected per-service drain progress on stderr; got: {stderr}"
     );
-    let v: serde_json::Value =
-        serde_json::from_slice(&out.stdout).expect("valid JSON on stdout");
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("valid JSON on stdout");
     assert_eq!(v["ok"], true);
     let stopped = v["stopped"].as_array().expect("stopped array");
     assert!(
@@ -149,7 +154,10 @@ fn daemon_stop_streams_per_service_drain_progress() {
     );
     // The socket is gone synchronously — stop waited for full teardown.
     let sock = env.home_path().join("state").join("bougied.sock");
-    assert!(!sock.exists(), "daemon socket should be gone after stop returns");
+    assert!(
+        !sock.exists(),
+        "daemon socket should be gone after stop returns"
+    );
 }
 
 #[test]
@@ -210,7 +218,9 @@ fn two_projects_share_one_redis_with_distinct_db_numbers() {
             .assert()
             .success();
     }
-    let tenants_path = env.home_path().join("state/services/redis/8.6.3/tenants.json");
+    let tenants_path = env
+        .home_path()
+        .join("state/services/redis/8.6.3/tenants.json");
     let ledger = fs::read_to_string(&tenants_path).unwrap();
     let entries: Vec<serde_json::Value> = ledger
         .lines()
@@ -259,7 +269,10 @@ fn down_in_one_project_keeps_redis_running_for_the_other() {
         .join("state/run")
         .join(bougie_paths::instance_run_token("redis", "8.6.3"))
         .join("redis.sock");
-    assert!(sock.exists(), "socket must still exist after one project goes down");
+    assert!(
+        sock.exists(),
+        "socket must still exist after one project goes down"
+    );
 
     // Now drop b too; redis should stop.
     env.bougie()
@@ -359,7 +372,9 @@ fn up_is_idempotent_for_the_same_project() {
             .assert()
             .success();
     }
-    let tenants = env.home_path().join("state/services/redis/8.6.3/tenants.json");
+    let tenants = env
+        .home_path()
+        .join("state/services/redis/8.6.3/tenants.json");
     let entries: Vec<&str> = fs::read_to_string(&tenants)
         .unwrap()
         .lines()
@@ -438,7 +453,9 @@ fn projects_purge_removes_orphaned_redis_tenant() {
         .assert()
         .success();
 
-    let ledger = env.home_path().join("state/services/redis/8.6.3/tenants.json");
+    let ledger = env
+        .home_path()
+        .join("state/services/redis/8.6.3/tenants.json");
     assert!(
         fs::read_to_string(&ledger).unwrap().contains("acme_blog"),
         "tenant should be provisioned before purge"
@@ -493,7 +510,9 @@ fn projects_purge_refuses_noninteractive_without_yes() {
         .timeout(STEP_TIMEOUT)
         .assert()
         .failure();
-    let ledger = env.home_path().join("state/services/redis/8.6.3/tenants.json");
+    let ledger = env
+        .home_path()
+        .join("state/services/redis/8.6.3/tenants.json");
     assert!(
         fs::read_to_string(&ledger).unwrap().contains("acme_blog"),
         "ledger must be untouched when purge is refused"

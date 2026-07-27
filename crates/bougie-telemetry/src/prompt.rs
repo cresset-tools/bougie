@@ -86,7 +86,9 @@ Details + full field list: https://bougie.tools/telemetry";
 /// All I/O is best-effort — a broken terminal must not break the
 /// command that triggered the prompt.
 pub fn maybe_prompt(interactive_format: bool) {
-    let Ok(config_dir) = bougie_paths::config_dir() else { return };
+    let Ok(config_dir) = bougie_paths::config_dir() else {
+        return;
+    };
     let mode_file = config_dir.join("telemetry");
     let state = mode::resolve_from_env(Some(&mode_file));
     let gates = Gates {
@@ -174,13 +176,34 @@ mod tests {
     #[test]
     fn prompt_only_when_every_gate_passes() {
         assert!(should_prompt(open_gates()));
-        assert!(!should_prompt(Gates { interactive_format: false, ..open_gates() }));
-        assert!(!should_prompt(Gates { in_run_shim: true, ..open_gates() }));
-        assert!(!should_prompt(Gates { ci: true, ..open_gates() }));
-        assert!(!should_prompt(Gates { stdin_tty: false, ..open_gates() }));
-        assert!(!should_prompt(Gates { stderr_tty: false, ..open_gates() }));
-        assert!(!should_prompt(Gates { prompt_eligible: false, ..open_gates() }));
-        assert!(!should_prompt(Gates { attempts: MAX_ATTEMPTS, ..open_gates() }));
+        assert!(!should_prompt(Gates {
+            interactive_format: false,
+            ..open_gates()
+        }));
+        assert!(!should_prompt(Gates {
+            in_run_shim: true,
+            ..open_gates()
+        }));
+        assert!(!should_prompt(Gates {
+            ci: true,
+            ..open_gates()
+        }));
+        assert!(!should_prompt(Gates {
+            stdin_tty: false,
+            ..open_gates()
+        }));
+        assert!(!should_prompt(Gates {
+            stderr_tty: false,
+            ..open_gates()
+        }));
+        assert!(!should_prompt(Gates {
+            prompt_eligible: false,
+            ..open_gates()
+        }));
+        assert!(!should_prompt(Gates {
+            attempts: MAX_ATTEMPTS,
+            ..open_gates()
+        }));
     }
 
     #[test]

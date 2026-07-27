@@ -40,7 +40,7 @@ fn duration_to_ms_u64(d: std::time::Duration) -> u64 {
 
 use bougie_paths::Paths;
 use eyre::{Result, WrapErr};
-use rustix::fs::{flock, FlockOperation};
+use rustix::fs::{FlockOperation, flock};
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
@@ -178,7 +178,9 @@ fn migrate_legacy_service_state(paths: &Paths) {
         // Whole-dir shuffle: <name> -> <name>.migrating, recreate empty
         // <name>, then <name>.migrating -> <name>/<version>. Rename is
         // atomic within one parent and avoids moving each child.
-        let staging = paths.services_dir().join(format!("{}.migrating", entry.name));
+        let staging = paths
+            .services_dir()
+            .join(format!("{}.migrating", entry.name));
         let _ = std::fs::remove_dir_all(&staging); // clear a prior half-run
         if let Err(e) = std::fs::rename(&name_dir, &staging) {
             tracing::warn!(service = entry.name, error = %e, "migrate: staging rename failed");
@@ -378,9 +380,14 @@ async fn restore_services(state: &Arc<DaemonState>) {
             return;
         }
     };
-    tracing::info!(?wanted, "restore: re-spawning services after daemon (re)start");
+    tracing::info!(
+        ?wanted,
+        "restore: re-spawning services after daemon (re)start"
+    );
     for name in order {
-        let Some(entry) = catalog::find(name) else { continue };
+        let Some(entry) = catalog::find(name) else {
+            continue;
+        };
         // Re-spawn every wanted instance of this service (usually one; two
         // for a multi-version service with tenants on both).
         for (_, version) in wanted.iter().filter(|(n, _)| *n == name) {
@@ -396,9 +403,13 @@ async fn restore_services(state: &Arc<DaemonState>) {
                 continue;
             }
             match supervisor::start_service(&state.supervisor, &inst).await {
-                Ok(true) => tracing::info!(service = name, version = %version, "restore: re-spawned"),
+                Ok(true) => {
+                    tracing::info!(service = name, version = %version, "restore: re-spawned")
+                }
                 Ok(false) => {}
-                Err(e) => tracing::warn!(service = name, version = %version, error = %e, "restore: start"),
+                Err(e) => {
+                    tracing::warn!(service = name, version = %version, error = %e, "restore: start")
+                }
             }
         }
     }
@@ -439,7 +450,9 @@ async fn wanted_services(paths: &Paths) -> Vec<(&'static str, String)> {
         }
         for version in tenants::instance_versions(&paths.service_name_dir(entry.name)) {
             let tenants_path = paths.service_tenants(entry.name, &version);
-            let n = tenants::load_all(&tenants_path).await.map_or(0, |v| v.len());
+            let n = tenants::load_all(&tenants_path)
+                .await
+                .map_or(0, |v| v.len());
             if n > 0 {
                 wanted.push((entry.name, version));
             }
@@ -509,7 +522,7 @@ async fn accept_loop(
 }
 
 async fn shutdown_signal() {
-    use tokio::signal::unix::{signal, SignalKind};
+    use tokio::signal::unix::{SignalKind, signal};
     let mut sigint = signal(SignalKind::interrupt()).expect("install SIGINT handler");
     let mut sigterm = signal(SignalKind::terminate()).expect("install SIGTERM handler");
     tokio::select! {
@@ -528,10 +541,7 @@ mod tests {
     async fn wanted_services_tracks_tenanted_user_facing_services() {
         let home = tempfile::tempdir().unwrap();
         let cache = tempfile::tempdir().unwrap();
-        let paths = Paths::new(
-            home.path().to_path_buf(),
-            cache.path().to_path_buf(),
-        );
+        let paths = Paths::new(home.path().to_path_buf(), cache.path().to_path_buf());
 
         // Fresh state: nothing provisioned → nothing to restore.
         assert!(wanted_services(&paths).await.is_empty());
@@ -589,9 +599,12 @@ mod tests {
         // exactly what makes `instance_versions` report a second entry.
         let stray = paths.service_name_dir("server").join("0.40.0");
         std::fs::create_dir_all(&stray).unwrap();
-        tenants::append(&stray.join("tenants.json"), &Tenant::new("acme", "/tmp/acme"))
-            .await
-            .unwrap();
+        tenants::append(
+            &stray.join("tenants.json"),
+            &Tenant::new("acme", "/tmp/acme"),
+        )
+        .await
+        .unwrap();
 
         // Precondition: the raw scan really does see two versions here — the
         // divergence the collapse defends against.
@@ -654,7 +667,10 @@ mod tests {
 
         assert!(paths.service_tenants("mariadb", v).is_file());
         assert!(
-            !paths.service_name_dir("mariadb").join("tenants.json").exists(),
+            !paths
+                .service_name_dir("mariadb")
+                .join("tenants.json")
+                .exists(),
             "no ledger conjured at the legacy depth"
         );
     }

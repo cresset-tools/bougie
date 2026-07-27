@@ -64,7 +64,10 @@ fn cli_runs_in_cwd_by_default_and_emits_real_file() {
         .stdout(contains("Generated autoload files containing"));
 
     let real = work.path().join("vendor/composer/autoload_real.php");
-    assert!(real.is_file(), "autoload_real.php should land in cwd's vendor/composer/");
+    assert!(
+        real.is_file(),
+        "autoload_real.php should land in cwd's vendor/composer/"
+    );
     let bytes = std::fs::read(&real).unwrap();
     assert!(!bytes.is_empty());
     assert!(
@@ -87,9 +90,16 @@ fn cli_working_dir_flag_redirects_output() {
         .assert()
         .success();
 
-    assert!(work.path().join("vendor/composer/autoload_real.php").is_file());
     assert!(
-        !unrelated.path().join("vendor/composer/autoload_real.php").exists(),
+        work.path()
+            .join("vendor/composer/autoload_real.php")
+            .is_file()
+    );
+    assert!(
+        !unrelated
+            .path()
+            .join("vendor/composer/autoload_real.php")
+            .exists(),
         "no vendor/ should land in the cwd we ran from"
     );
 }
@@ -112,10 +122,8 @@ fn cli_classmap_authoritative_propagates_to_output() {
         // is what tells us `--classmap-authoritative` propagated.
         .stdout(contains("(authoritative)"));
 
-    let real = std::fs::read_to_string(
-        work.path().join("vendor/composer/autoload_real.php"),
-    )
-    .unwrap();
+    let real =
+        std::fs::read_to_string(work.path().join("vendor/composer/autoload_real.php")).unwrap();
     assert!(
         real.contains("setClassMapAuthoritative(true)"),
         "autoload_real.php should carry the auth setter"
@@ -138,10 +146,8 @@ fn cli_apcu_prefix_implies_apcu_autoloader_and_propagates() {
     // APCu state isn't part of the Composer-style stdout footer, so
     // the propagation test is whether the emitted autoload_real.php
     // carries the setApcuPrefix call with our explicit prefix.
-    let real = std::fs::read_to_string(
-        work.path().join("vendor/composer/autoload_real.php"),
-    )
-    .unwrap();
+    let real =
+        std::fs::read_to_string(work.path().join("vendor/composer/autoload_real.php")).unwrap();
     assert!(real.contains("setApcuPrefix('fixture-apcu-prefix-zzz0')"));
 }
 
@@ -156,7 +162,11 @@ fn cli_dump_autoload_alias_works_for_composer_muscle_memory() {
         .assert()
         .success();
 
-    assert!(work.path().join("vendor/composer/autoload_real.php").is_file());
+    assert!(
+        work.path()
+            .join("vendor/composer/autoload_real.php")
+            .is_file()
+    );
 }
 
 #[test]
@@ -219,7 +229,9 @@ fn no_dev_with_installed_dev(env: &TestEnv, installed_dev: bool, extra_arg: Opti
         .success();
     let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
     let v: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
-    v["no_dev"].as_bool().expect("no_dev bool in json-v1 output")
+    v["no_dev"]
+        .as_bool()
+        .expect("no_dev bool in json-v1 output")
 }
 
 #[test]

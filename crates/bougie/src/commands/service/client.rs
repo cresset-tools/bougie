@@ -12,9 +12,9 @@
 //! stderr so users understand the pause.
 
 use bougie_paths::Paths;
-use eyre::{eyre, Result, WrapErr};
-use serde::de::DeserializeOwned;
+use eyre::{Result, WrapErr, eyre};
 use serde::Deserialize;
+use serde::de::DeserializeOwned;
 use serde_json::Value;
 use std::io::{BufRead, BufReader, ErrorKind, Write};
 use std::os::unix::net::UnixStream;
@@ -102,7 +102,10 @@ struct ErrorBody {
 /// an uncategorizable string (the frame crosses the socket as text,
 /// so no chain-walk can recover it downstream).
 fn daemon_error(e: ErrorBody) -> eyre::Report {
-    eyre::Report::new(bougie_errors::BougieError::Service { code: e.code, detail: e.message })
+    eyre::Report::new(bougie_errors::BougieError::Service {
+        code: e.code,
+        detail: e.message,
+    })
 }
 
 /// Issue a request to `bougied` and return the deserialized payload
@@ -142,8 +145,12 @@ pub fn call_streaming(paths: &Paths, method: &str, args: Value) -> Result<()> {
 /// wedged daemon from hanging the caller.
 pub fn try_call<R: DeserializeOwned>(paths: &Paths, method: &str, args: Value) -> Option<R> {
     let stream = UnixStream::connect(paths.bougied_sock()).ok()?;
-    stream.set_read_timeout(Some(Duration::from_millis(1500))).ok()?;
-    stream.set_write_timeout(Some(Duration::from_millis(1500))).ok()?;
+    stream
+        .set_read_timeout(Some(Duration::from_millis(1500)))
+        .ok()?;
+    stream
+        .set_write_timeout(Some(Duration::from_millis(1500)))
+        .ok()?;
     let request = serde_json::json!({"v": 1, "method": method, "args": args});
     issue(stream, &request).ok()
 }
@@ -184,10 +191,7 @@ fn connect_with_autospawn(sock: &Path) -> Result<UnixStream> {
             UnixStream::connect(sock)
                 .wrap_err_with(|| format!("connecting to bougied at {}", sock.display()))
         }
-        Err(e) => Err(eyre!(
-            "connecting to bougied at {}: {e}",
-            sock.display()
-        )),
+        Err(e) => Err(eyre!("connecting to bougied at {}: {e}", sock.display())),
     }
 }
 
@@ -222,9 +226,7 @@ fn ensure_compatible_daemon(paths: &Paths, caller_method: &str) -> Result<()> {
             Ok(())
         }
         Some(daemon_ver) => {
-            eprintln!(
-                "(restarting bougied: running v{daemon_ver}, cli v{want})"
-            );
+            eprintln!("(restarting bougied: running v{daemon_ver}, cli v{want})");
             send_shutdown(&sock).wrap_err("asking bougied to shut down for version upgrade")?;
             wait_for_socket_gone(&sock, SHUTDOWN_TIMEOUT)?;
             VERSION_CHECKED.set(()).ok();
@@ -245,9 +247,7 @@ fn ensure_compatible_daemon(paths: &Paths, caller_method: &str) -> Result<()> {
 /// "skip the check, let autospawn retry."
 fn probe_daemon_version(sock: &Path) -> Option<String> {
     let stream = UnixStream::connect(sock).ok()?;
-    stream
-        .set_read_timeout(Some(Duration::from_secs(2)))
-        .ok()?;
+    stream.set_read_timeout(Some(Duration::from_secs(2))).ok()?;
     stream
         .set_write_timeout(Some(Duration::from_secs(2)))
         .ok()?;
@@ -267,7 +267,11 @@ fn probe_daemon_version(sock: &Path) -> Option<String> {
     reader.read_line(&mut line).ok()?;
     let frame: ResponseFrame = serde_json::from_str(line.trim()).ok()?;
     match frame {
-        ResponseFrame::Result { ok: true, result: Some(v), .. } => v
+        ResponseFrame::Result {
+            ok: true,
+            result: Some(v),
+            ..
+        } => v
             .get("version")
             .and_then(|x| x.as_str())
             .map(std::string::ToString::to_string),
@@ -376,7 +380,11 @@ fn daemon_log_stdio() -> Option<std::process::Stdio> {
         let _ = std::fs::rename(&path, path.with_extension("log.1"));
     }
     std::fs::create_dir_all(path.parent()?).ok()?;
-    let file = std::fs::OpenOptions::new().create(true).append(true).open(&path).ok()?;
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .ok()?;
     Some(file.into())
 }
 
@@ -422,19 +430,23 @@ fn issue_streaming(stream: UnixStream, request: &Value) -> Result<()> {
         let frame: ResponseFrame = serde_json::from_str(line.trim())
             .wrap_err_with(|| format!("parsing frame: {}", line.trim()))?;
         match frame {
-            ResponseFrame::Progress { stream, data } => if stream.as_str() == "stdout" {
-                let _ = std::io::stdout().write_all(data.as_bytes());
-                let _ = std::io::stdout().flush();
-            } else {
-                let _ = std::io::stderr().write_all(data.as_bytes());
-                let _ = std::io::stderr().flush();
-            },
+            ResponseFrame::Progress { stream, data } => {
+                if stream.as_str() == "stdout" {
+                    let _ = std::io::stdout().write_all(data.as_bytes());
+                    let _ = std::io::stdout().flush();
+                } else {
+                    let _ = std::io::stderr().write_all(data.as_bytes());
+                    let _ = std::io::stderr().flush();
+                }
+            }
             // Streaming methods (today: `service.logs`) don't emit
             // download frames, but tolerate them so the wire schema
             // can grow without coupling unrelated commands.
             ResponseFrame::Download { .. } => {}
             ResponseFrame::Result { ok: true, .. } => return Ok(()),
-            ResponseFrame::Result { ok: false, error, .. } => {
+            ResponseFrame::Result {
+                ok: false, error, ..
+            } => {
                 let e = error.unwrap_or(ErrorBody {
                     code: "unknown".into(),
                     message: "bougied returned an error without a body".into(),
@@ -450,8 +462,12 @@ fn issue<R: DeserializeOwned>(stream: UnixStream, request: &Value) -> Result<R> 
     {
         let mut writer = &stream;
         let payload = serde_json::to_vec(request).wrap_err("serializing request")?;
-        writer.write_all(&payload).wrap_err("writing request to bougied")?;
-        writer.write_all(b"\n").wrap_err("writing request terminator")?;
+        writer
+            .write_all(&payload)
+            .wrap_err("writing request to bougied")?;
+        writer
+            .write_all(b"\n")
+            .wrap_err("writing request terminator")?;
         writer.flush().wrap_err("flushing request to bougied")?;
     }
 
@@ -471,11 +487,12 @@ fn issue<R: DeserializeOwned>(stream: UnixStream, request: &Value) -> Result<R> 
             if let Some(bar) = download_bar.take() {
                 bar.finish();
             }
-            return Err(eyre!("bougied closed connection without sending a result frame"));
+            return Err(eyre!(
+                "bougied closed connection without sending a result frame"
+            ));
         }
-        let frame: ResponseFrame = serde_json::from_str(line.trim()).wrap_err_with(|| {
-            format!("parsing response frame from bougied: {}", line.trim())
-        })?;
+        let frame: ResponseFrame = serde_json::from_str(line.trim())
+            .wrap_err_with(|| format!("parsing response frame from bougied: {}", line.trim()))?;
         match frame {
             ResponseFrame::Progress { stream, data } => {
                 // Forward unchanged. The daemon escapes embedded
@@ -490,12 +507,19 @@ fn issue<R: DeserializeOwned>(stream: UnixStream, request: &Value) -> Result<R> 
                     }
                 }
             }
-            ResponseFrame::Download { pos, total, label, extracting } => {
-                let bar = download_bar
-                    .get_or_insert_with(|| bougie_fetch::DownloadBar::new("service"));
+            ResponseFrame::Download {
+                pos,
+                total,
+                label,
+                extracting,
+            } => {
+                let bar =
+                    download_bar.get_or_insert_with(|| bougie_fetch::DownloadBar::new("service"));
                 bar.set_progress(pos, total, &label, extracting);
             }
-            ResponseFrame::Result { ok: true, result, .. } => {
+            ResponseFrame::Result {
+                ok: true, result, ..
+            } => {
                 if let Some(bar) = download_bar.take() {
                     bar.finish();
                 }
@@ -503,7 +527,9 @@ fn issue<R: DeserializeOwned>(stream: UnixStream, request: &Value) -> Result<R> 
                 return serde_json::from_value(value)
                     .wrap_err("deserializing daemon result payload");
             }
-            ResponseFrame::Result { ok: false, error, .. } => {
+            ResponseFrame::Result {
+                ok: false, error, ..
+            } => {
                 if let Some(bar) = download_bar.take() {
                     bar.finish();
                 }
@@ -527,7 +553,12 @@ mod tests {
         // must still parse the frame and treat it as the download phase.
         let line = r#"{"type":"download","pos":10,"total":100,"label":"opensearch"}"#;
         match serde_json::from_str::<ResponseFrame>(line).unwrap() {
-            ResponseFrame::Download { pos, total, label, extracting } => {
+            ResponseFrame::Download {
+                pos,
+                total,
+                label,
+                extracting,
+            } => {
                 assert_eq!((pos, total), (10, 100));
                 assert_eq!(label, "opensearch");
                 assert!(!extracting, "missing field must default to false");
@@ -538,8 +569,7 @@ mod tests {
 
     #[test]
     fn download_frame_parses_extracting_true() {
-        let line =
-            r#"{"type":"download","pos":100,"total":100,"label":"jdk","extracting":true}"#;
+        let line = r#"{"type":"download","pos":100,"total":100,"label":"jdk","extracting":true}"#;
         match serde_json::from_str::<ResponseFrame>(line).unwrap() {
             ResponseFrame::Download { extracting, .. } => assert!(extracting),
             other => panic!("expected Download, got {other:?}"),

@@ -77,9 +77,7 @@ fn sync_no_managed_php_uses_system_interpreter() {
         .success();
 
     // The system-PHP marker is written with the stub's absolute path…
-    let marker = proj
-        .path()
-        .join("vendor/bougie/state/resolved-php-path");
+    let marker = proj.path().join("vendor/bougie/state/resolved-php-path");
     let recorded = std::fs::read_to_string(&marker).expect("resolved-php-path written");
     let stub_php = std::fs::canonicalize(stub_dir.path().join("php")).unwrap();
     assert_eq!(recorded.trim(), stub_php.to_string_lossy());
@@ -128,7 +126,10 @@ fn sync_default_never_pins_system_php() {
         .stderr(predicates::str::contains("--no-managed-php"));
 
     assert!(
-        !proj.path().join("vendor/bougie/state/resolved-php-path").exists(),
+        !proj
+            .path()
+            .join("vendor/bougie/state/resolved-php-path")
+            .exists(),
         "default sync must not write the system-PHP marker"
     );
     assert!(
@@ -165,7 +166,10 @@ fn run_uses_system_php_without_pinning() {
 
     // …and nothing is pinned into project state.
     assert!(
-        !proj.path().join("vendor/bougie/state/resolved-php-path").exists(),
+        !proj
+            .path()
+            .join("vendor/bougie/state/resolved-php-path")
+            .exists(),
         "one-off run must not write the system-PHP marker"
     );
     assert!(
@@ -194,13 +198,25 @@ fn run_php_version_request_uses_system_without_pinning() {
     bougie(&home, &cache)
         .current_dir(proj.path())
         .env("PATH", path_with(stub_dir.path()))
-        .args(["run", "--php", "8.3.99", "--no-php-downloads", "--", "php", "-r", "noop"])
+        .args([
+            "run",
+            "--php",
+            "8.3.99",
+            "--no-php-downloads",
+            "--",
+            "php",
+            "-r",
+            "noop",
+        ])
         .assert()
         .success()
         .stdout(predicates::str::contains("STUB-PHP-RAN"));
 
     assert!(
-        !proj.path().join("vendor/bougie/state/resolved-php-path").exists(),
+        !proj
+            .path()
+            .join("vendor/bougie/state/resolved-php-path")
+            .exists(),
         "`run --php <version>` must not write the system-PHP marker"
     );
 }

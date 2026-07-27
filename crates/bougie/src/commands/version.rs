@@ -15,9 +15,9 @@ use std::process::ExitCode;
 
 use bougie_cli::{OutputFormat, VersionBump};
 use bougie_composer::lockfile::{read_json_file, write_json_file};
-use bougie_output::output::{emit, Render};
+use bougie_output::output::{Render, emit};
 use composer_semver::version::{Version, VersionKind};
-use eyre::{eyre, Context, Result};
+use eyre::{Context, Result, eyre};
 use serde::Serialize;
 use serde_json::{Map, Value};
 
@@ -110,7 +110,9 @@ pub fn run(
             .ok_or_else(|| eyre!("composer.json is not a JSON object"))?;
         (
             obj.get("name").and_then(Value::as_str).map(str::to_owned),
-            obj.get("version").and_then(Value::as_str).map(str::to_owned),
+            obj.get("version")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
         )
     };
 
@@ -438,7 +440,12 @@ mod tests {
 
         // The spliced key landed after `description`, not at the end.
         let doc: Value = serde_json::from_slice(&std::fs::read(&manifest).unwrap()).unwrap();
-        let keys: Vec<&str> = doc.as_object().unwrap().keys().map(String::as_str).collect();
+        let keys: Vec<&str> = doc
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
         assert_eq!(keys, ["name", "description", "version"]);
     }
 

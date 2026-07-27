@@ -55,8 +55,15 @@ enum ChangeKind {
 
 #[derive(Debug, Clone)]
 enum PendingEvent {
-    Touch { project: PathBuf, kind: ChangeKind },
-    UserCodeChange { project: PathBuf, path: PathBuf, deleted: bool },
+    Touch {
+        project: PathBuf,
+        kind: ChangeKind,
+    },
+    UserCodeChange {
+        project: PathBuf,
+        path: PathBuf,
+        deleted: bool,
+    },
 }
 
 /// Spawn the watcher + dispatch loop. The returned [`WatcherHandle`]
@@ -77,8 +84,8 @@ pub fn start(
     // The notify callback runs on its own thread; we plumb a sync
     // handle into it. `classify` takes a read guard on the path map
     // for each event — short reads + many writes-from-arm = RwLock.
-    let watcher: notify::RecommendedWatcher = notify::recommended_watcher(
-        move |res: notify::Result<notify::Event>| {
+    let watcher: notify::RecommendedWatcher =
+        notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
             let Ok(event) = res else { return };
             if !is_relevant(&event.kind) {
                 return;
@@ -90,9 +97,8 @@ pub fn start(
                     let _ = tx_for_cb.send(ev);
                 }
             }
-        },
-    )
-    .wrap_err("creating notify watcher")?;
+        })
+        .wrap_err("creating notify watcher")?;
 
     // Hand the constructed watcher to the registry first: both the
     // boot-time arming below and every later dynamic arm
@@ -354,19 +360,20 @@ fn classify(map: &PathMap, path: &Path, deleted: bool) -> Vec<PendingEvent> {
         .collect();
     vi_candidates.sort_by_key(|p| std::cmp::Reverse(p.as_os_str().len()));
     if let Some(project) = vi_candidates.first()
-        && let Some(basename) = path.file_name().and_then(|s| s.to_str()) {
-            match basename {
-                "composer.json" | "bougie.toml" => out.push(PendingEvent::Touch {
-                    project: (*project).clone(),
-                    kind: ChangeKind::VersionInput,
-                }),
-                "composer.lock" => out.push(PendingEvent::Touch {
-                    project: (*project).clone(),
-                    kind: ChangeKind::Lockfile,
-                }),
-                _ => {}
-            }
+        && let Some(basename) = path.file_name().and_then(|s| s.to_str())
+    {
+        match basename {
+            "composer.json" | "bougie.toml" => out.push(PendingEvent::Touch {
+                project: (*project).clone(),
+                kind: ChangeKind::VersionInput,
+            }),
+            "composer.lock" => out.push(PendingEvent::Touch {
+                project: (*project).clone(),
+                kind: ChangeKind::Lockfile,
+            }),
+            _ => {}
         }
+    }
 
     out
 }
@@ -384,19 +391,17 @@ async fn apply_touch(
     kind: ChangeKind,
 ) {
     match kind {
-        ChangeKind::ConfD => {
-            match pools.reload_project(project).await {
-                Ok(count) if count > 0 => eprintln!(
-                    "[pool_reload] project={} variants={count} reason=conf.d",
-                    project.display()
-                ),
-                Ok(_) => {}
-                Err(e) => eprintln!(
-                    "bougie server: reload failed for {} (ConfD): {e:#}",
-                    project.display()
-                ),
-            }
-        }
+        ChangeKind::ConfD => match pools.reload_project(project).await {
+            Ok(count) if count > 0 => eprintln!(
+                "[pool_reload] project={} variants={count} reason=conf.d",
+                project.display()
+            ),
+            Ok(_) => {}
+            Err(e) => eprintln!(
+                "bougie server: reload failed for {} (ConfD): {e:#}",
+                project.display()
+            ),
+        },
         ChangeKind::VersionInput => apply_version_input(pools, project).await,
         ChangeKind::Lockfile => {
             autoloader.handle_lockfile(project).await;
@@ -479,10 +484,7 @@ mod tests {
             std::path::PathBuf::from("/nonexistent-bougie-test-home"),
             std::path::PathBuf::from("/nonexistent-bougie-test-cache"),
         );
-        m.push_confd(
-            paths.project_confd_local(project),
-            project.to_path_buf(),
-        );
+        m.push_confd(paths.project_confd_local(project), project.to_path_buf());
         m.push_version_input(project.to_path_buf());
         m
     }
@@ -491,7 +493,11 @@ mod tests {
     fn classify_routes_confd_files() {
         let project = PathBuf::from("/p/myapp");
         let map = map_for(&project);
-        let evs = classify(&map, &project.join("vendor/bougie/conf.d/20-redis.ini"), false);
+        let evs = classify(
+            &map,
+            &project.join("vendor/bougie/conf.d/20-redis.ini"),
+            false,
+        );
         assert!(evs.iter().any(|e| matches!(
             e,
             PendingEvent::Touch { project: p, kind: ChangeKind::ConfD } if p == &project
@@ -540,7 +546,10 @@ mod tests {
         let user_root = project.join("src");
         map.push_user_code_root(project.clone(), user_root.clone(), true);
         let evs = classify(&map, &user_root.join("README.md"), false);
-        assert!(!evs.iter().any(|e| matches!(e, PendingEvent::UserCodeChange { .. })));
+        assert!(
+            !evs.iter()
+                .any(|e| matches!(e, PendingEvent::UserCodeChange { .. }))
+        );
     }
 
     #[test]
@@ -562,7 +571,11 @@ mod tests {
                 if p == &project && q == &dir
         )));
         let evs_change = classify(&map, &dir, false);
-        assert!(!evs_change.iter().any(|e| matches!(e, PendingEvent::UserCodeChange { .. })));
+        assert!(
+            !evs_change
+                .iter()
+                .any(|e| matches!(e, PendingEvent::UserCodeChange { .. }))
+        );
     }
 
     #[test]
@@ -609,10 +622,10 @@ mod tests {
         let user_root = project.join("src");
         map.push_user_code_root(project.clone(), user_root.clone(), true);
         let evs = classify(&map, &user_root.join("Foo.php"), true);
-        assert!(evs.iter().any(|e| matches!(
-            e,
-            PendingEvent::UserCodeChange { deleted: true, .. }
-        )));
+        assert!(
+            evs.iter()
+                .any(|e| matches!(e, PendingEvent::UserCodeChange { deleted: true, .. }))
+        );
     }
 
     #[test]
@@ -625,10 +638,14 @@ mod tests {
 
     #[test]
     fn is_relevant_filters_access_events() {
-        use notify::event::{AccessKind, AccessMode, CreateKind, ModifyKind, RemoveKind};
         use notify::EventKind;
-        assert!(!is_relevant(&EventKind::Access(AccessKind::Open(AccessMode::Read))));
-        assert!(!is_relevant(&EventKind::Access(AccessKind::Close(AccessMode::Read))));
+        use notify::event::{AccessKind, AccessMode, CreateKind, ModifyKind, RemoveKind};
+        assert!(!is_relevant(&EventKind::Access(AccessKind::Open(
+            AccessMode::Read
+        ))));
+        assert!(!is_relevant(&EventKind::Access(AccessKind::Close(
+            AccessMode::Read
+        ))));
         assert!(!is_relevant(&EventKind::Access(AccessKind::Any)));
         assert!(is_relevant(&EventKind::Create(CreateKind::File)));
         assert!(is_relevant(&EventKind::Modify(ModifyKind::Data(

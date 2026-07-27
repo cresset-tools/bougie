@@ -24,11 +24,11 @@
 
 pub mod select;
 
-pub use select::{select, PhpPreference, Requirement, Selection, SelectionContext};
+pub use select::{PhpPreference, Requirement, Selection, SelectionContext, select};
 
 use bougie_version::request::Flavor;
 use bougie_version::version::Version;
-use eyre::{eyre, Result, WrapErr};
+use eyre::{Result, WrapErr, eyre};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -67,9 +67,9 @@ impl SystemPhp {
     /// (`Zend OPcache` for `ext-opcache`).
     pub fn has_extension(&self, name: &str) -> bool {
         let want = name.to_ascii_lowercase();
-        self.extensions.iter().any(|ext| {
-            ext == &want || ext.strip_prefix("zend ").is_some_and(|rest| rest == want)
-        })
+        self.extensions
+            .iter()
+            .any(|ext| ext == &want || ext.strip_prefix("zend ").is_some_and(|rest| rest == want))
     }
 }
 
@@ -92,7 +92,13 @@ pub fn probe(php: &Path) -> Result<SystemPhp> {
 
     let path = std::fs::canonicalize(php).unwrap_or_else(|_| php.to_path_buf());
     let has_fpm = bougie_fs::state::system_fpm_for_php(&path).is_some();
-    Ok(SystemPhp { path, version, flavor, extensions, has_fpm })
+    Ok(SystemPhp {
+        path,
+        version,
+        flavor,
+        extensions,
+        has_fpm,
+    })
 }
 
 /// Run `php <args>` and capture stdout as a UTF-8 string.
@@ -241,8 +247,9 @@ fn is_php_name(name: &str) -> bool {
     }
     // `php8.3`, `php83`, `php8.3.exe` — `php` followed by digits/dots.
     let stem = name.strip_suffix(".exe").unwrap_or(name);
-    stem.strip_prefix("php")
-        .is_some_and(|rest| !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit() || b == b'.'))
+    stem.strip_prefix("php").is_some_and(|rest| {
+        !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit() || b == b'.')
+    })
 }
 
 /// Invoke `f` for every `php`-named entry in `dir`.
@@ -399,9 +406,7 @@ mod tests {
             path: PathBuf::from("/usr/bin/php"),
             version: Version::new(8, 3, 12),
             flavor: Flavor::Nts,
-            extensions: parse_modules(
-                "[PHP Modules]\ncurl\nintl\n[Zend Modules]\nZend OPcache\n",
-            ),
+            extensions: parse_modules("[PHP Modules]\ncurl\nintl\n[Zend Modules]\nZend OPcache\n"),
             has_fpm: true,
         };
         assert!(php.has_extension("curl"));

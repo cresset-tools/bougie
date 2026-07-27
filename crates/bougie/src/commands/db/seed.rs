@@ -98,10 +98,7 @@ pub fn run(format: OutputFormat, args: DbSeedArgs) -> Result<ExitCode> {
     // jibs load <from> --local-mysql <dsn> [--clean]. Inherit stdio so jibs's
     // per-table progress and any dropped-row warnings pass straight through.
     let mut cmd = Command::new(&jibs);
-    cmd.arg("load")
-        .arg(&from)
-        .arg("--local-mysql")
-        .arg(&dsn);
+    cmd.arg("load").arg(&from).arg("--local-mysql").arg(&dsn);
     if args.clean {
         cmd.arg("--clean");
     }
@@ -235,9 +232,12 @@ pub(crate) fn human_age(secs: u64) -> String {
 pub(crate) fn mariadb_dsn(paths: &Paths, project_root: &Path) -> Result<String> {
     // Multi-instance: resolve which mariadb version this project runs by
     // scanning the on-disk ledgers, then read that instance's tenant ledger.
-    let version = tenants::project_instance_version(paths, MARIADB, project_root).ok_or_else(|| {
-        eyre!("no mariadb tenant is provisioned for this project — run `bougie up mariadb` first")
-    })?;
+    let version =
+        tenants::project_instance_version(paths, MARIADB, project_root).ok_or_else(|| {
+            eyre!(
+                "no mariadb tenant is provisioned for this project — run `bougie up mariadb` first"
+            )
+        })?;
     let ledger = paths.service_tenants(MARIADB, &version);
     let rows = tenants::load_all_sync(&ledger).wrap_err("reading the mariadb tenant ledger")?;
     let canon = project_root

@@ -39,7 +39,8 @@ fn build_fixture_zip(top: &str) -> Vec<u8> {
         zw.write_all(br#"{"name":"acme/foo","autoload":{"psr-4":{"Acme\\Foo\\":"src/"}}}"#)
             .unwrap();
         zw.start_file(format!("{top}/src/Foo.php"), opts).unwrap();
-        zw.write_all(b"<?php\nnamespace Acme\\Foo; class Foo {}\n").unwrap();
+        zw.write_all(b"<?php\nnamespace Acme\\Foo; class Foo {}\n")
+            .unwrap();
         zw.finish().unwrap();
     }
     buf
@@ -81,7 +82,10 @@ fn dry_run_resolves_against_wiremock_and_prints_packages() {
     let env = TestEnv::new();
     let proj = TempDir::new().unwrap();
 
-    let foo = p2_body("acme/foo", &[("2.0.0", "{}"), ("1.5.0", "{}"), ("1.0.0", "{}")]);
+    let foo = p2_body(
+        "acme/foo",
+        &[("2.0.0", "{}"), ("1.5.0", "{}"), ("1.0.0", "{}")],
+    );
 
     let rt = rt();
     let (uri, _server) = rt.block_on(async {
@@ -114,7 +118,10 @@ fn dry_run_resolves_against_wiremock_and_prints_packages() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("acme/foo"), "{stdout}");
-    assert!(stdout.contains("1.5.0"), "must pick highest in range: {stdout}");
+    assert!(
+        stdout.contains("1.5.0"),
+        "must pick highest in range: {stdout}"
+    );
     // No vendor/ should appear — dry-run is read-only.
     assert!(!proj.path().join("vendor").exists());
 }
@@ -156,11 +163,18 @@ fn dry_run_resolves_transitive_dependency() {
         .output()
         .expect("run bougie");
 
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("acme/foo"), "{stdout}");
     assert!(stdout.contains("acme/bar"), "transitive missing: {stdout}");
-    assert!(stdout.contains("2.3.0"), "must pick highest matching bar: {stdout}");
+    assert!(
+        stdout.contains("2.3.0"),
+        "must pick highest matching bar: {stdout}"
+    );
 }
 
 #[test]
@@ -244,8 +258,7 @@ fn update_writes_composer_lock_to_project_root() {
 
     // The lockfile must parse back through bougie's reader. This is
     // the structural sanity check.
-    let lock = bougie_composer::lockfile::Lock::read(&lock_path)
-        .expect("written lock must parse");
+    let lock = bougie_composer::lockfile::Lock::read(&lock_path).expect("written lock must parse");
     assert_eq!(lock.packages.len(), 1);
     assert_eq!(lock.packages[0].name, "acme/foo");
     assert_eq!(lock.packages[0].version, "1.5.0");
@@ -301,12 +314,9 @@ fn update_partitions_packages_into_prod_and_dev() {
         String::from_utf8_lossy(&output.stderr),
     );
 
-    let lock = bougie_composer::lockfile::Lock::read(&proj.path().join("composer.lock"))
-        .unwrap();
-    let prod_names: Vec<&str> =
-        lock.packages.iter().map(|p| p.name.as_str()).collect();
-    let dev_names: Vec<&str> =
-        lock.packages_dev.iter().map(|p| p.name.as_str()).collect();
+    let lock = bougie_composer::lockfile::Lock::read(&proj.path().join("composer.lock")).unwrap();
+    let prod_names: Vec<&str> = lock.packages.iter().map(|p| p.name.as_str()).collect();
+    let dev_names: Vec<&str> = lock.packages_dev.iter().map(|p| p.name.as_str()).collect();
     assert_eq!(prod_names, vec!["acme/foo"], "{prod_names:?}");
     assert_eq!(dev_names, vec!["acme/bar"], "{dev_names:?}");
 }
@@ -418,7 +428,10 @@ fn update_installs_vendor_like_composer() {
         (server_uri, server)
     });
 
-    write_composer_json(proj.path(), r#"{"name":"test/p","require":{"acme/foo":"^1.0"}}"#);
+    write_composer_json(
+        proj.path(),
+        r#"{"name":"test/p","require":{"acme/foo":"^1.0"}}"#,
+    );
 
     let output = env
         .bougie()
@@ -427,11 +440,18 @@ fn update_installs_vendor_like_composer() {
         .arg(proj.path())
         .output()
         .expect("run bougie");
-    assert!(output.status.success(), "stderr={}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 
     // The lock was written AND vendor/ materialized (the compat fix).
     assert!(proj.path().join("composer.lock").is_file());
-    assert!(proj.path().join("vendor/acme/foo/src/Foo.php").is_file(), "update must install vendor/");
+    assert!(
+        proj.path().join("vendor/acme/foo/src/Foo.php").is_file(),
+        "update must install vendor/"
+    );
     assert!(proj.path().join("vendor/autoload.php").is_file());
 }
 
@@ -451,7 +471,10 @@ fn upgrade_is_an_alias_of_update() {
             .await;
         (server.uri(), server)
     });
-    write_composer_json(proj.path(), r#"{"name":"test/p","require":{"acme/foo":"^1.0"}}"#);
+    write_composer_json(
+        proj.path(),
+        r#"{"name":"test/p","require":{"acme/foo":"^1.0"}}"#,
+    );
 
     for alias in ["upgrade", "u"] {
         let _ = std::fs::remove_file(proj.path().join("composer.lock"));
@@ -467,8 +490,14 @@ fn upgrade_is_an_alias_of_update() {
             "`composer {alias}` should alias update: stderr={}",
             String::from_utf8_lossy(&output.stderr),
         );
-        assert!(proj.path().join("composer.lock").is_file(), "`composer {alias}` wrote the lock");
-        assert!(!proj.path().join("vendor").exists(), "--no-install: no vendor for {alias}");
+        assert!(
+            proj.path().join("composer.lock").is_file(),
+            "`composer {alias}` wrote the lock"
+        );
+        assert!(
+            !proj.path().join("vendor").exists(),
+            "--no-install: no vendor for {alias}"
+        );
     }
 }
 

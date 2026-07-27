@@ -47,8 +47,8 @@ pub struct UserCodeRoot {
 /// conf.d/` wins over `<project>/` when both match.
 #[derive(Debug, Default)]
 pub struct PathMap {
-    pub confd: Vec<(PathBuf, PathBuf)>,         // (prefix, project)
-    pub version_input: Vec<PathBuf>,            // project root (filtered by basename)
+    pub confd: Vec<(PathBuf, PathBuf)>, // (prefix, project)
+    pub version_input: Vec<PathBuf>,    // project root (filtered by basename)
     pub user_code: Vec<UserCodeRoot>,
 }
 
@@ -137,11 +137,7 @@ impl WatchRegistry {
     /// is poisoned — i.e. a previous holder panicked. Bougie treats
     /// lock poisoning as unrecoverable since recovering would mean
     /// running with possibly-torn state.
-    pub fn arm_user_code_roots(
-        &self,
-        project: &Path,
-        roots: &[PathBuf],
-    ) -> notify::Result<()> {
+    pub fn arm_user_code_roots(&self, project: &Path, roots: &[PathBuf]) -> notify::Result<()> {
         let mut watcher_guard = self.watcher.lock().expect("notify watcher poisoned");
         let mut map = self.path_map.write().expect("path map poisoned");
         for root in roots {
@@ -219,10 +215,7 @@ impl WatchRegistry {
             Some(w) => match w.watch(project, RecursiveMode::NonRecursive) {
                 Ok(()) => true,
                 Err(e) => {
-                    eprintln!(
-                        "bougie server: failed to watch {}: {e}",
-                        project.display()
-                    );
+                    eprintln!("bougie server: failed to watch {}: {e}", project.display());
                     false
                 }
             },
@@ -322,7 +315,11 @@ mod tests {
         assert!(!armed.contains(&missing));
 
         let map = reg.path_map();
-        assert!(map.confd.iter().any(|(p, proj)| p == &confd && proj == &project));
+        assert!(
+            map.confd
+                .iter()
+                .any(|(p, proj)| p == &confd && proj == &project)
+        );
         assert!(!map.confd.iter().any(|(p, _)| p == &missing));
         assert!(map.version_input.contains(&project));
         assert!(map.contains_project(&project));
@@ -336,11 +333,20 @@ mod tests {
         std::fs::create_dir_all(&confd).unwrap();
 
         let reg = WatchRegistry::new();
-        assert!(!reg.arm_project_watches(&project, std::slice::from_ref(&confd)).is_empty());
-        assert!(reg.arm_project_watches(&project, std::slice::from_ref(&confd)).is_empty());
+        assert!(
+            !reg.arm_project_watches(&project, std::slice::from_ref(&confd))
+                .is_empty()
+        );
+        assert!(
+            reg.arm_project_watches(&project, std::slice::from_ref(&confd))
+                .is_empty()
+        );
 
         let map = reg.path_map();
         assert_eq!(map.confd.iter().filter(|(_, p)| p == &project).count(), 1);
-        assert_eq!(map.version_input.iter().filter(|p| *p == &project).count(), 1);
+        assert_eq!(
+            map.version_input.iter().filter(|p| *p == &project).count(),
+            1
+        );
     }
 }

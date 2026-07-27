@@ -19,11 +19,41 @@ pub const OUTCOME_OK: &str = "ok";
 /// stays a subset; the collector consumes this const once it can
 /// depend on this crate from crates.io.
 pub const COMMAND_VOCAB: &[&str] = &[
-    "init", "new", "ext", "add", "remove", "lock", "tree", "outdated", "sync", "run",
-    "php", "node", "patches", "composer", "tool", "tool-exec", "cache", "self",
-    "telemetry", "__telemetry-flush", "diagnose", "server", "share", "service", "projects",
-    "db", "doctor", "ci", "make", "format",
-    "version", "start", "stop", "login", "unknown",
+    "init",
+    "new",
+    "ext",
+    "add",
+    "remove",
+    "lock",
+    "tree",
+    "outdated",
+    "sync",
+    "run",
+    "php",
+    "node",
+    "patches",
+    "composer",
+    "tool",
+    "tool-exec",
+    "cache",
+    "self",
+    "telemetry",
+    "__telemetry-flush",
+    "diagnose",
+    "server",
+    "share",
+    "service",
+    "projects",
+    "db",
+    "doctor",
+    "ci",
+    "make",
+    "format",
+    "version",
+    "start",
+    "stop",
+    "login",
+    "unknown",
     // Retired spellings older clients still emit; the collector must
     // keep accepting them. `services` was renamed to `service`.
     "services",
@@ -33,9 +63,24 @@ pub const COMMAND_VOCAB: &[&str] = &[
 /// with the reserved `usage`/`panic` codes. Same collector contract as
 /// [`COMMAND_VOCAB`].
 pub const OUTCOME_VOCAB: &[&str] = &[
-    "ok", "network", "index-signature", "manifest-hash", "blob-hash", "resolution",
-    "unknown-target", "yanked", "lock-held", "filesystem", "self-update", "no-project",
-    "config", "service", "vcs", "usage", "panic", "other",
+    "ok",
+    "network",
+    "index-signature",
+    "manifest-hash",
+    "blob-hash",
+    "resolution",
+    "unknown-target",
+    "yanked",
+    "lock-held",
+    "filesystem",
+    "self-update",
+    "no-project",
+    "config",
+    "service",
+    "vcs",
+    "usage",
+    "panic",
+    "other",
 ];
 
 /// Envelope fields shared by every event, flattened into each line.
@@ -172,7 +217,10 @@ impl Enrichment {
 /// Network is checked before io deliberately — transport errors often
 /// carry an io root, and the transport is the failure's substance.
 pub fn outcome_for_error(err: &eyre::Report) -> &'static str {
-    if let Some(typed) = err.chain().find_map(|cause| cause.downcast_ref::<BougieError>()) {
+    if let Some(typed) = err
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<BougieError>())
+    {
         return match typed {
             BougieError::Network { .. } => "network",
             BougieError::IndexSignature { .. } => "index-signature",
@@ -190,10 +238,16 @@ pub fn outcome_for_error(err: &eyre::Report) -> &'static str {
             BougieError::Vcs { .. } => "vcs",
         };
     }
-    if err.chain().any(<dyn std::error::Error>::is::<reqwest::Error>) {
+    if err
+        .chain()
+        .any(<dyn std::error::Error>::is::<reqwest::Error>)
+    {
         return "network";
     }
-    if err.chain().any(<dyn std::error::Error>::is::<std::io::Error>) {
+    if err
+        .chain()
+        .any(<dyn std::error::Error>::is::<std::io::Error>)
+    {
         return "filesystem";
     }
     "other"
@@ -248,22 +302,36 @@ mod tests {
     #[test]
     fn every_bougie_error_outcome_is_in_the_vocab() {
         let variants = [
-            BougieError::NoProject { detail: String::new() },
-            BougieError::Config { path: String::new(), detail: String::new() },
-            BougieError::Service { code: String::new(), detail: String::new() },
+            BougieError::NoProject {
+                detail: String::new(),
+            },
+            BougieError::Config {
+                path: String::new(),
+                detail: String::new(),
+            },
+            BougieError::Service {
+                code: String::new(),
+                detail: String::new(),
+            },
         ];
         for v in variants {
             let outcome = outcome_for_error(&eyre::Report::new(v));
-            assert!(OUTCOME_VOCAB.contains(&outcome), "{outcome} missing from OUTCOME_VOCAB");
+            assert!(
+                OUTCOME_VOCAB.contains(&outcome),
+                "{outcome} missing from OUTCOME_VOCAB"
+            );
             assert_ne!(outcome, "other");
         }
     }
 
     #[test]
     fn typed_error_classifies_through_wrap_layers() {
-        let err = eyre::Report::new(BougieError::LockHeld { path: String::new(), pid: 42 })
-            .wrap_err("syncing the project")
-            .wrap_err("outer context");
+        let err = eyre::Report::new(BougieError::LockHeld {
+            path: String::new(),
+            pid: 42,
+        })
+        .wrap_err("syncing the project")
+        .wrap_err("outer context");
         assert_eq!(outcome_for_error(&err), "lock-held");
     }
 

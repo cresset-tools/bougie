@@ -16,7 +16,7 @@
 //! via [`spawn_sudo_apply`].
 
 use bougie_cli::OutputFormat;
-use bougie_output::output::{emit, Render};
+use bougie_output::output::{Render, emit};
 use eyre::{Result, WrapErr};
 use serde::Serialize;
 use std::io::{self, Write};
@@ -283,8 +283,7 @@ fn write_preserving_mode(path: &Path, contents: &str) -> Result<()> {
     let parent = path
         .parent()
         .ok_or_else(|| eyre::eyre!("{} has no parent directory", path.display()))?;
-    let mode = std::fs::metadata(path)
-        .map_or(0o644, |m| m.permissions().mode() & 0o7777);
+    let mode = std::fs::metadata(path).map_or(0o644, |m| m.permissions().mode() & 0o7777);
     // Tempfile lives in the same directory so the final rename is
     // atomic (cross-fs renames aren't).
     let tmp = parent.join(format!(
@@ -293,8 +292,7 @@ fn write_preserving_mode(path: &Path, contents: &str) -> Result<()> {
             .and_then(|s| s.to_str())
             .unwrap_or("etc-hosts")
     ));
-    std::fs::write(&tmp, contents)
-        .wrap_err_with(|| format!("writing {}", tmp.display()))?;
+    std::fs::write(&tmp, contents).wrap_err_with(|| format!("writing {}", tmp.display()))?;
     std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(mode))
         .wrap_err_with(|| format!("chmod {} -> {mode:o}", tmp.display()))?;
     std::fs::rename(&tmp, path)
@@ -339,9 +337,8 @@ mod tests {
 
     #[test]
     fn splice_with_empty_hostnames_drops_block() {
-        let input = format!(
-            "127.0.0.1 localhost\n\n{BLOCK_BEGIN}\n127.0.0.1 a.bougie.test\n{BLOCK_END}\n"
-        );
+        let input =
+            format!("127.0.0.1 localhost\n\n{BLOCK_BEGIN}\n127.0.0.1 a.bougie.test\n{BLOCK_END}\n");
         let out = splice_sentinel_block(&input, &[]);
         assert!(out.contains("127.0.0.1 localhost"));
         assert!(!out.contains(BLOCK_BEGIN));
@@ -352,9 +349,8 @@ mod tests {
     fn splice_recovers_from_missing_end_marker() {
         // BEGIN without END is corruption (from a kill -9 mid-write).
         // The recovery rule: strip stray markers, append fresh block.
-        let input = format!(
-            "127.0.0.1 localhost\n\n{BLOCK_BEGIN}\n127.0.0.1 orphaned.bougie.test\n"
-        );
+        let input =
+            format!("127.0.0.1 localhost\n\n{BLOCK_BEGIN}\n127.0.0.1 orphaned.bougie.test\n");
         let out = splice_sentinel_block(&input, &["fresh.bougie.test".into()]);
         // Stray BEGIN is removed; the orphaned line is preserved
         // (we don't know which one was bougie's vs. the user's), but
@@ -398,7 +394,9 @@ mod tests {
                 root: ".".into(),
                 index: Vec::new(),
                 try_files: Vec::new(),
-                aliases: vec![HostAlias { hostname: "alias.bougie.test".into() }],
+                aliases: vec![HostAlias {
+                    hostname: "alias.bougie.test".into(),
+                }],
                 rewrites: Vec::new(),
             }],
         };

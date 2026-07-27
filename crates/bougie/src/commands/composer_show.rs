@@ -16,18 +16,21 @@ use std::process::ExitCode;
 use bougie_cli::OutputFormat;
 use bougie_composer::lockfile::{Lock, LockPackage};
 use bougie_composer_resolver::verify::is_platform;
-use bougie_composer_resolver::{latest_versions, DependencyGraph};
-use bougie_output::output::{emit, Render};
+use bougie_composer_resolver::{DependencyGraph, latest_versions};
+use bougie_output::output::{Render, emit};
 use bougie_paths::Paths;
 use composer_semver::stability::Stability;
 use composer_semver::version::Version;
-use eyre::{eyre, Context, Result};
+use eyre::{Context, Result, eyre};
 use serde::Serialize;
 
 /// Flags for the `show` command, grouped so the dispatch arm stays
 /// readable.
 #[derive(Debug, Clone)]
-#[allow(clippy::struct_excessive_bools, reason = "mirrors Composer's independent show flags")]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "mirrors Composer's independent show flags"
+)]
 pub struct ShowOptions {
     pub package: Option<String>,
     pub tree: bool,
@@ -209,7 +212,11 @@ fn read_root(project_root: &Path) -> serde_json::Value {
 
 fn root_require_names(root: &serde_json::Value, include_dev: bool) -> Vec<String> {
     let mut names = Vec::new();
-    let keys: &[&str] = if include_dev { &["require", "require-dev"] } else { &["require"] };
+    let keys: &[&str] = if include_dev {
+        &["require", "require-dev"]
+    } else {
+        &["require"]
+    };
     for key in keys {
         if let Some(obj) = root.get(*key).and_then(serde_json::Value::as_object) {
             names.extend(obj.keys().cloned());
@@ -397,7 +404,11 @@ fn show_platform(
     include_dev: bool,
 ) -> Result<ExitCode> {
     let mut rows = Vec::new();
-    let keys: &[&str] = if include_dev { &["require", "require-dev"] } else { &["require"] };
+    let keys: &[&str] = if include_dev {
+        &["require", "require-dev"]
+    } else {
+        &["require"]
+    };
     for key in keys {
         if let Some(obj) = root.get(*key).and_then(serde_json::Value::as_object) {
             for (name, constraint) in obj {
@@ -416,7 +427,6 @@ fn show_platform(
     }
     rows.sort_by(|a, b| a.name.cmp(&b.name));
     let result = ShowResult {
-
         schema_version: 1,
         rows,
         name_only: false,
@@ -461,7 +471,9 @@ fn show_tree(
     if let Some(name) = single {
         // Tree rooted at the named package.
         let Some(node) = graph.node(name) else {
-            return Err(eyre!("package {name} is not installed (not in composer.lock)"));
+            return Err(eyre!(
+                "package {name} is not installed (not in composer.lock)"
+            ));
         };
         lines.push(format!("{} {}", node.name, node.version));
         if dedupe {
@@ -498,7 +510,14 @@ fn show_tree(
                     continue;
                 }
                 expanded.insert(key);
-                render_children_deduped(&graph, dep, prefix, &mut lines, &mut expanded, &mut collapsed);
+                render_children_deduped(
+                    &graph,
+                    dep,
+                    prefix,
+                    &mut lines,
+                    &mut expanded,
+                    &mut collapsed,
+                );
             } else {
                 lines.push(format!("{branch}{dep} {constraint}"));
                 let mut seen = vec![dep.to_ascii_lowercase()];
@@ -538,7 +557,10 @@ fn render_children(
     for (i, edge) in edges.iter().enumerate() {
         let last = i + 1 == n;
         let branch = if last { "└──" } else { "├──" };
-        lines.push(format!("{prefix}{branch}{} {}", edge.to_raw, edge.constraint));
+        lines.push(format!(
+            "{prefix}{branch}{} {}",
+            edge.to_raw, edge.constraint
+        ));
         let key = edge.to.clone();
         if seen.contains(&key) {
             continue; // cycle guard
@@ -580,16 +602,29 @@ fn render_children_deduped(
         let has_children = child.is_some_and(|c| !c.requires.is_empty());
         if expanded.contains(&edge.to) && has_children {
             *collapsed = true;
-            lines.push(format!("{prefix}{branch}{} {} (*)", edge.to_raw, edge.constraint));
+            lines.push(format!(
+                "{prefix}{branch}{} {} (*)",
+                edge.to_raw, edge.constraint
+            ));
             continue;
         }
-        lines.push(format!("{prefix}{branch}{} {}", edge.to_raw, edge.constraint));
+        lines.push(format!(
+            "{prefix}{branch}{} {}",
+            edge.to_raw, edge.constraint
+        ));
         if child.is_none() {
             continue;
         }
         expanded.insert(edge.to.clone());
         let child_prefix = format!("{prefix}{}", if last { "   " } else { "│  " });
-        render_children_deduped(graph, &edge.to_raw, &child_prefix, lines, expanded, collapsed);
+        render_children_deduped(
+            graph,
+            &edge.to_raw,
+            &child_prefix,
+            lines,
+            expanded,
+            collapsed,
+        );
     }
 }
 

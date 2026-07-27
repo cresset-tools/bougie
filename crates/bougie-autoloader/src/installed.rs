@@ -34,8 +34,8 @@ use std::path::Path;
 
 use serde_json::{Map, Value};
 
-use crate::version::normalize as normalize_version;
 use crate::DumpError;
+use crate::version::normalize as normalize_version;
 
 /// Re-parse `composer.lock` as raw JSON. `lock::read_lock` already
 /// gives us a typed view tuned for the autoloader pass; `installed.json`
@@ -50,13 +50,11 @@ fn read_lock_value(project_root: &Path) -> Result<Value, DumpError> {
 fn read_manifest_value(project_root: &Path) -> Result<Value, DumpError> {
     let path = project_root.join("composer.json");
     let bytes = std::fs::read(&path)?;
-    serde_json::from_slice(&bytes).map_err(|e| DumpError::Manifest(format!("{}: {e}", path.display())))
+    serde_json::from_slice(&bytes)
+        .map_err(|e| DumpError::Manifest(format!("{}: {e}", path.display())))
 }
 
-pub(crate) fn emit_installed_json(
-    project_root: &Path,
-    no_dev: bool,
-) -> Result<String, DumpError> {
+pub(crate) fn emit_installed_json(project_root: &Path, no_dev: bool) -> Result<String, DumpError> {
     let lock = read_lock_value(project_root)?;
     let lock_obj = lock
         .as_object()
@@ -228,10 +226,7 @@ fn package_to_installed_entry(
     Ok(out)
 }
 
-pub(crate) fn emit_installed_php(
-    project_root: &Path,
-    no_dev: bool,
-) -> Result<String, DumpError> {
+pub(crate) fn emit_installed_php(project_root: &Path, no_dev: bool) -> Result<String, DumpError> {
     let lock = read_lock_value(project_root)?;
     let manifest = read_manifest_value(project_root)?;
 
@@ -272,8 +267,8 @@ pub(crate) fn emit_installed_php(
     let manifest_obj = manifest
         .as_object()
         .ok_or_else(|| DumpError::Manifest("expected top-level object".into()))?;
-    let root = root_entry_from_manifest(manifest_obj)
-        .map_err(|e| DumpError::Manifest(e.to_string()))?;
+    let root =
+        root_entry_from_manifest(manifest_obj).map_err(|e| DumpError::Manifest(e.to_string()))?;
 
     let dev_mode = !no_dev;
     Ok(format_installed_php(&root, &packages, dev_mode))
@@ -397,9 +392,19 @@ fn format_installed_php(root: &RootEntry, packages: &[PkgEntry], dev_mode: bool)
     // root block
     out.push_str("    'root' => array(\n");
     write_kv(&mut out, 8, "name", &php_str(&root.name));
-    write_kv(&mut out, 8, "pretty_version", &php_str(&root.pretty_version));
+    write_kv(
+        &mut out,
+        8,
+        "pretty_version",
+        &php_str(&root.pretty_version),
+    );
     write_kv(&mut out, 8, "version", &php_str(&root.version));
-    write_kv(&mut out, 8, "reference", &php_maybe_null(root.reference.as_deref()));
+    write_kv(
+        &mut out,
+        8,
+        "reference",
+        &php_maybe_null(root.reference.as_deref()),
+    );
     write_kv(&mut out, 8, "type", &php_str(&root.r#type));
     write_kv(
         &mut out,
@@ -427,7 +432,12 @@ fn format_installed_php(root: &RootEntry, packages: &[PkgEntry], dev_mode: bool)
 
     for pkg in &all {
         let _ = writeln!(out, "        {} => array(", php_str(&pkg.name));
-        write_kv(&mut out, 12, "pretty_version", &php_str(&pkg.pretty_version));
+        write_kv(
+            &mut out,
+            12,
+            "pretty_version",
+            &php_str(&pkg.pretty_version),
+        );
         write_kv(&mut out, 12, "version", &php_str(&pkg.version));
         write_kv(
             &mut out,
@@ -492,7 +502,8 @@ fn php_maybe_null(s: Option<&str>) -> String {
 fn format_composer_json(v: &Value) -> String {
     let mut bytes = composer_php_json::encode(v, composer_php_json::Mode::Pretty);
     bytes.push(b'\n');
-    String::from_utf8(bytes).expect("UTF-8 by construction (Pretty mode escapes non-UTF8 control bytes)")
+    String::from_utf8(bytes)
+        .expect("UTF-8 by construction (Pretty mode escapes non-UTF8 control bytes)")
 }
 
 #[cfg(test)]

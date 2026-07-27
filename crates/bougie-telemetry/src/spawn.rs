@@ -63,7 +63,9 @@ pub fn maybe_spawn_flush(cache_root: &Path, today: &str) {
     if !flush_due(&spool, today) || attempt_recently(cache_root) {
         return;
     }
-    let Ok(exe) = std::env::current_exe() else { return };
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
     let mut cmd = std::process::Command::new(exe);
     cmd.arg("__telemetry-flush")
         .stdin(std::process::Stdio::null())
@@ -105,11 +107,17 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let spool = Spool::new(tmp.path());
         spool.append("2026-07-02", "{}");
-        assert!(flush_due(&spool, "2026-07-03"), "yesterday's events are due");
+        assert!(
+            flush_due(&spool, "2026-07-03"),
+            "yesterday's events are due"
+        );
         let tmp2 = TempDir::new().unwrap();
         let spool2 = Spool::new(tmp2.path());
         spool2.append("2026-07-03", "{}");
-        assert!(!flush_due(&spool2, "2026-07-03"), "today's small spool can wait");
+        assert!(
+            !flush_due(&spool2, "2026-07-03"),
+            "today's small spool can wait"
+        );
     }
 
     #[test]

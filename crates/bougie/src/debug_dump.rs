@@ -58,12 +58,12 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::ThreadId;
 use std::time::Instant;
 
+use tracing::Subscriber;
 use tracing::field::{Field, Visit};
 use tracing::span::{Attributes, Id};
-use tracing::Subscriber;
+use tracing_subscriber::Layer;
 use tracing_subscriber::layer::Context;
 use tracing_subscriber::registry::LookupSpan;
-use tracing_subscriber::Layer;
 
 /// One entered (not yet exited) span on some thread's current stack.
 #[derive(Debug)]
@@ -251,7 +251,11 @@ fn render(now: Instant) -> String {
         for (depth, frame) in frames.iter().enumerate() {
             let indent = "  ".repeat(depth + 1);
             let held = now.saturating_duration_since(frame.entered);
-            let _ = write!(out, "{indent}{} [{}] ({:.2?} held)", frame.name, frame.target, held);
+            let _ = write!(
+                out,
+                "{indent}{} [{}] ({:.2?} held)",
+                frame.name, frame.target, held
+            );
             if frame.fields.is_empty() {
                 out.push('\n');
             } else {
@@ -281,7 +285,9 @@ mod tests {
 
     #[test]
     fn dump_shows_entered_span_with_fields() {
-        let _serial = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _serial = TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let subscriber = tracing_subscriber::registry().with(layer());
         tracing::subscriber::with_default(subscriber, || {
             let span = tracing::info_span!("prefetch_closure", packages = 42);
@@ -298,7 +304,9 @@ mod tests {
 
     #[test]
     fn dump_reports_idle_when_no_spans_entered() {
-        let _serial = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _serial = TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         // No active spans on this fresh thread → the idle hint.
         let text = std::thread::spawn(|| render(Instant::now()))
             .join()

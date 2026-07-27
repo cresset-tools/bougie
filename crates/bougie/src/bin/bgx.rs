@@ -97,7 +97,10 @@ fn get_bougie_path(
                 bougie.display(),
             )
         } else {
-            format!("Could not find the `bougie` binary at: {}", bougie.display())
+            format!(
+                "Could not find the `bougie` binary at: {}",
+                bougie.display()
+            )
         };
         Err(std::io::Error::new(std::io::ErrorKind::NotFound, message))
     } else {
@@ -136,9 +139,7 @@ fn main() -> ExitCode {
     let result = run();
     match result {
         // Fail with 2 if the status cannot be cast to an exit code.
-        Ok(status) => u8::try_from(status.code().unwrap_or(2))
-            .unwrap_or(2)
-            .into(),
+        Ok(status) => u8::try_from(status.code().unwrap_or(2)).unwrap_or(2).into(),
         Err(err) => {
             eprintln!("error: {err}");
             ExitCode::from(2)

@@ -19,9 +19,9 @@
 mod common;
 
 use assert_cmd::cargo::cargo_bin;
-use common::rabbitmq_fixture;
-use common::project_with_composer;
 use common::TestEnv;
+use common::project_with_composer;
+use common::rabbitmq_fixture;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
@@ -114,11 +114,8 @@ fn wait_for_tcp(addr: &str, timeout: Duration) -> bool {
     use std::net::TcpStream;
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
-        if TcpStream::connect_timeout(
-            &addr.parse().expect("addr"),
-            Duration::from_millis(250),
-        )
-        .is_ok()
+        if TcpStream::connect_timeout(&addr.parse().expect("addr"), Duration::from_millis(250))
+            .is_ok()
         {
             return true;
         }
@@ -134,7 +131,9 @@ fn rabbitmqctl(env: &TestEnv, args: &[&str]) -> (i32, String, String) {
     let ctl = env
         .home_path()
         .join("store/rabbitmq-4.2.6/sbin/rabbitmqctl");
-    let home = env.home_path().join("state/services/rabbitmq/4.2.6/data/home");
+    let home = env
+        .home_path()
+        .join("state/services/rabbitmq/4.2.6/data/home");
     // Mirror bougied's ctl PATH (see rabbitmq.rs `ctl_path`): FHS
     // defaults plus the inherited PATH, so rabbitmqctl's shell launchers
     // find coreutils (`dirname`, `readlink`) on non-FHS hosts like
@@ -158,7 +157,8 @@ fn rabbitmqctl(env: &TestEnv, args: &[&str]) -> (i32, String, String) {
         )
         .env(
             "RABBITMQ_MNESIA_BASE",
-            env.home_path().join("state/services/rabbitmq/4.2.6/data/mnesia"),
+            env.home_path()
+                .join("state/services/rabbitmq/4.2.6/data/mnesia"),
         )
         .env(
             "RABBITMQ_LOG_BASE",
@@ -220,8 +220,10 @@ fn up_starts_rabbitmq_and_provisions_vhost_user() {
 
     // And the user — but the username's only meaningful in
     // combination with permissions, so check those instead.
-    let (code, stdout, stderr) =
-        rabbitmqctl(&env, &["list_user_permissions", "acme_blog", "--no-table-headers"]);
+    let (code, stdout, stderr) = rabbitmqctl(
+        &env,
+        &["list_user_permissions", "acme_blog", "--no-table-headers"],
+    );
     assert_eq!(code, 0, "list_user_permissions stderr:\n{stderr}");
     assert!(
         stdout.contains("acme_blog"),
@@ -372,11 +374,11 @@ fn re_up_after_plain_down_resyncs_password_to_broker() {
         .join("state/services/rabbitmq/4.2.6/tenants.json");
     let first_ledger = fs::read_to_string(&tenants_path).expect("first tenants.json");
     let first_line = first_ledger.lines().next().expect("first tenant line");
-    let pw_a = serde_json::from_str::<serde_json::Value>(first_line).unwrap()["secrets"]
-        ["password"]
-        .as_str()
-        .unwrap()
-        .to_owned();
+    let pw_a =
+        serde_json::from_str::<serde_json::Value>(first_line).unwrap()["secrets"]["password"]
+            .as_str()
+            .unwrap()
+            .to_owned();
 
     // `bougie down` (no --purge) wipes the ledger and stops the
     // broker (last-tenant-out shuts the global service down). The
@@ -412,11 +414,11 @@ fn re_up_after_plain_down_resyncs_password_to_broker() {
 
     let second_ledger = fs::read_to_string(&tenants_path).expect("second tenants.json");
     let second_line = second_ledger.lines().next().expect("second tenant line");
-    let pw_b = serde_json::from_str::<serde_json::Value>(second_line).unwrap()["secrets"]
-        ["password"]
-        .as_str()
-        .unwrap()
-        .to_owned();
+    let pw_b =
+        serde_json::from_str::<serde_json::Value>(second_line).unwrap()["secrets"]["password"]
+            .as_str()
+            .unwrap()
+            .to_owned();
     // The password is derived, so re-provisioning yields the *same*
     // value — this is the guarantee that a captured app/etc/env.php keeps
     // authenticating after a down/up cycle.
@@ -428,8 +430,7 @@ fn re_up_after_plain_down_resyncs_password_to_broker() {
     // And the broker authenticates it after re-up: `change_password`
     // re-asserted the derived password on the persisted mnesia user
     // (this is what heals an older random-password install).
-    let (code, stdout, stderr) =
-        rabbitmqctl(&env, &["authenticate_user", "acme_blog", &pw_b]);
+    let (code, stdout, stderr) = rabbitmqctl(&env, &["authenticate_user", "acme_blog", &pw_b]);
     assert_eq!(
         code, 0,
         "broker should accept the ledger's password after re-up; stdout=`{stdout}` stderr=`{stderr}`"

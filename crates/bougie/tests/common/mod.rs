@@ -75,10 +75,20 @@ impl TestProject {
 fn tenant_slug(input: &str) -> String {
     let s: String = input
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
         .collect();
     let trimmed = s.trim_matches('_');
-    if trimmed.is_empty() { "project".to_string() } else { trimmed.to_string() }
+    if trimmed.is_empty() {
+        "project".to_string()
+    } else {
+        trimmed.to_string()
+    }
 }
 
 /// Create a project with the given composer `name` in a directory whose
@@ -98,8 +108,11 @@ fn project_with_composer_inner(name: &str, with_public: bool) -> TestProject {
     let tmp = TempDir::new().expect("project tempdir");
     let root = tmp.path().join(tenant_slug(name));
     std::fs::create_dir_all(&root).expect("create project dir");
-    std::fs::write(root.join("composer.json"), format!(r#"{{"name":"{name}"}}"#))
-        .expect("write composer.json");
+    std::fs::write(
+        root.join("composer.json"),
+        format!(r#"{{"name":"{name}"}}"#),
+    )
+    .expect("write composer.json");
     if with_public {
         std::fs::create_dir_all(root.join("public")).expect("create public/");
     }

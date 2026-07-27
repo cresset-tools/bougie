@@ -116,7 +116,9 @@ pub fn create_leaf(svc_root: &Path, service: &str) -> io::Result<PathBuf> {
 /// The caller keeps the fd alive across the spawn.
 pub fn open_leaf_procs(svc_root: &Path, service: &str) -> io::Result<(PathBuf, OwnedFd)> {
     let leaf = create_leaf(svc_root, service)?;
-    let file = OpenOptions::new().write(true).open(leaf.join("cgroup.procs"))?;
+    let file = OpenOptions::new()
+        .write(true)
+        .open(leaf.join("cgroup.procs"))?;
     Ok((leaf, OwnedFd::from(file)))
 }
 
@@ -357,7 +359,10 @@ mod tests {
         fs::write(td.path().join("cgroup.kill"), "").unwrap();
         // Even with the kill file present, a non-cgroup2 mount is a
         // hard no.
-        assert_eq!(probe_at(td.path(), false, NS), SupervisionBackend::ProcessGroup);
+        assert_eq!(
+            probe_at(td.path(), false, NS),
+            SupervisionBackend::ProcessGroup
+        );
     }
 
     #[test]
@@ -366,7 +371,9 @@ mod tests {
         fs::write(td.path().join("cgroup.kill"), "").unwrap();
         assert_eq!(
             probe_at(td.path(), true, NS),
-            SupervisionBackend::CgroupKill { svc_root: td.path().join(NS) }
+            SupervisionBackend::CgroupKill {
+                svc_root: td.path().join(NS)
+            }
         );
     }
 
@@ -376,7 +383,9 @@ mod tests {
         fs::write(td.path().join("cgroup.freeze"), "0").unwrap();
         assert_eq!(
             probe_at(td.path(), true, NS),
-            SupervisionBackend::CgroupFreeze { svc_root: td.path().join(NS) }
+            SupervisionBackend::CgroupFreeze {
+                svc_root: td.path().join(NS)
+            }
         );
     }
 
@@ -384,7 +393,10 @@ mod tests {
     fn cgroup2_without_any_kill_primitive_is_process_group() {
         let td = TempDir::new().unwrap();
         // Writable + cgroup2 but neither interface file present.
-        assert_eq!(probe_at(td.path(), true, NS), SupervisionBackend::ProcessGroup);
+        assert_eq!(
+            probe_at(td.path(), true, NS),
+            SupervisionBackend::ProcessGroup
+        );
     }
 
     #[test]
@@ -411,7 +423,9 @@ mod tests {
     #[test]
     fn backend_label_and_svc_root_accessors() {
         let p = PathBuf::from("/sys/fs/cgroup/x/bougie.svc-0123456789ab");
-        let k = SupervisionBackend::CgroupKill { svc_root: p.clone() };
+        let k = SupervisionBackend::CgroupKill {
+            svc_root: p.clone(),
+        };
         assert_eq!(k.label(), "cgroup-kill");
         assert_eq!(k.svc_root(), Some(p.as_path()));
         assert_eq!(SupervisionBackend::ProcessGroup.label(), "process-group");
@@ -433,7 +447,10 @@ mod tests {
         let b = svc_dir_name(Path::new("/home/b/.local/share/bougie/state"));
         assert!(a.starts_with("bougie.svc-"), "unexpected shape: {a}");
         // Same home → same namespace; different home → different one.
-        assert_eq!(a, svc_dir_name(Path::new("/home/a/.local/share/bougie/state")));
+        assert_eq!(
+            a,
+            svc_dir_name(Path::new("/home/a/.local/share/bougie/state"))
+        );
         assert_ne!(a, b);
     }
 
@@ -451,7 +468,9 @@ mod tests {
     #[test]
     fn leaf_and_kill_supported_track_the_variant() {
         let p = PathBuf::from("/sys/fs/cgroup/x/bougie.svc-0123456789ab");
-        let k = SupervisionBackend::CgroupKill { svc_root: p.clone() };
+        let k = SupervisionBackend::CgroupKill {
+            svc_root: p.clone(),
+        };
         assert_eq!(k.leaf("redis"), Some(p.join("redis")));
         assert!(k.kill_supported());
 
@@ -489,7 +508,10 @@ mod tests {
         // attempted (on a synthetic dir a kill attempt would have left a
         // regular `cgroup.kill` file behind).
         for leaf in ["redis", "mariadb"] {
-            assert!(root_b.join(leaf).is_dir(), "foreign leaf {leaf} was removed");
+            assert!(
+                root_b.join(leaf).is_dir(),
+                "foreign leaf {leaf} was removed"
+            );
             assert!(
                 !root_b.join(leaf).join("cgroup.kill").exists(),
                 "foreign leaf {leaf} was killed"
@@ -528,7 +550,10 @@ mod tests {
         // child pid IS the sleep (setsid doesn't fork when not already a
         // group leader), so we can address it directly.
         let mut cmd = Command::new("sleep");
-        cmd.arg("30").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        cmd.arg("30")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
         #[allow(unsafe_code)]
         unsafe {
             cmd.pre_exec(|| {
@@ -584,6 +609,10 @@ mod tests {
         let _ = child.wait();
         // Drop the (now-empty) namespaced svc root the test created.
         let _ = std::fs::remove_dir(svc_root);
-        assert!(removed, "leaf {} not removed — escapee survived cgroup.kill", leaf.display());
+        assert!(
+            removed,
+            "leaf {} not removed — escapee survived cgroup.kill",
+            leaf.display()
+        );
     }
 }

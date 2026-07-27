@@ -97,9 +97,7 @@ fn generate_profile(policy: &SandboxPolicy) -> Result<String, SandboxError> {
                     escape_path(&home)
                 ));
             }
-            profile.push_str(
-                "(deny file-read-data file-write* (regex #\"^/Users/[^/]+\"))\n",
-            );
+            profile.push_str("(deny file-read-data file-write* (regex #\"^/Users/[^/]+\"))\n");
         }
         ProtectHome::ReadOnly => {
             if let Ok(home) = std::env::var("HOME") {

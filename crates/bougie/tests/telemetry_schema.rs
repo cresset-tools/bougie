@@ -12,7 +12,7 @@
 //! the vocab/doc and CI fails here.
 
 use bougie_telemetry::event::{
-    self, CommandEvent, Common, CrashEvent, Enrichment, UpdateEvent, COMMAND_VOCAB, OUTCOME_VOCAB,
+    self, COMMAND_VOCAB, CommandEvent, Common, CrashEvent, Enrichment, OUTCOME_VOCAB, UpdateEvent,
 };
 
 /// The dispatcher's verb names, scraped from `command_name()`'s match
@@ -55,7 +55,10 @@ fn every_dispatcher_verb_is_in_the_command_vocab() {
 fn every_outcome_label_is_in_the_outcome_vocab() {
     use bougie::BougieError;
     let errors = [
-        BougieError::Network { operation: String::new(), detail: String::new() },
+        BougieError::Network {
+            operation: String::new(),
+            detail: String::new(),
+        },
         BougieError::IndexSignature {
             url: String::new(),
             trust_root_fingerprint: String::new(),
@@ -72,12 +75,29 @@ fn every_outcome_label_is_in_the_outcome_vocab() {
             expected: String::new(),
             actual: String::new(),
         },
-        BougieError::Resolution { kind: String::new(), detail: String::new() },
-        BougieError::UnknownTarget { triple: String::new(), hint: String::new() },
-        BougieError::YankedSelected { tag: String::new(), reason: String::new() },
-        BougieError::LockHeld { path: String::new(), pid: 0 },
-        BougieError::Filesystem { operation: String::new(), detail: String::new() },
-        BougieError::SelfUpdate { detail: String::new() },
+        BougieError::Resolution {
+            kind: String::new(),
+            detail: String::new(),
+        },
+        BougieError::UnknownTarget {
+            triple: String::new(),
+            hint: String::new(),
+        },
+        BougieError::YankedSelected {
+            tag: String::new(),
+            reason: String::new(),
+        },
+        BougieError::LockHeld {
+            path: String::new(),
+            pid: 0,
+        },
+        BougieError::Filesystem {
+            operation: String::new(),
+            detail: String::new(),
+        },
+        BougieError::SelfUpdate {
+            detail: String::new(),
+        },
         BougieError::Vcs {
             operation: String::new(),
             url: String::new(),
@@ -87,7 +107,10 @@ fn every_outcome_label_is_in_the_outcome_vocab() {
     ];
     for err in errors {
         let label = bougie_telemetry::outcome_for_error(&eyre::Report::new(err));
-        assert!(OUTCOME_VOCAB.contains(&label), "{label:?} missing from OUTCOME_VOCAB");
+        assert!(
+            OUTCOME_VOCAB.contains(&label),
+            "{label:?} missing from OUTCOME_VOCAB"
+        );
     }
     assert!(OUTCOME_VOCAB.contains(&bougie_telemetry::OUTCOME_OK));
     assert!(OUTCOME_VOCAB.contains(&"other"));
@@ -137,14 +160,20 @@ fn every_serialized_field_is_documented_in_telemetry_md() {
         },
     };
     let crash = CrashEvent {
-        common: Common { event: "crash", ..common.clone() },
+        common: Common {
+            event: "crash",
+            ..common.clone()
+        },
         command: "sync",
         fingerprint: "0123456789abcdef".into(),
         frames: vec!["bougie::run".into()],
         message: Some("m".into()),
     };
     let update = UpdateEvent {
-        common: Common { event: "update", ..common },
+        common: Common {
+            event: "update",
+            ..common
+        },
         from_version: "0.48.0".into(),
         to_version: "0.49.0".into(),
     };
@@ -156,7 +185,8 @@ fn every_serialized_field_is_documented_in_telemetry_md() {
     ] {
         for key in value.as_object().unwrap().keys() {
             assert!(
-                doc.contains(&format!("`{key}`")) || doc.contains(&format!("`{key}` /"))
+                doc.contains(&format!("`{key}`"))
+                    || doc.contains(&format!("`{key}` /"))
                     || doc.contains(&format!("/ `{key}`")),
                 "event field `{key}` is not documented in TELEMETRY.md — \
                  the doc is the collector's allowlist contract"

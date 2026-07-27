@@ -19,7 +19,9 @@ struct Run {
 
 impl Run {
     fn new() -> Self {
-        Self { home: TempDir::new().unwrap() }
+        Self {
+            home: TempDir::new().unwrap(),
+        }
     }
 
     fn mode_file(&self) -> PathBuf {
@@ -41,8 +43,16 @@ impl Run {
 
 #[test]
 fn snippet_is_posix_sh_clean() {
-    let out = Command::new("sh").arg("-n").arg(snippet()).output().unwrap();
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new("sh")
+        .arg("-n")
+        .arg(snippet())
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 #[test]
@@ -56,7 +66,12 @@ fn ci_skips_and_writes_nothing() {
 #[test]
 fn explicit_env_skips_and_writes_nothing() {
     let run = Run::new();
-    let out = run.sh().env("CI", "true").env("BOUGIE_TELEMETRY", "on").output().unwrap();
+    let out = run
+        .sh()
+        .env("CI", "true")
+        .env("BOUGIE_TELEMETRY", "on")
+        .output()
+        .unwrap();
     assert!(out.status.success());
     assert!(!run.mode_file().exists());
 }
@@ -65,7 +80,11 @@ fn explicit_env_skips_and_writes_nothing() {
 fn do_not_track_records_a_decline() {
     let run = Run::new();
     let out = run.sh().env("DO_NOT_TRACK", "1").output().unwrap();
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let contents = std::fs::read_to_string(run.mode_file()).unwrap();
     let mut parts = contents.split_ascii_whitespace();
     assert_eq!(parts.next(), Some("off"));
@@ -82,7 +101,10 @@ fn existing_mode_file_is_never_touched() {
     // Even a DNT run must not overwrite a recorded consent.
     let out = run.sh().env("DO_NOT_TRACK", "1").output().unwrap();
     assert!(out.status.success());
-    assert_eq!(std::fs::read_to_string(run.mode_file()).unwrap(), "on 2026-01-01 1\n");
+    assert_eq!(
+        std::fs::read_to_string(run.mode_file()).unwrap(),
+        "on 2026-01-01 1\n"
+    );
 }
 
 #[cfg(target_os = "linux")]
@@ -105,7 +127,11 @@ fn no_controlling_tty_leaves_mode_unset() {
         // setsid unavailable: nothing to assert.
         return;
     };
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     assert!(!run.mode_file().exists());
 }
 
@@ -115,7 +141,8 @@ fn appended_after_failing_entrypoint_never_runs() {
     // snippet. A failed install (`|| exit 1`) must skip consent.
     let run = Run::new();
     let combined = run.home.path().join("installer.sh");
-    let mut script = String::from("#!/bin/sh\nset -u\nmain() { return 1; }\nmain \"$@\" || exit 1\n");
+    let mut script =
+        String::from("#!/bin/sh\nset -u\nmain() { return 1; }\nmain \"$@\" || exit 1\n");
     script.push_str(&std::fs::read_to_string(snippet()).unwrap());
     std::fs::write(&combined, script).unwrap();
     let out = Command::new("sh")
@@ -128,5 +155,8 @@ fn appended_after_failing_entrypoint_never_runs() {
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(1), "install failure propagates");
-    assert!(!run.mode_file().exists(), "consent never runs after a failed install");
+    assert!(
+        !run.mode_file().exists(),
+        "consent never runs after a failed install"
+    );
 }

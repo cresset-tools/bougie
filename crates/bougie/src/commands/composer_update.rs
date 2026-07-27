@@ -13,14 +13,14 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use bougie_cli::OutputFormat;
-use bougie_composer::lockfile::{self, canonical_readme, Lock};
+use bougie_composer::lockfile::{self, Lock, canonical_readme};
 use bougie_composer_resolver::metadata::Repo;
 use bougie_composer_resolver::{
-    dry_run_update, dry_run_update_partial, resolve_for_lockfile_partial,
     DryRunOptions, InstallOptions, LockfileSolveOutcome, PartialUpdate, PlatformIgnore,
-    ResolutionStrategy, ResolvedPackage, UpdateSummary,
+    ResolutionStrategy, ResolvedPackage, UpdateSummary, dry_run_update, dry_run_update_partial,
+    resolve_for_lockfile_partial,
 };
-use bougie_output::output::{emit, Render};
+use bougie_output::output::{Render, emit};
 use bougie_paths::Paths;
 use eyre::{Context, Result};
 use serde::Serialize;
@@ -130,8 +130,8 @@ pub fn run(
                  run `bougie composer update` (no package list) first to create one",
             ));
         }
-        let lock = Lock::read(&lock_path)
-            .wrap_err_with(|| format!("reading {}", lock_path.display()))?;
+        let lock =
+            Lock::read(&lock_path).wrap_err_with(|| format!("reading {}", lock_path.display()))?;
         // Root requirements drive `-w`'s "leave root requires pinned"
         // rule. Read them straight from composer.json (`require` +
         // `require-dev` keys); only needed for the `-w` path, but cheap
@@ -382,4 +382,3 @@ fn read_root_require_names(project_root: &Path) -> Vec<String> {
     }
     names
 }
-

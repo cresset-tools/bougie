@@ -20,11 +20,11 @@ use super::client;
 use bougie_cli::OutputFormat;
 use bougie_daemon::daemon::catalog::{self, Tenancy};
 use bougie_daemon::daemon::tenants::Tenant;
-use bougie_output::output::{emit, Render};
+use bougie_output::output::{Render, emit};
 use bougie_paths::Paths;
-use eyre::{eyre, Result};
+use eyre::{Result, eyre};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 #[derive(Debug, Serialize)]
 pub struct ProjectsResult {
@@ -212,9 +212,9 @@ fn load_rows(paths: &Paths) -> Result<Vec<TenantRow>> {
         // multi-version service (mysql 8.0 beside 8.4) keeps one ledger
         // per version dir, and each project's tenant must show up.
         let mut rows = Vec::new();
-        for version in bougie_daemon::daemon::tenants::instance_versions(
-            &paths.service_name_dir(entry.name),
-        ) {
+        for version in
+            bougie_daemon::daemon::tenants::instance_versions(&paths.service_name_dir(entry.name))
+        {
             rows.extend(load_ledger(&paths.service_tenants(entry.name, &version))?);
         }
         for t in rows {
@@ -267,7 +267,11 @@ impl Render for PurgeResult {
             writeln!(w, "nothing to purge")?;
             return Ok(());
         }
-        let verb = if self.dry_run { "would purge" } else { "purged" };
+        let verb = if self.dry_run {
+            "would purge"
+        } else {
+            "purged"
+        };
         for p in &self.purged {
             let miss = if p.missing { " (missing)" } else { "" };
             writeln!(
@@ -329,7 +333,14 @@ pub fn purge(
     }
 
     if by_project.is_empty() {
-        emit(format, &PurgeResult { schema_version: 1, dry_run, purged: Vec::new() })?;
+        emit(
+            format,
+            &PurgeResult {
+                schema_version: 1,
+                dry_run,
+                purged: Vec::new(),
+            },
+        )?;
         return Ok(ExitCode::SUCCESS);
     }
 
@@ -346,7 +357,14 @@ pub fn purge(
         .collect();
 
     if dry_run {
-        emit(format, &PurgeResult { schema_version: 1, dry_run: true, purged: plan })?;
+        emit(
+            format,
+            &PurgeResult {
+                schema_version: 1,
+                dry_run: true,
+                purged: plan,
+            },
+        )?;
         return Ok(ExitCode::SUCCESS);
     }
 
@@ -363,7 +381,11 @@ pub fn purge(
             ));
         }
         // List the tenants up for deletion before asking.
-        let preview = PurgeResult { schema_version: 1, dry_run: true, purged: plan };
+        let preview = PurgeResult {
+            schema_version: 1,
+            dry_run: true,
+            purged: plan,
+        };
         let mut buf = Vec::new();
         preview.render_text(&mut buf).ok();
         io::Write::write_all(&mut io::stderr(), &buf).ok();
@@ -394,9 +416,20 @@ pub fn purge(
         let reply: DownReply = client::call(&paths, "service.down", args)?;
         let mut done = reply.deprovisioned;
         done.sort();
-        purged.push(PurgedProject { project: proj.clone(), missing: *missing, services: done });
+        purged.push(PurgedProject {
+            project: proj.clone(),
+            missing: *missing,
+            services: done,
+        });
     }
-    emit(format, &PurgeResult { schema_version: 1, dry_run: false, purged })?;
+    emit(
+        format,
+        &PurgeResult {
+            schema_version: 1,
+            dry_run: false,
+            purged,
+        },
+    )?;
     Ok(ExitCode::SUCCESS)
 }
 
@@ -406,7 +439,10 @@ mod tests {
 
     #[test]
     fn format_created_trims_rfc3339_to_minute() {
-        assert_eq!(format_created("2026-06-05T12:34:56.7+00:00"), "2026-06-05 12:34");
+        assert_eq!(
+            format_created("2026-06-05T12:34:56.7+00:00"),
+            "2026-06-05 12:34"
+        );
         assert_eq!(format_created("2026-06-05T12:34:00Z"), "2026-06-05 12:34");
         // Unexpected shape falls back to the raw string.
         assert_eq!(format_created("whenever"), "whenever");
@@ -416,13 +452,19 @@ mod tests {
     #[test]
     fn abbreviate_home_replaces_leading_home() {
         let home = Path::new("/home/jelle");
-        assert_eq!(abbreviate_home(Path::new("/home/jelle/work/acme"), Some(home)), "~/work/acme");
+        assert_eq!(
+            abbreviate_home(Path::new("/home/jelle/work/acme"), Some(home)),
+            "~/work/acme"
+        );
         // Exact home → bare tilde.
         assert_eq!(abbreviate_home(Path::new("/home/jelle"), Some(home)), "~");
         // Outside home is left untouched.
         assert_eq!(abbreviate_home(Path::new("/opt/x"), Some(home)), "/opt/x");
         // No HOME set → untouched.
-        assert_eq!(abbreviate_home(Path::new("/home/jelle/x"), None), "/home/jelle/x");
+        assert_eq!(
+            abbreviate_home(Path::new("/home/jelle/x"), None),
+            "/home/jelle/x"
+        );
     }
 
     #[test]
@@ -460,7 +502,10 @@ mod tests {
             alloc: tenants[0].alloc.clone(),
         };
         let json = serde_json::to_string(&row).unwrap();
-        assert!(!json.to_lowercase().contains("secret"), "secrets must never serialize: {json}");
+        assert!(
+            !json.to_lowercase().contains("secret"),
+            "secrets must never serialize: {json}"
+        );
         assert!(json.contains("db_number"));
         // `missing` is false → omitted from JSON.
         assert!(!json.contains("missing"));
@@ -478,7 +523,11 @@ mod tests {
             created_at: "2026-06-05T00:00:00Z".into(),
             alloc: BTreeMap::new(),
         };
-        let result = ProjectsResult { schema_version: 1, tenants: vec![row], show_alloc: false };
+        let result = ProjectsResult {
+            schema_version: 1,
+            tenants: vec![row],
+            show_alloc: false,
+        };
         let mut buf = Vec::new();
         result.render_text(&mut buf).unwrap();
         let text = String::from_utf8(buf).unwrap();

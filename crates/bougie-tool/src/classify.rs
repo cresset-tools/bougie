@@ -34,8 +34,7 @@ pub enum Classified {
 /// the right index section (extensions are partitioned per PHP minor +
 /// flavor). Errors indicate a hard failure (e.g. network unreachable)
 /// and propagate.
-pub type ExtensionClassifier =
-    dyn Fn(&str, &PhpChoice) -> Result<bool> + Send + Sync;
+pub type ExtensionClassifier = dyn Fn(&str, &PhpChoice) -> Result<bool> + Send + Sync;
 
 pub fn classify(
     name: &str,
@@ -73,10 +72,9 @@ mod tests {
 
     #[test]
     fn slash_form_is_composer_without_callback() {
-        let cb: Box<ExtensionClassifier> =
-            Box::new(|_: &str, _: &PhpChoice| -> Result<bool> {
-                panic!("classifier should not be called for vendor/name")
-            });
+        let cb: Box<ExtensionClassifier> = Box::new(|_: &str, _: &PhpChoice| -> Result<bool> {
+            panic!("classifier should not be called for vendor/name")
+        });
         let c = classify("phpstan/phpstan", &dummy_php(), cb.as_ref()).unwrap();
         assert_eq!(c, Classified::ComposerPackage("phpstan/phpstan".into()));
     }
@@ -93,8 +91,7 @@ mod tests {
 
     #[test]
     fn bare_name_classified_as_extension_via_callback() {
-        let cb: Box<ExtensionClassifier> =
-            Box::new(|name: &str, _: &PhpChoice| Ok(name == "intl"));
+        let cb: Box<ExtensionClassifier> = Box::new(|name: &str, _: &PhpChoice| Ok(name == "intl"));
         let c = classify("intl", &dummy_php(), cb.as_ref()).unwrap();
         assert_eq!(c, Classified::Extension("intl".into()));
     }
@@ -117,9 +114,8 @@ mod tests {
 
     #[test]
     fn classifier_error_propagates() {
-        let cb: Box<ExtensionClassifier> = Box::new(|_: &str, _: &PhpChoice| {
-            Err(eyre::eyre!("network unreachable"))
-        });
+        let cb: Box<ExtensionClassifier> =
+            Box::new(|_: &str, _: &PhpChoice| Err(eyre::eyre!("network unreachable")));
         let err = classify("intl", &dummy_php(), cb.as_ref())
             .unwrap_err()
             .to_string();

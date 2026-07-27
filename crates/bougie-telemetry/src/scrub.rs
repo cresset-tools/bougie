@@ -15,8 +15,7 @@ pub const EXTERNAL: &str = "[external]";
 
 /// Symbol-name prefixes that may ship verbatim: our own crates and
 /// the Rust runtime. Everything else is not ours to leak.
-const FRAME_PREFIXES: &[&str] =
-    &["bougie", "bgx", "sandbox_run", "std::", "core::", "alloc::"];
+const FRAME_PREFIXES: &[&str] = &["bougie", "bgx", "sandbox_run", "std::", "core::", "alloc::"];
 
 /// Render a captured backtrace as shippable frames: allowlisted symbol
 /// names (hash suffix stripped), `[external]` for foreign symbols
@@ -213,14 +212,20 @@ mod tests {
         // Property-style sweep: whatever the shape, nothing that
         // starts with `/` may pass through.
         let inputs = [
-            "a /b c", "x //e", "/", "/a/b/c",
-            "wrapped (/tmp/x) parens", "comma, /var/y, end",
+            "a /b c",
+            "x //e",
+            "/",
+            "/a/b/c",
+            "wrapped (/tmp/x) parens",
+            "comma, /var/y, end",
         ];
         for input in inputs {
             let scrubbed = message(input, None);
             for token in scrubbed.split_whitespace() {
                 assert!(
-                    !token.trim_matches(|c: char| ",.;:()".contains(c)).starts_with('/'),
+                    !token
+                        .trim_matches(|c: char| ",.;:()".contains(c))
+                        .starts_with('/'),
                     "{input:?} -> {scrubbed:?}"
                 );
             }
@@ -237,7 +242,10 @@ mod tests {
             strip_hash_suffix("bougie::run::h0123456789abcdef"),
             "bougie::run"
         );
-        assert_eq!(strip_hash_suffix("bougie::run::hnothex"), "bougie::run::hnothex");
+        assert_eq!(
+            strip_hash_suffix("bougie::run::hnothex"),
+            "bougie::run::hnothex"
+        );
     }
 
     #[test]

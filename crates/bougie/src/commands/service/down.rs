@@ -48,11 +48,7 @@ impl Render for ServicesDownResult {
     }
 }
 
-pub fn run(
-    format: OutputFormat,
-        names: Vec<String>,
-    purge: bool,
-) -> Result<ExitCode> {
+pub fn run(format: OutputFormat, names: Vec<String>, purge: bool) -> Result<ExitCode> {
     let project_root = locate_project_root()?;
     let project = load_project(&project_root)?;
 

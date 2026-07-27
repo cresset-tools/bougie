@@ -26,7 +26,7 @@
 use crate::daemon::store_layout;
 use crate::daemon::tenants::{self, Tenant};
 use bougie_paths::Paths;
-use eyre::{eyre, Result, WrapErr};
+use eyre::{Result, WrapErr, eyre};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::process::Command;
@@ -60,8 +60,8 @@ pub async fn pre_start(paths: &Paths, version: &str) -> Result<()> {
         return Ok(());
     }
 
-    let basedir = store_layout::basedir(paths, entry, version)
-        .wrap_err("resolving mariadb basedir")?;
+    let basedir =
+        store_layout::basedir(paths, entry, version).wrap_err("resolving mariadb basedir")?;
     let install_db = basedir.join("bin/mariadb-install-db");
     if !tokio::fs::try_exists(&install_db).await.unwrap_or(false) {
         return Err(eyre!(
@@ -347,7 +347,10 @@ fn purge_sql(name: &str, scratch_dbs: &[String]) -> String {
     for db in scratch_dbs {
         // Real DB names off the server — backtick-quote and double any
         // backtick so a weird scratch name can't break out of the identifier.
-        sql.push_str(&format!("DROP DATABASE IF EXISTS `{}`; ", db.replace('`', "``")));
+        sql.push_str(&format!(
+            "DROP DATABASE IF EXISTS `{}`; ",
+            db.replace('`', "``")
+        ));
     }
     sql.push_str(&format!(
         "DROP DATABASE IF EXISTS `{name}`; DROP USER IF EXISTS '{name}'@'localhost';"
@@ -360,9 +363,7 @@ fn purge_sql(name: &str, scratch_dbs: &[String]) -> String {
 /// `extra.bougie.services.tenant` override sneaking SQL metacharacters
 /// in via the wire.
 fn is_safe_identifier(s: &str) -> bool {
-    !s.is_empty()
-        && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-        && s.len() <= 64 // mariadb identifier cap
+    !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') && s.len() <= 64 // mariadb identifier cap
 }
 
 #[cfg(test)]
@@ -411,7 +412,11 @@ mod tests {
         );
         // Database + user still created; user name is unescaped (not a pattern).
         assert!(sql.contains("CREATE DATABASE IF NOT EXISTS `acme_blog`"));
-        assert!(sql.contains("CREATE USER IF NOT EXISTS 'acme_blog'@'localhost' IDENTIFIED BY 'secret'"));
+        assert!(
+            sql.contains(
+                "CREATE USER IF NOT EXISTS 'acme_blog'@'localhost' IDENTIFIED BY 'secret'"
+            )
+        );
     }
 
     #[test]

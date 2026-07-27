@@ -11,7 +11,7 @@
 //! test checks that equivalence against a fresh-bootstrap baseline so
 //! drift cannot hide behind the partial-update path.
 
-use bougie_autoloader::{user_code_roots, Autoloader, DumpRequest};
+use bougie_autoloader::{Autoloader, DumpRequest, user_code_roots};
 use std::path::{Path, PathBuf};
 
 const FIXTURES_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
@@ -67,8 +67,13 @@ fn apply_changed_path_adds_new_class() {
     // Bootstrap the live autoloader, then add the file, then patch.
     let mut loader = Autoloader::bootstrap(&req(live.path(), true)).unwrap();
     std::fs::write(live.path().join(new_rel), new_body).unwrap();
-    let changed = loader.apply_changed_path(&live.path().join(new_rel)).unwrap();
-    assert!(changed, "merged classmap should change when a new class lands");
+    let changed = loader
+        .apply_changed_path(&live.path().join(new_rel))
+        .unwrap();
+    assert!(
+        changed,
+        "merged classmap should change when a new class lands"
+    );
     loader.emit().unwrap();
 
     // Baseline: write the file before bootstrap and emit fresh.
@@ -80,10 +85,8 @@ fn apply_changed_path_adds_new_class() {
 
     assert_classmap_matches(live.path(), baseline.path());
     // Sanity: the new class actually made it into the live classmap.
-    let live_map = std::fs::read_to_string(
-        live.path().join("vendor/composer/autoload_classmap.php"),
-    )
-    .unwrap();
+    let live_map =
+        std::fs::read_to_string(live.path().join("vendor/composer/autoload_classmap.php")).unwrap();
     assert!(
         live_map.contains("'Acme\\\\Lib\\\\NewThing'"),
         "live classmap missing NewThing: {live_map}"
@@ -121,7 +124,10 @@ fn apply_changed_path_returns_false_for_out_of_scope_path() {
     std::fs::write(&outside, b"<?php class Doc {}").unwrap();
 
     let changed = loader.apply_changed_path(&outside).unwrap();
-    assert!(!changed, "path outside any scan_root must not change the classmap");
+    assert!(
+        !changed,
+        "path outside any scan_root must not change the classmap"
+    );
 }
 
 /// Two files declare the same class; first-seen wins on bootstrap. If
@@ -136,10 +142,9 @@ fn apply_deleted_path_resolves_ambiguity() {
     let mut loader = Autoloader::bootstrap(&req(project.path(), true)).unwrap();
     loader.emit().unwrap();
 
-    let initial_map = std::fs::read_to_string(
-        project.path().join("vendor/composer/autoload_classmap.php"),
-    )
-    .unwrap();
+    let initial_map =
+        std::fs::read_to_string(project.path().join("vendor/composer/autoload_classmap.php"))
+            .unwrap();
     assert!(
         initial_map.contains("'Shared\\\\Foo' => $vendorDir . '/acme/beta/src/Foo.php'"),
         "initial classmap expected beta to win — got:\n{initial_map}"
@@ -150,10 +155,9 @@ fn apply_deleted_path_resolves_ambiguity() {
     assert!(changed, "deleting the winner should move the classmap");
     loader.emit().unwrap();
 
-    let after_map = std::fs::read_to_string(
-        project.path().join("vendor/composer/autoload_classmap.php"),
-    )
-    .unwrap();
+    let after_map =
+        std::fs::read_to_string(project.path().join("vendor/composer/autoload_classmap.php"))
+            .unwrap();
     assert!(
         after_map.contains("'Shared\\\\Foo' => $vendorDir . '/acme/alpha/src/Foo.php'"),
         "after delete, alpha should win — got:\n{after_map}"
@@ -174,10 +178,9 @@ fn apply_deleted_path_drops_directory_subtree() {
     let mut loader = Autoloader::bootstrap(&req(project.path(), true)).unwrap();
     loader.emit().unwrap();
 
-    let initial_map = std::fs::read_to_string(
-        project.path().join("vendor/composer/autoload_classmap.php"),
-    )
-    .unwrap();
+    let initial_map =
+        std::fs::read_to_string(project.path().join("vendor/composer/autoload_classmap.php"))
+            .unwrap();
     assert!(
         initial_map.contains("'Acme\\\\Lib\\\\Thing'"),
         "initial classmap missing Acme\\Lib\\Thing — got:\n{initial_map}"
@@ -195,10 +198,9 @@ fn apply_deleted_path_drops_directory_subtree() {
     );
     loader.emit().unwrap();
 
-    let after_map = std::fs::read_to_string(
-        project.path().join("vendor/composer/autoload_classmap.php"),
-    )
-    .unwrap();
+    let after_map =
+        std::fs::read_to_string(project.path().join("vendor/composer/autoload_classmap.php"))
+            .unwrap();
     assert!(
         !after_map.contains("'Acme\\\\Lib\\\\Thing'"),
         "Acme\\Lib\\Thing must be gone after the directory delete — got:\n{after_map}"
@@ -231,8 +233,7 @@ fn user_code_roots_includes_root_and_path_repo_dirs() {
     let roots = user_code_roots(&req(project.path(), false)).unwrap();
 
     let project_canonical = std::fs::canonicalize(project.path()).unwrap();
-    let sneak_canonical =
-        std::fs::canonicalize(project.path().join("vendor/acme/sneak")).unwrap();
+    let sneak_canonical = std::fs::canonicalize(project.path().join("vendor/acme/sneak")).unwrap();
 
     assert!(
         roots.contains(&project_canonical),
@@ -285,12 +286,18 @@ fn rescan_root_reconciles_generated_directory() {
         std::fs::read_to_string(root.join("vendor/composer/autoload_classmap.php"))
             .unwrap_or_default()
     };
-    assert!(read_map().contains("Acme\\\\Proxy"), "bootstrap missed Proxy");
+    assert!(
+        read_map().contains("Acme\\\\Proxy"),
+        "bootstrap missed Proxy"
+    );
 
     // Magento clears the whole `generated/` tree (a bulk rm -rf).
     std::fs::remove_dir_all(root.join("generated")).unwrap();
     let changed = loader.rescan_root(&root.join("generated")).unwrap();
-    assert!(changed, "reconcile after wiping generated/ should change merged");
+    assert!(
+        changed,
+        "reconcile after wiping generated/ should change merged"
+    );
     loader.emit().unwrap();
     assert!(
         !read_map().contains("Acme\\\\Proxy"),
@@ -329,7 +336,9 @@ fn emit_drops_dangling_generated_entry() {
 
     let map_path = root.join("vendor/composer/autoload_classmap.php");
     assert!(
-        std::fs::read_to_string(&map_path).unwrap().contains("Acme\\\\Proxy"),
+        std::fs::read_to_string(&map_path)
+            .unwrap()
+            .contains("Acme\\\\Proxy"),
         "bootstrap missed Proxy"
     );
 
@@ -339,7 +348,9 @@ fn emit_drops_dangling_generated_entry() {
     std::fs::remove_file(root.join("generated/code/Acme/Proxy.php")).unwrap();
     loader.emit().unwrap();
     assert!(
-        !std::fs::read_to_string(&map_path).unwrap().contains("Acme\\\\Proxy"),
+        !std::fs::read_to_string(&map_path)
+            .unwrap()
+            .contains("Acme\\\\Proxy"),
         "emit must drop the dangling generated/ entry"
     );
 }
@@ -426,7 +437,8 @@ fn assert_classmap_matches(a: &Path, b: &Path) {
         let pb = b.join(rel);
         let ba = std::fs::read(&pa).unwrap_or_else(|_| panic!("read {}", pa.display()));
         let bb = std::fs::read(&pb).unwrap_or_else(|_| panic!("read {}", pb.display()));
-        assert!(ba == bb, 
+        assert!(
+            ba == bb,
             "{rel} differs between live-patched and fresh-bootstrap state\n--- live ---\n{}\n--- baseline ---\n{}",
             String::from_utf8_lossy(&ba),
             String::from_utf8_lossy(&bb),

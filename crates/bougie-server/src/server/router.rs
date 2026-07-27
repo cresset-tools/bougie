@@ -9,12 +9,12 @@
 //! Phase 3 layers per-request xdebug routing on top of the
 //! `variant="normal"` plumbing this module installs.
 
+use axum::Router;
 use axum::body::Body;
 use axum::extract::{ConnectInfo, State};
-use axum::http::{header, HeaderMap, HeaderName, HeaderValue, Request, StatusCode};
+use axum::http::{HeaderMap, HeaderName, HeaderValue, Request, StatusCode, header};
 use axum::response::Response;
 use axum::routing::any;
-use axum::Router;
 use http_body_util::BodyExt;
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -25,7 +25,7 @@ use std::time::Instant;
 use super::autoloader_manager::AutoloaderManager;
 use super::config::{HostBlock, ServerConfig};
 use super::fastcgi;
-use super::log::{emit_request, RequestRow};
+use super::log::{RequestRow, emit_request};
 use super::pool::PoolManager;
 use super::static_files::{self, Resolution};
 use super::xdebug::{self, Variant};
@@ -92,7 +92,8 @@ impl AppState {
     /// (when the requested port was 0). Called once during startup
     /// from `serve`.
     pub fn set_listen_port(&self, port: u16) {
-        self.listen_port.store(port, std::sync::atomic::Ordering::Relaxed);
+        self.listen_port
+            .store(port, std::sync::atomic::Ordering::Relaxed);
     }
 
     pub fn listen_port(&self) -> u16 {
@@ -172,7 +173,19 @@ async fn dispatch(
         .map(Arc::clone);
     let resp = match host_opt {
         None => unknown_host(&host_header),
-        Some(host) => serve(&state, &host, &host_header, &path, &query, peer, variant, req).await,
+        Some(host) => {
+            serve(
+                &state,
+                &host,
+                &host_header,
+                &path,
+                &query,
+                peer,
+                variant,
+                req,
+            )
+            .await
+        }
     };
 
     let (status, bytes_out) = response_summary(&resp);
@@ -237,7 +250,12 @@ async fn serve(
 
     match static_files::resolve(host, path, query) {
         Resolution::Static { path: file } => serve_static(&file).await,
-        Resolution::Php { script_filename, script_name, path_info, rewritten_query } => {
+        Resolution::Php {
+            script_filename,
+            script_name,
+            path_info,
+            rewritten_query,
+        } => {
             let effective_query = rewritten_query.as_deref().unwrap_or(query);
             serve_php(
                 state,
@@ -387,7 +405,12 @@ async fn serve_php(
         }
     }
 
-    cgi_to_response(&result.stdout, pool.php_version(), &host.project, variant.as_str())
+    cgi_to_response(
+        &result.stdout,
+        pool.php_version(),
+        &host.project,
+        variant.as_str(),
+    )
 }
 
 /// Wrap up [`collect_body`]'s tuple return. The outer Result lets the
@@ -405,7 +428,10 @@ async fn collect_body(
     let collected = match body.collect().await {
         Ok(c) => c.to_bytes(),
         Err(err) => {
-            if err.downcast_ref::<http_body_util::LengthLimitError>().is_some() {
+            if err
+                .downcast_ref::<http_body_util::LengthLimitError>()
+                .is_some()
+            {
                 return Err(plain_response(
                     StatusCode::PAYLOAD_TOO_LARGE,
                     format!("bougie: request body exceeds the {MAX_REQUEST_BODY}-byte limit\n"),
@@ -456,7 +482,12 @@ fn http_header_params(h: &HeaderMap) -> Vec<(String, String)> {
 /// headers come straight through; `Status: NNN reason` controls the
 /// HTTP status code; the body after the blank-line separator is
 /// streamed back verbatim.
-fn cgi_to_response(stdout: &[u8], php_version: &str, project: &std::path::Path, pool: &str) -> Response {
+fn cgi_to_response(
+    stdout: &[u8],
+    php_version: &str,
+    project: &std::path::Path,
+    pool: &str,
+) -> Response {
     let (head, body) = split_cgi(stdout);
     let mut status = StatusCode::OK;
     let mut headers: Vec<(HeaderName, HeaderValue)> = Vec::new();
@@ -531,9 +562,7 @@ fn split_cgi(stdout: &[u8]) -> (&[u8], &[u8]) {
 }
 
 fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack
-        .windows(needle.len())
-        .position(|w| w == needle)
+    haystack.windows(needle.len()).position(|w| w == needle)
 }
 
 fn parse_status_code(value: &[u8]) -> Option<StatusCode> {
@@ -629,7 +658,12 @@ mod tests {
             root: ".".into(),
             index: Vec::new(),
             try_files: Vec::new(),
-            aliases: aliases.iter().map(|a| HostAlias { hostname: (*a).to_string() }).collect(),
+            aliases: aliases
+                .iter()
+                .map(|a| HostAlias {
+                    hostname: (*a).to_string(),
+                })
+                .collect(),
             rewrites: Vec::new(),
         }
     }
@@ -738,7 +772,9 @@ mod tests {
         let raw = b"Content-Type: text/plain\r\n\r\nok";
         let resp = cgi_to_response(raw, "8.3.12-nts", std::path::Path::new("/p"), "normal");
         assert_eq!(
-            resp.headers().get("x-bougie-pool").map(axum::http::HeaderValue::as_bytes),
+            resp.headers()
+                .get("x-bougie-pool")
+                .map(axum::http::HeaderValue::as_bytes),
             Some(&b"normal"[..])
         );
     }

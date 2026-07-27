@@ -71,9 +71,8 @@ impl ServerSection {
     /// suffix set used in deployment config (`s`, `m`, `h`, `d`) plus a
     /// bare integer seconds.
     pub fn idle_pool_timeout_duration(&self) -> Result<Duration> {
-        parse_short_duration(&self.idle_pool_timeout).wrap_err_with(|| {
-            format!("invalid idle_pool_timeout {:?}", self.idle_pool_timeout)
-        })
+        parse_short_duration(&self.idle_pool_timeout)
+            .wrap_err_with(|| format!("invalid idle_pool_timeout {:?}", self.idle_pool_timeout))
     }
 }
 
@@ -193,18 +192,24 @@ pub fn validate_host(host: &HostBlock) -> Vec<HostWarning> {
     let project_meta = std::fs::metadata(&host.project);
     match &project_meta {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            out.push(HostWarning::MissingProject { project: host.project.clone() });
+            out.push(HostWarning::MissingProject {
+                project: host.project.clone(),
+            });
             return out;
         }
         Err(_) => {
             // Permission-denied / IO error: surface as MissingProject
             // — accurate enough, and we won't be able to validate the
             // web root either.
-            out.push(HostWarning::MissingProject { project: host.project.clone() });
+            out.push(HostWarning::MissingProject {
+                project: host.project.clone(),
+            });
             return out;
         }
         Ok(m) if !m.is_dir() => {
-            out.push(HostWarning::ProjectNotDirectory { project: host.project.clone() });
+            out.push(HostWarning::ProjectNotDirectory {
+                project: host.project.clone(),
+            });
             return out;
         }
         Ok(_) => {}
@@ -231,10 +236,7 @@ pub fn validate_host(host: &HostBlock) -> Vec<HostWarning> {
     // (e.g. `try_files = ["$uri", "/index.php$is_args$args"]` with a
     // front controller at the project root rather than the web root).
     // We surface a heads-up either way.
-    let any_index_present = host
-        .index
-        .iter()
-        .any(|name| web_root.join(name).is_file());
+    let any_index_present = host.index.iter().any(|name| web_root.join(name).is_file());
     if !any_index_present && !host.index.is_empty() {
         out.push(HostWarning::NoIndexFile {
             web_root,
@@ -249,7 +251,11 @@ fn default_index() -> Vec<String> {
 }
 
 fn default_try_files() -> Vec<String> {
-    vec!["$uri".into(), "$uri/".into(), "/index.php$is_args$args".into()]
+    vec![
+        "$uri".into(),
+        "$uri/".into(),
+        "/index.php$is_args$args".into(),
+    ]
 }
 
 /// Load the config from `path`. Missing file returns `ServerConfig::default()`.
@@ -257,8 +263,8 @@ pub fn load(path: &Path) -> Result<ServerConfig> {
     if !path.exists() {
         return Ok(ServerConfig::default());
     }
-    let text = std::fs::read_to_string(path)
-        .wrap_err_with(|| format!("reading {}", path.display()))?;
+    let text =
+        std::fs::read_to_string(path).wrap_err_with(|| format!("reading {}", path.display()))?;
     parse_str(&text).wrap_err_with(|| format!("parsing {}", path.display()))
 }
 
@@ -313,12 +319,17 @@ pub fn add_host_with_rewrites(
         table["root"] = toml_edit::value(r);
     }
     if !rewrites.is_empty() {
-        table.insert("rewrite", toml_edit::Item::ArrayOfTables(rewrite_array(rewrites)));
+        table.insert(
+            "rewrite",
+            toml_edit::Item::ArrayOfTables(rewrite_array(rewrites)),
+        );
     }
 
     let host = doc
         .entry("host")
-        .or_insert(toml_edit::Item::ArrayOfTables(toml_edit::ArrayOfTables::new()))
+        .or_insert(toml_edit::Item::ArrayOfTables(
+            toml_edit::ArrayOfTables::new(),
+        ))
         .as_array_of_tables_mut()
         .ok_or_else(|| eyre::eyre!("`host` is not an array of tables in {}", path.display()))?;
     host.push(table);
@@ -370,8 +381,8 @@ pub fn sync_host_rewrites(path: &Path, hostname: &str, rewrites: &[RewriteRule])
         return Ok(false);
     }
 
-    let body = std::fs::read_to_string(path)
-        .wrap_err_with(|| format!("reading {}", path.display()))?;
+    let body =
+        std::fs::read_to_string(path).wrap_err_with(|| format!("reading {}", path.display()))?;
     let mut doc: toml_edit::DocumentMut = body
         .parse()
         .wrap_err_with(|| format!("parsing {}", path.display()))?;
@@ -388,7 +399,10 @@ pub fn sync_host_rewrites(path: &Path, hostname: &str, rewrites: &[RewriteRule])
     if rewrites.is_empty() {
         table.remove("rewrite");
     } else {
-        table.insert("rewrite", toml_edit::Item::ArrayOfTables(rewrite_array(rewrites)));
+        table.insert(
+            "rewrite",
+            toml_edit::Item::ArrayOfTables(rewrite_array(rewrites)),
+        );
     }
     write_atomically(path, &doc.to_string())?;
     Ok(true)
@@ -400,8 +414,8 @@ pub fn remove_host(path: &Path, hostname: &str) -> Result<bool> {
     if !path.exists() {
         return Ok(false);
     }
-    let body = std::fs::read_to_string(path)
-        .wrap_err_with(|| format!("reading {}", path.display()))?;
+    let body =
+        std::fs::read_to_string(path).wrap_err_with(|| format!("reading {}", path.display()))?;
     let mut doc: toml_edit::DocumentMut = body
         .parse()
         .wrap_err_with(|| format!("parsing {}", path.display()))?;
@@ -432,7 +446,10 @@ fn validate_hostname(hostname: &str) -> Result<()> {
             return Err(eyre::eyre!("invalid label in hostname: {hostname:?}"));
         }
         let bytes = label.as_bytes();
-        if !bytes.iter().all(|c| c.is_ascii_alphanumeric() || *c == b'-') {
+        if !bytes
+            .iter()
+            .all(|c| c.is_ascii_alphanumeric() || *c == b'-')
+        {
             return Err(eyre::eyre!("invalid character in hostname: {hostname:?}"));
         }
         if bytes.first() == Some(&b'-') || bytes.last() == Some(&b'-') {
@@ -486,7 +503,9 @@ fn lexically_clean(path: &Path) -> PathBuf {
 }
 
 fn find_host_index(doc: &toml_edit::DocumentMut, hostname: &str) -> Option<usize> {
-    let host = doc.get("host").and_then(toml_edit::Item::as_array_of_tables)?;
+    let host = doc
+        .get("host")
+        .and_then(toml_edit::Item::as_array_of_tables)?;
     for (idx, table) in host.iter().enumerate() {
         if table
             .get("hostname")
@@ -495,7 +514,10 @@ fn find_host_index(doc: &toml_edit::DocumentMut, hostname: &str) -> Option<usize
         {
             return Some(idx);
         }
-        if let Some(aliases) = table.get("alias").and_then(toml_edit::Item::as_array_of_tables) {
+        if let Some(aliases) = table
+            .get("alias")
+            .and_then(toml_edit::Item::as_array_of_tables)
+        {
             for alias in aliases {
                 if alias
                     .get("hostname")
@@ -559,12 +581,16 @@ fn parse_short_duration(s: &str) -> Result<Duration> {
         Some(_) => s.split_at(s.len() - 1),
         None => unreachable!("checked non-empty above"),
     };
-    let n: u64 = num.parse().wrap_err_with(|| format!("not a number: {num:?}"))?;
+    let n: u64 = num
+        .parse()
+        .wrap_err_with(|| format!("not a number: {num:?}"))?;
     let secs = match unit {
         "s" => n,
         "m" => n.checked_mul(60).ok_or_else(|| eyre::eyre!("overflow"))?,
         "h" => n.checked_mul(3600).ok_or_else(|| eyre::eyre!("overflow"))?,
-        "d" => n.checked_mul(86_400).ok_or_else(|| eyre::eyre!("overflow"))?,
+        "d" => n
+            .checked_mul(86_400)
+            .ok_or_else(|| eyre::eyre!("overflow"))?,
         other => return Err(eyre::eyre!("unknown duration unit: {other:?}")),
     };
     Ok(Duration::from_secs(secs))
@@ -581,7 +607,10 @@ mod tests {
         assert_eq!(cfg.server.listen, DEFAULT_LISTEN);
         assert_eq!(cfg.server.log_format, DEFAULT_LOG_FORMAT);
         assert_eq!(cfg.server.idle_pool_timeout, DEFAULT_IDLE_POOL_TIMEOUT);
-        assert_eq!(cfg.server.max_concurrent_pools, DEFAULT_MAX_CONCURRENT_POOLS);
+        assert_eq!(
+            cfg.server.max_concurrent_pools,
+            DEFAULT_MAX_CONCURRENT_POOLS
+        );
         assert_eq!(cfg.server.debug_only_extensions, vec!["xdebug".to_string()]);
         assert!(cfg.hosts.is_empty());
     }
@@ -632,15 +661,27 @@ project  = "/tmp/x"
         let h = &cfg.hosts[0];
         assert_eq!(h.root, ".");
         assert_eq!(h.index, vec!["index.php", "index.html"]);
-        assert_eq!(h.try_files, vec!["$uri", "$uri/", "/index.php$is_args$args"]);
+        assert_eq!(
+            h.try_files,
+            vec!["$uri", "$uri/", "/index.php$is_args$args"]
+        );
     }
 
     #[test]
     fn duration_parses() {
-        assert_eq!(parse_short_duration("10m").unwrap(), Duration::from_mins(10));
-        assert_eq!(parse_short_duration("90s").unwrap(), Duration::from_secs(90));
+        assert_eq!(
+            parse_short_duration("10m").unwrap(),
+            Duration::from_mins(10)
+        );
+        assert_eq!(
+            parse_short_duration("90s").unwrap(),
+            Duration::from_secs(90)
+        );
         assert_eq!(parse_short_duration("2h").unwrap(), Duration::from_hours(2));
-        assert_eq!(parse_short_duration("1d").unwrap(), Duration::from_hours(24));
+        assert_eq!(
+            parse_short_duration("1d").unwrap(),
+            Duration::from_hours(24)
+        );
         assert_eq!(parse_short_duration("45").unwrap(), Duration::from_secs(45));
         assert!(parse_short_duration("").is_err());
         assert!(parse_short_duration("3x").is_err());
@@ -669,8 +710,14 @@ only_if_missing = true
         .unwrap();
         let rw = &cfg.hosts[0].rewrites;
         assert_eq!(rw.len(), 2);
-        assert!(!rw[0].only_if_missing, "version-strip rule defaults to unconditional");
-        assert!(rw[1].only_if_missing, "static.php fallback is only-if-missing");
+        assert!(
+            !rw[0].only_if_missing,
+            "version-strip rule defaults to unconditional"
+        );
+        assert!(
+            rw[1].only_if_missing,
+            "static.php fallback is only-if-missing"
+        );
 
         let dumped = toml_edit::ser::to_string(&cfg).unwrap();
         assert!(dumped.contains("only_if_missing = true"));
@@ -694,8 +741,14 @@ only_if_missing = true
                 only_if_missing: true,
             },
         ];
-        add_host_with_rewrites(&path, "x.bougie.run", Path::new("/tmp/x"), Some("pub"), &rewrites)
-            .unwrap();
+        add_host_with_rewrites(
+            &path,
+            "x.bougie.run",
+            Path::new("/tmp/x"),
+            Some("pub"),
+            &rewrites,
+        )
+        .unwrap();
         let cfg = load(&path).unwrap();
         let rw = &cfg.hosts[0].rewrites;
         assert_eq!(rw.len(), 2);
@@ -764,8 +817,13 @@ target = "/static.php?resource=$1"
     fn add_host_creates_file_with_skeleton_then_appends() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("server.toml");
-        let canonical =
-            add_host(&path, "myapp.bougie.run", Path::new("/tmp/myapp"), Some("public")).unwrap();
+        let canonical = add_host(
+            &path,
+            "myapp.bougie.run",
+            Path::new("/tmp/myapp"),
+            Some("public"),
+        )
+        .unwrap();
         assert_eq!(canonical, Some(PathBuf::from("/tmp/myapp")));
         let cfg = load(&path).unwrap();
         assert_eq!(cfg.hosts.len(), 1);
@@ -774,8 +832,13 @@ target = "/static.php?resource=$1"
         assert_eq!(cfg.hosts[0].root, "public");
 
         // Re-adding is idempotent: returns None.
-        let again =
-            add_host(&path, "myapp.bougie.run", Path::new("/tmp/myapp"), Some("public")).unwrap();
+        let again = add_host(
+            &path,
+            "myapp.bougie.run",
+            Path::new("/tmp/myapp"),
+            Some("public"),
+        )
+        .unwrap();
         assert!(again.is_none());
     }
 
@@ -853,7 +916,11 @@ listen = "0.0.0.0:7080"  # bound everywhere
         let stored = &cfg.hosts[0].project;
         let canonical_project = project.canonicalize().unwrap();
         assert_eq!(stored, &canonical_project);
-        assert!(!stored.to_string_lossy().ends_with("/."), "got: {}", stored.display());
+        assert!(
+            !stored.to_string_lossy().ends_with("/."),
+            "got: {}",
+            stored.display()
+        );
     }
 
     #[test]
@@ -950,7 +1017,10 @@ listen = "0.0.0.0:7080"  # bound everywhere
         let ws = validate_host(&h);
         match &ws[0] {
             HostWarning::NoIndexFile { tried, .. } => {
-                assert_eq!(tried, &vec!["index.php".to_string(), "index.html".to_string()]);
+                assert_eq!(
+                    tried,
+                    &vec!["index.php".to_string(), "index.html".to_string()]
+                );
             }
             other => panic!("expected NoIndexFile, got {other:?}"),
         }

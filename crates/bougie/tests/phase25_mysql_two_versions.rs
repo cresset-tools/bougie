@@ -106,9 +106,12 @@ fn read_tenant(env: &TestEnv, version: &str) -> Value {
         .join("state/services/mysql")
         .join(version)
         .join("tenants.json");
-    let text = fs::read_to_string(&ledger)
-        .unwrap_or_else(|e| panic!("reading {}: {e}", ledger.display()));
-    let line = text.lines().find(|l| !l.trim().is_empty()).expect("a tenant row");
+    let text =
+        fs::read_to_string(&ledger).unwrap_or_else(|e| panic!("reading {}: {e}", ledger.display()));
+    let line = text
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .expect("a tenant row");
     serde_json::from_str(line).expect("valid tenant JSON")
 }
 

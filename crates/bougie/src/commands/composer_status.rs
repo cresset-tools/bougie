@@ -15,8 +15,8 @@ use std::process::ExitCode;
 
 use bougie_cli::OutputFormat;
 use bougie_composer::lockfile::Lock;
-use bougie_output::output::{emit, Render};
-use eyre::{eyre, Context, Result};
+use bougie_output::output::{Render, emit};
+use eyre::{Context, Result, eyre};
 use serde::Serialize;
 
 #[derive(Debug, Serialize)]
@@ -59,7 +59,8 @@ pub fn run(format: OutputFormat, working_dir: Option<PathBuf>) -> Result<ExitCod
             project_root.display()
         ));
     }
-    let lock = Lock::read(&lock_path).wrap_err_with(|| format!("reading {}", lock_path.display()))?;
+    let lock =
+        Lock::read(&lock_path).wrap_err_with(|| format!("reading {}", lock_path.display()))?;
 
     let mut path_packages: Vec<String> = lock
         .all_packages()
@@ -68,6 +69,12 @@ pub fn run(format: OutputFormat, working_dir: Option<PathBuf>) -> Result<ExitCod
         .collect();
     path_packages.sort();
 
-    emit(format, &StatusResult { schema_version: 1, path_packages })?;
+    emit(
+        format,
+        &StatusResult {
+            schema_version: 1,
+            path_packages,
+        },
+    )?;
     Ok(ExitCode::SUCCESS)
 }

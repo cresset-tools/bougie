@@ -55,8 +55,7 @@ pub fn run(
     let bougie_paths = Paths::from_env()?;
     let server_paths = ServerPaths::from_env()?;
     let idle_pool_timeout = cfg.server.idle_pool_timeout_duration()?;
-    let max_concurrent_pools = usize::try_from(cfg.server.max_concurrent_pools)
-        .unwrap_or(16);
+    let max_concurrent_pools = usize::try_from(cfg.server.max_concurrent_pools).unwrap_or(16);
     let pools = Arc::new(PoolManager::new(
         bougie_paths,
         server_paths,
@@ -194,7 +193,10 @@ async fn serve(
     };
     let _control_handle = match control::start(Arc::clone(&state), control_socket.clone()) {
         Ok(h) => {
-            eprintln!("bougie server: control socket at {}", control_socket.display());
+            eprintln!(
+                "bougie server: control socket at {}",
+                control_socket.display()
+            );
             Some(h)
         }
         Err(e) => {
@@ -266,7 +268,7 @@ async fn serve(
 
 #[cfg(unix)]
 async fn shutdown_signal() {
-    use tokio::signal::unix::{signal, SignalKind};
+    use tokio::signal::unix::{SignalKind, signal};
     let mut sigint = signal(SignalKind::interrupt()).expect("install SIGINT handler");
     let mut sigterm = signal(SignalKind::terminate()).expect("install SIGTERM handler");
     tokio::select! {

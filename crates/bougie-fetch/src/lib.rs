@@ -5,12 +5,12 @@
 //! the final destination so the rename is on the same filesystem),
 //! atomic-rename to `<dest>`, delete `tmp`.
 
-use bougie_errors::{error_chain, BougieError};
+use bougie_errors::{BougieError, error_chain};
 use eyre::{Result, WrapErr};
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use sha2::{Digest, Sha256};
 use std::fs::{self, File};
-use std::io::{copy, Read, Write};
+use std::io::{Read, Write, copy};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -163,10 +163,16 @@ pub struct Hash<'a> {
 
 impl<'a> Hash<'a> {
     pub fn sha256(hex: &'a str) -> Self {
-        Self { algo: HashAlgo::Sha256, hex }
+        Self {
+            algo: HashAlgo::Sha256,
+            hex,
+        }
     }
     pub fn sha1(hex: &'a str) -> Self {
-        Self { algo: HashAlgo::Sha1, hex }
+        Self {
+            algo: HashAlgo::Sha1,
+            hex,
+        }
     }
 }
 
@@ -276,7 +282,10 @@ const BACKOFF_BASE: Duration = Duration::from_millis(250);
 fn backoff_sleep(attempt: u32) {
     // 2^(attempt-1), saturating so a future bump to RETRY_BUDGET can't
     // overflow the shift; capped at 8x so the wait stays bounded.
-    let factor = 1u32.checked_shl(attempt.saturating_sub(1)).unwrap_or(u32::MAX).min(8);
+    let factor = 1u32
+        .checked_shl(attempt.saturating_sub(1))
+        .unwrap_or(u32::MAX)
+        .min(8);
     let base = BACKOFF_BASE.saturating_mul(factor);
     let clock_nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -395,8 +404,7 @@ fn fetch_with_retry(
     fs::create_dir_all(spec.partial_dir)
         .wrap_err_with(|| format!("creating {}", spec.partial_dir.display()))?;
     if let Some(parent) = spec.dest.parent() {
-        fs::create_dir_all(parent)
-            .wrap_err_with(|| format!("creating {}", parent.display()))?;
+        fs::create_dir_all(parent).wrap_err_with(|| format!("creating {}", parent.display()))?;
     }
 
     let mut attempts = 0;
@@ -558,8 +566,7 @@ fn try_once_blob(
 
     let incoming = sibling_with_suffix(spec.dest, ".incoming");
     let _ = fs::remove_dir_all(&incoming);
-    fs::create_dir_all(&incoming)
-        .wrap_err_with(|| format!("creating {}", incoming.display()))?;
+    fs::create_dir_all(&incoming).wrap_err_with(|| format!("creating {}", incoming.display()))?;
     match spec.archive {
         ArchiveKind::TarZst => extract_tar_zst(&tmp, &incoming, spec.strip_prefix)?,
         ArchiveKind::TarGz => extract_tar_gz(&tmp, &incoming, spec.strip_prefix)?,
@@ -601,8 +608,7 @@ fn try_once_file(
 /// Pass `""` to disable stripping (archive entries land verbatim).
 #[tracing::instrument(skip_all, fields(into = %into.display()))]
 fn extract_tar_zst(tar_zst: &Path, into: &Path, strip_prefix: &str) -> Result<()> {
-    let f = File::open(tar_zst)
-        .wrap_err_with(|| format!("opening {}", tar_zst.display()))?;
+    let f = File::open(tar_zst).wrap_err_with(|| format!("opening {}", tar_zst.display()))?;
     let zd = zstd::stream::read::Decoder::new(f).wrap_err("zstd decoder")?;
     extract_tar(zd, tar_zst, into, strip_prefix)
 }
@@ -614,8 +620,7 @@ fn extract_tar_zst(tar_zst: &Path, into: &Path, strip_prefix: &str) -> Result<()
 /// and contain symlinks (`bin/npm` → `../lib/node_modules/npm/bin/npm-cli.js`),
 /// both handled by [`extract_tar`].
 fn extract_tar_gz(tar_gz: &Path, into: &Path, strip_prefix: &str) -> Result<()> {
-    let f = File::open(tar_gz)
-        .wrap_err_with(|| format!("opening {}", tar_gz.display()))?;
+    let f = File::open(tar_gz).wrap_err_with(|| format!("opening {}", tar_gz.display()))?;
     let gd = flate2::read::GzDecoder::new(f);
     extract_tar(gd, tar_gz, into, strip_prefix)
 }
@@ -673,8 +678,7 @@ pub fn detect_tar_top_level(archive: &Path) -> Result<String> {
 /// picking the decoder from the leading magic bytes (gzip / zstd / plain).
 /// Shared by [`extract_tar_auto`] and [`detect_tar_top_level`].
 fn open_tar_reader(archive: &Path) -> Result<Box<dyn Read>> {
-    let mut f = File::open(archive)
-        .wrap_err_with(|| format!("opening {}", archive.display()))?;
+    let mut f = File::open(archive).wrap_err_with(|| format!("opening {}", archive.display()))?;
     let mut magic = [0u8; 4];
     let mut filled = 0;
     while filled < magic.len() {
@@ -714,10 +718,7 @@ fn extract_tar<R: Read>(reader: R, src: &Path, into: &Path, strip_prefix: &str) 
         .wrap_err_with(|| format!("reading entries from {}", src.display()))?
     {
         let mut entry = entry.wrap_err("reading archive entry")?;
-        let path = entry
-            .path()
-            .wrap_err("reading entry path")?
-            .into_owned();
+        let path = entry.path().wrap_err("reading entry path")?.into_owned();
         let Some(rewritten) = rewrite_archive_path(&path, strip_prefix) else {
             // The prefix directory entry itself; skip — `into` exists.
             continue;
@@ -750,10 +751,17 @@ fn extract_tar<R: Read>(reader: R, src: &Path, into: &Path, strip_prefix: &str) 
             let link_name = entry
                 .link_name()
                 .wrap_err("reading hardlink target")?
-                .ok_or_else(|| eyre::eyre!("hardlink entry for {} has no link name", path.display()))?
+                .ok_or_else(|| {
+                    eyre::eyre!("hardlink entry for {} has no link name", path.display())
+                })?
                 .into_owned();
-            let link_dest_rel = rewrite_archive_path(&link_name, strip_prefix)
-                .ok_or_else(|| eyre::eyre!("hardlink target {} resolves to the strip prefix root", link_name.display()))?;
+            let link_dest_rel =
+                rewrite_archive_path(&link_name, strip_prefix).ok_or_else(|| {
+                    eyre::eyre!(
+                        "hardlink target {} resolves to the strip prefix root",
+                        link_name.display()
+                    )
+                })?;
             if !is_safe_archive_path(&link_dest_rel) {
                 return Err(eyre::eyre!(
                     "hardlink target {} escapes the extraction root",
@@ -792,7 +800,9 @@ fn extract_tar<R: Read>(reader: R, src: &Path, into: &Path, strip_prefix: &str) 
             let link_name = entry
                 .link_name()
                 .wrap_err("reading symlink target")?
-                .ok_or_else(|| eyre::eyre!("symlink entry for {} has no link name", path.display()))?
+                .ok_or_else(|| {
+                    eyre::eyre!("symlink entry for {} has no link name", path.display())
+                })?
                 .into_owned();
             if symlink_target_escapes(&rewritten, &link_name) {
                 return Err(eyre::eyre!(
@@ -825,10 +835,9 @@ fn extract_tar<R: Read>(reader: R, src: &Path, into: &Path, strip_prefix: &str) 
 /// rewrite (which `extract` doesn't support) trivial.
 #[tracing::instrument(skip_all, fields(into = %into.display()))]
 pub fn extract_zip(zip_path: &Path, into: &Path, strip_prefix: &str) -> Result<()> {
-    let f = File::open(zip_path)
-        .wrap_err_with(|| format!("opening {}", zip_path.display()))?;
-    let mut archive = zip::ZipArchive::new(f)
-        .wrap_err_with(|| format!("reading zip {}", zip_path.display()))?;
+    let f = File::open(zip_path).wrap_err_with(|| format!("opening {}", zip_path.display()))?;
+    let mut archive =
+        zip::ZipArchive::new(f).wrap_err_with(|| format!("reading zip {}", zip_path.display()))?;
     for i in 0..archive.len() {
         let mut entry = archive
             .by_index(i)
@@ -844,16 +853,15 @@ pub fn extract_zip(zip_path: &Path, into: &Path, strip_prefix: &str) -> Result<(
         };
         let dest = into.join(&rewritten);
         if entry.is_dir() {
-            fs::create_dir_all(&dest)
-                .wrap_err_with(|| format!("creating {}", dest.display()))?;
+            fs::create_dir_all(&dest).wrap_err_with(|| format!("creating {}", dest.display()))?;
             continue;
         }
         if let Some(parent) = dest.parent() {
             fs::create_dir_all(parent)
                 .wrap_err_with(|| format!("creating {}", parent.display()))?;
         }
-        let mut out = File::create(&dest)
-            .wrap_err_with(|| format!("creating {}", dest.display()))?;
+        let mut out =
+            File::create(&dest).wrap_err_with(|| format!("creating {}", dest.display()))?;
         std::io::copy(&mut entry, &mut out)
             .wrap_err_with(|| format!("writing {}", dest.display()))?;
         // Preserve Unix executable bit if the entry carried mode info
@@ -879,10 +887,9 @@ pub fn extract_zip(zip_path: &Path, into: &Path, strip_prefix: &str) -> Result<(
 /// `<owner>-<repo>-<short_sha>/`, but the wrapper name isn't
 /// predictable across CDNs, so detection beats computation.
 pub fn detect_zip_top_level(zip_path: &Path) -> Result<String> {
-    let f = File::open(zip_path)
-        .wrap_err_with(|| format!("opening {}", zip_path.display()))?;
-    let mut archive = zip::ZipArchive::new(f)
-        .wrap_err_with(|| format!("reading zip {}", zip_path.display()))?;
+    let f = File::open(zip_path).wrap_err_with(|| format!("opening {}", zip_path.display()))?;
+    let mut archive =
+        zip::ZipArchive::new(f).wrap_err_with(|| format!("reading zip {}", zip_path.display()))?;
     let mut top: Option<String> = None;
     for i in 0..archive.len() {
         let entry = archive
@@ -1050,7 +1057,9 @@ impl DownloadBar {
             pb,
             sink: None,
             download_label: label.to_owned(),
-            pending: Some(PendingActivation { activated: AtomicBool::new(false) }),
+            pending: Some(PendingActivation {
+                activated: AtomicBool::new(false),
+            }),
         }
     }
 
@@ -1059,7 +1068,9 @@ impl DownloadBar {
     /// state-changing method so a stray `inc()` on a stalled fetch
     /// still surfaces a bar.
     fn activate(&self) {
-        let Some(pending) = self.pending.as_ref() else { return };
+        let Some(pending) = self.pending.as_ref() else {
+            return;
+        };
         // Relaxed is fine: contention here just means two threads
         // both call `set_draw_target` — idempotent, and the steady
         // tick can only be enabled once anyway.
@@ -1118,7 +1129,9 @@ impl DownloadBar {
             pb,
             sink: None,
             download_label: label.to_owned(),
-            pending: Some(PendingActivation { activated: AtomicBool::new(false) }),
+            pending: Some(PendingActivation {
+                activated: AtomicBool::new(false),
+            }),
         }
     }
 
@@ -1145,7 +1158,12 @@ impl DownloadBar {
     pub fn hidden() -> Self {
         let pb = ProgressBar::new(0);
         pb.set_draw_target(ProgressDrawTarget::hidden());
-        Self { pb, sink: None, download_label: "downloading".to_owned(), pending: None }
+        Self {
+            pb,
+            sink: None,
+            download_label: "downloading".to_owned(),
+            pending: None,
+        }
     }
 
     /// Hidden draw target + sink. Use when the local process has no UI
@@ -1160,7 +1178,12 @@ impl DownloadBar {
     pub fn hidden_with_sink(sink: Arc<dyn DownloadSink>) -> Self {
         let pb = ProgressBar::new(0);
         pb.set_draw_target(ProgressDrawTarget::hidden());
-        Self { pb, sink: Some(sink), download_label: "downloading".to_owned(), pending: None }
+        Self {
+            pb,
+            sink: Some(sink),
+            download_label: "downloading".to_owned(),
+            pending: None,
+        }
     }
 
     /// Grow the planned total. Safe to call repeatedly as each manifest
@@ -1245,7 +1268,9 @@ impl DownloadBar {
             // bar) can flip its own prefix to `extracting`. The artifact
             // name is whatever the preceding `set_current` put in the
             // message — the thing we just finished downloading.
-            sink.on_event(DownloadEvent::Extracting { name: self.pb.message() });
+            sink.on_event(DownloadEvent::Extracting {
+                name: self.pb.message(),
+            });
         }
     }
 
@@ -1283,7 +1308,11 @@ impl DownloadBar {
         }
         // Likewise only touch the prefix when the phase actually flips,
         // so a steady stream of same-phase frames doesn't force redraws.
-        let want_prefix = if extracting { "extracting" } else { self.download_label.as_str() };
+        let want_prefix = if extracting {
+            "extracting"
+        } else {
+            self.download_label.as_str()
+        };
         if self.pb.prefix() != want_prefix {
             self.pb.set_prefix(want_prefix.to_owned());
         }
@@ -1406,19 +1435,28 @@ mod tests {
         // schedule is asserted without actually sleeping. Attempt 1→1x,
         // 2→2x, 3→4x, 4→8x, and capped at 8x thereafter.
         let factor = |attempt: u32| {
-            1u32.checked_shl(attempt.saturating_sub(1)).unwrap_or(u32::MAX).min(8)
+            1u32.checked_shl(attempt.saturating_sub(1))
+                .unwrap_or(u32::MAX)
+                .min(8)
         };
         assert_eq!(factor(1), 1);
         assert_eq!(factor(2), 2);
         assert_eq!(factor(3), 4);
         assert_eq!(factor(4), 8);
-        assert_eq!(factor(99), 8, "huge attempt counts saturate, never overflow the shift");
+        assert_eq!(
+            factor(99),
+            8,
+            "huge attempt counts saturate, never overflow the shift"
+        );
     }
 
     #[test]
     fn sibling_with_suffix_appends() {
         let p = Path::new("/a/b/c");
-        assert_eq!(sibling_with_suffix(p, ".incoming"), Path::new("/a/b/c.incoming"));
+        assert_eq!(
+            sibling_with_suffix(p, ".incoming"),
+            Path::new("/a/b/c.incoming")
+        );
     }
 
     #[test]
@@ -1538,8 +1576,7 @@ mod tests {
                 .unwrap();
             builder.finish().unwrap();
         }
-        let mut encoder =
-            flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
         encoder.write_all(&tar_buf).unwrap();
         let gz = encoder.finish().unwrap();
         std::fs::write(&archive_path, gz).unwrap();
@@ -1563,7 +1600,10 @@ mod tests {
     fn composer_tar_fixture(prefix: &str) -> Vec<u8> {
         let mut tar_buf: Vec<u8> = Vec::new();
         let mut builder = tar::Builder::new(&mut tar_buf);
-        for (name, body) in [("composer.json", &b"{}"[..]), ("src/Email.php", &b"<?php"[..])] {
+        for (name, body) in [
+            ("composer.json", &b"{}"[..]),
+            ("src/Email.php", &b"<?php"[..]),
+        ] {
             let mut header = tar::Header::new_gnu();
             header.set_size(body.len() as u64);
             header.set_mode(0o644);
@@ -1597,14 +1637,24 @@ mod tests {
             std::fs::write(&archive, bytes).unwrap();
 
             // Detection finds the single wrapper dir regardless of codec...
-            assert_eq!(detect_tar_top_level(&archive).unwrap(), prefix, "detect {label}");
+            assert_eq!(
+                detect_tar_top_level(&archive).unwrap(),
+                prefix,
+                "detect {label}"
+            );
 
             // ...and extraction strips it.
             let into = dir.path().join("out");
             std::fs::create_dir_all(&into).unwrap();
             extract_tar_auto(&archive, &into, prefix).unwrap();
-            assert!(into.join("composer.json").is_file(), "composer.json {label}");
-            assert!(into.join("src/Email.php").is_file(), "src/Email.php {label}");
+            assert!(
+                into.join("composer.json").is_file(),
+                "composer.json {label}"
+            );
+            assert!(
+                into.join("src/Email.php").is_file(),
+                "src/Email.php {label}"
+            );
             assert!(!into.join(prefix).exists(), "wrapper stripped {label}");
         }
     }
@@ -1694,7 +1744,11 @@ mod tests {
             header.set_mode(0o644);
             header.set_cksum();
             builder
-                .append_data(&mut header, "libcurl-8.20.0-aaaa/lib/libcurl.so.4", &b"data"[..])
+                .append_data(
+                    &mut header,
+                    "libcurl-8.20.0-aaaa/lib/libcurl.so.4",
+                    &b"data"[..],
+                )
                 .unwrap();
             builder.finish().unwrap();
         }
@@ -1739,7 +1793,11 @@ mod tests {
             header.set_entry_type(tar::EntryType::Regular);
             header.set_cksum();
             builder
-                .append_data(&mut header, "install/escript/rabbitmq-diagnostics", &body[..])
+                .append_data(
+                    &mut header,
+                    "install/escript/rabbitmq-diagnostics",
+                    &body[..],
+                )
                 .unwrap();
             // Hardlinks share the entry-type code with the regular
             // GNU header; size is zero and link_name carries the
@@ -1753,7 +1811,11 @@ mod tests {
                 .unwrap();
             link_header.set_cksum();
             builder
-                .append_data(&mut link_header, "install/escript/rabbitmqctl", std::io::empty())
+                .append_data(
+                    &mut link_header,
+                    "install/escript/rabbitmqctl",
+                    std::io::empty(),
+                )
                 .unwrap();
             builder.finish().unwrap();
         }
@@ -1778,16 +1840,28 @@ mod tests {
     #[test]
     fn symlink_target_escapes_detects_escapes() {
         // Absolute targets always escape.
-        assert!(symlink_target_escapes(Path::new("pwn"), Path::new("/etc/passwd")));
+        assert!(symlink_target_escapes(
+            Path::new("pwn"),
+            Path::new("/etc/passwd")
+        ));
         // A top-level symlink climbing above the root escapes.
-        assert!(symlink_target_escapes(Path::new("pwn"), Path::new("../outside")));
-        assert!(symlink_target_escapes(Path::new("a/b"), Path::new("../../../outside")));
+        assert!(symlink_target_escapes(
+            Path::new("pwn"),
+            Path::new("../outside")
+        ));
+        assert!(symlink_target_escapes(
+            Path::new("a/b"),
+            Path::new("../../../outside")
+        ));
         // Legitimate intra-archive relative symlinks stay inside.
         assert!(!symlink_target_escapes(
             Path::new("bin/npm"),
             Path::new("../lib/node_modules/npm/bin/npm-cli.js"),
         ));
-        assert!(!symlink_target_escapes(Path::new("a/b/c"), Path::new("../../d")));
+        assert!(!symlink_target_escapes(
+            Path::new("a/b/c"),
+            Path::new("../../d")
+        ));
         // Net-neutral `..` that lands back at the root is fine.
         assert!(!symlink_target_escapes(Path::new("a/b"), Path::new("../c")));
     }
@@ -1845,7 +1919,8 @@ mod tests {
             zw.write_all(b"MZ exe stub").unwrap();
             zw.start_file("php-8.4.3/ext/php_curl.dll", opts).unwrap();
             zw.write_all(b"DLL stub").unwrap();
-            zw.start_file("php-8.4.3/php.ini-development", opts).unwrap();
+            zw.start_file("php-8.4.3/php.ini-development", opts)
+                .unwrap();
             zw.write_all(b"; ini\n").unwrap();
             zw.finish().unwrap();
         }
@@ -1856,8 +1931,14 @@ mod tests {
         extract_zip(&zip_path, &into, "php-8.4.3").unwrap();
 
         assert_eq!(std::fs::read(into.join("php.exe")).unwrap(), b"MZ exe stub");
-        assert_eq!(std::fs::read(into.join("ext/php_curl.dll")).unwrap(), b"DLL stub");
-        assert_eq!(std::fs::read(into.join("php.ini-development")).unwrap(), b"; ini\n");
+        assert_eq!(
+            std::fs::read(into.join("ext/php_curl.dll")).unwrap(),
+            b"DLL stub"
+        );
+        assert_eq!(
+            std::fs::read(into.join("php.ini-development")).unwrap(),
+            b"; ini\n"
+        );
         // The wrapping directory itself is not materialized.
         assert!(!into.join("php-8.4.3").exists());
     }
@@ -1884,7 +1965,10 @@ mod tests {
         std::fs::create_dir_all(&into).unwrap();
         extract_zip(&zip_path, &into, "").unwrap();
 
-        assert_eq!(std::fs::read(into.join("php_xdebug.dll")).unwrap(), b"xdebug");
+        assert_eq!(
+            std::fs::read(into.join("php_xdebug.dll")).unwrap(),
+            b"xdebug"
+        );
     }
 
     fn make_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
@@ -1920,7 +2004,11 @@ mod tests {
     fn detect_zip_top_level_returns_empty_for_flat_archive() {
         let dir = tempfile::TempDir::new().unwrap();
         let p = dir.path().join("flat.zip");
-        std::fs::write(&p, make_zip(&[("composer.json", b"{}"), ("Foo.php", b"<?php")])).unwrap();
+        std::fs::write(
+            &p,
+            make_zip(&[("composer.json", b"{}"), ("Foo.php", b"<?php")]),
+        )
+        .unwrap();
         assert_eq!(detect_zip_top_level(&p).unwrap(), "");
     }
 

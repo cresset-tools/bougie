@@ -28,7 +28,9 @@ fn seed_server_toml(xdg: &Path, hostname: &str, project: &Path, root: Option<&st
     std::fs::create_dir_all(&cfg_dir).expect("mkdir xdg/bougie");
     let path = cfg_dir.join("server.toml");
     let project = std::fs::canonicalize(project).expect("canonicalize project");
-    let root_line = root.map(|r| format!("root = \"{r}\"\n")).unwrap_or_default();
+    let root_line = root
+        .map(|r| format!("root = \"{r}\"\n"))
+        .unwrap_or_default();
     let body = format!(
         "[server]\nlisten = \"127.0.0.1:7080\"\nlog_format = \"text\"\n\n[[host]]\nhostname = \"{hostname}\"\nproject = \"{project}\"\n{root_line}",
         project = project.display(),
@@ -45,7 +47,10 @@ fn wait_for_listening(stderr: &mut Box<dyn BufRead + Send>) -> String {
         if stderr.read_line(&mut line).unwrap() == 0 {
             continue;
         }
-        if let Some(rest) = line.find("http://").and_then(|i| line[i + 7..].split_whitespace().next()) {
+        if let Some(rest) = line
+            .find("http://")
+            .and_then(|i| line[i + 7..].split_whitespace().next())
+        {
             return rest.to_string();
         }
     }
@@ -104,7 +109,9 @@ fn control_socket_status_returns_listen_port_and_hosts() {
     // Connect synchronously via std's UnixStream — no need for tokio
     // in the test client.
     let mut stream = UnixStream::connect(&socket).expect("connect control sock");
-    stream.write_all(b"{\"v\":1,\"method\":\"status\"}\n").unwrap();
+    stream
+        .write_all(b"{\"v\":1,\"method\":\"status\"}\n")
+        .unwrap();
     stream.shutdown(std::net::Shutdown::Write).unwrap();
     let mut body = String::new();
     stream.read_to_string(&mut body).unwrap();
@@ -229,7 +236,12 @@ fn invalid_request_returns_error_response() {
     stream.read_to_string(&mut body).unwrap();
     let parsed: serde_json::Value = serde_json::from_str(body.trim()).unwrap();
     assert_eq!(parsed["ok"], false);
-    assert!(parsed["error"].as_str().unwrap().contains("invalid request"));
+    assert!(
+        parsed["error"]
+            .as_str()
+            .unwrap()
+            .contains("invalid request")
+    );
 
     let _ = StdCommand::new("kill")
         .args(["-INT", &child.id().to_string()])

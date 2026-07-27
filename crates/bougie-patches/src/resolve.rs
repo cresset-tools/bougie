@@ -102,7 +102,10 @@ pub fn resolve_patches_dir(
         let text = std::fs::read_to_string(&path)
             .wrap_err_with(|| format!("reading patch `{}`", path.display()))?;
         let parsed = diff::split(&text).wrap_err_with(|| format!("parsing `{name}`"))?;
-        let header_paths: Vec<&str> = parsed.iter().filter_map(diff::FileDiff::routed_path).collect();
+        let header_paths: Vec<&str> = parsed
+            .iter()
+            .filter_map(diff::FileDiff::routed_path)
+            .collect();
         let inferred = target::infer_target(&header_paths, install_paths)
             .wrap_err_with(|| format!("patches/{name}"))?;
         out.push(Patch {
@@ -350,6 +353,10 @@ mod tests {
     #[test]
     fn missing_patches_dir_is_empty() {
         let dir = tempdir().unwrap();
-        assert!(resolve_patches_dir(&dir.path().join("nope"), &[], &[]).unwrap().is_empty());
+        assert!(
+            resolve_patches_dir(&dir.path().join("nope"), &[], &[])
+                .unwrap()
+                .is_empty()
+        );
     }
 }

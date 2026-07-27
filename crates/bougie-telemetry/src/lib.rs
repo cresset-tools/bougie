@@ -26,7 +26,7 @@ pub mod spawn;
 pub mod spool;
 pub mod update;
 
-pub use event::{outcome_for_error, OUTCOME_OK};
-pub use mode::{Mode, ModeState, Source, CONSENT_VERSION};
+pub use event::{OUTCOME_OK, outcome_for_error};
+pub use mode::{CONSENT_VERSION, Mode, ModeState, Source};
 pub use recorder::{BinInfo, Recorder};
 pub use spool::Spool;

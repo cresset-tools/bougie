@@ -24,7 +24,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use bougie_autoloader::{user_code_roots, Autoloader, DumpRequest};
+use bougie_autoloader::{Autoloader, DumpRequest, user_code_roots};
 use tokio::sync::Mutex;
 
 use super::watch_registry::WatchRegistry;
@@ -190,13 +190,12 @@ impl AutoloaderManager {
                     }
                 }
                 any |= self.resync_arming(project, loader);
-                if any
-                    && let Err(e) = loader.emit() {
-                        eprintln!(
-                            "bougie server: autoloader re-emit failed for {}: {e:#}",
-                            project.display()
-                        );
-                    }
+                if any && let Err(e) = loader.emit() {
+                    eprintln!(
+                        "bougie server: autoloader re-emit failed for {}: {e:#}",
+                        project.display()
+                    );
+                }
             }
         }
     }
@@ -234,13 +233,12 @@ impl AutoloaderManager {
                     }
                 }
                 any |= self.resync_arming(project, loader);
-                if any
-                    && let Err(e) = loader.emit() {
-                        eprintln!(
-                            "bougie server: autoloader re-emit failed for {}: {e:#}",
-                            project.display()
-                        );
-                    }
+                if any && let Err(e) = loader.emit() {
+                    eprintln!(
+                        "bougie server: autoloader re-emit failed for {}: {e:#}",
+                        project.display()
+                    );
+                }
             }
         }
     }
@@ -294,12 +292,13 @@ impl AutoloaderManager {
         // new path-repo package or autoload directive.
         let req = bootstrap_request(project);
         if let Ok(roots) = user_code_roots(&req)
-            && let Err(e) = self.registry.arm_user_code_roots(project, &roots) {
-                eprintln!(
-                    "bougie server: re-arming watcher for {} failed: {e:#}",
-                    project.display()
-                );
-            }
+            && let Err(e) = self.registry.arm_user_code_roots(project, &roots)
+        {
+            eprintln!(
+                "bougie server: re-arming watcher for {} failed: {e:#}",
+                project.display()
+            );
+        }
 
         let project_owned = project.to_path_buf();
         tokio::spawn(async move {
@@ -430,10 +429,7 @@ async fn run_bootstrap(slot: Arc<Mutex<ProjectState>>, project: PathBuf) {
             loader.apply_deleted_path(path)
         };
         if let Err(e) = result {
-            eprintln!(
-                "bougie server: drain failed for {}: {e:#}",
-                path.display()
-            );
+            eprintln!("bougie server: drain failed for {}: {e:#}", path.display());
         }
     }
 
@@ -495,7 +491,8 @@ mod tests {
             if manager.state_label(project).await == Some(target) {
                 return;
             }
-            assert!(std::time::Instant::now() < deadline, 
+            assert!(
+                std::time::Instant::now() < deadline,
                 "timeout waiting for state {target}; last = {:?}",
                 manager.state_label(project).await
             );
@@ -527,10 +524,7 @@ mod tests {
         let dir = temp();
         write_minimal_project(&dir);
         let registry = Arc::new(WatchRegistry::new());
-        let manager = Arc::new(AutoloaderManager::new(
-            std::slice::from_ref(&dir),
-            registry,
-        ));
+        let manager = Arc::new(AutoloaderManager::new(std::slice::from_ref(&dir), registry));
 
         assert_eq!(manager.state_label(&dir).await, Some("cold"));
 
@@ -548,10 +542,7 @@ mod tests {
         let dir = temp();
         write_minimal_project(&dir);
         let registry = Arc::new(WatchRegistry::new());
-        let manager = Arc::new(AutoloaderManager::new(
-            std::slice::from_ref(&dir),
-            registry,
-        ));
+        let manager = Arc::new(AutoloaderManager::new(std::slice::from_ref(&dir), registry));
 
         // Concurrent ensure_bootstrap calls must not spawn two
         // bootstrap tasks — the second arrival should see Warming or
@@ -573,10 +564,7 @@ mod tests {
         let dir = temp();
         write_minimal_project(&dir);
         let registry = Arc::new(WatchRegistry::new());
-        let manager = Arc::new(AutoloaderManager::new(
-            std::slice::from_ref(&dir),
-            registry,
-        ));
+        let manager = Arc::new(AutoloaderManager::new(std::slice::from_ref(&dir), registry));
 
         manager.ensure_bootstrap(&dir).await;
         wait_for_state(&manager, &dir, "live", Duration::from_secs(5)).await;
@@ -635,7 +623,10 @@ mod tests {
 
         let map_path = dir.join("vendor/composer/autoload_classmap.php");
         let read_map = || std::fs::read_to_string(&map_path).unwrap_or_default();
-        assert!(read_map().contains("Acme\\\\Proxy"), "bootstrap missed Proxy");
+        assert!(
+            read_map().contains("Acme\\\\Proxy"),
+            "bootstrap missed Proxy"
+        );
 
         // Magento clears the whole generated/ tree (rm -rf). The watcher
         // surfaces the removal as a delete of the `generated/` directory
@@ -674,10 +665,7 @@ mod tests {
         let dir = temp();
         write_minimal_project(&dir);
         let registry = Arc::new(WatchRegistry::new());
-        let manager = Arc::new(AutoloaderManager::new(
-            std::slice::from_ref(&dir),
-            registry,
-        ));
+        let manager = Arc::new(AutoloaderManager::new(std::slice::from_ref(&dir), registry));
 
         manager.ensure_bootstrap(&dir).await;
         wait_for_state(&manager, &dir, "live", Duration::from_secs(5)).await;
@@ -723,10 +711,7 @@ mod tests {
         let dir = temp();
         write_minimal_project(&dir);
         let registry = Arc::new(WatchRegistry::new());
-        let manager = Arc::new(AutoloaderManager::new(
-            std::slice::from_ref(&dir),
-            registry,
-        ));
+        let manager = Arc::new(AutoloaderManager::new(std::slice::from_ref(&dir), registry));
 
         // Set state to Warming manually so the test isn't racing the
         // real bootstrap task. ensure_bootstrap is intentionally
@@ -743,14 +728,8 @@ mod tests {
         // Write a new file and route it through. handle_user_code
         // must append to the buffer rather than try to patch.
         let new_file = dir.join("src/Buffered.php");
-        std::fs::write(
-            &new_file,
-            b"<?php\n\nnamespace App;\n\nclass Buffered {}\n",
-        )
-        .unwrap();
-        manager
-            .handle_user_code(&dir, vec![new_file.clone()])
-            .await;
+        std::fs::write(&new_file, b"<?php\n\nnamespace App;\n\nclass Buffered {}\n").unwrap();
+        manager.handle_user_code(&dir, vec![new_file.clone()]).await;
 
         // Verify the buffer holds the event.
         {

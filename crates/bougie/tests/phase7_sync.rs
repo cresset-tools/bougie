@@ -60,9 +60,8 @@ async fn build_fixture() -> Fixture {
     let (blob_bytes, blob_sha) = build_php_tarball();
     let blob_url = format!("{}/blobs/{blob_sha}", server.uri());
 
-    let manifest_path_abs = format!(
-        "/targets/{target}/manifests/php/8.3/php-8.3.12-{target}-nts.json"
-    );
+    let manifest_path_abs =
+        format!("/targets/{target}/manifests/php/8.3/php-8.3.12-{target}-nts.json");
     let manifest_json = serde_json::json!({
         "schema": 1,
         "kind": "interpreter",
@@ -107,27 +106,40 @@ async fn build_fixture() -> Fixture {
     let sig = signer.sign(&root_bytes).unwrap();
     let sig_b64 = base64::engine::general_purpose::STANDARD.encode(&sig);
 
-    let section_path = format!(
-        "/versions/{publish_version}/targets/{target}/sections/interpreter/php.json"
-    );
+    let section_path =
+        format!("/versions/{publish_version}/targets/{target}/sections/interpreter/php.json");
     let manifest_path = manifest_path_abs.clone();
     let blob_path = format!("/blobs/{blob_sha}");
 
-    Mock::given(method("GET")).and(path("/index.json"))
-        .respond_with(ResponseTemplate::new(200).set_body_bytes(root_bytes).insert_header("etag", "\"v1\""))
-        .mount(&server).await;
-    Mock::given(method("GET")).and(path("/index.json.sig"))
+    Mock::given(method("GET"))
+        .and(path("/index.json"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_bytes(root_bytes)
+                .insert_header("etag", "\"v1\""),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/index.json.sig"))
         .respond_with(ResponseTemplate::new(200).set_body_bytes(sig_b64.into_bytes()))
-        .mount(&server).await;
-    Mock::given(method("GET")).and(path(section_path))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(section_path))
         .respond_with(ResponseTemplate::new(200).set_body_bytes(section_bytes))
-        .mount(&server).await;
-    Mock::given(method("GET")).and(path(manifest_path))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(manifest_path))
         .respond_with(ResponseTemplate::new(200).set_body_bytes(manifest_bytes))
-        .mount(&server).await;
-    Mock::given(method("GET")).and(path(blob_path))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(blob_path))
         .respond_with(ResponseTemplate::new(200).set_body_bytes(blob_bytes))
-        .mount(&server).await;
+        .mount(&server)
+        .await;
 
     Fixture { server, pub_pem }
 }

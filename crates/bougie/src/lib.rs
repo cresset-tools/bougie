@@ -10,7 +10,7 @@ pub mod shim;
 // `bougie::{Cli, exit_code_for, shim, Paths, Triple}` without
 // caring which leaf crate hosts them.
 pub use bougie_cli::{Cli, Command, OutputFormat};
-pub use bougie_errors::{exit_code_for, BougieError};
+pub use bougie_errors::{BougieError, exit_code_for};
 pub use bougie_paths::Paths;
 pub use bougie_platform::target::Triple;
 
@@ -69,10 +69,7 @@ fn resolution_strategy(
 
 /// Build a resolve-time platform-ignore filter from the
 /// `--ignore-platform-reqs` / `--ignore-platform-req=<req>` flags.
-fn platform_ignore(
-    ignore_all: bool,
-    reqs: &[String],
-) -> bougie_composer_resolver::PlatformIgnore {
+fn platform_ignore(ignore_all: bool, reqs: &[String]) -> bougie_composer_resolver::PlatformIgnore {
     bougie_composer_resolver::PlatformIgnore::new(ignore_all, reqs)
 }
 
@@ -89,7 +86,10 @@ where
         .filter_map(|a| a.into_string().ok())
         .find(|a| !a.starts_with('-'))
         .and_then(|tok| {
-            bougie_telemetry::event::COMMAND_VOCAB.iter().find(|v| **v == tok).copied()
+            bougie_telemetry::event::COMMAND_VOCAB
+                .iter()
+                .find(|v| **v == tok)
+                .copied()
         })
         .unwrap_or("unknown")
 }
@@ -141,9 +141,8 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
     // interactive text-mode invocation: a JSON consumer would otherwise
     // see ANSI escapes mixed into stderr alongside the §9.2 event stream,
     // and `--quiet` users opted out of all non-error stderr noise.
-    let progress_visible = !cli.quiet
-        && matches!(cli.format, OutputFormat::Text)
-        && std::io::stderr().is_terminal();
+    let progress_visible =
+        !cli.quiet && matches!(cli.format, OutputFormat::Text) && std::io::stderr().is_terminal();
     bougie_output::output::set_progress_visible(progress_visible);
     bougie_output::output::set_verbose(cli.verbose);
 
@@ -167,7 +166,10 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
     // bypassed the installer consent block: cargo install, docker,
     // Windows irm|iex). Self-gating: only when the mode is undecided,
     // interactive text-mode on a real tty, outside CI and run-shims.
-    if !matches!(command, "telemetry" | "__telemetry-flush" | "tool-exec" | "diagnose") {
+    if !matches!(
+        command,
+        "telemetry" | "__telemetry-flush" | "tool-exec" | "diagnose"
+    ) {
         bougie_telemetry::prompt::maybe_prompt(
             matches!(cli.format, OutputFormat::Text) && !cli.quiet,
         );
@@ -201,20 +203,33 @@ pub fn run(cli: Cli) -> Result<ExitCode> {
     result
 }
 
-#[allow(clippy::too_many_lines, reason = "top-level command dispatch is one big match")]
+#[allow(
+    clippy::too_many_lines,
+    reason = "top-level command dispatch is one big match"
+)]
 fn dispatch(cli: Cli) -> Result<ExitCode> {
     let format = cli.format;
     match cli.command {
-        Command::Init { script, toml, name, starter, start } => {
+        Command::Init {
+            script,
+            toml,
+            name,
+            starter,
+            start,
+        } => {
             if let Some(file) = script {
                 commands::script::init(format, &file)
             } else {
                 commands::init::run(format, toml, name, starter, start)
             }
         }
-        Command::New { directory, toml, name, starter, start } => {
-            commands::init::run_new(format, &directory, toml, name, starter, start)
-        }
+        Command::New {
+            directory,
+            toml,
+            name,
+            starter,
+            start,
+        } => commands::init::run_new(format, &directory, toml, name, starter, start),
         Command::Add {
             packages,
             script,
@@ -266,14 +281,21 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
             format,
             packages,
             dev,
-            frozen,   // --frozen → edit composer.json only (no_update)
-            no_sync,  // --no-sync → re-lock but don't install (no_install)
-            false,    // top-level remove always considers dev when installing
+            frozen,  // --frozen → edit composer.json only (no_update)
+            no_sync, // --no-sync → re-lock but don't install (no_install)
+            false,   // top-level remove always considers dev when installing
             working_dir,
             dry_run,
             platform_ignore(ignore_platform_reqs, &ignore_platform_req),
         ),
-        Command::Lock { script, resolution, working_dir, dry_run, ignore_platform_reqs, ignore_platform_req } => {
+        Command::Lock {
+            script,
+            resolution,
+            working_dir,
+            dry_run,
+            ignore_platform_reqs,
+            ignore_platform_req,
+        } => {
             if let Some(file) = script {
                 commands::script::lock(format, &file, dry_run, resolution_strategy(resolution))
             } else {
@@ -286,7 +308,11 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
                 )
             }
         }
-        Command::Tree { package, no_dev, working_dir } => commands::composer_show::run(
+        Command::Tree {
+            package,
+            no_dev,
+            working_dir,
+        } => commands::composer_show::run(
             format,
             commands::composer_show::ShowOptions {
                 package,
@@ -352,7 +378,15 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
                 platform_ignore(ignore_platform_reqs, &ignore_platform_req),
             )
         }
-        Command::Run { script, with, no_sync, xdebug, php_request, php, argv } => {
+        Command::Run {
+            script,
+            with,
+            no_sync,
+            xdebug,
+            php_request,
+            php,
+            argv,
+        } => {
             if script {
                 commands::script::run(&argv, format, php_request.as_deref(), &with, xdebug, php)
             } else {
@@ -393,27 +427,20 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
         Command::Cache(CacheCommand::Dir) => commands::cache_dir::run(format),
         Command::Cache(CacheCommand::Clean) => commands::cache_clean::run(format),
         Command::Cache(CacheCommand::Size) => commands::cache_size::run(format),
-        Command::Cache(CacheCommand::Prune { dry_run, prune_projects: _ }) => {
-            commands::cache_prune::run(format, dry_run)
-        }
+        Command::Cache(CacheCommand::Prune {
+            dry_run,
+            prune_projects: _,
+        }) => commands::cache_prune::run(format, dry_run),
         Command::Php(PhpCommand::Dir) => commands::php_dir::run(format),
         Command::Php(PhpCommand::Install {
             requests,
             flavor,
             bare,
             without,
-        }) => commands::php_install::run(
-            format,
-            &requests,
-            flavor.as_deref(),
-            bare,
-            &without,
-        ),
-        Command::Php(PhpCommand::Uninstall { requests, flavor }) => commands::php_uninstall::run(
-            format,
-            &requests,
-            flavor.as_deref(),
-        ),
+        }) => commands::php_install::run(format, &requests, flavor.as_deref(), bare, &without),
+        Command::Php(PhpCommand::Uninstall { requests, flavor }) => {
+            commands::php_uninstall::run(format, &requests, flavor.as_deref())
+        }
         Command::Php(PhpCommand::List {
             request,
             only_installed,
@@ -437,7 +464,11 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
         Command::Php(PhpCommand::Find { request }) => {
             commands::php_find::run(format, request.as_deref())
         }
-        Command::Php(PhpCommand::Pin { request, toml, composer }) => {
+        Command::Php(PhpCommand::Pin {
+            request,
+            toml,
+            composer,
+        }) => {
             let target = if toml {
                 commands::php_pin::PinTarget::Toml
             } else if composer {
@@ -642,7 +673,9 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
             recursive,
             tree,
             working_dir,
-        }) => commands::composer_why::why_not(format, package, version, recursive, tree, working_dir),
+        }) => {
+            commands::composer_why::why_not(format, package, version, recursive, tree, working_dir)
+        }
         Command::Composer(ComposerCommand::Outdated {
             packages,
             direct,
@@ -679,15 +712,17 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
                 working_dir,
             },
         ),
-        Command::Composer(ComposerCommand::Licenses { no_dev, working_dir }) => {
-            commands::composer_licenses::run(format, no_dev, working_dir)
-        }
+        Command::Composer(ComposerCommand::Licenses {
+            no_dev,
+            working_dir,
+        }) => commands::composer_licenses::run(format, no_dev, working_dir),
         Command::Composer(ComposerCommand::Status { working_dir }) => {
             commands::composer_status::run(format, working_dir)
         }
-        Command::Composer(ComposerCommand::Fund { no_dev, working_dir }) => {
-            commands::composer_fund::run(format, no_dev, working_dir)
-        }
+        Command::Composer(ComposerCommand::Fund {
+            no_dev,
+            working_dir,
+        }) => commands::composer_fund::run(format, no_dev, working_dir),
         Command::Composer(ComposerCommand::External(args)) => {
             let sub = args
                 .first()
@@ -728,15 +763,15 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
             commands::service::remove::run(format, names, purge)
         }
         #[cfg(unix)]
-        Command::Service(ServiceCommand::List { all }) => {
-            commands::service::list::run(format, all)
-        }
+        Command::Service(ServiceCommand::List { all }) => commands::service::list::run(format, all),
         #[cfg(unix)]
         Command::Service(ServiceCommand::Catalog) => commands::service::catalog::run(format),
         #[cfg(unix)]
-        Command::Service(ServiceCommand::Exec { service, tool, args }) => {
-            commands::service::exec::run(service, tool, args)
-        }
+        Command::Service(ServiceCommand::Exec {
+            service,
+            tool,
+            args,
+        }) => commands::service::exec::run(service, tool, args),
         #[cfg(unix)]
         Command::Service(ServiceCommand::Restart { names }) => {
             commands::service::restart::run(format, names)
@@ -750,9 +785,11 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
             commands::service::credentials::run(format, name, env)
         }
         #[cfg(unix)]
-        Command::Service(ServiceCommand::Logs { name, follow, lines }) => {
-            commands::service::logs::run(format, name, follow, lines)
-        }
+        Command::Service(ServiceCommand::Logs {
+            name,
+            follow,
+            lines,
+        }) => commands::service::logs::run(format, name, follow, lines),
         #[cfg(unix)]
         Command::Service(ServiceCommand::Daemon(ServiceDaemonCommand::Status)) => {
             commands::service::daemon::status(format)
@@ -772,9 +809,12 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
             commands::service::projects::run(format, alloc)
         }
         #[cfg(unix)]
-        Command::Projects(ProjectsCommand::Purge { project, all, dry_run, yes }) => {
-            commands::service::projects::purge(format, project, all, dry_run, yes)
-        }
+        Command::Projects(ProjectsCommand::Purge {
+            project,
+            all,
+            dry_run,
+            yes,
+        }) => commands::service::projects::purge(format, project, all, dry_run, yes),
         #[cfg(not(unix))]
         Command::Projects(_) => unsupported_on_windows("bougie projects"),
         #[cfg(unix)]
@@ -856,12 +896,22 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
         #[cfg(not(unix))]
         Command::Ci(_) => unsupported_on_windows("bougie ci"),
         #[cfg(unix)]
-        Command::Start { no_sync, dry_run, explain, no_builtin, recipe } => {
-            commands::start::run(
-                format,
-                commands::start::StartOptions { no_sync, dry_run, explain, no_builtin, recipe },
-            )
-        }
+        Command::Start {
+            no_sync,
+            dry_run,
+            explain,
+            no_builtin,
+            recipe,
+        } => commands::start::run(
+            format,
+            commands::start::StartOptions {
+                no_sync,
+                dry_run,
+                explain,
+                no_builtin,
+                recipe,
+            },
+        ),
         #[cfg(not(unix))]
         Command::Start { .. } => unsupported_on_windows("bougie start"),
         // `stop` is the teardown twin of `start`: bring the project's
@@ -872,9 +922,12 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
         Command::Stop { names, purge } => commands::service::down::run(format, names, purge),
         #[cfg(not(unix))]
         Command::Stop { .. } => unsupported_on_windows("bougie stop"),
-        Command::Tool(ToolCommand::Install { package, php, with, force }) => {
-            commands::tool_install::run(format, &package, php.as_deref(), &with, force)
-        }
+        Command::Tool(ToolCommand::Install {
+            package,
+            php,
+            with,
+            force,
+        }) => commands::tool_install::run(format, &package, php.as_deref(), &with, force),
         Command::Tool(ToolCommand::Uninstall { package }) => {
             commands::tool_uninstall::run(format, &package)
         }
@@ -884,9 +937,11 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
         Command::Tool(ToolCommand::Uninject { package, with }) => {
             commands::tool_uninject::run(format, &package, &with)
         }
-        Command::Tool(ToolCommand::Upgrade { package, all, reinstall }) => {
-            commands::tool_upgrade::run(format, package.as_deref(), all, reinstall)
-        }
+        Command::Tool(ToolCommand::Upgrade {
+            package,
+            all,
+            reinstall,
+        }) => commands::tool_upgrade::run(format, package.as_deref(), all, reinstall),
         Command::Tool(ToolCommand::Run(args)) => commands::tool_run::run(
             format,
             args.php.as_deref(),
@@ -904,18 +959,30 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
             args.tool_run.command,
         ),
         Command::Tool(ToolCommand::List) => commands::tool_list::run(format),
-        Command::Tool(ToolCommand::Dir { package }) => {
-            commands::tool_dir::run(format, package)
-        }
+        Command::Tool(ToolCommand::Dir { package }) => commands::tool_dir::run(format, package),
         Command::ToolExec { wrapper, args } => commands::tool_exec::run(&wrapper, args),
         Command::Telemetry { command } => commands::telemetry::run(format, command),
         Command::TelemetryFlush => commands::telemetry_flush::run(),
-        Command::Diagnose { issue, yes, edit, no_edit, last, project, args } => {
-            commands::diagnose::run(
-                format,
-                commands::diagnose::DiagnoseArgs { issue, yes, edit, no_edit, last, project, args },
-            )
-        }
+        Command::Diagnose {
+            issue,
+            yes,
+            edit,
+            no_edit,
+            last,
+            project,
+            args,
+        } => commands::diagnose::run(
+            format,
+            commands::diagnose::DiagnoseArgs {
+                issue,
+                yes,
+                edit,
+                no_edit,
+                last,
+                project,
+                args,
+            },
+        ),
     }
 }
 
@@ -929,13 +996,22 @@ mod usage_name_tests {
 
     #[test]
     fn first_non_flag_token_maps_through_the_vocab() {
-        assert_eq!(super::usage_command_name(args(&["bougie", "sync", "--bad"])), "sync");
+        assert_eq!(
+            super::usage_command_name(args(&["bougie", "sync", "--bad"])),
+            "sync"
+        );
         assert_eq!(
             super::usage_command_name(args(&["bougie", "--format", "json-v1", "snyc"])),
             "unknown",
         );
-        assert_eq!(super::usage_command_name(args(&["bougie", "sylc"])), "unknown");
-        assert_eq!(super::usage_command_name(args(&["bougie", "--bad-flag"])), "unknown");
+        assert_eq!(
+            super::usage_command_name(args(&["bougie", "sylc"])),
+            "unknown"
+        );
+        assert_eq!(
+            super::usage_command_name(args(&["bougie", "--bad-flag"])),
+            "unknown"
+        );
         assert_eq!(super::usage_command_name(args(&["bougie"])), "unknown");
     }
 }

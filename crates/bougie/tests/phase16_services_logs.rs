@@ -17,7 +17,11 @@ use std::time::{Duration, Instant};
 const STEP_TIMEOUT: Duration = Duration::from_secs(15);
 
 fn install_fake_redis(env: &TestEnv) {
-    let store = env.home_path().join("store").join("redis-8.6.3").join("bin");
+    let store = env
+        .home_path()
+        .join("store")
+        .join("redis-8.6.3")
+        .join("bin");
     fs::create_dir_all(&store).unwrap();
     let dst = store.join("redis-server");
     fs::copy(cargo_bin("fake-redis"), &dst).unwrap();
@@ -77,7 +81,10 @@ fn logs_tail_shows_lines_the_service_wrote() {
         .stdout
         .clone();
     let s = String::from_utf8(out).unwrap();
-    assert!(s.contains("fake-redis"), "expected fake-redis output in tail: {s}");
+    assert!(
+        s.contains("fake-redis"),
+        "expected fake-redis output in tail: {s}"
+    );
     stop_daemon(&env);
 }
 
@@ -186,7 +193,10 @@ fn logs_n_truncates_to_requested_lines() {
     assert!(s.contains("synthetic-line-9"), "{s}");
     assert!(s.contains("synthetic-line-8"), "{s}");
     assert!(s.contains("synthetic-line-7"), "{s}");
-    assert!(!s.contains("synthetic-line-6"), "tail spilled past N=3: {s}");
+    assert!(
+        !s.contains("synthetic-line-6"),
+        "tail spilled past N=3: {s}"
+    );
     stop_daemon(&env);
 }
 
@@ -313,7 +323,8 @@ fn multi_service_logs_prefixes_each_line_with_the_service_name() {
     });
     {
         let mut w = &stream;
-        w.write_all(serde_json::to_string(&req).unwrap().as_bytes()).unwrap();
+        w.write_all(serde_json::to_string(&req).unwrap().as_bytes())
+            .unwrap();
         w.write_all(b"\n").unwrap();
         w.flush().unwrap();
     }

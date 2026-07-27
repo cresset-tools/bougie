@@ -20,7 +20,7 @@
 //! the only thing multiplexing buys us in practice is fewer `connect()`
 //! syscalls. We can revisit if a perf trace shows it dominating.
 
-use eyre::{eyre, Result, WrapErr};
+use eyre::{Result, WrapErr, eyre};
 use std::net::SocketAddr;
 #[cfg(unix)]
 use std::path::PathBuf;
@@ -335,7 +335,11 @@ where
             }
         }
     }
-    Ok(DispatchResult { stdout, stderr, app_status })
+    Ok(DispatchResult {
+        stdout,
+        stderr,
+        app_status,
+    })
 }
 
 #[derive(Debug)]
@@ -408,8 +412,8 @@ mod tests {
     #[test]
     fn encode_short_pair_uses_one_byte_lengths() {
         let bytes = encode_params(&[("PATH_INFO", "/foo")]);
-        assert_eq!(bytes[0], 9);   // PATH_INFO is 9 chars
-        assert_eq!(bytes[1], 4);   // /foo is 4 chars
+        assert_eq!(bytes[0], 9); // PATH_INFO is 9 chars
+        assert_eq!(bytes[1], 4); // /foo is 4 chars
         assert_eq!(&bytes[2..11], b"PATH_INFO");
         assert_eq!(&bytes[11..15], b"/foo");
         assert_eq!(bytes.len(), 15);
@@ -419,7 +423,7 @@ mod tests {
     fn encode_long_value_uses_four_byte_length() {
         let v = "x".repeat(200);
         let bytes = encode_params(&[("A", v.as_str())]);
-        assert_eq!(bytes[0], 1);   // name len fits in 1 byte
+        assert_eq!(bytes[0], 1); // name len fits in 1 byte
         // value len 200 → top bit set + 4-byte big-endian
         assert_eq!(bytes[1] & 0x80, 0x80);
         let len = (u32::from(bytes[1] & 0x7f) << 24)
@@ -433,7 +437,10 @@ mod tests {
     fn encode_decode_round_trip() {
         let original = [
             ("REQUEST_METHOD".to_string(), "GET".to_string()),
-            ("SCRIPT_FILENAME".to_string(), "/var/www/index.php".to_string()),
+            (
+                "SCRIPT_FILENAME".to_string(),
+                "/var/www/index.php".to_string(),
+            ),
             ("HTTP_X_CUSTOM".to_string(), "1".to_string()),
         ];
         let pairs: Vec<(&str, &str)> = original
@@ -463,7 +470,10 @@ mod tests {
         let mut buf = Vec::new();
         write_record(&mut buf, RecordType::Stdin, &body);
         // Two frames: 65535 + 64465. Each carries an 8-byte header.
-        assert_eq!(buf.len(), FCGI_HEADER_LEN + 65_535 + FCGI_HEADER_LEN + 64_465);
+        assert_eq!(
+            buf.len(),
+            FCGI_HEADER_LEN + 65_535 + FCGI_HEADER_LEN + 64_465
+        );
         // First header opcodes + lengths.
         assert_eq!(buf[0], FCGI_VERSION_1);
         assert_eq!(buf[1], RecordType::Stdin as u8);

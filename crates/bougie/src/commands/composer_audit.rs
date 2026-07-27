@@ -19,10 +19,10 @@ use bougie_cli::{AbandonedHandling, OutputFormat};
 use bougie_composer::lockfile::Lock;
 use bougie_composer_resolver::audit::{self, Advisory};
 use bougie_composer_resolver::metadata::build_client;
-use bougie_output::output::{emit, Render};
+use bougie_output::output::{Render, emit};
 use composer_semver::constraint::Constraint;
 use composer_semver::version::Version;
-use eyre::{eyre, Context, Result};
+use eyre::{Context, Result, eyre};
 use serde::Serialize;
 
 #[derive(Debug, Clone)]
@@ -113,7 +113,8 @@ pub fn run(format: OutputFormat, opts: AuditOptions) -> Result<ExitCode> {
             project_root.display()
         ));
     }
-    let lock = Lock::read(&lock_path).wrap_err_with(|| format!("reading {}", lock_path.display()))?;
+    let lock =
+        Lock::read(&lock_path).wrap_err_with(|| format!("reading {}", lock_path.display()))?;
 
     // Locked version per package name (lowercased), for constraint
     // matching against advisories.
@@ -125,7 +126,10 @@ pub fn run(format: OutputFormat, opts: AuditOptions) -> Result<ExitCode> {
         lock.all_packages().collect()
     };
     for p in &pkgs {
-        versions.insert(p.name.to_ascii_lowercase(), (p.name.clone(), p.version.clone()));
+        versions.insert(
+            p.name.to_ascii_lowercase(),
+            (p.name.clone(), p.version.clone()),
+        );
     }
     let names: Vec<String> = pkgs.iter().map(|p| p.name.clone()).collect();
     let packages_audited = names.len();
@@ -173,7 +177,11 @@ pub fn run(format: OutputFormat, opts: AuditOptions) -> Result<ExitCode> {
             findings,
         },
     )?;
-    Ok(if any { ExitCode::FAILURE } else { ExitCode::SUCCESS })
+    Ok(if any {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    })
 }
 
 /// Does this advisory's `affectedVersions` constraint cover the locked

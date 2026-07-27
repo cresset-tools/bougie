@@ -30,12 +30,12 @@ pub use bougie_index_backend::BougieIndexBackend;
 pub use nodejs_org::{NodeRecipe, NodeRequest, NodeVersion, NodejsOrgBackend};
 pub use windows_php_net::WindowsPhpNetBackend;
 
-use bougie_fetch::{fetch_blob, ArchiveKind, BlobOutcome, DownloadBar};
+use bougie_fetch::{ArchiveKind, BlobOutcome, DownloadBar, fetch_blob};
 use bougie_index::wire::LoadDirective;
 use bougie_paths::Paths;
-use bougie_version::request::{Flavor, VersionLike};
-use bougie_resolver::ResolveOptions;
 use bougie_platform::target::{Os, Triple};
+use bougie_resolver::ResolveOptions;
+use bougie_version::request::{Flavor, VersionLike};
 use bougie_version::version::{PartialVersion, Version};
 use eyre::Result;
 use std::path::{Path, PathBuf};

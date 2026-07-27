@@ -8,13 +8,13 @@ use super::client;
 use super::config_mut::locate_project_root;
 use super::ide;
 use bougie_cli::OutputFormat;
-use bougie_config::{load_project, ServicePin};
+use bougie_config::{ServicePin, load_project};
 use bougie_daemon::daemon::store_fetch::ResolvedTool;
 use bougie_output::output::{Render, emit};
 use bougie_paths::Paths;
-use eyre::{eyre, Result};
+use eyre::{Result, eyre};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::io::{self, IsTerminal, Write};
 use std::process::ExitCode;
@@ -103,12 +103,15 @@ pub fn run(format: OutputFormat, names: Vec<String>, detach: bool) -> Result<Exi
         out
     };
     if selected.is_empty() {
-        emit(format, &ServicesUpResult {
-            schema_version: 2,
-            started: vec![],
-            tenants: BTreeMap::new(),
-            dependencies: BTreeMap::new(),
-        })?;
+        emit(
+            format,
+            &ServicesUpResult {
+                schema_version: 2,
+                started: vec![],
+                tenants: BTreeMap::new(),
+                dependencies: BTreeMap::new(),
+            },
+        )?;
         return Ok(ExitCode::SUCCESS);
     }
 
@@ -121,7 +124,8 @@ pub fn run(format: OutputFormat, names: Vec<String>, detach: bool) -> Result<Exi
         .iter()
         .map(|(name, pin)| -> Result<Value> {
             let tenant = pin
-                .tenant().map_or_else(|| default_tenant.clone(), str::to_owned);
+                .tenant()
+                .map_or_else(|| default_tenant.clone(), str::to_owned);
             let version = resolve_service_version(name, pin)?;
             Ok(json!({"name": name, "version": version, "tenant": tenant}))
         })
@@ -191,9 +195,7 @@ pub fn run(format: OutputFormat, names: Vec<String>, detach: bool) -> Result<Exi
     // CLI; the daemon keeps the services running. Recipe steps that
     // shell out to `bougie up <svc>` pass `--detach` so the build never
     // blocks here (see recipes/{magento,laravel,generic}.toml).
-    let attach = !detach
-        && matches!(format, OutputFormat::Text)
-        && std::io::stdout().is_terminal();
+    let attach = !detach && matches!(format, OutputFormat::Text) && std::io::stdout().is_terminal();
     if attach {
         let follow: Vec<String> = selected.iter().map(|(n, _)| n.clone()).collect();
         if !follow.is_empty() {
@@ -359,8 +361,9 @@ fn rewrite_env_php_sockets(
             if content.starts_with('/')
                 && content.ends_with(".sock")
                 && std::path::Path::new(content).starts_with(state_prefix)
-                && let Some(sockname) =
-                    std::path::Path::new(content).file_name().and_then(|s| s.to_str())
+                && let Some(sockname) = std::path::Path::new(content)
+                    .file_name()
+                    .and_then(|s| s.to_str())
             {
                 let target = stable_for(sockname).display().to_string();
                 if target != content && !repl.iter().any(|(o, _)| o == content) {
@@ -429,7 +432,18 @@ mod tests {
         assert!(is_full_exact("1.30.2"));
         assert!(is_full_exact("8.4.10"));
         assert!(is_full_exact("11.4.4"));
-        for spec in ["8", "8.4", "*", "^8.4", "~1.0", ">=8", "8.x", "8.0.0-rc1", "", "v8.4"] {
+        for spec in [
+            "8",
+            "8.4",
+            "*",
+            "^8.4",
+            "~1.0",
+            ">=8",
+            "8.x",
+            "8.0.0-rc1",
+            "",
+            "v8.4",
+        ] {
             assert!(!is_full_exact(spec), "{spec} should not be full-exact");
         }
     }
@@ -437,18 +451,36 @@ mod tests {
     #[test]
     fn multi_version_service_resolves_partials_to_highest_match() {
         // mysql ships 8.4.10 (default) + 8.0.46.
-        assert_eq!(resolve_service_version("mysql", &pin("8.0")).unwrap(), "8.0.46");
-        assert_eq!(resolve_service_version("mysql", &pin("8.4")).unwrap(), "8.4.10");
+        assert_eq!(
+            resolve_service_version("mysql", &pin("8.0")).unwrap(),
+            "8.0.46"
+        );
+        assert_eq!(
+            resolve_service_version("mysql", &pin("8.4")).unwrap(),
+            "8.4.10"
+        );
         // Bare major and caret both span the two → highest.
-        assert_eq!(resolve_service_version("mysql", &pin("8")).unwrap(), "8.4.10");
-        assert_eq!(resolve_service_version("mysql", &pin("^8.0")).unwrap(), "8.4.10");
+        assert_eq!(
+            resolve_service_version("mysql", &pin("8")).unwrap(),
+            "8.4.10"
+        );
+        assert_eq!(
+            resolve_service_version("mysql", &pin("^8.0")).unwrap(),
+            "8.4.10"
+        );
         // Exact published version passes through as itself.
-        assert_eq!(resolve_service_version("mysql", &pin("8.0.46")).unwrap(), "8.0.46");
+        assert_eq!(
+            resolve_service_version("mysql", &pin("8.0.46")).unwrap(),
+            "8.0.46"
+        );
     }
 
     #[test]
     fn wildcard_and_unset_resolve_to_default() {
-        assert_eq!(resolve_service_version("mysql", &pin("*")).unwrap(), "8.4.10");
+        assert_eq!(
+            resolve_service_version("mysql", &pin("*")).unwrap(),
+            "8.4.10"
+        );
         // Detail table with no version set → default.
         let detail = ServicePin::Detail(Default::default());
         assert_eq!(resolve_service_version("mysql", &detail).unwrap(), "8.4.10");
@@ -457,8 +489,14 @@ mod tests {
     #[test]
     fn single_version_service_resolves_compatible_pins() {
         // redis ships only 8.6.3; a compatible partial resolves to it.
-        assert_eq!(resolve_service_version("redis", &pin("8.6")).unwrap(), "8.6.3");
-        assert_eq!(resolve_service_version("redis", &pin("*")).unwrap(), "8.6.3");
+        assert_eq!(
+            resolve_service_version("redis", &pin("8.6")).unwrap(),
+            "8.6.3"
+        );
+        assert_eq!(
+            resolve_service_version("redis", &pin("*")).unwrap(),
+            "8.6.3"
+        );
         // An exact patch the catalog doesn't list is trusted (the index
         // is authoritative) — e.g. a newer mariadb than bougie shipped.
         assert_eq!(
@@ -543,11 +581,23 @@ return array (
              'queue' => array ( 'amqp' => array ( 'host' => 'localhost' ) ) );";
         let (out, changed) = rewrite_env_php_sockets(env, Path::new("/h/state"), stable).unwrap();
         // Both bougie sockets repointed at the stable per-project socket.
-        assert!(out.contains("'host' => '/h/state/conn/PROJ/mariadb.sock'"), "{out}");
-        assert!(out.contains("'server' => '/h/state/conn/PROJ/redis.sock'"), "{out}");
+        assert!(
+            out.contains("'host' => '/h/state/conn/PROJ/mariadb.sock'"),
+            "{out}"
+        );
+        assert!(
+            out.contains("'server' => '/h/state/conn/PROJ/redis.sock'"),
+            "{out}"
+        );
         // A user's external socket + a TCP host are left untouched.
-        assert!(out.contains("'/var/run/mysqld/mysqld.sock'"), "external socket must survive");
-        assert!(out.contains("'host' => 'localhost'"), "TCP host must survive");
+        assert!(
+            out.contains("'/var/run/mysqld/mysqld.sock'"),
+            "external socket must survive"
+        );
+        assert!(
+            out.contains("'host' => 'localhost'"),
+            "TCP host must survive"
+        );
         assert_eq!(changed.len(), 2);
     }
 

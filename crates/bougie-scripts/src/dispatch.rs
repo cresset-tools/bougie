@@ -6,7 +6,7 @@ use std::collections::HashSet;
 use std::process::Command;
 use std::time::Duration;
 
-use eyre::{bail, eyre, Result, WrapErr};
+use eyre::{Result, WrapErr, bail, eyre};
 use wait_timeout::ChildExt;
 
 use crate::{Entry, ScriptContext, Scripts};
@@ -45,7 +45,15 @@ pub fn dispatch(scripts: &Scripts, event: &str, ctx: &ScriptContext) -> Result<V
     // `disableProcessTimeout` callback flips it off for every subsequent
     // entry (matching Composer's process-wide ProcessExecutor::$timeout).
     let mut timeout = ctx.timeout;
-    dispatch_inner(scripts, event, ctx, &mut env, &mut timeout, &mut seen, &mut outcomes)?;
+    dispatch_inner(
+        scripts,
+        event,
+        ctx,
+        &mut env,
+        &mut timeout,
+        &mut seen,
+        &mut outcomes,
+    )?;
     Ok(outcomes)
 }
 
@@ -77,7 +85,11 @@ fn dispatch_inner(
                 dispatch_inner(scripts, name, ctx, env, timeout, seen, outcomes)?;
             }
             Entry::Php(args) => {
-                let line = format!("{} {}", shell_quote(&ctx.php_bin.display().to_string()), args);
+                let line = format!(
+                    "{} {}",
+                    shell_quote(&ctx.php_bin.display().to_string()),
+                    args
+                );
                 run_command_line(line.trim(), ctx, env, *timeout)
                     .wrap_err_with(|| format!("`{event}`: @php {args}"))?;
                 outcomes.push(EntryOutcome::Ran);
@@ -106,8 +118,9 @@ fn dispatch_inner(
                     continue;
                 }
                 if let Some(handler) = ctx.callbacks.get(class, method) {
-                    handler(ctx)
-                        .wrap_err_with(|| format!("`{event}`: native callback {class}::{method}"))?;
+                    handler(ctx).wrap_err_with(|| {
+                        format!("`{event}`: native callback {class}::{method}")
+                    })?;
                     outcomes.push(EntryOutcome::NativeCallback);
                 } else {
                     eprintln!(
@@ -131,9 +144,16 @@ fn seed_env(ctx: &ScriptContext) -> HashMap<String, String> {
     let mut env: HashMap<String, String> = ctx.base_env.iter().cloned().collect();
     let bin = ctx.bin_dir.display().to_string();
     let path = env.get("PATH").cloned().unwrap_or_default();
-    let leads = path.split(PATH_SEP).next().is_some_and(|first| first == bin);
+    let leads = path
+        .split(PATH_SEP)
+        .next()
+        .is_some_and(|first| first == bin);
     if !bin.is_empty() && !leads {
-        let joined = if path.is_empty() { bin } else { format!("{bin}{PATH_SEP}{path}") };
+        let joined = if path.is_empty() {
+            bin
+        } else {
+            format!("{bin}{PATH_SEP}{path}")
+        };
         env.insert("PATH".into(), joined);
     }
     env
@@ -168,7 +188,9 @@ fn run_command_line(
         cmd.env(k, v);
     }
     let Some(limit) = timeout else {
-        let status = cmd.status().wrap_err_with(|| format!("spawning shell for `{line}`"))?;
+        let status = cmd
+            .status()
+            .wrap_err_with(|| format!("spawning shell for `{line}`"))?;
         return exit_to_result(status, line);
     };
     // Put the script in its own process group so a timeout tears down the
@@ -181,8 +203,13 @@ fn run_command_line(
         use std::os::unix::process::CommandExt;
         cmd.process_group(0);
     }
-    let mut child = cmd.spawn().wrap_err_with(|| format!("spawning shell for `{line}`"))?;
-    if let Some(status) = child.wait_timeout(limit).wrap_err_with(|| format!("waiting for `{line}`"))? {
+    let mut child = cmd
+        .spawn()
+        .wrap_err_with(|| format!("spawning shell for `{line}`"))?;
+    if let Some(status) = child
+        .wait_timeout(limit)
+        .wrap_err_with(|| format!("waiting for `{line}`"))?
+    {
         return exit_to_result(status, line);
     }
     kill_tree(&mut child);
@@ -199,7 +226,7 @@ fn run_command_line(
 /// any grandchildren it forked too.
 #[cfg(unix)]
 fn kill_tree(child: &mut std::process::Child) {
-    use nix::sys::signal::{killpg, Signal};
+    use nix::sys::signal::{Signal, killpg};
     use nix::unistd::Pid;
     if let Ok(pid) = i32::try_from(child.id()) {
         let _ = killpg(Pid::from_raw(pid), Signal::SIGKILL);
@@ -283,7 +310,11 @@ fn expand(val: &str, env: &HashMap<String, String>) -> String {
         }
         let mut name = String::new();
         while let Some(&nc) = chars.peek() {
-            let ok = if braced { nc != '}' } else { nc.is_ascii_alphanumeric() || nc == '_' };
+            let ok = if braced {
+                nc != '}'
+            } else {
+                nc.is_ascii_alphanumeric() || nc == '_'
+            };
             if !ok {
                 break;
             }
@@ -307,10 +338,14 @@ mod tests {
     use super::*;
     use crate::CallbackRegistry;
     use std::path::{Path, PathBuf};
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
-    fn ctx<'a>(root: &'a Path, reg: &'a CallbackRegistry, env: Vec<(String, String)>) -> ScriptContext<'a> {
+    fn ctx<'a>(
+        root: &'a Path,
+        reg: &'a CallbackRegistry,
+        env: Vec<(String, String)>,
+    ) -> ScriptContext<'a> {
         ScriptContext {
             project_root: root,
             php_bin: Path::new("/usr/bin/php"),
@@ -393,7 +428,10 @@ mod tests {
         assert_eq!(hits.load(Ordering::SeqCst), 1);
         assert_eq!(
             out,
-            vec![EntryOutcome::NativeCallback, EntryOutcome::SkippedCallback("Other\\Thing::go".into())]
+            vec![
+                EntryOutcome::NativeCallback,
+                EntryOutcome::SkippedCallback("Other\\Thing::go".into())
+            ]
         );
     }
 
@@ -408,7 +446,10 @@ mod tests {
         let out = dispatch(&scripts, "x", &c).unwrap();
         assert_eq!(
             out,
-            vec![EntryOutcome::Ran, EntryOutcome::SkippedComposer("require foo/bar".into())]
+            vec![
+                EntryOutcome::Ran,
+                EntryOutcome::SkippedComposer("require foo/bar".into())
+            ]
         );
     }
 
@@ -418,7 +459,11 @@ mod tests {
         let reg = CallbackRegistry::new();
         let scripts = Scripts::parse(&serde_json::json!({ "scripts": {} }));
         let c = ctx(tmp.path(), &reg, vec![]);
-        assert!(dispatch(&scripts, "post-install-cmd", &c).unwrap().is_empty());
+        assert!(
+            dispatch(&scripts, "post-install-cmd", &c)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
@@ -437,8 +482,14 @@ mod tests {
         let env = seed_env(&c);
         assert_eq!(env.get("PATH").unwrap(), "/opt/proj/vendor/bin:/usr/bin");
         // Idempotent: already-leading bin_dir isn't doubled.
-        let c2 = ScriptContext { base_env: vec![("PATH".into(), env["PATH"].clone())], ..c };
-        assert_eq!(seed_env(&c2).get("PATH").unwrap(), "/opt/proj/vendor/bin:/usr/bin");
+        let c2 = ScriptContext {
+            base_env: vec![("PATH".into(), env["PATH"].clone())],
+            ..c
+        };
+        assert_eq!(
+            seed_env(&c2).get("PATH").unwrap(),
+            "/opt/proj/vendor/bin:/usr/bin"
+        );
     }
 
     /// A `ScriptContext` with the inherited `PATH` (so `sleep` resolves) and
@@ -463,12 +514,19 @@ mod tests {
     fn process_timeout_kills_a_slow_entry() {
         let tmp = tempfile::tempdir().unwrap();
         let reg = CallbackRegistry::new();
-        let c = ctx_with_timeout(tmp.path(), &reg, Some(std::time::Duration::from_millis(300)));
+        let c = ctx_with_timeout(
+            tmp.path(),
+            &reg,
+            Some(std::time::Duration::from_millis(300)),
+        );
         let scripts = Scripts::parse(&serde_json::json!({ "scripts": { "x": ["sleep 5"] } }));
         let start = std::time::Instant::now();
         let err = dispatch(&scripts, "x", &c).unwrap_err();
         // Killed promptly, nowhere near the 5s sleep.
-        assert!(start.elapsed() < std::time::Duration::from_secs(2), "should kill promptly");
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(2),
+            "should kill promptly"
+        );
         assert!(format!("{err:#}").contains("timeout"), "{err:#}");
     }
 
@@ -479,7 +537,11 @@ mod tests {
         let done = tmp.path().join("done");
         // A 200ms budget would kill `sleep 0.5`, but the callback lifts it
         // for the rest of the dispatch, so the entry completes.
-        let c = ctx_with_timeout(tmp.path(), &reg, Some(std::time::Duration::from_millis(200)));
+        let c = ctx_with_timeout(
+            tmp.path(),
+            &reg,
+            Some(std::time::Duration::from_millis(200)),
+        );
         let scripts = Scripts::parse(&serde_json::json!({ "scripts": { "x": [
             "Composer\\Config::disableProcessTimeout",
             format!("sleep 0.5 && : > {}", done.display()),

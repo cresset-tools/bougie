@@ -35,8 +35,7 @@ pub use bougie_tool::install::LockResolver;
 /// at best be a no-op and at worst emit "module already loaded"
 /// warnings on every PHP startup.
 pub fn ext_needs_install(name: &str) -> bool {
-    !bougie_installer::baseline::is_builtin(name)
-        && !bougie_installer::baseline::is_baseline(name)
+    !bougie_installer::baseline::is_builtin(name) && !bougie_installer::baseline::is_baseline(name)
 }
 
 /// Build the `ToolRequiresFetcher` callback. Hits Packagist v2
@@ -50,9 +49,7 @@ pub fn ext_needs_install(name: &str) -> bool {
 pub fn tool_requires_fetcher() -> Box<ToolRequiresFetcher> {
     Box::new(
         |paths: &Paths, package: &str, user_constraint: &str| -> Result<ToolRequires> {
-            use bougie_composer_resolver::metadata::{
-                Repo, Variant, fetch_package_metadata,
-            };
+            use bougie_composer_resolver::metadata::{Repo, Variant, fetch_package_metadata};
             let client = reqwest::blocking::Client::new();
             let repo = Repo::packagist();
             let metadata = fetch_package_metadata(&client, paths, &repo, package, Variant::Stable)
@@ -211,8 +208,8 @@ pub fn native_prefetcher() -> Box<bougie_tool::prefetch::NativeFetcher> {
 /// triplet isn't on disk.
 pub fn php_installer() -> Box<PhpInstaller> {
     Box::new(|paths: &Paths, spec: &str| -> Result<PhpChoice> {
-        let request = parse_php_request(spec)
-            .wrap_err_with(|| format!("parsing --php value `{spec}`"))?;
+        let request =
+            parse_php_request(spec).wrap_err_with(|| format!("parsing --php value `{spec}`"))?;
         let installed = install_php(paths, &request, None, ResolveOptions::default())
             .wrap_err_with(|| format!("installing PHP for --php {spec}"))?;
         Ok(PhpChoice {
@@ -246,16 +243,14 @@ pub fn extension_classifier() -> Box<ExtensionClassifier> {
         }
         let paths = Paths::from_env()?;
         let target = Triple::detect()?;
-        let host = std::env::var("BOUGIE_INDEX_URL")
-            .unwrap_or_else(|_| DEFAULT_INDEX_URL.into());
+        let host = std::env::var("BOUGIE_INDEX_URL").unwrap_or_else(|_| DEFAULT_INDEX_URL.into());
         let backend = bougie_backend::select(&target, &host, &paths)?;
         let (php_minor, flavor) = parse_php_choice(php)?;
-        match backend.resolve_extension(name, php_minor, flavor, None, ResolveOptions::default())
-        {
+        match backend.resolve_extension(name, php_minor, flavor, None, ResolveOptions::default()) {
             Ok(_) => Ok(true),
             Err(e) => match e.downcast_ref::<BougieError>() {
-                Some(BougieError::Resolution { kind, detail }) if kind == "extension"
-                    && is_name_unknown_detail(detail) =>
+                Some(BougieError::Resolution { kind, detail })
+                    if kind == "extension" && is_name_unknown_detail(detail) =>
                 {
                     Ok(false)
                 }
@@ -280,8 +275,7 @@ pub fn extension_classifier() -> Box<ExtensionClassifier> {
 /// The resolver's "no candidate satisfies LABEL" (artifact-selection
 /// failure for a known section) is intentionally NOT matched here.
 fn is_name_unknown_detail(detail: &str) -> bool {
-    detail.contains(" section under target ")
-        || detail.contains("`WINDOWS_PECL_VERSIONS` entry")
+    detail.contains(" section under target ") || detail.contains("`WINDOWS_PECL_VERSIONS` entry")
 }
 
 /// Build the extension installer. Calls `install_extension` for the
@@ -289,27 +283,29 @@ fn is_name_unknown_detail(detail: &str) -> bool {
 /// conf.d fragment under the tool's `conf.d/` dir via the
 /// installer's existing fragment-writer.
 pub fn extension_installer() -> Box<ExtInstaller> {
-    Box::new(|paths: &Paths, name: &str, php: &PhpChoice, conf_d: &std::path::Path| -> Result<PathBuf> {
-        let (php_minor, flavor) = parse_php_choice(php)?;
-        let installed = install_extension(
-            paths,
-            name,
-            None,
-            php_minor,
-            flavor,
-            ResolveOptions::default(),
-        )
-        .wrap_err_with(|| format!("installing extension `{name}` for tool"))?;
-        let ini = write_ext_fragment_into(
-            conf_d,
-            &installed.name,
-            &installed.so_path,
-            installed.load,
-            &installed.path_extras,
-        )
-        .wrap_err_with(|| format!("writing conf.d fragment for `{name}`"))?;
-        Ok(ini)
-    })
+    Box::new(
+        |paths: &Paths, name: &str, php: &PhpChoice, conf_d: &std::path::Path| -> Result<PathBuf> {
+            let (php_minor, flavor) = parse_php_choice(php)?;
+            let installed = install_extension(
+                paths,
+                name,
+                None,
+                php_minor,
+                flavor,
+                ResolveOptions::default(),
+            )
+            .wrap_err_with(|| format!("installing extension `{name}` for tool"))?;
+            let ini = write_ext_fragment_into(
+                conf_d,
+                &installed.name,
+                &installed.so_path,
+                installed.load,
+                &installed.path_extras,
+            )
+            .wrap_err_with(|| format!("writing conf.d fragment for `{name}`"))?;
+            Ok(ini)
+        },
+    )
 }
 
 /// Split a [`PhpChoice`] into `(php_minor, flavor)` shapes the
@@ -331,4 +327,3 @@ fn parse_flavor(s: &str) -> Option<Flavor> {
         _ => return None,
     })
 }
-

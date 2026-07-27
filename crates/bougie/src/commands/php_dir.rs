@@ -1,5 +1,5 @@
 use bougie_cli::OutputFormat;
-use bougie_output::output::{emit, Render};
+use bougie_output::output::{Render, emit};
 use bougie_paths::Paths;
 use eyre::Result;
 use serde::Serialize;

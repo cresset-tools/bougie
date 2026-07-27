@@ -103,14 +103,24 @@ pub fn install_source(paths: &Paths, url: &str, reference: &str, dest: &Path) ->
         "clone",
         url,
         None,
-        &["clone".as_ref(), "--quiet".as_ref(), mirror.as_os_str(), dest.as_os_str()],
+        &[
+            "clone".as_ref(),
+            "--quiet".as_ref(),
+            mirror.as_os_str(),
+            dest.as_os_str(),
+        ],
     )?;
 
     run_git(
         "checkout",
         url,
         Some(dest),
-        &["checkout".as_ref(), "--quiet".as_ref(), "--detach".as_ref(), reference.as_ref()],
+        &[
+            "checkout".as_ref(),
+            "--quiet".as_ref(),
+            "--detach".as_ref(),
+            reference.as_ref(),
+        ],
     )?;
 
     // Point origin back at the real remote (the clone set it to the local
@@ -119,7 +129,12 @@ pub fn install_source(paths: &Paths, url: &str, reference: &str, dest: &Path) ->
         "set-url",
         url,
         Some(dest),
-        &["remote".as_ref(), "set-url".as_ref(), "origin".as_ref(), url.as_ref()],
+        &[
+            "remote".as_ref(),
+            "set-url".as_ref(),
+            "origin".as_ref(),
+            url.as_ref(),
+        ],
     );
 
     Ok(())
@@ -137,18 +152,44 @@ fn ensure_mirror(paths: &Paths, url: &str, reference: &str) -> Result<PathBuf> {
     if mirror.join("HEAD").is_file() {
         // Fetch only if the wanted commit isn't already present.
         if !reference.is_empty() && !commit_present(&mirror, reference) {
-            run_git("fetch", url, Some(&mirror), &["remote".as_ref(), "update".as_ref(), "--prune".as_ref()])?;
+            run_git(
+                "fetch",
+                url,
+                Some(&mirror),
+                &["remote".as_ref(), "update".as_ref(), "--prune".as_ref()],
+            )?;
         }
     } else {
         let _ = std::fs::remove_dir_all(&mirror);
-        run_git("clone", url, None, &["clone".as_ref(), "--mirror".as_ref(), "--quiet".as_ref(), url.as_ref(), mirror.as_os_str()])?;
+        run_git(
+            "clone",
+            url,
+            None,
+            &[
+                "clone".as_ref(),
+                "--mirror".as_ref(),
+                "--quiet".as_ref(),
+                url.as_ref(),
+                mirror.as_os_str(),
+            ],
+        )?;
     }
     Ok(mirror)
 }
 
 /// `true` when `reference` resolves to a commit object in the mirror.
 fn commit_present(mirror: &Path, reference: &str) -> bool {
-    run_git("cat-file", "", Some(mirror), &["cat-file".as_ref(), "-e".as_ref(), format!("{reference}^{{commit}}").as_ref()]).is_ok()
+    run_git(
+        "cat-file",
+        "",
+        Some(mirror),
+        &[
+            "cat-file".as_ref(),
+            "-e".as_ref(),
+            format!("{reference}^{{commit}}").as_ref(),
+        ],
+    )
+    .is_ok()
 }
 
 /// A filesystem-safe, collision-resistant directory name for a repo URL:
@@ -160,10 +201,23 @@ fn mirror_dir_name(url: &str) -> String {
     h.write(url.as_bytes());
     let sanitized: String = url
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') { c } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect();
     // Keep the tail (the repo name is the informative part) bounded.
-    let tail: String = sanitized.chars().rev().take(60).collect::<Vec<_>>().into_iter().rev().collect();
+    let tail: String = sanitized
+        .chars()
+        .rev()
+        .take(60)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
     format!("{tail}-{:016x}", h.finish())
 }
 
@@ -185,7 +239,11 @@ fn run_git(
     if out.status.success() {
         Ok(())
     } else {
-        Err(classify_git(operation, url, &String::from_utf8_lossy(&out.stderr)))
+        Err(classify_git(
+            operation,
+            url,
+            &String::from_utf8_lossy(&out.stderr),
+        ))
     }
 }
 
@@ -205,7 +263,11 @@ fn git_output(
     if out.status.success() {
         Ok(out.stdout)
     } else {
-        Err(classify_git(operation, url, &String::from_utf8_lossy(&out.stderr)))
+        Err(classify_git(
+            operation,
+            url,
+            &String::from_utf8_lossy(&out.stderr),
+        ))
     }
 }
 
@@ -220,10 +282,26 @@ pub fn refresh_mirror(paths: &Paths, url: &str) -> Result<PathBuf> {
         .wrap_err_with(|| format!("creating {}", cache_root.display()))?;
     let mirror = cache_root.join(mirror_dir_name(url));
     if mirror.join("HEAD").is_file() {
-        run_git("fetch", url, Some(&mirror), &["remote".as_ref(), "update".as_ref(), "--prune".as_ref()])?;
+        run_git(
+            "fetch",
+            url,
+            Some(&mirror),
+            &["remote".as_ref(), "update".as_ref(), "--prune".as_ref()],
+        )?;
     } else {
         let _ = std::fs::remove_dir_all(&mirror);
-        run_git("clone", url, None, &["clone".as_ref(), "--mirror".as_ref(), "--quiet".as_ref(), url.as_ref(), mirror.as_os_str()])?;
+        run_git(
+            "clone",
+            url,
+            None,
+            &[
+                "clone".as_ref(),
+                "--mirror".as_ref(),
+                "--quiet".as_ref(),
+                url.as_ref(),
+                mirror.as_os_str(),
+            ],
+        )?;
     }
     Ok(mirror)
 }
@@ -273,7 +351,11 @@ pub fn list_refs(mirror: &Path) -> Result<Vec<GitRef>> {
         } else {
             continue;
         };
-        refs.push(GitRef { name: name.to_owned(), sha: sha.to_owned(), is_tag });
+        refs.push(GitRef {
+            name: name.to_owned(),
+            sha: sha.to_owned(),
+            is_tag,
+        });
     }
     Ok(refs)
 }

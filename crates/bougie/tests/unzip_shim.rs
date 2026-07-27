@@ -7,7 +7,7 @@
 //! file containing the target path).
 
 use std::io::Write;
-use std::os::unix::fs::{symlink, PermissionsExt};
+use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::PathBuf;
 use std::process::Command;
 use tempfile::TempDir;
@@ -54,7 +54,8 @@ fn build_fixture(tmp: &std::path::Path) -> PathBuf {
     // target as the file body; `ZipArchive::extract` then reproduces it
     // as a real symlink on disk.
     let symlink_opts = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
-    z.add_symlink("link.txt", "hello.txt", symlink_opts).unwrap();
+    z.add_symlink("link.txt", "hello.txt", symlink_opts)
+        .unwrap();
 
     z.finish().expect("finalising fixture zip");
     zip_path
@@ -137,8 +138,5 @@ fn unzip_rejects_unknown_flag() {
         .expect("spawning unzip shim");
     assert!(!out.status.success(), "expected nonzero exit on bad flag");
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        stderr.contains("unsupported flag"),
-        "stderr was: {stderr}"
-    );
+    assert!(stderr.contains("unsupported flag"), "stderr was: {stderr}");
 }

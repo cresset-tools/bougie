@@ -48,7 +48,9 @@ pub(crate) fn materialize_path_packages(
 ) -> PathLinkSummary {
     let mut summary = PathLinkSummary::default();
     for (pkg, dest) in packages.iter().zip(dests.iter()) {
-        let Some(dist) = pkg.dist.as_ref() else { continue };
+        let Some(dist) = pkg.dist.as_ref() else {
+            continue;
+        };
         let source = project_root.join(&dist.url);
         if !source.exists() {
             summary.warnings.push(format!(
@@ -291,8 +293,7 @@ mod tests {
         let (tmp, pkg) = setup(Value::Null, None);
         let root = tmp.path();
         let dest = root.join("vendor/acme/local");
-        let summary =
-            materialize_path_packages(root, &[&pkg], std::slice::from_ref(&dest), None);
+        let summary = materialize_path_packages(root, &[&pkg], std::slice::from_ref(&dest), None);
         assert_eq!(summary.linked, 1);
         assert!(summary.warnings.is_empty(), "{:?}", summary.warnings);
         let meta = std::fs::symlink_metadata(&dest).unwrap();
@@ -309,11 +310,13 @@ mod tests {
         let (tmp, pkg) = setup(serde_json::json!({"symlink": false}), None);
         let root = tmp.path();
         let dest = root.join("vendor/acme/local");
-        let summary =
-            materialize_path_packages(root, &[&pkg], std::slice::from_ref(&dest), None);
+        let summary = materialize_path_packages(root, &[&pkg], std::slice::from_ref(&dest), None);
         assert_eq!(summary.linked, 1);
         let meta = std::fs::symlink_metadata(&dest).unwrap();
-        assert!(meta.file_type().is_dir(), "symlink:false must copy a real dir");
+        assert!(
+            meta.file_type().is_dir(),
+            "symlink:false must copy a real dir"
+        );
         assert!(!meta.file_type().is_symlink());
         assert_eq!(
             std::fs::read_to_string(dest.join("marker.txt")).unwrap(),
@@ -346,7 +349,8 @@ mod tests {
         let mut packages = HashMap::new();
         packages.insert("acme/local".to_string(), "abc123".to_string());
         let state = Some(InstalledState { packages });
-        let s2 = materialize_path_packages(root, &[&pkg], std::slice::from_ref(&dest), state.as_ref());
+        let s2 =
+            materialize_path_packages(root, &[&pkg], std::slice::from_ref(&dest), state.as_ref());
         assert_eq!(s2.up_to_date, 1, "unchanged reference → up-to-date");
         assert_eq!(s2.linked, 0);
     }
@@ -362,8 +366,7 @@ mod tests {
         }))
         .unwrap();
         let dest = root.join("vendor/acme/gone");
-        let summary =
-            materialize_path_packages(root, &[&pkg], std::slice::from_ref(&dest), None);
+        let summary = materialize_path_packages(root, &[&pkg], std::slice::from_ref(&dest), None);
         assert_eq!(summary.linked, 0);
         assert_eq!(summary.warnings.len(), 1);
         assert!(summary.warnings[0].contains("does not exist"));

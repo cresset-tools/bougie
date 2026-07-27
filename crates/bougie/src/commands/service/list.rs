@@ -6,7 +6,7 @@
 
 use super::config_mut::locate_project_root;
 use bougie_cli::OutputFormat;
-use bougie_config::{load_project, ServicePin};
+use bougie_config::{ServicePin, load_project};
 use bougie_output::output::{Render, emit};
 use eyre::Result;
 use serde::Serialize;

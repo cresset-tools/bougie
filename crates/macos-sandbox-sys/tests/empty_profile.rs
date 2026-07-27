@@ -11,8 +11,7 @@ use std::fs::File;
 
 #[test]
 fn empty_profile_allows_file_reads() {
-    let res =
-        create_sandbox_with_parameters("(version 1)\n(allow default)\n".to_string(), 0, &[]);
+    let res = create_sandbox_with_parameters("(version 1)\n(allow default)\n".to_string(), 0, &[]);
     assert!(res.is_ok(), "empty profile failed: {res:?}");
 
     File::open("./Cargo.toml").expect("Cargo.toml should still be readable");

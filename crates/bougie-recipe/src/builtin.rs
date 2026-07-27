@@ -1,7 +1,7 @@
 //! Builtin recipes shipped with the binary, plus per-project-type
 //! detection and per-task merge with a local `bougie.toml`.
 
-use super::parser::{parse, Recipe};
+use super::parser::{Recipe, parse};
 
 /// `(name, TOML body)` of every builtin recipe, embedded at compile
 /// time. The name (`"magento"`, etc.) is what `--recipe <name>` selects.
@@ -23,16 +23,15 @@ pub const BUILTINS: &[(&str, &str)] = &[
 /// - `laravel/framework` → `laravel`
 /// - otherwise → `generic`
 pub fn detect_from_text(composer_json: Option<&str>) -> &'static str {
-    let Some(text) = composer_json else { return "generic" };
+    let Some(text) = composer_json else {
+        return "generic";
+    };
     let v: serde_json::Value = match serde_json::from_str(text) {
         Ok(v) => v,
         Err(_) => return "generic",
     };
     let require = v.get("require").and_then(|r| r.as_object());
-    let has = |pkg: &str| {
-        require
-            .is_some_and(|r| r.contains_key(pkg))
-    };
+    let has = |pkg: &str| require.is_some_and(|r| r.contains_key(pkg));
     let name = v.get("name").and_then(|n| n.as_str()).unwrap_or("");
     if has("magento/product-community-edition")
         || has("magento/magento2-base")
@@ -223,7 +222,10 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("vendor/mage-os/framework-amqp")).unwrap();
         let log = run_script(&install, dir.path(), true);
         assert!(!log.contains("--amqp"), "log:\n{log}");
-        assert!(log.contains("setup:install"), "install must still run:\n{log}");
+        assert!(
+            log.contains("setup:install"),
+            "install must still run:\n{log}"
+        );
         let log = run_script(&services, dir.path(), true);
         assert!(!log.contains("rabbitmq"), "log:\n{log}");
         assert!(log.contains("service add mariadb"), "log:\n{log}");
@@ -266,11 +268,11 @@ mod tests {
         // Nothing configured (`db pull` exits 3) → fresh setup:install, no seed.
         let dir = tempfile::tempdir().unwrap();
         let log = run_script_pull(&install, dir.path(), true, 3);
-        assert!(log.contains("setup:install"), "fresh path must install:\n{log}");
         assert!(
-            !log.contains("db seed"),
-            "fresh path must not seed:\n{log}"
+            log.contains("setup:install"),
+            "fresh path must install:\n{log}"
         );
+        assert!(!log.contains("db seed"), "fresh path must not seed:\n{log}");
 
         // A real pull failure (exit 1) must abort, NOT silently fall back to a
         // destructive fresh install.
@@ -281,7 +283,11 @@ mod tests {
         {
             use std::os::unix::fs::PermissionsExt;
             let fake = bindir.join("bougie");
-            std::fs::write(&fake, "#!/bin/sh\ncase \"$*\" in *'db pull'*) exit 1;; esac\n").unwrap();
+            std::fs::write(
+                &fake,
+                "#!/bin/sh\ncase \"$*\" in *'db pull'*) exit 1;; esac\n",
+            )
+            .unwrap();
             std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
         let path = format!(
@@ -322,7 +328,10 @@ run = "composer install --no-dev"
         )
         .unwrap();
         let merged = merge_with_builtin(builtin, local);
-        assert_eq!(merged.tasks["vendor"].run.as_deref(), Some("composer install --no-dev"));
+        assert_eq!(
+            merged.tasks["vendor"].run.as_deref(),
+            Some("composer install --no-dev")
+        );
         assert_eq!(merged.tasks["start"].run.as_deref(), Some("echo orig"));
     }
 }

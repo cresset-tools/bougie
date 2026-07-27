@@ -47,7 +47,10 @@ pub fn run(format: OutputFormat, short: bool) -> Result<ExitCode> {
         schema_version: 1,
         bougie: VersionInfo {
             version: VERSION,
-            trust: TrustInfo { kind: trust.kind, detail: trust.detail },
+            trust: TrustInfo {
+                kind: trust.kind,
+                detail: trust.detail,
+            },
         },
     };
     emit(format, &result)?;

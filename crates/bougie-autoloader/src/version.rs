@@ -93,9 +93,18 @@ pub(crate) fn normalize(s: &str) -> Result<String, NormalizeError> {
         let parts = format!(
             "{}{}{}{}",
             c.get(1).expect("major").as_str(),
-            c.get(2).map(|m| m.as_str()).filter(|s| !s.is_empty()).unwrap_or(".0"),
-            c.get(3).map(|m| m.as_str()).filter(|s| !s.is_empty()).unwrap_or(".0"),
-            c.get(4).map(|m| m.as_str()).filter(|s| !s.is_empty()).unwrap_or(".0"),
+            c.get(2)
+                .map(|m| m.as_str())
+                .filter(|s| !s.is_empty())
+                .unwrap_or(".0"),
+            c.get(3)
+                .map(|m| m.as_str())
+                .filter(|s| !s.is_empty())
+                .unwrap_or(".0"),
+            c.get(4)
+                .map(|m| m.as_str())
+                .filter(|s| !s.is_empty())
+                .unwrap_or(".0"),
         );
         return Ok(apply_modifier(parts, &c, 5));
     }
@@ -148,8 +157,7 @@ fn apply_modifier(base: String, c: &regex::Captures<'_>, index: usize) -> String
             return version;
         }
         let expanded = expand_stability(&lower);
-        let tail = stability_num
-            .map_or("", |s| s.trim_start_matches(['.', '-']));
+        let tail = stability_num.map_or("", |s| s.trim_start_matches(['.', '-']));
         version.push('-');
         version.push_str(expanded);
         version.push_str(tail);

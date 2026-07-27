@@ -19,23 +19,23 @@
 use eyre::{Result, WrapErr};
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Child;
 use tokio::sync::Mutex;
 
-#[cfg(unix)]
-use super::conf_d::{self, PoolConf};
 #[cfg(windows)]
 use super::conf_d;
+#[cfg(unix)]
+use super::conf_d::{self, PoolConf};
 use super::fastcgi::{self, Transport};
-use super::paths::{create_dir_0700, ServerPaths};
-use bougie_paths::Paths;
+use super::paths::{ServerPaths, create_dir_0700};
 use bougie_fs::state::read_project_resolved;
 #[cfg(unix)]
 use bougie_fs::state::{read_project_resolved_php_path, system_fpm_for_php};
+use bougie_paths::Paths;
 
 /// How long a spawn waits for php-fpm to bind the pool socket. The
 /// master process runs all of its startup — including compiling the
@@ -190,7 +190,10 @@ impl Pool {
             if let Some(pid) = pid
                 && rustix::process::kill_process_group(pid, rustix::process::Signal::TERM).is_ok()
             {
-                if tokio::time::timeout(TERMINATE_GRACE, guard.wait()).await.is_err() {
+                if tokio::time::timeout(TERMINATE_GRACE, guard.wait())
+                    .await
+                    .is_err()
+                {
                     let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
                     let _ = guard.wait().await;
                 }
@@ -329,7 +332,11 @@ impl PoolManager {
         let regular = bougie_installer::conf_d::project_confd_dir(project);
         let local = paths.project_confd_local(project);
         match variant {
-            "xdebug" => vec![regular, local, bougie_installer::conf_d::project_confd_debug_dir(project)],
+            "xdebug" => vec![
+                regular,
+                local,
+                bougie_installer::conf_d::project_confd_debug_dir(project),
+            ],
             _ => vec![regular, local],
         }
     }
@@ -343,7 +350,12 @@ impl PoolManager {
     /// entries, the oldest-idle pool is evicted before the new spawn
     /// (SERVER.md §7.2 "Concurrency cap"). `host` is the requesting
     /// vhost, used purely to label the pool's log output.
-    pub async fn get_or_spawn(&self, project: &Path, variant: &str, host: &str) -> Result<Arc<Pool>> {
+    pub async fn get_or_spawn(
+        &self,
+        project: &Path,
+        variant: &str,
+        host: &str,
+    ) -> Result<Arc<Pool>> {
         let (version, flavor) = read_project_resolved(project).wrap_err_with(|| {
             format!(
                 "reading vendor/bougie/state/resolved in {}",
@@ -423,8 +435,7 @@ impl PoolManager {
             let confd_dir = self
                 .server_paths
                 .pool_confd(&pool.key.project, &pool.key.variant);
-            let sources =
-                Self::variant_source_dirs(&self.bougie_paths, &pool.key.variant, project);
+            let sources = Self::variant_source_dirs(&self.bougie_paths, &pool.key.variant, project);
             let source_refs: Vec<&Path> = sources.iter().map(PathBuf::as_path).collect();
             conf_d::build_variant_confd(&confd_dir, &source_refs)?;
             pool.reload()?;
@@ -534,8 +545,10 @@ impl PoolManager {
                 key: k.clone(),
                 pid: p.pid(),
                 idle_ms: u64::try_from(p.idle_for().as_millis()).unwrap_or(u64::MAX),
-                started_ago_ms: u64::try_from(now.saturating_duration_since(p.started_at).as_millis())
-                    .unwrap_or(u64::MAX),
+                started_ago_ms: u64::try_from(
+                    now.saturating_duration_since(p.started_at).as_millis(),
+                )
+                .unwrap_or(u64::MAX),
                 php_version: p.php_version.clone(),
             })
             .collect()
@@ -667,15 +680,13 @@ impl PoolManager {
 
         // Health probe: SERVER.md §7.6, 2s timeout. Probe failures
         // surface as 502 to the client.
-        fastcgi::probe(&transport)
-            .await
-            .wrap_err_with(|| {
-                format!(
-                    "FastCGI health probe failed for pool {}{}",
-                    key.variant,
-                    stderr_tail.render(),
-                )
-            })?;
+        fastcgi::probe(&transport).await.wrap_err_with(|| {
+            format!(
+                "FastCGI health probe failed for pool {}{}",
+                key.variant,
+                stderr_tail.render(),
+            )
+        })?;
 
         let pid = child
             .id()
@@ -722,12 +733,17 @@ async fn spawn_runtime(
     // System PHP (`inject_confd == false`): no bougie scan dir, so the
     // interpreter keeps its own compiled-in conf.d + extensions.
     let scan_dir = inject_confd.then_some(confd_dir);
-    let pool_conf = PoolConf { listen_socket: &socket, php_ini_scan_dir: scan_dir };
+    let pool_conf = PoolConf {
+        listen_socket: &socket,
+        php_ini_scan_dir: scan_dir,
+    };
     conf_d::write_pool_conf(&conf_path, &pool_conf)?;
 
     let mut cmd = tokio::process::Command::new(binary);
-    cmd.arg("-y").arg(&conf_path)
-        .arg("-p").arg(project_dir)
+    cmd.arg("-y")
+        .arg(&conf_path)
+        .arg("-p")
+        .arg(project_dir)
         .arg("-F");
     // PHP_INI_SCAN_DIR must be set on php-fpm's *own* process
     // env: the master parses INI files at startup, before any
@@ -818,10 +834,7 @@ async fn spawn_runtime(
                 // a non-retryable startup error so we don't silently
                 // loop on, e.g., a missing PHP extension or bad ini.
                 if msg.contains("Couldn't create FastCGI listen socket") {
-                    last_err = Some(eyre::eyre!(
-                        "port {port} unavailable: {}",
-                        msg.trim()
-                    ));
+                    last_err = Some(eyre::eyre!("port {port} unavailable: {}", msg.trim()));
                     continue;
                 }
                 return Err(eyre::eyre!(
@@ -833,9 +846,7 @@ async fn spawn_runtime(
         }
     }
     Err(last_err.unwrap_or_else(|| {
-        eyre::eyre!(
-            "could not bind a loopback port for php-cgi.exe after {MAX_ATTEMPTS} attempts"
-        )
+        eyre::eyre!("could not bind a loopback port for php-cgi.exe after {MAX_ATTEMPTS} attempts")
     }))
 }
 
@@ -897,11 +908,7 @@ fn evict_lru(map: &mut HashMap<PoolKey, Arc<Pool>>) {
 /// binding — a bad ini or a fatal in the `opcache.preload` script
 /// shouldn't sit out the full timeout.
 #[cfg(unix)]
-async fn wait_for_socket(
-    socket: &Path,
-    child: &mut Child,
-    stderr_tail: &StderrTail,
-) -> Result<()> {
+async fn wait_for_socket(socket: &Path, child: &mut Child, stderr_tail: &StderrTail) -> Result<()> {
     let timeout = pool_ready_timeout();
     let deadline = Instant::now() + timeout;
     loop {
@@ -947,7 +954,10 @@ const STDERR_TAIL_LINES: usize = 20;
 
 impl StderrTail {
     fn push(&self, line: &str) {
-        let mut buf = self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut buf = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if buf.len() == STDERR_TAIL_LINES {
             buf.pop_front();
         }
@@ -957,7 +967,10 @@ impl StderrTail {
     /// Render as an error-message suffix: an indented block of the
     /// captured lines, or a "no output" note when php-fpm was silent.
     fn render(&self) -> String {
-        let buf = self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let buf = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if buf.is_empty() {
             return " — php-fpm produced no output".to_owned();
         }
@@ -996,11 +1009,7 @@ where
 /// is blocking (uses `reqwest::blocking`), so we hand it to
 /// `spawn_blocking` to keep the tokio runtime responsive while a
 /// possibly-multi-MB download runs.
-async fn ensure_debug_extension(
-    project: &Path,
-    name: &str,
-    bougie_paths: &Paths,
-) -> Result<()> {
+async fn ensure_debug_extension(project: &Path, name: &str, bougie_paths: &Paths) -> Result<()> {
     if bougie_installer::conf_d::fragment_present_anywhere(bougie_paths, project, name) {
         return Ok(());
     }
@@ -1023,7 +1032,11 @@ async fn ensure_debug_extension(
         eprintln!(
             "bougie server: enabling {name_owned} for {} (first xdebug request{})",
             project.display(),
-            if installed.already_present { "" } else { "; downloaded" },
+            if installed.already_present {
+                ""
+            } else {
+                "; downloaded"
+            },
         );
         bougie_installer::conf_d::write_debug_overlay_fragment(
             &project,
@@ -1034,7 +1047,12 @@ async fn ensure_debug_extension(
         Ok(())
     })
     .await
-    .map_err(|e| eyre::eyre!("join error enabling {name_for_log} in {}: {e}", project_for_log.display()))??;
+    .map_err(|e| {
+        eyre::eyre!(
+            "join error enabling {name_for_log} in {}: {e}",
+            project_for_log.display()
+        )
+    })??;
     Ok(())
 }
 
@@ -1063,7 +1081,10 @@ mod tests {
         // 25 pushed, 20 kept: line0..line4 rolled off, line5..line24 remain.
         let rendered = tail.render();
         assert!(rendered.contains("recent php-fpm output"));
-        assert!(!rendered.contains("\n  line4\n"), "oldest lines roll off: {rendered}");
+        assert!(
+            !rendered.contains("\n  line4\n"),
+            "oldest lines roll off: {rendered}"
+        );
         assert!(rendered.contains("\n  line5\n"));
         assert!(rendered.contains(&format!("line{}", STDERR_TAIL_LINES + 4)));
     }
@@ -1106,7 +1127,10 @@ mod tests {
         std::fs::write(&socket, b"").unwrap();
 
         let pool = test_pool(spawn_sleeper(), socket.clone());
-        assert!(pool.is_alive().await, "live process + present socket => alive");
+        assert!(
+            pool.is_alive().await,
+            "live process + present socket => alive"
+        );
 
         std::fs::remove_file(&socket).unwrap();
         assert!(!pool.is_alive().await, "missing socket => not alive");
@@ -1134,7 +1158,9 @@ mod tests {
         tail.push("ERROR: unknown entry 'boom'");
 
         let started = Instant::now();
-        let err = wait_for_socket(&socket, &mut child, &tail).await.unwrap_err();
+        let err = wait_for_socket(&socket, &mut child, &tail)
+            .await
+            .unwrap_err();
         assert!(
             started.elapsed() < DEFAULT_POOL_READY_TIMEOUT,
             "child exit should short-circuit the timeout"

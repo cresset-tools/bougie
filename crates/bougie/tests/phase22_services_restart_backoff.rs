@@ -51,10 +51,7 @@ fn status_snapshot(env: &TestEnv, proj: &std::path::Path) -> serde_json::Value {
     serde_json::from_slice(&out).expect("status JSON")
 }
 
-fn service_row<'a>(
-    snap: &'a serde_json::Value,
-    name: &str,
-) -> Option<&'a serde_json::Value> {
+fn service_row<'a>(snap: &'a serde_json::Value, name: &str) -> Option<&'a serde_json::Value> {
     snap["services"]
         .as_array()?
         .iter()
@@ -85,9 +82,7 @@ where
 
 fn kill_pid(pid: u64) {
     use std::process::Command;
-    let _ = Command::new("kill")
-        .args(["-9", &pid.to_string()])
-        .status();
+    let _ = Command::new("kill").args(["-9", &pid.to_string()]).status();
 }
 
 #[test]
@@ -120,18 +115,12 @@ fn crashed_service_is_auto_restarted_with_new_pid() {
     // start-cost ≈ 3s. Give ourselves 15s to absorb CI jitter.
     kill_pid(pid_before);
 
-    let post_crash = wait_for_status(
-        &env,
-        proj.path(),
-        Duration::from_secs(15),
-        |snap| {
-            let Some(row) = service_row(snap, "redis") else {
-                return false;
-            };
-            row["state"] == "running"
-                && row["pid"].as_u64().is_some_and(|p| p != pid_before)
-        },
-    )
+    let post_crash = wait_for_status(&env, proj.path(), Duration::from_secs(15), |snap| {
+        let Some(row) = service_row(snap, "redis") else {
+            return false;
+        };
+        row["state"] == "running" && row["pid"].as_u64().is_some_and(|p| p != pid_before)
+    })
     .expect("redis should respawn with a new pid");
     let row_after = service_row(&post_crash, "redis").unwrap();
     let pid_after = row_after["pid"].as_u64().unwrap();
@@ -178,18 +167,12 @@ fn repeated_crashes_increment_failure_count_and_grow_backoff() {
     kill_pid(pid1);
 
     // Wait for the first respawn.
-    let after_first = wait_for_status(
-        &env,
-        proj.path(),
-        Duration::from_secs(15),
-        |s| {
-            let Some(r) = service_row(s, "redis") else {
-                return false;
-            };
-            r["state"] == "running"
-                && r["pid"].as_u64().is_some_and(|p| p != pid1)
-        },
-    )
+    let after_first = wait_for_status(&env, proj.path(), Duration::from_secs(15), |s| {
+        let Some(r) = service_row(s, "redis") else {
+            return false;
+        };
+        r["state"] == "running" && r["pid"].as_u64().is_some_and(|p| p != pid1)
+    })
     .expect("first respawn");
     let pid2 = service_row(&after_first, "redis").unwrap()["pid"]
         .as_u64()
@@ -198,17 +181,12 @@ fn repeated_crashes_increment_failure_count_and_grow_backoff() {
 
     // Wait for the second respawn or the Failed-pending-restart
     // window. Either way `failure_count >= 2` should be visible.
-    let after_second = wait_for_status(
-        &env,
-        proj.path(),
-        Duration::from_secs(15),
-        |s| {
-            let Some(r) = service_row(s, "redis") else {
-                return false;
-            };
-            r["failure_count"].as_u64().unwrap_or(0) >= 2
-        },
-    )
+    let after_second = wait_for_status(&env, proj.path(), Duration::from_secs(15), |s| {
+        let Some(r) = service_row(s, "redis") else {
+            return false;
+        };
+        r["failure_count"].as_u64().unwrap_or(0) >= 2
+    })
     .expect("second crash should bump failure_count to >= 2");
     let r = service_row(&after_second, "redis").unwrap();
     assert!(

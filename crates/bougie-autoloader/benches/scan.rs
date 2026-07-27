@@ -11,7 +11,7 @@
 use std::hint::black_box;
 
 use bougie_autoloader::bench_api::{clean, find_classes};
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 
 const SMALL_FILE: &[u8] = br"<?php
 

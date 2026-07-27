@@ -227,13 +227,12 @@ fn skip_heredoc(input: &[u8], start: usize, delim: &[u8]) -> usize {
                 i += 1;
                 continue;
             }
-            c if c == delim[0]
-                && i + delim.len() <= len && &input[i..i + delim.len()] == delim => {
-                    let after = i + delim.len();
-                    if after >= len || !is_ident_cont(input[after]) {
-                        return after;
-                    }
+            c if c == delim[0] && i + delim.len() <= len && &input[i..i + delim.len()] == delim => {
+                let after = i + delim.len();
+                if after >= len || !is_ident_cont(input[after]) {
+                    return after;
                 }
+            }
             _ => {}
         }
         // Skip past this line + any trailing newline run.

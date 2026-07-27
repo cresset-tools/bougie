@@ -272,7 +272,10 @@ mod tests {
         assert_eq!(patches.len(), 1);
         let p = &patches[0];
         assert_eq!(p.description, "Remote fix");
-        assert_eq!(p.source, PatchSource::Remote("https://example.com/a.patch".into()));
+        assert_eq!(
+            p.source,
+            PatchSource::Remote("https://example.com/a.patch".into())
+        );
         assert_eq!(p.sha256.as_deref(), Some("abc"));
         assert_eq!(p.depth, DepthSpec::Fixed(2));
     }
@@ -283,14 +286,20 @@ mod tests {
         let patches = parse_target_patches("vendor/pkg", &v).unwrap();
         assert_eq!(patches.len(), 1);
         assert_eq!(patches[0].description, "Just a desc");
-        assert_eq!(patches[0].source, PatchSource::Local("patches/x.patch".into()));
+        assert_eq!(
+            patches[0].source,
+            PatchSource::Local("patches/x.patch".into())
+        );
     }
 
     #[test]
     fn bare_string_array_form() {
         // The cweagans description-less list form (issue #422): a plain array of
         // patch paths. Each entry applies in order; description defaults to the path.
-        let v = json!(["patches/amasty/base/fix.patch", "https://example.com/b.patch"]);
+        let v = json!([
+            "patches/amasty/base/fix.patch",
+            "https://example.com/b.patch"
+        ]);
         let patches = parse_target_patches("amasty/base", &v).unwrap();
         assert_eq!(patches.len(), 2);
         assert_eq!(patches[0].description, "patches/amasty/base/fix.patch");

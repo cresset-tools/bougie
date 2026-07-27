@@ -71,7 +71,7 @@
 //! the other [`InstallContext`](crate::install::InstallContext)
 //! callbacks.
 
-use eyre::{bail, Result, WrapErr};
+use eyre::{Result, WrapErr, bail};
 use std::path::{Path, PathBuf};
 
 /// The one spec revision this bougie understands. Unknown revisions
@@ -240,7 +240,9 @@ pub fn read_spec(composer_json: &serde_json::Value) -> Result<SpecLookup> {
     // be segment-safe since it's spliced into the tag URL segment.
     let tag_prefix = str_field("tag-prefix")?;
     if !tag_prefix.is_empty() && !valid_segment(&tag_prefix) {
-        bail!("`extra.bougie.native-binary.tag-prefix` `{tag_prefix}` has characters outside [A-Za-z0-9._-]");
+        bail!(
+            "`extra.bougie.native-binary.tag-prefix` `{tag_prefix}` has characters outside [A-Za-z0-9._-]"
+        );
     }
     let base_urls = str_list("base-urls", 8)?;
     for url in &base_urls {
@@ -253,7 +255,9 @@ pub fn read_spec(composer_json: &serde_json::Value) -> Result<SpecLookup> {
     let targets = str_list("targets", 32)?;
     for t in &targets {
         if !valid_segment(t) {
-            bail!("`extra.bougie.native-binary.targets` entry `{t}` has characters outside [A-Za-z0-9._-]");
+            bail!(
+                "`extra.bougie.native-binary.targets` entry `{t}` has characters outside [A-Za-z0-9._-]"
+            );
         }
     }
 

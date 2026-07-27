@@ -12,10 +12,10 @@ use std::process::ExitCode;
 
 use bougie_cli::{OutputFormat, PatchesCommand, PhpPrefArgs};
 use bougie_config::load_project;
-use bougie_paths::Paths;
 use bougie_patches::lock;
 use bougie_patches::make::{FileEntry, MakeOutcome, make_patch};
 use bougie_patches::model::{DepthSpec, PatchSource};
+use bougie_paths::Paths;
 use eyre::{Result, WrapErr, bail};
 use serde_json::{Value, json};
 
@@ -34,7 +34,15 @@ pub fn run(format: OutputFormat, cmd: PatchesCommand) -> Result<ExitCode> {
             depth,
             to_file,
             no_sync,
-        } => add(format, &source, package, description, depth, to_file, no_sync),
+        } => add(
+            format,
+            &source,
+            package,
+            description,
+            depth,
+            to_file,
+            no_sync,
+        ),
         PatchesCommand::Create {
             package,
             output,
@@ -143,7 +151,10 @@ fn doctor(format: OutputFormat) -> Result<ExitCode> {
     }
 
     if format == OutputFormat::JsonV1 {
-        println!("{}", serde_json::to_string_pretty(&json!({ "problems": problems }))?);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({ "problems": problems }))?
+        );
         return Ok(ExitCode::SUCCESS);
     }
 
@@ -294,7 +305,9 @@ fn create(
         .wrap_err("reading composer.lock (run `bougie sync` first)")?;
     let lock: Value = serde_json::from_slice(&lock_bytes).wrap_err("parsing composer.lock")?;
     let pkg = find_locked_package(&lock, package).ok_or_else(|| {
-        eyre::eyre!("`{package}` is not in composer.lock — is it installed? Run `bougie sync` first")
+        eyre::eyre!(
+            "`{package}` is not in composer.lock — is it installed? Run `bougie sync` first"
+        )
     })?;
 
     let installer_paths = bougie_installers::InstallerPaths::parse(&composer_value);
@@ -323,12 +336,26 @@ fn create(
     if url.is_empty() {
         bail!("`{package}` dist entry has no url");
     }
-    let shasum = dist.get("shasum").and_then(Value::as_str).unwrap_or_default();
-    let reference = dist.get("reference").and_then(Value::as_str).unwrap_or_default();
+    let shasum = dist
+        .get("shasum")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let reference = dist
+        .get("reference")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
 
     let paths = Paths::from_env()?;
     let tmp = tempfile::tempdir().wrap_err("creating a temp dir for the pristine extraction")?;
-    extract_pristine(&paths, &project_root, package, url, shasum, reference, tmp.path())?;
+    extract_pristine(
+        &paths,
+        &project_root,
+        package,
+        url,
+        shasum,
+        reference,
+        tmp.path(),
+    )?;
 
     // Where the patch will be written — resolved up front so the baseline
     // reconstruction can exclude it (re-running `create` overwrites its own
@@ -344,7 +371,14 @@ fn create(
     // If this package already has *other* patches applied (per
     // patches.lock.json), re-apply them on top of pristine so the new patch is a
     // clean delta — not a re-fold of the already-applied patches.
-    reconstruct_applied_baseline(&paths, &project_root, &project, package, &out_path, tmp.path())?;
+    reconstruct_applied_baseline(
+        &paths,
+        &project_root,
+        &project,
+        package,
+        &out_path,
+        tmp.path(),
+    )?;
 
     // Diff the baseline against the edited tree. Headers are prefixed with the
     // install dir (project-relative) so bougie's zero-config `patches/`
@@ -390,7 +424,10 @@ fn create(
     if format == OutputFormat::JsonV1 {
         emit_create_json(package, Some(&rel_out), &outcome)?;
     } else {
-        println!("Wrote {rel_out} ({} file(s) changed).", outcome.changed_count());
+        println!(
+            "Wrote {rel_out} ({} file(s) changed).",
+            outcome.changed_count()
+        );
         if default_path {
             println!(
                 "bougie auto-applies patches under `{}/` — run `bougie sync` to apply it \
@@ -550,9 +587,10 @@ fn same_file(a: &Path, b: &Path) -> bool {
             return c;
         }
         match (p.parent(), p.file_name()) {
-            (Some(parent), Some(name)) => {
-                parent.canonicalize().unwrap_or_else(|_| parent.to_path_buf()).join(name)
-            }
+            (Some(parent), Some(name)) => parent
+                .canonicalize()
+                .unwrap_or_else(|_| parent.to_path_buf())
+                .join(name),
             _ => p.to_path_buf(),
         }
     }
@@ -644,9 +682,7 @@ fn import(packages: &[String], all: bool, to_file: bool) -> Result<ExitCode> {
     if imported == 0 {
         println!("No matching dependency patches to import.");
     } else {
-        println!(
-            "Imported {imported} patch(es) into the root. Run `bougie sync` to apply them."
-        );
+        println!("Imported {imported} patch(es) into the root. Run `bougie sync` to apply them.");
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -654,8 +690,8 @@ fn import(packages: &[String], all: bool, to_file: bool) -> Result<ExitCode> {
 // ---------------------------------------------------------------- helpers
 
 fn infer_target_for(project_root: &Path, patch_bytes: &[u8]) -> Result<String> {
-    let text = std::str::from_utf8(patch_bytes)
-        .wrap_err("patch is not valid UTF-8; pass --package")?;
+    let text =
+        std::str::from_utf8(patch_bytes).wrap_err("patch is not valid UTF-8; pass --package")?;
     let files = bougie_patches::diff::split(text)?;
     let header_paths: Vec<&str> = files
         .iter()
@@ -690,25 +726,22 @@ fn read_composer_value(project_root: &Path) -> Value {
 /// Append an expanded patch entry under `extra.patches[target]` in either
 /// `composer.json` or the external patches file, normalizing the target's
 /// value to an array first so metadata (sha256/depth/extra) can be carried.
-fn write_patch_entry(
-    project_root: &Path,
-    target: &str,
-    entry: Value,
-    to_file: bool,
-) -> Result<()> {
+fn write_patch_entry(project_root: &Path, target: &str, entry: Value, to_file: bool) -> Result<()> {
     let path = if to_file {
         patches_file_path(project_root)
     } else {
         project_root.join("composer.json")
     };
     let body = std::fs::read_to_string(&path).unwrap_or_else(|_| "{}".to_string());
-    let mut doc: Value = serde_json::from_str(&body)
-        .wrap_err_with(|| format!("parsing {}", path.display()))?;
+    let mut doc: Value =
+        serde_json::from_str(&body).wrap_err_with(|| format!("parsing {}", path.display()))?;
 
     // Navigate to the patches map: composer.json → extra.patches; patches
     // file → top-level patches.
     let patches_map = if to_file {
-        ensure_object(&mut doc)?.entry("patches").or_insert_with(|| json!({}))
+        ensure_object(&mut doc)?
+            .entry("patches")
+            .or_insert_with(|| json!({}))
     } else {
         let extra = ensure_object(&mut doc)?
             .entry("extra")
@@ -759,7 +792,9 @@ fn ensure_object(v: &mut Value) -> Result<&mut serde_json::Map<String, Value>> {
         .ok_or_else(|| eyre::eyre!("expected a JSON object"))
 }
 
-fn group_by_target(patches: &[bougie_patches::Patch]) -> BTreeMap<&str, Vec<&bougie_patches::Patch>> {
+fn group_by_target(
+    patches: &[bougie_patches::Patch],
+) -> BTreeMap<&str, Vec<&bougie_patches::Patch>> {
     let mut by_target: BTreeMap<&str, Vec<&bougie_patches::Patch>> = BTreeMap::new();
     for p in patches {
         by_target.entry(&p.target).or_default().push(p);

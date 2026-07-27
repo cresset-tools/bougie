@@ -53,7 +53,10 @@ fn path_code(install_path: &str, sub: &str) -> String {
 /// output is byte-identical to a raw `'/…'` interpolation, so existing
 /// fixtures are unaffected.
 fn anchored_path_expr(anchor: &str, path: &str) -> String {
-    format!("{anchor} . {}", crate::emit::php_single_quoted(&format!("/{path}")))
+    format!(
+        "{anchor} . {}",
+        crate::emit::php_single_quoted(&format!("/{path}"))
+    )
 }
 
 /// One PSR-4 or PSR-0 prefix and its install-path-prefixed dirs.
@@ -246,7 +249,9 @@ pub(crate) enum Origin {
     /// A package's scan. Carries the package's project-relative install
     /// path (e.g. `vendor/acme/foo`, or a relocated `app/design/...`) so
     /// the emitted classmap literal anchors on the right base.
-    Package { install_path: String },
+    Package {
+        install_path: String,
+    },
     Root,
 }
 
@@ -382,7 +387,9 @@ pub(crate) fn build_classmap_tasks(
         let install_abs = canonical(project_root.join(&install_path));
         for dir in &pkg.autoload.classmap {
             tasks.push(Task {
-                origin: Origin::Package { install_path: install_path.clone() },
+                origin: Origin::Package {
+                    install_path: install_path.clone(),
+                },
                 scan_root: canonical(install_abs.join(strip_leading_slash(dir))),
                 install_abs: install_abs.clone(),
                 filter: NamespaceFilter::None,
@@ -507,7 +514,9 @@ pub(crate) fn build_classmap_tasks(
                     psr_tasks.push((
                         ns.clone(),
                         Task {
-                            origin: Origin::Package { install_path: install_path.clone() },
+                            origin: Origin::Package {
+                                install_path: install_path.clone(),
+                            },
                             scan_root: scan_root.clone(),
                             install_abs: install_abs.clone(),
                             filter: NamespaceFilter::Psr4 {
@@ -526,7 +535,9 @@ pub(crate) fn build_classmap_tasks(
                     psr_tasks.push((
                         ns.clone(),
                         Task {
-                            origin: Origin::Package { install_path: install_path.clone() },
+                            origin: Origin::Package {
+                                install_path: install_path.clone(),
+                            },
                             scan_root: scan_root.clone(),
                             install_abs: install_abs.clone(),
                             filter: NamespaceFilter::Psr0 {

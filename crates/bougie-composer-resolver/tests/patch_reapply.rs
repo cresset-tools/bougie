@@ -48,9 +48,7 @@ fn composer_json(with_patch: bool) -> String {
     } else {
         ""
     };
-    format!(
-        r#"{{ "name": "acme/test", "require": {{ "acme/widget": "^1.0" }}{patches} }}"#
-    )
+    format!(r#"{{ "name": "acme/test", "require": {{ "acme/widget": "^1.0" }}{patches} }}"#)
 }
 
 fn write_lock(project_root: &Path, composer_json: &str, artifact: &Path) {
@@ -215,8 +213,16 @@ fn root_patch_spans_two_packages() {
     )
     .unwrap();
     assert_eq!(s2.packages_up_to_date, 2, "both skipped when unchanged");
-    assert_eq!(std::fs::read_to_string(&a_php).unwrap(), "ONE-A\n", "patched exactly once");
-    assert_eq!(std::fs::read_to_string(&b_php).unwrap(), "TWO-B\n", "patched exactly once");
+    assert_eq!(
+        std::fs::read_to_string(&a_php).unwrap(),
+        "ONE-A\n",
+        "patched exactly once"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&b_php).unwrap(),
+        "TWO-B\n",
+        "patched exactly once"
+    );
 
     // ---- 3. only acme/one's dist changes -> coupling re-extracts BOTH pristine
     // and re-applies the whole patch (so acme/two isn't double-patched).
@@ -229,7 +235,10 @@ fn root_patch_spans_two_packages() {
         Some(&root_plan(&proj)),
     )
     .unwrap();
-    assert_eq!(s3.packages_up_to_date, 0, "coupling forces both to re-extract");
+    assert_eq!(
+        s3.packages_up_to_date, 0,
+        "coupling forces both to re-extract"
+    );
     assert_eq!(std::fs::read_to_string(&a_php).unwrap(), "ONE-A\n");
     assert_eq!(
         std::fs::read_to_string(&b_php).unwrap(),
@@ -238,7 +247,11 @@ fn root_patch_spans_two_packages() {
     );
     // The audit trail survives the repatch — written fresh, not accumulated.
     let report = std::fs::read_to_string(&b_patches_txt).unwrap();
-    assert_eq!(report.matches("Source: patches/top.patch").count(), 1, "{report}");
+    assert_eq!(
+        report.matches("Source: patches/top.patch").count(),
+        1,
+        "{report}"
+    );
 
     // ---- 4. remove the patch -> both restored pristine, lock + PATCHES.txt gone.
     std::fs::remove_file(&patch_file).unwrap();
@@ -255,10 +268,24 @@ fn root_patch_spans_two_packages() {
         Some(&cleanup),
     )
     .unwrap();
-    assert_eq!(s4.packages_up_to_date, 0, "removal forces both to re-extract");
-    assert_eq!(std::fs::read_to_string(&a_php).unwrap(), "one-a\n", "acme/one pristine");
-    assert_eq!(std::fs::read_to_string(&b_php).unwrap(), "two-b\n", "acme/two pristine");
-    assert!(!a_patches_txt.exists() && !b_patches_txt.exists(), "PATCHES.txt gone");
+    assert_eq!(
+        s4.packages_up_to_date, 0,
+        "removal forces both to re-extract"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&a_php).unwrap(),
+        "one-a\n",
+        "acme/one pristine"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&b_php).unwrap(),
+        "two-b\n",
+        "acme/two pristine"
+    );
+    assert!(
+        !a_patches_txt.exists() && !b_patches_txt.exists(),
+        "PATCHES.txt gone"
+    );
     let applied = lock::read(&proj);
     assert!(!applied.contains_key("acme/one") && !applied.contains_key("acme/two"));
 }
@@ -322,14 +349,9 @@ fn patched_component_deploys_patched_content() {
         write_lock: false,
     };
 
-    let s = install_from_lock_with_patches(
-        &paths,
-        &proj,
-        InstallOptions::default(),
-        None,
-        Some(&plan),
-    )
-    .unwrap();
+    let s =
+        install_from_lock_with_patches(&paths, &proj, InstallOptions::default(), None, Some(&plan))
+            .unwrap();
     assert_eq!(s.packages_installed, 1);
     assert_eq!(
         std::fs::read_to_string(proj.join("vendor/acme/skeleton/src/Db.php")).unwrap(),
@@ -376,7 +398,10 @@ fn reapplication_state_matrix() {
     )
     .unwrap();
     assert_eq!(s1.packages_installed, 1, "widget should be extracted");
-    assert_eq!(std::fs::read_to_string(&widget_php).unwrap(), "alpha\nBETA\ngamma\n");
+    assert_eq!(
+        std::fs::read_to_string(&widget_php).unwrap(),
+        "alpha\nBETA\ngamma\n"
+    );
     assert!(patches_txt.exists(), "PATCHES.txt written");
     assert!(
         lock::read(&proj).contains_key("acme/widget"),
@@ -418,7 +443,10 @@ fn reapplication_state_matrix() {
     // is 0, and the tree is wiped + restored before the new patch applies, so the
     // step-1 BETA edit is gone and only the new GAMMA edit remains. (`packages_installed`
     // counts network downloads; the artifact zip is cached, so it reads 0.)
-    assert_eq!(s3.packages_up_to_date, 0, "patch edit forces a re-extract, not a skip");
+    assert_eq!(
+        s3.packages_up_to_date, 0,
+        "patch edit forces a re-extract, not a skip"
+    );
     assert_eq!(
         std::fs::read_to_string(&widget_php).unwrap(),
         "alpha\nbeta\nGAMMA\n",
@@ -439,13 +467,19 @@ fn reapplication_state_matrix() {
         Some(&cleanup_plan(&proj)),
     )
     .unwrap();
-    assert_eq!(s4.packages_up_to_date, 0, "removal forces a re-extract, not a skip");
+    assert_eq!(
+        s4.packages_up_to_date, 0,
+        "removal forces a re-extract, not a skip"
+    );
     assert_eq!(
         std::fs::read_to_string(&widget_php).unwrap(),
         PRISTINE,
         "file restored to pristine"
     );
-    assert!(!patches_txt.exists(), "PATCHES.txt removed with the pristine tree");
+    assert!(
+        !patches_txt.exists(),
+        "PATCHES.txt removed with the pristine tree"
+    );
     assert!(
         !lock::read(&proj).contains_key("acme/widget"),
         "fingerprint dropped"
@@ -518,18 +552,16 @@ fn deferred_vendor_sourced_patch_applies_after_install() {
         write_lock: false,
     };
 
-    let s = install_from_lock_with_patches(
-        &paths,
-        &proj,
-        InstallOptions::default(),
-        None,
-        Some(&plan),
-    )
-    .unwrap();
+    let s =
+        install_from_lock_with_patches(&paths, &proj, InstallOptions::default(), None, Some(&plan))
+            .unwrap();
     assert!(s.warnings.is_empty(), "no warnings: {:?}", s.warnings);
 
     // The patches-repo shipped the file...
-    assert!(deferred_path.is_file(), "patch file extracted from the vendor package");
+    assert!(
+        deferred_path.is_file(),
+        "patch file extracted from the vendor package"
+    );
     // ...and the target package was patched with it.
     let widget_php = proj.join("vendor/acme/widget/src/Widget.php");
     assert_eq!(
@@ -575,7 +607,10 @@ fn deferred_vendor_sourced_patch_applies_after_install() {
         Some(&eager_plan),
     )
     .unwrap();
-    assert_eq!(s2.packages_up_to_date, 2, "nothing re-extracts on the second run");
+    assert_eq!(
+        s2.packages_up_to_date, 2,
+        "nothing re-extracts on the second run"
+    );
     assert_eq!(
         std::fs::read_to_string(&widget_php).unwrap(),
         "alpha\nBETA\ngamma\n",

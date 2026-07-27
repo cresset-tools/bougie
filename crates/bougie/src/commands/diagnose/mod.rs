@@ -86,7 +86,9 @@ pub fn run(format: OutputFormat, args: DiagnoseArgs) -> Result<ExitCode> {
         return print_recent(format, &paths);
     }
 
-    let rerun = (!args.is_empty()).then(|| rerun_capture(&args)).transpose()?;
+    let rerun = (!args.is_empty())
+        .then(|| rerun_capture(&args))
+        .transpose()?;
     let (failure, recent) = newest_and_earlier(&paths);
     if failure.is_none() && rerun.is_none() {
         eprintln!(
@@ -98,8 +100,14 @@ pub fn run(format: OutputFormat, args: DiagnoseArgs) -> Result<ExitCode> {
 
     let project_root = resolve_project_root(project.as_deref(), failure.as_ref());
     let scrubber = scrub::Scrubber::from_env(&paths, project_root.as_deref());
-    let report =
-        collect::collect(&paths, failure, recent, rerun, project_root.as_deref(), &scrubber);
+    let report = collect::collect(
+        &paths,
+        failure,
+        recent,
+        rerun,
+        project_root.as_deref(),
+        &scrubber,
+    );
     let mut markdown = render::to_markdown(&report);
     cap_report(&mut markdown);
 
@@ -189,7 +197,9 @@ fn confirm_send(markdown: &str) -> Result<bool> {
     eprint!("report is {kib} KiB ({lines} lines) — send to the bougie developers? [y/N] ");
     io::stderr().flush().ok();
     let mut line = String::new();
-    io::stdin().read_line(&mut line).map_err(|e| eyre::eyre!("reading confirmation: {e}"))?;
+    io::stdin()
+        .read_line(&mut line)
+        .map_err(|e| eyre::eyre!("reading confirmation: {e}"))?;
     let ans = line.trim().to_ascii_lowercase();
     Ok(ans == "y" || ans == "yes")
 }

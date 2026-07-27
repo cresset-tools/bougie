@@ -86,11 +86,8 @@ fn wait_for_tcp(addr: &str, timeout: Duration) -> bool {
     use std::net::TcpStream;
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
-        if TcpStream::connect_timeout(
-            &addr.parse().expect("addr"),
-            Duration::from_millis(250),
-        )
-        .is_ok()
+        if TcpStream::connect_timeout(&addr.parse().expect("addr"), Duration::from_millis(250))
+            .is_ok()
         {
             return true;
         }
@@ -107,10 +104,10 @@ fn server_status() -> Option<serde_json::Value> {
         return None;
     }
     let mut stream = UnixStream::connect(&sock).ok()?;
+    stream.set_read_timeout(Some(Duration::from_secs(5))).ok()?;
     stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
+        .write_all(b"{\"v\":1,\"method\":\"status\"}\n")
         .ok()?;
-    stream.write_all(b"{\"v\":1,\"method\":\"status\"}\n").ok()?;
     stream.shutdown(std::net::Shutdown::Write).ok()?;
     let mut buf = String::new();
     stream.read_to_string(&mut buf).ok()?;
@@ -169,10 +166,8 @@ fn up_brings_server_online_and_registers_host() {
     );
 
     // Tenant ledger records the hostname.
-    let ledger = fs::read_to_string(
-        env.home_path().join("state/services/server/tenants.json"),
-    )
-    .expect("tenants.json should exist");
+    let ledger = fs::read_to_string(env.home_path().join("state/services/server/tenants.json"))
+        .expect("tenants.json should exist");
     let line = ledger.lines().next().expect("at least one tenant");
     let t: serde_json::Value = serde_json::from_str(line).unwrap();
     assert_eq!(t["tenant"], "acme_blog");
@@ -229,8 +224,14 @@ fn two_projects_share_one_server_with_distinct_hosts() {
         .iter()
         .map(|v| v.as_str().unwrap().to_string())
         .collect::<Vec<_>>();
-    assert!(hosts.contains(&"acme-blog.bougie.run".to_string()), "{hosts:?}");
-    assert!(hosts.contains(&"acme-store.bougie.run".to_string()), "{hosts:?}");
+    assert!(
+        hosts.contains(&"acme-blog.bougie.run".to_string()),
+        "{hosts:?}"
+    );
+    assert!(
+        hosts.contains(&"acme-store.bougie.run".to_string()),
+        "{hosts:?}"
+    );
 
     stop_daemon(&env);
 }
@@ -265,10 +266,8 @@ fn down_purge_drops_host_block() {
         .success();
 
     // Tenant ledger empty.
-    let ledger = fs::read_to_string(
-        env.home_path().join("state/services/server/tenants.json"),
-    )
-    .unwrap_or_default();
+    let ledger = fs::read_to_string(env.home_path().join("state/services/server/tenants.json"))
+        .unwrap_or_default();
     assert!(
         ledger.lines().all(|l| l.trim().is_empty()),
         "tenants ledger should be empty after --purge; was\n{ledger}"
@@ -301,11 +300,7 @@ fn up_fails_with_actionable_hint_when_no_docroot() {
     let _guard = server_test_lock();
     let env = TestEnv::new();
     let proj = TempDir::new().expect("project tempdir");
-    fs::write(
-        proj.path().join("composer.json"),
-        r#"{"name":"acme/blog"}"#,
-    )
-    .unwrap();
+    fs::write(proj.path().join("composer.json"), r#"{"name":"acme/blog"}"#).unwrap();
     // Deliberately no `public/` or `pub/` directory.
 
     env.bougie()
@@ -425,4 +420,3 @@ fn bougie_run_exports_server_env_vars() {
 
     stop_daemon(&env);
 }
-

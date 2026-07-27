@@ -18,7 +18,7 @@
 //! Bougied is not expected to write; the socket is one-way for our
 //! purposes. It simply holds the peer end open until it exits.
 
-use eyre::{eyre, Result, WrapErr};
+use eyre::{Result, WrapErr, eyre};
 use std::ffi::OsString;
 use std::os::fd::FromRawFd;
 use std::process::{ExitCode, Stdio};
@@ -84,9 +84,7 @@ fn parse_args(args: Vec<OsString>) -> Result<Config> {
         }
         let key = a.to_string_lossy().into_owned();
         if !key.starts_with("--") {
-            return Err(eyre!(
-                "expected a `--flag` or `--` separator, got `{key}`"
-            ));
+            return Err(eyre!("expected a `--flag` or `--` separator, got `{key}`"));
         }
         let val = iter
             .next()
@@ -157,9 +155,8 @@ async fn serve(cfg: Config) -> Result<ExitCode> {
     // leaves the service running as an orphan in its own pgrp. This
     // race was the root cause of the `babysit_kills_group_on_sigterm`
     // flake reported in issue #34.
-    let mut sigterm =
-        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .wrap_err("installing SIGTERM handler")?;
+    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .wrap_err("installing SIGTERM handler")?;
     // Also catch SIGINT and treat it exactly like SIGTERM. When bougied
     // runs in the foreground, Ctrl-C delivers SIGINT to the whole
     // terminal foreground process group — bougied *and* every babysit
@@ -169,9 +166,8 @@ async fn serve(cfg: Config) -> Result<ExitCode> {
     // but any forked descendant (e.g. rabbitmq's beam helpers) escapes
     // and reparents to pid 1. Catching it here means the group is always
     // torn down, whatever signal arrives.
-    let mut sigint =
-        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
-            .wrap_err("installing SIGINT handler")?;
+    let mut sigint = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
+        .wrap_err("installing SIGINT handler")?;
 
     // Build the supervised process group. With a sidecar, it's created
     // by the sidecar (spawned first so it's listening before the main
@@ -181,9 +177,8 @@ async fn serve(cfg: Config) -> Result<ExitCode> {
     // itself.
     let mut sidecar_child = None;
     let (pgid, mut child) = if let Some(sidecar_exec) = &cfg.sidecar {
-        let sc = spawn_in_group(sidecar_exec, &[], None).wrap_err_with(|| {
-            format!("spawning sidecar {}", sidecar_exec.to_string_lossy())
-        })?;
+        let sc = spawn_in_group(sidecar_exec, &[], None)
+            .wrap_err_with(|| format!("spawning sidecar {}", sidecar_exec.to_string_lossy()))?;
         let sc_pid = sc.id().ok_or_else(|| eyre!("sidecar has no pid"))?;
         let group = i32::try_from(sc_pid)
             .wrap_err_with(|| format!("sidecar pid {sc_pid} doesn't fit in pid_t"))?;
@@ -200,12 +195,20 @@ async fn serve(cfg: Config) -> Result<ExitCode> {
         }
 
         let main = spawn_in_group(&cfg.exec, &cfg.argv, Some(group)).wrap_err_with(|| {
-            format!("spawning service {} ({})", cfg.service_name, cfg.exec.to_string_lossy())
+            format!(
+                "spawning service {} ({})",
+                cfg.service_name,
+                cfg.exec.to_string_lossy()
+            )
         })?;
         (group, main)
     } else {
         let main = spawn_in_group(&cfg.exec, &cfg.argv, None).wrap_err_with(|| {
-            format!("spawning service {} ({})", cfg.service_name, cfg.exec.to_string_lossy())
+            format!(
+                "spawning service {} ({})",
+                cfg.service_name,
+                cfg.exec.to_string_lossy()
+            )
         })?;
         let pid_u32 = main.id().ok_or_else(|| eyre!("spawned child has no pid"))?;
         let pid = i32::try_from(pid_u32)
@@ -363,7 +366,9 @@ fn spawn_in_group(
 fn exit_status_code(status: std::io::Result<std::process::ExitStatus>) -> i32 {
     status.ok().map_or(-1, |s| {
         use std::os::unix::process::ExitStatusExt;
-        s.code().or_else(|| s.signal().map(|sig| 128 + sig)).unwrap_or(-1)
+        s.code()
+            .or_else(|| s.signal().map(|sig| 128 + sig))
+            .unwrap_or(-1)
     })
 }
 
@@ -383,7 +388,10 @@ async fn wait_optional_child(child: Option<&mut tokio::process::Child>) {
 async fn wait_for_port(port: u16, timeout: Duration) -> bool {
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
-        if tokio::net::TcpStream::connect(("127.0.0.1", port)).await.is_ok() {
+        if tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .is_ok()
+        {
             return true;
         }
         if tokio::time::Instant::now() >= deadline {
@@ -500,7 +508,10 @@ mod tests {
         .unwrap();
         assert_eq!(cfg.sidecar, Some(OsString::from("/store/erlang/bin/epmd")));
         assert_eq!(cfg.sidecar_ready_port, Some(4369));
-        assert_eq!(cfg.exec, OsString::from("/store/rabbitmq/sbin/rabbitmq-server"));
+        assert_eq!(
+            cfg.exec,
+            OsString::from("/store/rabbitmq/sbin/rabbitmq-server")
+        );
         assert!(cfg.argv.is_empty());
     }
 

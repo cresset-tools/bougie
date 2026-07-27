@@ -58,18 +58,12 @@ fn p2_entry(name: &str, version: &str, require: &str) -> String {
 }
 
 fn p2_body(name: &str, entries: &[String]) -> String {
-    format!(
-        r#"{{"packages":{{"{name}":[{}]}}}}"#,
-        entries.join(",")
-    )
+    format!(r#"{{"packages":{{"{name}":[{}]}}}}"#, entries.join(","))
 }
 
 // ---- Wiremock setup ----
 
-async fn mount_metadata(
-    server: &MockServer,
-    packages: &[(String, String)],
-) {
+async fn mount_metadata(server: &MockServer, packages: &[(String, String)]) {
     for (name, body) in packages {
         let route = format!("/p2/{name}.json");
         Mock::given(method("GET"))
@@ -88,18 +82,21 @@ struct ResolvedSet {
     packages_dev: BTreeMap<String, String>,
 }
 
-fn run_bougie_update(
-    env: &TestEnv,
-    project_dir: &Path,
-    server_uri: &str,
-) -> ResolvedSet {
+fn run_bougie_update(env: &TestEnv, project_dir: &Path, server_uri: &str) -> ResolvedSet {
     let output = env
         .bougie()
         .env("BOUGIE_PACKAGIST_BASE_URL", server_uri)
         // `--no-install`: the cross-check diffs the *lock* against real
         // Composer; vendor/ materialization isn't under test (and the
         // fixtures don't serve dists).
-        .args(["composer", "update", "--no-install", "--format", "json-v1", "-d"])
+        .args([
+            "composer",
+            "update",
+            "--no-install",
+            "--format",
+            "json-v1",
+            "-d",
+        ])
         .arg(project_dir)
         .output()
         .expect("run bougie");
@@ -223,11 +220,7 @@ fn cross_check_smoke_single_dep() {
 
 #[test]
 fn cross_check_smoke_transitive() {
-    let foo_entries = vec![p2_entry(
-        "acme/foo",
-        "1.0.0",
-        r#"{"acme/bar":"^2.0"}"#,
-    )];
+    let foo_entries = vec![p2_entry("acme/foo", "1.0.0", r#"{"acme/bar":"^2.0"}"#)];
     let bar_entries = vec![
         p2_entry("acme/bar", "2.3.0", "{}"),
         p2_entry("acme/bar", "2.0.0", "{}"),
@@ -370,17 +363,12 @@ mod corpus {
         (composer_json, metadata, resolved)
     }
 
-    async fn mount_corpus_server(
-        server: &MockServer,
-        metadata: &HashMap<String, Vec<u8>>,
-    ) {
+    async fn mount_corpus_server(server: &MockServer, metadata: &HashMap<String, Vec<u8>>) {
         for (name, body) in metadata {
             let route = format!("/p2/{name}.json");
             Mock::given(method("GET"))
                 .and(wm_path(&route))
-                .respond_with(
-                    ResponseTemplate::new(200).set_body_bytes(body.clone()),
-                )
+                .respond_with(ResponseTemplate::new(200).set_body_bytes(body.clone()))
                 .mount(server)
                 .await;
         }

@@ -107,7 +107,12 @@ echo step 2
         let i = &r.tasks["install"];
         assert_eq!(
             i.creates.as_deref(),
-            Some(&["app/etc/env.php".to_string(), "app/etc/config.php".to_string()][..])
+            Some(
+                &[
+                    "app/etc/env.php".to_string(),
+                    "app/etc/config.php".to_string()
+                ][..]
+            )
         );
         assert_eq!(i.check.as_deref(), Some("test -f app/etc/env.php"));
         assert!(i.run.as_ref().unwrap().contains("step 1"));

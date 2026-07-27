@@ -49,11 +49,7 @@ pub struct ToolExecPrep {
 /// Produce a [`ToolExecPrep`] from the wrapper path the kernel handed
 /// us. Reads the receipt and (best-effort) ensures the `unzip` exec
 /// shim exists so the tool's `PATH` can point at it.
-pub fn prepare(
-    paths: &Paths,
-    wrapper: &Path,
-    user_args: Vec<OsString>,
-) -> Result<ToolExecPrep> {
+pub fn prepare(paths: &Paths, wrapper: &Path, user_args: Vec<OsString>) -> Result<ToolExecPrep> {
     // Reject wrapper paths outside `$BOUGIE_LOCAL/tools/` or
     // `$BOUGIE_CACHE/tool-run/`. Without this a misconfigured shebang
     // on a user-controlled file could turn `bougie tool-exec` into a
@@ -242,8 +238,7 @@ pub fn execve_replace(_prep: &ToolExecPrep) -> Result<std::convert::Infallible> 
 /// crisp "not under tools/" rejection rather than an ENOENT
 /// pass-through.
 fn canon(p: &Path) -> Result<PathBuf> {
-    std::fs::canonicalize(p)
-        .wrap_err_with(|| format!("resolving {}", p.display()))
+    std::fs::canonicalize(p).wrap_err_with(|| format!("resolving {}", p.display()))
 }
 
 /// True when `canon_wrapper` lives under one of the two roots
@@ -313,7 +308,9 @@ mod tests {
         std::fs::write(&wrapper, "<?php\n").unwrap();
         // no receipt.toml
         let paths = paths_for(td.path());
-        let err = prepare(&paths, &wrapper, Vec::new()).unwrap_err().to_string();
+        let err = prepare(&paths, &wrapper, Vec::new())
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("receipt.toml missing"), "{err}");
     }
 
@@ -325,7 +322,9 @@ mod tests {
         std::fs::write(&wrapper, "<?php\n").unwrap();
         write_receipt(&tool_dir, Path::new("/does/not/exist/php"));
         let paths = paths_for(td.path());
-        let err = prepare(&paths, &wrapper, Vec::new()).unwrap_err().to_string();
+        let err = prepare(&paths, &wrapper, Vec::new())
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("no longer installed"), "{err}");
     }
 
@@ -378,7 +377,8 @@ mod tests {
             "cli-defaults should be in scan dir; got {scan_str}"
         );
         assert!(
-            scan_str.find(&*defaults_str).unwrap() < scan_str.find(&*tool_cd.to_string_lossy()).unwrap(),
+            scan_str.find(&*defaults_str).unwrap()
+                < scan_str.find(&*tool_cd.to_string_lossy()).unwrap(),
             "cli-defaults must precede the tool conf.d so per-tool fragments win; got {scan_str}"
         );
         let tool_env = prep
@@ -394,7 +394,9 @@ mod tests {
         let td = tempfile::TempDir::new().unwrap();
         let paths = paths_for(td.path());
 
-        let dir = paths.ensure_cli_defaults().expect("cli-defaults must materialise");
+        let dir = paths
+            .ensure_cli_defaults()
+            .expect("cli-defaults must materialise");
         let ini = dir.join(bougie_paths::CLI_DEFAULTS_INI_NAME);
         let body = std::fs::read_to_string(&ini).unwrap();
         assert!(body.contains("memory_limit = -1"), "{body}");

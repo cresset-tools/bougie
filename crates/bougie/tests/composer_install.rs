@@ -75,11 +75,19 @@ fn build_magento_component_zip(top: &str) -> Vec<u8> {
             zw.start_file(format!("{top}/{name}"), opts).unwrap();
             zw.write_all(body).unwrap();
         };
-        file(&mut zw, "composer.json", br#"{"name":"magento/magento2-base","type":"magento2-component"}"#);
+        file(
+            &mut zw,
+            "composer.json",
+            br#"{"name":"magento/magento2-base","type":"magento2-component"}"#,
+        );
         file(&mut zw, "index.php", b"<?php // Magento front controller\n");
         file(&mut zw, "pub/index.php", b"<?php // pub front controller\n");
         file(&mut zw, "pub/media/.htaccess", b"Deny from all\n");
-        file(&mut zw, "bin/magento", b"#!/usr/bin/env php\n<?php // CLI\n");
+        file(
+            &mut zw,
+            "bin/magento",
+            b"#!/usr/bin/env php\n<?php // CLI\n",
+        );
         zw.finish().unwrap();
     }
     buf
@@ -114,8 +122,7 @@ fn install_against_wiremock_dist_emits_vendor_and_autoload() {
     "name": "test/project",
     "require": {"acme/foo": "^1.0"}
 }"#;
-    let content_hash =
-        bougie_composer::lockfile::content_hash(composer_json.as_bytes()).unwrap();
+    let content_hash = bougie_composer::lockfile::content_hash(composer_json.as_bytes()).unwrap();
     let lock = format!(
         r#"{{
         "content-hash": "{content_hash}",
@@ -153,7 +160,11 @@ fn install_against_wiremock_dist_emits_vendor_and_autoload() {
 
     // bougie-autoloader emitted the standard surface.
     assert!(proj.path().join("vendor/autoload.php").is_file());
-    assert!(proj.path().join("vendor/composer/autoload_psr4.php").is_file());
+    assert!(
+        proj.path()
+            .join("vendor/composer/autoload_psr4.php")
+            .is_file()
+    );
     assert!(proj.path().join("vendor/composer/installed.json").is_file());
     assert!(proj.path().join("vendor/composer/installed.php").is_file());
 }
@@ -186,8 +197,7 @@ fn install_deploys_magento_component_into_project_root() {
     "name": "test/magento",
     "require": {"magento/magento2-base": "*"}
 }"#;
-    let content_hash =
-        bougie_composer::lockfile::content_hash(composer_json.as_bytes()).unwrap();
+    let content_hash = bougie_composer::lockfile::content_hash(composer_json.as_bytes()).unwrap();
     let lock = format!(
         r#"{{
         "content-hash": "{content_hash}",
@@ -225,7 +235,11 @@ fn install_deploys_magento_component_into_project_root() {
         .success();
 
     // Package still extracted under vendor/.
-    assert!(proj.path().join("vendor/magento/magento2-base/index.php").is_file());
+    assert!(
+        proj.path()
+            .join("vendor/magento/magento2-base/index.php")
+            .is_file()
+    );
 
     // extra.map copied the skeleton into the project root.
     assert!(proj.path().join("index.php").is_file());
@@ -237,7 +251,10 @@ fn install_deploys_magento_component_into_project_root() {
     let vp = proj.path().join("app/etc/vendor_path.php");
     assert!(vp.is_file());
     let vp_contents = std::fs::read_to_string(&vp).unwrap();
-    assert!(vp_contents.contains("return './vendor';"), "vendor_path.php: {vp_contents}");
+    assert!(
+        vp_contents.contains("return './vendor';"),
+        "vendor_path.php: {vp_contents}"
+    );
 
     // extra.chmod applied (Unix only).
     #[cfg(unix)]
@@ -279,8 +296,7 @@ fn install_relocates_package_via_composer_installers() {
     "name": "test/project",
     "require": {"acme/foo": "^1.0"}
 }"#;
-    let content_hash =
-        bougie_composer::lockfile::content_hash(composer_json.as_bytes()).unwrap();
+    let content_hash = bougie_composer::lockfile::content_hash(composer_json.as_bytes()).unwrap();
     let lock = format!(
         r#"{{
         "content-hash": "{content_hash}",
@@ -310,19 +326,24 @@ fn install_relocates_package_via_composer_installers() {
 
     // Relocated, NOT under vendor/.
     let relocated = proj.path().join("app/design/frontend/foo");
-    assert!(relocated.is_dir(), "package should install to app/design/frontend/foo");
+    assert!(
+        relocated.is_dir(),
+        "package should install to app/design/frontend/foo"
+    );
     assert!(relocated.join("src/Foo.php").is_file());
     assert!(!proj.path().join("vendor/acme/foo").exists());
 
     // Autoloader anchors the relocated package on $baseDir.
-    let psr4 = std::fs::read_to_string(proj.path().join("vendor/composer/autoload_psr4.php")).unwrap();
+    let psr4 =
+        std::fs::read_to_string(proj.path().join("vendor/composer/autoload_psr4.php")).unwrap();
     assert!(
         psr4.contains("$baseDir . '/app/design/frontend/foo/src'"),
         "autoload_psr4.php should anchor relocated pkg on $baseDir: {psr4}"
     );
 
     // installed.php records the relocated install-path (relative to vendor/composer).
-    let installed = std::fs::read_to_string(proj.path().join("vendor/composer/installed.php")).unwrap();
+    let installed =
+        std::fs::read_to_string(proj.path().join("vendor/composer/installed.php")).unwrap();
     assert!(
         installed.contains("../../app/design/frontend/foo"),
         "installed.php install-path should point at the relocated dir: {installed}"
@@ -353,8 +374,7 @@ fn install_warns_on_unhandled_composer_installers_type() {
     });
 
     let composer_json = r#"{"name":"test/cake","require":{"acme/foo":"^1.0"}}"#;
-    let content_hash =
-        bougie_composer::lockfile::content_hash(composer_json.as_bytes()).unwrap();
+    let content_hash = bougie_composer::lockfile::content_hash(composer_json.as_bytes()).unwrap();
     let lock = format!(
         r#"{{
         "content-hash": "{content_hash}",
@@ -378,13 +398,20 @@ fn install_warns_on_unhandled_composer_installers_type() {
         .arg(proj.path())
         .output()
         .expect("run bougie");
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     // Default vendor/ placement (not relocated).
     assert!(proj.path().join("vendor/acme/foo").is_dir());
     // Warning names the package and the framework.
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("warning:"), "{stderr}");
-    assert!(stderr.contains("acme/foo") && stderr.contains("cakephp"), "{stderr}");
+    assert!(
+        stderr.contains("acme/foo") && stderr.contains("cakephp"),
+        "{stderr}"
+    );
 }
 
 #[test]
@@ -413,11 +440,15 @@ fn install_runs_native_laravel_package_discovery() {
 
     // A stale compiled cache that discovery must remove.
     std::fs::create_dir_all(proj.path().join("bootstrap/cache")).unwrap();
-    std::fs::write(proj.path().join("bootstrap/cache/config.php"), b"<?php return [];").unwrap();
+    std::fs::write(
+        proj.path().join("bootstrap/cache/config.php"),
+        b"<?php return [];",
+    )
+    .unwrap();
 
-    let composer_json = r#"{"name":"test/laravel","require":{"laravel/framework":"^11.0","acme/pkg":"^1.0"}}"#;
-    let content_hash =
-        bougie_composer::lockfile::content_hash(composer_json.as_bytes()).unwrap();
+    let composer_json =
+        r#"{"name":"test/laravel","require":{"laravel/framework":"^11.0","acme/pkg":"^1.0"}}"#;
+    let content_hash = bougie_composer::lockfile::content_hash(composer_json.as_bytes()).unwrap();
     let lock = format!(
         r#"{{
         "content-hash": "{content_hash}",
@@ -450,15 +481,27 @@ fn install_runs_native_laravel_package_discovery() {
     // Manifest generated with the package's provider; framework itself
     // (no extra.laravel) is absent.
     let manifest = proj.path().join("bootstrap/cache/packages.php");
-    assert!(manifest.is_file(), "bootstrap/cache/packages.php should be generated");
+    assert!(
+        manifest.is_file(),
+        "bootstrap/cache/packages.php should be generated"
+    );
     let contents = std::fs::read_to_string(&manifest).unwrap();
     assert!(contents.starts_with("<?php return array ("), "{contents}");
     assert!(contents.contains("'acme/pkg'"), "{contents}");
-    assert!(contents.contains("Acme\\\\Pkg\\\\PkgServiceProvider"), "{contents}");
-    assert!(!contents.contains("laravel/framework"), "framework has no extra.laravel: {contents}");
+    assert!(
+        contents.contains("Acme\\\\Pkg\\\\PkgServiceProvider"),
+        "{contents}"
+    );
+    assert!(
+        !contents.contains("laravel/framework"),
+        "framework has no extra.laravel: {contents}"
+    );
 
     // Stale compiled cache cleared.
-    assert!(!proj.path().join("bootstrap/cache/config.php").exists(), "config.php should be cleared");
+    assert!(
+        !proj.path().join("bootstrap/cache/config.php").exists(),
+        "config.php should be cleared"
+    );
 }
 
 #[test]
@@ -482,8 +525,7 @@ fn install_errors_when_laravel_post_autoload_dump_drifts() {
         ]
     }
 }"#;
-    let content_hash =
-        bougie_composer::lockfile::content_hash(composer_json.as_bytes()).unwrap();
+    let content_hash = bougie_composer::lockfile::content_hash(composer_json.as_bytes()).unwrap();
     // Dist URL is unreachable on purpose — the guard must fire before any
     // download is attempted.
     let lock = format!(
@@ -508,12 +550,18 @@ fn install_errors_when_laravel_post_autoload_dump_drifts() {
         .arg(proj.path())
         .output()
         .expect("run bougie");
-    assert!(!output.status.success(), "expected install to fail on drift");
+    assert!(
+        !output.status.success(),
+        "expected install to fail on drift"
+    );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("post-autoload-dump"), "{stderr}");
     assert!(stderr.contains("vendor:publish"), "{stderr}");
     // Nothing should have been installed (fail-fast before extraction).
-    assert!(!proj.path().join("vendor/laravel").exists(), "must not extract on drift");
+    assert!(
+        !proj.path().join("vendor/laravel").exists(),
+        "must not extract on drift"
+    );
 }
 
 #[test]
@@ -548,8 +596,7 @@ fn install_allows_trailing_custom_post_autoload_dump_step() {
         ]
     }
 }"#;
-    let content_hash =
-        bougie_composer::lockfile::content_hash(composer_json.as_bytes()).unwrap();
+    let content_hash = bougie_composer::lockfile::content_hash(composer_json.as_bytes()).unwrap();
     let lock = format!(
         r#"{{
         "content-hash": "{content_hash}",
@@ -665,7 +712,8 @@ fn install_extracts_composer_plugin_files_and_warns_about_hooks() {
         zw.start_file(format!("{top}/composer.json"), opts).unwrap();
         zw.write_all(br#"{"name":"acme/plugin","type":"composer-plugin"}"#)
             .unwrap();
-        zw.start_file(format!("{top}/src/Discovery.php"), opts).unwrap();
+        zw.start_file(format!("{top}/src/Discovery.php"), opts)
+            .unwrap();
         zw.write_all(b"<?php // runtime half of a dual-purpose plugin\n")
             .unwrap();
         zw.finish().unwrap();
@@ -684,8 +732,7 @@ fn install_extracts_composer_plugin_files_and_warns_about_hooks() {
     });
 
     let composer_json = r#"{"name":"test/plug","require":{}}"#;
-    let hash =
-        bougie_composer::lockfile::content_hash(composer_json.as_bytes()).unwrap();
+    let hash = bougie_composer::lockfile::content_hash(composer_json.as_bytes()).unwrap();
     let lock = format!(
         r#"{{
             "content-hash": "{hash}",
@@ -713,13 +760,19 @@ fn install_extracts_composer_plugin_files_and_warns_about_hooks() {
         .output()
         .expect("run bougie");
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(output.status.success(), "exit status: {:?}\nstderr: {stderr}", output.status);
+    assert!(
+        output.status.success(),
+        "exit status: {:?}\nstderr: {stderr}",
+        output.status
+    );
     assert!(stderr.contains("warning:"), "{stderr}");
     assert!(stderr.contains("acme/plugin"), "{stderr}");
     assert!(stderr.contains("install-time hooks"), "{stderr}");
     // The runtime half of the package must be on disk.
     assert!(
-        proj.path().join("vendor/acme/plugin/src/Discovery.php").is_file(),
+        proj.path()
+            .join("vendor/acme/plugin/src/Discovery.php")
+            .is_file(),
         "plugin package files must be extracted into vendor/",
     );
 }
@@ -729,8 +782,7 @@ fn lock_verify_returns_zero_on_valid_lock() {
     let env = TestEnv::new();
     let proj = TempDir::new().unwrap();
     let composer_json = r#"{"name":"test/ok","require":{"acme/foo":"^1.2"}}"#;
-    let content_hash =
-        bougie_composer::lockfile::content_hash(composer_json.as_bytes()).unwrap();
+    let content_hash = bougie_composer::lockfile::content_hash(composer_json.as_bytes()).unwrap();
     let lock = format!(
         r#"{{
             "content-hash": "{content_hash}",
@@ -752,7 +804,11 @@ fn lock_verify_returns_zero_on_valid_lock() {
         .arg(proj.path())
         .output()
         .expect("run bougie");
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("valid"), "{stdout}");
     // No vendor/ should be created for the verify path.
@@ -765,8 +821,7 @@ fn lock_verify_returns_non_zero_on_invalid_lock() {
     let proj = TempDir::new().unwrap();
     // Root says ^2 but lock pins 1.5 — invalid.
     let composer_json = r#"{"name":"test/bad","require":{"acme/foo":"^2"}}"#;
-    let content_hash =
-        bougie_composer::lockfile::content_hash(composer_json.as_bytes()).unwrap();
+    let content_hash = bougie_composer::lockfile::content_hash(composer_json.as_bytes()).unwrap();
     let lock = format!(
         r#"{{
             "content-hash": "{content_hash}",
@@ -791,7 +846,10 @@ fn lock_verify_returns_non_zero_on_invalid_lock() {
     assert!(!output.status.success(), "expected non-zero exit");
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("INVALID"), "{stdout}");
-    assert!(stdout.contains("acme/foo"), "must name the conflicting pkg: {stdout}");
+    assert!(
+        stdout.contains("acme/foo"),
+        "must name the conflicting pkg: {stdout}"
+    );
 }
 
 /// Use the binary `Command` API directly here so `cargo build -p

@@ -78,14 +78,15 @@ pub fn parse_inline_metadata(source: &str) -> Result<Option<InlineMetadata>> {
         return Ok(None);
     };
 
-    let value: serde_json::Value = serde_json::from_str(&body).map_err(|e| {
-        eyre::eyre!("inline `# /// {BLOCK_TYPE}` block is not valid JSON: {e}")
-    })?;
+    let value: serde_json::Value = serde_json::from_str(&body)
+        .map_err(|e| eyre::eyre!("inline `# /// {BLOCK_TYPE}` block is not valid JSON: {e}"))?;
     if !value.is_object() {
         bail!("inline `# /// {BLOCK_TYPE}` block must be a JSON object (a composer.json subset)");
     }
 
-    Ok(Some(InlineMetadata { composer_json: body }))
+    Ok(Some(InlineMetadata {
+        composer_json: body,
+    }))
 }
 
 /// Consume comment lines after an opening marker until the closing
@@ -282,9 +283,15 @@ echo "hi";
 
     #[test]
     fn replace_block_body_preserves_surroundings_and_reparses() {
-        let new = parse_inline_metadata(&replace_block_body(SCRIPT, "{\n  \"require\": {\n    \"php\": \">=8.4\"\n  }\n}").unwrap())
-            .unwrap()
-            .unwrap();
+        let new = parse_inline_metadata(
+            &replace_block_body(
+                SCRIPT,
+                "{\n  \"require\": {\n    \"php\": \">=8.4\"\n  }\n}",
+            )
+            .unwrap(),
+        )
+        .unwrap()
+        .unwrap();
         let v: serde_json::Value = serde_json::from_str(&new.composer_json).unwrap();
         assert_eq!(v["require"]["php"], ">=8.4");
 
@@ -299,7 +306,9 @@ echo "hi";
 
     #[test]
     fn replace_block_body_errors_without_block() {
-        let err = replace_block_body("<?php\necho 1;\n", "{}").unwrap_err().to_string();
+        let err = replace_block_body("<?php\necho 1;\n", "{}")
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("no complete"), "{err}");
     }
 }

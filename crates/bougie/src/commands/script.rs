@@ -76,7 +76,12 @@ pub fn run(
     // makes the run reproducible: install from it instead of re-resolving.
     let lock_sidecar = sidecar_lock_path(&script_path);
     let lock_bytes = std::fs::read(&lock_sidecar).ok();
-    let key = cache_key(&meta.composer_json, php_request, with, lock_bytes.as_deref());
+    let key = cache_key(
+        &meta.composer_json,
+        php_request,
+        with,
+        lock_bytes.as_deref(),
+    );
     let slot = paths.cache_script_run_dir(&key);
     let ready = slot.join(READY_MARKER);
 
@@ -94,7 +99,14 @@ pub fn run(
                 lock_sidecar.display()
             );
         }
-        materialise(&paths, &slot, &meta.composer_json, Some(lock), php_request, php_pref)?;
+        materialise(
+            &paths,
+            &slot,
+            &meta.composer_json,
+            Some(lock),
+            php_request,
+            php_pref,
+        )?;
     } else {
         // Fold any ad-hoc `--with` deps into the inline composer.json
         // before resolving (the inline block always wins on a key clash).
@@ -117,8 +129,8 @@ fn merge_with(composer_json: &str, with: &[String]) -> Result<String> {
     if with.is_empty() {
         return Ok(composer_json.to_string());
     }
-    let mut doc: serde_json::Value = serde_json::from_str(composer_json)
-        .wrap_err("re-parsing the inline composer.json")?;
+    let mut doc: serde_json::Value =
+        serde_json::from_str(composer_json).wrap_err("re-parsing the inline composer.json")?;
     let obj = doc
         .as_object_mut()
         .ok_or_else(|| eyre!("inline metadata must be a JSON object"))?;
@@ -167,9 +179,13 @@ fn materialise(
 ) -> Result<()> {
     std::fs::create_dir_all(slot)
         .wrap_err_with(|| format!("creating script env {}", slot.display()))?;
-    let _guard = ExclusiveGuard::acquire(&slot.join(".lock"), LOCK_TIMEOUT).wrap_err_with(
-        || format!("acquiring lock on {} (another `bougie run --script`?)", slot.display()),
-    )?;
+    let _guard =
+        ExclusiveGuard::acquire(&slot.join(".lock"), LOCK_TIMEOUT).wrap_err_with(|| {
+            format!(
+                "acquiring lock on {} (another `bougie run --script`?)",
+                slot.display()
+            )
+        })?;
     // Re-check under the lock: a concurrent run may have just finished.
     if slot.join(READY_MARKER).is_file() {
         return Ok(());
@@ -196,8 +212,7 @@ fn materialise(
     super::sync::sync_script_slot(paths, slot, request.as_ref(), php_pref)
         .wrap_err("preparing the script's dependency environment")?;
 
-    std::fs::write(slot.join(READY_MARKER), b"")
-        .wrap_err("writing the script-env ready marker")?;
+    std::fs::write(slot.join(READY_MARKER), b"").wrap_err("writing the script-env ready marker")?;
     Ok(())
 }
 
@@ -213,8 +228,7 @@ fn exec_script(
 ) -> Result<ExitCode> {
     let php_bin = resolve_php_bin(paths, slot)?;
 
-    let env_session_set =
-        std::env::var_os("XDEBUG_SESSION").is_some_and(|v| !v.is_empty());
+    let env_session_set = std::env::var_os("XDEBUG_SESSION").is_some_and(|v| !v.is_empty());
     let debug_overlay = xdebug_flag || env_session_set;
     let scan_dir = conf_d::php_ini_scan_dir(paths, slot, debug_overlay);
 
@@ -260,7 +274,10 @@ fn resolve_php_bin(paths: &Paths, slot: &Path) -> Result<PathBuf> {
         return Ok(system);
     }
     let (version, flavor) = read_project_resolved(slot).wrap_err_with(|| {
-        format!("reading the resolved PHP marker for script env {}", slot.display())
+        format!(
+            "reading the resolved PHP marker for script env {}",
+            slot.display()
+        )
     })?;
     let bin = paths
         .installs()
@@ -301,7 +318,10 @@ pub fn lock(
     let source = std::fs::read_to_string(&script_path)
         .wrap_err_with(|| format!("reading script {}", script_path.display()))?;
     let meta = parse_inline_metadata(&source)?.ok_or_else(|| {
-        eyre!("{} has no `# /// script` block to lock", script_path.display())
+        eyre!(
+            "{} has no `# /// script` block to lock",
+            script_path.display()
+        )
     })?;
     let sidecar = sidecar_lock_path(&script_path);
     if dry_run {
@@ -349,8 +369,8 @@ pub fn add(
     let defaults = if bare.is_empty() {
         std::collections::HashMap::new()
     } else {
-        let tmp = tempfile::tempdir()
-            .wrap_err("creating a temp dir to resolve default constraints")?;
+        let tmp =
+            tempfile::tempdir().wrap_err("creating a temp dir to resolve default constraints")?;
         std::fs::write(tmp.path().join("composer.json"), &meta.composer_json)
             .wrap_err("writing composer.json for constraint resolution")?;
         super::composer_require::default_constraints_for(
@@ -383,8 +403,8 @@ pub fn add(
         };
         require.insert(name, serde_json::Value::String(version));
     }
-    let new_body = serde_json::to_string_pretty(&doc)
-        .wrap_err("serializing the updated metadata block")?;
+    let new_body =
+        serde_json::to_string_pretty(&doc).wrap_err("serializing the updated metadata block")?;
     let new_source = replace_block_body(&source, &new_body)
         .wrap_err("splicing the updated metadata block back into the script")?;
 
@@ -414,17 +434,26 @@ pub fn add(
 /// Unix so `./<file>` runs immediately.
 pub fn init(_format: OutputFormat, file: &Path) -> Result<ExitCode> {
     if file.exists() {
-        return Err(eyre!("{} already exists; refusing to overwrite", file.display()));
+        return Err(eyre!(
+            "{} already exists; refusing to overwrite",
+            file.display()
+        ));
     }
     let php_floor = default_php_floor(Paths::from_env().ok().as_ref());
-    let name = file.file_name().and_then(|n| n.to_str()).unwrap_or("script");
+    let name = file
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("script");
     let stub = SCRIPT_STUB
         .replace("__PHP__", &php_floor)
         .replace("__NAME__", name);
     std::fs::write(file, &stub).wrap_err_with(|| format!("writing {}", file.display()))?;
     #[cfg(unix)]
     make_executable(file);
-    eprintln!("bougie: created script {} (php {php_floor})", file.display());
+    eprintln!(
+        "bougie: created script {} (php {php_floor})",
+        file.display()
+    );
     Ok(ExitCode::SUCCESS)
 }
 
@@ -545,7 +574,7 @@ fn touch(marker: &Path) {
 
 #[cfg(test)]
 mod tests {
-    use super::{cache_key, classify_with, default_php_floor, merge_with, SCRIPT_STUB};
+    use super::{SCRIPT_STUB, cache_key, classify_with, default_php_floor, merge_with};
 
     #[test]
     fn scaffolded_stub_roundtrips_through_the_parser() {
@@ -587,8 +616,11 @@ mod tests {
     #[test]
     fn merge_with_adds_without_overriding_inline_block() {
         let base = r#"{"require":{"php":">=8.2","psr/log":"^3.0"}}"#;
-        let merged = merge_with(base, &["gd".into(), "psr/log".into(), "guzzlehttp/guzzle@^7".into()])
-            .unwrap();
+        let merged = merge_with(
+            base,
+            &["gd".into(), "psr/log".into(), "guzzlehttp/guzzle@^7".into()],
+        )
+        .unwrap();
         let v: serde_json::Value = serde_json::from_str(&merged).unwrap();
         let req = v["require"].as_object().unwrap();
         // inline block's psr/log constraint is preserved (not clobbered by --with)
@@ -621,7 +653,12 @@ mod tests {
         let pinned_php = cache_key(r#"{"require":{"php":">=8.2"}}"#, Some("8.4"), &[], None);
         assert_ne!(base, pinned_php);
         // A committed sidecar lock changes the key (different env).
-        let with_lock = cache_key(r#"{"require":{"php":">=8.2"}}"#, None, &[], Some(b"lockbytes"));
+        let with_lock = cache_key(
+            r#"{"require":{"php":">=8.2"}}"#,
+            None,
+            &[],
+            Some(b"lockbytes"),
+        );
         assert_ne!(base, with_lock);
         assert_eq!(base.len(), 16);
     }

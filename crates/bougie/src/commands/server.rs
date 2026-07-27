@@ -22,9 +22,16 @@ use std::process::ExitCode;
 pub fn dispatch(format: OutputFormat, args: ServerArgs) -> Result<ExitCode> {
     match args.command {
         None => serve(format, &args.serve),
-        Some(ServerCommand::Run { config, listen, log_format }) => {
-            bougie_server::server::run::run(format, &config, listen.as_deref(), log_format.as_deref())
-        }
+        Some(ServerCommand::Run {
+            config,
+            listen,
+            log_format,
+        }) => bougie_server::server::run::run(
+            format,
+            &config,
+            listen.as_deref(),
+            log_format.as_deref(),
+        ),
         Some(ServerCommand::Status { config }) => status(format, config),
         Some(ServerCommand::Open { name }) => open(format, name),
         Some(ServerCommand::Stop) => stop(format),
@@ -54,7 +61,9 @@ fn resolve_config(config: Option<PathBuf>) -> Result<PathBuf> {
         return Ok(path);
     }
     let paths = bougie_paths::Paths::from_env()?;
-    Ok(paths.service_conf("server", server_state_version()).join("server.toml"))
+    Ok(paths
+        .service_conf("server", server_state_version())
+        .join("server.toml"))
 }
 
 /// `bougie server status` — host + pool view. Phase 1 reads the
@@ -107,7 +116,9 @@ enum DnsVerdict {
 fn dns_verdict<I: IntoIterator<Item = std::net::SocketAddr>>(
     result: std::io::Result<I>,
 ) -> DnsVerdict {
-    let Ok(addrs) = result else { return DnsVerdict::NoAnswer };
+    let Ok(addrs) = result else {
+        return DnsVerdict::NoAnswer;
+    };
     let mut first_other = None;
     for addr in addrs {
         if addr.ip().is_loopback() {
@@ -222,10 +233,18 @@ fn resolve_web_root(project_root: &std::path::Path, explicit: Option<&str>) -> R
 /// Read the shared server's listen port from the bougied-managed
 /// `server.toml`; falls back to the engine default when unreadable.
 pub(crate) fn server_listen_port(paths: &bougie_paths::Paths) -> u16 {
-    let cfg_path = paths.service_conf("server", server_state_version()).join("server.toml");
+    let cfg_path = paths
+        .service_conf("server", server_state_version())
+        .join("server.toml");
     bougie_server::server::config::load(&cfg_path)
         .ok()
-        .and_then(|cfg| cfg.server.listen.rsplit(':').next().and_then(|p| p.parse().ok()))
+        .and_then(|cfg| {
+            cfg.server
+                .listen
+                .rsplit(':')
+                .next()
+                .and_then(|p| p.parse().ok())
+        })
         .unwrap_or(7080)
 }
 
@@ -302,7 +321,7 @@ fn serve(format: OutputFormat, args: &ServeArgs) -> Result<ExitCode> {
     use crate::commands::service::client;
     use bougie_config::load_project;
     use bougie_paths::Paths;
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
     use std::io::IsTerminal;
 
     let project_root = locate_project_root()?;
@@ -352,13 +371,16 @@ fn serve(format: OutputFormat, args: &ServeArgs) -> Result<ExitCode> {
     let hostname = derive_hostname(&tenant);
     let port = server_listen_port(&paths);
     let url = build_url(args.tls, &hostname, port);
-    emit(format, &ServeResult {
-        schema_version: 1,
-        project: project_root,
-        hostname: hostname.clone(),
-        url: url.clone(),
-        port,
-    })?;
+    emit(
+        format,
+        &ServeResult {
+            schema_version: 1,
+            project: project_root,
+            hostname: hostname.clone(),
+            url: url.clone(),
+            port,
+        },
+    )?;
     warn_if_dns_blocked(&hostname, port);
 
     if args.open {
@@ -404,7 +426,13 @@ fn open(format: OutputFormat, name: Option<String>) -> Result<ExitCode> {
     };
     let hostname = derive_hostname(&tenant);
     let url = build_url(false, &hostname, server_listen_port(&paths));
-    emit(format, &OpenResult { schema_version: 1, url: url.clone() })?;
+    emit(
+        format,
+        &OpenResult {
+            schema_version: 1,
+            url: url.clone(),
+        },
+    )?;
     open_url(&url)?;
     Ok(ExitCode::SUCCESS)
 }
@@ -518,7 +546,9 @@ fn serve_standalone(format: OutputFormat, args: &ServeArgs) -> Result<ExitCode> 
     let hostname = derive_hostname(&tenant);
     let root = resolve_web_root(&project_root, project.bougie.server.root.as_deref())?;
 
-    let cfg_path = paths.service_conf("server", server_state_version()).join("server.toml");
+    let cfg_path = paths
+        .service_conf("server", server_state_version())
+        .join("server.toml");
     if let Some(parent) = cfg_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -533,13 +563,16 @@ fn serve_standalone(format: OutputFormat, args: &ServeArgs) -> Result<ExitCode> 
 
     let port = server_listen_port(&paths);
     let url = build_url(args.tls, &hostname, port);
-    emit(format, &ServeResult {
-        schema_version: 1,
-        project: project_root,
-        hostname: hostname.clone(),
-        url: url.clone(),
-        port,
-    })?;
+    emit(
+        format,
+        &ServeResult {
+            schema_version: 1,
+            project: project_root,
+            hostname: hostname.clone(),
+            url: url.clone(),
+            port,
+        },
+    )?;
     warn_if_dns_blocked(&hostname, port);
     if args.open {
         let _ = open_url(&url);
@@ -580,8 +613,8 @@ fn windows_unsupported(feature: &str) -> Result<ExitCode> {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_url, derive_hostname, dns_verdict, dns_warning, resolve_web_root, sanitize_tenant,
-        DnsVerdict,
+        DnsVerdict, build_url, derive_hostname, dns_verdict, dns_warning, resolve_web_root,
+        sanitize_tenant,
     };
     use std::net::SocketAddr;
 
@@ -685,9 +718,15 @@ mod tests {
     #[test]
     fn url_drops_default_port() {
         assert_eq!(build_url(false, "a.bougie.run", 80), "http://a.bougie.run");
-        assert_eq!(build_url(false, "a.bougie.run", 7080), "http://a.bougie.run:7080");
+        assert_eq!(
+            build_url(false, "a.bougie.run", 7080),
+            "http://a.bougie.run:7080"
+        );
         assert_eq!(build_url(true, "a.bougie.run", 443), "https://a.bougie.run");
-        assert_eq!(build_url(true, "a.bougie.run", 7443), "https://a.bougie.run:7443");
+        assert_eq!(
+            build_url(true, "a.bougie.run", 7443),
+            "https://a.bougie.run:7443"
+        );
     }
 
     #[test]

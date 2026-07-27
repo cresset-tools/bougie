@@ -19,22 +19,89 @@ use std::time::Duration;
 pub const ECOSYSTEM_INTERVAL: Duration = Duration::from_hours(7 * 24);
 
 /// Dev-service names bougie provisions — the full catalog.
-pub const SERVICE_VOCAB: &[&str] =
-    &["mariadb", "redis", "opensearch", "rabbitmq", "mailpit", "mkcert", "server"];
+pub const SERVICE_VOCAB: &[&str] = &[
+    "mariadb",
+    "redis",
+    "opensearch",
+    "rabbitmq",
+    "mailpit",
+    "mkcert",
+    "server",
+];
 
 /// PHP extension names that may appear on events. Anything a project
 /// uses outside this list (a private or locally-built extension) is
 /// dropped, not sent. Additions happen by PR against TELEMETRY.md.
 pub const EXTENSION_VOCAB: &[&str] = &[
-    "amqp", "apcu", "ast", "bcmath", "bz2", "calendar", "curl", "dba", "dom", "ds",
-    "enchant", "event", "exif", "ffi", "fileinfo", "ftp", "gd", "gettext", "gmp",
-    "gnupg", "iconv", "igbinary", "imagick", "imap", "intl", "ldap", "mbstring",
-    "memcached", "mongodb", "msgpack", "mysqli", "oci8", "opcache", "openswoole",
-    "pcntl", "pdo_mysql", "pdo_pgsql", "pdo_sqlite", "pdo_sqlsrv", "pgsql", "phar",
-    "posix", "protobuf", "pspell", "redis", "shmop", "simplexml", "snmp", "soap",
-    "sockets", "sodium", "sqlite3", "sqlsrv", "ssh2", "swoole", "sysvmsg", "sysvsem",
-    "sysvshm", "tidy", "uuid", "xdebug", "xhprof", "xml", "xmlreader", "xmlwriter",
-    "xsl", "yaml", "zip", "zstd",
+    "amqp",
+    "apcu",
+    "ast",
+    "bcmath",
+    "bz2",
+    "calendar",
+    "curl",
+    "dba",
+    "dom",
+    "ds",
+    "enchant",
+    "event",
+    "exif",
+    "ffi",
+    "fileinfo",
+    "ftp",
+    "gd",
+    "gettext",
+    "gmp",
+    "gnupg",
+    "iconv",
+    "igbinary",
+    "imagick",
+    "imap",
+    "intl",
+    "ldap",
+    "mbstring",
+    "memcached",
+    "mongodb",
+    "msgpack",
+    "mysqli",
+    "oci8",
+    "opcache",
+    "openswoole",
+    "pcntl",
+    "pdo_mysql",
+    "pdo_pgsql",
+    "pdo_sqlite",
+    "pdo_sqlsrv",
+    "pgsql",
+    "phar",
+    "posix",
+    "protobuf",
+    "pspell",
+    "redis",
+    "shmop",
+    "simplexml",
+    "snmp",
+    "soap",
+    "sockets",
+    "sodium",
+    "sqlite3",
+    "sqlsrv",
+    "ssh2",
+    "swoole",
+    "sysvmsg",
+    "sysvsem",
+    "sysvshm",
+    "tidy",
+    "uuid",
+    "xdebug",
+    "xhprof",
+    "xml",
+    "xmlreader",
+    "xmlwriter",
+    "xsl",
+    "yaml",
+    "zip",
+    "zstd",
 ];
 
 #[derive(Debug, Default)]
@@ -61,7 +128,10 @@ pub fn record(f: impl FnOnce(&mut ProbeData)) {
 
 /// Drain the probe (recorder-side).
 pub(crate) fn take() -> ProbeData {
-    cell().lock().map(|mut g| std::mem::take(&mut *g)).unwrap_or_default()
+    cell()
+        .lock()
+        .map(|mut g| std::mem::take(&mut *g))
+        .unwrap_or_default()
 }
 
 /// Millisecond wall-clock as the integer the wire carries.
@@ -128,7 +198,8 @@ pub fn vocab_token(token: &str) -> Option<String> {
     let t = token.trim().to_ascii_lowercase();
     let ok = !t.is_empty()
         && t.len() <= 24
-        && t.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_');
+        && t.bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_');
     ok.then_some(t)
 }
 
@@ -184,7 +255,12 @@ mod tests {
     #[test]
     fn vocab_filtering_drops_unknown_and_dedupes() {
         let filtered = filter_vocab(
-            ["Redis".into(), "gd".into(), "my-private-ext".into(), "redis".into()],
+            [
+                "Redis".into(),
+                "gd".into(),
+                "my-private-ext".into(),
+                "redis".into(),
+            ],
             EXTENSION_VOCAB,
         );
         assert_eq!(filtered, vec!["gd".to_owned(), "redis".to_owned()]);

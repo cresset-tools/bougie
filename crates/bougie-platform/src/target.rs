@@ -224,7 +224,8 @@ pub(crate) fn read_pt_interp(path: &Path) -> Result<String> {
         if p_filesz == 0 || p_filesz > 4096 {
             return Err(eyre::eyre!("implausible PT_INTERP size {p_filesz}"));
         }
-        f.seek(SeekFrom::Start(p_offset)).wrap_err("seeking PT_INTERP")?;
+        f.seek(SeekFrom::Start(p_offset))
+            .wrap_err("seeking PT_INTERP")?;
         let size = usize::try_from(p_filesz).wrap_err("PT_INTERP size overflow")?;
         let mut buf = vec![0u8; size];
         f.read_exact(&mut buf).wrap_err("reading PT_INTERP")?;

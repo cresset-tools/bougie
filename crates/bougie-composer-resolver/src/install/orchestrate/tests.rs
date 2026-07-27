@@ -54,7 +54,12 @@ fn content_hash_mismatch_warns_but_installs() {
         .warnings
         .iter()
         .find(|w| w.contains("out of sync"))
-        .unwrap_or_else(|| panic!("expected a content-hash warning, got {:?}", summary.warnings));
+        .unwrap_or_else(|| {
+            panic!(
+                "expected a content-hash warning, got {:?}",
+                summary.warnings
+            )
+        });
     assert!(warning.contains("composer update"), "{warning}");
 }
 
@@ -111,10 +116,12 @@ fn composer_plugin_package_files_install_but_hooks_are_skipped() {
         let mut zw = zip::ZipWriter::new(cursor);
         let opts = zip::write::SimpleFileOptions::default()
             .compression_method(zip::CompressionMethod::Stored);
-        zw.start_file("acme-plugin-abc/composer.json", opts).unwrap();
+        zw.start_file("acme-plugin-abc/composer.json", opts)
+            .unwrap();
         zw.write_all(br#"{"name":"acme/plugin","type":"composer-plugin"}"#)
             .unwrap();
-        zw.start_file("acme-plugin-abc/src/Discovery.php", opts).unwrap();
+        zw.start_file("acme-plugin-abc/src/Discovery.php", opts)
+            .unwrap();
         zw.write_all(b"<?php class Discovery {}").unwrap();
         zw.finish().unwrap();
     }
@@ -228,7 +235,14 @@ fn git_source_package_installs_from_lock() {
         let st = Command::new("git")
             .arg("-C")
             .arg(&origin)
-            .args(["-c", "user.email=t@e", "-c", "user.name=t", "-c", "commit.gpgsign=false"])
+            .args([
+                "-c",
+                "user.email=t@e",
+                "-c",
+                "user.name=t",
+                "-c",
+                "commit.gpgsign=false",
+            ])
             .args(args)
             .status()
             .unwrap();
@@ -236,7 +250,11 @@ fn git_source_package_installs_from_lock() {
     };
     git(&["init", "-q"]);
     std::fs::write(origin.join("composer.json"), r#"{"name":"acme/lib"}"#).unwrap();
-    std::fs::write(origin.join("src/Thing.php"), "<?php\nnamespace Acme;\nclass Thing {}\n").unwrap();
+    std::fs::write(
+        origin.join("src/Thing.php"),
+        "<?php\nnamespace Acme;\nclass Thing {}\n",
+    )
+    .unwrap();
     git(&["add", "-A"]);
     git(&["commit", "-q", "-m", "init"]);
     let sha = {
@@ -271,13 +289,19 @@ fn git_source_package_installs_from_lock() {
     let summary = install_from_lock(&paths, &proj, InstallOptions::default(), None)
         .expect("git source install must succeed");
     assert_eq!(summary.packages_installed, 1, "{:?}", summary);
-    assert!(proj.join("vendor/acme/lib/src/Thing.php").is_file(), "source tree materialized");
+    assert!(
+        proj.join("vendor/acme/lib/src/Thing.php").is_file(),
+        "source tree materialized"
+    );
     assert!(proj.join("vendor/autoload.php").is_file(), "autoloader ran");
 
     // A second install with the same lock is a no-op (up-to-date).
     let again = install_from_lock(&paths, &proj, InstallOptions::default(), None)
         .expect("re-install must succeed");
-    assert_eq!(again.packages_installed, 0, "unchanged source is up-to-date: {again:?}");
+    assert_eq!(
+        again.packages_installed, 0,
+        "unchanged source is up-to-date: {again:?}"
+    );
 }
 
 #[test]
@@ -315,7 +339,10 @@ fn unsupported_dist_kind_is_rejected() {
     assert!(msg.contains("`xz`"), "{msg}");
     assert!(msg.contains("`zip` and `tar`"), "{msg}");
     // The old circular "Use `bougie run -- composer install`" suggestion is gone.
-    assert!(!msg.contains("bougie run -- composer install"), "circular: {msg}");
+    assert!(
+        !msg.contains("bougie run -- composer install"),
+        "circular: {msg}"
+    );
 }
 
 #[test]
@@ -377,7 +404,11 @@ fn composer_json_with_scripts_warns() {
     let summary = install_from_lock(&paths, &proj, InstallOptions::default(), None)
         .expect("install must succeed; scripts produce a warning, not an error");
     assert_eq!(summary.warnings.len(), 1, "{:?}", summary.warnings);
-    assert!(summary.warnings[0].contains("scripts"), "{:?}", summary.warnings);
+    assert!(
+        summary.warnings[0].contains("scripts"),
+        "{:?}",
+        summary.warnings
+    );
 }
 
 #[test]
@@ -473,13 +504,8 @@ fn no_dev_hides_dev_only_packages_from_preflight() {
     );
     write_project(&proj, MINIMAL_COMPOSER_JSON, &lock);
 
-    let summary = install_from_lock(
-        &paths,
-        &proj,
-        InstallOptions { no_dev: true },
-        None,
-    )
-    .expect("preflight should pass with --no-dev");
+    let summary = install_from_lock(&paths, &proj, InstallOptions { no_dev: true }, None)
+        .expect("preflight should pass with --no-dev");
     assert_eq!(summary.packages_installed, 0);
     assert_eq!(summary.packages_already_present, 0);
     assert_eq!(summary.plugin_hooks_skipped, 0);
@@ -784,7 +810,7 @@ fn second_install_skips_up_to_date_packages() {
 
 #[test]
 fn diff_removes_stale_vendor_dirs() {
-    use super::super::orchestrate::{diff_install_set, InstalledState};
+    use super::super::orchestrate::{InstalledState, diff_install_set};
     use bougie_composer::lockfile::LockPackage;
 
     let tmp = TempDir::new().unwrap();
@@ -820,8 +846,12 @@ fn diff_removes_stale_vendor_dirs() {
     std::fs::create_dir_all(&foo_vendor).unwrap();
 
     let installable = vec![&foo_lock];
-    let (need_install, up_to_date, removed) =
-        diff_install_set(&installable, &state, &proj, &std::collections::HashSet::new());
+    let (need_install, up_to_date, removed) = diff_install_set(
+        &installable,
+        &state,
+        &proj,
+        &std::collections::HashSet::new(),
+    );
 
     assert!(need_install.is_empty(), "acme/foo is up-to-date");
     assert_eq!(up_to_date, 1);
@@ -831,7 +861,7 @@ fn diff_removes_stale_vendor_dirs() {
 
 #[test]
 fn missing_vendor_dir_forces_reinstall() {
-    use super::super::orchestrate::{diff_install_set, InstalledState};
+    use super::super::orchestrate::{InstalledState, diff_install_set};
     use bougie_composer::lockfile::LockPackage;
 
     let tmp = TempDir::new().unwrap();
@@ -858,10 +888,18 @@ fn missing_vendor_dir_forces_reinstall() {
 
     // Do NOT create the vendor dir — simulates manual deletion.
     let installable = vec![&foo_lock];
-    let (need_install, up_to_date, removed) =
-        diff_install_set(&installable, &state, &proj, &std::collections::HashSet::new());
+    let (need_install, up_to_date, removed) = diff_install_set(
+        &installable,
+        &state,
+        &proj,
+        &std::collections::HashSet::new(),
+    );
 
-    assert_eq!(need_install.len(), 1, "must re-install when vendor dir is missing");
+    assert_eq!(
+        need_install.len(),
+        1,
+        "must re-install when vendor dir is missing"
+    );
     assert_eq!(need_install[0].name, "acme/foo");
     assert_eq!(up_to_date, 0);
     assert_eq!(removed, 0);
@@ -869,7 +907,7 @@ fn missing_vendor_dir_forces_reinstall() {
 
 #[test]
 fn changed_reference_forces_reinstall() {
-    use super::super::orchestrate::{diff_install_set, InstalledState};
+    use super::super::orchestrate::{InstalledState, diff_install_set};
     use bougie_composer::lockfile::LockPackage;
 
     let tmp = TempDir::new().unwrap();
@@ -900,10 +938,18 @@ fn changed_reference_forces_reinstall() {
     std::fs::create_dir_all(proj.join("vendor/acme/foo")).unwrap();
 
     let installable = vec![&foo_lock];
-    let (need_install, up_to_date, removed) =
-        diff_install_set(&installable, &state, &proj, &std::collections::HashSet::new());
+    let (need_install, up_to_date, removed) = diff_install_set(
+        &installable,
+        &state,
+        &proj,
+        &std::collections::HashSet::new(),
+    );
 
-    assert_eq!(need_install.len(), 1, "must re-install when reference changed");
+    assert_eq!(
+        need_install.len(),
+        1,
+        "must re-install when reference changed"
+    );
     assert_eq!(need_install[0].name, "acme/foo");
     assert_eq!(up_to_date, 0);
     assert_eq!(removed, 0);
@@ -964,14 +1010,23 @@ fn hooks_fire_in_lifecycle_order() {
     let paths = paths_in(tmp.path());
     let proj = tmp.path().join("p");
     std::fs::create_dir_all(&proj).unwrap();
-    write_project(&proj, MINIMAL_COMPOSER_JSON, &empty_lock_for(MINIMAL_COMPOSER_JSON));
+    write_project(
+        &proj,
+        MINIMAL_COMPOSER_JSON,
+        &empty_lock_for(MINIMAL_COMPOSER_JSON),
+    );
 
     let hooks = RecordingHooks::default();
     install_from_lock(&paths, &proj, InstallOptions::default(), Some(&hooks))
         .expect("install with hooks must succeed");
     assert_eq!(
         hooks.events.into_inner(),
-        vec!["pre_cmd", "pre_autoload_dump", "post_autoload_dump", "post_cmd"],
+        vec![
+            "pre_cmd",
+            "pre_autoload_dump",
+            "post_autoload_dump",
+            "post_cmd"
+        ],
     );
 }
 
@@ -981,7 +1036,11 @@ fn scripts_warning_suppressed_when_hooks_present() {
     let paths = paths_in(tmp.path());
     let proj = tmp.path().join("p");
     std::fs::create_dir_all(&proj).unwrap();
-    write_project(&proj, SCRIPTED_COMPOSER_JSON, &empty_lock_for(SCRIPTED_COMPOSER_JSON));
+    write_project(
+        &proj,
+        SCRIPTED_COMPOSER_JSON,
+        &empty_lock_for(SCRIPTED_COMPOSER_JSON),
+    );
 
     // Scripts ON: hooks run them, so no "declares scripts" warning.
     let hooks = RecordingHooks::default();
@@ -1024,7 +1083,10 @@ fn scripts_warning_suppressed_for_only_reproduced_scripts() {
 
     let summary = install_from_lock(&paths, &proj, InstallOptions::default(), None).unwrap();
     assert!(
-        !summary.warnings.iter().any(|w| w.contains("declares `scripts`")),
+        !summary
+            .warnings
+            .iter()
+            .any(|w| w.contains("declares `scripts`")),
         "pure-discovery scripts must not warn: {:?}",
         summary.warnings
     );

@@ -7,7 +7,7 @@
 //! the file using the same tempfile-then-rename pattern bougie's
 //! `composer::lockfile` already uses.
 
-use eyre::{eyre, Result, WrapErr};
+use eyre::{Result, WrapErr, eyre};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -113,7 +113,9 @@ pub fn project_instance_version(
     let canon = std::fs::canonicalize(project).unwrap_or_else(|_| project.to_path_buf());
     for v in instance_versions(&paths.service_name_dir(service)) {
         if let Ok(rows) = load_all_sync(&paths.service_tenants(service, &v))
-            && rows.iter().any(|t| t.project == canon || t.project == project)
+            && rows
+                .iter()
+                .any(|t| t.project == canon || t.project == project)
         {
             return Some(v);
         }
@@ -162,8 +164,7 @@ pub async fn append(path: &Path, tenant: &Tenant) -> Result<()> {
             .await
             .wrap_err_with(|| format!("creating {}", parent.display()))?;
     }
-    let mut json = serde_json::to_vec(tenant)
-        .wrap_err("serialising tenant record")?;
+    let mut json = serde_json::to_vec(tenant).wrap_err("serialising tenant record")?;
     json.push(b'\n');
     let mut f = tokio::fs::OpenOptions::new()
         .create(true)
@@ -240,7 +241,11 @@ pub async fn rewrite(path: &Path, keep: impl Fn(&Tenant) -> bool) -> Result<usiz
     drop(tf);
     if let Err(e) = tokio::fs::rename(&tmp_path, path).await {
         let _ = tokio::fs::remove_file(&tmp_path).await;
-        return Err(eyre!("renaming {} → {}: {e}", tmp_path.display(), path.display()));
+        return Err(eyre!(
+            "renaming {} → {}: {e}",
+            tmp_path.display(),
+            path.display()
+        ));
     }
     Ok(removed)
 }
@@ -350,8 +355,12 @@ mod tests {
         let path = dir.path().join("tenants.json");
         append(&path, &Tenant::new("keep_me", "/a")).await.unwrap();
         append(&path, &Tenant::new("drop_me", "/b")).await.unwrap();
-        append(&path, &Tenant::new("keep_me_too", "/c")).await.unwrap();
-        let removed = rewrite(&path, |t| !t.tenant.starts_with("drop")).await.unwrap();
+        append(&path, &Tenant::new("keep_me_too", "/c"))
+            .await
+            .unwrap();
+        let removed = rewrite(&path, |t| !t.tenant.starts_with("drop"))
+            .await
+            .unwrap();
         assert_eq!(removed, 1);
         let loaded = load_all(&path).await.unwrap();
         assert_eq!(loaded.len(), 2);

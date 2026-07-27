@@ -9,7 +9,7 @@
 
 use super::*;
 use bougie_paths::Paths;
-use pubgrub::{resolve, DefaultStringReporter, PubGrubError, Reporter};
+use pubgrub::{DefaultStringReporter, PubGrubError, Reporter, resolve};
 use serde_json::json;
 use std::path::Path;
 use tempfile::TempDir;
@@ -32,11 +32,7 @@ fn paths_in(tmp: &Path) -> Paths {
 }
 
 /// One Packagist version-entry, fully expanded.
-fn version_entry(
-    name: &str,
-    version: &str,
-    require: serde_json::Value,
-) -> serde_json::Value {
+fn version_entry(name: &str, version: &str, require: serde_json::Value) -> serde_json::Value {
     json!({
         "name": name,
         "version": version,
@@ -97,8 +93,14 @@ fn resolves_single_dep_to_highest_in_range() {
     });
 
     let client = crate::metadata::build_client().unwrap();
-    let provider =
-        ResolveProvider::build(client, paths, crate::metadata::Repo::from_url(uri), &composer_json, true).unwrap();
+    let provider = ResolveProvider::build(
+        client,
+        paths,
+        crate::metadata::Repo::from_url(uri),
+        &composer_json,
+        true,
+    )
+    .unwrap();
     let root = provider.root_version();
 
     let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
@@ -114,10 +116,7 @@ fn resolves_transitive_dependency() {
     let tmp = TempDir::new().unwrap();
     let paths = paths_in(tmp.path());
 
-    let foo_body = p2_body(
-        "acme/foo",
-        &[("1.0.0", json!({"acme/bar": "^2.0"}))],
-    );
+    let foo_body = p2_body("acme/foo", &[("1.0.0", json!({"acme/bar": "^2.0"}))]);
     let bar_body = p2_body(
         "acme/bar",
         &[
@@ -137,8 +136,14 @@ fn resolves_transitive_dependency() {
 
     let composer_json = json!({"require": {"acme/foo": "^1.0"}});
     let client = crate::metadata::build_client().unwrap();
-    let provider =
-        ResolveProvider::build(client, paths, crate::metadata::Repo::from_url(uri), &composer_json, true).unwrap();
+    let provider = ResolveProvider::build(
+        client,
+        paths,
+        crate::metadata::Repo::from_url(uri),
+        &composer_json,
+        true,
+    )
+    .unwrap();
     let root = provider.root_version();
 
     let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
@@ -174,8 +179,14 @@ fn lowest_strategy_picks_lowest_in_range() {
 
     let composer_json = json!({"require": {"acme/foo": "^1.0"}});
     let client = crate::metadata::build_client().unwrap();
-    let mut provider =
-        ResolveProvider::build(client, paths, crate::metadata::Repo::from_url(uri), &composer_json, true).unwrap();
+    let mut provider = ResolveProvider::build(
+        client,
+        paths,
+        crate::metadata::Repo::from_url(uri),
+        &composer_json,
+        true,
+    )
+    .unwrap();
     provider.set_resolution(ResolutionStrategy::Lowest);
     let root = provider.root_version();
 
@@ -201,10 +212,7 @@ fn lowest_direct_lowers_direct_but_keeps_transitive_highest() {
             ("1.0.0", json!({"acme/bar": "^2.0"})),
         ],
     );
-    let bar_body = p2_body(
-        "acme/bar",
-        &[("2.5.0", json!({})), ("2.1.0", json!({}))],
-    );
+    let bar_body = p2_body("acme/bar", &[("2.5.0", json!({})), ("2.1.0", json!({}))]);
 
     let rt = rt();
     let (uri, _server) = rt.block_on(async {
@@ -216,8 +224,14 @@ fn lowest_direct_lowers_direct_but_keeps_transitive_highest() {
 
     let composer_json = json!({"require": {"acme/foo": "^1.0"}});
     let client = crate::metadata::build_client().unwrap();
-    let mut provider =
-        ResolveProvider::build(client, paths, crate::metadata::Repo::from_url(uri), &composer_json, true).unwrap();
+    let mut provider = ResolveProvider::build(
+        client,
+        paths,
+        crate::metadata::Repo::from_url(uri),
+        &composer_json,
+        true,
+    )
+    .unwrap();
     provider.set_resolution(ResolutionStrategy::LowestDirect);
     let root = provider.root_version();
 
@@ -240,10 +254,7 @@ fn lowest_strategy_lowers_transitive_too() {
     // Same fixture as the lowest-direct test, but full `lowest` lowers the
     // transitive bar as well (2.1.0 rather than 2.5.0).
     let foo_body = p2_body("acme/foo", &[("1.0.0", json!({"acme/bar": "^2.0"}))]);
-    let bar_body = p2_body(
-        "acme/bar",
-        &[("2.5.0", json!({})), ("2.1.0", json!({}))],
-    );
+    let bar_body = p2_body("acme/bar", &[("2.5.0", json!({})), ("2.1.0", json!({}))]);
 
     let rt = rt();
     let (uri, _server) = rt.block_on(async {
@@ -255,8 +266,14 @@ fn lowest_strategy_lowers_transitive_too() {
 
     let composer_json = json!({"require": {"acme/foo": "^1.0"}});
     let client = crate::metadata::build_client().unwrap();
-    let mut provider =
-        ResolveProvider::build(client, paths, crate::metadata::Repo::from_url(uri), &composer_json, true).unwrap();
+    let mut provider = ResolveProvider::build(
+        client,
+        paths,
+        crate::metadata::Repo::from_url(uri),
+        &composer_json,
+        true,
+    )
+    .unwrap();
     provider.set_resolution(ResolutionStrategy::Lowest);
     let root = provider.root_version();
 
@@ -284,8 +301,14 @@ fn unsatisfiable_constraint_produces_no_solution() {
 
     let composer_json = json!({"require": {"acme/foo": "^1.0"}});
     let client = crate::metadata::build_client().unwrap();
-    let provider =
-        ResolveProvider::build(client, paths, crate::metadata::Repo::from_url(uri), &composer_json, true).unwrap();
+    let provider = ResolveProvider::build(
+        client,
+        paths,
+        crate::metadata::Repo::from_url(uri),
+        &composer_json,
+        true,
+    )
+    .unwrap();
     let root = provider.root_version();
 
     let err = resolve(&provider, PubGrubPackage::Root, root).unwrap_err();
@@ -323,8 +346,14 @@ fn prerelease_versions_are_filtered_from_candidates() {
 
     let composer_json = json!({"require": {"acme/foo": ">=1.0"}});
     let client = crate::metadata::build_client().unwrap();
-    let provider =
-        ResolveProvider::build(client, paths, crate::metadata::Repo::from_url(uri), &composer_json, true).unwrap();
+    let provider = ResolveProvider::build(
+        client,
+        paths,
+        crate::metadata::Repo::from_url(uri),
+        &composer_json,
+        true,
+    )
+    .unwrap();
     let root = provider.root_version();
 
     let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
@@ -359,14 +388,32 @@ fn platform_requires_are_skipped_no_fetch_attempted() {
         },
     });
     let client = crate::metadata::build_client().unwrap();
-    let provider =
-        ResolveProvider::build(client, paths, crate::metadata::Repo::from_url(uri), &composer_json, true).unwrap();
+    let provider = ResolveProvider::build(
+        client,
+        paths,
+        crate::metadata::Repo::from_url(uri),
+        &composer_json,
+        true,
+    )
+    .unwrap();
     let root = provider.root_version();
 
     let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
-    assert!(solution.get(&PubGrubPackage::Package("acme/foo".into())).is_some());
-    assert!(solution.get(&PubGrubPackage::Package("php".into())).is_none());
-    assert!(solution.get(&PubGrubPackage::Package("ext-mbstring".into())).is_none());
+    assert!(
+        solution
+            .get(&PubGrubPackage::Package("acme/foo".into()))
+            .is_some()
+    );
+    assert!(
+        solution
+            .get(&PubGrubPackage::Package("php".into()))
+            .is_none()
+    );
+    assert!(
+        solution
+            .get(&PubGrubPackage::Package("ext-mbstring".into()))
+            .is_none()
+    );
 }
 
 #[test]
@@ -391,13 +438,22 @@ fn require_dev_included_when_no_dev_is_false() {
     });
 
     let client = crate::metadata::build_client().unwrap();
-    let provider =
-        ResolveProvider::build(client, paths, crate::metadata::Repo::from_url(uri), &composer_json, /*no_dev=*/ false)
-            .unwrap();
+    let provider = ResolveProvider::build(
+        client,
+        paths,
+        crate::metadata::Repo::from_url(uri),
+        &composer_json,
+        /*no_dev=*/ false,
+    )
+    .unwrap();
     let root = provider.root_version();
 
     let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
-    assert!(solution.get(&PubGrubPackage::Package("acme/bar".into())).is_some());
+    assert!(
+        solution
+            .get(&PubGrubPackage::Package("acme/bar".into()))
+            .is_some()
+    );
 }
 
 #[test]
@@ -420,22 +476,32 @@ fn require_dev_excluded_when_no_dev_is_true() {
     });
 
     let client = crate::metadata::build_client().unwrap();
-    let provider =
-        ResolveProvider::build(client, paths, crate::metadata::Repo::from_url(uri), &composer_json, /*no_dev=*/ true)
-            .unwrap();
+    let provider = ResolveProvider::build(
+        client,
+        paths,
+        crate::metadata::Repo::from_url(uri),
+        &composer_json,
+        /*no_dev=*/ true,
+    )
+    .unwrap();
     let root = provider.root_version();
 
     let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
-    assert!(solution.get(&PubGrubPackage::Package("acme/bar".into())).is_none());
+    assert!(
+        solution
+            .get(&PubGrubPackage::Package("acme/bar".into()))
+            .is_none()
+    );
 }
 
 /// Build a `/p2/<name>.json` body where each version can declare
 /// extra Composer maps (`replace`, `provide`, etc.). Inline JSON
 /// would also work, but pulling this helper out keeps the
 /// replace/provide tests below readable.
-fn p2_body_with_extras(name: &str, versions: &[(&str, serde_json::Value, serde_json::Value)])
-    -> String
-{
+fn p2_body_with_extras(
+    name: &str,
+    versions: &[(&str, serde_json::Value, serde_json::Value)],
+) -> String {
     let entries: Vec<_> = versions
         .iter()
         .map(|(v, require, extras)| {
@@ -470,12 +536,13 @@ fn replace_forces_replaced_package_to_consistent_version() {
 
     let monolith = p2_body_with_extras(
         "acme/monolith",
-        &[("2.0.0", json!({}), json!({"replace": {"acme/sub": "2.0.0"}}))],
+        &[(
+            "2.0.0",
+            json!({}),
+            json!({"replace": {"acme/sub": "2.0.0"}}),
+        )],
     );
-    let sub = p2_body(
-        "acme/sub",
-        &[("2.5.0", json!({})), ("2.0.0", json!({}))],
-    );
+    let sub = p2_body("acme/sub", &[("2.5.0", json!({})), ("2.0.0", json!({}))]);
 
     let rt = rt();
     let (uri, _server) = rt.block_on(async {
@@ -492,15 +559,25 @@ fn replace_forces_replaced_package_to_consistent_version() {
         },
     });
     let client = crate::metadata::build_client().unwrap();
-    let provider =
-        ResolveProvider::build(client, paths, crate::metadata::Repo::from_url(uri), &composer_json, true).unwrap();
+    let provider = ResolveProvider::build(
+        client,
+        paths,
+        crate::metadata::Repo::from_url(uri),
+        &composer_json,
+        true,
+    )
+    .unwrap();
     let root = provider.root_version();
 
     let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
     let sub_version = solution
         .get(&PubGrubPackage::Package("acme/sub".into()))
         .expect("acme/sub should be resolved");
-    assert_eq!(sub_version.to_string(), "2.0.0.0", "replace must pin sub@2.0.0");
+    assert_eq!(
+        sub_version.to_string(),
+        "2.0.0.0",
+        "replace must pin sub@2.0.0"
+    );
 }
 
 #[test]
@@ -512,12 +589,13 @@ fn provide_forces_consistent_version_same_as_replace() {
 
     let provider_pkg = p2_body_with_extras(
         "acme/provider",
-        &[("1.0.0", json!({}), json!({"provide": {"acme/iface": "1.0.0"}}))],
+        &[(
+            "1.0.0",
+            json!({}),
+            json!({"provide": {"acme/iface": "1.0.0"}}),
+        )],
     );
-    let iface = p2_body(
-        "acme/iface",
-        &[("2.0.0", json!({})), ("1.0.0", json!({}))],
-    );
+    let iface = p2_body("acme/iface", &[("2.0.0", json!({})), ("1.0.0", json!({}))]);
 
     let rt = rt();
     let (uri, _server) = rt.block_on(async {
@@ -531,8 +609,14 @@ fn provide_forces_consistent_version_same_as_replace() {
         "require": {"acme/provider": "^1.0", "acme/iface": "^1.0"},
     });
     let client = crate::metadata::build_client().unwrap();
-    let provider =
-        ResolveProvider::build(client, paths, crate::metadata::Repo::from_url(uri), &composer_json, true).unwrap();
+    let provider = ResolveProvider::build(
+        client,
+        paths,
+        crate::metadata::Repo::from_url(uri),
+        &composer_json,
+        true,
+    )
+    .unwrap();
     let root = provider.root_version();
 
     let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
@@ -552,7 +636,11 @@ fn replace_conflicts_with_a_separate_require_yield_no_solution() {
 
     let monolith = p2_body_with_extras(
         "acme/monolith",
-        &[("1.0.0", json!({}), json!({"replace": {"acme/sub": "1.0.0"}}))],
+        &[(
+            "1.0.0",
+            json!({}),
+            json!({"replace": {"acme/sub": "1.0.0"}}),
+        )],
     );
     let sub = p2_body("acme/sub", &[("2.0.0", json!({}))]);
 
@@ -568,8 +656,14 @@ fn replace_conflicts_with_a_separate_require_yield_no_solution() {
         "require": {"acme/monolith": "^1.0", "acme/sub": "^2.0"},
     });
     let client = crate::metadata::build_client().unwrap();
-    let provider =
-        ResolveProvider::build(client, paths, crate::metadata::Repo::from_url(uri), &composer_json, true).unwrap();
+    let provider = ResolveProvider::build(
+        client,
+        paths,
+        crate::metadata::Repo::from_url(uri),
+        &composer_json,
+        true,
+    )
+    .unwrap();
     let root = provider.root_version();
 
     let err = resolve(&provider, PubGrubPackage::Root, root).unwrap_err();
@@ -602,8 +696,16 @@ fn fork_replace_back_edge_to_replacer_does_not_break_solve() {
     let fork = p2_body_with_extras(
         "acme/fork",
         &[
-            ("2.0.0", json!({}), json!({"replace": {"acme/orig": "1.0.0"}})),
-            ("2.1.0", json!({}), json!({"replace": {"acme/orig": "1.0.0"}})),
+            (
+                "2.0.0",
+                json!({}),
+                json!({"replace": {"acme/orig": "1.0.0"}}),
+            ),
+            (
+                "2.1.0",
+                json!({}),
+                json!({"replace": {"acme/orig": "1.0.0"}}),
+            ),
         ],
     );
     let orig = p2_body_with_extras(
@@ -625,8 +727,14 @@ fn fork_replace_back_edge_to_replacer_does_not_break_solve() {
         "require": {"acme/fork": "2.0.0", "acme/orig": "^1.0"},
     });
     let client = crate::metadata::build_client().unwrap();
-    let provider =
-        ResolveProvider::build(client, paths, crate::metadata::Repo::from_url(uri), &composer_json, true).unwrap();
+    let provider = ResolveProvider::build(
+        client,
+        paths,
+        crate::metadata::Repo::from_url(uri),
+        &composer_json,
+        true,
+    )
+    .unwrap();
     let root = provider.root_version();
 
     let solution = resolve(&provider, PubGrubPackage::Root, root)
@@ -655,7 +763,11 @@ fn replace_clause_as_range_intersects_with_separate_require() {
     );
     let sub = p2_body(
         "acme/sub",
-        &[("2.3.0", json!({})), ("2.1.0", json!({})), ("2.0.0", json!({}))],
+        &[
+            ("2.3.0", json!({})),
+            ("2.1.0", json!({})),
+            ("2.0.0", json!({})),
+        ],
     );
 
     let rt = rt();
@@ -670,8 +782,14 @@ fn replace_clause_as_range_intersects_with_separate_require() {
         "require": {"acme/monolith": "^2.0", "acme/sub": "^2.1"},
     });
     let client = crate::metadata::build_client().unwrap();
-    let provider =
-        ResolveProvider::build(client, paths, crate::metadata::Repo::from_url(uri), &composer_json, true).unwrap();
+    let provider = ResolveProvider::build(
+        client,
+        paths,
+        crate::metadata::Repo::from_url(uri),
+        &composer_json,
+        true,
+    )
+    .unwrap();
     let root = provider.root_version();
 
     let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
@@ -709,8 +827,14 @@ fn platform_replace_clauses_are_skipped() {
         "require": {"symfony/polyfill-php80": "^1.0"},
     });
     let client = crate::metadata::build_client().unwrap();
-    let provider =
-        ResolveProvider::build(client, paths, crate::metadata::Repo::from_url(uri), &composer_json, true).unwrap();
+    let provider = ResolveProvider::build(
+        client,
+        paths,
+        crate::metadata::Repo::from_url(uri),
+        &composer_json,
+        true,
+    )
+    .unwrap();
     let root = provider.root_version();
 
     let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
@@ -720,7 +844,11 @@ fn platform_replace_clauses_are_skipped() {
             .is_some(),
     );
     // php must not appear in the solution — it was filtered.
-    assert!(solution.get(&PubGrubPackage::Package("php".into())).is_none());
+    assert!(
+        solution
+            .get(&PubGrubPackage::Package("php".into()))
+            .is_none()
+    );
 }
 
 #[test]
@@ -732,10 +860,7 @@ fn default_minimum_stability_is_stable_unchanged_behavior() {
 
     let body = p2_body(
         "acme/foo",
-        &[
-            ("2.0.0-beta1", json!({})),
-            ("1.0.0", json!({})),
-        ],
+        &[("2.0.0-beta1", json!({})), ("1.0.0", json!({}))],
     );
 
     let rt = rt();
@@ -747,15 +872,25 @@ fn default_minimum_stability_is_stable_unchanged_behavior() {
 
     let composer_json = json!({"require": {"acme/foo": ">=1.0"}});
     let client = crate::metadata::build_client().unwrap();
-    let provider =
-        ResolveProvider::build(client, paths, crate::metadata::Repo::from_url(uri), &composer_json, true).unwrap();
+    let provider = ResolveProvider::build(
+        client,
+        paths,
+        crate::metadata::Repo::from_url(uri),
+        &composer_json,
+        true,
+    )
+    .unwrap();
     let root = provider.root_version();
 
     let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
     let foo = solution
         .get(&PubGrubPackage::Package("acme/foo".into()))
         .unwrap();
-    assert_eq!(foo.to_string(), "1.0.0.0", "beta must be filtered by default");
+    assert_eq!(
+        foo.to_string(),
+        "1.0.0.0",
+        "beta must be filtered by default"
+    );
 }
 
 #[test]
@@ -785,14 +920,22 @@ fn minimum_stability_dev_allows_dev_versions() {
         "require": {"acme/devonly": "^1.0"},
     });
     let client = crate::metadata::build_client().unwrap();
-    let provider =
-        ResolveProvider::build(client, paths, crate::metadata::Repo::from_url(uri), &composer_json, true).unwrap();
+    let provider = ResolveProvider::build(
+        client,
+        paths,
+        crate::metadata::Repo::from_url(uri),
+        &composer_json,
+        true,
+    )
+    .unwrap();
     let root = provider.root_version();
 
     let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
-    assert!(solution
-        .get(&PubGrubPackage::Package("acme/devonly".into()))
-        .is_some());
+    assert!(
+        solution
+            .get(&PubGrubPackage::Package("acme/devonly".into()))
+            .is_some()
+    );
 }
 
 #[test]
@@ -825,8 +968,14 @@ fn minimum_stability_beta_accepts_beta_rejects_alpha() {
         "require": {"acme/foo": ">=1.0"},
     });
     let client = crate::metadata::build_client().unwrap();
-    let provider =
-        ResolveProvider::build(client, paths, crate::metadata::Repo::from_url(uri), &composer_json, true).unwrap();
+    let provider = ResolveProvider::build(
+        client,
+        paths,
+        crate::metadata::Repo::from_url(uri),
+        &composer_json,
+        true,
+    )
+    .unwrap();
     let root = provider.root_version();
 
     let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
@@ -858,14 +1007,22 @@ fn per_package_at_dev_flag_overrides_default_stability() {
         "require": {"acme/foo": "^1.0@dev"},
     });
     let client = crate::metadata::build_client().unwrap();
-    let provider =
-        ResolveProvider::build(client, paths, crate::metadata::Repo::from_url(uri), &composer_json, true).unwrap();
+    let provider = ResolveProvider::build(
+        client,
+        paths,
+        crate::metadata::Repo::from_url(uri),
+        &composer_json,
+        true,
+    )
+    .unwrap();
     let root = provider.root_version();
 
     let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
-    assert!(solution
-        .get(&PubGrubPackage::Package("acme/foo".into()))
-        .is_some());
+    assert!(
+        solution
+            .get(&PubGrubPackage::Package("acme/foo".into()))
+            .is_some()
+    );
 }
 
 #[test]
@@ -902,8 +1059,14 @@ fn per_package_at_stable_flag_tightens_a_global_dev_floor() {
         },
     });
     let client = crate::metadata::build_client().unwrap();
-    let provider =
-        ResolveProvider::build(client, paths, crate::metadata::Repo::from_url(uri), &composer_json, true).unwrap();
+    let provider = ResolveProvider::build(
+        client,
+        paths,
+        crate::metadata::Repo::from_url(uri),
+        &composer_json,
+        true,
+    )
+    .unwrap();
     let root = provider.root_version();
 
     let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
@@ -914,7 +1077,11 @@ fn per_package_at_stable_flag_tightens_a_global_dev_floor() {
         .get(&PubGrubPackage::Package("acme/loose".into()))
         .unwrap();
     assert_eq!(strict.to_string(), "1.0.0.0", "strict must drop the beta");
-    assert_eq!(loose.to_string(), "2.0.0.0-beta1", "loose can keep the beta");
+    assert_eq!(
+        loose.to_string(),
+        "2.0.0.0-beta1",
+        "loose can keep the beta"
+    );
 }
 
 #[test]
@@ -926,8 +1093,14 @@ fn unknown_minimum_stability_value_is_a_build_error() {
         "require": {},
     });
     let client = crate::metadata::build_client().unwrap();
-    let err = ResolveProvider::build(client, paths, crate::metadata::Repo::from_url("http://x"), &composer_json, true)
-        .unwrap_err();
+    let err = ResolveProvider::build(
+        client,
+        paths,
+        crate::metadata::Repo::from_url("http://x"),
+        &composer_json,
+        true,
+    )
+    .unwrap_err();
     let msg = format!("{err}");
     assert!(msg.contains("wonky"), "{msg}");
     assert!(msg.contains("stable"), "{msg}");
@@ -967,8 +1140,14 @@ fn dev_floor_pulls_branch_versions_from_tilde_dev_json() {
         "require": {"acme/foo": "^1.0"},
     });
     let client = crate::metadata::build_client().unwrap();
-    let provider =
-        ResolveProvider::build(client, paths, crate::metadata::Repo::from_url(uri), &composer_json, true).unwrap();
+    let provider = ResolveProvider::build(
+        client,
+        paths,
+        crate::metadata::Repo::from_url(uri),
+        &composer_json,
+        true,
+    )
+    .unwrap();
     let root = provider.root_version();
 
     let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
@@ -976,7 +1155,11 @@ fn dev_floor_pulls_branch_versions_from_tilde_dev_json() {
         .get(&PubGrubPackage::Package("acme/foo".into()))
         .unwrap();
     // 1.x-dev normalizes to 1.9999999... which is higher than 1.0.0.
-    assert_eq!(foo.to_string(), "1.9999999.9999999.9999999-dev", "got {foo}");
+    assert_eq!(
+        foo.to_string(),
+        "1.9999999.9999999.9999999-dev",
+        "got {foo}"
+    );
 }
 
 #[test]
@@ -1007,8 +1190,14 @@ fn dev_floor_tolerates_missing_tilde_dev_json() {
         "require": {"acme/foo": "^1.0"},
     });
     let client = crate::metadata::build_client().unwrap();
-    let provider =
-        ResolveProvider::build(client, paths, crate::metadata::Repo::from_url(uri), &composer_json, true).unwrap();
+    let provider = ResolveProvider::build(
+        client,
+        paths,
+        crate::metadata::Repo::from_url(uri),
+        &composer_json,
+        true,
+    )
+    .unwrap();
     let root = provider.root_version();
 
     let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
@@ -1045,8 +1234,14 @@ fn stable_floor_does_not_fetch_tilde_dev_json() {
 
     let composer_json = json!({"require": {"acme/foo": "^1.0"}});
     let client = crate::metadata::build_client().unwrap();
-    let provider =
-        ResolveProvider::build(client, paths, crate::metadata::Repo::from_url(uri), &composer_json, true).unwrap();
+    let provider = ResolveProvider::build(
+        client,
+        paths,
+        crate::metadata::Repo::from_url(uri),
+        &composer_json,
+        true,
+    )
+    .unwrap();
     let root = provider.root_version();
 
     let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
@@ -1081,8 +1276,14 @@ fn combined_stable_plus_dev_versions_sort_descending() {
         "require": {"acme/foo": ">=1.0"},
     });
     let client = crate::metadata::build_client().unwrap();
-    let provider =
-        ResolveProvider::build(client, paths, crate::metadata::Repo::from_url(uri), &composer_json, true).unwrap();
+    let provider = ResolveProvider::build(
+        client,
+        paths,
+        crate::metadata::Repo::from_url(uri),
+        &composer_json,
+        true,
+    )
+    .unwrap();
     let root = provider.root_version();
 
     let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
@@ -1116,7 +1317,10 @@ fn build_virtual_scenario(
     );
     let consumer_doc = p2_body(
         consumer_name,
-        &[(consumer_version, json!({virtual_name: consumer_requires_virtual}))],
+        &[(
+            consumer_version,
+            json!({virtual_name: consumer_requires_virtual}),
+        )],
     );
     (provider_doc, consumer_doc)
 }
@@ -1157,19 +1361,29 @@ fn virtual_package_satisfied_by_provide_clause() {
         },
     });
     let client = crate::metadata::build_client().unwrap();
-    let provider =
-        ResolveProvider::build(client, paths, crate::metadata::Repo::from_url(uri), &composer_json, true).unwrap();
+    let provider = ResolveProvider::build(
+        client,
+        paths,
+        crate::metadata::Repo::from_url(uri),
+        &composer_json,
+        true,
+    )
+    .unwrap();
     provider.pre_fetch_closure().unwrap();
     let root = provider.root_version();
 
     let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
     // Both real packages are in the solution.
-    assert!(solution
-        .get(&PubGrubPackage::Package("acme/guzzle".into()))
-        .is_some());
-    assert!(solution
-        .get(&PubGrubPackage::Package("acme/some-client".into()))
-        .is_some());
+    assert!(
+        solution
+            .get(&PubGrubPackage::Package("acme/guzzle".into()))
+            .is_some()
+    );
+    assert!(
+        solution
+            .get(&PubGrubPackage::Package("acme/some-client".into()))
+            .is_some()
+    );
     // The virtual itself is in pubgrub's raw solution but the
     // dry-run / lockfile output filters it out (see the orchestrator
     // tests below). Confirm the virtual selection map has it.
@@ -1201,8 +1415,14 @@ fn virtual_package_with_no_provider_yields_no_solution() {
 
     let composer_json = json!({"require": {"acme/lonely": "^1.0"}});
     let client = crate::metadata::build_client().unwrap();
-    let provider =
-        ResolveProvider::build(client, paths, crate::metadata::Repo::from_url(uri), &composer_json, true).unwrap();
+    let provider = ResolveProvider::build(
+        client,
+        paths,
+        crate::metadata::Repo::from_url(uri),
+        &composer_json,
+        true,
+    )
+    .unwrap();
     provider.pre_fetch_closure().unwrap();
     let root = provider.root_version();
 
@@ -1252,18 +1472,28 @@ fn replace_clause_with_range_constraint_registers_virtual() {
         },
     });
     let client = crate::metadata::build_client().unwrap();
-    let provider =
-        ResolveProvider::build(client, paths, crate::metadata::Repo::from_url(uri), &composer_json, true).unwrap();
+    let provider = ResolveProvider::build(
+        client,
+        paths,
+        crate::metadata::Repo::from_url(uri),
+        &composer_json,
+        true,
+    )
+    .unwrap();
     provider.pre_fetch_closure().unwrap();
     let root = provider.root_version();
 
     let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
-    assert!(solution
-        .get(&PubGrubPackage::Package("acme/big-cache".into()))
-        .is_some());
-    assert!(solution
-        .get(&PubGrubPackage::Package("acme/consumer".into()))
-        .is_some());
+    assert!(
+        solution
+            .get(&PubGrubPackage::Package("acme/big-cache".into()))
+            .is_some()
+    );
+    assert!(
+        solution
+            .get(&PubGrubPackage::Package("acme/consumer".into()))
+            .is_some()
+    );
 }
 
 #[test]
@@ -1277,11 +1507,19 @@ fn multiple_providers_at_same_virtual_version_dedup() {
 
     let p1 = p2_body_with_extras(
         "acme/p1",
-        &[("1.0.0", json!({}), json!({"provide": {"acme/iface": "1.0.0"}}))],
+        &[(
+            "1.0.0",
+            json!({}),
+            json!({"provide": {"acme/iface": "1.0.0"}}),
+        )],
     );
     let p2 = p2_body_with_extras(
         "acme/p2",
-        &[("2.0.0", json!({}), json!({"provide": {"acme/iface": "1.0.0"}}))],
+        &[(
+            "2.0.0",
+            json!({}),
+            json!({"provide": {"acme/iface": "1.0.0"}}),
+        )],
     );
 
     let rt = rt();
@@ -1300,19 +1538,29 @@ fn multiple_providers_at_same_virtual_version_dedup() {
         },
     });
     let client = crate::metadata::build_client().unwrap();
-    let provider =
-        ResolveProvider::build(client, paths, crate::metadata::Repo::from_url(uri), &composer_json, true).unwrap();
+    let provider = ResolveProvider::build(
+        client,
+        paths,
+        crate::metadata::Repo::from_url(uri),
+        &composer_json,
+        true,
+    )
+    .unwrap();
     provider.pre_fetch_closure().unwrap();
     let root = provider.root_version();
 
     let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
     // Both providers are explicitly required by root.
-    assert!(solution
-        .get(&PubGrubPackage::Package("acme/p1".into()))
-        .is_some());
-    assert!(solution
-        .get(&PubGrubPackage::Package("acme/p2".into()))
-        .is_some());
+    assert!(
+        solution
+            .get(&PubGrubPackage::Package("acme/p1".into()))
+            .is_some()
+    );
+    assert!(
+        solution
+            .get(&PubGrubPackage::Package("acme/p2".into()))
+            .is_some()
+    );
     // Only one virtual selection mapping exists for acme/iface@1.0.0.
     let selections = provider.virtual_selections.borrow();
     let iface_entries: Vec<_> = selections
@@ -1336,10 +1584,26 @@ fn many_versions_of_same_provider_replacing_one_virtual_picks_any() {
     let base = p2_body_with_extras(
         "acme/base",
         &[
-            ("1.0.0-beta1", json!({}), json!({"replace": {"acme/sub": "1.0.0"}})),
-            ("1.0.0", json!({}), json!({"replace": {"acme/sub": "1.0.0"}})),
-            ("1.0.0-p1", json!({}), json!({"replace": {"acme/sub": "1.0.0"}})),
-            ("1.0.0-p2", json!({}), json!({"replace": {"acme/sub": "1.0.0"}})),
+            (
+                "1.0.0-beta1",
+                json!({}),
+                json!({"replace": {"acme/sub": "1.0.0"}}),
+            ),
+            (
+                "1.0.0",
+                json!({}),
+                json!({"replace": {"acme/sub": "1.0.0"}}),
+            ),
+            (
+                "1.0.0-p1",
+                json!({}),
+                json!({"replace": {"acme/sub": "1.0.0"}}),
+            ),
+            (
+                "1.0.0-p2",
+                json!({}),
+                json!({"replace": {"acme/sub": "1.0.0"}}),
+            ),
         ],
     );
     // Edition pins a specific (non-beta) base patch.
@@ -1361,8 +1625,14 @@ fn many_versions_of_same_provider_replacing_one_virtual_picks_any() {
         "require": {"acme/edition": "1.0.0-p2"},
     });
     let client = crate::metadata::build_client().unwrap();
-    let provider =
-        ResolveProvider::build(client, paths, crate::metadata::Repo::from_url(uri), &composer_json, true).unwrap();
+    let provider = ResolveProvider::build(
+        client,
+        paths,
+        crate::metadata::Repo::from_url(uri),
+        &composer_json,
+        true,
+    )
+    .unwrap();
     provider.pre_fetch_closure().unwrap();
     let root = provider.root_version();
 
@@ -1400,8 +1670,14 @@ fn prefer_stable_picks_stable_over_higher_beta() {
         "require": {"acme/foo": ">=1.0"},
     });
     let client = crate::metadata::build_client().unwrap();
-    let provider =
-        ResolveProvider::build(client, paths, crate::metadata::Repo::from_url(uri), &composer_json, true).unwrap();
+    let provider = ResolveProvider::build(
+        client,
+        paths,
+        crate::metadata::Repo::from_url(uri),
+        &composer_json,
+        true,
+    )
+    .unwrap();
     let root = provider.root_version();
 
     let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
@@ -1433,8 +1709,14 @@ fn without_prefer_stable_highest_beta_still_wins() {
         "require": {"acme/foo": ">=1.0"},
     });
     let client = crate::metadata::build_client().unwrap();
-    let provider =
-        ResolveProvider::build(client, paths, crate::metadata::Repo::from_url(uri), &composer_json, true).unwrap();
+    let provider = ResolveProvider::build(
+        client,
+        paths,
+        crate::metadata::Repo::from_url(uri),
+        &composer_json,
+        true,
+    )
+    .unwrap();
     let root = provider.root_version();
 
     let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
@@ -1471,8 +1753,14 @@ fn prefer_stable_falls_back_to_unstable_when_no_stable_in_range() {
         "require": {"acme/foo": "^2.0.0-beta1"},
     });
     let client = crate::metadata::build_client().unwrap();
-    let provider =
-        ResolveProvider::build(client, paths, crate::metadata::Repo::from_url(uri), &composer_json, true).unwrap();
+    let provider = ResolveProvider::build(
+        client,
+        paths,
+        crate::metadata::Repo::from_url(uri),
+        &composer_json,
+        true,
+    )
+    .unwrap();
     let root = provider.root_version();
 
     let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
@@ -1489,10 +1777,7 @@ fn prefer_stable_is_noop_when_floor_is_stable() {
     // the highest in range as usual.
     let tmp = TempDir::new().unwrap();
     let paths = paths_in(tmp.path());
-    let body = p2_body(
-        "acme/foo",
-        &[("2.0.0", json!({})), ("1.0.0", json!({}))],
-    );
+    let body = p2_body("acme/foo", &[("2.0.0", json!({})), ("1.0.0", json!({}))]);
 
     let rt = rt();
     let (uri, _server) = rt.block_on(async {
@@ -1506,8 +1791,14 @@ fn prefer_stable_is_noop_when_floor_is_stable() {
         "require": {"acme/foo": ">=1.0"},
     });
     let client = crate::metadata::build_client().unwrap();
-    let provider =
-        ResolveProvider::build(client, paths, crate::metadata::Repo::from_url(uri), &composer_json, true).unwrap();
+    let provider = ResolveProvider::build(
+        client,
+        paths,
+        crate::metadata::Repo::from_url(uri),
+        &composer_json,
+        true,
+    )
+    .unwrap();
     let root = provider.root_version();
 
     let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
@@ -1526,8 +1817,14 @@ fn unknown_prefer_stable_type_is_a_build_error() {
         "require": {},
     });
     let client = crate::metadata::build_client().unwrap();
-    let err = ResolveProvider::build(client, paths, crate::metadata::Repo::from_url("http://x"), &composer_json, true)
-        .unwrap_err();
+    let err = ResolveProvider::build(
+        client,
+        paths,
+        crate::metadata::Repo::from_url("http://x"),
+        &composer_json,
+        true,
+    )
+    .unwrap_err();
     let msg = format!("{err}");
     assert!(msg.contains("prefer-stable"), "{msg}");
 }
@@ -1576,30 +1873,40 @@ fn wildcard_replace_satisfies_unrelated_range() {
         },
     });
     let client = crate::metadata::build_client().unwrap();
-    let provider =
-        ResolveProvider::build(client, paths, crate::metadata::Repo::from_url(uri), &composer_json, true).unwrap();
+    let provider = ResolveProvider::build(
+        client,
+        paths,
+        crate::metadata::Repo::from_url(uri),
+        &composer_json,
+        true,
+    )
+    .unwrap();
     provider.pre_fetch_closure().unwrap();
     let root = provider.root_version();
 
     let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
-    assert!(solution
-        .get(&PubGrubPackage::Package("acme/monolith".into()))
-        .is_some());
-    assert!(solution
-        .get(&PubGrubPackage::Package("acme/consumer".into()))
-        .is_some());
+    assert!(
+        solution
+            .get(&PubGrubPackage::Package("acme/monolith".into()))
+            .is_some()
+    );
+    assert!(
+        solution
+            .get(&PubGrubPackage::Package("acme/consumer".into()))
+            .is_some()
+    );
     // The wildcard synthesized a wrapper@<some_version>; it
     // appears in pubgrub's raw solution but is filtered from
     // user-facing output.
-    let wrapper_sel = solution
-        .get(&PubGrubPackage::Package("acme/wrapper".into()));
+    let wrapper_sel = solution.get(&PubGrubPackage::Package("acme/wrapper".into()));
     assert!(wrapper_sel.is_some(), "wrapper must be in raw solution");
     // virtual_selections recorded the link back to the provider.
     let selections = provider.virtual_selections.borrow();
-    let any_wrapper_entry = selections
-        .keys()
-        .any(|(n, _)| n.as_str() == "acme/wrapper");
-    assert!(any_wrapper_entry, "virtual_selections should record wrapper");
+    let any_wrapper_entry = selections.keys().any(|(n, _)| n.as_str() == "acme/wrapper");
+    assert!(
+        any_wrapper_entry,
+        "virtual_selections should record wrapper"
+    );
 }
 
 #[test]
@@ -1628,18 +1935,28 @@ fn wildcard_replace_does_not_synthesize_without_consumer() {
 
     let composer_json = json!({"require": {"acme/monolith": "^5.0"}});
     let client = crate::metadata::build_client().unwrap();
-    let provider =
-        ResolveProvider::build(client, paths, crate::metadata::Repo::from_url(uri), &composer_json, true).unwrap();
+    let provider = ResolveProvider::build(
+        client,
+        paths,
+        crate::metadata::Repo::from_url(uri),
+        &composer_json,
+        true,
+    )
+    .unwrap();
     provider.pre_fetch_closure().unwrap();
     let root = provider.root_version();
 
     let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
-    assert!(solution
-        .get(&PubGrubPackage::Package("acme/monolith".into()))
-        .is_some());
-    assert!(solution
-        .get(&PubGrubPackage::Package("acme/wrapper".into()))
-        .is_none());
+    assert!(
+        solution
+            .get(&PubGrubPackage::Package("acme/monolith".into()))
+            .is_some()
+    );
+    assert!(
+        solution
+            .get(&PubGrubPackage::Package("acme/wrapper".into()))
+            .is_none()
+    );
 }
 
 #[test]
@@ -1680,8 +1997,14 @@ fn real_packagist_versions_preferred_over_wildcard() {
         },
     });
     let client = crate::metadata::build_client().unwrap();
-    let provider =
-        ResolveProvider::build(client, paths, crate::metadata::Repo::from_url(uri), &composer_json, true).unwrap();
+    let provider = ResolveProvider::build(
+        client,
+        paths,
+        crate::metadata::Repo::from_url(uri),
+        &composer_json,
+        true,
+    )
+    .unwrap();
     provider.pre_fetch_closure().unwrap();
     let root = provider.root_version();
 
@@ -1785,9 +2108,11 @@ fn packagist_org_false_disables_public_fallback() {
     let root = provider.root_version();
 
     let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
-    assert!(solution
-        .get(&PubGrubPackage::Package("acme/foo".into()))
-        .is_some());
+    assert!(
+        solution
+            .get(&PubGrubPackage::Package("acme/foo".into()))
+            .is_some()
+    );
 }
 
 #[test]
@@ -1835,9 +2160,11 @@ fn packagist_false_bc_alias_disables_public_fallback() {
     let root = provider.root_version();
 
     let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
-    assert!(solution
-        .get(&PubGrubPackage::Package("acme/foo".into()))
-        .is_some());
+    assert!(
+        solution
+            .get(&PubGrubPackage::Package("acme/foo".into()))
+            .is_some()
+    );
 }
 
 #[test]
@@ -1892,9 +2219,11 @@ fn packagist_org_false_disables_public_fallback_named_object_form() {
     let root = provider.root_version();
 
     let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
-    assert!(solution
-        .get(&PubGrubPackage::Package("acme/foo".into()))
-        .is_some());
+    assert!(
+        solution
+            .get(&PubGrubPackage::Package("acme/foo".into()))
+            .is_some()
+    );
 }
 
 #[test]
@@ -1957,9 +2286,11 @@ fn vcs_repo_present_does_not_block_packagist() {
     let root = provider.root_version();
 
     let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
-    assert!(solution
-        .get(&PubGrubPackage::Package("acme/foo".into()))
-        .is_some());
+    assert!(
+        solution
+            .get(&PubGrubPackage::Package("acme/foo".into()))
+            .is_some()
+    );
 }
 
 #[cfg(unix)]
@@ -1969,7 +2300,7 @@ fn vcs_repo_resolves_from_git_source() {
     // candidate version, the solver picks it, and the lock carries a
     // `source` block (no dist) — all from a file:// repo, no network.
     use crate::platform::PlatformIgnore;
-    use crate::update::{resolve_for_lockfile, ResolutionStrategy};
+    use crate::update::{ResolutionStrategy, resolve_for_lockfile};
 
     let tmp = TempDir::new().unwrap();
     let paths = paths_in(tmp.path());
@@ -1982,14 +2313,25 @@ fn vcs_repo_resolves_from_git_source() {
         let st = std::process::Command::new("git")
             .arg("-C")
             .arg(&origin)
-            .args(["-c", "user.email=t@e", "-c", "user.name=t", "-c", "commit.gpgsign=false"])
+            .args([
+                "-c",
+                "user.email=t@e",
+                "-c",
+                "user.name=t",
+                "-c",
+                "commit.gpgsign=false",
+            ])
             .args(args)
             .status()
             .unwrap();
         assert!(st.success(), "git {args:?}");
     };
     git(&["init", "-q", "-b", "main"]);
-    std::fs::write(origin.join("composer.json"), r#"{"name":"acme/lib","require":{}}"#).unwrap();
+    std::fs::write(
+        origin.join("composer.json"),
+        r#"{"name":"acme/lib","require":{}}"#,
+    )
+    .unwrap();
     git(&["add", "-A"]);
     git(&["commit", "-q", "-m", "v1"]);
     git(&["tag", "v1.2.0"]);
@@ -2033,7 +2375,10 @@ fn vcs_repo_resolves_from_git_source() {
         .iter()
         .find(|p| p.name == "acme/lib")
         .expect("acme/lib resolved from the vcs repo");
-    assert_eq!(pkg.version, "1.2.0", "tag version resolved (leading v stripped)");
+    assert_eq!(
+        pkg.version, "1.2.0",
+        "tag version resolved (leading v stripped)"
+    );
     assert!(pkg.dist.is_none(), "vcs package has no dist");
     let src = pkg.source.as_ref().expect("source block written");
     assert_eq!(src.kind, "git");
@@ -2057,12 +2402,21 @@ fn unsupported_repo_warnings_names_dropped_repos() {
         ],
     });
     let warnings = unsupported_repo_warnings(&cj);
-    assert_eq!(warnings.len(), 2, "only svn + package are dropped: {warnings:?}");
+    assert_eq!(
+        warnings.len(),
+        2,
+        "only svn + package are dropped: {warnings:?}"
+    );
     assert!(
-        warnings.iter().any(|w| w.contains("`svn`") && w.contains("svn.example/acme")),
+        warnings
+            .iter()
+            .any(|w| w.contains("`svn`") && w.contains("svn.example/acme")),
         "{warnings:?}",
     );
-    assert!(warnings.iter().any(|w| w.contains("`package`")), "{warnings:?}");
+    assert!(
+        warnings.iter().any(|w| w.contains("`package`")),
+        "{warnings:?}"
+    );
 
     // Named-object form is honored too.
     let obj = json!({
@@ -2074,10 +2428,12 @@ fn unsupported_repo_warnings_names_dropped_repos() {
 
     // No repositories, or only supported ones → nothing.
     assert!(unsupported_repo_warnings(&json!({})).is_empty());
-    assert!(unsupported_repo_warnings(&json!({
-        "repositories": [{"type": "composer", "url": "https://x/"}],
-    }))
-    .is_empty());
+    assert!(
+        unsupported_repo_warnings(&json!({
+            "repositories": [{"type": "composer", "url": "https://x/"}],
+        }))
+        .is_empty()
+    );
 }
 
 #[test]
@@ -2114,7 +2470,10 @@ fn path_repo_entry_parses_into_path_kind() {
     assert_eq!(cfg.symlink, Some(false));
     assert_eq!(cfg.relative, Some(true));
     assert_eq!(cfg.reference, ReferenceMode::Config);
-    assert_eq!(cfg.versions.get("acme/local").map(String::as_str), Some("2.3-dev"));
+    assert_eq!(
+        cfg.versions.get("acme/local").map(String::as_str),
+        Some("2.3-dev")
+    );
 }
 
 #[test]
@@ -2135,7 +2494,10 @@ fn path_repo_defaults_when_options_omitted() {
         panic!("expected a path repo");
     };
     assert_eq!(cfg.symlink, None, "default is Composer's symlink-or-copy");
-    assert_eq!(cfg.relative, None, "unset → install-time default (relative) applies");
+    assert_eq!(
+        cfg.relative, None,
+        "unset → install-time default (relative) applies"
+    );
     assert_eq!(cfg.reference, ReferenceMode::Auto);
     assert!(cfg.versions.is_empty());
 }
@@ -2207,10 +2569,13 @@ fn read_repositories_overlay_reads_array_absent_is_empty_nonarray_errors() {
     assert!(crate::update::read_repositories_overlay(tmp.path()).is_err());
 }
 
-
 /// Write a path-package directory under `root` with the given
 /// composer.json contents. Returns the package directory.
-fn write_path_package(root: &Path, subdir: &str, composer_json: serde_json::Value) -> std::path::PathBuf {
+fn write_path_package(
+    root: &Path,
+    subdir: &str,
+    composer_json: serde_json::Value,
+) -> std::path::PathBuf {
     let dir = root.join(subdir);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(
@@ -2276,7 +2641,11 @@ fn path_repo_resolves_and_locks_path_dist() {
     assert_eq!(dist.reference, None, "reference: none → null");
     assert_eq!(dist.url, "packages/local");
     assert_eq!(
-        locked.autoload.psr_4.get("Acme\\Local\\").and_then(|v| v.as_str()),
+        locked
+            .autoload
+            .psr_4
+            .get("Acme\\Local\\")
+            .and_then(|v| v.as_str()),
         Some("src/"),
     );
 }
@@ -2437,7 +2806,6 @@ fn path_package_transitive_require_is_crawled_from_packagist() {
     assert_eq!(dep.to_string(), "2.1.0.0");
 }
 
-
 // ===================== Repository auth =====================
 
 #[test]
@@ -2499,9 +2867,11 @@ fn http_basic_auth_from_config_unlocks_private_repo() {
     .unwrap();
     let root = provider.root_version();
     let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
-    assert!(solution
-        .get(&PubGrubPackage::Package("acme/private".into()))
-        .is_some());
+    assert!(
+        solution
+            .get(&PubGrubPackage::Package("acme/private".into()))
+            .is_some()
+    );
 }
 
 #[test]
@@ -2559,9 +2929,11 @@ fn bearer_auth_from_config_unlocks_private_repo() {
     .unwrap();
     let root = provider.root_version();
     let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
-    assert!(solution
-        .get(&PubGrubPackage::Package("acme/gated".into()))
-        .is_some());
+    assert!(
+        solution
+            .get(&PubGrubPackage::Package("acme/gated".into()))
+            .is_some()
+    );
 }
 
 #[test]
@@ -2642,9 +3014,11 @@ fn auth_json_overrides_composer_json_config() {
     .unwrap();
     let root = provider.root_version();
     let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
-    assert!(solution
-        .get(&PubGrubPackage::Package("acme/foo".into()))
-        .is_some());
+    assert!(
+        solution
+            .get(&PubGrubPackage::Package("acme/foo".into()))
+            .is_some()
+    );
 }
 
 #[test]
@@ -2659,7 +3033,10 @@ fn auth_credentials_debug_redacts_password_and_token() {
     let basic_dbg = format!("{basic:?}");
     let bearer_dbg = format!("{bearer:?}");
     assert!(!basic_dbg.contains("supersecret123"), "{basic_dbg}");
-    assert!(basic_dbg.contains("alice"), "username should be visible: {basic_dbg}");
+    assert!(
+        basic_dbg.contains("alice"),
+        "username should be visible: {basic_dbg}"
+    );
     assert!(basic_dbg.contains("redacted"), "{basic_dbg}");
     assert!(!bearer_dbg.contains("tokenZZ"), "{bearer_dbg}");
     assert!(bearer_dbg.contains("redacted"), "{bearer_dbg}");
@@ -2689,9 +3066,8 @@ fn discover_repos_resolves_via_v1_protocol_end_to_end() {
             }}
         }}"#
     );
-    let provider_include = format!(
-        r#"{{"providers": {{"acme/foo": {{"sha256": "{pkg_sha}"}}}}}}"#,
-    );
+    let provider_include =
+        format!(r#"{{"providers": {{"acme/foo": {{"sha256": "{pkg_sha}"}}}}}}"#,);
     let per_package = r#"{
         "packages": {
             "acme/foo": {
@@ -2785,7 +3161,10 @@ fn discover_repos_resolves_via_v1_protocol_end_to_end() {
         .lock_package_for("acme/foo", foo)
         .expect("cached lock package");
     assert_eq!(lp.version, "1.1.0");
-    assert_eq!(lp.dist.expect("dist").url, "https://example.test/foo-1.1.0.zip");
+    assert_eq!(
+        lp.dist.expect("dist").url,
+        "https://example.test/foo-1.1.0.zip"
+    );
 }
 
 // --- auth-source tests ---------------------------------------------
@@ -2940,7 +3319,13 @@ fn global_auth_json_candidates_honors_composer_home_first() {
 fn global_auth_json_candidates_falls_back_to_xdg_then_legacy() {
     // No COMPOSER_HOME, no XDG_CONFIG_HOME — just $HOME. We expect
     // the XDG-default path first, the legacy ~/.composer path second.
-    let env = |k: &str| if k == "HOME" { Some("/home/u".into()) } else { None };
+    let env = |k: &str| {
+        if k == "HOME" {
+            Some("/home/u".into())
+        } else {
+            None
+        }
+    };
     let got = crate::update::global_auth_json_candidates(env);
     assert_eq!(
         got,
@@ -2973,7 +3358,13 @@ fn bougie_auth_json_candidates_prefers_xdg_then_home() {
         ],
     );
     // HOME-only falls back to ~/.config/bougie.
-    let env = |k: &str| if k == "HOME" { Some("/home/u".into()) } else { None };
+    let env = |k: &str| {
+        if k == "HOME" {
+            Some("/home/u".into())
+        } else {
+            None
+        }
+    };
     assert_eq!(
         crate::update::bougie_auth_json_candidates(env),
         vec![std::path::PathBuf::from("/home/u/.config/bougie/auth.json")],
@@ -2989,8 +3380,13 @@ fn write_http_basic_at_creates_merges_and_round_trips() {
     // A nested dir that doesn't exist yet — the writer must create it.
     let path = tmp.path().join("bougie").join("auth.json");
 
-    crate::update::write_http_basic_at(&path, "hyva-themes.repo.packagist.com", "token", "secret-key")
-        .unwrap();
+    crate::update::write_http_basic_at(
+        &path,
+        "hyva-themes.repo.packagist.com",
+        "token",
+        "secret-key",
+    )
+    .unwrap();
     // A second host merges in rather than clobbering the first.
     crate::update::write_http_basic_at(&path, "other.example", "u2", "p2").unwrap();
 
@@ -3002,7 +3398,10 @@ fn write_http_basic_at_creates_merges_and_round_trips() {
         }
         other => panic!("expected Basic, got {other:?}"),
     }
-    assert!(got.contains_key("other.example"), "first host must survive the second write");
+    assert!(
+        got.contains_key("other.example"),
+        "first host must survive the second write"
+    );
 
     #[cfg(unix)]
     {
@@ -3029,8 +3428,14 @@ fn write_bearer_at_creates_merges_and_coexists_with_basic() {
         crate::metadata::AuthCredentials::Bearer { token } => assert_eq!(token, "sconce_abc"),
         other => panic!("expected Bearer, got {other:?}"),
     }
-    assert!(got.contains_key("other.example"), "first bearer host must survive the second write");
-    assert!(got.contains_key("basic.example"), "pre-existing http-basic entry must survive");
+    assert!(
+        got.contains_key("other.example"),
+        "first bearer host must survive the second write"
+    );
+    assert!(
+        got.contains_key("basic.example"),
+        "pre-existing http-basic entry must survive"
+    );
 
     #[cfg(unix)]
     {
@@ -3090,14 +3495,19 @@ fn merge_auth_sources_follows_composer_precedence() {
     // password marker, then assert the env-var marker wins.
     use crate::metadata::AuthCredentials;
     fn basic(p: &str) -> AuthCredentials {
-        AuthCredentials::Basic { username: "u".into(), password: p.into() }
+        AuthCredentials::Basic {
+            username: "u".into(),
+            password: p.into(),
+        }
     }
     let host = "example.com";
 
     // env wins over everything.
     let out = crate::update::merge_auth_sources(
         [(host.into(), basic("global"))].into_iter().collect(),
-        [(host.into(), basic("composer.json"))].into_iter().collect(),
+        [(host.into(), basic("composer.json"))]
+            .into_iter()
+            .collect(),
         [(host.into(), basic("project"))].into_iter().collect(),
         [(host.into(), basic("env"))].into_iter().collect(),
     );
@@ -3109,7 +3519,9 @@ fn merge_auth_sources_follows_composer_precedence() {
     // Without env, project wins over composer.json wins over global.
     let out = crate::update::merge_auth_sources(
         [(host.into(), basic("global"))].into_iter().collect(),
-        [(host.into(), basic("composer.json"))].into_iter().collect(),
+        [(host.into(), basic("composer.json"))]
+            .into_iter()
+            .collect(),
         [(host.into(), basic("project"))].into_iter().collect(),
         HashMap::new(),
     );
@@ -3122,7 +3534,9 @@ fn merge_auth_sources_follows_composer_precedence() {
     // case the previous implementation got backwards).
     let out = crate::update::merge_auth_sources(
         [(host.into(), basic("global"))].into_iter().collect(),
-        [(host.into(), basic("composer.json"))].into_iter().collect(),
+        [(host.into(), basic("composer.json"))]
+            .into_iter()
+            .collect(),
         HashMap::new(),
         HashMap::new(),
     );
@@ -3163,7 +3577,10 @@ fn read_all_auth_merges_composer_json_and_project_auth_json() {
     assert!(out.contains_key("from-auth.json"));
     match out.get("shared").unwrap() {
         crate::metadata::AuthCredentials::Basic { username, .. } => {
-            assert_eq!(username, "winner", "project auth.json must win over composer.json");
+            assert_eq!(
+                username, "winner",
+                "project auth.json must win over composer.json"
+            );
         }
         other => panic!("{other:?}"),
     }
@@ -3344,8 +3761,9 @@ fn ignore_platform_req_php_drops_the_edge_and_resolves() {
         &composer_json,
         true,
         auth,
-        crate::platform::PlatformEnv::new(Some(Version::parse("8.3.31").unwrap()))
-            .ignoring(crate::platform::PlatformIgnore::new(false, &["php".to_string()])),
+        crate::platform::PlatformEnv::new(Some(Version::parse("8.3.31").unwrap())).ignoring(
+            crate::platform::PlatformIgnore::new(false, &["php".to_string()]),
+        ),
         None,
     )
     .unwrap();
@@ -3356,13 +3774,17 @@ fn ignore_platform_req_php_drops_the_edge_and_resolves() {
     // rest of the graph resolves cleanly.
     let solution = resolve(&provider, PubGrubPackage::Root, root)
         .expect("ignoring php should let the solve succeed");
-    assert!(solution
-        .get(&PubGrubPackage::Package("acme/bar".into()))
-        .is_some());
+    assert!(
+        solution
+            .get(&PubGrubPackage::Package("acme/bar".into()))
+            .is_some()
+    );
     // `php` must not appear as a resolved package — it was dropped.
-    assert!(solution
-        .get(&PubGrubPackage::Package("php".into()))
-        .is_none());
+    assert!(
+        solution
+            .get(&PubGrubPackage::Package("php".into()))
+            .is_none()
+    );
 }
 
 #[test]
@@ -3425,12 +3847,18 @@ fn analyze_resolution_problems_reports_php_version_mismatch_clearly() {
 #[test]
 fn repo_host_extracts_origin_for_per_host_throttle() {
     // Same host across different paths/ports → same limiter key.
-    assert_eq!(super::repo_host("https://repo.mage-os.org"), "repo.mage-os.org");
+    assert_eq!(
+        super::repo_host("https://repo.mage-os.org"),
+        "repo.mage-os.org"
+    );
     assert_eq!(
         super::repo_host("https://repo.mage-os.org/p2/foo/bar.json"),
         "repo.mage-os.org"
     );
-    assert_eq!(super::repo_host("https://repo.packagist.org"), "repo.packagist.org");
+    assert_eq!(
+        super::repo_host("https://repo.packagist.org"),
+        "repo.packagist.org"
+    );
     // Unparseable URL falls back to the raw string (still a stable key).
     assert_eq!(super::repo_host("not a url"), "not a url");
 }
@@ -3489,30 +3917,46 @@ fn root_wildcard_replace_excludes_package_and_its_exclusive_deps() {
         "replace": {"acme/mod": "*"},
     });
     let client = crate::metadata::build_client().unwrap();
-    let provider =
-        ResolveProvider::build(client, paths, crate::metadata::Repo::from_url(uri), &composer_json, true).unwrap();
+    let provider = ResolveProvider::build(
+        client,
+        paths,
+        crate::metadata::Repo::from_url(uri),
+        &composer_json,
+        true,
+    )
+    .unwrap();
     let root = provider.root_version();
 
     let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
 
     // Kept dependency resolves normally.
     assert!(
-        solution.get(&PubGrubPackage::Package("acme/keep".into())).is_some(),
+        solution
+            .get(&PubGrubPackage::Package("acme/keep".into()))
+            .is_some(),
         "acme/keep should resolve",
     );
     // The root-replaced package is gone…
     assert!(
-        solution.get(&PubGrubPackage::Package("acme/mod".into())).is_none(),
+        solution
+            .get(&PubGrubPackage::Package("acme/mod".into()))
+            .is_none(),
         "acme/mod is replaced by the root and must not be in the solution",
     );
     // …and so is its exclusive transitive dep (proves the edge was
     // dropped, not just the package filtered post-solve).
     assert!(
-        solution.get(&PubGrubPackage::Package("acme/only".into())).is_none(),
+        solution
+            .get(&PubGrubPackage::Package("acme/only".into()))
+            .is_none(),
         "acme/only is only needed by the replaced acme/mod and must not resolve",
     );
     // Neither was even fetched: only acme/meta + acme/keep.
-    assert_eq!(provider.cache_size(), 2, "only acme/meta + acme/keep fetched");
+    assert_eq!(
+        provider.cache_size(),
+        2,
+        "only acme/meta + acme/keep fetched"
+    );
 }
 
 // ---------------------------------------------------------------------
@@ -3592,7 +4036,11 @@ fn partial_update_pins_out_of_scope_package() {
         .expect("acme/bar resolves");
     // Named package floats up; the pinned one stays put.
     assert_eq!(foo.to_string(), "1.5.0.0", "named package updates");
-    assert_eq!(bar.to_string(), "2.1.0.0", "out-of-scope package stays pinned");
+    assert_eq!(
+        bar.to_string(),
+        "2.1.0.0",
+        "out-of-scope package stays pinned"
+    );
 }
 
 #[test]
@@ -3602,7 +4050,10 @@ fn partial_update_with_dependencies_floats_transitive() {
 
     let foo_body = p2_body(
         "acme/foo",
-        &[("1.5.0", json!({"acme/bar": "^2.0"})), ("1.0.0", json!({"acme/bar": "^2.0"}))],
+        &[
+            ("1.5.0", json!({"acme/bar": "^2.0"})),
+            ("1.0.0", json!({"acme/bar": "^2.0"})),
+        ],
     );
     let bar_body = p2_body("acme/bar", &[("2.5.0", json!({})), ("2.1.0", json!({}))]);
 
@@ -3698,7 +4149,11 @@ fn partial_update_pin_falls_back_when_locked_version_gone() {
         .get(&PubGrubPackage::Package("acme/bar".into()))
         .expect("acme/bar resolves");
     // The pinned 2.0.0 is unavailable, so it floats rather than dead-ending.
-    assert_eq!(bar.to_string(), "2.5.0.0", "missing pin falls back to a free choice");
+    assert_eq!(
+        bar.to_string(),
+        "2.5.0.0",
+        "missing pin falls back to a free choice"
+    );
 }
 
 /// Pure check of the `-w` vs `-W` scope rule via the resulting pin set.
@@ -3732,7 +4187,11 @@ fn with_dependencies_vs_with_all_dependencies_scope() {
         .map(std::string::ToString::to_string)
         .collect();
     pinned.sort();
-    assert_eq!(pinned, vec!["acme/bar", "acme/baz"], "-w keeps root requires pinned");
+    assert_eq!(
+        pinned,
+        vec!["acme/bar", "acme/baz"],
+        "-w keeps root requires pinned"
+    );
 
     // `-W`: full closure floats → nothing pinned.
     let w_all = PartialUpdate {

@@ -68,14 +68,12 @@ pub fn read(path: &Path) -> Result<ToolReceipt> {
 }
 
 pub fn write(path: &Path, receipt: &ToolReceipt) -> Result<()> {
-    let text = toml_edit::ser::to_string_pretty(receipt)
-        .wrap_err("serialising tool receipt")?;
+    let text = toml_edit::ser::to_string_pretty(receipt).wrap_err("serialising tool receipt")?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .wrap_err_with(|| format!("creating {}", parent.display()))?;
     }
-    std::fs::write(path, text)
-        .wrap_err_with(|| format!("writing tool receipt {}", path.display()))
+    std::fs::write(path, text).wrap_err_with(|| format!("writing tool receipt {}", path.display()))
 }
 
 /// A single (old, new) PHP upgrade tuple. `bougie php upgrade` accumulates
@@ -130,9 +128,10 @@ pub fn refresh_php_pin(
                 continue;
             }
         };
-        let Some(upgrade) = upgrades.iter().find(|u| {
-            u.from_version == receipt.php_version && u.flavor == receipt.php_flavor
-        }) else {
+        let Some(upgrade) = upgrades
+            .iter()
+            .find(|u| u.from_version == receipt.php_version && u.flavor == receipt.php_flavor)
+        else {
             continue;
         };
         receipt.php_version = upgrade.to_version.clone();
@@ -156,7 +155,9 @@ mod tests {
             php_flavor: "nts".into(),
             composer_version: "2.8.12".into(),
             with: vec![],
-            php_resolved_path: PathBuf::from("/home/u/.local/share/bougie/installs/8.3.12-nts/bin/php"),
+            php_resolved_path: PathBuf::from(
+                "/home/u/.local/share/bougie/installs/8.3.12-nts/bin/php",
+            ),
             entrypoints: vec![ToolEntrypoint {
                 name: "phpstan".into(),
                 install_path: PathBuf::from("/home/u/.local/bin/phpstan"),

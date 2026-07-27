@@ -55,10 +55,8 @@ pub fn run(_format: OutputFormat, args: DbStatusArgs) -> Result<ExitCode> {
     }
 
     // The seed marker — when the local database last got its data.
-    let marker = super::seed::read_seed_marker(&super::seed::seed_marker_path(
-        &paths,
-        &project_root,
-    ));
+    let marker =
+        super::seed::read_seed_marker(&super::seed::seed_marker_path(&paths, &project_root));
     match &marker {
         Some(m) => println!(
             "  seeded: {} (from {})",

@@ -114,7 +114,11 @@ fn write_markdown(md: &mut String, r: &DiagnoseReport) -> std::fmt::Result {
             } else {
                 String::new()
             };
-            writeln!(md, "- {}{times} [{}] `{}` — {}", f.when, f.category, f.command, f.error)?;
+            writeln!(
+                md,
+                "- {}{times} [{}] `{}` — {}",
+                f.when, f.category, f.command, f.error
+            )?;
         }
     }
 

@@ -51,7 +51,11 @@ mod tests {
     use composer_semver::Constraint;
 
     fn pv(major: u32, minor: Option<u32>, patch: Option<u32>) -> VersionLike {
-        VersionLike::Version(PartialVersion { major, minor, patch })
+        VersionLike::Version(PartialVersion {
+            major,
+            minor,
+            patch,
+        })
     }
 
     fn con(s: &str) -> VersionLike {

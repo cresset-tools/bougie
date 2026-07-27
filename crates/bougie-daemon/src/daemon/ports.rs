@@ -46,7 +46,11 @@ pub const PORT_SCAN_SPAN: u16 = 64;
 /// it already picked this round, and so the policy is unit-testable
 /// without binding real sockets. Returns `None` when nothing in the scan
 /// window is free.
-pub fn allocate_port(default: u16, recorded: Option<u16>, is_free: impl Fn(u16) -> bool) -> Option<u16> {
+pub fn allocate_port(
+    default: u16,
+    recorded: Option<u16>,
+    is_free: impl Fn(u16) -> bool,
+) -> Option<u16> {
     if let Some(r) = recorded
         && r != 0
         && is_free(r)
@@ -236,11 +240,15 @@ mod tests {
         // gets a fresh closure so `claimed` can grow between them.
         let external = [9200u16];
         let mut claimed: Vec<u16> = Vec::new();
-        let first =
-            allocate_port(9200, None, |p| !external.contains(&p) && !claimed.contains(&p)).unwrap();
+        let first = allocate_port(9200, None, |p| {
+            !external.contains(&p) && !claimed.contains(&p)
+        })
+        .unwrap();
         claimed.push(first);
-        let second =
-            allocate_port(9200, None, |p| !external.contains(&p) && !claimed.contains(&p)).unwrap();
+        let second = allocate_port(9200, None, |p| {
+            !external.contains(&p) && !claimed.contains(&p)
+        })
+        .unwrap();
         assert_ne!(first, second);
         assert_eq!((first, second), (9201, 9202));
     }

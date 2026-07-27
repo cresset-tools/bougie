@@ -6,7 +6,7 @@
 //! returns a structured error so the daemon can surface a clear hint.
 
 use crate::daemon::tenants::{self, Tenant};
-use eyre::{eyre, Result};
+use eyre::{Result, eyre};
 use serde_json::json;
 use std::collections::HashSet;
 use std::path::Path;
@@ -63,9 +63,13 @@ pub async fn deprovision(
     };
     if purge
         && let Some(sock) = socket_path
-            && let Some(db) = target.alloc.get("db_number").and_then(serde_json::Value::as_u64) {
-                flush_db(sock, db).await?;
-            }
+        && let Some(db) = target
+            .alloc
+            .get("db_number")
+            .and_then(serde_json::Value::as_u64)
+    {
+        flush_db(sock, db).await?;
+    }
     tenants::rewrite(tenants_path, |t| t.tenant != tenant_name).await?;
     Ok(())
 }
@@ -129,7 +133,9 @@ mod tests {
     async fn first_tenant_gets_db_zero() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("tenants.json");
-        let t = provision(&path, "acme_blog", Path::new("/work/blog")).await.unwrap();
+        let t = provision(&path, "acme_blog", Path::new("/work/blog"))
+            .await
+            .unwrap();
         assert_eq!(t.alloc["db_number"], 0);
     }
 
@@ -159,9 +165,13 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("tenants.json");
         for i in 0..16 {
-            provision(&path, &format!("p{i}"), Path::new(&format!("/p/{i}"))).await.unwrap();
+            provision(&path, &format!("p{i}"), Path::new(&format!("/p/{i}")))
+                .await
+                .unwrap();
         }
-        let err = provision(&path, "overflow", Path::new("/p/over")).await.unwrap_err();
+        let err = provision(&path, "overflow", Path::new("/p/over"))
+            .await
+            .unwrap_err();
         let msg = format!("{err:#}");
         assert!(msg.contains("16"));
         assert!(msg.contains("--purge"), "{msg}");

@@ -11,7 +11,7 @@
 //! URL defaults to public Packagist and is overridable for mirrors /
 //! the air-gapped appliance / tests via `BOUGIE_AUDIT_BASE_URL`.
 
-use bougie_errors::{error_chain, BougieError};
+use bougie_errors::{BougieError, error_chain};
 use eyre::{Result, WrapErr};
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -65,7 +65,10 @@ pub fn fetch_advisories(
     if package_names.is_empty() {
         return Ok(BTreeMap::new());
     }
-    let url = format!("{}/api/security-advisories/", base_url.trim_end_matches('/'));
+    let url = format!(
+        "{}/api/security-advisories/",
+        base_url.trim_end_matches('/')
+    );
     // `application/x-www-form-urlencoded` body: `packages[]=<name>` per
     // package. Built by hand because the resolver's reqwest is compiled
     // without the form-encoding feature; composer package names only

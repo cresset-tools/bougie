@@ -15,7 +15,7 @@
 
 use crate::daemon::tenants::{self, Tenant};
 use bougie_paths::Paths;
-use eyre::{eyre, Result, WrapErr};
+use eyre::{Result, WrapErr, eyre};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -52,7 +52,12 @@ pub async fn pre_start(paths: &Paths) -> Result<()> {
 
 /// Provision a tenant. Idempotent — repeated calls for the same
 /// project re-use the same hostname + existing `[[host]]` entry.
-pub async fn provision(paths: &Paths, tenants_path: &Path, tenant_name: &str, project: &Path) -> Result<Tenant> {
+pub async fn provision(
+    paths: &Paths,
+    tenants_path: &Path,
+    tenant_name: &str,
+    project: &Path,
+) -> Result<Tenant> {
     let existing = tenants::load_all(tenants_path).await?;
     if let Some(existing_t) = existing.iter().find(|t| t.project == project) {
         // Make sure the server has the entry in memory too — a
@@ -105,7 +110,11 @@ pub async fn deprovision(
     let hostname = target
         .alloc
         .get("hostname")
-        .and_then(|v| v.as_str()).map_or_else(|| derive_hostname(tenant_name), std::string::ToString::to_string);
+        .and_then(|v| v.as_str())
+        .map_or_else(
+            || derive_hostname(tenant_name),
+            std::string::ToString::to_string,
+        );
 
     // Best-effort: server.toml might already have lost the block,
     // and the running server might be down. Either way we still
@@ -118,11 +127,12 @@ pub async fn deprovision(
 
     if purge
         && let Some(rt) = project_runtime_dir(&target.project)
-            && tokio::fs::try_exists(&rt).await.unwrap_or(false) {
-                tokio::fs::remove_dir_all(&rt)
-                    .await
-                    .wrap_err_with(|| format!("removing {}", rt.display()))?;
-            }
+        && tokio::fs::try_exists(&rt).await.unwrap_or(false)
+    {
+        tokio::fs::remove_dir_all(&rt)
+            .await
+            .wrap_err_with(|| format!("removing {}", rt.display()))?;
+    }
 
     tenants::rewrite(tenants_path, |t| t.tenant != tenant_name).await?;
     Ok(())
@@ -132,7 +142,9 @@ pub async fn deprovision(
 
 /// Resolve `<service_conf>/server.toml`.
 pub fn server_toml_path(paths: &Paths) -> PathBuf {
-    paths.service_conf("server", crate::daemon::catalog::default_version("server")).join("server.toml")
+    paths
+        .service_conf("server", crate::daemon::catalog::default_version("server"))
+        .join("server.toml")
 }
 
 /// `bougie service add server` records the tenant name as
@@ -148,9 +160,16 @@ fn derive_hostname(tenant_name: &str) -> String {
 /// Ensure `[[host]]` exists for the given hostname/project. Wraps
 /// `commands::server::config::add_host` so the daemon writes
 /// through the same atomic-temp-then-rename code path the CLI uses.
-async fn ensure_host_block(paths: &Paths, hostname: &str, project: &Path, root: &str) -> Result<()> {
+async fn ensure_host_block(
+    paths: &Paths,
+    hostname: &str,
+    project: &Path,
+    root: &str,
+) -> Result<()> {
     let cfg = server_toml_path(paths);
-    let parent = cfg.parent().ok_or_else(|| eyre!("config path has no parent"))?;
+    let parent = cfg
+        .parent()
+        .ok_or_else(|| eyre!("config path has no parent"))?;
     tokio::fs::create_dir_all(parent)
         .await
         .wrap_err_with(|| format!("creating {}", parent.display()))?;
@@ -159,7 +178,11 @@ async fn ensure_host_block(paths: &Paths, hostname: &str, project: &Path, root: 
     // returns `Ok(None)` when the hostname is already present —
     // idempotent by design.
     let added = bougie_server::server::config::add_host_with_rewrites(
-        &cfg, hostname, project, Some(root), &rewrites,
+        &cfg,
+        hostname,
+        project,
+        Some(root),
+        &rewrites,
     )
     .wrap_err_with(|| format!("adding host {hostname} to {}", cfg.display()))?;
     // Existing host: refresh its rewrites in case it was provisioned by
@@ -317,16 +340,22 @@ pub async fn ping_reload_config(_paths: &Paths) -> Result<()> {
 /// path through `ServerPaths::from_env`, which the daemon would
 /// otherwise have to instantiate just to derive a string).
 fn control_socket_path() -> PathBuf {
-    let xdg = std::env::var_os("XDG_RUNTIME_DIR").map_or_else(|| {
+    let xdg = std::env::var_os("XDG_RUNTIME_DIR").map_or_else(
+        || {
             #[cfg(unix)]
             {
-                PathBuf::from(format!("/tmp/bougie-server-{}", rustix::process::geteuid().as_raw()))
+                PathBuf::from(format!(
+                    "/tmp/bougie-server-{}",
+                    rustix::process::geteuid().as_raw()
+                ))
             }
             #[cfg(not(unix))]
             {
                 PathBuf::from("/tmp/bougie-server")
             }
-        }, PathBuf::from);
+        },
+        PathBuf::from,
+    );
     xdg.join("bougie").join("server").join("control.sock")
 }
 
@@ -348,9 +377,7 @@ fn project_runtime_dir(project: &Path) -> Option<PathBuf> {
         }
         out
     };
-    let parent = control_socket_path()
-        .parent()?
-        .to_path_buf();
+    let parent = control_socket_path().parent()?.to_path_buf();
     Some(parent.join(hash))
 }
 
@@ -406,7 +433,10 @@ mod tests {
         let msg = format!("{err:#}");
         assert!(msg.contains("pub"));
         assert!(msg.contains("public"));
-        assert!(msg.contains("bougie.toml") || msg.contains("composer.json"), "{msg}");
+        assert!(
+            msg.contains("bougie.toml") || msg.contains("composer.json"),
+            "{msg}"
+        );
     }
 
     #[test]
@@ -414,11 +444,7 @@ mod tests {
         let td = tempfile::TempDir::new().unwrap();
         std::fs::create_dir_all(td.path().join("pub")).unwrap();
         std::fs::create_dir_all(td.path().join("web")).unwrap();
-        std::fs::write(
-            td.path().join("bougie.toml"),
-            "[server]\nroot = \"web\"\n",
-        )
-        .unwrap();
+        std::fs::write(td.path().join("bougie.toml"), "[server]\nroot = \"web\"\n").unwrap();
         assert_eq!(resolve_web_root(td.path()).unwrap(), "web");
     }
 
@@ -436,11 +462,7 @@ mod tests {
     #[test]
     fn resolve_root_rejects_empty_explicit_value() {
         let td = tempfile::TempDir::new().unwrap();
-        std::fs::write(
-            td.path().join("bougie.toml"),
-            "[server]\nroot = \"\"\n",
-        )
-        .unwrap();
+        std::fs::write(td.path().join("bougie.toml"), "[server]\nroot = \"\"\n").unwrap();
         let err = resolve_web_root(td.path()).unwrap_err();
         assert!(format!("{err:#}").contains("empty"));
     }

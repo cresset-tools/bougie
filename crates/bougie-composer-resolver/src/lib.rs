@@ -29,17 +29,17 @@ fn elapsed_ms(d: std::time::Duration) -> u64 {
     u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
 }
 
+pub use audit::{Advisory, fetch_advisories};
 pub use install::{
-    fetch_and_extract_dists, install_from_lock, install_from_lock_with_patches, DistOutcome,
-    DistRequest, InstallOptions, InstallSummary, ScriptHooks,
+    DistOutcome, DistRequest, InstallOptions, InstallSummary, ScriptHooks, fetch_and_extract_dists,
+    install_from_lock, install_from_lock_with_patches,
 };
-pub use audit::{fetch_advisories, Advisory};
 pub use platform::{PlatformEnv, PlatformIgnore};
 pub use query::{
-    funding, latest_versions, licenses, DependencyGraph, Edge, Node, RootNode, Section,
+    DependencyGraph, Edge, Node, RootNode, Section, funding, latest_versions, licenses,
 };
 pub use update::{
-    dry_run_update, dry_run_update_partial, resolve_for_lockfile, resolve_for_lockfile_partial,
-    unsupported_repo_warnings, DryRunOptions, LockfileSolveOutcome, PartialUpdate,
-    ResolutionStrategy, ResolvedPackage, UpdateSummary,
+    DryRunOptions, LockfileSolveOutcome, PartialUpdate, ResolutionStrategy, ResolvedPackage,
+    UpdateSummary, dry_run_update, dry_run_update_partial, resolve_for_lockfile,
+    resolve_for_lockfile_partial, unsupported_repo_warnings,
 };

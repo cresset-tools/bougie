@@ -11,9 +11,12 @@
 //! starts treating opensearch as a multi-process catalog entry that
 //! some users would run alongside a security-plugin install.
 
-use crate::daemon::{store_layout, tenants::{self, Tenant}};
+use crate::daemon::{
+    store_layout,
+    tenants::{self, Tenant},
+};
 use bougie_paths::Paths;
-use eyre::{eyre, Result, WrapErr};
+use eyre::{Result, WrapErr, eyre};
 use std::path::Path;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -53,8 +56,14 @@ const PROVISION_READY_TIMEOUT: Duration = Duration::from_secs(30);
 /// 3. **`<datadir>/data`** — for `path.data` and the JVM's
 ///    `-XX:HeapDumpPath=data` (also relative).
 pub async fn pre_start(paths: &Paths) -> Result<()> {
-    let data = paths.service_data("opensearch", crate::daemon::catalog::default_version("opensearch"));
-    let conf = paths.service_conf("opensearch", crate::daemon::catalog::default_version("opensearch"));
+    let data = paths.service_data(
+        "opensearch",
+        crate::daemon::catalog::default_version("opensearch"),
+    );
+    let conf = paths.service_conf(
+        "opensearch",
+        crate::daemon::catalog::default_version("opensearch"),
+    );
     for sub in ["tmp", "logs", "data"] {
         let p = data.join(sub);
         tokio::fs::create_dir_all(&p)
@@ -73,7 +82,10 @@ pub async fn pre_start(paths: &Paths) -> Result<()> {
     let basedir = store_layout::basedir(paths, entry, entry.version)
         .wrap_err("resolving opensearch basedir")?;
     let src_config = basedir.join("config");
-    if !tokio::fs::metadata(&src_config).await.is_ok_and(|m| m.is_dir()) {
+    if !tokio::fs::metadata(&src_config)
+        .await
+        .is_ok_and(|m| m.is_dir())
+    {
         return Err(eyre!(
             "opensearch tarball missing config/ at {}",
             src_config.display()
@@ -147,7 +159,10 @@ async fn rewrite_jvm_options(path: &Path, data_dir: &Path) -> Result<()> {
         if looks_active {
             let replaced = line
                 .replace("logs/", &format!("{}/", logs.display()))
-                .replace("HeapDumpPath=data", &format!("HeapDumpPath={}", data_sub.display()));
+                .replace(
+                    "HeapDumpPath=data",
+                    &format!("HeapDumpPath={}", data_sub.display()),
+                );
             out.push_str(&replaced);
         } else {
             out.push_str(line);
@@ -162,7 +177,12 @@ async fn rewrite_jvm_options(path: &Path, data_dir: &Path) -> Result<()> {
 
 /// Provision a tenant. Idempotent — repeated calls for the same
 /// project re-use the existing index template.
-pub async fn provision(port: u16, tenants_path: &Path, tenant_name: &str, project: &Path) -> Result<Tenant> {
+pub async fn provision(
+    port: u16,
+    tenants_path: &Path,
+    tenant_name: &str,
+    project: &Path,
+) -> Result<Tenant> {
     let existing = tenants::load_all(tenants_path).await?;
     if let Some(existing_t) = existing.iter().find(|t| t.project == project) {
         return Ok(existing_t.clone());
@@ -185,9 +205,10 @@ pub async fn provision(port: u16, tenants_path: &Path, tenant_name: &str, projec
         .wrap_err_with(|| format!("provisioning opensearch tenant `{tenant_name}`"))?;
 
     let mut tenant = Tenant::new(tenant_name, project.to_path_buf());
-    tenant
-        .alloc
-        .insert("index_prefix".into(), serde_json::json!(format!("{tenant_name}-")));
+    tenant.alloc.insert(
+        "index_prefix".into(),
+        serde_json::json!(format!("{tenant_name}-")),
+    );
     tenants::append(tenants_path, &tenant).await?;
     Ok(tenant)
 }
@@ -196,7 +217,12 @@ pub async fn provision(port: u16, tenants_path: &Path, tenant_name: &str, projec
 /// and every index that matched `<tenant>-*`. Without `purge`, only
 /// the local ledger entry goes away; opensearch state survives a
 /// `service down` so a later `up` re-uses it (matches redis/mariadb).
-pub async fn deprovision(port: u16, tenants_path: &Path, tenant_name: &str, purge: bool) -> Result<()> {
+pub async fn deprovision(
+    port: u16,
+    tenants_path: &Path,
+    tenant_name: &str,
+    purge: bool,
+) -> Result<()> {
     let existing = tenants::load_all(tenants_path).await?;
     let Some(_target) = existing.iter().find(|t| t.tenant == tenant_name).cloned() else {
         return Ok(());
@@ -254,8 +280,8 @@ pub(crate) async fn health(port: u16) -> Result<()> {
         .text()
         .await
         .map_err(|e| eyre!("reading cluster health body: {e}"))?;
-    let body: serde_json::Value = serde_json::from_str(&text)
-        .map_err(|e| eyre!("parsing cluster health JSON: {e}"))?;
+    let body: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| eyre!("parsing cluster health JSON: {e}"))?;
     match body.get("status").and_then(serde_json::Value::as_str) {
         Some("red") => Err(eyre!("opensearch cluster status is red")),
         Some(_) => Ok(()),
@@ -346,9 +372,10 @@ async fn wait_for_cluster(port: u16, timeout: Duration) -> Result<()> {
     let url = format!("http://127.0.0.1:{port}/");
     loop {
         if let Ok(r) = client.get(&url).send().await
-            && r.status().is_success() {
-                return Ok(());
-            }
+            && r.status().is_success()
+        {
+            return Ok(());
+        }
         if Instant::now() >= deadline {
             return Err(eyre!(
                 "opensearch HTTP root never returned 200 within {timeout:?}"
@@ -366,7 +393,8 @@ async fn wait_for_cluster(port: u16, timeout: Duration) -> Result<()> {
 fn is_safe_template_name(s: &str) -> bool {
     !s.is_empty()
         && s.len() <= 128
-        && s.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+        && s.chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
 }
 
 #[cfg(test)]
