@@ -47,26 +47,53 @@ pub struct LockResult {
     /// Path written (omitted for dry-run / no-op).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lock_path: Option<PathBuf>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub toolchain: Option<ToolchainLockResult>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ToolchainLockResult {
+    pub dry_run: bool,
+    pub php_version: String,
+    pub extensions: usize,
+    pub services: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lock_path: Option<PathBuf>,
 }
 
 impl Render for LockResult {
     fn render_text(&self, w: &mut dyn Write) -> io::Result<()> {
         if self.already_in_sync {
-            return writeln!(w, "composer.lock is already in sync with composer.json");
-        }
-        let count = self
-            .packages
-            .map_or_else(|| "packages".to_string(), |n| format!("{n} packages"));
-        if !self.changed.is_empty() {
-            writeln!(w, "re-resolving: {}", self.changed.join(", "))?;
-        }
-        if self.dry_run {
-            writeln!(w, "lock --dry-run: would write composer.lock ({count})")
+            writeln!(w, "composer.lock is already in sync with composer.json")?;
         } else if let Some(p) = &self.lock_path {
-            writeln!(w, "wrote {} ({count})", p.display())
-        } else {
-            Ok(())
+            let count = self
+                .packages
+                .map_or_else(|| "packages".to_string(), |n| format!("{n} packages"));
+            if !self.changed.is_empty() {
+                writeln!(w, "re-resolving: {}", self.changed.join(", "))?;
+            }
+            writeln!(w, "wrote {} ({count})", p.display())?;
+        } else if self.dry_run {
+            let count = self
+                .packages
+                .map_or_else(|| "packages".to_string(), |n| format!("{n} packages"));
+            if !self.changed.is_empty() {
+                writeln!(w, "re-resolving: {}", self.changed.join(", "))?;
+            }
+            writeln!(w, "lock --dry-run: would write composer.lock ({count})")?;
         }
+        if let Some(toolchain) = &self.toolchain {
+            let summary = format!(
+                "PHP {}, {} extensions, {} services",
+                toolchain.php_version, toolchain.extensions, toolchain.services
+            );
+            if toolchain.dry_run {
+                writeln!(w, "lock --dry-run: would write bougie.lock ({summary})")?;
+            } else if let Some(path) = &toolchain.lock_path {
+                writeln!(w, "wrote {} ({summary})", path.display())?;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -78,6 +105,7 @@ pub fn run(
     format: OutputFormat,
     working_dir: Option<PathBuf>,
     dry_run: bool,
+    with_platform: bool,
     resolution: ResolutionStrategy,
     ignore_platform: PlatformIgnore,
 ) -> Result<ExitCode> {
@@ -101,6 +129,34 @@ pub fn run(
 
     // (1) No lock yet → full resolve writes a fresh one.
     if !lock_path.is_file() {
+        if dry_run {
+            let summary = dry_run_update_partial(
+                &paths,
+                &project_root,
+                Repo::packagist(),
+                DryRunOptions {
+                    no_dev: false,
+                    resolution,
+                },
+                None,
+                &ignore_platform,
+            )?;
+            return finish_with_platform(
+                format,
+                LockResult {
+                    schema_version: 1,
+                    project_root,
+                    already_in_sync: false,
+                    dry_run: true,
+                    changed: Vec::new(),
+                    packages: Some(summary.packages.len()),
+                    lock_path: None,
+                    toolchain: None,
+                },
+                with_platform,
+                &paths,
+            );
+        }
         let (path, outcome) = super::composer_update::resolve_and_write_lock_partial(
             &paths,
             &project_root,
@@ -108,9 +164,9 @@ pub fn run(
             resolution,
             &ignore_platform,
         )?;
-        return finish(
+        return finish_with_platform(
             format,
-            &LockResult {
+            LockResult {
                 schema_version: 1,
                 project_root,
                 already_in_sync: false,
@@ -118,7 +174,10 @@ pub fn run(
                 changed: Vec::new(),
                 packages: Some(outcome.packages.len() + outcome.packages_dev.len()),
                 lock_path: Some(path),
+                toolchain: None,
             },
+            with_platform,
+            &paths,
         );
     }
 
@@ -129,9 +188,9 @@ pub fn run(
     let content_hash = lockfile::content_hash(&composer_json_bytes)
         .wrap_err("computing composer.json content-hash")?;
     if lock.content_hash.as_deref() == Some(content_hash.as_str()) {
-        return finish(
+        return finish_with_platform(
             format,
-            &LockResult {
+            LockResult {
                 schema_version: 1,
                 project_root,
                 already_in_sync: true,
@@ -139,7 +198,10 @@ pub fn run(
                 changed: Vec::new(),
                 packages: Some(lock.all_packages().count()),
                 lock_path: None,
+                toolchain: None,
             },
+            with_platform,
+            &paths,
         );
     }
 
@@ -169,9 +231,9 @@ pub fn run(
             Some(&partial),
             &ignore_platform,
         )?;
-        return finish(
+        return finish_with_platform(
             format,
-            &LockResult {
+            LockResult {
                 schema_version: 1,
                 project_root,
                 already_in_sync: false,
@@ -179,7 +241,10 @@ pub fn run(
                 changed,
                 packages: Some(summary.packages.len()),
                 lock_path: None,
+                toolchain: None,
             },
+            with_platform,
+            &paths,
         );
     }
 
@@ -190,9 +255,9 @@ pub fn run(
         resolution,
         &ignore_platform,
     )?;
-    finish(
+    finish_with_platform(
         format,
-        &LockResult {
+        LockResult {
             schema_version: 1,
             project_root,
             already_in_sync: false,
@@ -200,7 +265,10 @@ pub fn run(
             changed,
             packages: Some(outcome.packages.len() + outcome.packages_dev.len()),
             lock_path: Some(path),
+            toolchain: None,
         },
+        with_platform,
+        &paths,
     )
 }
 
@@ -266,4 +334,28 @@ fn finish(format: OutputFormat, result: &LockResult) -> Result<ExitCode> {
     });
     emit(format, result)?;
     Ok(ExitCode::SUCCESS)
+}
+
+fn finish_with_platform(
+    format: OutputFormat,
+    mut result: LockResult,
+    with_platform: bool,
+    paths: &Paths,
+) -> Result<ExitCode> {
+    if with_platform {
+        let lock = super::platform_lock::resolve(&result.project_root, paths)?;
+        let lock_path = if result.dry_run {
+            None
+        } else {
+            Some(lock.write(&result.project_root)?)
+        };
+        result.toolchain = Some(ToolchainLockResult {
+            dry_run: result.dry_run,
+            php_version: lock.php.version.clone(),
+            extensions: lock.extensions.len(),
+            services: lock.services.len(),
+            lock_path,
+        });
+    }
+    finish(format, &result)
 }

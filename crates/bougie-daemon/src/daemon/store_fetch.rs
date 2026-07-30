@@ -78,6 +78,12 @@ pub struct ResolvedTool {
     pub install_path: String,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct ExpectedTool {
+    pub manifest_sha256: String,
+    pub blob_sha256: String,
+}
+
 const LOCK_TIMEOUT: Duration = Duration::from_mins(1);
 
 /// Make sure the service tarball named by `entry.tarball` is present
@@ -92,6 +98,7 @@ pub async fn ensure_tarball(
     paths: &Paths,
     entry: &'static CatalogEntry,
     version: String,
+    expected: Option<ExpectedTool>,
     bar: Option<Arc<DownloadBar>>,
 ) -> Result<Vec<ResolvedTool>> {
     // The `server` catalog entry reuses the bougie binary itself —
@@ -100,19 +107,22 @@ pub async fn ensure_tarball(
     if entry.tarball.is_empty() {
         return Ok(Vec::new());
     }
-    if store_layout::basedir(paths, entry, &version).is_ok() {
+    if expected.is_none() && store_layout::basedir(paths, entry, &version).is_ok() {
         return Ok(Vec::new());
     }
     let paths = paths.clone();
-    tokio::task::spawn_blocking(move || fetch_blocking(&paths, entry, &version, bar.as_deref()))
-        .await
-        .wrap_err("joining tarball-fetch task")?
+    tokio::task::spawn_blocking(move || {
+        fetch_blocking(&paths, entry, &version, expected.as_ref(), bar.as_deref())
+    })
+    .await
+    .wrap_err("joining tarball-fetch task")?
 }
 
 fn fetch_blocking(
     paths: &Paths,
     entry: &CatalogEntry,
     version: &str,
+    expected: Option<&ExpectedTool>,
     external_bar: Option<&DownloadBar>,
 ) -> Result<Vec<ResolvedTool>> {
     let target = Triple::detect()?.to_string();
@@ -124,7 +134,7 @@ fn fetch_blocking(
     // could have populated the store while we were queued behind
     // it, in which case there's nothing left to do and skipping the
     // network round-trip is the polite choice.
-    if store_layout::basedir(paths, entry, version).is_ok() {
+    if expected.is_none() && store_layout::basedir(paths, entry, version).is_ok() {
         return Ok(Vec::new());
     }
 
@@ -134,7 +144,16 @@ fn fetch_blocking(
     let fetched = fetch_root(&client, &host, &cache_root, build_verifier)?;
 
     let section = fetch_tool_section(&client, &fetched, &host, &cache_root, &target, entry.name)?;
-    let artifact = pick_pinned_artifact(&section.artifacts, version).ok_or_else(|| {
+    let artifact = if expected.is_some() {
+        section
+            .artifacts
+            .iter()
+            .filter(|artifact| artifact.version == version)
+            .max_by_key(|artifact| artifact.frozen)
+    } else {
+        pick_pinned_artifact(&section.artifacts, version)
+    }
+    .ok_or_else(|| {
         let published: Vec<&str> = section
             .artifacts
             .iter()
@@ -155,6 +174,13 @@ fn fetch_blocking(
             },
         )
     })?;
+    if artifact.yanked {
+        tracing::warn!(
+            service = entry.name,
+            version,
+            "bougie.lock selects a yanked service artifact"
+        );
+    }
 
     let manifest = fetch_manifest(
         &client,
@@ -169,6 +195,27 @@ fn fetch_blocking(
     manifest
         .validate()
         .wrap_err_with(|| format!("validating manifest for {}", manifest.tag))?;
+    if let Some(expected) = expected {
+        if artifact.manifest.sha256 != expected.manifest_sha256 {
+            return Err(BougieError::ManifestHashMismatch {
+                url: artifact.manifest.path.clone(),
+                expected: expected.manifest_sha256.clone(),
+                actual: artifact.manifest.sha256.clone(),
+            }
+            .into());
+        }
+        if manifest.blob.sha256 != expected.blob_sha256 {
+            return Err(BougieError::BlobHashMismatch {
+                url: manifest.blob.url.clone(),
+                expected: expected.blob_sha256.clone(),
+                actual: manifest.blob.sha256.clone(),
+            }
+            .into());
+        }
+        if store_layout::basedir(paths, entry, version).is_ok() {
+            return Ok(Vec::new());
+        }
+    }
 
     // Surface any drift between the compiled-in catalog's runtime_deps
     // and the upstream manifest's requires_tools. Non-fatal — the

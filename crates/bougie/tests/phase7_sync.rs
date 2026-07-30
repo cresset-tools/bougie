@@ -44,9 +44,33 @@ fn build_php_tarball() -> (Vec<u8>, String) {
     (zst, h)
 }
 
+fn build_extension_tarball() -> (Vec<u8>, String) {
+    let mut tar_buf = Vec::new();
+    {
+        let mut builder = tar::Builder::new(&mut tar_buf);
+        let body = b"fake extension";
+        let mut header = tar::Header::new_gnu();
+        header.set_path("lib/extensions/redis.so").unwrap();
+        header.set_size(body.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        builder.append(&header, &body[..]).unwrap();
+        builder.finish().unwrap();
+    }
+    let zst = zstd::stream::encode_all(&tar_buf[..], 0).unwrap();
+    let hash = hex(&zst);
+    (zst, hash)
+}
+
 struct Fixture {
     server: MockServer,
     pub_pem: String,
+    snapshot: String,
+    target: String,
+    manifest_sha: String,
+    blob_sha: String,
+    redis_manifest_sha: String,
+    redis_blob_sha: String,
 }
 
 async fn build_fixture() -> Fixture {
@@ -93,12 +117,50 @@ async fn build_fixture() -> Fixture {
     let section_bytes = serde_json::to_vec(&section_json).unwrap();
     let section_sha = hex(&section_bytes);
 
+    let (redis_blob_bytes, redis_blob_sha) = build_extension_tarball();
+    let redis_blob_url = format!("{}/blobs/{redis_blob_sha}", server.uri());
+    let redis_manifest_path_abs =
+        format!("/targets/{target}/manifests/ext/redis/6.0.0/redis-6.0.0+php83-{target}-nts.json");
+    let redis_manifest_json = serde_json::json!({
+        "schema": 1,
+        "kind": "extension",
+        "name": "redis",
+        "tag": format!("redis-6.0.0+php83-{target}-nts"),
+        "version": "6.0.0",
+        "target": target,
+        "flavor": "nts",
+        "abi": {"php":"8.3","zend_module_api_no":"20230831","zend_extension_api_no":"420230831"},
+        "libc": {"family":"gnu","min":"2.17"},
+        "blob": {"url": redis_blob_url, "sha256": redis_blob_sha},
+        "extension": {"path":"lib/extensions/redis.so","sha256":"unused"},
+        "closure": []
+    });
+    let redis_manifest_bytes = serde_json::to_vec(&redis_manifest_json).unwrap();
+    let redis_manifest_sha = hex(&redis_manifest_bytes);
+    let redis_section_json = serde_json::json!({
+        "schema": 1, "name": "redis", "kind": "extension",
+        "target": target,
+        "artifacts": [{
+            "tag": format!("redis-6.0.0+php83-{target}-nts"),
+            "version": "6.0.0",
+            "flavor": "nts",
+            "php_minor": "8.3",
+            "manifest": {"path": redis_manifest_path_abs, "sha256": redis_manifest_sha},
+            "yanked": false, "frozen": false
+        }]
+    });
+    let redis_section_bytes = serde_json::to_vec(&redis_section_json).unwrap();
+    let redis_section_sha = hex(&redis_section_bytes);
+
     let publish_version = "20260509T000000Z";
     let root = serde_json::json!({
         "schema": 1, "version": publish_version, "generated": "2026-05-09T00:00:00Z",
         "targets": {
             target.clone(): {
-                "sections": {"interpreter/php": {"sha256": section_sha, "size": section_bytes.len()}}
+                "sections": {
+                    "interpreter/php": {"sha256": section_sha, "size": section_bytes.len()},
+                    "extension/redis": {"sha256": redis_section_sha, "size": redis_section_bytes.len()}
+                }
             }
         }
     });
@@ -110,6 +172,9 @@ async fn build_fixture() -> Fixture {
         format!("/versions/{publish_version}/targets/{target}/sections/interpreter/php.json");
     let manifest_path = manifest_path_abs.clone();
     let blob_path = format!("/blobs/{blob_sha}");
+    let redis_section_path =
+        format!("/versions/{publish_version}/targets/{target}/sections/extension/redis.json");
+    let redis_blob_path = format!("/blobs/{redis_blob_sha}");
 
     Mock::given(method("GET"))
         .and(path("/index.json"))
@@ -140,8 +205,32 @@ async fn build_fixture() -> Fixture {
         .respond_with(ResponseTemplate::new(200).set_body_bytes(blob_bytes))
         .mount(&server)
         .await;
+    Mock::given(method("GET"))
+        .and(path(redis_section_path))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(redis_section_bytes))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(redis_manifest_path_abs))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(redis_manifest_bytes))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(redis_blob_path))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(redis_blob_bytes))
+        .mount(&server)
+        .await;
 
-    Fixture { server, pub_pem }
+    Fixture {
+        server,
+        pub_pem,
+        snapshot: publish_version.into(),
+        target,
+        manifest_sha,
+        blob_sha,
+        redis_manifest_sha,
+        redis_blob_sha,
+    }
 }
 
 fn write_trust_root(env: &TestEnv, pem: &str) -> std::path::PathBuf {
@@ -189,6 +278,233 @@ fn sync_installs_php_and_writes_state() {
     // native Composer subcommands rather than a phar.
     let composer_link = proj.path().join("vendor/bougie/bin/composer");
     assert!(composer_link.symlink_metadata().is_ok());
+}
+
+fn disable_baseline(project: &std::path::Path) {
+    let mut config = String::from("[extensions]\n");
+    for name in bougie_installer::baseline::BASELINE_EXTENSIONS {
+        use std::fmt::Write as _;
+        let _ = writeln!(config, "{name} = false");
+    }
+    std::fs::write(project.join("bougie.toml"), config).unwrap();
+}
+
+fn write_toolchain_lock(project: &std::path::Path, fx: &Fixture, blob_sha: String) {
+    use bougie_lock::{ArtifactDigest, PhpPin, TargetArtifacts, ToolchainLock};
+    use std::collections::BTreeMap;
+    ToolchainLock {
+        version: bougie_lock::FORMAT_VERSION,
+        snapshot: fx.snapshot.clone(),
+        php: PhpPin {
+            constraint: "8.3.12".into(),
+            version: "8.3.12".into(),
+            flavor: "nts".into(),
+        },
+        extensions: BTreeMap::new(),
+        services: BTreeMap::new(),
+        targets: BTreeMap::from([(
+            fx.target.clone(),
+            TargetArtifacts {
+                php: ArtifactDigest {
+                    manifest_sha256: fx.manifest_sha.clone(),
+                    blob_sha256: blob_sha,
+                },
+                extensions: BTreeMap::new(),
+                services: BTreeMap::new(),
+            },
+        )]),
+    }
+    .write(project)
+    .unwrap();
+}
+
+#[test]
+fn sync_installs_php_from_fresh_toolchain_lock() {
+    let runtime = rt();
+    let fx = runtime.block_on(build_fixture());
+    let env = TestEnv::new();
+    let trust = write_trust_root(&env, &fx.pub_pem);
+    let proj = tempfile::TempDir::new().unwrap();
+    std::fs::write(
+        proj.path().join("composer.json"),
+        r#"{"require":{"php":"8.3.12"}}"#,
+    )
+    .unwrap();
+    disable_baseline(proj.path());
+    write_toolchain_lock(proj.path(), &fx, fx.blob_sha.clone());
+
+    env.bougie()
+        .current_dir(proj.path())
+        .env("BOUGIE_INDEX_URL", fx.server.uri())
+        .env("BOUGIE_TRUST_ROOT_PATH", &trust)
+        .arg("sync")
+        .assert()
+        .success();
+
+    assert_eq!(
+        std::fs::read_to_string(proj.path().join("vendor/bougie/state/resolved"))
+            .unwrap()
+            .trim(),
+        "8.3.12-nts"
+    );
+
+    let requests_before = runtime
+        .block_on(fx.server.received_requests())
+        .unwrap()
+        .len();
+    std::fs::remove_dir_all(proj.path().join("vendor")).unwrap();
+    env.bougie()
+        .current_dir(proj.path())
+        .env("BOUGIE_INDEX_URL", fx.server.uri())
+        .env("BOUGIE_TRUST_ROOT_PATH", &trust)
+        .args(["sync", "--offline"])
+        .assert()
+        .success();
+    let requests_after = runtime
+        .block_on(fx.server.received_requests())
+        .unwrap()
+        .len();
+    assert_eq!(
+        requests_after, requests_before,
+        "locked offline sync must use the verified index cache"
+    );
+}
+
+#[test]
+fn sync_rejects_blob_digest_drift_from_toolchain_lock() {
+    let runtime = rt();
+    let fx = runtime.block_on(build_fixture());
+    let env = TestEnv::new();
+    let trust = write_trust_root(&env, &fx.pub_pem);
+    let proj = tempfile::TempDir::new().unwrap();
+    std::fs::write(
+        proj.path().join("composer.json"),
+        r#"{"require":{"php":"8.3.12"}}"#,
+    )
+    .unwrap();
+    disable_baseline(proj.path());
+    write_toolchain_lock(proj.path(), &fx, "0".repeat(64));
+
+    env.bougie()
+        .current_dir(proj.path())
+        .env("BOUGIE_INDEX_URL", fx.server.uri())
+        .env("BOUGIE_TRUST_ROOT_PATH", &trust)
+        .arg("sync")
+        .assert()
+        .failure()
+        .stderr(contains("blob sha256 mismatch"));
+    assert!(!proj.path().join("vendor/bougie/state/resolved").exists());
+}
+
+#[test]
+fn stale_toolchain_lock_warns_and_falls_back_to_floating_resolution() {
+    let runtime = rt();
+    let fx = runtime.block_on(build_fixture());
+    let env = TestEnv::new();
+    let trust = write_trust_root(&env, &fx.pub_pem);
+    let proj = tempfile::TempDir::new().unwrap();
+    std::fs::write(
+        proj.path().join("composer.json"),
+        r#"{"require":{"php":"^8.3"}}"#,
+    )
+    .unwrap();
+    disable_baseline(proj.path());
+    write_toolchain_lock(proj.path(), &fx, fx.blob_sha.clone());
+
+    env.bougie()
+        .current_dir(proj.path())
+        .env("BOUGIE_INDEX_URL", fx.server.uri())
+        .env("BOUGIE_TRUST_ROOT_PATH", &trust)
+        .arg("sync")
+        .assert()
+        .success()
+        .stderr(contains("bougie.lock is stale: php constraint changed"));
+}
+
+#[test]
+fn sync_lazily_adds_missing_current_target_to_lock() {
+    let runtime = rt();
+    let fx = runtime.block_on(build_fixture());
+    let env = TestEnv::new();
+    let trust = write_trust_root(&env, &fx.pub_pem);
+    let proj = tempfile::TempDir::new().unwrap();
+    std::fs::write(
+        proj.path().join("composer.json"),
+        r#"{"require":{"php":"8.3.12"}}"#,
+    )
+    .unwrap();
+    disable_baseline(proj.path());
+    write_toolchain_lock(proj.path(), &fx, fx.blob_sha.clone());
+    let mut lock = bougie_lock::ToolchainLock::read(proj.path())
+        .unwrap()
+        .unwrap();
+    lock.targets.clear();
+    lock.write(proj.path()).unwrap();
+
+    env.bougie()
+        .current_dir(proj.path())
+        .env("BOUGIE_INDEX_URL", fx.server.uri())
+        .env("BOUGIE_TRUST_ROOT_PATH", &trust)
+        .arg("sync")
+        .assert()
+        .success()
+        .stderr(contains("added current target"));
+
+    let lock = bougie_lock::ToolchainLock::read(proj.path())
+        .unwrap()
+        .unwrap();
+    assert!(lock.targets.contains_key(&fx.target));
+}
+
+#[test]
+fn sync_installs_exact_locked_extension_with_verified_digests() {
+    let runtime = rt();
+    let fx = runtime.block_on(build_fixture());
+    let env = TestEnv::new();
+    let trust = write_trust_root(&env, &fx.pub_pem);
+    let proj = tempfile::TempDir::new().unwrap();
+    std::fs::write(
+        proj.path().join("composer.json"),
+        r#"{"require":{"php":"8.3.12","ext-redis":"6.0.0"}}"#,
+    )
+    .unwrap();
+    disable_baseline(proj.path());
+    write_toolchain_lock(proj.path(), &fx, fx.blob_sha.clone());
+    let mut lock = bougie_lock::ToolchainLock::read(proj.path())
+        .unwrap()
+        .unwrap();
+    lock.extensions.insert(
+        "redis".into(),
+        bougie_lock::ExtensionPin {
+            constraint: "6.0.0".into(),
+            version: "6.0.0".into(),
+            origin: bougie_lock::ExtensionOrigin::Declared,
+        },
+    );
+    lock.targets.get_mut(&fx.target).unwrap().extensions.insert(
+        "redis".into(),
+        bougie_lock::ArtifactDigest {
+            manifest_sha256: fx.redis_manifest_sha.clone(),
+            blob_sha256: fx.redis_blob_sha.clone(),
+        },
+    );
+    lock.write(proj.path()).unwrap();
+
+    env.bougie()
+        .current_dir(proj.path())
+        .env("BOUGIE_INDEX_URL", fx.server.uri())
+        .env("BOUGIE_TRUST_ROOT_PATH", &trust)
+        .arg("sync")
+        .assert()
+        .success();
+
+    let fragment = proj.path().join("vendor/bougie/conf.d/20-redis.ini");
+    assert!(fragment.is_file());
+    assert!(
+        std::fs::read_to_string(fragment)
+            .unwrap()
+            .contains("ext-redis-6.0.0+php83-nts-")
+    );
 }
 
 #[test]

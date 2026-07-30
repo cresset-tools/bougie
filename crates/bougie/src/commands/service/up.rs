@@ -118,6 +118,8 @@ pub fn run(format: OutputFormat, names: Vec<String>, detach: bool) -> Result<Exi
     // Default tenant: sanitized project dir basename, made unique +
     // stable against the on-disk ledgers. See `commands::tenant`.
     let paths = Paths::from_env()?;
+    let toolchain_lock = bougie_lock::ToolchainLock::read(&project_root)?;
+    let target = bougie_platform::target::Triple::detect()?.to_string();
     let default_tenant = crate::commands::tenant::derive_default_tenant(&project_root, &paths);
 
     let services_payload: Vec<Value> = selected
@@ -126,8 +128,30 @@ pub fn run(format: OutputFormat, names: Vec<String>, detach: bool) -> Result<Exi
             let tenant = pin
                 .tenant()
                 .map_or_else(|| default_tenant.clone(), str::to_owned);
-            let version = resolve_service_version(name, pin)?;
-            Ok(json!({"name": name, "version": version, "tenant": tenant}))
+            let configured_constraint = pin.version().unwrap_or("*");
+            let locked = toolchain_lock.as_ref().and_then(|lock| {
+                lock.services
+                    .get(name)
+                    .filter(|locked| locked.constraint == configured_constraint)
+                    .map(|locked| (lock, locked))
+            });
+            let version = if let Some((_, locked)) = locked {
+                locked.version.clone()
+            } else {
+                resolve_service_version(name, pin)?
+            };
+            let digest = locked.and_then(|(lock, _)| {
+                lock.targets
+                    .get(&target)
+                    .and_then(|artifacts| artifacts.services.get(name))
+            });
+            Ok(json!({
+                "name": name,
+                "version": version,
+                "tenant": tenant,
+                "manifest_sha256": digest.map(|digest| &digest.manifest_sha256),
+                "blob_sha256": digest.map(|digest| &digest.blob_sha256),
+            }))
         })
         .collect::<Result<Vec<_>>>()?;
     let args = json!({
@@ -236,7 +260,7 @@ pub fn run(format: OutputFormat, names: Vec<String>, detach: bool) -> Result<Exi
 /// - anything with no match and not a concrete version → a clear error.
 ///
 /// [`CatalogEntry::versions`]: bougie_daemon::daemon::catalog::CatalogEntry::versions
-fn resolve_service_version(name: &str, pin: &ServicePin) -> Result<String> {
+pub(crate) fn resolve_service_version(name: &str, pin: &ServicePin) -> Result<String> {
     use bougie_daemon::daemon::catalog;
     use composer_semver::constraint::Constraint;
     use composer_semver::version::Version;

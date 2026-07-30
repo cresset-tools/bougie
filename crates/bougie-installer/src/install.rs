@@ -35,6 +35,46 @@ pub struct InstalledPhp {
     pub install_path: PathBuf,
     pub already_present: bool,
     pub frozen_warning: bool,
+    pub yanked_warning: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ExpectedArtifact<'a> {
+    pub manifest_sha256: &'a str,
+    pub blob_sha256: &'a str,
+}
+
+fn verify_locked_recipe(
+    url: &str,
+    manifest_sha256: Option<&str>,
+    blob_sha256: &str,
+    expected: Option<ExpectedArtifact<'_>>,
+) -> Result<()> {
+    let Some(expected) = expected else {
+        return Ok(());
+    };
+    let actual_manifest = manifest_sha256.ok_or_else(|| BougieError::ManifestHashMismatch {
+        url: url.to_owned(),
+        expected: expected.manifest_sha256.to_owned(),
+        actual: "unavailable".into(),
+    })?;
+    if actual_manifest != expected.manifest_sha256 {
+        return Err(BougieError::ManifestHashMismatch {
+            url: url.to_owned(),
+            expected: expected.manifest_sha256.to_owned(),
+            actual: actual_manifest.to_owned(),
+        }
+        .into());
+    }
+    if blob_sha256 != expected.blob_sha256 {
+        return Err(BougieError::BlobHashMismatch {
+            url: url.to_owned(),
+            expected: expected.blob_sha256.to_owned(),
+            actual: blob_sha256.to_owned(),
+        }
+        .into());
+    }
+    Ok(())
 }
 
 #[tracing::instrument(skip_all, fields(request = ?request))]
@@ -64,6 +104,22 @@ pub fn backend_for(paths: &Paths) -> Result<Box<dyn Backend>> {
     bougie_backend::select(&target, &host, paths)
 }
 
+pub fn backend_for_locked(paths: &Paths, offline: bool) -> Result<Box<dyn Backend>> {
+    if !offline {
+        return backend_for(paths);
+    }
+    let target = Triple::detect()?;
+    let host = std::env::var("BOUGIE_INDEX_URL").unwrap_or_else(|_| DEFAULT_INDEX_URL.into());
+    if target.os == bougie_platform::target::Os::Windows {
+        return backend_for(paths);
+    }
+    Ok(Box::new(bougie_backend::BougieIndexBackend::new_offline(
+        paths,
+        &host,
+        &target.to_string(),
+    )?))
+}
+
 /// [`install_php`] against a caller-provided backend, so a single sync
 /// can share one backend (and thus one root fetch) across the
 /// interpreter + baseline + preinstall steps.
@@ -73,6 +129,17 @@ pub fn install_php_with_backend(
     request: &Request,
     flavor_override: Option<Flavor>,
     opts: ResolveOptions,
+) -> Result<InstalledPhp> {
+    install_php_with_backend_verified(backend, paths, request, flavor_override, opts, None)
+}
+
+pub fn install_php_with_backend_verified(
+    backend: &dyn Backend,
+    paths: &Paths,
+    request: &Request,
+    flavor_override: Option<Flavor>,
+    opts: ResolveOptions,
+    expected: Option<ExpectedArtifact<'_>>,
 ) -> Result<InstalledPhp> {
     let (spec, in_request_flavor) = match request {
         Request::VersionLike { spec, flavor } => (spec.clone(), *flavor),
@@ -88,8 +155,21 @@ pub fn install_php_with_backend(
     let _guard = ExclusiveGuard::acquire(&paths.global_lock(), LOCK_TIMEOUT)?;
 
     let recipe = backend.resolve_php(&spec, flavor, opts)?;
+    verify_locked_recipe(
+        &recipe.blob.url,
+        recipe.manifest_sha256.as_deref(),
+        &recipe.blob.sha256,
+        expected,
+    )?;
     let dest = install_dir(paths, recipe.version, recipe.flavor);
     let already_present = dest.exists();
+    if !already_present && backend.offline() {
+        return Err(BougieError::Network {
+            operation: format!("installing locked PHP {} offline", recipe.version),
+            detail: "the verified artifact is not present in the local install store".into(),
+        }
+        .into());
+    }
     if !already_present {
         // Interpreter is a monolithic blob (no closure walk), so the
         // bar grows by exactly the tarball's size. A pre-`size`
@@ -112,6 +192,7 @@ pub fn install_php_with_backend(
         install_path: dest,
         already_present,
         frozen_warning: recipe.frozen_warning,
+        yanked_warning: recipe.yanked_warning,
     })
 }
 
@@ -146,6 +227,7 @@ pub struct InstalledExt {
     pub load: LoadDirective,
     pub already_present: bool,
     pub frozen_warning: bool,
+    pub yanked_warning: bool,
     /// Extra directories that need to be on PATH at run-time so the
     /// extension's dependent DLLs resolve. Empty on every Unix
     /// installation (closures + RPATH handle deps there) and on every
@@ -208,6 +290,32 @@ pub fn install_extension_with_bar(
         php_minor,
         flavor,
         opts,
+        None,
+        bar,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn install_extension_with_backend_verified(
+    backend: &dyn Backend,
+    paths: &Paths,
+    name: &str,
+    version_pin: &str,
+    php_minor: PartialVersion,
+    flavor: Flavor,
+    expected: ExpectedArtifact<'_>,
+    bar: &DownloadBar,
+) -> Result<InstalledExt> {
+    let _guard = ExclusiveGuard::acquire(&paths.global_lock(), LOCK_TIMEOUT)?;
+    install_extension_resolved(
+        backend,
+        paths,
+        name,
+        Some(version_pin),
+        php_minor,
+        flavor,
+        ResolveOptions { allow_yanked: true },
+        Some(expected),
         bar,
     )
 }
@@ -228,9 +336,16 @@ fn install_extension_resolved(
     php_minor: PartialVersion,
     flavor: Flavor,
     opts: ResolveOptions,
+    expected: Option<ExpectedArtifact<'_>>,
     bar: &DownloadBar,
 ) -> Result<InstalledExt> {
     let recipe = backend.resolve_extension(name, php_minor, flavor, version_pin, opts)?;
+    verify_locked_recipe(
+        &recipe.blob.url,
+        recipe.manifest_sha256.as_deref(),
+        &recipe.blob.sha256,
+        expected,
+    )?;
 
     let sha8: String = recipe.blob.sha256.chars().take(8).collect();
     let php_minor_label = format!("php{}{}", php_minor.major, php_minor.minor.unwrap_or(0));
@@ -240,6 +355,19 @@ fn install_extension_resolved(
     );
     let dest = paths.store().join(&dirname);
     let already_present = dest.exists();
+    #[cfg(not(target_os = "windows"))]
+    let missing_closure = recipe.closure.iter().any(|entry| {
+        !store_dir_for_closure(paths, &entry.name, &entry.version, &entry.hash).is_dir()
+    });
+    #[cfg(target_os = "windows")]
+    let missing_closure = false;
+    if backend.offline() && (!already_present || missing_closure) {
+        return Err(BougieError::Network {
+            operation: format!("installing locked extension {} offline", recipe.name),
+            detail: "the verified artifact or one of its closure entries is not present in the local store".into(),
+        }
+        .into());
+    }
 
     // Grow the shared bar's planned total by this extension's bytes:
     // the main `.so`/`.dll` blob (if not already on disk) plus every
@@ -327,6 +455,7 @@ fn install_extension_resolved(
         load: recipe.load,
         already_present,
         frozen_warning: recipe.frozen_warning,
+        yanked_warning: recipe.yanked_warning,
         path_extras,
     })
 }
@@ -590,6 +719,7 @@ pub fn install_baseline_into_with_backend(
                 php_minor,
                 flavor,
                 resolve_opts,
+                None,
                 &byte_bar,
             ) {
                 Ok(installed) => {
@@ -827,6 +957,7 @@ pub fn preinstall_into_with_backend(
             php_minor,
             flavor,
             resolve_opts,
+            None,
             &bar,
         ) {
             Ok(_) => report.installed.push(name.into()),

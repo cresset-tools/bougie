@@ -20,6 +20,7 @@ members = [
     "crates/bougie-index",
     "crates/bougie-installer",
     "crates/bougie-installers",
+    "crates/bougie-lock",
     "crates/bougie-output",
     "crates/bougie-patches",
     "crates/bougie-paths",
@@ -76,6 +77,7 @@ bougie-fs = { path = "crates/bougie-fs", version = "0.53.0" } # x-release-please
 bougie-index = { path = "crates/bougie-index", version = "0.53.0" } # x-release-please-version
 bougie-installer = { path = "crates/bougie-installer", version = "0.53.0" } # x-release-please-version
 bougie-installers = { path = "crates/bougie-installers", version = "0.53.0" } # x-release-please-version
+bougie-lock = { path = "crates/bougie-lock", version = "0.53.0" } # x-release-please-version
 bougie-output = { path = "crates/bougie-output", version = "0.53.0" } # x-release-please-version
 bougie-patches = { path = "crates/bougie-patches", version = "0.53.0" } # x-release-please-version
 bougie-paths = { path = "crates/bougie-paths", version = "0.53.0" } # x-release-please-version

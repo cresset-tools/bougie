@@ -393,7 +393,7 @@ async fn restore_services(state: &Arc<DaemonState>) {
         for (_, version) in wanted.iter().filter(|(n, _)| *n == name) {
             let inst = Instance::new(entry.name, version);
             if let Err(e) =
-                store_fetch::ensure_tarball(&state.paths, entry, version.clone(), None).await
+                store_fetch::ensure_tarball(&state.paths, entry, version.clone(), None, None).await
             {
                 tracing::warn!(service = name, version = %version, error = format!("{e:#}"), "restore: tarball fetch");
                 continue;

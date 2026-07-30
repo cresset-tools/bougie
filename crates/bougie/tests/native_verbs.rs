@@ -461,6 +461,42 @@ fn lock_dry_run_writes_nothing() {
 }
 
 #[test]
+fn lock_dry_run_does_not_create_missing_lock() {
+    let env = TestEnv::new();
+    let proj = TempDir::new().unwrap();
+    write_composer_json(
+        proj.path(),
+        r#"{"name":"test/p","require":{"acme/foo":"^1.5"}}"#,
+    );
+
+    let foo = p2_body("acme/foo", &["1.6.0"]);
+    let rt = rt();
+    let (uri, _server) = rt.block_on(async {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(wm_path("/p2/acme/foo.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(foo))
+            .mount(&server)
+            .await;
+        (server.uri(), server)
+    });
+
+    let out = env
+        .bougie()
+        .env("BOUGIE_PACKAGIST_BASE_URL", &uri)
+        .args(["lock", "--dry-run", "-d"])
+        .arg(proj.path())
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(!proj.path().join("composer.lock").exists());
+}
+
+#[test]
 fn remove_frozen_drops_entry() {
     let env = TestEnv::new();
     let proj = TempDir::new().unwrap();

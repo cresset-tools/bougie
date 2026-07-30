@@ -14,9 +14,12 @@ use bougie_fs::store::list_installed;
 use bougie_installer::baseline::{self, BaselineFilter};
 use bougie_installer::conf_d;
 use bougie_installer::install::{
-    InstalledExt, InstalledPhp, backend_for, install_baseline_into_with_backend,
-    install_extension_with_bar, install_php_with_backend, preinstall_into_with_backend,
+    ExpectedArtifact, InstalledExt, InstalledPhp, backend_for, backend_for_locked,
+    install_baseline_into_with_backend, install_extension_with_backend_verified,
+    install_extension_with_bar, install_php_with_backend, install_php_with_backend_verified,
+    preinstall_into_with_backend,
 };
+use bougie_lock::ToolchainLock;
 use bougie_output::changelog::{fmt_elapsed as fmt_ms, plural};
 use bougie_output::output::{Render, emit};
 use bougie_paths::Paths;
@@ -386,8 +389,26 @@ pub fn run(
         return Ok(ExitCode::SUCCESS);
     }
 
+    let toolchain_lock = super::locked_toolchain::load_fresh(
+        &project_root,
+        &paths,
+        &project,
+        &spec,
+        flavor,
+        offline,
+    )?;
+
     // Step 2 — toolchain (PHP + extensions + composer + shims).
-    let result = ensure_synced_with(&paths, &project_root, &project, spec, flavor, resolution)?;
+    let result = ensure_synced_with_lock(
+        &paths,
+        &project_root,
+        &project,
+        spec,
+        flavor,
+        resolution,
+        toolchain_lock.as_ref(),
+        offline,
+    )?;
 
     // Step 3 — materialize vendor/ from the lock, running opted-in root
     // scripts during the install lifecycle. The toolchain (incl. PHP) is
@@ -888,6 +909,33 @@ pub fn ensure_synced_with(
     flavor: Flavor,
     resolution: PhpResolution,
 ) -> Result<SyncResult> {
+    ensure_synced_with_lock(
+        paths,
+        project_root,
+        project,
+        spec,
+        flavor,
+        resolution,
+        None,
+        false,
+    )
+}
+
+fn ensure_synced_with_lock(
+    paths: &Paths,
+    project_root: &std::path::Path,
+    project: &ProjectConfig,
+    spec: VersionLike,
+    flavor: Flavor,
+    resolution: PhpResolution,
+    toolchain_lock: Option<&ToolchainLock>,
+    offline: bool,
+) -> Result<SyncResult> {
+    let resolution = if toolchain_lock.is_some() {
+        PhpResolution::only_managed()
+    } else {
+        resolution
+    };
     migrate_legacy_layout(paths, project_root);
     let required_exts = required_ext_names(project);
     let managed_installed = gather_managed_installed(paths);
@@ -945,9 +993,15 @@ pub fn ensure_synced_with(
         // `install_php_with_backend` reuses an installed match and
         // downloads otherwise (selection already enforced the download
         // gate, so this only downloads when permitted).
-        Selection::ManagedInstalled { .. } | Selection::Download => {
-            ensure_synced_managed(paths, project_root, project, spec, flavor)
-        }
+        Selection::ManagedInstalled { .. } | Selection::Download => ensure_synced_managed(
+            paths,
+            project_root,
+            project,
+            spec,
+            flavor,
+            toolchain_lock,
+            offline,
+        ),
     }
 }
 
@@ -1056,27 +1110,76 @@ fn ensure_synced_managed(
     project: &ProjectConfig,
     spec: VersionLike,
     flavor: Flavor,
+    toolchain_lock: Option<&ToolchainLock>,
+    offline: bool,
 ) -> Result<SyncResult> {
     // Drop any stale system-PHP marker so a project switching back to a
     // managed PHP stops resolving the old system binary in the shim.
     clear_project_resolved_php_path(project_root)?;
-    let request = Request::VersionLike {
-        spec,
-        flavor: Some(flavor),
+    let request = if let Some(lock) = toolchain_lock {
+        let version = lock.php.version.parse::<Version>()?;
+        Request::VersionLike {
+            spec: VersionLike::Version(PartialVersion {
+                major: version.major,
+                minor: Some(version.minor),
+                patch: Some(version.patch),
+            }),
+            flavor: Some(flavor),
+        }
+    } else {
+        Request::VersionLike {
+            spec,
+            flavor: Some(flavor),
+        }
     };
     // Build one backend for the whole toolchain phase. It memoizes the
     // signed index root on first use, so the interpreter, baseline, and
     // preinstall resolves below share a single conditional GET instead
     // of one per resolve — a warm sync used to stall on ~30 sequential
     // `If-None-Match` round-trips (the "stuck installing exif" symptom).
-    let backend = backend_for(paths)?;
-    let installed: InstalledPhp = install_php_with_backend(
-        &*backend,
-        paths,
-        &request,
-        Some(flavor),
-        ResolveOptions::default(),
-    )?;
+    let backend = if toolchain_lock.is_some() {
+        backend_for_locked(paths, offline)?
+    } else {
+        backend_for(paths)?
+    };
+    let expected_php = toolchain_lock
+        .map(|lock| {
+            let target = Triple::detect()?.to_string();
+            let digest = &lock
+                .targets
+                .get(&target)
+                .expect("fresh lock covers target")
+                .php;
+            Ok::<_, eyre::Report>(ExpectedArtifact {
+                manifest_sha256: &digest.manifest_sha256,
+                blob_sha256: &digest.blob_sha256,
+            })
+        })
+        .transpose()?;
+    let installed: InstalledPhp = if toolchain_lock.is_some() {
+        install_php_with_backend_verified(
+            &*backend,
+            paths,
+            &request,
+            Some(flavor),
+            ResolveOptions { allow_yanked: true },
+            expected_php,
+        )?
+    } else {
+        install_php_with_backend(
+            &*backend,
+            paths,
+            &request,
+            Some(flavor),
+            ResolveOptions::default(),
+        )?
+    };
+    if installed.yanked_warning {
+        eprintln!(
+            "warning: bougie.lock selects yanked PHP {} for this project",
+            installed.version
+        );
+    }
 
     // Ensure the baseline set is present on this interpreter. Idempotent:
     // already-installed extensions short-circuit at the blob fetch, and
@@ -1090,42 +1193,63 @@ fn ensure_synced_managed(
         minor: Some(installed.version.minor),
         patch: None,
     };
-    let baseline_report = install_baseline_into_with_backend(
-        &*backend,
-        paths,
-        &installed.install_path,
-        php_minor,
-        installed.flavor,
-        &BaselineFilter::All,
-        ResolveOptions::default(),
-    );
-    for (name, reason) in &baseline_report.failed {
-        eprintln!("warning: baseline extension {name} not installed: {reason}");
+    if toolchain_lock.is_none() {
+        let baseline_report = install_baseline_into_with_backend(
+            &*backend,
+            paths,
+            &installed.install_path,
+            php_minor,
+            installed.flavor,
+            &BaselineFilter::All,
+            ResolveOptions::default(),
+        );
+        for (name, reason) in &baseline_report.failed {
+            eprintln!("warning: baseline extension {name} not installed: {reason}");
+        }
     }
 
     // Pre-download xdebug et al. into the store so the first
     // server-side debug request doesn't pay the download cost. No
     // conf.d fragment is written here — see
     // `bougie_installer::baseline::PREINSTALLED_EXTENSIONS`.
-    let preinstall_report = preinstall_into_with_backend(
-        &*backend,
-        paths,
-        &installed.install_path,
-        php_minor,
-        installed.flavor,
-        ResolveOptions::default(),
-    );
-    for (name, reason) in &preinstall_report.failed {
-        eprintln!("warning: pre-download of {name} failed: {reason}");
+    if toolchain_lock.is_none() {
+        let preinstall_report = preinstall_into_with_backend(
+            &*backend,
+            paths,
+            &installed.install_path,
+            php_minor,
+            installed.flavor,
+            ResolveOptions::default(),
+        );
+        for (name, reason) in &preinstall_report.failed {
+            eprintln!("warning: pre-download of {name} failed: {reason}");
+        }
     }
 
     let resolved_path = write_project_resolved(project_root, installed.version, installed.flavor)?;
 
-    let opt_out = baseline_opt_outs(project);
+    let mut opt_out = baseline_opt_outs(project);
+    if toolchain_lock.is_some() {
+        opt_out.extend(
+            baseline::BASELINE_EXTENSIONS
+                .iter()
+                .map(|name| (*name).to_owned()),
+        );
+    }
     replicate_install_conf_d(&installed.install_path, project_root, &opt_out)?;
 
-    let installed_extensions =
-        install_required_extensions(paths, project_root, project, php_minor, installed.flavor)?;
+    let installed_extensions = if let Some(lock) = toolchain_lock {
+        install_locked_extensions(
+            &*backend,
+            paths,
+            project_root,
+            lock,
+            php_minor,
+            installed.flavor,
+        )?
+    } else {
+        install_required_extensions(paths, project_root, project, php_minor, installed.flavor)?
+    };
 
     let shims_dir = write_shims(project_root)?;
     // Make the `bougie-run` shebang shim available on the user's PATH
@@ -1316,6 +1440,55 @@ fn install_required_extensions(
             installed.load,
             &installed.path_extras,
         )?;
+        installed_names.push(installed.name);
+    }
+    bar.finish();
+    Ok(installed_names)
+}
+
+fn install_locked_extensions(
+    backend: &dyn bougie_backend::Backend,
+    paths: &Paths,
+    project_root: &std::path::Path,
+    lock: &ToolchainLock,
+    php_minor: PartialVersion,
+    flavor: Flavor,
+) -> Result<Vec<String>> {
+    let target = Triple::detect()?.to_string();
+    let target_artifacts = lock.targets.get(&target).expect("fresh lock covers target");
+    let bar = DownloadBar::new("downloading");
+    let mut installed_names = Vec::with_capacity(lock.extensions.len());
+    for (name, pin) in &lock.extensions {
+        let digest = target_artifacts
+            .extensions
+            .get(name)
+            .expect("fresh lock covers every extension");
+        let installed = install_extension_with_backend_verified(
+            backend,
+            paths,
+            name,
+            &pin.version,
+            php_minor,
+            flavor,
+            ExpectedArtifact {
+                manifest_sha256: &digest.manifest_sha256,
+                blob_sha256: &digest.blob_sha256,
+            },
+            &bar,
+        )?;
+        conf_d::write_ext_fragment(
+            project_root,
+            &installed.name,
+            &installed.so_path,
+            installed.load,
+            &installed.path_extras,
+        )?;
+        if installed.yanked_warning {
+            eprintln!(
+                "warning: bougie.lock selects yanked extension {} {}",
+                installed.name, installed.version
+            );
+        }
         installed_names.push(installed.name);
     }
     bar.finish();

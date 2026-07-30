@@ -274,6 +274,9 @@ pub enum Command {
         /// offline runs instead of re-resolving
         #[arg(long = "script", value_name = "FILE")]
         script: Option<std::path::PathBuf>,
+        /// Also resolve PHP, extensions, and services into bougie.lock
+        #[arg(long = "with-platform", conflicts_with = "script")]
+        with_platform: bool,
         /// Version-preference policy when re-resolving changed requires
         #[arg(
             long = "resolution",

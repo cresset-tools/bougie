@@ -290,6 +290,7 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
         ),
         Command::Lock {
             script,
+            with_platform,
             resolution,
             working_dir,
             dry_run,
@@ -303,6 +304,7 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
                     format,
                     working_dir,
                     dry_run,
+                    with_platform,
                     resolution_strategy(resolution),
                     platform_ignore(ignore_platform_reqs, &ignore_platform_req),
                 )

@@ -173,6 +173,10 @@ pub struct ServiceRequest {
     /// on the wire so the daemon keys the instance by `(name, version)`.
     pub version: String,
     pub tenant: String,
+    #[serde(default)]
+    pub manifest_sha256: Option<String>,
+    #[serde(default)]
+    pub blob_sha256: Option<String>,
 }
 
 // -------------------- Response side --------------------
@@ -1331,6 +1335,15 @@ async fn dispatch_up(
             .iter()
             .find(|s| s.name == name)
             .map_or_else(|| entry.version.to_string(), |s| s.version.clone());
+        let expected = services
+            .iter()
+            .find(|service| service.name == name)
+            .and_then(|service| {
+                Some(super::store_fetch::ExpectedTool {
+                    manifest_sha256: service.manifest_sha256.clone()?,
+                    blob_sha256: service.blob_sha256.clone()?,
+                })
+            });
         let inst = Instance::new(entry.name, &version);
         // Backstop the tarball: pre_start and supervisor.start both
         // resolve `store_layout::basedir` and bail if it's missing.
@@ -1340,6 +1353,7 @@ async fn dispatch_up(
             &state.paths,
             entry,
             version.clone(),
+            expected,
             bar.clone(),
         )
         .await

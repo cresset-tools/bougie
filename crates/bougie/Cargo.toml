@@ -87,6 +87,7 @@ bougie-fs = { workspace = true }
 bougie-index = { path = "../bougie-index", version = "0.53.0", default-features = false } # x-release-please-version
 bougie-installer = { workspace = true }
 bougie-installers = { workspace = true }
+bougie-lock = { workspace = true }
 bougie-output = { workspace = true }
 bougie-patches = { workspace = true }
 bougie-paths = { workspace = true }

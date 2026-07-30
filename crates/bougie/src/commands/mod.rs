@@ -28,6 +28,7 @@ pub mod format;
 pub mod infer_php;
 pub mod init;
 pub mod lock;
+pub mod locked_toolchain;
 pub mod login;
 #[cfg(unix)]
 pub mod make;
@@ -42,6 +43,7 @@ pub mod php_list;
 pub mod php_pin;
 pub mod php_uninstall;
 pub mod php_upgrade;
+pub mod platform_lock;
 pub mod run;
 pub mod script;
 pub mod scripts;

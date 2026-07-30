@@ -392,6 +392,7 @@ dependencies = [
  "bougie-index",
  "bougie-installer",
  "bougie-installers",
+ "bougie-lock",
  "bougie-output",
  "bougie-patches",
  "bougie-paths",
@@ -662,6 +663,16 @@ dependencies = [
  "eyre",
  "serde_json",
  "tempfile",
+]
+
+[[package]]
+name = "bougie-lock"
+version = "0.52.0"
+dependencies = [
+ "eyre",
+ "serde",
+ "tempfile",
+ "toml_edit",
 ]
 
 [[package]]

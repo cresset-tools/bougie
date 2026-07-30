@@ -115,6 +115,46 @@ where
     })
 }
 
+pub fn read_cached_root(cache_root: &Path) -> Result<Root> {
+    let path = cache_root.join("index.json");
+    let bytes = fs::read(&path).wrap_err_with(|| format!("reading cached {}", path.display()))?;
+    serde_json::from_slice(&bytes).wrap_err("parsing cached index.json")
+}
+
+pub fn read_cached_section(cache_root: &Path, expected_sha256: &str) -> Result<Section> {
+    let path = cache_root
+        .join("sections")
+        .join(format!("{expected_sha256}.json"));
+    let bytes = fs::read(&path).wrap_err_with(|| format!("reading cached {}", path.display()))?;
+    let actual = hex_sha256(&bytes);
+    if actual != expected_sha256 {
+        return Err(BougieError::ManifestHashMismatch {
+            url: path.display().to_string(),
+            expected: expected_sha256.to_owned(),
+            actual,
+        }
+        .into());
+    }
+    serde_json::from_slice(&bytes).wrap_err("parsing cached section")
+}
+
+pub fn read_cached_manifest(cache_root: &Path, expected_sha256: &str) -> Result<Manifest> {
+    let path = cache_root
+        .join("manifests")
+        .join(format!("{expected_sha256}.json"));
+    let bytes = fs::read(&path).wrap_err_with(|| format!("reading cached {}", path.display()))?;
+    let actual = hex_sha256(&bytes);
+    if actual != expected_sha256 {
+        return Err(BougieError::ManifestHashMismatch {
+            url: path.display().to_string(),
+            expected: expected_sha256.to_owned(),
+            actual,
+        }
+        .into());
+    }
+    serde_json::from_slice(&bytes).wrap_err("parsing cached manifest")
+}
+
 /// Fetch a section file, verifying its sha256 against the value the
 /// signed root advertised. Cached files are reused when their hash
 /// matches the expected sha; mismatches force a refetch.

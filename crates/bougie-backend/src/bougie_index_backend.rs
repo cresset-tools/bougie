@@ -18,7 +18,10 @@ use bougie_index::host_to_dirname;
 use bougie_index::wire::Root;
 use bougie_index::{
     build_verifier,
-    fetch::{fetch_manifest, fetch_root, fetch_section},
+    fetch::{
+        fetch_manifest, fetch_root, fetch_section, read_cached_manifest, read_cached_root,
+        read_cached_section,
+    },
 };
 use bougie_paths::Paths;
 use bougie_resolver::{ResolveOptions, Selected, resolve_extension, resolve_php};
@@ -42,6 +45,7 @@ pub struct BougieIndexBackend {
     /// the backend is single-threaded (never shared across threads —
     /// `select` hands back a plain `Box<dyn Backend>`).
     root_cache: RefCell<Option<Rc<Root>>>,
+    offline: bool,
 }
 
 impl BougieIndexBackend {
@@ -57,7 +61,14 @@ impl BougieIndexBackend {
             target: target.to_owned(),
             cache_root,
             root_cache: RefCell::new(None),
+            offline: false,
         })
+    }
+
+    pub fn new_offline(paths: &Paths, host: &str, target: &str) -> Result<Self> {
+        let mut backend = Self::new(paths, host, target)?;
+        backend.offline = true;
+        Ok(backend)
     }
 
     /// Fetch the signed index root once and memoize it for the lifetime
@@ -73,14 +84,22 @@ impl BougieIndexBackend {
         if let Some(root) = self.root_cache.borrow().as_ref() {
             return Ok(Rc::clone(root));
         }
-        let fetched = fetch_root(&self.client, &self.host, &self.cache_root, build_verifier)?;
-        let root = Rc::new(fetched.root);
+        let root = if self.offline {
+            Rc::new(read_cached_root(&self.cache_root)?)
+        } else {
+            let fetched = fetch_root(&self.client, &self.host, &self.cache_root, build_verifier)?;
+            Rc::new(fetched.root)
+        };
         *self.root_cache.borrow_mut() = Some(Rc::clone(&root));
         Ok(root)
     }
 }
 
 impl super::Backend for BougieIndexBackend {
+    fn offline(&self) -> bool {
+        self.offline
+    }
+
     fn client(&self) -> &reqwest::blocking::Client {
         &self.client
     }
@@ -107,24 +126,32 @@ impl super::Backend for BougieIndexBackend {
                         self.host, self.target,
                     ),
                 })?;
-        let section = fetch_section(
-            &self.client,
-            &self.host,
-            &self.cache_root,
-            &root.version,
-            &self.target,
-            SECTION_NAME,
-            &section_ref.sha256,
-        )?;
+        let section = if self.offline {
+            read_cached_section(&self.cache_root, &section_ref.sha256)?
+        } else {
+            fetch_section(
+                &self.client,
+                &self.host,
+                &self.cache_root,
+                &root.version,
+                &self.target,
+                SECTION_NAME,
+                &section_ref.sha256,
+            )?
+        };
 
         let selected: Selected<'_> = resolve_php(&section, spec, flavor, opts)?;
-        let manifest = fetch_manifest(
-            &self.client,
-            &self.host,
-            &self.cache_root,
-            &selected.artifact.manifest.path,
-            &selected.artifact.manifest.sha256,
-        )?;
+        let manifest = if self.offline {
+            read_cached_manifest(&self.cache_root, &selected.artifact.manifest.sha256)?
+        } else {
+            fetch_manifest(
+                &self.client,
+                &self.host,
+                &self.cache_root,
+                &selected.artifact.manifest.path,
+                &selected.artifact.manifest.sha256,
+            )?
+        };
         // sha256 only proves the bytes match the section row; structural
         // safety (absolute blob/closure URLs, hex shape, `link_into`
         // traversal) is enforced separately.
@@ -142,6 +169,8 @@ impl super::Backend for BougieIndexBackend {
                 strip_prefix: "install".to_owned(),
             },
             frozen_warning: selected.frozen_warning,
+            yanked_warning: selected.yanked_warning,
+            manifest_sha256: Some(selected.artifact.manifest.sha256.clone()),
         })
     }
 
@@ -171,26 +200,34 @@ impl super::Backend for BougieIndexBackend {
                         self.host, self.target,
                     ),
                 })?;
-        let section = fetch_section(
-            &self.client,
-            &self.host,
-            &self.cache_root,
-            &root.version,
-            &self.target,
-            &section_name,
-            &section_ref.sha256,
-        )?;
+        let section = if self.offline {
+            read_cached_section(&self.cache_root, &section_ref.sha256)?
+        } else {
+            fetch_section(
+                &self.client,
+                &self.host,
+                &self.cache_root,
+                &root.version,
+                &self.target,
+                &section_name,
+                &section_ref.sha256,
+            )?
+        };
 
         let selected: Selected<'_> =
             resolve_extension(&section, php_minor, flavor, version_pin, opts)?;
 
-        let manifest = fetch_manifest(
-            &self.client,
-            &self.host,
-            &self.cache_root,
-            &selected.artifact.manifest.path,
-            &selected.artifact.manifest.sha256,
-        )?;
+        let manifest = if self.offline {
+            read_cached_manifest(&self.cache_root, &selected.artifact.manifest.sha256)?
+        } else {
+            fetch_manifest(
+                &self.client,
+                &self.host,
+                &self.cache_root,
+                &selected.artifact.manifest.path,
+                &selected.artifact.manifest.sha256,
+            )?
+        };
         manifest.validate()?;
         let ext_ref = manifest.extension.as_ref().ok_or_else(|| {
             eyre!(
@@ -222,6 +259,8 @@ impl super::Backend for BougieIndexBackend {
             // needed at run time.
             needs_store_on_path: false,
             frozen_warning: selected.frozen_warning,
+            yanked_warning: selected.yanked_warning,
+            manifest_sha256: Some(selected.artifact.manifest.sha256.clone()),
         })
     }
 }

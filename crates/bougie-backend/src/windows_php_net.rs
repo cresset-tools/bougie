@@ -155,6 +155,8 @@ impl super::Backend for WindowsPhpNetBackend {
             closure: Vec::new(),
             needs_store_on_path: artifact.needs_store_on_path,
             frozen_warning: false,
+            yanked_warning: false,
+            manifest_sha256: None,
         })
     }
 
@@ -215,6 +217,8 @@ impl super::Backend for WindowsPhpNetBackend {
             // PHP project doesn't expose an equivalent of bougie's
             // yanked/frozen flags. Always false.
             frozen_warning: false,
+            yanked_warning: false,
+            manifest_sha256: None,
         })
     }
 }

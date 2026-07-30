@@ -33,6 +33,7 @@ pub struct Selected<'a> {
     pub artifact: &'a Artifact,
     pub version: Version,
     pub frozen_warning: bool,
+    pub yanked_warning: bool,
 }
 
 pub fn resolve_php<'a>(
@@ -92,6 +93,33 @@ pub fn resolve_extension<'a>(
     pick_highest(candidates, "extension", &label)
 }
 
+pub fn resolve_extension_constraint<'a>(
+    section: &'a Section,
+    php_minor: PartialVersion,
+    flavor: Flavor,
+    constraint: &Constraint,
+    opts: ResolveOptions,
+) -> Result<Selected<'a>> {
+    let php_minor_string = format!("{}.{}", php_minor.major, php_minor.minor.unwrap_or(0));
+    let candidates = section.artifacts.iter().filter(|artifact| {
+        if artifact.yanked && !opts.allow_yanked {
+            return false;
+        }
+        if artifact.flavor != flavor.as_str()
+            || artifact.php_minor.as_deref() != Some(&php_minor_string)
+        {
+            return false;
+        }
+        parse_artifact_version(&artifact.version)
+            .is_ok_and(|version| constraint.matches(&lift(version)))
+    });
+    let label = format!(
+        "{} constraint (php={php_minor_string} flavor={flavor})",
+        section.name
+    );
+    pick_highest(candidates, "extension", &label)
+}
+
 fn pick_highest<'a, I>(candidates: I, kind: &str, label: &str) -> Result<Selected<'a>>
 where
     I: Iterator<Item = &'a Artifact>,
@@ -115,6 +143,7 @@ where
         artifact,
         version,
         frozen_warning: artifact.frozen,
+        yanked_warning: artifact.yanked,
     })
 }
 
@@ -270,6 +299,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(sel.version, Version::new(8, 3, 13));
+        assert!(sel.yanked_warning);
     }
 
     #[test]
@@ -341,6 +371,34 @@ mod tests {
         )
         .unwrap();
         assert_eq!(sel.artifact.version, "3.5.0");
+    }
+
+    #[test]
+    fn extension_constraint_selects_highest_compatible_version() {
+        let s = section(
+            "extension/redis",
+            SectionKind::Extension,
+            vec![
+                art("6.0.2", "nts", "8.3", false, false),
+                art("6.2.0", "nts", "8.3", false, false),
+                art("7.0.0", "nts", "8.3", false, false),
+            ],
+        );
+        let pv = PartialVersion {
+            major: 8,
+            minor: Some(3),
+            patch: None,
+        };
+        let constraint = Constraint::parse("^6.0").unwrap();
+        let selected = resolve_extension_constraint(
+            &s,
+            pv,
+            Flavor::Nts,
+            &constraint,
+            ResolveOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(selected.version, Version::new(6, 2, 0));
     }
 
     #[test]

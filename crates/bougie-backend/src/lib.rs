@@ -43,6 +43,10 @@ use std::path::{Path, PathBuf};
 /// A source of PHP interpreter artifacts. One concrete impl per
 /// distribution channel — bougie's own signed index, windows.php.net.
 pub trait Backend {
+    fn offline(&self) -> bool {
+        false
+    }
+
     /// Resolve a user-facing request into a [`PhpRecipe`] ready to
     /// hand off to the extract pipeline. Network I/O happens here
     /// (root + section + manifest fetches for `BougieIndexBackend`;
@@ -161,6 +165,8 @@ pub struct PhpRecipe {
     pub flavor: Flavor,
     pub blob: BlobRef,
     pub frozen_warning: bool,
+    pub yanked_warning: bool,
+    pub manifest_sha256: Option<String>,
 }
 
 impl BlobRef {
@@ -218,6 +224,8 @@ pub struct ExtRecipe {
     pub closure: Vec<ClosureRef>,
     pub needs_store_on_path: bool,
     pub frozen_warning: bool,
+    pub yanked_warning: bool,
+    pub manifest_sha256: Option<String>,
 }
 
 /// One bundled-library entry an extension `.so` depends on at runtime.
