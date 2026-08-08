@@ -338,6 +338,7 @@ fn serve(format: OutputFormat, args: &ServeArgs) -> Result<ExitCode> {
             format,
             false,
             false,
+            false,
             None,
             None,
             bougie_cli::PhpPrefArgs::default(),
@@ -528,6 +529,7 @@ fn serve_standalone(format: OutputFormat, args: &ServeArgs) -> Result<ExitCode> 
         crate::commands::sync::run(
             &project_root,
             format,
+            false,
             false,
             false,
             None,

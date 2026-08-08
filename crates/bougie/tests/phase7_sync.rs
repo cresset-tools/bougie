@@ -318,6 +318,78 @@ fn write_toolchain_lock(project: &std::path::Path, fx: &Fixture, blob_sha: Strin
     .unwrap();
 }
 
+fn write_composer_lock(project: &std::path::Path) {
+    let composer_json = std::fs::read(project.join("composer.json")).unwrap();
+    let hash = bougie_composer::lockfile::content_hash(&composer_json).unwrap();
+    std::fs::write(
+        project.join("composer.lock"),
+        format!(r#"{{"content-hash":"{hash}","packages":[],"packages-dev":[]}}"#),
+    )
+    .unwrap();
+}
+
+#[test]
+fn sync_locked_requires_composer_lock() {
+    let env = TestEnv::new();
+    let proj = tempfile::TempDir::new().unwrap();
+    std::fs::write(
+        proj.path().join("composer.json"),
+        r#"{"require":{"php":"8.3.12"}}"#,
+    )
+    .unwrap();
+
+    env.bougie()
+        .current_dir(proj.path())
+        .args(["sync", "--locked"])
+        .assert()
+        .failure()
+        .stderr(contains("composer.lock not found and --locked is set"));
+}
+
+#[test]
+fn sync_locked_requires_toolchain_lock() {
+    let env = TestEnv::new();
+    let proj = tempfile::TempDir::new().unwrap();
+    std::fs::write(
+        proj.path().join("composer.json"),
+        r#"{"require":{"php":"8.3.12"}}"#,
+    )
+    .unwrap();
+    write_composer_lock(proj.path());
+
+    env.bougie()
+        .current_dir(proj.path())
+        .args(["sync", "--locked"])
+        .assert()
+        .failure()
+        .stderr(contains("bougie.lock not found and --locked is set"));
+}
+
+#[test]
+fn sync_locked_rejects_stale_composer_lock() {
+    let env = TestEnv::new();
+    let proj = tempfile::TempDir::new().unwrap();
+    std::fs::write(
+        proj.path().join("composer.json"),
+        r#"{"require":{"php":"8.3.12"}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        proj.path().join("composer.lock"),
+        r#"{"content-hash":"stale","packages":[],"packages-dev":[]}"#,
+    )
+    .unwrap();
+
+    env.bougie()
+        .current_dir(proj.path())
+        .args(["sync", "--locked"])
+        .assert()
+        .failure()
+        .stderr(contains(
+            "composer.lock is out of sync with composer.json and --locked is set",
+        ));
+}
+
 #[test]
 fn sync_installs_php_from_fresh_toolchain_lock() {
     let runtime = rt();
@@ -331,13 +403,14 @@ fn sync_installs_php_from_fresh_toolchain_lock() {
     )
     .unwrap();
     disable_baseline(proj.path());
+    write_composer_lock(proj.path());
     write_toolchain_lock(proj.path(), &fx, fx.blob_sha.clone());
 
     env.bougie()
         .current_dir(proj.path())
         .env("BOUGIE_INDEX_URL", fx.server.uri())
         .env("BOUGIE_TRUST_ROOT_PATH", &trust)
-        .arg("sync")
+        .args(["sync", "--locked"])
         .assert()
         .success();
 
@@ -422,6 +495,40 @@ fn stale_toolchain_lock_warns_and_falls_back_to_floating_resolution() {
 }
 
 #[test]
+fn sync_locked_rejects_stale_toolchain_lock_without_fallback() {
+    let runtime = rt();
+    let fx = runtime.block_on(build_fixture());
+    let env = TestEnv::new();
+    let trust = write_trust_root(&env, &fx.pub_pem);
+    let proj = tempfile::TempDir::new().unwrap();
+    std::fs::write(
+        proj.path().join("composer.json"),
+        r#"{"require":{"php":"^8.3"}}"#,
+    )
+    .unwrap();
+    disable_baseline(proj.path());
+    write_composer_lock(proj.path());
+    write_toolchain_lock(proj.path(), &fx, fx.blob_sha.clone());
+    let before = std::fs::read_to_string(proj.path().join("bougie.lock")).unwrap();
+
+    env.bougie()
+        .current_dir(proj.path())
+        .env("BOUGIE_INDEX_URL", fx.server.uri())
+        .env("BOUGIE_TRUST_ROOT_PATH", &trust)
+        .args(["sync", "--locked"])
+        .assert()
+        .failure()
+        .stderr(contains("bougie.lock is stale and --locked is set"))
+        .stderr(contains("php constraint changed"));
+
+    assert_eq!(
+        std::fs::read_to_string(proj.path().join("bougie.lock")).unwrap(),
+        before
+    );
+    assert!(!proj.path().join("vendor/bougie/state/resolved").exists());
+}
+
+#[test]
 fn sync_lazily_adds_missing_current_target_to_lock() {
     let runtime = rt();
     let fx = runtime.block_on(build_fixture());
@@ -454,6 +561,100 @@ fn sync_lazily_adds_missing_current_target_to_lock() {
         .unwrap()
         .unwrap();
     assert!(lock.targets.contains_key(&fx.target));
+}
+
+#[test]
+fn sync_locked_rejects_missing_target_without_extending_lock() {
+    let runtime = rt();
+    let fx = runtime.block_on(build_fixture());
+    let env = TestEnv::new();
+    let trust = write_trust_root(&env, &fx.pub_pem);
+    let proj = tempfile::TempDir::new().unwrap();
+    std::fs::write(
+        proj.path().join("composer.json"),
+        r#"{"require":{"php":"8.3.12"}}"#,
+    )
+    .unwrap();
+    disable_baseline(proj.path());
+    write_composer_lock(proj.path());
+    write_toolchain_lock(proj.path(), &fx, fx.blob_sha.clone());
+    let mut lock = bougie_lock::ToolchainLock::read(proj.path())
+        .unwrap()
+        .unwrap();
+    lock.targets.clear();
+    lock.write(proj.path()).unwrap();
+    let before = std::fs::read_to_string(proj.path().join("bougie.lock")).unwrap();
+
+    env.bougie()
+        .current_dir(proj.path())
+        .env("BOUGIE_INDEX_URL", fx.server.uri())
+        .env("BOUGIE_TRUST_ROOT_PATH", &trust)
+        .args(["sync", "--locked"])
+        .assert()
+        .failure()
+        .stderr(contains("current target"))
+        .stderr(contains("is not covered"));
+
+    assert_eq!(
+        std::fs::read_to_string(proj.path().join("bougie.lock")).unwrap(),
+        before
+    );
+    assert!(
+        runtime
+            .block_on(fx.server.received_requests())
+            .unwrap()
+            .is_empty(),
+        "--locked must not fetch index data to extend bougie.lock"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn sync_locked_rejects_missing_service_digest() {
+    let runtime = rt();
+    let fx = runtime.block_on(build_fixture());
+    let env = TestEnv::new();
+    let proj = tempfile::TempDir::new().unwrap();
+    std::fs::write(
+        proj.path().join("composer.json"),
+        r#"{"require":{"php":"8.3.12"}}"#,
+    )
+    .unwrap();
+    disable_baseline(proj.path());
+    let config = std::fs::read_to_string(proj.path().join("bougie.toml")).unwrap();
+    std::fs::write(
+        proj.path().join("bougie.toml"),
+        format!("{config}\n[services]\nredis = \"8.6.3\"\n"),
+    )
+    .unwrap();
+    write_composer_lock(proj.path());
+    write_toolchain_lock(proj.path(), &fx, fx.blob_sha.clone());
+    let mut lock = bougie_lock::ToolchainLock::read(proj.path())
+        .unwrap()
+        .unwrap();
+    lock.services.insert(
+        "redis".into(),
+        bougie_lock::ServicePin {
+            constraint: "8.6.3".into(),
+            version: "8.6.3".into(),
+        },
+    );
+    lock.write(proj.path()).unwrap();
+
+    env.bougie()
+        .current_dir(proj.path())
+        .args(["sync", "--locked"])
+        .assert()
+        .failure()
+        .stderr(contains("current target has no digest for service redis"));
+
+    assert!(
+        runtime
+            .block_on(fx.server.received_requests())
+            .unwrap()
+            .is_empty(),
+        "--locked must not fetch a missing service digest"
+    );
 }
 
 #[test]

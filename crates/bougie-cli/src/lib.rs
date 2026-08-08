@@ -373,6 +373,10 @@ pub enum Command {
         /// Don't try to download anything, this will fail if there are uncached packages
         #[arg(long)]
         offline: bool,
+        /// Assert composer.lock and bougie.lock are present and up to date.
+        /// Never resolve, refresh, or extend either lock
+        #[arg(long)]
+        locked: bool,
         /// Show the plan, change nothing on disk
         #[arg(long)]
         dry_run: bool,
@@ -2027,6 +2031,14 @@ mod tests {
                 dry_run: true,
                 ..
             }
+        ));
+    }
+
+    #[test]
+    fn sync_accepts_locked_ci_gate() {
+        assert!(matches!(
+            cmd(&["bougie", "sync", "--locked"]),
+            Command::Sync { locked: true, .. }
         ));
     }
 

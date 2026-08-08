@@ -120,7 +120,7 @@ bougie php install 8.3                  # 8.3 | 8.3.12 | 8.3+zts
 bougie php pin 8.3 --composer          # record the pin in composer.json
 
 # 3. Install everything the project declares (PHP + extensions + vendor/)
-bougie sync                            # add --dry-run to preview, --offline for cache-only
+bougie sync                            # add --dry-run to preview, --offline for cache-only, --locked in CI
 
 # 4. Run commands in the project environment
 bougie run -- php -v                   # the `--` is optional
@@ -148,8 +148,10 @@ Run `bougie help <command>` for full flags. Global: `--quiet`, `--verbose`,
   flags are ignored in that mode.
 - `bougie new DIRECTORY [--toml] [--name …] [--starter …] [--start]`
   — create DIRECTORY and scaffold inside it.
-- `bougie sync [--offline] [--dry-run] [--scripts | --no-scripts] [--patches | --no-patches] [--resolution STRATEGY] [--managed-php | --no-managed-php] [--no-php-downloads] [--ignore-platform-reqs] [--ignore-platform-req REQ]`
+- `bougie sync [--offline] [--locked] [--dry-run] [--scripts | --no-scripts] [--patches | --no-patches] [--resolution STRATEGY] [--managed-php | --no-managed-php] [--no-php-downloads] [--ignore-platform-reqs] [--ignore-platform-req REQ]`
   — install everything the project requires (toolchain + extensions + `vendor/`).
+  `--locked` requires fresh committed `composer.lock` and `bougie.lock` files,
+  including digests for the current target; it never refreshes or extends them.
   The workhorse. Scripts are off by default; `--scripts` opts in. Patches are on
   by default when declared; `--no-patches` suppresses them. `--resolution`
   applies when a fresh lock must be resolved. PHP source: `--managed-php` (only

@@ -233,11 +233,39 @@ fn ensure_lock(
     paths: &Paths,
     project_root: &std::path::Path,
     offline: bool,
+    locked: bool,
     dry_run: bool,
     resolution: ResolutionStrategy,
     ignore_platform: &PlatformIgnore,
 ) -> Result<()> {
     let lock_path = project_root.join("composer.lock");
+    if locked {
+        if !lock_path.is_file() {
+            return Err(eyre!(
+                "composer.lock not found and --locked is set; run `bougie lock` and commit the result"
+            ));
+        }
+        let composer_json_path = project_root.join("composer.json");
+        let composer_json_bytes = std::fs::read(&composer_json_path).map_err(|error| {
+            eyre!(
+                "{} not found and --locked is set: {error}",
+                composer_json_path.display()
+            )
+        })?;
+        let lock = bougie_composer::lockfile::Lock::read(&lock_path)?;
+        let Some(expected) = lock.content_hash.as_deref() else {
+            return Err(eyre!(
+                "composer.lock has no content-hash, so --locked cannot prove it is up to date; run `bougie lock`"
+            ));
+        };
+        let actual = bougie_composer::lockfile::content_hash(&composer_json_bytes)?;
+        if !actual.eq_ignore_ascii_case(expected) {
+            return Err(eyre!(
+                "composer.lock is out of sync with composer.json and --locked is set (content-hash {expected} -> {actual}); run `bougie lock` and commit the result"
+            ));
+        }
+        return Ok(());
+    }
     if lock_path.is_file() {
         return Ok(());
     }
@@ -335,6 +363,7 @@ pub fn run(
     project_root: &Path,
     format: OutputFormat,
     offline: bool,
+    locked: bool,
     dry_run: bool,
     scripts: Option<bool>,
     patches: Option<bool>,
@@ -368,6 +397,7 @@ pub fn run(
         &paths,
         &project_root,
         offline,
+        locked,
         dry_run,
         pkg_resolution,
         &ignore_platform,
@@ -379,6 +409,24 @@ pub fn run(
     let (spec, flavor) = resolve_php_inputs(&project_root, &project)?;
     let resolution = PhpResolution::from_args(php_pref, &project, SelectionContext::Project)?;
 
+    let toolchain_lock = if locked || !dry_run {
+        super::locked_toolchain::load_fresh(
+            &project_root,
+            &paths,
+            &project,
+            &spec,
+            flavor,
+            offline,
+            if locked {
+                super::locked_toolchain::LockPolicy::Locked
+            } else {
+                super::locked_toolchain::LockPolicy::Update
+            },
+        )?
+    } else {
+        None
+    };
+
     if dry_run {
         let lock_count = count_lock_packages(&project_root);
         eprintln!("Resolving…");
@@ -388,15 +436,6 @@ pub fn run(
         }
         return Ok(ExitCode::SUCCESS);
     }
-
-    let toolchain_lock = super::locked_toolchain::load_fresh(
-        &project_root,
-        &paths,
-        &project,
-        &spec,
-        flavor,
-        offline,
-    )?;
 
     // Step 2 — toolchain (PHP + extensions + composer + shims).
     let result = ensure_synced_with_lock(
@@ -588,6 +627,7 @@ pub fn run_with_default_fallback(
         &paths,
         &project_root,
         false,
+        false,
         dry_run,
         ResolutionStrategy::Highest,
         &PlatformIgnore::default(),
@@ -659,6 +699,7 @@ pub fn run_with_php_request(
     ensure_lock(
         &paths,
         &project_root,
+        false,
         false,
         dry_run,
         ResolutionStrategy::Highest,
@@ -748,6 +789,7 @@ pub fn sync_script_slot(
     ensure_lock(
         paths,
         slot,
+        false,
         false,
         false,
         ResolutionStrategy::Highest,

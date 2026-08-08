@@ -355,6 +355,7 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
         ),
         Command::Sync {
             offline,
+            locked,
             dry_run,
             scripts,
             no_scripts,
@@ -372,6 +373,7 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
                 &project_root,
                 format,
                 offline,
+                locked,
                 dry_run,
                 scripts_override(scripts, no_scripts),
                 tristate(patches, no_patches),

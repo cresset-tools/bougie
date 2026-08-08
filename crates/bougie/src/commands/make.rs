@@ -211,6 +211,7 @@ pub fn run(format: OutputFormat, opts: MakeOptions) -> Result<ExitCode> {
             format,
             false,
             false,
+            false,
             None,
             None,
             bougie_cli::PhpPrefArgs::default(),

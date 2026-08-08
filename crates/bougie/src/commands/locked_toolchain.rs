@@ -1,6 +1,8 @@
 //! Load and semantically validate `bougie.lock` for install-time use.
 
 use bougie_config::ProjectConfig;
+#[cfg(unix)]
+use bougie_daemon::daemon::catalog;
 use bougie_lock::ToolchainLock;
 use bougie_paths::Paths;
 use bougie_platform::target::Triple;
@@ -9,6 +11,16 @@ use eyre::Result;
 use std::collections::BTreeMap;
 use std::path::Path;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LockPolicy {
+    /// Use a fresh lock when available, lazily add the current target, and
+    /// warn before falling back to floating resolution when it is stale.
+    Update,
+    /// CI assertion mode: require a fresh lock that already covers the
+    /// current target. Never mutate the lock or fall back.
+    Locked,
+}
+
 pub fn load_fresh(
     project_root: &Path,
     paths: &Paths,
@@ -16,8 +28,14 @@ pub fn load_fresh(
     php_spec: &VersionLike,
     flavor: Flavor,
     offline: bool,
+    policy: LockPolicy,
 ) -> Result<Option<ToolchainLock>> {
     let Some(mut lock) = ToolchainLock::read(project_root)? else {
+        if policy == LockPolicy::Locked {
+            return Err(eyre::eyre!(
+                "bougie.lock not found and --locked is set; run `bougie lock --with-platform` and commit the result"
+            ));
+        }
         return Ok(None);
     };
     let mut drift = Vec::new();
@@ -114,6 +132,9 @@ pub fn load_fresh(
 
     let target = Triple::detect()?.to_string();
     match lock.targets.get(&target) {
+        None if policy == LockPolicy::Locked => {
+            drift.push(format!("current target {target} is not covered"));
+        }
         None if drift.is_empty() && !offline => {
             let (resolved_target, artifacts) =
                 super::platform_lock::resolve_locked_target(&lock, paths)?;
@@ -133,11 +154,24 @@ pub fn load_fresh(
                     drift.push(format!("current target has no digest for extension {name}"));
                 }
             }
+            #[cfg(unix)]
+            for name in lock.services.keys() {
+                let ships_artifact =
+                    catalog::find(name).is_some_and(|entry| !entry.tarball.is_empty());
+                if ships_artifact && !artifacts.services.contains_key(name) {
+                    drift.push(format!("current target has no digest for service {name}"));
+                }
+            }
         }
     }
 
     if drift.is_empty() {
         Ok(Some(lock))
+    } else if policy == LockPolicy::Locked {
+        Err(eyre::eyre!(
+            "bougie.lock is stale and --locked is set:\n  - {}\nrun `bougie lock --with-platform` and commit the result",
+            drift.join("\n  - ")
+        ))
     } else if offline {
         Err(eyre::eyre!(
             "bougie.lock is stale and --offline prevents floating resolution; run `bougie lock --with-platform` online"

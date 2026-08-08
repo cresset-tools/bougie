@@ -153,7 +153,10 @@ Top-level subcommands (from `bougie-cli`):
   any pre-release suffix, pads to three segments, and preserves a `v`
   prefix. A newly-added key is spliced after `description`/`name` rather
   than appended, so it doesn't land below `require`.
-- `sync [--offline] [--dry-run]` — Install everything the project requires.
+- `sync [--offline] [--locked] [--dry-run]` — Install everything the project
+  requires. `--locked` is the CI gate: require fresh `composer.lock` and
+  `bougie.lock` files that already cover the current target, without changing
+  either lock.
 - `up [names...]` / `down [names...] [--purge]` — Start / stop declared
   services.
 - `run [--with EXT=VER] [--no-sync] [--xdebug] -- ARGV...` — Run a command

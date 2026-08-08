@@ -207,6 +207,7 @@ fn resync(format: OutputFormat) -> Result<ExitCode> {
         format,
         false,
         false,
+        false,
         None,
         Some(true),
         PhpPrefArgs::default(),

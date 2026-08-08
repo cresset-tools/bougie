@@ -74,6 +74,7 @@ pub fn run(format: OutputFormat, request: &str, pin_target: PinTarget) -> Result
         format,
         false,
         false,
+        false,
         None,
         None,
         bougie_cli::PhpPrefArgs::default(),
