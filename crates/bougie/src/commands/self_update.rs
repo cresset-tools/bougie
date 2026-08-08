@@ -58,11 +58,8 @@ const HTTP_TIMEOUT: Duration = Duration::from_secs(60);
 pub fn run(force: bool) -> Result<ExitCode> {
     if env::var_os(NO_SELF_UPDATE_ENV).is_some() {
         return Err(BougieError::SelfUpdate {
-            detail: format!(
-                "{NO_SELF_UPDATE_ENV} is set; refusing to self-update — \
-                 the binary is owned by an external installer (package manager, \
-                 nix store, /usr/local/bin, …)."
-            ),
+            detail: format!("not self-updating: {NO_SELF_UPDATE_ENV} is set"),
+            declined: true,
         }
         .into());
     }
@@ -83,12 +80,11 @@ pub fn run(force: bool) -> Result<ExitCode> {
         Provenance::External(reason) => {
             return Err(BougieError::SelfUpdate {
                 detail: format!(
-                    "{reason}. `bougie self update` only updates a binary installed by \
-                     bougie's own installer (the cargo-dist `curl … | sh` / `irm … | iex` \
-                     script). Update this copy through whatever installed it (apt, brew, \
-                     nix, `cargo install`, …), or re-run with `--force` if you're sure it \
-                     came from bougie's installer."
+                    "{reason}\n  \
+                     hint: update it however it was installed (cargo, nix, brew, apt, …), \
+                     or pass --force"
                 ),
+                declined: true,
             }
             .into());
         }
@@ -252,8 +248,7 @@ fn install_provenance(current_exe: &Path) -> Provenance {
 
     let Ok(body) = fs::read_to_string(&receipt_path) else {
         return Provenance::External(format!(
-            "no bougie install receipt at {} — this binary doesn't look like it came from \
-             bougie's installer",
+            "this bougie has no install receipt at {}, so it isn't one the installer placed",
             receipt_path.display()
         ));
     };
@@ -272,11 +267,9 @@ fn install_provenance(current_exe: &Path) -> Provenance {
         Provenance::Managed
     } else {
         Provenance::External(format!(
-            "this binary runs from {} but bougie's installer manages {} (per {}) — looks like it \
-             was installed by a package manager, cargo, or nix",
+            "this bougie runs from {}, not the {} its installer manages",
             current_exe.parent().unwrap_or(current_exe).display(),
             receipt.install_prefix,
-            receipt_path.display(),
         ))
     }
 }
@@ -493,6 +486,7 @@ fn verify_sha256(file: &Path, expected: &str) -> Result<()> {
                 "sha256 mismatch on {}: expected {expected_lc}, got {actual}",
                 file.display()
             ),
+            declined: false,
         }
         .into());
     }

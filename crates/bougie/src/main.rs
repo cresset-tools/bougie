@@ -1,4 +1,4 @@
-use bougie::{Cli, exit_code_for, shim};
+use bougie::{Cli, exit_code_for, shim, wants_diagnose_for};
 use clap::Parser;
 use std::process::ExitCode;
 
@@ -216,9 +216,14 @@ fn report_error(err: &eyre::Report) {
     }
     // Capture the full context locally (a small ring, never uploaded
     // on its own) and point at the zero-effort reporting path.
-    // Local-only by design — see `bougie::failure`.
+    // Local-only by design — see `bougie::failure`. The capture is
+    // unconditional so `bougie diagnose` still has the context if the
+    // user asks; only the pointer is withheld, from the errors that
+    // already handed the user their next step.
     bougie::failure::record(err);
-    eprintln!("hint: run `bougie diagnose` to assemble a shareable report");
+    if wants_diagnose_for(err) {
+        eprintln!("hint: run `bougie diagnose` to assemble a shareable report");
+    }
 }
 
 /// The static next-step line for a telemetry error category, if that

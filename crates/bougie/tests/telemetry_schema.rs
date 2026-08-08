@@ -97,6 +97,7 @@ fn every_outcome_label_is_in_the_outcome_vocab() {
         },
         BougieError::SelfUpdate {
             detail: String::new(),
+            declined: false,
         },
         BougieError::Vcs {
             operation: String::new(),

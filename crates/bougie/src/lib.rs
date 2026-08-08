@@ -10,7 +10,7 @@ pub mod shim;
 // `bougie::{Cli, exit_code_for, shim, Paths, Triple}` without
 // caring which leaf crate hosts them.
 pub use bougie_cli::{Cli, Command, OutputFormat};
-pub use bougie_errors::{BougieError, exit_code_for};
+pub use bougie_errors::{BougieError, exit_code_for, wants_diagnose_for};
 pub use bougie_paths::Paths;
 pub use bougie_platform::target::Triple;
 

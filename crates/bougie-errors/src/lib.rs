@@ -96,8 +96,15 @@ pub enum BougieError {
     #[error("filesystem error while {operation}: {detail}")]
     Filesystem { operation: String, detail: String },
 
-    #[error("self-update failed: {detail}")]
-    SelfUpdate { detail: String },
+    /// A self-update that didn't happen. `declined` separates the
+    /// cases where bougie *chose* not to update — this binary isn't
+    /// the one our installer manages, `BOUGIE_NO_SELF_UPDATE` is set —
+    /// from an update that was attempted and broke. A declined update
+    /// is a policy answer, not a fault: it names the fix itself, so it
+    /// drops the `self-update failed` framing and the reporting path
+    /// skips the `bougie diagnose` pointer for it.
+    #[error("{}{detail}", if *declined { "" } else { "self-update failed: " })]
+    SelfUpdate { detail: String, declined: bool },
 
     /// No project marker found walking up from the invocation
     /// directory. `detail` carries the site's full message — which
@@ -154,6 +161,45 @@ impl BougieError {
             Self::Vcs { .. } => 71,
         }
     }
+
+    /// Does a failure of this kind leave the user something worth
+    /// reporting? The `bougie diagnose` pointer is the *fallback*
+    /// next step, for when bougie has nothing better to offer. The
+    /// variants below already handed the user their fix and describe
+    /// a machine that is working correctly — there is no project
+    /// here, your composer.json won't parse, another bougie holds the
+    /// lock, you asked for a yanked artifact, this platform isn't
+    /// built for — so a "go assemble a report" line after them is
+    /// noise, and the report itself would tell nobody anything.
+    ///
+    /// Deliberately absent, though they read as user-side at a
+    /// glance:
+    ///
+    /// - `Vcs` — three of its four hints are complete, but the
+    ///   classifier's fallback is "see git's output above", which is
+    ///   exactly the git failure bougie *couldn't* explain.
+    /// - `Resolution` — "my constraint or your resolver bug?" is a
+    ///   question the user can't answer alone.
+    /// - `Network` — an offline user ignores the line; a user whose
+    ///   mirror is down wants it.
+    /// - `Filesystem` — a permission or a bougie bug, indistinguishable
+    ///   from the message.
+    ///
+    /// The hash- and signature-mismatch variants keep it most of all:
+    /// their own hints say to surface the failure to the index
+    /// publisher, and a report is how.
+    #[must_use]
+    pub fn wants_diagnose(&self) -> bool {
+        !matches!(
+            self,
+            Self::NoProject { .. }
+                | Self::Config { .. }
+                | Self::LockHeld { .. }
+                | Self::YankedSelected { .. }
+                | Self::UnknownTarget { .. }
+                | Self::SelfUpdate { declined: true, .. }
+        )
+    }
 }
 
 /// Chain-walking on purpose, mirroring telemetry's
@@ -163,6 +209,16 @@ pub fn exit_code_for(err: &eyre::Report) -> u8 {
     err.chain()
         .find_map(|cause| cause.downcast_ref::<BougieError>())
         .map_or(1, BougieError::exit_code)
+}
+
+/// [`BougieError::wants_diagnose`] for the typed error inside a
+/// report's chain. An untyped error is an unmodelled failure — the
+/// case the pointer exists for — so it keeps it.
+#[must_use]
+pub fn wants_diagnose_for(err: &eyre::Report) -> bool {
+    err.chain()
+        .find_map(|cause| cause.downcast_ref::<BougieError>())
+        .is_none_or(BougieError::wants_diagnose)
 }
 
 #[cfg(test)]
@@ -223,6 +279,7 @@ mod tests {
             .exit_code(),
             BougieError::SelfUpdate {
                 detail: String::new(),
+                declined: false,
             }
             .exit_code(),
             BougieError::NoProject {
@@ -268,6 +325,165 @@ mod tests {
     fn exit_code_for_unknown_error_defaults_to_one() {
         let report = eyre::eyre!("something else");
         assert_eq!(exit_code_for(&report), 1);
+    }
+
+    #[test]
+    fn declined_self_update_skips_the_diagnose_pointer() {
+        let declined = eyre::Report::new(BougieError::SelfUpdate {
+            detail: "this bougie runs from /a, not the /b its installer manages".into(),
+            declined: true,
+        });
+        assert!(!wants_diagnose_for(&declined));
+        // …and it renders as the refusal it is, without `failed`.
+        assert!(declined.to_string().starts_with("this bougie runs from"));
+
+        let broke = eyre::Report::new(BougieError::SelfUpdate {
+            detail: "sha256 mismatch on /tmp/x".into(),
+            declined: false,
+        });
+        assert!(wants_diagnose_for(&broke));
+        assert_eq!(
+            broke.to_string(),
+            "self-update failed: sha256 mismatch on /tmp/x"
+        );
+    }
+
+    #[test]
+    fn unmodelled_errors_keep_the_diagnose_pointer() {
+        assert!(wants_diagnose_for(&eyre::eyre!("something else")));
+    }
+
+    /// Every variant, classified on purpose. `matches!` can't be
+    /// exhaustive, so a new variant silently defaults to keeping the
+    /// pointer — this list is where that decision gets made out loud.
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one line per variant is the point — the list is the decision"
+    )]
+    fn every_variant_is_classified() {
+        let cases: [(BougieError, bool); 15] = [
+            // Already actionable, and nobody could act on a report.
+            (
+                BougieError::NoProject {
+                    detail: String::new(),
+                },
+                false,
+            ),
+            (
+                BougieError::Config {
+                    path: String::new(),
+                    detail: String::new(),
+                },
+                false,
+            ),
+            (
+                BougieError::LockHeld {
+                    path: String::new(),
+                    pid: 0,
+                },
+                false,
+            ),
+            (
+                BougieError::YankedSelected {
+                    tag: String::new(),
+                    reason: String::new(),
+                },
+                false,
+            ),
+            (
+                BougieError::UnknownTarget {
+                    triple: String::new(),
+                    hint: String::new(),
+                },
+                false,
+            ),
+            (
+                BougieError::SelfUpdate {
+                    detail: String::new(),
+                    declined: true,
+                },
+                false,
+            ),
+            // Worth reporting: a bougie bug, a bad publish, or a
+            // failure the message alone can't attribute.
+            (
+                BougieError::SelfUpdate {
+                    detail: String::new(),
+                    declined: false,
+                },
+                true,
+            ),
+            (
+                BougieError::Network {
+                    operation: String::new(),
+                    detail: String::new(),
+                },
+                true,
+            ),
+            (
+                BougieError::IndexSignature {
+                    url: String::new(),
+                    trust_root_fingerprint: String::new(),
+                    reason: String::new(),
+                    hint: String::new(),
+                },
+                true,
+            ),
+            (
+                BougieError::ManifestHashMismatch {
+                    url: String::new(),
+                    expected: String::new(),
+                    actual: String::new(),
+                },
+                true,
+            ),
+            (
+                BougieError::BlobHashMismatch {
+                    url: String::new(),
+                    expected: String::new(),
+                    actual: String::new(),
+                },
+                true,
+            ),
+            (
+                BougieError::Resolution {
+                    kind: String::new(),
+                    detail: String::new(),
+                },
+                true,
+            ),
+            (
+                BougieError::Filesystem {
+                    operation: String::new(),
+                    detail: String::new(),
+                },
+                true,
+            ),
+            (
+                BougieError::Service {
+                    code: String::new(),
+                    detail: String::new(),
+                },
+                true,
+            ),
+            (
+                BougieError::Vcs {
+                    operation: String::new(),
+                    url: String::new(),
+                    detail: String::new(),
+                    hint: String::new(),
+                },
+                true,
+            ),
+        ];
+        for (err, want) in cases {
+            assert_eq!(
+                err.wants_diagnose(),
+                want,
+                "{err:?} is on the wrong side of the diagnose pointer"
+            );
+        }
     }
 
     #[test]
