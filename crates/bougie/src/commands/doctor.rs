@@ -161,7 +161,7 @@ fn services_check(paths: &Paths, project: Option<&ProjectConfig>) -> Check {
                 declared.len()
             ),
         )
-        .hint("run `bougie up`");
+        .hint("run `bougie service up`");
     };
     let mut bad = Vec::new();
     for name in &declared {
@@ -180,7 +180,7 @@ fn services_check(paths: &Paths, project: Option<&ProjectConfig>) -> Check {
         Check::ok("services", format!("{} service(s) running", declared.len()))
     } else {
         Check::fail("services", format!("not healthy: {}", bad.join(", ")))
-            .hint("run `bougie up` (then `bougie service logs <name>` if it fails again)")
+            .hint("run `bougie service up` (then `bougie service logs <name>` if it fails again)")
     }
 }
 
