@@ -83,6 +83,51 @@ To add this tool to your path, run `bougie tool install`
 bougie tool install --php 8.4 laravel/pint
 ```
 
+## Bougie and coding agents
+
+Coding agents reach for the machine's `php` and `composer` by reflex, which
+in a bougie project is either the wrong interpreter or none at all. Bougie
+ships a skill that sets them straight: the environment is bougie's, check
+whether the site is already up before running anything that needs it, and
+ask before running `bougie start` — it downloads a toolchain and brings up
+services shared with every other project on the machine.
+
+```bash
+bougie skill install
+```
+
+With no flags it asks which agents — leading with any already in use in the
+project, and taking `1,3` for more than one — and then where the files go:
+
+| `--agent` | file |
+| --- | --- |
+| `claude` | `.claude/skills/bougie/SKILL.md` (also `~/.claude/…`) |
+| `agents` | `AGENTS.md` — Codex, opencode, Jules, Amp, Zed, … |
+| `cursor` | `.cursor/rules/bougie.mdc` |
+| `copilot` | `.github/instructions/bougie.instructions.md` |
+| `gemini` | `GEMINI.md` (also `~/.gemini/GEMINI.md`) |
+| `plain` | bare markdown, wherever `--path` says |
+
+Same prose in each; only the frontmatter that agent keys off differs. Teams
+mix editors, so a run can cover several at once:
+
+```bash
+bougie skill install --project --agent claude,agents,cursor
+```
+
+Add `--project`, `--user`, or `--path <DIR>` to skip the questions, which
+is what scripts and CI must do. `bougie skill print --agent <name>` writes
+a single document to stdout.
+
+`AGENTS.md` and `GEMINI.md` are yours, not bougie's, so bougie confines
+itself to a marked block and leaves the rest of the file alone. A file it
+owns outright is never overwritten without asking (or `--force`).
+
+The document ships inside the binary, so `bougie self update` keeps it in
+step with the CLI it describes — re-run `bougie skill install` after an
+update and it reports `unchanged` if there was nothing to do.
+
+
 ## Telemetry
 
 Bougie can collect anonymous usage statistics and crash reports —

@@ -37,6 +37,7 @@ pub const COMMAND_VOCAB: &[&str] = &[
     "tool-exec",
     "cache",
     "self",
+    "skill",
     "telemetry",
     "__telemetry-flush",
     "diagnose",

@@ -56,6 +56,7 @@ pub mod service;
 pub mod share;
 #[cfg(unix)]
 mod share_fixup;
+pub mod skill;
 #[cfg(unix)]
 pub mod start;
 pub mod starter;

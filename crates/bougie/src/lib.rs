@@ -15,7 +15,8 @@ pub use bougie_paths::Paths;
 pub use bougie_platform::target::Triple;
 
 use bougie_cli::{
-    CacheCommand, ComposerCommand, ExtCommand, NodeCommand, PhpCommand, SelfCommand, ToolCommand,
+    CacheCommand, ComposerCommand, ExtCommand, NodeCommand, PhpCommand, SelfCommand, SkillCommand,
+    ToolCommand,
 };
 #[cfg(unix)]
 use bougie_cli::{DbCommand, ProjectsCommand, ServiceCommand, ServiceDaemonCommand};
@@ -118,6 +119,7 @@ fn command_name(cmd: &Command) -> &'static str {
         Command::ToolExec { .. } => "tool-exec",
         Command::Cache(_) => "cache",
         Command::SelfCmd(_) => "self",
+        Command::Skill(_) => "skill",
         Command::Telemetry { .. } => "telemetry",
         Command::TelemetryFlush => "__telemetry-flush",
         Command::Diagnose { .. } => "diagnose",
@@ -965,6 +967,8 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
         Command::Tool(ToolCommand::List) => commands::tool_list::run(format),
         Command::Tool(ToolCommand::Dir { package }) => commands::tool_dir::run(format, package),
         Command::ToolExec { wrapper, args } => commands::tool_exec::run(&wrapper, args),
+        Command::Skill(SkillCommand::Install(args)) => commands::skill::install(format, &args),
+        Command::Skill(SkillCommand::Print { agent }) => commands::skill::print(format, agent),
         Command::Telemetry { command } => commands::telemetry::run(format, command),
         Command::TelemetryFlush => commands::telemetry_flush::run(),
         Command::Diagnose {

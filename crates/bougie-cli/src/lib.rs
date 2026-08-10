@@ -34,7 +34,7 @@ Command groups:
   Dependencies add, remove, lock, tree, outdated, ext, composer
   Toolchain    php, node, tool
   Services     server, service, projects
-  Admin        cache, self
+  Admin        cache, self, skill
 
 Run `bougie help <command>` for details on any command";
 
@@ -498,8 +498,22 @@ pub enum Command {
     #[command(name = "self", display_order = 41)]
     SelfCmd(SelfCommand),
 
+    /// Manage the coding-agent skill for bougie projects
+    #[command(
+        subcommand,
+        display_order = 42,
+        long_about = "Manage the coding-agent skill for bougie projects.\n\n\
+            The skill tells an agent that this project's PHP, extensions, \
+            dependencies and services belong to bougie (so it shouldn't reach \
+            for the machine's `php` or `composer`), how to check whether the \
+            site is already up, and to ask before running `bougie start`.\n\n\
+            `install` writes it where an agent will find it; `print` sends it \
+            to stdout for anywhere else."
+    )]
+    Skill(SkillCommand),
+
     /// Manage anonymous usage telemetry (opt-in; see TELEMETRY.md)
-    #[command(display_order = 42)]
+    #[command(display_order = 43)]
     Telemetry {
         #[command(subcommand)]
         command: Option<TelemetryCommand>,
@@ -512,7 +526,7 @@ pub enum Command {
 
     /// Assemble a shareable diagnostic report from the last failure
     /// (reviewed in $EDITOR; nothing is sent without confirmation)
-    #[command(display_order = 43)]
+    #[command(display_order = 44)]
     Diagnose {
         /// Write the report to ./bougie-diagnose.md for a GitHub issue
         /// instead of uploading
@@ -1823,6 +1837,70 @@ pub enum CacheCommand {
 }
 
 #[derive(Subcommand, Debug)]
+pub enum SkillCommand {
+    /// Write the skill where your coding agents will find it. With no
+    /// flags, asks which agents and where
+    Install(SkillInstallArgs),
+    /// Print the skill to stdout, in the chosen agent's shape
+    Print {
+        /// Which agent's format to render
+        #[arg(long, value_name = "AGENT", default_value = "claude")]
+        agent: SkillAgent,
+    },
+}
+
+/// Which agent's convention a skill is written for. Each names a
+/// different file, and most want their own YAML frontmatter around the
+/// same body — `bougie skill print --agent <name>` shows the result.
+#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SkillAgent {
+    /// Claude Code skill — `.claude/skills/bougie/SKILL.md`
+    Claude,
+    /// `AGENTS.md` at the project root — the cross-agent convention
+    /// (Codex, opencode, Jules, Amp, Zed, …). Written as a marked
+    /// block, so the rest of the file is left alone
+    Agents,
+    /// Cursor project rule — `.cursor/rules/bougie.mdc`
+    Cursor,
+    /// GitHub Copilot instructions —
+    /// `.github/instructions/bougie.instructions.md`
+    Copilot,
+    /// Gemini CLI — `GEMINI.md`, as a marked block
+    Gemini,
+    /// Plain markdown, no frontmatter, for an agent bougie doesn't know
+    /// about. Has no default location, so it needs `--path`
+    Plain,
+}
+
+/// Where `bougie skill install` writes, and whether it may clobber.
+/// The three location flags are mutually exclusive; passing none makes
+/// the command ask (and, with nothing to ask — no tty — error).
+#[derive(Args, Debug)]
+pub struct SkillInstallArgs {
+    /// Which agent to install for. Repeat (or comma-separate) to write
+    /// the skill for several at once. Asked interactively when omitted;
+    /// a non-interactive run defaults to `claude`
+    #[arg(long, value_name = "AGENT", value_delimiter = ',')]
+    pub agent: Vec<SkillAgent>,
+    /// Install into this project, at the agent's project-level location
+    #[arg(long, conflicts_with_all = ["user", "path"])]
+    pub project: bool,
+    /// Install for your user account, at the agent's user-level location
+    /// (not every agent has one)
+    #[arg(long, conflicts_with_all = ["project", "path"])]
+    pub user: bool,
+    /// Write the agent's file into this directory (created if needed),
+    /// instead of either default location
+    #[arg(long, value_name = "DIR", conflicts_with_all = ["project", "user"])]
+    pub path: Option<std::path::PathBuf>,
+    /// Overwrite an existing file whose contents differ, instead of
+    /// asking. Doesn't apply to marked blocks — those are always
+    /// rewritten in place
+    #[arg(long)]
+    pub force: bool,
+}
+
+#[derive(Subcommand, Debug)]
 pub enum TelemetryCommand {
     /// Show the telemetry mode, where it came from, and what's spooled
     Status,
@@ -2131,6 +2209,63 @@ mod tests {
         // exist under `service` now.
         assert!(Cli::try_parse_from(["bougie", "up"]).is_err());
         assert!(Cli::try_parse_from(["bougie", "down"]).is_err());
+    }
+
+    #[test]
+    fn skill_verbs_and_install_locations() {
+        // `print` renders Claude Code's shape unless told otherwise.
+        assert!(matches!(
+            cmd(&["bougie", "skill", "print"]),
+            Command::Skill(SkillCommand::Print {
+                agent: SkillAgent::Claude
+            })
+        ));
+        assert!(matches!(
+            cmd(&["bougie", "skill", "print", "--agent", "cursor"]),
+            Command::Skill(SkillCommand::Print {
+                agent: SkillAgent::Cursor
+            })
+        ));
+        let Command::Skill(SkillCommand::Install(args)) =
+            cmd(&["bougie", "skill", "install", "--user"])
+        else {
+            panic!("expected skill install");
+        };
+        assert!(args.user && !args.project && args.path.is_none());
+        // Empty, so install knows to ask rather than assume.
+        assert!(args.agent.is_empty());
+
+        // Several agents in one run, repeated or comma-separated.
+        for argv in [
+            &["bougie", "skill", "install", "--agent", "agents,cursor"][..],
+            &[
+                "bougie", "skill", "install", "--agent", "agents", "--agent", "cursor",
+            ][..],
+        ] {
+            let Command::Skill(SkillCommand::Install(args)) = cmd(argv) else {
+                panic!("expected skill install for {argv:?}");
+            };
+            assert_eq!(
+                args.agent,
+                vec![SkillAgent::Agents, SkillAgent::Cursor],
+                "for {argv:?}"
+            );
+        }
+
+        // A bare `bougie skill` names no verb — clap lists them instead of
+        // guessing between printing and writing a file.
+        assert!(Cli::try_parse_from(["bougie", "skill"]).is_err());
+        // An agent bougie has no convention for is a usage error, not a
+        // silently-wrong file.
+        assert!(Cli::try_parse_from(["bougie", "skill", "install", "--agent", "nope"]).is_err());
+        // Exactly one location.
+        assert!(
+            Cli::try_parse_from(["bougie", "skill", "install", "--user", "--project"]).is_err()
+        );
+        assert!(
+            Cli::try_parse_from(["bougie", "skill", "install", "--user", "--path", "/tmp/x"])
+                .is_err()
+        );
     }
 
     #[test]

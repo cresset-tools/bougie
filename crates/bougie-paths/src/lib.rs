@@ -45,6 +45,17 @@ memory_limit = -1
 /// ordering across scan dirs is by dir position anyway.
 pub const CLI_DEFAULTS_INI_NAME: &str = "99-memory-limit.ini";
 
+/// The user's real home directory — for the rare path that is literally
+/// `~/…` because *another* tool defined it that way (a coding agent's
+/// `~/.claude/skills/`, say), on every platform alike.
+///
+/// Everything bougie owns goes through [`Paths`] instead, which honors
+/// `BOUGIE_HOME` and the platform's base-dir conventions. Reach for this
+/// only when the layout isn't ours to choose.
+pub fn home_dir() -> Result<PathBuf> {
+    etcetera::home_dir().wrap_err("could not resolve the home directory")
+}
+
 #[derive(Debug, Clone)]
 pub struct Paths {
     home: PathBuf,

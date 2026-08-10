@@ -175,6 +175,42 @@ Top-level subcommands (from `bougie-cli`):
   PATH — sync retires any stale one it previously placed.)
 - `cache {clean,prune,dir,size}` — Cache management.
 - `self {update,version}` — Manage the bougie binary.
+- `skill {install,print}` — The coding-agent skill, in each agent's own
+  convention. `--agent {claude,agents,cursor,copilot,gemini,plain}` selects
+  the filename + frontmatter and is **repeatable** (`--agent a --agent b`
+  or `--agent a,b`) — one run installs for as many agents as asked, so the
+  result is always a list (`installs: [{agent, path, status}]`) and the
+  text output is one line each. The prose is one asset
+  (`commands/skill_assets/body.md`, plus `description.txt` for the
+  frontmatter-bearing formats), `include_str!`'d rather than shipped
+  alongside the binary so it can't drift from the CLI surface it
+  describes. The per-agent layout is the `Target` table in
+  `commands/skill.rs` — adding an agent is a `SkillAgent` variant plus a
+  row.
+  - **Location:** `--project` / `--user` (not every agent has a
+    user-level file) / `--path DIR`, resolved **once** for the whole
+    selection into a `Location`, which each agent then joins its own
+    relative path onto. Every destination is resolved before anything is
+    written, so a selection holding one agent the chosen scope can't
+    serve fails outright instead of half-installing. With no location
+    flag it prompts — which agents (multi-select, leading with any
+    detected in the project), then where, offering only the scopes every
+    selected agent supports — and errors naming the flags when stdin
+    isn't a tty. `--agent` is the exception: unset and non-interactive,
+    it defaults to `claude` rather than erroring, since a wrong *format*
+    in a path you named is visible and cheap to redo, while a wrong
+    *location* litters the disk.
+  - **Ownership decides clobbering.** A dedicated file (`SKILL.md`,
+    `bougie.mdc`, …) is bougie's whole file, so a differing one needs
+    `--force` or a `y`; declining is `kept`, exit 0, not an error. A
+    shared file (`AGENTS.md`, `GEMINI.md`) is the project's, so bougie
+    splices only a `<!-- bougie:start -->` … `<!-- bougie:end -->` block
+    and rewrites it unasked. Adding a block to a file that had none is
+    `installed`, not `updated`.
+  - Unit tests in `commands/skill.rs` pin the frontmatter shapes, the
+    check-then-ask protocol, the verbs the body names, the splice's
+    idempotence, and the multi-select answer parser; `tests/skill.rs`
+    covers the per-agent and multi-agent install lifecycles.
 - `server [NAME]` — Dev HTTP/FastCGI server. With no subcommand it's
   the project verb: register the current project with the shared
   bougied-managed server, print its `<name>.bougie.run` URL, and attach
