@@ -14,6 +14,7 @@ already know the basics.
 - [Extensions](/docs/guides/extensions)
 - [Services](/docs/guides/services)
 - [Dev server](/docs/guides/dev-server)
+- [Run tools with bgx](/docs/guides/bgx)
 - [Global tools](/docs/guides/global-tools)
 - [Patches](/docs/guides/patches)
 - [Recipes](/docs/guides/recipes)

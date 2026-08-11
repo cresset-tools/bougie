@@ -231,6 +231,7 @@ export default defineConfig({
             { text: 'Extensions', link: '/docs/guides/extensions' },
             { text: 'Services', link: '/docs/guides/services' },
             { text: 'Dev server', link: '/docs/guides/dev-server' },
+            { text: 'Run tools with bgx', link: '/docs/guides/bgx' },
             { text: 'Global tools', link: '/docs/guides/global-tools' },
             { text: 'Patches', link: '/docs/guides/patches' },
             { text: 'Recipes', link: '/docs/guides/recipes' },
