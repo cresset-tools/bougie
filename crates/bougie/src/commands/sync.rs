@@ -600,16 +600,13 @@ fn elapsed_ms(started: Instant) -> f64 {
     started.elapsed().as_secs_f64() * 1000.0
 }
 
-/// Same as [`run`] but, when neither `composer.json` nor `bougie.toml`
-/// pins a PHP version *and* no inference signal fires, falls back to
-/// the highest already-installed interpreter (or `>=8.0` for a fresh
-/// machine) instead of erroring.
+/// Same as [`run`] but tuned for `bougie run`'s implicit sync: the PHP
+/// selection is a one-off ([`SelectionContext::OneOff`]) rather than a
+/// project configuration, the lock refresh never errors offline, and
+/// root scripts stay config-driven (no CLI flag reaches here).
 ///
-/// Mirrors uv's behavior for `uv run` outside a project: be useful with
-/// whatever's lying around, defer the strict-constraint requirement to
-/// the explicit `bougie sync` path. `bougie sync` itself still errors
-/// when inference can't help — only `bougie run` opts in via this
-/// entry point for the install-state fallback.
+/// The unpinned-PHP fallback it used to own now lives in
+/// [`resolve_php_inputs`], so every entry point shares it.
 pub fn run_with_default_fallback(
     project_root: &Path,
     format: OutputFormat,
@@ -636,11 +633,7 @@ pub fn run_with_default_fallback(
     let resolve_ms = elapsed_ms(resolve_started);
 
     let project = load_project(&project_root)?;
-    let (spec, flavor) = match resolve_php_inputs(&project_root, &project) {
-        Ok(inputs) => inputs,
-        Err(err) if is_missing_php_constraint(&err) => default_php_inputs(&paths, &project)?,
-        Err(err) => return Err(err),
-    };
+    let (spec, flavor) = resolve_php_inputs(&project_root, &project)?;
     let resolution = PhpResolution::from_args(php_pref, &project, SelectionContext::OneOff)?;
 
     if dry_run {
@@ -824,14 +817,10 @@ pub fn sync_script_slot(
         }
         None => {
             // No `--php` override: drive PHP off the script's own
-            // `require.php`, falling back to the highest installed (or
-            // `>=8.0`) when the inline block pins nothing — the uv-parity
-            // forgiving default shared with `run_with_default_fallback`.
-            let (spec, flavor) = match resolve_php_inputs(slot, &project) {
-                Ok(inputs) => inputs,
-                Err(err) if is_missing_php_constraint(&err) => default_php_inputs(paths, &project)?,
-                Err(err) => return Err(err),
-            };
+            // `require.php`. When the inline block pins nothing,
+            // `resolve_php_inputs` falls back to the install state
+            // (`default_php_spec`) rather than erroring.
+            let (spec, flavor) = resolve_php_inputs(slot, &project)?;
             ensure_synced_with(paths, slot, &project, spec, flavor, resolution)?;
         }
     }
@@ -859,34 +848,6 @@ fn expand_tilde(path: &std::path::Path) -> PathBuf {
     } else {
         path.to_path_buf()
     }
-}
-
-fn is_missing_php_constraint(err: &eyre::Report) -> bool {
-    matches!(
-        err.downcast_ref::<BougieError>(),
-        Some(BougieError::Resolution { kind, .. }) if kind == "php"
-    ) && format!("{err}").contains("no PHP version constraint set")
-}
-
-/// Resolve PHP inputs when no project constraint is set:
-///   (1) prefer the highest already-installed interpreter (matching
-///       any flavor pin), so repeat `bougie run` is fast and offline;
-///   (2) else fall back to `>=8.0` — the resolver picks the latest
-///       published artifact for the configured flavor.
-fn default_php_inputs(paths: &Paths, project: &ProjectConfig) -> Result<(VersionLike, Flavor)> {
-    let flavor = parse_flavor(project.bougie.php.flavor.as_deref())?;
-    if let Some(v) = highest_installed(paths, flavor) {
-        return Ok((
-            VersionLike::Version(PartialVersion {
-                major: v.major,
-                minor: Some(v.minor),
-                patch: Some(v.patch),
-            }),
-            flavor,
-        ));
-    }
-    let c = Constraint::parse(">=8.0").map_err(|e| eyre!("default constraint: {e}"))?;
-    Ok((VersionLike::Constraint(c), flavor))
 }
 
 fn highest_installed(paths: &Paths, flavor: Flavor) -> Option<Version> {
@@ -1749,9 +1710,71 @@ fn resolve_php_inputs(
         }
     }
 
-    let spec = intersect_php(public.as_ref(), override_spec.as_ref())?;
     let flavor = parse_flavor(project.bougie.php.flavor.as_deref())?;
+    // Nothing written, nothing inferred: pick a PHP off the install
+    // state rather than erroring. `intersect_php` still owns the
+    // both-sides-set conflict check for every other combination.
+    let spec = if public.is_none() && override_spec.is_none() {
+        default_php_spec(&Paths::from_env()?, project_root, flavor)?
+    } else {
+        intersect_php(public.as_ref(), override_spec.as_ref())?
+    };
     Ok((spec, flavor))
+}
+
+/// The PHP spec for a project that pins none: prefer what's already on
+/// hand, and only reach for the network when there's nothing to reuse.
+///
+///   1. `bougie.lock`'s PHP pin, when one is committed for this flavor —
+///      the project's own recorded resolution outranks install state, and
+///      keeps `bougie sync --locked` a gate rather than a contradiction.
+///   2. Else the highest already-installed interpreter of that flavor, so
+///      repeat runs stay fast and offline.
+///   3. Else `>=8.0`, which the resolver satisfies with the newest
+///      published artifact — i.e. a fresh machine installs current PHP.
+///
+/// Steps 1 and 2 return exact pins; only step 3 is open-ended.
+fn default_php_spec(
+    paths: &Paths,
+    project_root: &std::path::Path,
+    flavor: Flavor,
+) -> Result<VersionLike> {
+    let verbose = bougie_output::output::verbose();
+    if let Some(v) = locked_php(project_root, flavor) {
+        if verbose {
+            eprintln!("no php constraint set — using bougie.lock's php {v}");
+        }
+        return Ok(exact(v));
+    }
+    if let Some(v) = highest_installed(paths, flavor) {
+        if verbose {
+            eprintln!("no php constraint set — using the highest installed php {v}");
+        }
+        return Ok(exact(v));
+    }
+    if verbose {
+        eprintln!("no php constraint set and no php installed — installing the newest php");
+    }
+    let c = Constraint::parse(">=8.0").map_err(|e| eyre!("default constraint: {e}"))?;
+    Ok(VersionLike::Constraint(c))
+}
+
+/// The `bougie.lock` PHP pin, if the lock is readable and pins this
+/// flavor. Best-effort: an unreadable or stale-format lock yields
+/// `None` here and is reported properly by `locked_toolchain::load_fresh`.
+fn locked_php(project_root: &std::path::Path, flavor: Flavor) -> Option<Version> {
+    let lock = ToolchainLock::read(project_root).ok()??;
+    (lock.php.flavor == flavor.to_string())
+        .then(|| lock.php.version.parse::<Version>().ok())
+        .flatten()
+}
+
+fn exact(v: Version) -> VersionLike {
+    VersionLike::Version(PartialVersion {
+        major: v.major,
+        minor: Some(v.minor),
+        patch: Some(v.patch),
+    })
 }
 
 /// Copy `<install>/etc/php/conf.d/*.ini` into `<project>/vendor/bougie/conf.d/`
@@ -2215,6 +2238,119 @@ fn link_shim(target: &std::path::Path, link: &std::path::Path) -> io::Result<()>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A `Paths` over a temp home, with `installs/<version>-<flavor>`
+    /// dirs staged so `list_installed` sees them.
+    fn paths_with_installs(home: &std::path::Path, installs: &[&str]) -> Paths {
+        for name in installs {
+            std::fs::create_dir_all(home.join("installs").join(name)).unwrap();
+        }
+        Paths::new(home.to_path_buf(), home.join("cache"))
+    }
+
+    fn write_toolchain_lock_php(project_root: &std::path::Path, version: &str, flavor: &str) {
+        use bougie_lock::{FORMAT_VERSION, PhpPin};
+        ToolchainLock {
+            version: FORMAT_VERSION,
+            snapshot: "20260101T000000Z".into(),
+            php: PhpPin {
+                constraint: "*".into(),
+                version: version.into(),
+                flavor: flavor.into(),
+            },
+            extensions: BTreeMap::new(),
+            services: BTreeMap::new(),
+            targets: BTreeMap::new(),
+        }
+        .write(project_root)
+        .unwrap();
+    }
+
+    #[test]
+    fn default_php_spec_pins_highest_installed_of_the_flavor() {
+        let home = TempDir::new().unwrap();
+        let project = TempDir::new().unwrap();
+        // 8.5.0 is present but zts — the nts pin must not pick it up.
+        let paths = paths_with_installs(home.path(), &["8.3.12-nts", "8.4.3-nts", "8.5.0-zts"]);
+
+        let spec = default_php_spec(&paths, project.path(), Flavor::Nts).unwrap();
+        assert!(
+            matches!(spec, VersionLike::Version(pv) if pv == PartialVersion {
+                major: 8,
+                minor: Some(4),
+                patch: Some(3),
+            }),
+            "expected an exact 8.4.3 pin, got {spec:?}"
+        );
+    }
+
+    #[test]
+    fn default_php_spec_falls_back_to_newest_when_nothing_installed() {
+        let home = TempDir::new().unwrap();
+        let project = TempDir::new().unwrap();
+        let paths = paths_with_installs(home.path(), &[]);
+
+        // An open lower bound, so the resolver takes the highest
+        // published artifact — i.e. installs current PHP.
+        let spec = default_php_spec(&paths, project.path(), Flavor::Nts).unwrap();
+        let VersionLike::Constraint(c) = spec else {
+            panic!("expected a constraint, got {spec:?}");
+        };
+        assert!(c.matches(&composer_semver::Version::parse("8.5.0").unwrap()));
+        assert!(!c.matches(&composer_semver::Version::parse("7.4.33").unwrap()));
+    }
+
+    /// A committed `bougie.lock` outranks install state: it's the
+    /// project's own recorded resolution, and `--locked` compares the
+    /// resolved spec back against it.
+    #[test]
+    fn default_php_spec_prefers_the_toolchain_lock() {
+        let home = TempDir::new().unwrap();
+        let project = TempDir::new().unwrap();
+        let paths = paths_with_installs(home.path(), &["8.4.3-nts"]);
+        write_toolchain_lock_php(project.path(), "8.3.12", "nts");
+
+        let spec = default_php_spec(&paths, project.path(), Flavor::Nts).unwrap();
+        assert!(
+            matches!(spec, VersionLike::Version(pv) if pv == PartialVersion {
+                major: 8,
+                minor: Some(3),
+                patch: Some(12),
+            }),
+            "expected the locked 8.3.12, got {spec:?}"
+        );
+
+        // A lock for a different flavor doesn't apply — fall through to
+        // the installed nts interpreter.
+        write_toolchain_lock_php(project.path(), "8.3.12", "zts");
+        let spec = default_php_spec(&paths, project.path(), Flavor::Nts).unwrap();
+        assert!(
+            matches!(spec, VersionLike::Version(pv) if pv.minor == Some(4)),
+            "expected the installed 8.4.3, got {spec:?}"
+        );
+    }
+
+    /// The whole point of the fallback: an unpinned project resolves
+    /// instead of erroring out of `intersect_php`.
+    #[test]
+    fn resolve_php_inputs_without_any_pin_uses_the_install_state() {
+        let project_root = TempDir::new().unwrap();
+        let project = ProjectConfig {
+            composer: None,
+            bougie: BougieConfig::default(),
+        };
+        let (spec, flavor) = resolve_php_inputs(project_root.path(), &project)
+            .expect("an unpinned project must still resolve");
+        assert_eq!(flavor, Flavor::Nts);
+        // Whatever this machine has installed, the spec is usable: an
+        // exact pin or the open `>=8.0` lower bound, never an error.
+        match spec {
+            VersionLike::Version(pv) => assert!(pv.major >= 8),
+            VersionLike::Constraint(c) => {
+                assert!(c.matches(&composer_semver::Version::parse("8.5.0").unwrap()));
+            }
+        }
+    }
 
     #[test]
     fn expand_tilde_rewrites_home_prefix_only() {

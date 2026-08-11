@@ -728,16 +728,50 @@ fn sync_dry_run_changes_nothing() {
     assert!(!proj.path().join("vendor/bougie/bin").exists());
 }
 
+/// A project that pins no PHP anywhere is not an error: with nothing
+/// installed, sync takes the newest published interpreter (the fixture
+/// publishes one, 8.3.12). A second unpinned project on the same
+/// `BOUGIE_HOME` then reuses that install instead of re-resolving.
 #[test]
-fn sync_without_require_php_errors() {
+fn sync_without_require_php_uses_newest_then_reuses_it() {
+    let runtime = rt();
+    let fx = runtime.block_on(build_fixture());
     let env = TestEnv::new();
+    let trust = write_trust_root(&env, &fx.pub_pem);
     let proj = tempfile::TempDir::new().unwrap();
     std::fs::write(proj.path().join("composer.json"), r"{}").unwrap();
 
     env.bougie()
         .current_dir(proj.path())
-        .arg("sync")
+        .env("BOUGIE_INDEX_URL", fx.server.uri())
+        .env("BOUGIE_TRUST_ROOT_PATH", &trust)
+        .args(["--verbose", "sync"])
         .assert()
-        .failure()
-        .stderr(contains("no PHP version constraint"));
+        .success()
+        .stderr(contains("no php constraint set and no php installed"));
+
+    let resolved = proj.path().join("vendor/bougie/state/resolved");
+    assert_eq!(
+        std::fs::read_to_string(&resolved).unwrap().trim(),
+        "8.3.12-nts"
+    );
+
+    let other = tempfile::TempDir::new().unwrap();
+    std::fs::write(other.path().join("composer.json"), r"{}").unwrap();
+
+    env.bougie()
+        .current_dir(other.path())
+        .env("BOUGIE_INDEX_URL", fx.server.uri())
+        .env("BOUGIE_TRUST_ROOT_PATH", &trust)
+        .args(["--verbose", "sync"])
+        .assert()
+        .success()
+        .stderr(contains("using the highest installed php 8.3.12"));
+
+    assert_eq!(
+        std::fs::read_to_string(other.path().join("vendor/bougie/state/resolved"))
+            .unwrap()
+            .trim(),
+        "8.3.12-nts"
+    );
 }
