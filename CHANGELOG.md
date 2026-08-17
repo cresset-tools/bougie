@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.54.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.53.0...bougie-v0.54.0) (2026-08-17)
+
+
+### Features
+
+* **cli:** add `bougie version` to read and set the project version ([7fe7d08](https://github.com/cresset-tools/bougie/commit/7fe7d08681785b13828f647b5ebbcab4f0a6529c))
+* **skill:** add `bougie skill` -- the agent skill, in every agent's shape ([cd427d5](https://github.com/cresset-tools/bougie/commit/cd427d5773e0874214fb1ea1f4419d12037d9cf1))
+* **sync:** add strict --locked CI gate ([64c1941](https://github.com/cresset-tools/bougie/commit/64c1941c94b1962dd6c5b4704fba81cbc83be153))
+* **sync:** phase 10 — run against the canonical store, one copy per host ([40496de](https://github.com/cresset-tools/bougie/commit/40496de98e3b2242a87e0f4488e94730d24a4790))
+
+
+### Bug Fixes
+
+* **cli:** drop the diagnose pointer from self-explanatory errors ([8697302](https://github.com/cresset-tools/bougie/commit/86973023415e7f36ad8a67f1d4ac7a43cb555201))
+* **daemon:** give rabbitmq its own erlang node name, and evict stale ones ([3c67630](https://github.com/cresset-tools/bougie/commit/3c67630bf3d862ab7d4eeab9534a783099cf9587))
+* **doctor:** point the services checks at `bougie service up` ([69e5fde](https://github.com/cresset-tools/bougie/commit/69e5fded6ebc3c0a2f2b3bebef51ad4f276250f0))
+* **sync:** stop erroring when a project pins no php version ([66ed1de](https://github.com/cresset-tools/bougie/commit/66ed1de96ab0105deb77740653a21b7c7c071cf5))
+
 ## [0.53.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.52.0...bougie-v0.53.0) (2026-07-24)
 
 
