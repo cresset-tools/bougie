@@ -568,6 +568,23 @@ impl Supervisor {
             svc.restart_at = None;
         }
 
+        // rabbitmq only: a broker that outlived its daemon keeps our
+        // Erlang node name registered with the host-wide epmd, and every
+        // respawn then dies in prelaunch with `duplicate_node_name` —
+        // through the whole backoff ladder, forever, since nothing in
+        // that loop removes the squatter. We are past the
+        // already-running check above, so a node still holding the name
+        // is unsupervised by definition: evict it, if it can be proven
+        // ours. Deliberately under the lock — off-lock, a concurrent
+        // start could spawn in the gap and we'd shoot down the broker it
+        // had just started. Ahead of the endpoint resolution below so
+        // the freed AMQP port is available again rather than relocated
+        // around. Every step inside is timed out; a start with nothing
+        // to clean up pays one epmd query.
+        if entry.name == "rabbitmq" {
+            super::provisioners::rabbitmq::clear_stale_node(&self.paths).await;
+        }
+
         // Resolve the effective TCP endpoint BEFORE spawning: allocate a
         // free port when the catalog default is already taken — by the
         // developer's own service or by a sibling instance (two search

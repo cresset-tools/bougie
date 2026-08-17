@@ -33,6 +33,47 @@ use tokio::time::Instant;
 /// works.
 const RABBITMQCTL_READY_TIMEOUT: Duration = Duration::from_mins(1);
 
+/// The Erlang node bougie's broker runs as.
+///
+/// Erlang node names are registered in `epmd`, which is **host-wide**
+/// (one daemon on 4369 serving every BEAM on the box) — so the name is
+/// a shared namespace, not a per-install one. Under rabbitmq's stock
+/// `rabbit@…` name, any other dev tool that also runs a broker
+/// (docker-compose with host networking, a distro package, a competing
+/// devbox) claims the same name first and every bougie start after that
+/// dies with `{duplicate_node_name,"rabbit","localhost"}` — the AMQP
+/// port relocation the supervisor already does can't help, because the
+/// collision isn't on the port. Naming ourselves `bougie` puts us in
+/// our own corner of that namespace so the two brokers coexist.
+///
+/// The host half stays `localhost`: it's in `/etc/hosts` on every
+/// supported platform, resolves to 127.0.0.1, and is dot-free, which
+/// keeps Erlang's `shortnames` mode happy (a `bougie@127.0.0.1` name
+/// would require `RABBITMQ_USE_LONGNAME=true`).
+const NODENAME: &str = "bougie@localhost";
+
+/// The node bougie used before [`NODENAME`]. Ledger rows written back
+/// then carry no `node` allocation, so this is what they mean — see
+/// [`tenant_node`].
+const LEGACY_NODENAME: &str = "rabbit@localhost";
+
+/// Bounds on [`clear_stale_node`]. It runs under the supervisor lock —
+/// that placement is what makes it race-free, since it sits after the
+/// already-running check, where any node still holding our name is
+/// unsupervised by definition — so a wedged broker must not be able to
+/// stall `status` and the reaper indefinitely. A start with no collision
+/// pays only [`EPMD_QUERY_TIMEOUT`]'s subprocess, which returns in
+/// milliseconds.
+const EPMD_QUERY_TIMEOUT: Duration = Duration::from_secs(5);
+/// epmd's fixed port — see [`node_registered`].
+const EPMD_PORT: u16 = 4369;
+const NODE_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+const NODE_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(20);
+const NODE_RELEASE_TIMEOUT: Duration = Duration::from_secs(5);
+/// Loopback connect to a node's distribution port: answers or refuses
+/// immediately, so this only has to cover a wedged accept queue.
+const DIST_PORT_TIMEOUT: Duration = Duration::from_secs(2);
+
 /// rabbitmq's catalog default version — the `<version>` segment in its
 /// state paths. Phase 1a runs a single instance at the default version;
 /// once the request layer carries a resolved version this becomes the
@@ -70,8 +111,18 @@ pub async fn provision(
     project: &Path,
 ) -> Result<Tenant> {
     let existing = tenants::load_all(tenants_path).await?;
-    if let Some(existing_t) = existing.iter().find(|t| t.project == project) {
-        return Ok(existing_t.clone());
+    let (tenant_name, stale_node) = match plan(&existing, project, tenant_name) {
+        Plan::Reuse(t) => return Ok(t.clone()),
+        Plan::Create { name, stale_node } => (name, stale_node),
+    };
+    if let Some(from) = stale_node {
+        tracing::info!(
+            tenant = tenant_name,
+            from,
+            to = NODENAME,
+            "rabbitmq node changed; re-provisioning tenant on the current node",
+        );
+        tenants::rewrite(tenants_path, |row| row.project != project).await?;
     }
     if !is_safe_identifier(tenant_name) {
         return Err(eyre!(
@@ -152,6 +203,11 @@ pub async fn provision(
     tenant
         .alloc
         .insert("username".into(), serde_json::json!(tenant_name));
+    // Stamp the node the vhost/user actually live in, so a later rename
+    // is detectable instead of silently handing out dead credentials.
+    tenant
+        .alloc
+        .insert("node".into(), serde_json::json!(NODENAME));
     tenant.secrets.insert("password".into(), password);
     tenants::append(tenants_path, &tenant).await?;
     Ok(tenant)
@@ -188,7 +244,190 @@ pub async fn deprovision(
     Ok(())
 }
 
+/// Evict a broker that outlived its daemon and still holds our Erlang
+/// node name.
+///
+/// Node names are registered with `epmd`, a host-wide daemon that
+/// outlives any single broker — so a rabbitmq that escaped teardown
+/// (`bougied` taken out by a `SIGKILL`, or a BEAM that daemonized out of
+/// the process group on a platform with no cgroup backstop) keeps
+/// [`NODENAME`] claimed. Every respawn after that dies in prelaunch with
+/// `{duplicate_node_name,…}`, through the entire restart-backoff ladder,
+/// forever: nothing in that loop removes the squatter, and the port
+/// relocation the supervisor does can't help because the collision isn't
+/// on a port. The rename that keeps *foreign* brokers out of our way is
+/// no help either — here the squatter is our own past self.
+///
+/// So: ask epmd whether the name is claimed, and if it is, whether the
+/// claimant is ours. `rabbitmqctl status` succeeds only against a node
+/// that accepts the Erlang cookie in this install's private `HOME`, so a
+/// broker belonging to another `BOUGIE_HOME` — or any foreign Erlang app
+/// that happened to pick the name — fails that test and is left alone,
+/// with the reason logged. We never kill a process we can't prove is
+/// ours.
+///
+/// Best-effort throughout: every failure path leaves the spawn to
+/// proceed exactly as it would have, so this can only turn a permanent
+/// failure into a recovery, never a working start into a broken one.
+pub async fn clear_stale_node(paths: &Paths) {
+    let Some(dist_port) = node_dist_port().await else {
+        return;
+    };
+    let Ok(ctl) = ctl_binary(paths) else {
+        return;
+    };
+    // Ours? The distribution port is a cheap gate — a registration whose
+    // port refuses connections can't be a live node — and `rabbitmqctl
+    // status` is the authority, since it only succeeds against a node
+    // that accepts the Erlang cookie in this install's private HOME.
+    let ours = dist_port_answers(dist_port).await
+        && matches!(
+            tokio::time::timeout(NODE_PROBE_TIMEOUT, health(paths)).await,
+            Ok(Ok(()))
+        );
+    if !ours {
+        // Two very different things fail that test: a foreign node, and
+        // one of ours partway through dying — epmd drops a name only when
+        // the node's socket closes, which trails the process exiting, and
+        // a killed BEAM can still accept on its port for a moment (seen
+        // in the wild: bougied's own `reap_stale_leaves` SIGKILLs a
+        // leftover broker at startup and a quarter-second later both the
+        // registration and the port are still there). Time tells them
+        // apart — a corpse's registration clears, a live squatter's
+        // doesn't — so wait before concluding anything. Waiting also
+        // keeps us from spawning into a name epmd is about to release,
+        // which would burn a crash-and-backoff cycle for nothing.
+        if wait_for_deregistration("waiting out a registration with no live node behind it").await {
+            return;
+        }
+        tracing::warn!(
+            node = NODENAME,
+            "the erlang node name is held by a live node that doesn't answer to this install's \
+             cookie; leaving it alone — rabbitmq can't start while it holds the name",
+        );
+        return;
+    }
+    tracing::warn!(
+        node = NODENAME,
+        "a rabbitmq broker outlived its daemon and still holds the node name; shutting it down \
+         before respawning",
+    );
+    match tokio::time::timeout(NODE_SHUTDOWN_TIMEOUT, run_ctl(&ctl, paths, &["shutdown"])).await {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => {
+            tracing::warn!(node = NODENAME, error = %e, "rabbitmqctl shutdown failed");
+            return;
+        }
+        Err(_) => {
+            tracing::warn!(
+                node = NODENAME,
+                "rabbitmqctl shutdown timed out; spawning anyway",
+            );
+            return;
+        }
+    }
+    // `shutdown` waits for the OS process to exit, but epmd drops the
+    // registration a beat later, when the node's socket closes. Let that
+    // land so the spawn we're about to do doesn't race it.
+    if wait_for_deregistration("after shutdown").await {
+        tracing::info!(node = NODENAME, "stale broker evicted; node name is free");
+    }
+}
+
+/// Poll until epmd stops listing [`NODENAME`], up to
+/// [`NODE_RELEASE_TIMEOUT`]. `true` if the name came free. On timeout the
+/// caller spawns anyway: rabbitmq's own prelaunch check is the backstop,
+/// and one crash-and-backoff beats refusing to start.
+async fn wait_for_deregistration(context: &str) -> bool {
+    let deadline = Instant::now() + NODE_RELEASE_TIMEOUT;
+    while node_dist_port().await.is_some() {
+        if Instant::now() >= deadline {
+            tracing::warn!(
+                node = NODENAME,
+                context,
+                "epmd still lists the node; spawning anyway",
+            );
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    true
+}
+
 // -------------------- helpers --------------------
+
+/// The Erlang distribution port [`NODENAME`] is registered under with the
+/// local epmd, or `None` if the name is free.
+///
+/// Asked over epmd's own wire protocol rather than by shelling out to
+/// the `epmd` binary: that binary sits at a stable path only when the
+/// standalone erlang runtime-dep is installed, while a rabbitmq booting
+/// from its tarball's *bundled* erlang buries it under an erts-version
+/// directory. The request is one byte (`NAMES_REQ`); the reply is epmd's
+/// own port followed by the very listing `epmd -names` prints.
+///
+/// A refused connection means no epmd is running, so nothing can be
+/// holding the name — `None`. The port asked is the fixed 4369: what the
+/// sidecar the supervisor co-locates listens on
+/// (`supervisor::sidecar_for`) and what every Erlang node contacts by
+/// default. An operator who moved epmd with `ERL_EPMD_PORT` gets no
+/// cleanup — the same as before this existed.
+async fn node_dist_port() -> Option<u16> {
+    let Ok(Ok(listing)) = tokio::time::timeout(EPMD_QUERY_TIMEOUT, epmd_names()).await else {
+        return None;
+    };
+    epmd_node_port(&listing, node_shortname())
+}
+
+/// Is anything actually listening where epmd says the node is? epmd
+/// hands out registrations it hasn't yet noticed are dead, so this is
+/// what tells a live node from a lingering entry.
+async fn dist_port_answers(port: u16) -> bool {
+    matches!(
+        tokio::time::timeout(
+            DIST_PORT_TIMEOUT,
+            tokio::net::TcpStream::connect(("127.0.0.1", port)),
+        )
+        .await,
+        Ok(Ok(_))
+    )
+}
+
+/// epmd's `NAMES` exchange: send `<<1:16, 110>>`, read until epmd closes,
+/// drop the leading `<<EpmdPort:32>>`.
+async fn epmd_names() -> std::io::Result<String> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    const NAMES_REQ: u8 = 110;
+
+    let mut sock = tokio::net::TcpStream::connect(("127.0.0.1", EPMD_PORT)).await?;
+    sock.write_all(&[0, 1, NAMES_REQ]).await?;
+    let mut reply = Vec::new();
+    sock.read_to_end(&mut reply).await?;
+    Ok(String::from_utf8_lossy(reply.get(4..).unwrap_or_default()).into_owned())
+}
+
+/// The port an epmd `NAMES` listing gives for `node`, if it lists it at
+/// all. Each line reads `name bougie at port 25672`. (The `epmd -names`
+/// CLI prints these same lines under an `epmd: up and running …` header
+/// of its own.)
+fn epmd_node_port(listing: &str, node: &str) -> Option<u16> {
+    listing.lines().find_map(|line| {
+        let mut fields = line.split_whitespace();
+        (fields.next() == Some("name")
+            && fields.next() == Some(node)
+            && fields.next() == Some("at")
+            && fields.next() == Some("port"))
+        .then(|| fields.next()?.parse().ok())
+        .flatten()
+    })
+}
+
+/// The node half of [`NODENAME`] — what epmd registers. The host half is
+/// implicit there: an epmd only ever speaks for its own host.
+fn node_shortname() -> &'static str {
+    NODENAME.split_once('@').map_or(NODENAME, |(node, _)| node)
+}
 
 /// Health probe: a single `rabbitmqctl status --quiet`, healthy on exit
 /// 0. The supervisor's old TCP probe was satisfied the moment the inet
@@ -240,6 +479,10 @@ async fn run_ctl(ctl: &Path, paths: &Paths, args: &[&str]) -> Result<()> {
     let mut cmd = Command::new(ctl);
     cmd.args(args);
     build_ctl_env(&mut cmd, paths);
+    // Callers that bound this with a timeout ([`clear_stale_node`]) drop
+    // the future on expiry; kill the ctl child with it rather than
+    // stranding a BEAM waiting on an unresponsive node.
+    cmd.kill_on_drop(true);
     let output = cmd
         .output()
         .await
@@ -360,15 +603,12 @@ pub fn rabbitmq_env(paths: &Paths, node_port: u16) -> Vec<(String, String)> {
     let run = paths.service_run("rabbitmq", svc_version());
     let conf = paths.service_conf("rabbitmq", svc_version());
     vec![
-        // Pin the node to a stable shortname. Default is
-        // `rabbit@$(hostname)`, which couples the dev broker to the
-        // operator's hostname (and breaks in containers where
-        // hostname is a hex id). `localhost` is in /etc/hosts on
-        // every supported platform and resolves to 127.0.0.1; it's
-        // also dot-free, which keeps Erlang's `shortnames` mode
-        // happy (a `rabbit@127.0.0.1` name would require
-        // `RABBITMQ_USE_LONGNAME=true`).
-        ("RABBITMQ_NODENAME".into(), "rabbit@localhost".into()),
+        // Pin the node to a stable, bougie-private shortname. The
+        // default is `rabbit@$(hostname)`, which both couples the dev
+        // broker to the operator's hostname (and breaks in containers
+        // where hostname is a hex id) and shares the `rabbit` name
+        // with every other broker on the box. See [`NODENAME`].
+        ("RABBITMQ_NODENAME".into(), NODENAME.into()),
         ("RABBITMQ_NODE_IP_ADDRESS".into(), "127.0.0.1".into()),
         ("RABBITMQ_NODE_PORT".into(), node_port.to_string()),
         // RabbitMQ's `rabbitmq-defaults` script reads $RABBITMQ_BASE
@@ -396,6 +636,59 @@ pub fn rabbitmq_env(paths: &Paths, node_port: u16) -> Vec<(String, String)> {
         // insists on a `.erlang.cookie` file in HOME, so we point
         // HOME at our RW data dir.
     ]
+}
+
+/// What [`provision`] does for a project, decided from the ledger alone
+/// (no broker contact).
+#[derive(Debug)]
+enum Plan<'a> {
+    /// A row already describes this project's tenant on the node we're
+    /// about to talk to. Nothing to do.
+    Reuse(&'a Tenant),
+    /// Create the vhost + user under `name`. `stale_node` names the node
+    /// a superseded row was provisioned against — that row must be
+    /// dropped from the ledger first.
+    Create {
+        name: &'a str,
+        stale_node: Option<&'a str>,
+    },
+}
+
+/// Decide [`Plan`] for `project`.
+///
+/// The interesting case is a row that names a *different* node: rabbitmq
+/// keys its metadata store by node name, so that row's vhost and user
+/// live in a store the current broker never opened. Reusing it would
+/// hand the project credentials for a vhost that doesn't exist and every
+/// AMQP login would fail with `ACCESS_REFUSED` — so re-provision instead.
+/// That's safe to do unasked because [`crate::daemon::credentials::derive_password`]
+/// is deterministic: the re-created user gets the same password an
+/// already-installed `env.php` holds. The tenant keeps its *recorded*
+/// name rather than the caller's freshly-derived one, for the same
+/// reason — it's the vhost name the project is already configured with.
+fn plan<'a>(existing: &'a [Tenant], project: &Path, requested: &'a str) -> Plan<'a> {
+    match existing.iter().find(|t| t.project == project) {
+        Some(t) if tenant_node(t) == NODENAME => Plan::Reuse(t),
+        Some(t) => Plan::Create {
+            name: &t.tenant,
+            stale_node: Some(tenant_node(t)),
+        },
+        None => Plan::Create {
+            name: requested,
+            stale_node: None,
+        },
+    }
+}
+
+/// The node a ledger row's vhost + user were created on. Rows written
+/// before the node rename carry no `node` allocation; they belong to
+/// [`LEGACY_NODENAME`], which is what makes them re-provisionable
+/// rather than ambiguous.
+fn tenant_node(t: &Tenant) -> &str {
+    t.alloc
+        .get("node")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or(LEGACY_NODENAME)
 }
 
 /// Match `[a-z0-9_]+`. Vhost/username characters are looser at the
@@ -436,7 +729,7 @@ mod tests {
         assert_eq!(
             env.get("RABBITMQ_NODENAME")
                 .map(std::string::String::as_str),
-            Some("rabbit@localhost")
+            Some("bougie@localhost")
         );
         assert_eq!(
             env.get("RABBITMQ_NODE_IP_ADDRESS")
@@ -456,6 +749,134 @@ mod tests {
             env.get("RABBITMQ_LOG_BASE")
                 .is_some_and(|p| p.contains("rabbitmq") && p.ends_with("/log"))
         );
+    }
+
+    #[test]
+    fn nodename_is_bougie_private_and_shortname_safe() {
+        // The point of the name: not `rabbit`, so a foreign broker
+        // holding the stock name in epmd can't lock us out.
+        assert!(NODENAME.starts_with("bougie@"));
+        // Erlang `shortnames` mode rejects a dotted host half.
+        let (_, host) = NODENAME.split_once('@').expect("node@host");
+        assert!(!host.contains('.'), "shortnames mode forbids a dotted host");
+    }
+
+    #[test]
+    fn tenant_node_reads_the_recorded_node() {
+        let mut t = Tenant::new("acme_blog", "/p/acme");
+        t.alloc
+            .insert("node".into(), serde_json::json!("bougie@localhost"));
+        assert_eq!(tenant_node(&t), "bougie@localhost");
+    }
+
+    #[test]
+    fn tenant_node_treats_an_unstamped_row_as_the_legacy_node() {
+        // Pre-rename rows have no `node` key. Reading them as the legacy
+        // node is what triggers exactly one re-provision on upgrade —
+        // defaulting to NODENAME instead would leave the project holding
+        // credentials for a vhost the new node never created.
+        let t = Tenant::new("acme_blog", "/p/acme");
+        assert_eq!(tenant_node(&t), LEGACY_NODENAME);
+        assert_ne!(tenant_node(&t), NODENAME);
+    }
+
+    #[test]
+    fn epmd_listing_yields_our_nodes_distribution_port() {
+        // The port matters as much as the name: it's what a liveness
+        // probe connects to, which is how a live squatter is told from a
+        // registration epmd hasn't yet dropped.
+        let listing = "epmd: up and running on port 4369 with data:\nname bougie at port 25673\n";
+        assert_eq!(epmd_node_port(listing, node_shortname()), Some(25673));
+        assert_eq!(node_shortname(), "bougie");
+    }
+
+    #[test]
+    fn epmd_listing_ignores_other_nodes_and_an_empty_registry() {
+        // epmd is up but nothing of ours is registered: the header alone.
+        assert_eq!(
+            epmd_node_port(
+                "epmd: up and running on port 4369 with data:\n",
+                node_shortname()
+            ),
+            None
+        );
+        // Someone else's node — the one case where we must not conclude
+        // our name is taken, since that's what leads to an eviction.
+        assert_eq!(
+            epmd_node_port("name rabbit at port 25672\n", node_shortname()),
+            None
+        );
+        // A node whose name merely starts with ours.
+        assert_eq!(
+            epmd_node_port("name bougie2 at port 25672\n", "bougie"),
+            None
+        );
+        // No epmd at all — the query failed and there's no listing.
+        assert_eq!(epmd_node_port("", node_shortname()), None);
+    }
+
+    #[test]
+    fn epmd_listing_survives_a_malformed_line() {
+        // Never panic on epmd output we didn't anticipate; an
+        // unparseable port reads as "not listed" so we leave it alone.
+        assert_eq!(
+            epmd_node_port("name bougie at port hello\n", "bougie"),
+            None
+        );
+        assert_eq!(epmd_node_port("name bougie at\n", "bougie"), None);
+        assert_eq!(
+            epmd_node_port("garbage\nname bougie at port 25673\n", "bougie"),
+            Some(25673)
+        );
+    }
+
+    /// A ledger row as the current code writes one.
+    fn row_on(node: &str, tenant: &str, project: &str) -> Tenant {
+        let mut t = Tenant::new(tenant, project);
+        t.alloc.insert("vhost".into(), serde_json::json!(tenant));
+        t.alloc.insert("node".into(), serde_json::json!(node));
+        t
+    }
+
+    #[test]
+    fn plan_reuses_a_row_on_the_current_node() {
+        let rows = vec![row_on(NODENAME, "acme_blog", "/p/acme")];
+        match plan(&rows, Path::new("/p/acme"), "acme_blog") {
+            Plan::Reuse(t) => assert_eq!(t.tenant, "acme_blog"),
+            other @ Plan::Create { .. } => panic!("expected Reuse, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn plan_creates_when_the_project_has_no_row() {
+        let rows = vec![row_on(NODENAME, "other", "/p/other")];
+        match plan(&rows, Path::new("/p/acme"), "acme_blog") {
+            Plan::Create { name, stale_node } => {
+                assert_eq!(name, "acme_blog");
+                assert_eq!(stale_node, None);
+            }
+            other @ Plan::Reuse(_) => panic!("expected Create, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn plan_reprovisions_a_row_from_the_legacy_node_under_its_recorded_name() {
+        // The upgrade path: a pre-rename row (no `node` key) names a
+        // vhost that only exists in the old node's store. It has to be
+        // re-created — and under the name the project's env.php already
+        // carries, not the caller's derived one.
+        let mut legacy = Tenant::new("old_name", "/p/acme");
+        legacy
+            .alloc
+            .insert("vhost".into(), serde_json::json!("old_name"));
+        let rows = vec![legacy];
+        match plan(&rows, Path::new("/p/acme"), "derived_name") {
+            Plan::Create { name, stale_node } => {
+                assert_eq!(name, "old_name");
+                assert_eq!(stale_node, Some(LEGACY_NODENAME));
+            }
+            other @ Plan::Reuse(_) => panic!("expected Create, got {other:?}"),
+        }
     }
 
     #[test]
