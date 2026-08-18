@@ -206,7 +206,7 @@ fn resync(format: OutputFormat) -> Result<ExitCode> {
         &project_root,
         format,
         false,
-        crate::commands::locked_toolchain::LockPolicy::Update,
+        false,
         false,
         None,
         Some(true),

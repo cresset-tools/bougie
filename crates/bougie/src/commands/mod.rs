@@ -44,7 +44,6 @@ pub mod php_pin;
 pub mod php_uninstall;
 pub mod php_upgrade;
 pub mod platform_lock;
-pub mod repo;
 pub mod run;
 pub mod script;
 pub mod scripts;

@@ -69,6 +69,14 @@ fn health_timeout_for(name: &str) -> Duration {
     }
 }
 
+/// How long to wait on a start that was already in flight when this call
+/// arrived. The attempt being waited on is itself bounded by
+/// [`health_timeout_for`], so this only has to outlast that plus the hop
+/// back under the lock to finalize.
+fn in_flight_start_ceiling(name: &str) -> Duration {
+    health_timeout_for(name) + Duration::from_secs(5)
+}
+
 /// Default grace window before escalating SIGTERM → SIGKILL. Matches
 /// SERVICES.md §5.3.
 const STOP_GRACE: Duration = Duration::from_secs(10);
@@ -385,6 +393,12 @@ impl Supervisor {
         if let Some(root) = self.backend.svc_root() {
             let _ = std::fs::remove_dir(root);
         }
+    }
+
+    /// This instance's lifecycle state, if the supervisor has a slot for
+    /// it. `None` until the first `up` materializes one.
+    pub fn state_of(&self, inst: &Instance) -> Option<ServiceState> {
+        self.services.get(&inst.id()).map(|svc| svc.state)
     }
 
     /// Snapshot every service for the `status` IPC method.
@@ -2079,8 +2093,15 @@ pub type Shared = Arc<Mutex<Supervisor>>;
 /// it was already running (or was stopped mid-probe), `Err` if the spawn
 /// or the health probe failed.
 pub async fn start_service(sup: &Shared, inst: &Instance) -> Result<bool> {
-    let mut pending = match sup.lock().await.spawn_service(inst).await? {
-        SpawnOutcome::AlreadyRunning => return Ok(false),
+    // Bind the outcome in its own scope so the lock guard is *dropped*
+    // before the match arms run. A `match sup.lock().await...{}` holds the
+    // scrutinee's temporary guard for the whole match, so an arm that
+    // locks again (as `AlreadyRunning` does, to wait the in-flight start
+    // out) deadlocks against itself — and, since every other task needs
+    // this mutex, wedges the daemon.
+    let outcome = { sup.lock().await.spawn_service(inst).await? };
+    let mut pending = match outcome {
+        SpawnOutcome::AlreadyRunning => return await_in_flight_start(sup, inst).await,
         // Move out of the box so the fields below can be moved out by value.
         SpawnOutcome::Spawned(pending) => *pending,
     };
@@ -2101,6 +2122,59 @@ pub async fn start_service(sup: &Shared, inst: &Instance) -> Result<bool> {
             let _ = child.wait().await;
             Ok(false)
         }
+    }
+}
+
+/// A start was already in flight when this call arrived — an operator
+/// `up` racing the reaper's auto-restart, or two `up`s at once — so
+/// there was nothing here to spawn. Wait for that attempt to settle and
+/// report *its* outcome.
+///
+/// Reporting success on sight of a start in progress is how `bougie up`
+/// came to exit 0 for a crash-looping service. The reaper's respawn sits
+/// in `HealthChecking` for the seconds a doomed boot takes, and an `up`
+/// landing in that window was told the service was up — moments before
+/// it went back to `Failed`. In a crash loop that window is most of the
+/// wall clock, so the wrong answer was the common one: four consecutive
+/// `up`s against a rabbitmq that could not start all exited 0.
+///
+/// `Ok(false)` throughout the success paths: whatever happened, this
+/// call did not bring the service up.
+async fn await_in_flight_start(sup: &Shared, inst: &Instance) -> Result<bool> {
+    let deadline = Instant::now() + in_flight_start_ceiling(&inst.name);
+    loop {
+        let (state, paths) = {
+            let sup = sup.lock().await;
+            (sup.state_of(inst), sup.paths.clone())
+        };
+        match state {
+            Some(ServiceState::Starting | ServiceState::HealthChecking) => {}
+            // It didn't land on its feet. Quote the log the same way our
+            // own failed spawn would, so which call did the spawning
+            // isn't visible in the error the operator reads.
+            Some(ServiceState::Failed) => {
+                return Err(eyre!(
+                    "service `{}` failed to start{}",
+                    inst.name,
+                    startup_log_excerpt(&inst.name, &inst.version, &paths),
+                ));
+            }
+            // Everything else is a no-op for this call: `Running` means
+            // the in-flight start worked, while `Unhealthy` (a live
+            // process the *continuous* probe owns), a concurrent stop, or
+            // a slot that went away are not this call's start to
+            // adjudicate.
+            _ => return Ok(false),
+        }
+        if Instant::now() >= deadline {
+            return Err(eyre!(
+                "service `{}` was still starting after {:?}; giving up waiting on it \
+                 (check `bougie service status`)",
+                inst.name,
+                in_flight_start_ceiling(&inst.name),
+            ));
+        }
+        tokio::time::sleep(HEALTH_POLL).await;
     }
 }
 
@@ -2469,6 +2543,63 @@ mod tests {
         assert!(msg.contains("exited during startup"), "{msg}");
         assert!(msg.contains("BOOT FAILED: Address already in use"), "{msg}");
         assert!(msg.contains("bougie service logs redis"), "{msg}");
+    }
+
+    /// A `Shared` supervisor with `name` seeded in `state`, as if another
+    /// caller's start had put it there.
+    fn shared_in_state(name: &'static str, state: ServiceState) -> (Shared, Instance) {
+        let mut sup = test_supervisor();
+        let inst = seed(&mut sup, name);
+        sup.services.get_mut(&inst.id()).expect("seeded slot").state = state;
+        (Arc::new(Mutex::new(sup)), inst)
+    }
+
+    #[tokio::test]
+    async fn in_flight_start_that_lands_running_is_a_no_op_success() {
+        let (sup, inst) = shared_in_state("redis", ServiceState::Running);
+        assert!(
+            !await_in_flight_start(&sup, &inst).await.unwrap(),
+            "someone else's spawn brought it up, so this call reports no-op"
+        );
+    }
+
+    #[tokio::test]
+    async fn in_flight_start_that_fails_is_an_error_not_a_success() {
+        // The regression: `up` used to return Ok(false) the moment it saw
+        // a start in flight, so a crash-looping service reported success.
+        let (sup, inst) = shared_in_state("redis", ServiceState::Failed);
+        let err = await_in_flight_start(&sup, &inst).await.unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("failed to start"), "{msg}");
+        assert!(msg.contains("redis"), "{msg}");
+    }
+
+    #[tokio::test]
+    async fn in_flight_start_is_waited_out_until_it_settles() {
+        let (sup, inst) = shared_in_state("redis", ServiceState::HealthChecking);
+        // Settle it from another task while the waiter polls, which is
+        // exactly the shape of the race: the reaper's respawn finalizes
+        // under the lock while an operator `up` waits on it.
+        let settler = {
+            let sup = Arc::clone(&sup);
+            let id = inst.id();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                sup.lock().await.services.get_mut(&id).expect("slot").state = ServiceState::Failed;
+            })
+        };
+        let err = await_in_flight_start(&sup, &inst).await.unwrap_err();
+        settler.await.unwrap();
+        assert!(format!("{err:#}").contains("failed to start"));
+    }
+
+    #[tokio::test]
+    async fn an_unhealthy_service_is_left_to_the_continuous_probe() {
+        // Unhealthy is a *live* process failing its ongoing probe, whose
+        // teardown-and-restart the supervisor already owns. Not this
+        // call's start to adjudicate, and not something to block on.
+        let (sup, inst) = shared_in_state("redis", ServiceState::Unhealthy);
+        assert!(!await_in_flight_start(&sup, &inst).await.unwrap());
     }
 
     /// A live child handle to stand in for a babysit in finalize tests.

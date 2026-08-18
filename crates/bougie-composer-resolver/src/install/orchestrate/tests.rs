@@ -809,6 +809,57 @@ fn second_install_skips_up_to_date_packages() {
 }
 
 #[test]
+fn diff_removes_stale_vendor_dirs() {
+    use super::super::orchestrate::{InstalledState, diff_install_set};
+    use bougie_composer::lockfile::LockPackage;
+
+    let tmp = TempDir::new().unwrap();
+    let proj = tmp.path().join("p");
+    std::fs::create_dir_all(&proj).unwrap();
+
+    // Simulate a previous install that had acme/foo + acme/stale.
+    let stale_dir = proj.join("vendor/acme/stale");
+    std::fs::create_dir_all(&stale_dir).unwrap();
+
+    let mut old_packages = HashMap::new();
+    old_packages.insert("acme/foo".into(), "ref1".into());
+    old_packages.insert("acme/stale".into(), "ref2".into());
+    let state = Some(InstalledState {
+        packages: old_packages,
+    });
+
+    // Current lock only has acme/foo.
+    let foo_lock: LockPackage = serde_json::from_value(serde_json::json!({
+        "name": "acme/foo",
+        "version": "1.0.0",
+        "dist": {
+            "type": "zip",
+            "url": "https://example/foo.zip",
+            "reference": "ref1",
+            "shasum": "0000000000000000000000000000000000000000"
+        }
+    }))
+    .unwrap();
+
+    // acme/foo's vendor dir exists → up-to-date.
+    let foo_vendor = proj.join("vendor/acme/foo");
+    std::fs::create_dir_all(&foo_vendor).unwrap();
+
+    let installable = vec![&foo_lock];
+    let (need_install, up_to_date, removed) = diff_install_set(
+        &installable,
+        &state,
+        &proj,
+        &std::collections::HashSet::new(),
+    );
+
+    assert!(need_install.is_empty(), "acme/foo is up-to-date");
+    assert_eq!(up_to_date, 1);
+    assert_eq!(removed, 1, "acme/stale must be removed");
+    assert!(!stale_dir.exists(), "stale vendor dir must be deleted");
+}
+
+#[test]
 fn missing_vendor_dir_forces_reinstall() {
     use super::super::orchestrate::{InstalledState, diff_install_set};
     use bougie_composer::lockfile::LockPackage;
@@ -837,7 +888,12 @@ fn missing_vendor_dir_forces_reinstall() {
 
     // Do NOT create the vendor dir — simulates manual deletion.
     let installable = vec![&foo_lock];
-    let (need_install, up_to_date) = diff_install_set(&installable, &state, &proj);
+    let (need_install, up_to_date, removed) = diff_install_set(
+        &installable,
+        &state,
+        &proj,
+        &std::collections::HashSet::new(),
+    );
 
     assert_eq!(
         need_install.len(),
@@ -846,6 +902,7 @@ fn missing_vendor_dir_forces_reinstall() {
     );
     assert_eq!(need_install[0].name, "acme/foo");
     assert_eq!(up_to_date, 0);
+    assert_eq!(removed, 0);
 }
 
 #[test]
@@ -881,7 +938,12 @@ fn changed_reference_forces_reinstall() {
     std::fs::create_dir_all(proj.join("vendor/acme/foo")).unwrap();
 
     let installable = vec![&foo_lock];
-    let (need_install, up_to_date) = diff_install_set(&installable, &state, &proj);
+    let (need_install, up_to_date, removed) = diff_install_set(
+        &installable,
+        &state,
+        &proj,
+        &std::collections::HashSet::new(),
+    );
 
     assert_eq!(
         need_install.len(),
@@ -890,6 +952,7 @@ fn changed_reference_forces_reinstall() {
     );
     assert_eq!(need_install[0].name, "acme/foo");
     assert_eq!(up_to_date, 0);
+    assert_eq!(removed, 0);
 }
 
 // -------------------- opt-in root scripts (ScriptHooks) --------------------
