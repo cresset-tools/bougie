@@ -1,0 +1,7 @@
+# Mirrors `composer install --apcu-autoloader \
+#   --apcu-autoloader-prefix=fixture-apcu-prefix-zzz0`.
+# The fixed prefix is what gives the fixture deterministic output —
+# the default is `bin2hex(random_bytes(10))`, so without a pin
+# regen would never produce stable bytes.
+apcu_autoloader=true
+apcu_prefix=fixture-apcu-prefix-zzz0

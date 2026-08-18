@@ -55,13 +55,12 @@ contract for index format, server behavior, and service tarballs).
 - `bougie-cli` — clap derive types: `Cli`, `Command`, all subcommand enums.
 
 **Composer ecosystem:**
-- `bougie-composer` — re-exports the shared `composer.json` /
-  `composer.lock` model (`composer-manifest`), plus inline metadata for
-  single-file PHP scripts.
+- `bougie-composer` — `composer.json` / `composer.lock` model + PHP channel
+  fetch.
 - `bougie-composer-resolver` — Native pubgrub-based Composer dep resolver +
-  async metadata fetcher, plus `install/`, which runs `composer-install`
-  with bougie's fetcher, cache dirs, `bougie login` credentials, progress
-  bar and error types.
+  async metadata fetcher + parallel dist download/extract.
+- `bougie-autoloader` — Generates `vendor/composer/autoload_*.php`
+  byte-equivalent to Composer 2.8.12. Parallel scan, SIMD classmap.
 - `bougie-semver` — Composer-flavored semver (Version, Constraint, Stability)
   with ported composer/semver test cases.
 - `bougie-version` — PHP version + Composer-constraint grammar (shared
@@ -71,11 +70,6 @@ The Composer wire format and PHP-exact `json_encode` live in the shared
 `composer-rs` workspace (crates.io: `composer-semver`, `composer-wire`,
 `composer-php-json`), consumed by both bougie and sconce. `bougie-composer`
 re-exports them (`bougie_composer::php_json`, `bougie_composer::metadata`).
-The `composer.json` / `composer.lock` model, the native installer-plugin
-ports, the autoloader generator, the patcher and the install-from-lock
-engine come from the composer-client workspace (crates.io:
-`composer-manifest`, `composer-installers`, `composer-autoload`,
-`composer-patches`, `composer-install`), shared with magebuild.
 
 **PHP toolchain / package management:**
 - `bougie-backend` — Pluggable PHP-distribution backends (bougie index +
@@ -132,19 +126,11 @@ Top-level subcommands (from `bougie-cli`):
   lower-bound default (vs `composer require`'s caret); shared engine,
   [`DefaultConstraint`] policy selects the default. `--frozen` = edit
   composer.json only; `--no-sync` = re-lock but don't install.
-- `lock [--dry-run] [--resolution S] [--with-platform [--all-targets] [-U | -P NAME]]` —
-  minimal `composer.lock` refresh
+- `lock [--dry-run] [--resolution S]` — minimal `composer.lock` refresh
   (uv's `uv lock`): reconcile the lock with `composer.json`, holding each
   package at its locked version where still valid; re-resolve only what
   changed. Never bumps versions, never installs (use `bougie composer
   update` to pull newer). Content-hash match → offline no-op.
-  `--with-platform` also writes the toolchain lock `bougie.lock` (PHP,
-  extensions, services; per-target digests) and prints what moved. Re-locking
-  keeps each pin that still satisfies its constraint (uv semantics);
-  `--upgrade`/`-U` re-resolves all of them, `--upgrade-package`/`-P NAME`
-  (`php`, an extension, a service) just one. When no pin moved, other targets'
-  digests and the snapshot are kept. `--all-targets` records digests for
-  every target the index serves instead of only this one.
 - `--resolution {highest,lowest,lowest-direct}` (on `add`, `lock`, `sync`,
   `composer update`) is uv's version-preference knob: `highest` (default)
   picks newest in range, `lowest` picks oldest for every package,
@@ -167,21 +153,14 @@ Top-level subcommands (from `bougie-cli`):
   any pre-release suffix, pads to three segments, and preserves a `v`
   prefix. A newly-added key is spliced after `description`/`name` rather
   than appended, so it doesn't land below `require`.
-- `sync [--offline] [--locked | --frozen] [--dry-run]` — Install everything
-  the project requires. `--locked` is the CI gate: require fresh
-  `composer.lock` and `bougie.lock` files that already cover the current
-  target, without changing either lock. `--frozen` installs both locks as
-  written, skipping the staleness checks; it still needs digests for the
-  current target and never writes either lock. A baseline extension a
-  platform cannot build (gettext off Linux) is pinned in `bougie.lock` but
-  carries no digest for that platform. On Windows, `[services]` is neither
-  enforced nor treated as drift.
+- `sync [--offline] [--locked] [--dry-run]` — Install everything the project
+  requires. `--locked` is the CI gate: require fresh `composer.lock` and
+  `bougie.lock` files that already cover the current target, without changing
+  either lock.
 - `up [names...]` / `down [names...] [--purge]` — Start / stop declared
   services.
-- `run [--with EXT=VER] [--no-sync] [--locked | --frozen] [--xdebug] -- ARGV...`
-  — Run a command in the project env; supports ad-hoc extensions and xdebug
-  overlay. The implicit sync installs from `bougie.lock` like `sync` does;
-  `--locked` / `--frozen` check the locks even when no sync is needed.
+- `run [--with EXT=VER] [--no-sync] [--xdebug] -- ARGV...` — Run a command
+  in the project env; supports ad-hoc extensions and xdebug overlay.
 - `php {install,uninstall,list,find,pin,upgrade,dir}` — Manage PHP
   interpreters.
 - `composer {install,update,require,remove,show,why,why-not,outdated,audit,licenses,fund,status,validate,dump-autoload}`
@@ -351,7 +330,7 @@ Merging the PR tags `bougie-v<version>`, which triggers
   Trusted Publishing (OIDC) — no long-lived registry secret. cargo-dist
   (`bougie-release.yml`) independently owns the GitHub Release binaries
   on the same tag. Test fixtures are `exclude`d from the heavier crates
-  (bougie-composer-resolver, the `bougie` bin) to
+  (bougie-autoloader, bougie-composer-resolver, the `bougie` bin) to
   keep packed crates lean.
 
 **Use conventional commit prefixes** or release-please won't pick the
@@ -396,20 +375,20 @@ coordinated PRs.
 - **No Composer plugins.** Bougie never runs plugin install-time hooks.
   When users need a plugin's behavior (composer/installers paths, Symfony
   Flex recipes, Laravel package discovery), reimplement it natively. See
-  `bougie-recipe` for the Flex-recipe lane and `composer-installers` (in
-  composer-client) for the declarative-plugin ports.
+  `bougie-recipe` for the Flex-recipe lane and `bougie-installers` for the
+  declarative-plugin ports.
 - **Root `composer.json` scripts: opt-in, off by default.** Composer only
   ever runs scripts from the *root* package (never dependencies), so they
   are the project author's own commands. `bougie-scripts` runs them when
   enabled via `[scripts] run = true` / `--scripts` (parse → classify →
   dispatch). The default stays deterministic-native: scripts don't run,
   and bougie reproduces the effect of the ones it can (Laravel discovery
-  via `composer-installers`). PHP-callback entries (`Class::method`) are
+  via `bougie-installers`). PHP-callback entries (`Class::method`) are
   warn-skipped except a small native allowlist. The resolver fires
   lifecycle hooks (`ScriptHooks`) during `install_from_lock`; the CLI
   (`commands/scripts.rs`) builds the `ScriptContext`.
 - **Byte-equivalent Composer output where applicable.**
-  `composer-autoload` matches Composer 2.8.12's `autoload_*.php`
+  `bougie-autoloader` matches Composer 2.8.12's `autoload_*.php`
   byte-for-byte across the fixture suite. `bougie-php-json` exists
   solely to match PHP's `json_encode` byte output for content hashing.
 - **Conventional commits required** (see Release flow).
@@ -423,10 +402,8 @@ coordinated PRs.
 - New CLI flag: `crates/bougie-cli/src/lib.rs`.
 - New subcommand impl: `crates/bougie/src/commands/`.
 - Composer-side change: `crates/bougie-composer{,-resolver}/`.
-- Autoloader or installer-plugin change: `composer-autoload` /
-  `composer-installers` in composer-client (`products/mage/composer/composer-client`
-  in the monorepo), whose `scripts/generate-autoload-fixtures.sh` regenerates
-  fixtures if expected output shifts.
+- Autoloader change: `crates/bougie-autoloader/` + run
+  `scripts/generate-autoload-fixtures.sh` if expected output shifts.
 - Server / FastCGI: `crates/bougie-server/`.
 - Service supervision / sandboxing: `crates/bougie-daemon/`,
   `crates/bougie-babysit/`, `crates/sandbox-run/`.

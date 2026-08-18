@@ -1,0 +1,26 @@
+{
+    "packages": [
+        {
+            "name": "acme/foo-polyfill",
+            "version": "1.0.0",
+            "version_normalized": "1.0.0.0",
+            "dist": {
+                "type": "path",
+                "url": "packages/foo-polyfill",
+                "reference": "3e6e52d9dab6f2a0c102e35191f84a3012ec5d27"
+            },
+            "provide": {
+                "ext-foo": "*"
+            },
+            "type": "library",
+            "installation-source": "dist",
+            "transport-options": {
+                "symlink": false,
+                "relative": true
+            },
+            "install-path": "../acme/foo-polyfill"
+        }
+    ],
+    "dev": true,
+    "dev-package-names": []
+}

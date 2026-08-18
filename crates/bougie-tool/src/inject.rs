@@ -89,16 +89,8 @@ pub fn inject(ctx: &InstallContext<'_>, package: &str, extras: &[String]) -> Res
     if !added_composer.is_empty() {
         regenerate_and_install(ctx.paths, &tool_dir, &receipt)?;
         (ctx.resolve_lock)(ctx.paths, &tool_dir).wrap_err("resolving composer.lock for tool")?;
-        install_from_lock(
-            ctx.paths,
-            &tool_dir,
-            InstallOptions {
-                no_dev: true,
-                ..Default::default()
-            },
-            None,
-        )
-        .wrap_err("installing tool dependencies")?;
+        install_from_lock(ctx.paths, &tool_dir, InstallOptions { no_dev: true }, None)
+            .wrap_err("installing tool dependencies")?;
     }
 
     // Extension installation: front the bougie binary's callback,
@@ -188,16 +180,8 @@ pub fn uninject(
     if !removed_composer.is_empty() {
         regenerate_and_install(ctx.paths, &tool_dir, &receipt)?;
         (ctx.resolve_lock)(ctx.paths, &tool_dir).wrap_err("resolving composer.lock for tool")?;
-        install_from_lock(
-            ctx.paths,
-            &tool_dir,
-            InstallOptions {
-                no_dev: true,
-                ..Default::default()
-            },
-            None,
-        )
-        .wrap_err("installing tool dependencies after uninject")?;
+        install_from_lock(ctx.paths, &tool_dir, InstallOptions { no_dev: true }, None)
+            .wrap_err("installing tool dependencies after uninject")?;
     }
     // Extension uninstall (delete conf.d fragment) lands in the
     // extension-wiring follow-up.

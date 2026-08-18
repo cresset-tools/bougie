@@ -377,7 +377,7 @@ pub fn fetch_blob(
     spec: &BlobSpec<'_>,
     bar: &DownloadBar,
 ) -> Result<BlobOutcome> {
-    fetch_with_retry(client, spec, bar, try_once_blob, &|_, _| {})
+    fetch_with_retry(client, spec, bar, try_once_blob)
 }
 
 /// Fetch a single bare file (e.g. a `.phar`) into `dest`, verifying its
@@ -389,19 +389,7 @@ pub fn fetch_file(
     spec: &BlobSpec<'_>,
     bar: &DownloadBar,
 ) -> Result<BlobOutcome> {
-    fetch_with_retry(client, spec, bar, try_once_file, &|_, _| {})
-}
-
-/// [`fetch_file`], calling `on_retry(attempt, error)` before each retry
-/// (`attempt` is 1 on the first). For a caller whose own progress display
-/// should show the retry, because `bar` is hidden or shared.
-pub fn fetch_file_with(
-    client: &reqwest::blocking::Client,
-    spec: &BlobSpec<'_>,
-    bar: &DownloadBar,
-    on_retry: &dyn Fn(u32, &eyre::Report),
-) -> Result<BlobOutcome> {
-    fetch_with_retry(client, spec, bar, try_once_file, on_retry)
+    fetch_with_retry(client, spec, bar, try_once_file)
 }
 
 fn fetch_with_retry(
@@ -409,7 +397,6 @@ fn fetch_with_retry(
     spec: &BlobSpec<'_>,
     bar: &DownloadBar,
     once: fn(&reqwest::blocking::Client, &BlobSpec<'_>, &DownloadBar) -> Result<()>,
-    on_retry: &dyn Fn(u32, &eyre::Report),
 ) -> Result<BlobOutcome> {
     if spec.dest.exists() {
         return Ok(BlobOutcome::AlreadyPresent);
@@ -433,7 +420,6 @@ fn fetch_with_retry(
                 // `{msg}` label is shared across a parallel fan-out and
                 // would race, but the URL is local to this fetch.
                 bar.note_retry(url_label(spec.url), attempts, RETRY_BUDGET);
-                on_retry(attempts, &e);
                 backoff_sleep(attempts);
             }
             Err(e) => return Err(e),
@@ -1373,35 +1359,6 @@ pub fn write_with_sha256(into: &Path, bytes: &[u8]) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn fetch_file_with_reports_each_retry() {
-        let tmp = tempfile::tempdir().unwrap();
-        let dest = tmp.path().join("out.bin");
-        // Port 1 refuses the connection at once, so every attempt fails fast.
-        let spec = BlobSpec {
-            url: "http://127.0.0.1:1/x.zip",
-            hash: Hash::sha256(""),
-            partial_dir: tmp.path(),
-            dest: &dest,
-            strip_prefix: "",
-            archive: ArchiveKind::Zip,
-            auth_header: None,
-            auth_header_name: None,
-        };
-        let seen = std::sync::Mutex::new(Vec::new());
-        let result = fetch_file_with(
-            &default_client().unwrap(),
-            &spec,
-            &DownloadBar::hidden(),
-            &|attempt, _| seen.lock().unwrap().push(attempt),
-        );
-        assert!(result.is_err());
-        assert_eq!(
-            *seen.lock().unwrap(),
-            (1..=RETRY_BUDGET).collect::<Vec<_>>()
-        );
-    }
 
     #[test]
     fn format_hex_lowercase() {

@@ -54,7 +54,6 @@ pub const COMMAND_VOCAB: &[&str] = &[
     "start",
     "stop",
     "login",
-    "repo",
     "unknown",
     // Retired spellings older clients still emit; the collector must
     // keep accepting them. `services` was renamed to `service`.

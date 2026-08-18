@@ -240,7 +240,7 @@ impl WatchRegistry {
     /// Cheap (a handful of `is_dir` probes per project) and idempotent,
     /// so the manager can call it on every user-code batch.
     ///
-    /// [`Autoloader::rescan_root`]: composer_autoload::Autoloader::rescan_root
+    /// [`Autoloader::rescan_root`]: bougie_autoloader::Autoloader::rescan_root
     ///
     /// # Panics
     ///

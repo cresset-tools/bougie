@@ -19,10 +19,6 @@ pub enum LockPolicy {
     /// CI assertion mode: require a fresh lock that already covers the
     /// current target. Never mutate the lock or fall back.
     Locked,
-    /// Install from the lock as written, without checking it against the
-    /// project's constraints. It must still cover the current target,
-    /// and is never mutated. No lock means the toolchain floats as usual.
-    Frozen,
 }
 
 pub fn load_fresh(
@@ -42,10 +38,6 @@ pub fn load_fresh(
         }
         return Ok(None);
     };
-    let target = Triple::detect()?.to_string();
-    if policy == LockPolicy::Frozen {
-        return frozen(lock, &target).map(Some);
-    }
     let mut drift = Vec::new();
 
     if let Some(constraint) = super::platform_lock::php_constraint_input(project_root, project)
@@ -116,16 +108,12 @@ pub fn load_fresh(
         }
     }
 
-    // Services cannot run on Windows, so a Windows checkout neither
-    // enforces nor invalidates the `[services]` half of the lock.
-    #[cfg(unix)]
     let current_services: BTreeMap<&str, &str> = project
         .bougie
         .services
         .iter()
         .map(|(name, pin)| (name.as_str(), pin.version().unwrap_or("*")))
         .collect();
-    #[cfg(unix)]
     for (name, constraint) in &current_services {
         match lock.services.get(*name) {
             None => drift.push(format!("service {name} was added")),
@@ -136,23 +124,21 @@ pub fn load_fresh(
             Some(_) => {}
         }
     }
-    #[cfg(unix)]
     for name in lock.services.keys() {
         if !current_services.contains_key(name.as_str()) {
             drift.push(format!("service {name} was removed"));
         }
     }
-    #[cfg(not(unix))]
-    let _ = project;
 
+    let target = Triple::detect()?.to_string();
     match lock.targets.get(&target) {
         None if policy == LockPolicy::Locked => {
             drift.push(format!("current target {target} is not covered"));
         }
         None if drift.is_empty() && !offline => {
-            let ctx = super::platform_lock::IndexCtx::open(paths)?;
-            let artifacts = super::platform_lock::resolve_target(&ctx, &lock, &target)?;
-            lock.targets.insert(target.clone(), artifacts);
+            let (resolved_target, artifacts) =
+                super::platform_lock::resolve_locked_target(&lock, paths)?;
+            lock.targets.insert(resolved_target, artifacts);
             lock.write(project_root)?;
             eprintln!("added current target {target} to bougie.lock");
         }
@@ -162,7 +148,21 @@ pub fn load_fresh(
             ));
         }
         None => drift.push(format!("current target {target} is not covered")),
-        Some(_) => drift.extend(missing_digests(&lock, &target)),
+        Some(artifacts) => {
+            for name in lock.extensions.keys() {
+                if !artifacts.extensions.contains_key(name) {
+                    drift.push(format!("current target has no digest for extension {name}"));
+                }
+            }
+            #[cfg(unix)]
+            for name in lock.services.keys() {
+                let ships_artifact =
+                    catalog::find(name).is_some_and(|entry| !entry.tarball.is_empty());
+                if ships_artifact && !artifacts.services.contains_key(name) {
+                    drift.push(format!("current target has no digest for service {name}"));
+                }
+            }
+        }
     }
 
     if drift.is_empty() {
@@ -183,45 +183,4 @@ pub fn load_fresh(
         eprintln!("warning: run `bougie lock --with-platform` to refresh it");
         Ok(None)
     }
-}
-
-/// `--frozen`: trust the lock's pins as written, but still refuse to
-/// install anything this target has no digest for.
-fn frozen(lock: ToolchainLock, target: &str) -> Result<ToolchainLock> {
-    let missing = if lock.targets.contains_key(target) {
-        missing_digests(&lock, target)
-    } else {
-        vec![format!("current target {target} is not covered")]
-    };
-    if missing.is_empty() {
-        Ok(lock)
-    } else {
-        Err(eyre::eyre!(
-            "bougie.lock cannot be installed as-is and --frozen is set:\n  - {}\nrun `bougie sync` once without --frozen, or `bougie lock --with-platform --all-targets`, and commit the result",
-            missing.join("\n  - ")
-        ))
-    }
-}
-
-/// Entries the lock pins for which `target`'s digest block has no digest.
-fn missing_digests(lock: &ToolchainLock, target: &str) -> Vec<String> {
-    let Some(artifacts) = lock.targets.get(target) else {
-        return Vec::new();
-    };
-    let mut missing = Vec::new();
-    for (name, pin) in &lock.extensions {
-        if super::platform_lock::extension_expected_on(name, pin.origin, target)
-            && !artifacts.extensions.contains_key(name)
-        {
-            missing.push(format!("current target has no digest for extension {name}"));
-        }
-    }
-    #[cfg(unix)]
-    for name in lock.services.keys() {
-        let ships_artifact = catalog::find(name).is_some_and(|entry| !entry.tarball.is_empty());
-        if ships_artifact && !artifacts.services.contains_key(name) {
-            missing.push(format!("current target has no digest for service {name}"));
-        }
-    }
-    missing
 }
