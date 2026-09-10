@@ -38,7 +38,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
           cache-bin: false
 
@@ -93,7 +93,7 @@ jobs:
       # 'build' found" because rustup-init doesn't speak cargo
       # subcommands. The action's bin cache only saves ~5–10s; the
       # toolchain itself is still cached by Swatinem/rust-cache.
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
           cache-bin: false
 
@@ -117,7 +117,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
           cache-bin: false
 
