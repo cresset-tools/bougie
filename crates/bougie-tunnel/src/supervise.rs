@@ -1,44 +1,80 @@
-//! Reconnect supervisor: redial with capped backoff, carrying the resume token
-//! so the public URL survives a dropped connection.
+//! Reconnect supervisor: keep a share up across dropped connections.
+//!
+//! When the session ends — the relay closed it, or keepalive found the link
+//! dead — redial with capped backoff, presenting the share's resume token so
+//! the relay hands back the same URL. A relay that can't resume (it restarted,
+//! or the grace period ran out) issues a new share instead; the caller learns
+//! of it through [`Event::Reconnected`] and can re-register the new host.
+//!
+//! Only a *refusal* (bad login, not allowed to share) stops the loop: retrying
+//! can't fix it. Network errors are retried for as long as the caller lets the
+//! future run.
 
+use std::future::Future;
 use std::time::Duration;
 
-use crate::{ShareHandle, TunnelClient};
+use eyre::Result;
 
-/// Backoff schedule (seconds), capped — mirrors the daemon supervisor's
-/// exponential-with-cap posture.
+use crate::{Refused, Serving, ShareHandle, TunnelClient};
+
+/// Backoff schedule (seconds) between attempts, capped at the last entry.
 const BACKOFF: &[u64] = &[1, 2, 5, 10, 30];
 
-/// Open the tunnel and keep it open across drops. `on_ready` is invoked with the
-/// (possibly refreshed) [`ShareHandle`] each time a connection is established —
-/// the first call is the one the `bougie share` command prints.
-///
-/// Never returns on its own; the caller wraps it in a `tokio::select!` against
-/// `ctrl_c()` to end the share.
-pub async fn run_forever<F>(mut client: TunnelClient, mut on_ready: F) -> !
+/// What happened to the share, for the caller to report.
+#[derive(Debug, Clone)]
+pub enum Event {
+    /// The connection dropped; reconnecting.
+    Lost { reason: String },
+    /// An attempt failed; the next one is in `wait`.
+    Retrying {
+        attempt: usize,
+        wait: Duration,
+        error: String,
+    },
+    /// Connected again. `handle.host` differs from before if the relay could
+    /// not resume the old share.
+    Reconnected(ShareHandle),
+}
+
+/// Serve `first` (from [`TunnelClient::open`]) and keep the share up across
+/// drops, reporting each change to `on_event`. Returns only when the relay
+/// refuses a reconnect.
+pub async fn keep_up<F, Fut>(
+    mut client: TunnelClient,
+    first: (ShareHandle, Serving),
+    mut on_event: F,
+) -> Result<()>
 where
-    F: FnMut(&ShareHandle),
+    F: FnMut(Event) -> Fut,
+    Fut: Future<Output = ()>,
 {
-    let mut attempt = 0usize;
+    let (mut handle, mut serving) = first;
     loop {
-        match client.open().await {
-            Ok((handle, serving)) => {
-                attempt = 0;
-                // Carry the resume token so we keep the same URL next time.
-                if handle.resume.is_some() {
-                    let mut cfg = client.config().clone();
-                    handle.resume.clone_into(&mut cfg.resume);
-                    client = TunnelClient::new(cfg);
-                }
-                on_ready(&handle);
-                if let Err(e) = serving.run().await {
-                    tracing::warn!("tunnel dropped: {e}");
+        client = client.resuming(&handle);
+        let reason = match serving.run().await {
+            Ok(()) => "the relay closed the connection".to_owned(),
+            Err(e) => e.to_string(),
+        };
+        on_event(Event::Lost { reason }).await;
+
+        let mut attempt = 0usize;
+        (handle, serving) = loop {
+            match client.open().await {
+                Ok(opened) => break opened,
+                Err(e) if e.downcast_ref::<Refused>().is_some() => return Err(e),
+                Err(e) => {
+                    let wait = Duration::from_secs(BACKOFF[attempt.min(BACKOFF.len() - 1)]);
+                    attempt += 1;
+                    on_event(Event::Retrying {
+                        attempt,
+                        wait,
+                        error: e.to_string(),
+                    })
+                    .await;
+                    tokio::time::sleep(wait).await;
                 }
             }
-            Err(e) => tracing::warn!("relay connect failed: {e}"),
-        }
-        let secs = BACKOFF[attempt.min(BACKOFF.len() - 1)];
-        attempt += 1;
-        tokio::time::sleep(Duration::from_secs(secs)).await;
+        };
+        on_event(Event::Reconnected(handle.clone())).await;
     }
 }

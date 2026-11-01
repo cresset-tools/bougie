@@ -11,7 +11,7 @@
 //! Flow: [`TunnelClient::open`] dials the relay, completes the length-prefixed
 //! JSON handshake ([`mod@protocol`]), and returns the assigned [`ShareHandle`]
 //! (URL + view password) plus a [`Serving`] future you drive until Ctrl-C.
-//! [`supervise::run_forever`] wraps that with reconnect-and-backoff.
+//! [`supervise::keep_up`] wraps that with reconnect-and-backoff.
 
 mod connect;
 mod protocol;
@@ -88,6 +88,19 @@ impl Serving {
     }
 }
 
+/// The relay answered the handshake with a refusal (bad login, not allowed to
+/// share). Distinct from network errors because retrying can't fix it.
+#[derive(Debug, Clone)]
+pub struct Refused(pub String);
+
+impl fmt::Display for Refused {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "relay refused the share: {}", self.0)
+    }
+}
+
+impl std::error::Error for Refused {}
+
 /// Tunnel client. Cheap — holds only config.
 #[derive(Debug, Clone)]
 pub struct TunnelClient {
@@ -119,9 +132,80 @@ impl TunnelClient {
         ))
     }
 
-    /// Config accessor (used by the reconnect supervisor).
+    /// Config accessor.
     #[must_use]
     pub fn config(&self) -> &TunnelConfig {
         &self.cfg
+    }
+
+    /// A client that reconnects to `handle`'s share: it presents the resume
+    /// token, and also asks for the same slug and view password, so a relay
+    /// that can't resume (or predates resume tokens) still hands back the same
+    /// URL when the slug is free.
+    #[must_use]
+    pub fn resuming(&self, handle: &ShareHandle) -> Self {
+        let mut cfg = self.cfg.clone();
+        if handle.resume.is_some() {
+            cfg.resume.clone_from(&handle.resume);
+        }
+        if let Some(label) = handle.host.split('.').next().filter(|l| !l.is_empty()) {
+            cfg.slug = Some(label.to_owned());
+        }
+        cfg.password_mode = if handle.view_password.is_some() {
+            PasswordMode::Custom
+        } else {
+            PasswordMode::None
+        };
+        cfg.password.clone_from(&handle.view_password);
+        Self { cfg }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cfg() -> TunnelConfig {
+        TunnelConfig {
+            relay_addr: "relay:443".into(),
+            relay_sni: "tunnel.bougie.show".into(),
+            local_port: 7080,
+            project: "shop".into(),
+            token: Some("t".into()),
+            slug: None,
+            password_mode: PasswordMode::Auto,
+            password: None,
+            resume: None,
+        }
+    }
+
+    #[test]
+    fn resuming_asks_for_the_same_share_back() {
+        let handle = ShareHandle {
+            url: "https://shop-x1y2z3.bougie.show".into(),
+            host: "shop-x1y2z3.bougie.show".into(),
+            view_password: Some("pw".into()),
+            resume: Some("tok".into()),
+        };
+        let c = TunnelClient::new(cfg()).resuming(&handle);
+        let c = c.config();
+        assert_eq!(c.resume.as_deref(), Some("tok"));
+        // Fallbacks for a relay that can't resume: same slug, same password.
+        assert_eq!(c.slug.as_deref(), Some("shop-x1y2z3"));
+        assert_eq!(c.password_mode, PasswordMode::Custom);
+        assert_eq!(c.password.as_deref(), Some("pw"));
+    }
+
+    #[test]
+    fn resuming_a_public_share_stays_public() {
+        let handle = ShareHandle {
+            url: "https://shop-a.bougie.show".into(),
+            host: "shop-a.bougie.show".into(),
+            view_password: None,
+            resume: None,
+        };
+        let c = TunnelClient::new(cfg()).resuming(&handle);
+        assert_eq!(c.config().password_mode, PasswordMode::None);
+        assert_eq!(c.config().resume, None);
     }
 }

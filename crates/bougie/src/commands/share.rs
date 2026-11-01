@@ -20,6 +20,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use bougie_cli::{OutputFormat, ShareArgs};
+use bougie_tunnel::supervise::{self, Event};
 use bougie_tunnel::{PasswordMode, ShareHandle, TunnelClient, TunnelConfig};
 use eyre::{Result, WrapErr, eyre};
 use serde_json::{Value, json};
@@ -166,7 +167,8 @@ pub fn run(format: OutputFormat, args: ShareArgs) -> Result<ExitCode> {
         .enable_all()
         .build()?;
     rt.block_on(async move {
-        let (handle, serving) = TunnelClient::new(tunnel_cfg).open().await?;
+        let client = TunnelClient::new(tunnel_cfg);
+        let (handle, serving) = client.open().await?;
 
         // Register the relay-assigned `<slug>.bougie.show` as a `[[host]]`
         // mirroring the tenant (same project/root/rewrites), then reload the
@@ -182,18 +184,105 @@ pub fn run(format: OutputFormat, args: ShareArgs) -> Result<ExitCode> {
         .await?;
         banner(format, &project_root, &handle)?;
 
-        // Drive the tunnel until the relay closes it or the user hits Ctrl-C.
-        let out = tokio::select! {
-            r = serving.run() => r,
-            _ = tokio::signal::ctrl_c() => Ok(()),
+        let site = ShareSite {
+            server_toml: &server_toml,
+            project: &project_root,
+            root: &root,
+            rewrites: &rewrites,
+            paths: &paths,
         };
+        let (out, current) = serve_share(client, (handle, serving), &site).await;
 
         // Always tear the temporary host back down, whatever ended the share.
-        remove_share_host(&server_toml, &handle.host, &paths).await;
+        remove_share_host(&server_toml, &current, &paths).await;
         out
     })?;
 
     Ok(ExitCode::SUCCESS)
+}
+
+/// Where the share's temporary `[[host]]` lives, for re-registering it when a
+/// reconnect comes back with a different URL.
+struct ShareSite<'a> {
+    server_toml: &'a Path,
+    project: &'a Path,
+    root: &'a str,
+    rewrites: &'a [bougie_server::server::config::RewriteRule],
+    paths: &'a bougie_paths::Paths,
+}
+
+/// Serve until Ctrl-C, reconnecting whenever the connection drops. Only a
+/// refusal from the relay (e.g. an expired login) ends it early. Returns how it
+/// ended plus the share host in use at the end, for teardown.
+async fn serve_share(
+    client: TunnelClient,
+    first: (ShareHandle, bougie_tunnel::Serving),
+    site: &ShareSite<'_>,
+) -> (Result<()>, String) {
+    let (ev_tx, mut events) = tokio::sync::mpsc::unbounded_channel();
+    let mut current = first.0.host.clone();
+    let share = supervise::keep_up(client, first, move |ev| {
+        let _ = ev_tx.send(ev);
+        std::future::ready(())
+    });
+    tokio::pin!(share);
+    let out = loop {
+        tokio::select! {
+            r = &mut share => break r,
+            _ = tokio::signal::ctrl_c() => break Ok(()),
+            Some(ev) = events.recv() => {
+                if let Err(e) = on_share_event(ev, &mut current, site).await {
+                    break Err(e);
+                }
+            }
+        }
+    };
+    (out, current)
+}
+
+/// Report a reconnect-supervisor event; if the relay could not resume the old
+/// share, swap the dev server's share host for the new one.
+async fn on_share_event(ev: Event, current: &mut String, site: &ShareSite<'_>) -> Result<()> {
+    match ev {
+        Event::Lost { reason } => {
+            tracing::debug!("share connection ended: {reason}");
+            eprintln!("connection to the relay lost; reconnecting…");
+        }
+        Event::Retrying {
+            attempt,
+            wait,
+            error,
+        } => {
+            eprintln!(
+                "  attempt {attempt} failed ({error}); retrying in {}s",
+                wait.as_secs()
+            );
+        }
+        Event::Reconnected(handle) if handle.host == *current => {
+            eprintln!("reconnected — still sharing at {}", handle.url);
+        }
+        Event::Reconnected(handle) => {
+            remove_share_host(site.server_toml, current, site.paths).await;
+            add_share_host(
+                site.server_toml,
+                &handle.host,
+                site.project,
+                site.root,
+                site.rewrites,
+                site.paths,
+            )
+            .await?;
+            current.clone_from(&handle.host);
+            eprintln!(
+                "reconnected, but the relay couldn't keep the old URL — now sharing at {}",
+                handle.url
+            );
+            if let Some(pw) = &handle.view_password {
+                eprintln!("  view password: {pw}");
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The login bearer that authorises the share with the relay.

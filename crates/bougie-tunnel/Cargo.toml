@@ -44,6 +44,11 @@ version = "0.26"
 [dependencies.yamux]
 version = "0.13"
 
+# TCP keepalive tuning on the relay connection (tokio doesn't expose it).
+[dependencies.socket2]
+version = "0.6"
+features = ["all"]
+
 [dependencies.tracing]
 version = "0.1"
 

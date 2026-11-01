@@ -1,8 +1,9 @@
 //! TLS dial + handshake + yamux client setup.
 
 use std::sync::Arc;
+use std::time::Duration;
 
-use eyre::{Result, bail, eyre};
+use eyre::{Result, eyre};
 use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
 use tokio_rustls::rustls::crypto::ring;
@@ -11,7 +12,7 @@ use tokio_rustls::rustls::{ClientConfig, RootCertStore};
 use tokio_util::compat::TokioAsyncReadCompatExt;
 
 use crate::protocol::{self, HelloRequest, HelloResponse, PROTOCOL_VERSION};
-use crate::{Mux, TlsIo, TunnelConfig};
+use crate::{Mux, Refused, TlsIo, TunnelConfig};
 
 /// Result of a completed handshake: the assigned share plus the live yamux
 /// session (internal — [`crate::TunnelClient::open`] splits it into the public
@@ -51,6 +52,7 @@ fn client_config() -> Result<ClientConfig> {
 pub(crate) async fn connect(cfg: &TunnelConfig) -> Result<Connected> {
     let tcp = TcpStream::connect(&cfg.relay_addr).await?;
     tcp.set_nodelay(true).ok();
+    set_keepalive(&tcp);
 
     let connector = TlsConnector::from(Arc::new(client_config()?));
     let sni = ServerName::try_from(cfg.relay_sni.clone())?;
@@ -68,10 +70,8 @@ pub(crate) async fn connect(cfg: &TunnelConfig) -> Result<Connected> {
     protocol::write_frame(&mut tls, &req).await?;
     let hello: HelloResponse = protocol::read_frame(&mut tls).await?;
     if !hello.ok {
-        bail!(
-            "relay refused the share: {}",
-            hello.error.as_deref().unwrap_or("unknown error")
-        );
+        let why = hello.error.as_deref().unwrap_or("unknown error");
+        return Err(Refused(why.to_owned()).into());
     }
 
     // Hand the *same* TLS stream to yamux; the laptop is the yamux client and
@@ -79,4 +79,18 @@ pub(crate) async fn connect(cfg: &TunnelConfig) -> Result<Connected> {
     let io: TlsIo = tls.compat();
     let conn = yamux::Connection::new(io, yamux::Config::default(), yamux::Mode::Client);
     Ok(Connected { hello, conn })
+}
+
+/// Probe the idle connection so a dead link (laptop slept, network changed) is
+/// noticed in ~30s and the share reconnects, instead of hanging until the
+/// kernel's two-hour default. Best-effort.
+fn set_keepalive(tcp: &TcpStream) {
+    let ka = socket2::TcpKeepalive::new()
+        .with_time(Duration::from_secs(15))
+        .with_interval(Duration::from_secs(5));
+    #[cfg(not(windows))]
+    let ka = ka.with_retries(3);
+    if let Err(e) = socket2::SockRef::from(tcp).set_tcp_keepalive(&ka) {
+        tracing::debug!("set keepalive: {e}");
+    }
 }

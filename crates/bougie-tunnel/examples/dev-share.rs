@@ -33,15 +33,20 @@ async fn main() -> eyre::Result<()> {
         resume: None,
     };
 
-    let (handle, serving) = TunnelClient::new(cfg).open().await?;
+    let client = TunnelClient::new(cfg);
+    let (handle, serving) = client.open().await?;
     println!("SHARE_URL={}", handle.url);
     println!("SHARE_HOST={}", handle.host);
     if let Some(pw) = &handle.view_password {
         println!("SHARE_PASSWORD={pw}");
     }
     println!("share up; Ctrl-C to stop");
-    serving.run().await?;
-    Ok(())
+    // Same reconnect behaviour as `bougie share`.
+    bougie_tunnel::supervise::keep_up(client, (handle, serving), |ev| {
+        println!("EVENT={ev:?}");
+        std::future::ready(())
+    })
+    .await
 }
 
 fn env(k: &str, default: &str) -> String {

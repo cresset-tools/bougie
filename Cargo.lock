@@ -846,6 +846,7 @@ dependencies = [
  "bougie-tunnel-protocol",
  "eyre",
  "rustls-pemfile",
+ "socket2",
  "tokio",
  "tokio-rustls",
  "tokio-util",
