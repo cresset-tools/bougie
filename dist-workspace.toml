@@ -11,7 +11,8 @@
 # which rewrites .github/workflows/bougie-release.yml. NOTE: `dist generate`
 # emits an `on: push: tags` trigger; we hand-edit it to `on: release:
 # published` (release-please creates tags via the API, which doesn't reliably
-# fire `push`). Re-apply that trigger edit after any regenerate.
+# fire `push`). Re-apply that trigger edit after any regenerate, along with
+# the `scripts/patch-installer-env-scripts.sh` step in build-global-artifacts.
 
 [workspace]
 members = ["cargo:."]
@@ -19,7 +20,7 @@ members = ["cargo:."]
 [dist]
 # Pin the dist version that CI runs — bumps come through PRs so the
 # generated release.yml is updated in lockstep.
-cargo-dist-version = "0.32.0"
+cargo-dist-version = "0.33.1"
 
 # Workspace has 25 crates; only `bougie` ships binaries. The default
 # `dist = false` opts every package out; the bougie crate opts itself

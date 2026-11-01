@@ -74,9 +74,9 @@ regeneration.
 
 ```sh
 # Install dist matching the pinned `cargo-dist-version` in
-# dist-workspace.toml — currently 0.32.0.
+# dist-workspace.toml — currently 0.33.1.
 curl --proto '=https' --tlsv1.2 -LsSf \
-  https://github.com/axodotdev/cargo-dist/releases/download/v0.32.0/cargo-dist-installer.sh \
+  https://github.com/axodotdev/cargo-dist/releases/download/v0.33.1/cargo-dist-installer.sh \
   | sh
 
 # Regenerate the workflow file in place.
