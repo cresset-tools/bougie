@@ -144,6 +144,9 @@ rustix = { version = "1.0", default-features = false, features = ["std", "fs"] }
 # --- External deps still used directly by the bin (CLI dispatch,
 #     commands/ handlers, the unzip-shim role, etc.) ---
 
+[dependencies.anstream]
+version = "1.0"
+
 [dependencies.clap]
 version = "4.5"
 default-features = false

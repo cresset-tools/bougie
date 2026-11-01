@@ -6,7 +6,8 @@
 //! outbound TLS connection, and this client splices that substream straight to
 //! the local dev server on loopback (`copy_bidirectional`). All HTTP semantics —
 //! Host routing, `X-Forwarded-*` injection, `Set-Cookie` rewriting, view-auth —
-//! live in the relay, so the client never parses a request.
+//! live in the relay. The client forwards bytes unchanged; it only reads the
+//! request and status lines to report each exchange ([`RequestLog`]).
 //!
 //! Flow: [`TunnelClient::open`] dials the relay, completes the length-prefixed
 //! JSON handshake ([`mod@protocol`]), and returns the assigned [`ShareHandle`]
@@ -23,6 +24,7 @@ use std::fmt;
 use eyre::Result;
 
 pub use protocol::{HelloRequest, HelloResponse, PasswordMode};
+pub use proxy::RequestLog;
 
 /// The TLS byte stream after the handshake, adapted to futures-io for yamux.
 type TlsIo = tokio_util::compat::Compat<tokio_rustls::client::TlsStream<tokio::net::TcpStream>>;
@@ -50,6 +52,8 @@ pub struct TunnelConfig {
     pub password: Option<String>,
     /// Resume token to keep the same URL across reconnects.
     pub resume: Option<String>,
+    /// Where to report each proxied request, if anywhere.
+    pub request_log: Option<tokio::sync::mpsc::UnboundedSender<RequestLog>>,
 }
 
 /// The assigned public share, returned as soon as the handshake completes.
@@ -70,6 +74,7 @@ pub struct ShareHandle {
 pub struct Serving {
     conn: Mux,
     local_port: u16,
+    request_log: Option<tokio::sync::mpsc::UnboundedSender<RequestLog>>,
 }
 
 impl fmt::Debug for Serving {
@@ -84,7 +89,7 @@ impl Serving {
     /// Accept relay-opened substreams and splice each to the local server.
     /// Returns `Ok(())` when the relay closes the session.
     pub async fn run(self) -> Result<()> {
-        proxy::serve(self.conn, self.local_port).await
+        proxy::serve(self.conn, self.local_port, self.request_log).await
     }
 }
 
@@ -128,6 +133,7 @@ impl TunnelClient {
             Serving {
                 conn: c.conn,
                 local_port: self.cfg.local_port,
+                request_log: self.cfg.request_log.clone(),
             },
         ))
     }
@@ -176,6 +182,7 @@ mod tests {
             password_mode: PasswordMode::Auto,
             password: None,
             resume: None,
+            request_log: None,
         }
     }
 

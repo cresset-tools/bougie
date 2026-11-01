@@ -376,6 +376,7 @@ dependencies = [
 name = "bougie"
 version = "0.53.0"
 dependencies = [
+ "anstream",
  "assert_cmd",
  "base64 0.22.1",
  "bougie-autoloader",

@@ -17,6 +17,7 @@ use bougie_tunnel::{PasswordMode, TunnelClient, TunnelConfig};
 
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
+    let (log_tx, mut requests) = tokio::sync::mpsc::unbounded_channel();
     let cfg = TunnelConfig {
         relay_addr: env("RELAY_ADDR", "127.0.0.1:8443"),
         relay_sni: env("RELAY_SNI", "tunnel.bougie.test"),
@@ -31,7 +32,13 @@ async fn main() -> eyre::Result<()> {
         },
         password: None,
         resume: None,
+        request_log: Some(log_tx),
     };
+    tokio::spawn(async move {
+        while let Some(r) = requests.recv().await {
+            println!("REQUEST={r:?}");
+        }
+    });
 
     let client = TunnelClient::new(cfg);
     let (handle, serving) = client.open().await?;

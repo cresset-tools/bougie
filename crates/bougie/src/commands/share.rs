@@ -21,7 +21,7 @@ use std::process::ExitCode;
 
 use bougie_cli::{OutputFormat, ShareArgs};
 use bougie_tunnel::supervise::{self, Event};
-use bougie_tunnel::{PasswordMode, ShareHandle, TunnelClient, TunnelConfig};
+use bougie_tunnel::{PasswordMode, RequestLog, ShareHandle, TunnelClient, TunnelConfig};
 use eyre::{Result, WrapErr, eyre};
 use serde_json::{Value, json};
 
@@ -151,6 +151,7 @@ pub fn run(format: OutputFormat, args: ShareArgs) -> Result<ExitCode> {
         PasswordMode::Auto
     };
 
+    let (log_tx, requests) = tokio::sync::mpsc::unbounded_channel();
     let tunnel_cfg = TunnelConfig {
         relay_addr: relay_addr(),
         relay_sni: relay_sni(),
@@ -161,6 +162,7 @@ pub fn run(format: OutputFormat, args: ShareArgs) -> Result<ExitCode> {
         password_mode,
         password,
         resume: None,
+        request_log: Some(log_tx),
     };
 
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -191,7 +193,7 @@ pub fn run(format: OutputFormat, args: ShareArgs) -> Result<ExitCode> {
             rewrites: &rewrites,
             paths: &paths,
         };
-        let (out, current) = serve_share(client, (handle, serving), &site).await;
+        let (out, current) = serve_share(client, (handle, serving), &site, requests, format).await;
 
         // Always tear the temporary host back down, whatever ended the share.
         remove_share_host(&server_toml, &current, &paths).await;
@@ -218,7 +220,12 @@ async fn serve_share(
     client: TunnelClient,
     first: (ShareHandle, bougie_tunnel::Serving),
     site: &ShareSite<'_>,
+    mut requests: tokio::sync::mpsc::UnboundedReceiver<RequestLog>,
+    format: OutputFormat,
 ) -> (Result<()>, String) {
+    if matches!(format, OutputFormat::Text) {
+        println!("\nHTTP requests\n-------------");
+    }
     let (ev_tx, mut events) = tokio::sync::mpsc::unbounded_channel();
     let mut current = first.0.host.clone();
     let share = supervise::keep_up(client, first, move |ev| {
@@ -235,9 +242,66 @@ async fn serve_share(
                     break Err(e);
                 }
             }
+            Some(req) = requests.recv() => print_request(&req, format),
         }
     };
     (out, current)
+}
+
+/// One line per proxied request, ngrok-style: method, path, status, time.
+/// JSON output gets one object per line instead.
+fn print_request(req: &RequestLog, format: OutputFormat) {
+    let ms = req.duration.as_millis();
+    if !matches!(format, OutputFormat::Text) {
+        let line = json!({
+            "event": "request",
+            "method": req.method,
+            "target": req.target,
+            "status": req.status,
+            "duration_ms": ms,
+            "bytes": req.bytes,
+        });
+        println!("{line}");
+        return;
+    }
+    // anstream strips the colour when stdout isn't a terminal or NO_COLOR is
+    // set, like the rest of bougie's output.
+    anstream::println!("{}", request_line(req, true));
+}
+
+/// The longest request target shown before it's cut short with `…`.
+const TARGET_WIDTH: usize = 48;
+
+fn request_line(req: &RequestLog, color: bool) -> String {
+    let target = if req.target.chars().count() > TARGET_WIDTH {
+        let cut: String = req.target.chars().take(TARGET_WIDTH - 1).collect();
+        format!("{cut}…")
+    } else {
+        req.target.clone()
+    };
+    let status = match req.status {
+        Some(code) => format!("{code} {}", req.reason),
+        None => "—".to_owned(),
+    };
+    let status = format!("{status:<20}");
+    let status = match (color, req.status) {
+        (true, Some(code)) => {
+            let ansi = match code {
+                200..=299 => "32", // green
+                300..=399 => "36", // cyan
+                400..=499 => "33", // yellow
+                _ => "31",         // red
+            };
+            format!("\x1b[{ansi}m{status}\x1b[0m")
+        }
+        _ => status,
+    };
+    format!(
+        "{:<7} {target:<width$} {status} {:>6} ms",
+        req.method,
+        req.duration.as_millis(),
+        width = TARGET_WIDTH
+    )
 }
 
 /// Report a reconnect-supervisor event; if the relay could not resume the old
@@ -392,6 +456,29 @@ mod tests {
 
     /// The relay takes tunnels on :443, picked out by SNI; it keys on
     /// `BOUGIE_RELAY_TUNNEL_HOST`, which defaults to `tunnel.<domain>`.
+    #[test]
+    fn request_line_is_aligned_and_cuts_long_paths() {
+        let req = RequestLog {
+            method: "GET".into(),
+            target: "/wp-admin/".into(),
+            status: Some(200),
+            reason: "OK".into(),
+            duration: std::time::Duration::from_millis(48),
+            bytes: 10,
+        };
+        assert_eq!(
+            request_line(&req, false),
+            format!("GET     {:<48} {:<20}     48 ms", "/wp-admin/", "200 OK")
+        );
+        let long = RequestLog {
+            target: format!("/{}", "a".repeat(100)),
+            ..req
+        };
+        let line = request_line(&long, false);
+        assert!(line.contains('…'), "{line}");
+        assert!(!line.contains(&"a".repeat(60)), "{line}");
+    }
+
     #[test]
     fn default_relay_is_the_tunnel_host_on_443() {
         assert_eq!(DEFAULT_RELAY_ADDR, format!("{DEFAULT_RELAY_SNI}:443"));
