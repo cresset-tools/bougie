@@ -312,6 +312,17 @@ async fn serve_php(
     // Touch up front so a long dispatch can't be reaped underneath us.
     pool.touch();
 
+    // REQUEST_URI is the request line exactly as the client sent it — raw
+    // percent-encoding and query included — never the routed script or a
+    // rewrite target, matching nginx's `$request_uri`, Apache and `php -S`.
+    // Apps compare it with the URL they would generate (WordPress's
+    // `redirect_canonical()`), so a reconstructed `/index.php` for a `/`
+    // request redirect-loops. Read before `collect_body` consumes `req`.
+    let request_uri = req
+        .uri()
+        .path_and_query()
+        .map_or_else(|| "/".to_owned(), |pq| pq.as_str().to_owned());
+
     let body_bytes = match collect_body(req).await {
         Ok(b) => b,
         Err(resp) => return resp,
@@ -336,20 +347,6 @@ async fn serve_php(
     let peer_port = peer.port().to_string();
     let script_fn_str = super::paths::cgi_path_string(script_filename);
     let doc_root_str = super::paths::cgi_path_string(&web_root_canonical);
-    let request_uri_str = if query.is_empty() {
-        // PATH_INFO carries the URI portion after the script for
-        // front-controller dispatch; for direct hits it's empty and we
-        // fall back to script_name as REQUEST_URI.
-        if path_info.is_empty() {
-            script_name.to_owned()
-        } else {
-            path_info.to_owned()
-        }
-    } else if path_info.is_empty() {
-        format!("{script_name}?{query}")
-    } else {
-        format!("{path_info}?{query}")
-    };
 
     // Build the FastCGI param table. The exact set matches what nginx
     // sends with `include fastcgi_params; fastcgi_param SCRIPT_FILENAME …`.
@@ -359,7 +356,7 @@ async fn serve_php(
     params.push(("PATH_INFO", path_info));
     params.push(("QUERY_STRING", query));
     params.push(("REQUEST_METHOD", method_str));
-    params.push(("REQUEST_URI", &request_uri_str));
+    params.push(("REQUEST_URI", &request_uri));
     params.push(("DOCUMENT_ROOT", &doc_root_str));
     params.push(("CONTENT_TYPE", content_type));
     params.push(("CONTENT_LENGTH", &content_length));

@@ -287,6 +287,86 @@ echo "BODY=" . file_get_contents('php://input') . "\n";
     let _ = server.shutdown();
 }
 
+/// `REQUEST_URI` is the request line as sent, whatever script the router
+/// picked. A directory hit used to report the index script (`/index.php` for
+/// `/`), which sent WordPress's canonical redirect into a loop.
+#[test]
+fn request_uri_is_the_original_request_line() {
+    let Some((resolved, bougie_home)) = discover_installed_php() else {
+        eprintln!("(skipped: no bougie-installed php-fpm found on this system)");
+        return;
+    };
+
+    let env = TestEnv::new();
+    let xdg = TempDir::new().unwrap();
+    let proj = make_php_project(&resolved);
+    let probe = r#"<?php
+header('Content-Type: text/plain');
+echo 'URI=', $_SERVER['REQUEST_URI'], "\n", 'SCRIPT=', $_SERVER['SCRIPT_NAME'], "\n",
+     'PI=', $_SERVER['PATH_INFO'] ?? '', "\n", 'Q=', $_SERVER['QUERY_STRING'], "\n";
+"#;
+    std::fs::write(proj.path().join("public/index.php"), probe).unwrap();
+    std::fs::create_dir_all(proj.path().join("public/__probe")).unwrap();
+    std::fs::write(proj.path().join("public/__probe/index.php"), probe).unwrap();
+    std::fs::write(proj.path().join("public/__probe/direct.php"), probe).unwrap();
+
+    let cfg = seed_single_host(xdg.path(), "uri-test.bougie.run", proj.path());
+    let server = ServerHandle::spawn(&env, &cfg, &bougie_home);
+
+    // (request, REQUEST_URI, SCRIPT_NAME)
+    let cases = [
+        ("/", "/", "/index.php"),
+        ("/?a=1", "/?a=1", "/index.php"),
+        ("/__probe/", "/__probe/", "/__probe/index.php"),
+        ("/__probe/?a=1", "/__probe/?a=1", "/__probe/index.php"),
+        (
+            "/__probe/index.php",
+            "/__probe/index.php",
+            "/__probe/index.php",
+        ),
+        (
+            "/__probe/direct.php",
+            "/__probe/direct.php",
+            "/__probe/direct.php",
+        ),
+        // Front-controller fallthrough.
+        ("/users/42?page=1", "/users/42?page=1", "/index.php"),
+        // Raw bytes survive: no decoding of path or query.
+        ("/caf%C3%A9?q=a%20b", "/caf%C3%A9?q=a%20b", "/index.php"),
+    ];
+    for (request, uri, script) in cases {
+        let (status, _, body) = http("GET", &server.url(request), "uri-test.bougie.run", None);
+        let body = String::from_utf8_lossy(&body);
+        assert_eq!(status, 200, "{request}: {body}");
+        assert!(body.contains(&format!("URI={uri}\n")), "{request}: {body}");
+        assert!(
+            body.contains(&format!("SCRIPT={script}\n")),
+            "{request}: {body}"
+        );
+    }
+
+    // A script with trailing path info runs that script, not the front
+    // controller, and REQUEST_URI still carries the whole path.
+    let (status, _, body) = http(
+        "GET",
+        &server.url("/__probe/direct.php/extra/path?a=1"),
+        "uri-test.bougie.run",
+        None,
+    );
+    let body = String::from_utf8_lossy(&body);
+    assert_eq!(status, 200, "{body}");
+    for want in [
+        "URI=/__probe/direct.php/extra/path?a=1\n",
+        "SCRIPT=/__probe/direct.php\n",
+        "PI=/extra/path\n",
+        "Q=a=1\n",
+    ] {
+        assert!(body.contains(want), "missing {want:?}: {body}");
+    }
+
+    let _ = server.shutdown();
+}
+
 #[test]
 fn xdebug_session_cookie_routes_to_xdebug_pool() {
     let Some((resolved, bougie_home)) = discover_installed_php() else {
