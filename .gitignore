@@ -14,3 +14,7 @@
 /website/node_modules
 /website/.vitepress/cache
 /website/.vitepress/dist
+
+# Erlang crash dumps: a broker that dies in prelaunch writes one into
+# whatever directory the test ran from (crates/bougie/).
+erl_crash.dump

@@ -136,12 +136,38 @@ fn recorded_port(env: &TestEnv) -> Option<u16> {
 /// A loopback TCP port nothing is listening on, for a broker this test
 /// starts by hand. Racy in principle, harmless here: the suite is
 /// serialised and the port is claimed moments later.
-fn free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .expect("bind ephemeral")
-        .local_addr()
-        .expect("local addr")
-        .port()
+///
+/// Deliberately *not* an OS-assigned ephemeral port. RabbitMQ derives
+/// the Erlang distribution port from the AMQP one — `RABBITMQ_DIST_PORT`
+/// defaults to `RABBITMQ_NODE_PORT + 20000` — and refuses to launch with
+/// `{invalid_dist_port_range, N}` once that sum passes 65535. So any
+/// AMQP port at or above 45536 is poison, and the ephemeral ranges sit
+/// squarely in it: Linux hands out 32768–60999 by default (over half the
+/// picks unusable) and macOS 49152–65535 (every pick unusable). That is
+/// the whole story behind this test failing permanently on the macOS
+/// runner and flaking on Linux.
+///
+/// Scans a low range instead, checking that *both* halves are free,
+/// since RabbitMQ is about to open each of them.
+fn free_rabbitmq_port() -> u16 {
+    /// RabbitMQ's fixed offset from AMQP port to distribution port.
+    const DIST_OFFSET: u16 = 20_000;
+    const LOW: u16 = 20_000;
+    const HIGH: u16 = 45_000;
+
+    let span = u32::from(HIGH - LOW);
+    // Offset the scan per process so repeated or parallel runs on one
+    // box don't queue up on the same first candidate.
+    let seed = std::process::id() % span;
+    for i in 0..span {
+        let port = LOW + u16::try_from((seed + i) % span).expect("offset fits in u16");
+        if std::net::TcpListener::bind(("127.0.0.1", port)).is_ok()
+            && std::net::TcpListener::bind(("127.0.0.1", port + DIST_OFFSET)).is_ok()
+        {
+            return port;
+        }
+    }
+    panic!("no free port in {LOW}..{HIGH} whose +{DIST_OFFSET} distribution port is also free");
 }
 
 fn services_up_or_dump(env: &TestEnv, proj_path: &Path, extra_args: &[&str]) {
@@ -253,7 +279,7 @@ impl UnsupervisedBroker {
             Ok(p) if !p.is_empty() => format!("/usr/bin:/bin:{p}"),
             _ => "/usr/bin:/bin".to_string(),
         };
-        let port = free_port();
+        let port = free_rabbitmq_port();
         let child = Command::new(home.join("store/rabbitmq-4.2.6/sbin/rabbitmq-server"))
             .env_clear()
             .env("HOME", svc.join("data/home"))
@@ -270,6 +296,48 @@ impl UnsupervisedBroker {
             bougie_home: home.to_path_buf(),
             port,
         }
+    }
+
+    /// Dump what this broker itself said, plus whether it is even still
+    /// alive.
+    ///
+    /// `dump_rabbitmq_log` reads the *service* log directory, which a
+    /// broker only populates once it gets far enough to open its own
+    /// logs. A prelaunch failure — the interesting case when it never
+    /// binds — leaves that directory empty, so the test fails with no
+    /// evidence whatsoever. This process's stdout and stderr go to
+    /// `unsupervised-broker.log` instead, which is where a prelaunch
+    /// error actually lands.
+    fn dump_log(&mut self, label: &str) {
+        let p = self.bougie_home.join("unsupervised-broker.log");
+        eprintln!(
+            "\n===== unsupervised broker [{label}] @ {} =====",
+            p.display()
+        );
+        // Whether it died or is merely unreachable changes which half
+        // of the failure to go looking at, so say which.
+        match self.child.try_wait() {
+            Ok(Some(status)) => eprintln!("(already exited: {status})"),
+            Ok(None) => eprintln!("(still running as pid {})", self.child.id()),
+            Err(e) => eprintln!("(could not query the process: {e})"),
+        }
+        match fs::read_to_string(&p) {
+            Ok(s) if s.trim().is_empty() => {
+                eprintln!("(log is empty — it died before writing anything)");
+            }
+            Ok(s) => {
+                // Tail the last 8 KiB, rounded forward to a char
+                // boundary: slicing mid-codepoint would panic inside the
+                // diagnostic and bury the failure it exists to explain.
+                let mut start = s.len().saturating_sub(8 * 1024);
+                while start < s.len() && !s.is_char_boundary(start) {
+                    start += 1;
+                }
+                eprintln!("{}", &s[start..]);
+            }
+            Err(e) => eprintln!("(read failed: {e})"),
+        }
+        eprintln!("===== end unsupervised broker =====\n");
     }
 
     /// Did it exit within `timeout`? Reaps it if so.
@@ -733,6 +801,10 @@ fn up_evicts_an_unsupervised_broker_holding_the_node_name() {
         &format!("127.0.0.1:{}", squatter.port),
         Duration::from_mins(2),
     ) {
+        // Its own stdout/stderr first: when it fails in prelaunch the
+        // service log dir below is still empty, so this is the only
+        // place the reason shows up.
+        squatter.dump_log("unsupervised broker never bound");
         dump_rabbitmq_log(&env, "unsupervised broker never bound");
         panic!(
             "the unsupervised broker never bound 127.0.0.1:{}",
