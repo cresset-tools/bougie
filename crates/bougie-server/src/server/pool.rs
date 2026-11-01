@@ -13,8 +13,8 @@
 //! - Stderr captured + line-prefixed with `[fpm:<host>:<variant>]` —
 //!   the *vhost*, so the lines survive `bougie server`'s host-scoped
 //!   log attach. Forwarding starts before the readiness wait, and a
-//!   rolling stderr tail is embedded in spawn errors so a failed
-//!   startup reports why php-fpm died, not just that it did.
+//!   rolling tail of stderr *and* stdout is embedded in spawn errors so
+//!   a failed startup reports why php-fpm died, not just that it did.
 
 use eyre::{Result, WrapErr};
 use std::collections::{HashMap, VecDeque};
@@ -656,17 +656,20 @@ impl PoolManager {
         // `[fpm:<host>:<variant>]`; drains until the child exits.
         // Wired *before* the readiness wait so php-fpm's own startup
         // errors reach the server log even when the spawn fails. The
-        // stderr side also feeds a rolling tail that the readiness /
+        // Both sides also feed a rolling tail that the readiness /
         // probe errors embed, so a failed spawn reports php-fpm's
-        // actual complaint instead of a bare timeout.
-        let stderr_tail = StderrTail::default();
+        // actual complaint instead of a bare timeout. stdout counts: with
+        // no php.ini (`display_errors=On`, `log_errors=Off`) a fatal in
+        // the master — an `opcache.preload` script throwing — is printed
+        // there and nowhere else.
+        let output_tail = OutputTail::default();
         if let Some(stderr) = child.stderr.take() {
             let prefix = format!("[fpm:{host}:{}]", key.variant);
-            tokio::spawn(forward_lines(stderr, prefix, Some(stderr_tail.clone())));
+            tokio::spawn(forward_lines(stderr, prefix, Some(output_tail.clone())));
         }
         if let Some(stdout) = child.stdout.take() {
             let prefix = format!("[fpm:{host}:{}:stdout]", key.variant);
-            tokio::spawn(forward_lines(stdout, prefix, None));
+            tokio::spawn(forward_lines(stdout, prefix, Some(output_tail.clone())));
         }
 
         // Readiness: wait for the listen socket, failing fast (with
@@ -675,7 +678,7 @@ impl PoolManager {
         // handled inside `spawn_runtime`'s bind-retry loop.
         #[cfg(unix)]
         if let Transport::UnixSocket(socket) = &transport {
-            wait_for_socket(socket, &mut child, &stderr_tail).await?;
+            wait_for_socket(socket, &mut child, &output_tail).await?;
         }
 
         // Health probe: SERVER.md §7.6, 2s timeout. Probe failures
@@ -684,7 +687,7 @@ impl PoolManager {
             format!(
                 "FastCGI health probe failed for pool {}{}",
                 key.variant,
-                stderr_tail.render(),
+                output_tail.render(),
             )
         })?;
 
@@ -908,7 +911,7 @@ fn evict_lru(map: &mut HashMap<PoolKey, Arc<Pool>>) {
 /// binding — a bad ini or a fatal in the `opcache.preload` script
 /// shouldn't sit out the full timeout.
 #[cfg(unix)]
-async fn wait_for_socket(socket: &Path, child: &mut Child, stderr_tail: &StderrTail) -> Result<()> {
+async fn wait_for_socket(socket: &Path, child: &mut Child, output_tail: &OutputTail) -> Result<()> {
     let timeout = pool_ready_timeout();
     let deadline = Instant::now() + timeout;
     loop {
@@ -924,7 +927,7 @@ async fn wait_for_socket(socket: &Path, child: &mut Child, stderr_tail: &StderrT
             tokio::time::sleep(Duration::from_millis(150)).await;
             return Err(eyre::eyre!(
                 "php-fpm exited during startup ({status}){}",
-                stderr_tail.render()
+                output_tail.render()
             ));
         }
         if Instant::now() >= deadline {
@@ -934,31 +937,41 @@ async fn wait_for_socket(socket: &Path, child: &mut Child, stderr_tail: &StderrT
                  BOUGIE_SERVER_POOL_READY_TIMEOUT_MS to extend){}",
                 socket.display(),
                 timeout,
-                stderr_tail.render()
+                output_tail.render()
             ));
         }
         tokio::time::sleep(POOL_READY_POLL).await;
     }
 }
 
-/// Rolling tail of a pool's most recent stderr lines, capped at
-/// [`STDERR_TAIL_LINES`]. Written by the forwarding task, read by the
+/// Rolling tail of a pool's most recent output lines (stderr and stdout), capped at
+/// [`OUTPUT_TAIL_LINES`]. Written by the forwarding task, read by the
 /// spawn path to embed php-fpm's own words in startup errors (which
 /// reach both the 502 body and the server log).
 #[derive(Debug, Clone, Default)]
-struct StderrTail(Arc<std::sync::Mutex<VecDeque<String>>>);
+struct OutputTail(Arc<std::sync::Mutex<VecDeque<String>>>);
 
 /// php-fpm startup failures are short — a config complaint plus a
 /// fatal line — so a small window captures the whole story.
-const STDERR_TAIL_LINES: usize = 20;
+const OUTPUT_TAIL_LINES: usize = 20;
 
-impl StderrTail {
+impl OutputTail {
     fn push(&self, line: &str) {
+        // `display_errors` output is HTML (`<br />\n<b>Fatal error</b>: …`);
+        // keep the words, drop the markup and the blank lines it leaves.
+        let line = line
+            .replace("<br />", "")
+            .replace("<b>", "")
+            .replace("</b>", "");
+        let line = line.trim();
+        if line.is_empty() {
+            return;
+        }
         let mut buf = self
             .0
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if buf.len() == STDERR_TAIL_LINES {
+        if buf.len() == OUTPUT_TAIL_LINES {
             buf.pop_front();
         }
         buf.push_back(line.to_owned());
@@ -983,7 +996,7 @@ impl StderrTail {
     }
 }
 
-async fn forward_lines<R>(stream: R, prefix: String, tail: Option<StderrTail>)
+async fn forward_lines<R>(stream: R, prefix: String, tail: Option<OutputTail>)
 where
     R: tokio::io::AsyncRead + Unpin,
 {
@@ -1072,10 +1085,24 @@ mod tests {
     }
 
     #[test]
-    fn stderr_tail_renders_block_and_caps() {
-        let tail = StderrTail::default();
+    fn output_tail_strips_display_errors_markup() {
+        let tail = OutputTail::default();
+        tail.push("<br />");
+        tail.push(
+            "<b>Fatal error</b>:  Uncaught RuntimeException: preload boom in /p/preload.php:1",
+        );
+        let rendered = tail.render();
+        assert_eq!(
+            rendered,
+            " — recent php-fpm output:\n  Fatal error:  Uncaught RuntimeException: preload boom in /p/preload.php:1"
+        );
+    }
+
+    #[test]
+    fn output_tail_renders_block_and_caps() {
+        let tail = OutputTail::default();
         assert!(tail.render().contains("no output"));
-        for i in 0..(STDERR_TAIL_LINES + 5) {
+        for i in 0..(OUTPUT_TAIL_LINES + 5) {
             tail.push(&format!("line{i}"));
         }
         // 25 pushed, 20 kept: line0..line4 rolled off, line5..line24 remain.
@@ -1086,7 +1113,7 @@ mod tests {
             "oldest lines roll off: {rendered}"
         );
         assert!(rendered.contains("\n  line5\n"));
-        assert!(rendered.contains(&format!("line{}", STDERR_TAIL_LINES + 4)));
+        assert!(rendered.contains(&format!("line{}", OUTPUT_TAIL_LINES + 4)));
     }
 
     // Build a Pool wrapping an arbitrary child + socket path so the
@@ -1154,7 +1181,7 @@ mod tests {
             .kill_on_drop(true)
             .spawn()
             .expect("spawn sh");
-        let tail = StderrTail::default();
+        let tail = OutputTail::default();
         tail.push("ERROR: unknown entry 'boom'");
 
         let started = Instant::now();
@@ -1182,7 +1209,7 @@ mod tests {
         std::fs::write(&socket, b"").unwrap();
 
         let mut child = spawn_sleeper();
-        let tail = StderrTail::default();
+        let tail = OutputTail::default();
         assert!(wait_for_socket(&socket, &mut child, &tail).await.is_ok());
 
         let _ = child.start_kill();
