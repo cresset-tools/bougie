@@ -3,8 +3,13 @@
 //! `*.bougie.run` dev host) instead of the host baked into its stored config.
 //!
 //! Most frameworks (Laravel, Symfony, plain PHP) already build URLs from the
-//! request (`Host` + `X-Forwarded-Proto`), so they need nothing. **Magento** is
-//! the exception: it builds absolute URLs from the configured `base_url`, not
+//! request (`Host` + `X-Forwarded-Proto`), so they need nothing. **`WordPress`**
+//! stores absolute URLs (the `home`/`siteurl` options, Bedrock's `WP_HOME`, and
+//! links saved in post content) and redirects to them; it gets a must-use
+//! plugin, `bougie-share.php`, that swaps the local origin for the share origin
+//! on share requests — see the plugin's own header for the mechanism.
+//!
+//! **Magento** builds absolute URLs from the configured `base_url`, not
 //! the request — so a share of a Magento store would emit `bougie.run` links on
 //! a `bougie.show` page. We fix that by installing a tiny Magento module
 //! (`Bougie_Share`) whose plugin re-hosts `Store::getBaseUrl` onto the request,
@@ -23,7 +28,7 @@
 //! we deploy it once (idempotent) and never tear it down.
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use eyre::{Result, WrapErr};
 
@@ -48,16 +53,33 @@ const MODULE_FILES: &[(&str, &str)] = &[
     ),
 ];
 
+/// The `WordPress` must-use plugin; written as `<mu-plugins>/bougie-share.php`.
+const WORDPRESS_PLUGIN: &str = include_str!("share_assets/wordpress/bougie-share.php");
+
+/// Directories a classic (non-Composer) `WordPress` install commonly lives in,
+/// relative to the project root.
+const WORDPRESS_ROOTS: &[&str] = &[
+    ".",
+    "web",
+    "public",
+    "htdocs",
+    "public_html",
+    "wordpress",
+    "wp",
+];
+
 /// What `ensure` did, so the caller can log a one-liner.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FixupOutcome {
-    /// The project needs no share fixup (not Magento).
+    /// The project needs no share fixup (neither Magento nor `WordPress`).
     NotApplicable,
-    /// The Magento `Bougie_Share` module was already in place — nothing to do.
+    /// The fixup was already in place — nothing to do.
     AlreadyInstalled,
     /// The Magento `Bougie_Share` module was (re)deployed; the config cache was
     /// flushed so its plugin takes effect.
     Installed,
+    /// The `WordPress` `bougie-share.php` must-use plugin was (re)written.
+    InstalledWordPress,
 }
 
 /// Ensure `project` has whatever share fixup its framework needs. Idempotent.
@@ -66,6 +88,9 @@ pub enum FixupOutcome {
 /// `app/code/Bougie/Share/`, enables it via the (gitignored) `app/etc/env.php`
 /// `modules` map, and flushes the config cache once so the plugin is picked up.
 pub fn ensure(project: &Path) -> Result<FixupOutcome> {
+    if let Some(mu_plugins) = wordpress_mu_plugins_dir(project) {
+        return ensure_wordpress(&mu_plugins);
+    }
     if !is_magento(project) {
         return Ok(FixupOutcome::NotApplicable);
     }
@@ -88,6 +113,56 @@ pub fn ensure(project: &Path) -> Result<FixupOutcome> {
     } else {
         Ok(FixupOutcome::AlreadyInstalled)
     }
+}
+
+/// Write `bougie-share.php` into `mu_plugins` unless it is already there
+/// byte-for-byte. `WordPress` loads every top-level PHP file in that directory
+/// on every request, so there is nothing to enable or flush.
+fn ensure_wordpress(mu_plugins: &Path) -> Result<FixupOutcome> {
+    let dest = mu_plugins.join("bougie-share.php");
+    if fs::read_to_string(&dest).ok().as_deref() == Some(WORDPRESS_PLUGIN) {
+        return Ok(FixupOutcome::AlreadyInstalled);
+    }
+    fs::create_dir_all(mu_plugins)
+        .wrap_err_with(|| format!("creating {}", mu_plugins.display()))?;
+    fs::write(&dest, WORDPRESS_PLUGIN).wrap_err_with(|| format!("writing {}", dest.display()))?;
+    Ok(FixupOutcome::InstalledWordPress)
+}
+
+/// Where this project's `WordPress` loads must-use plugins from, if it is a
+/// `WordPress` project at all.
+///
+/// - **Composer-managed (Bedrock and similar):** `composer.json`'s
+///   `extra.installer-paths` names the mu-plugins directory for
+///   `type:wordpress-muplugin` (Bedrock: `web/app/mu-plugins/{$name}/`).
+/// - **Classic:** a directory holding both `wp-settings.php` and `wp-content/`
+///   — the core files and the content directory side by side.
+fn wordpress_mu_plugins_dir(project: &Path) -> Option<PathBuf> {
+    if let Some(dir) = composer_mu_plugins_dir(project) {
+        return Some(dir);
+    }
+    WORDPRESS_ROOTS
+        .iter()
+        .map(|rel| project.join(rel))
+        .find_map(|root| {
+            (root.join("wp-settings.php").is_file() && root.join("wp-content").is_dir())
+                .then(|| root.join("wp-content/mu-plugins"))
+        })
+}
+
+fn composer_mu_plugins_dir(project: &Path) -> Option<PathBuf> {
+    let raw = fs::read_to_string(project.join("composer.json")).ok()?;
+    let json: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    let paths = json.get("extra")?.get("installer-paths")?.as_object()?;
+    paths.iter().find_map(|(path, matchers)| {
+        let is_mu = matchers
+            .as_array()?
+            .iter()
+            .any(|m| m.as_str() == Some("type:wordpress-muplugin"));
+        // `web/app/mu-plugins/{$name}/` → `web/app/mu-plugins`
+        let dir = path.split("{$name}").next()?.trim_end_matches('/');
+        (is_mu && !dir.is_empty()).then(|| project.join(dir))
+    })
 }
 
 /// A project is Magento if it ships the `bin/magento` CLI entrypoint.
@@ -230,6 +305,65 @@ mod magento {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn touch(path: &Path, body: &str) {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, body).unwrap();
+    }
+
+    #[test]
+    fn bedrock_uses_the_composer_mu_plugins_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        touch(
+            &tmp.path().join("composer.json"),
+            r#"{"extra":{"installer-paths":{
+                "web/app/mu-plugins/{$name}/":["type:wordpress-muplugin"],
+                "web/app/plugins/{$name}/":["type:wordpress-plugin"]}}}"#,
+        );
+        assert_eq!(
+            wordpress_mu_plugins_dir(tmp.path()),
+            Some(tmp.path().join("web/app/mu-plugins"))
+        );
+    }
+
+    #[test]
+    fn classic_install_found_in_a_docroot_subdir() {
+        let tmp = tempfile::tempdir().unwrap();
+        touch(&tmp.path().join("public/wp-settings.php"), "<?php");
+        fs::create_dir_all(tmp.path().join("public/wp-content")).unwrap();
+        assert_eq!(
+            wordpress_mu_plugins_dir(tmp.path()),
+            Some(tmp.path().join("public/wp-content/mu-plugins"))
+        );
+    }
+
+    #[test]
+    fn non_wordpress_project_is_not_detected() {
+        let tmp = tempfile::tempdir().unwrap();
+        touch(
+            &tmp.path().join("composer.json"),
+            r#"{"require":{"laravel/framework":"^11"}}"#,
+        );
+        assert_eq!(wordpress_mu_plugins_dir(tmp.path()), None);
+    }
+
+    #[test]
+    fn wordpress_plugin_install_is_idempotent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mu = tmp.path().join("wp-content/mu-plugins");
+        assert_eq!(
+            ensure_wordpress(&mu).unwrap(),
+            FixupOutcome::InstalledWordPress
+        );
+        assert_eq!(
+            ensure_wordpress(&mu).unwrap(),
+            FixupOutcome::AlreadyInstalled
+        );
+        assert_eq!(
+            fs::read_to_string(mu.join("bougie-share.php")).unwrap(),
+            WORDPRESS_PLUGIN
+        );
+    }
 
     // A trimmed but faithful Magento `env.php` (var_export formatting).
     const ENV_WITH_MODULES: &str = "<?php\nreturn array (\n  'backend' => \n  array (\n    'frontName' => 'admin',\n  ),\n  'modules' => \n  array (\n    'Magento_TwoFactorAuth' => 0,\n  ),\n);\n";

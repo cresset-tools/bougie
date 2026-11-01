@@ -12,7 +12,8 @@
 //! all HTTP; the client is a pure byte-splice (see [`bougie_tunnel`]). The share
 //! inherits the tenant host's docroot + framework rewrites so static assets
 //! resolve identically, and [`super::share_fixup`] makes framework-generated
-//! absolute URLs request-relative (Magento needs a small injected module; most
+//! absolute URLs request-relative (Magento needs a small injected module,
+//! `WordPress` a must-use plugin; most
 //! frameworks already honour `X-Forwarded-*`).
 
 use std::path::{Path, PathBuf};
@@ -37,6 +38,23 @@ use crate::commands::tenant::{derive_default_tenant, sanitize_tenant};
 /// `tunnel.bougie.test`).
 const DEFAULT_RELAY_ADDR: &str = "tunnel.bougie.show:443";
 const DEFAULT_RELAY_SNI: &str = "tunnel.bougie.show";
+
+/// Magento and `WordPress` build absolute URLs from stored config, not from
+/// the request, so a share would otherwise emit (or redirect to) the dev
+/// host's URLs. Deploy the framework's fixup (idempotent; inert off share
+/// hosts). Best-effort — a fixup failure must never block the share.
+fn apply_share_fixup(project_root: &Path) {
+    match share_fixup::ensure(project_root) {
+        Ok(FixupOutcome::Installed) => {
+            tracing::info!("installed the Bougie_Share request-relative base_url module");
+        }
+        Ok(FixupOutcome::InstalledWordPress) => {
+            tracing::info!("installed the bougie-share.php WordPress must-use plugin");
+        }
+        Ok(FixupOutcome::AlreadyInstalled | FixupOutcome::NotApplicable) => {}
+        Err(e) => tracing::warn!("share base_url fixup skipped: {e:#}"),
+    }
+}
 
 fn relay_addr() -> String {
     std::env::var("BOUGIE_SHARE_RELAY").unwrap_or_else(|_| DEFAULT_RELAY_ADDR.to_owned())
@@ -82,17 +100,7 @@ pub fn run(format: OutputFormat, args: ShareArgs) -> Result<ExitCode> {
         )?;
     }
 
-    // Magento builds absolute URLs from stored config, not from the request, so
-    // a share would otherwise emit the dev host's URLs on the public page.
-    // Deploy the request-relative `base_url` module (idempotent; inert off
-    // bougie hosts). Best-effort — a fixup failure must never block the share.
-    match share_fixup::ensure(&project_root) {
-        Ok(FixupOutcome::Installed) => {
-            tracing::info!("installed the Bougie_Share request-relative base_url module");
-        }
-        Ok(FixupOutcome::AlreadyInstalled | FixupOutcome::NotApplicable) => {}
-        Err(e) => tracing::warn!("share base_url fixup skipped: {e:#}"),
-    }
+    apply_share_fixup(&project_root);
 
     let paths = Paths::from_env()?;
     let tenant = match &name {
