@@ -5,7 +5,7 @@
 //!
 //! Env:
 //! ```text
-//!   RELAY_ADDR        default 127.0.0.1:7443
+//!   RELAY_ADDR        default 127.0.0.1:8443
 //!   RELAY_SNI         default tunnel.bougie.test
 //!   LOCAL_PORT        default 9000   (the local server to expose)
 //!   PROJECT           default myshop (seeds the slug)
@@ -18,7 +18,7 @@ use bougie_tunnel::{PasswordMode, TunnelClient, TunnelConfig};
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
     let cfg = TunnelConfig {
-        relay_addr: env("RELAY_ADDR", "127.0.0.1:7443"),
+        relay_addr: env("RELAY_ADDR", "127.0.0.1:8443"),
         relay_sni: env("RELAY_SNI", "tunnel.bougie.test"),
         local_port: env("LOCAL_PORT", "9000").parse()?,
         project: env("PROJECT", "myshop"),

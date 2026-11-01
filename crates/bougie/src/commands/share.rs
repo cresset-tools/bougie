@@ -29,10 +29,12 @@ use crate::commands::server::{
 use crate::commands::share_fixup::{self, FixupOutcome};
 use crate::commands::tenant::{derive_default_tenant, sanitize_tenant};
 
-/// Relay tunnel-ingress the client dials. The relay isn't deployed yet —
-/// override with `BOUGIE_SHARE_RELAY` (`host:port`) + `BOUGIE_SHARE_RELAY_SNI`
-/// to point at a local or staging `bougie-relay` (the example harness uses
-/// `127.0.0.1:7443` / `tunnel.bougie.test`).
+/// Relay the client dials. Tunnels share :443 with share viewers — the relay
+/// routes on SNI (`tunnel.bougie.show`) — so `bougie share` works from
+/// networks that only let HTTPS out. Override with `BOUGIE_SHARE_RELAY`
+/// (`host:port`) + `BOUGIE_SHARE_RELAY_SNI` to point at a local or staging
+/// `bougie-relay` (the example harness uses `127.0.0.1:8443` /
+/// `tunnel.bougie.test`).
 const DEFAULT_RELAY_ADDR: &str = "tunnel.bougie.show:443";
 const DEFAULT_RELAY_SNI: &str = "tunnel.bougie.show";
 
@@ -285,4 +287,16 @@ fn banner(format: OutputFormat, project: &Path, handle: &ShareHandle) -> Result<
         },
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The relay takes tunnels on :443, picked out by SNI; it keys on
+    /// `BOUGIE_RELAY_TUNNEL_HOST`, which defaults to `tunnel.<domain>`.
+    #[test]
+    fn default_relay_is_the_tunnel_host_on_443() {
+        assert_eq!(DEFAULT_RELAY_ADDR, format!("{DEFAULT_RELAY_SNI}:443"));
+    }
 }
