@@ -85,6 +85,14 @@ pub fn resolve(host: &HostBlock, request_path: &str, query: &str) -> Resolution 
         return direct;
     }
 
+    // Step 1b: a script with trailing path info, `/app.php/extra/path` —
+    // nginx's `fastcgi_split_path_info ^(.+\.php)(/.+)$` and `php -S` both
+    // run `app.php` with `PATH_INFO=/extra/path` instead of falling through
+    // to the front controller.
+    if let Some(split) = resolve_path_info_split(&canonical_root, &boundary, path1, q1.clone()) {
+        return split;
+    }
+
     // Step 2: `only_if_missing` rewrites — nginx's `if (!-f
     // $request_filename) { rewrite … }`. Magento's `/static/` →
     // `static.php?resource=…` and `/media/` → `get.php?resource=…`
@@ -104,6 +112,43 @@ pub fn resolve(host: &HostBlock, request_path: &str, query: &str) -> Resolution 
     // ordinary application routes that aren't files on disk.
     let query1_owned = query1.to_string();
     run_try_files(&canonical_root, &boundary, host, path1, &query1_owned, &q1)
+}
+
+/// Split `path` at the last `.php/` whose prefix is a PHP file on disk, and
+/// run that script with the remainder as `PATH_INFO`. The last match wins,
+/// like nginx's greedy split regex and `php -S`'s longest existing prefix.
+fn resolve_path_info_split(
+    canonical_root: &Path,
+    boundary: &Path,
+    path: &str,
+    rewritten_query: Option<String>,
+) -> Option<Resolution> {
+    let lower = path.to_ascii_lowercase();
+    let mut ends: Vec<usize> = lower.match_indices(".php/").map(|(i, _)| i + 4).collect();
+    ends.reverse();
+    for end in ends {
+        let (script, info) = path.split_at(end);
+        let rel = safe_relative(script)?;
+        if !canonical_root.join(&rel).is_file() {
+            continue;
+        }
+        return match resolve_candidate(canonical_root, boundary, script, &[], script, false) {
+            Resolution::Php {
+                script_filename,
+                script_name,
+                ..
+            } => Some(Resolution::Php {
+                script_filename,
+                script_name,
+                path_info: info.to_owned(),
+                rewritten_query,
+            }),
+            // A symlink escaping the project stays forbidden.
+            Resolution::Forbidden => Some(Resolution::Forbidden),
+            _ => None,
+        };
+    }
+    None
 }
 
 /// Resolve a path against the filesystem *directly* — a real file, or a
@@ -562,6 +607,66 @@ mod tests {
         match resolve(&h, "/style.css", "") {
             Resolution::Static { path } => assert!(path.ends_with("style.css")),
             other => panic!("expected Static, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn script_with_trailing_path_info_runs_that_script() {
+        let d = fixture(&[("pub/index.php", "<?php"), ("pub/sub/direct.php", "<?php")]);
+        let h = host(
+            d.path(),
+            "pub",
+            &["$uri", "/index.php$is_args$args"],
+            &["index.php"],
+        );
+        match resolve(&h, "/sub/direct.php/extra/path", "") {
+            Resolution::Php {
+                script_name,
+                path_info,
+                ..
+            } => {
+                assert_eq!(script_name, "/sub/direct.php");
+                assert_eq!(path_info, "/extra/path");
+            }
+            other => panic!("expected direct.php, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn path_info_split_needs_the_script_on_disk() {
+        let d = fixture(&[("pub/index.php", "<?php")]);
+        let h = host(
+            d.path(),
+            "pub",
+            &["$uri", "/index.php$is_args$args"],
+            &["index.php"],
+        );
+        // No `ghost.php` → the front controller handles it, as before.
+        match resolve(&h, "/ghost.php/extra", "") {
+            Resolution::Php {
+                script_name,
+                path_info,
+                ..
+            } => {
+                assert_eq!(script_name, "/index.php");
+                assert_eq!(path_info, "/ghost.php/extra");
+            }
+            other => panic!("expected front controller, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn path_info_split_skips_a_directory_named_like_a_script() {
+        let d = fixture(&[("pub/index.php", "<?php"), ("pub/x.php/index.php", "<?php")]);
+        let h = host(
+            d.path(),
+            "pub",
+            &["$uri", "/index.php$is_args$args"],
+            &["index.php"],
+        );
+        match resolve(&h, "/x.php/extra", "") {
+            Resolution::Php { script_name, .. } => assert_eq!(script_name, "/index.php"),
+            other => panic!("expected front controller, got {other:?}"),
         }
     }
 
