@@ -188,9 +188,10 @@ impl super::Backend for WindowsPhpNetBackend {
             ),
         })?;
 
-        let version: Version = minor.version.parse().wrap_err_with(|| {
+        let version = php_release_version(&minor.version).wrap_err_with(|| {
             format!(
-                "releases.json `{minor_key}.version = {}` is not a full semver",
+                "releases.json `{minor_key}.version = {}` is not a PHP release version \
+                 (expected `8.4.27`, optionally with a build revision like `8.4.27-1`)",
                 minor.version
             )
         })?;
@@ -374,6 +375,38 @@ fn parse_minor(s: &str) -> Result<(u32, u32)> {
         .split_once('.')
         .ok_or_else(|| eyre!("`{s}` is not a <major>.<minor>"))?;
     Ok((maj.parse()?, min.parse()?))
+}
+
+/// Parse the PHP release version out of a releases.json `version`
+/// string, tolerating the Windows build-revision suffix.
+///
+/// windows.php.net appends `-N` when it rebuilds the *same* PHP
+/// release: `"8.4.27-1"` is PHP 8.4.27, Windows build 1 — not a
+/// prerelease of 8.4.27, which is what reading it as semver would
+/// imply (and would sort it *before* 8.4.27). Every actively-built
+/// minor carries one; only the EOL minors that are no longer rebuilt
+/// (7.4.33, 8.0.30, 8.1.34) are still plain, which is why this went
+/// unnoticed until a rebuild landed on all four live minors at once.
+///
+/// The revision is already carried by each flavor's zip `path`
+/// (`php-8.4.27-1-Win32-vs17-x64.zip`), and the download URL is built
+/// from that path rather than from this field — so dropping the suffix
+/// here costs nothing and keeps a `--php 8.4.27` pin satisfiable
+/// against a rebuilt zip.
+///
+/// Only an all-digit suffix is stripped. Anything else (a real semver
+/// prerelease, say) still fails, so a genuinely unexpected upstream
+/// shape is reported rather than silently reinterpreted.
+fn php_release_version(s: &str) -> Result<Version> {
+    let base = match s.split_once('-') {
+        Some((base, revision))
+            if !revision.is_empty() && revision.bytes().all(|b| b.is_ascii_digit()) =>
+        {
+            base
+        }
+        _ => s,
+    };
+    base.parse()
 }
 
 /// Parse the human-readable size string releases.json publishes
@@ -929,6 +962,40 @@ mod tests {
         assert!(!keys.contains(&"source"));
     }
 
+    /// The same snapshot, but carrying the build-revision suffix
+    /// upstream publishes on every actively-built minor. Deliberately
+    /// exercises the wire shape *and* the version parse together: that
+    /// pairing is what broke, because the snapshot above deserializes a
+    /// revisioned `version` perfectly happily while `resolve_php` still
+    /// fails on it — nothing fed the field through the parser.
+    #[test]
+    fn parses_minor_entry_with_a_build_revision() {
+        let json = r#"{
+            "8.4": {
+                "version": "8.4.27-1",
+                "nts-vs17-x64": {
+                    "zip": {
+                        "path": "php-8.4.27-1-nts-Win32-vs17-x64.zip",
+                        "size": "33.31MB",
+                        "sha256": "2cb57d0d3a17b1248c6a53b600719d4b051e1c374373404d5031409c0725031d"
+                    }
+                }
+            }
+        }"#;
+        let r: Releases = serde_json::from_str(json).unwrap();
+        let minor = r.get("8.4").expect("8.4 entry");
+        assert_eq!(minor.version, "8.4.27-1");
+        // The PHP version drops the revision...
+        assert_eq!(
+            php_release_version(&minor.version).unwrap(),
+            Version::new(8, 4, 27)
+        );
+        // ...while the zip path keeps it, and the path is what the
+        // download URL is built from.
+        let zip = minor.flavor_zip("nts-vs17-x64").unwrap();
+        assert_eq!(zip.path, "php-8.4.27-1-nts-Win32-vs17-x64.zip");
+    }
+
     #[test]
     fn parse_human_size_handles_real_releases_json_shapes() {
         // The shape the bar actually has to deal with: "33.31MB" for
@@ -958,6 +1025,54 @@ mod tests {
         // PB and TB aren't on the windows.php.net surface — refuse
         // rather than silently underestimate.
         assert!(parse_human_size("2TB").is_none());
+    }
+
+    #[test]
+    fn php_release_version_accepts_the_windows_build_revision() {
+        // The shape every actively-built minor actually has upstream:
+        // a rebuild of the same PHP release, so the PHP version is the
+        // part before the suffix.
+        assert_eq!(
+            php_release_version("8.4.27-1").unwrap(),
+            Version::new(8, 4, 27)
+        );
+        assert_eq!(
+            php_release_version("8.2.35-1").unwrap(),
+            Version::new(8, 2, 35)
+        );
+        assert_eq!(
+            php_release_version("8.5.12-1").unwrap(),
+            Version::new(8, 5, 12)
+        );
+        // A second rebuild, should it ever ship.
+        assert_eq!(
+            php_release_version("8.4.27-12").unwrap(),
+            Version::new(8, 4, 27)
+        );
+        // The EOL minors carry no revision and must keep working.
+        assert_eq!(
+            php_release_version("7.4.33").unwrap(),
+            Version::new(7, 4, 33)
+        );
+        assert_eq!(
+            php_release_version("8.1.34").unwrap(),
+            Version::new(8, 1, 34)
+        );
+    }
+
+    #[test]
+    fn php_release_version_rejects_shapes_it_should_not_reinterpret() {
+        // Not an all-digit revision — surface it instead of guessing
+        // which component upstream meant.
+        assert!(php_release_version("8.4.27-rc1").is_err());
+        assert!(php_release_version("8.4.27-").is_err());
+        assert!(php_release_version("8.4.27-1-2").is_err());
+        // Stripping a revision must not promote a partial version into
+        // a usable one: the patch still has to be there.
+        assert!(php_release_version("8.4").is_err());
+        assert!(php_release_version("8.4-1").is_err());
+        assert!(php_release_version("").is_err());
+        assert!(php_release_version("abc").is_err());
     }
 
     // ---------- PECL ----------

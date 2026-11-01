@@ -82,7 +82,9 @@ async fn splice(
     let (request_line, _) = request?;
     let (status_line, bytes) = response?;
 
-    if let (Some(tx), Some((method, target))) = (log, request_line.as_deref().and_then(parse_request_line)) {
+    if let (Some(tx), Some((method, target))) =
+        (log, request_line.as_deref().and_then(parse_request_line))
+    {
         let (status, reason) = status_line
             .as_deref()
             .and_then(parse_status_line)
@@ -163,9 +165,18 @@ mod tests {
 
     #[test]
     fn parses_the_status_line() {
-        assert_eq!(parse_status_line("HTTP/1.1 200 OK"), Some((200, "OK".into())));
-        assert_eq!(parse_status_line("HTTP/1.1 404 Not Found"), Some((404, "Not Found".into())));
-        assert_eq!(parse_status_line("HTTP/1.1 204"), Some((204, String::new())));
+        assert_eq!(
+            parse_status_line("HTTP/1.1 200 OK"),
+            Some((200, "OK".into()))
+        );
+        assert_eq!(
+            parse_status_line("HTTP/1.1 404 Not Found"),
+            Some((404, "Not Found".into()))
+        );
+        assert_eq!(
+            parse_status_line("HTTP/1.1 204"),
+            Some((204, String::new()))
+        );
         assert_eq!(parse_status_line("nope"), None);
     }
 
