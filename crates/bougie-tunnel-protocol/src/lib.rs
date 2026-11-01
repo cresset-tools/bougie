@@ -148,6 +148,15 @@ where
 {
     let mut len_buf = [0u8; 4];
     r.read_exact(&mut len_buf).await?;
+    // A plain web server answers the hello with `HTTP/1.1 …`; read as a
+    // length, those four bytes claim a ~1.2 GB frame.
+    if &len_buf == b"HTTP" {
+        bail!(
+            "the relay answered with HTTP instead of the share handshake — this address \
+             serves web traffic but doesn't accept tunnels (check BOUGIE_SHARE_RELAY / \
+             BOUGIE_SHARE_RELAY_SNI, or the relay is too old)"
+        );
+    }
     let len = u32::from_be_bytes(len_buf) as usize;
     if len > MAX_FRAME {
         bail!("handshake frame too large: {len} bytes");
@@ -160,6 +169,17 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn http_reply_gets_a_clear_error() {
+        let (mut a, mut b) = tokio::io::duplex(4096);
+        a.write_all(b"HTTP/1.1 400 Bad Request\r\n\r\n")
+            .await
+            .unwrap();
+        let err = read_frame::<_, HelloResponse>(&mut b).await.unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("answered with HTTP"), "{msg}");
+    }
 
     #[tokio::test]
     async fn hello_round_trips_over_a_pipe() {
