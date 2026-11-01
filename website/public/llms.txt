@@ -187,16 +187,25 @@ full Composer-compatible flag parity.
   `--frozen` edits `composer.json` only. `--script FILE` adds to a self-contained
   script's inline dependency block instead (see "Single-file scripts" below).
 - `bougie remove PACKAGES... [--dev] [--no-sync] [--frozen] [-d DIR] [--dry-run] [--ignore-platform-reqs] [--ignore-platform-req REQ]`
-- `bougie lock [--script FILE] [--resolution STRATEGY] [-d DIR] [--dry-run] [--ignore-platform-reqs] [--ignore-platform-req REQ]` — minimal lock refresh: reconcile
+- `bougie lock [--script FILE] [--with-platform] [--resolution STRATEGY] [-d DIR] [--dry-run] [--ignore-platform-reqs] [--ignore-platform-req REQ]` — minimal lock refresh: reconcile
   `composer.lock` with `composer.json`, holding each package at its locked
   version where still valid, re-resolving only what changed. Never bumps
-  versions, never installs. Content-hash match → offline no-op. `--script FILE`
+  versions, never installs. `--with-platform` also resolves PHP, extensions,
+  and services into `bougie.lock`. Content-hash match → offline no-op. `--script FILE`
   locks a single-file script's inline dependencies into an adjacent
   `<file>.lock` instead.
 - `bougie tree [PACKAGE] [--no-dev] [-d DIR]` — print the dependency tree
   (reads `composer.lock`).
 - `bougie outdated [PACKAGES...] [-D|--direct] [--major-only] [--minor-only] [--patch-only] [--no-dev] [--strict] [-d DIR]`
   — list installed packages with a newer version available.
+
+### Project version — `bougie version`
+
+- `bougie version [VERSION] [--bump major|minor|patch] [--short] [--dry-run] [-d DIR]`
+  — read or set the project's own version in `composer.json` (uv's `uv
+  version`; distinct from `bougie self version`). `VERSION` is stored verbatim;
+  `--bump` zeroes lower components and drops any pre-release suffix; `--short`
+  prints the bare version; `--dry-run` writes nothing.
 
 ### Single-file scripts (uv-style)
 
@@ -426,6 +435,16 @@ Ctrl-C ends the share.
   Every argument is forwarded verbatim to `wick` (`--check`,
   `--diff`, paths, `-` for stdin). Pin a specific wick release with
   `BOUGIE_WICK_VERSION`. Cross-platform.
+
+### Coding-agent skill — `bougie skill`
+
+- `bougie skill install [--agent claude|agents|cursor|copilot|gemini|plain]... [--project | --user | --path DIR] [--force]`
+  — write bougie's skill where coding agents find it. `--agent` is repeatable
+  (or comma-separated); non-interactive runs default to `claude`. With no
+  location flag it prompts (errors if stdin isn't a tty). `plain` needs `--path`.
+  Shared files (`AGENTS.md`, `GEMINI.md`) get a marked block; dedicated files
+  need `--force` to overwrite a differing one.
+- `bougie skill print [--agent …]` — print the skill to stdout (default `claude`).
 
 ### Cache & self — `bougie cache`, `bougie self`
 
