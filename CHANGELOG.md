@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.54.1](https://github.com/cresset-tools/bougie/compare/bougie-v0.54.0...bougie-v0.54.1) (2026-11-01)
+
+
+### Miscellaneous Chores
+
+* **release:** cut 0.54.1 to ship binaries ([#571](https://github.com/cresset-tools/bougie/issues/571)) ([01f76ed](https://github.com/cresset-tools/bougie/commit/01f76ede7c123b5080e39b1bb8ea66188694fd64))
+
 ## [0.54.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.53.0...bougie-v0.54.0) (2026-11-01)
 
 
