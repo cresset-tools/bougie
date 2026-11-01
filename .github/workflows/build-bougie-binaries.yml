@@ -30,7 +30,7 @@ env:
   # Keep in lockstep with `cargo-dist-version` in dist-workspace.toml — this is
   # the static-musl dist used inside the glibc-2.17 container (the gnu-linked
   # dist the host installs cannot run there).
-  DIST_VERSION: "0.32.0"
+  DIST_VERSION: "0.33.1"
   # glibc-2.17 baseline (== manylinux2014 == CentOS 7), matching
   # php-build-standalone's gnu leg and the `min-glibc-version` assertion.
   GLIBC_CONTAINER: "quay.io/pypa/manylinux2014_x86_64"

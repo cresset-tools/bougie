@@ -71,7 +71,7 @@ jobs:
         # we specify bash to get pipefail; it guards against the `curl` command
         # failing. otherwise `sh` won't catch that `curl` returned non-0
         shell: bash
-        run: "curl --proto '=https' --tlsv1.2 -LsSf https://github.com/axodotdev/cargo-dist/releases/download/v0.32.0/cargo-dist-installer.sh | sh"
+        run: "curl --proto '=https' --tlsv1.2 -LsSf https://github.com/axodotdev/cargo-dist/releases/download/v0.33.1/cargo-dist-installer.sh | sh"
       - name: Cache dist
         uses: actions/upload-artifact@v7
         with:
@@ -135,6 +135,12 @@ jobs:
         run: |
           dist build ${{ needs.plan.outputs.tag-flag }} --output-format=json "--artifacts=global" > dist-manifest.json
           echo "dist ran successfully"
+
+          # HAND-EDITED: undo dist 0.33's flat-layout env-script migration,
+          # which deletes ~/.local/bin/env shared with uv and other tools.
+          # Runs before upload, so the GitHub release and the mirror both
+          # get the patched installer. See the script's header.
+          sh scripts/patch-installer-env-scripts.sh target/distrib/bougie-installer.sh
 
           # Parse out what we just built and upload it to scratch storage
           echo "paths<<EOF" >> "$GITHUB_OUTPUT"
