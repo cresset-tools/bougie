@@ -160,3 +160,9 @@ local-artifacts-jobs = ["./build-bougie-binaries"]
 # release mode.
 [dist.binaries]
 "*" = ["bougie", "bgx"]
+
+# dist 0.32.0 builds aarch64-apple-darwin on `macos-14` by default. GitHub
+# retired that image on 2026-11-02, and its brownouts before that date
+# broke the bougie-v0.54.0 release, so pin a supported image.
+[dist.github-custom-runners]
+aarch64-apple-darwin = "macos-15"
