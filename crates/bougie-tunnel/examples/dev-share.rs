@@ -9,6 +9,7 @@
 //!   RELAY_SNI         default tunnel.bougie.test
 //!   LOCAL_PORT        default 9000   (the local server to expose)
 //!   PROJECT           default myshop (seeds the slug)
+//!   SLUG              request this slug, like `bougie share --slug`
 //!   PUBLIC            set → no view password (default: generated password)
 //!   BOUGIE_TUNNEL_CA  path to a CA PEM to additionally trust (self-signed relay)
 //! ```
@@ -24,7 +25,7 @@ async fn main() -> eyre::Result<()> {
         local_port: env("LOCAL_PORT", "9000").parse()?,
         project: env("PROJECT", "myshop"),
         token: std::env::var("SHARE_TOKEN").ok().filter(|t| !t.is_empty()),
-        slug: None,
+        slug: std::env::var("SLUG").ok().filter(|s| !s.is_empty()),
         password_mode: if std::env::var("PUBLIC").is_ok() {
             PasswordMode::None
         } else {

@@ -1078,8 +1078,10 @@ pub struct ShareArgs {
     #[arg(value_name = "NAME")]
     pub name: Option<String>,
     /// Request a stable named slug instead of `<name>-<random>` (may
-    /// require `bougie login`)
-    #[arg(long, value_name = "SLUG")]
+    /// require `bougie login`). The share only ever runs on this slug: if
+    /// the relay won't grant it, bougie retries for a few minutes and then
+    /// exits with an error rather than serve a different URL
+    #[arg(long, value_name = "SLUG", value_parser = parse_slug)]
     pub slug: Option<String>,
     /// Make the share fully public — no view password (loud warning)
     #[arg(long)]
@@ -1090,6 +1092,18 @@ pub struct ShareArgs {
     /// Skip the implicit `bougie sync` before serving
     #[arg(long)]
     pub no_sync: bool,
+}
+
+/// `--slug` must keep at least one letter or digit once the relay normalises
+/// it (lowercase, everything else becomes `-`, trimmed). Otherwise the relay
+/// ignores the request and picks a random slug, which a `--slug` share must
+/// never end up on.
+fn parse_slug(s: &str) -> Result<String, String> {
+    if s.chars().any(|c| c.is_ascii_alphanumeric()) {
+        Ok(s.to_owned())
+    } else {
+        Err("needs at least one letter or digit, like `my-shop`".to_owned())
+    }
 }
 
 #[derive(Subcommand, Debug)]
@@ -2097,6 +2111,20 @@ mod tests {
 
     fn cmd(argv: &[&str]) -> Command {
         Cli::try_parse_from(argv).expect("parse").command
+    }
+
+    #[test]
+    fn share_slug_needs_a_letter_or_digit() {
+        let Command::Share(args) = cmd(&["bougie", "share", "--slug", "my-shop"]) else {
+            panic!("expected share");
+        };
+        assert_eq!(args.slug.as_deref(), Some("my-shop"));
+        for bad in ["--slug=--", "--slug=!!!", "--slug="] {
+            assert!(
+                Cli::try_parse_from(["bougie", "share", bad]).is_err(),
+                "{bad} should be rejected"
+            );
+        }
     }
 
     #[test]

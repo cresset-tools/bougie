@@ -126,6 +126,30 @@ impl HelloResponse {
     }
 }
 
+/// Normalise a requested slug into the DNS label the relay will use:
+/// lowercase, keep `[a-z0-9-]`, turn everything else into `-`, trim `-` from
+/// both ends, cap at 40 bytes. An empty result means the relay ignores the
+/// request and picks a random slug.
+///
+/// The client uses this to tell whether the relay granted the slug it asked
+/// for, so it must match the relay's own normalisation byte for byte.
+#[must_use]
+pub fn sanitize_label(s: &str) -> String {
+    let mut out: String = s
+        .to_ascii_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    while out.starts_with('-') {
+        out.remove(0);
+    }
+    while out.ends_with('-') {
+        out.pop();
+    }
+    out.truncate(40);
+    out
+}
+
 /// Write one length-prefixed JSON frame.
 pub async fn write_frame<W, T>(w: &mut W, msg: &T) -> Result<()>
 where
@@ -232,5 +256,14 @@ mod tests {
         let err = HelloResponse::error("nope");
         assert!(!err.ok);
         assert_eq!(err.error.as_deref(), Some("nope"));
+    }
+
+    #[test]
+    fn sanitize_label_matches_the_relay() {
+        assert_eq!(sanitize_label("My Shop!"), "my-shop");
+        assert_eq!(sanitize_label("--acme--"), "acme");
+        assert_eq!(sanitize_label("a/b_c"), "a-b-c");
+        assert_eq!(sanitize_label("!!!"), "");
+        assert_eq!(sanitize_label(&"x".repeat(50)).len(), 40);
     }
 }
