@@ -8,7 +8,8 @@
 //!
 //! Only a *refusal* (bad login, not allowed to share) stops the loop: retrying
 //! can't fix it. Network errors are retried for as long as the caller lets the
-//! future run.
+//! future run, and so is a relay that hands a `--slug` share a different host
+//! ([`crate::SlugNotGranted`]): that share must not move to another URL.
 
 use std::future::Future;
 use std::time::Duration;

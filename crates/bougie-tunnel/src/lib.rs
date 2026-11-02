@@ -23,7 +23,7 @@ use std::fmt;
 
 use eyre::Result;
 
-pub use protocol::{HelloRequest, HelloResponse, PasswordMode};
+pub use protocol::{HelloRequest, HelloResponse, PasswordMode, sanitize_label};
 pub use proxy::RequestLog;
 
 /// The TLS byte stream after the handshake, adapted to futures-io for yamux.
@@ -106,20 +106,62 @@ impl fmt::Display for Refused {
 
 impl std::error::Error for Refused {}
 
+/// The relay gave out a different host than the slug the user asked for.
+/// The relay does this without an error when the slug is not free, most often
+/// because the share that just ended still holds it for its resume grace
+/// period. Retrying can fix it once that hold runs out.
+#[derive(Debug, Clone)]
+pub struct SlugNotGranted {
+    /// The requested slug, normalised the way the relay normalises it.
+    pub requested: String,
+    /// The host the relay assigned instead.
+    pub host: String,
+}
+
+impl fmt::Display for SlugNotGranted {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "the relay assigned {} instead of the requested slug {}",
+            self.host, self.requested
+        )
+    }
+}
+
+impl std::error::Error for SlugNotGranted {}
+
 /// Tunnel client. Cheap — holds only config.
 #[derive(Debug, Clone)]
 pub struct TunnelClient {
     cfg: TunnelConfig,
+    /// The slug the user asked for (normalised), if any. Unlike `cfg.slug`,
+    /// which [`Self::resuming`] fills in for random shares too, this is a
+    /// requirement: [`Self::open`] fails with [`SlugNotGranted`] rather than
+    /// accept another host.
+    required_slug: Option<String>,
 }
 
 impl TunnelClient {
     #[must_use]
     pub fn new(cfg: TunnelConfig) -> Self {
-        Self { cfg }
+        let required_slug = cfg.slug.as_deref().map(protocol::sanitize_label);
+        Self { cfg, required_slug }
+    }
+
+    /// The normalised slug this client insists on, if the user asked for one.
+    #[must_use]
+    pub fn required_slug(&self) -> Option<&str> {
+        self.required_slug.as_deref()
     }
 
     /// Dial the relay, complete the handshake, and return the assigned
     /// [`ShareHandle`] plus a [`Serving`] to drive.
+    ///
+    /// # Errors
+    ///
+    /// [`Refused`] if the relay rejects the share, [`SlugNotGranted`] if it
+    /// assigns a host other than the required slug (the connection is closed
+    /// first), or a network/handshake error.
     pub async fn open(&self) -> Result<(ShareHandle, Serving)> {
         let c = connect::connect(&self.cfg).await?;
         let handle = ShareHandle {
@@ -128,6 +170,9 @@ impl TunnelClient {
             view_password: c.hello.view_password.clone(),
             resume: c.hello.resume.clone(),
         };
+        // On a mismatch, returning drops `c.conn`, which closes the session so
+        // the relay stops routing the host it picked for us.
+        self.check_granted(&handle.host)?;
         Ok((
             handle,
             Serving {
@@ -136,6 +181,17 @@ impl TunnelClient {
                 request_log: self.cfg.request_log.clone(),
             },
         ))
+    }
+
+    /// `Err(SlugNotGranted)` if the user asked for a slug and `host` isn't it.
+    fn check_granted(&self, host: &str) -> std::result::Result<(), SlugNotGranted> {
+        match &self.required_slug {
+            Some(want) if host_label(host) != want.as_str() => Err(SlugNotGranted {
+                requested: want.clone(),
+                host: host.to_owned(),
+            }),
+            _ => Ok(()),
+        }
     }
 
     /// Config accessor.
@@ -147,15 +203,19 @@ impl TunnelClient {
     /// A client that reconnects to `handle`'s share: it presents the resume
     /// token, and also asks for the same slug and view password, so a relay
     /// that can't resume (or predates resume tokens) still hands back the same
-    /// URL when the slug is free.
+    /// URL when the slug is free. A slug the user asked for is kept as the
+    /// request, rather than whatever label the relay assigned last.
     #[must_use]
     pub fn resuming(&self, handle: &ShareHandle) -> Self {
         let mut cfg = self.cfg.clone();
         if handle.resume.is_some() {
             cfg.resume.clone_from(&handle.resume);
         }
-        if let Some(label) = handle.host.split('.').next().filter(|l| !l.is_empty()) {
-            cfg.slug = Some(label.to_owned());
+        if self.required_slug.is_none() {
+            let label = host_label(&handle.host);
+            if !label.is_empty() {
+                cfg.slug = Some(label.to_owned());
+            }
         }
         cfg.password_mode = if handle.view_password.is_some() {
             PasswordMode::Custom
@@ -163,8 +223,16 @@ impl TunnelClient {
             PasswordMode::None
         };
         cfg.password.clone_from(&handle.view_password);
-        Self { cfg }
+        Self {
+            cfg,
+            required_slug: self.required_slug.clone(),
+        }
     }
+}
+
+/// The first DNS label of `host`: the slug of `<slug>.bougie.show`.
+fn host_label(host: &str) -> &str {
+    host.split('.').next().unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -201,6 +269,64 @@ mod tests {
         assert_eq!(c.slug.as_deref(), Some("shop-x1y2z3"));
         assert_eq!(c.password_mode, PasswordMode::Custom);
         assert_eq!(c.password.as_deref(), Some("pw"));
+    }
+
+    #[test]
+    fn resuming_keeps_asking_for_the_requested_slug() {
+        let mut want = cfg();
+        want.slug = Some("Shop Demo".into());
+        // The relay handed out a random host instead of the requested slug.
+        let handle = ShareHandle {
+            url: "https://shop-79encp.bougie.show".into(),
+            host: "shop-79encp.bougie.show".into(),
+            view_password: None,
+            resume: Some("tok".into()),
+        };
+        let c = TunnelClient::new(want).resuming(&handle);
+        assert_eq!(c.config().slug.as_deref(), Some("Shop Demo"));
+        assert_eq!(c.required_slug(), Some("shop-demo"));
+        // …and still does after a second reconnect.
+        assert_eq!(c.resuming(&handle).required_slug(), Some("shop-demo"));
+    }
+
+    #[test]
+    fn a_different_host_is_not_the_requested_slug() {
+        let mut want = cfg();
+        want.slug = Some("Weesparaat-Local-9h9rka".into());
+        let c = TunnelClient::new(want);
+        assert!(
+            c.check_granted("weesparaat-local-9h9rka.bougie.show")
+                .is_ok()
+        );
+        let err = c
+            .check_granted("weesparaat-local-79encp.bougie.show")
+            .unwrap_err();
+        assert_eq!(err.requested, "weesparaat-local-9h9rka");
+        assert_eq!(err.host, "weesparaat-local-79encp.bougie.show");
+        // A prefix match is not a match.
+        assert!(c.check_granted("weesparaat-local.bougie.show").is_err());
+        // Without --slug, any host is fine.
+        assert!(
+            TunnelClient::new(cfg())
+                .check_granted("x.bougie.show")
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn no_slug_means_no_requirement() {
+        let c = TunnelClient::new(cfg());
+        assert_eq!(c.required_slug(), None);
+        let handle = ShareHandle {
+            url: "https://shop-a.bougie.show".into(),
+            host: "shop-a.bougie.show".into(),
+            view_password: None,
+            resume: None,
+        };
+        // A random share asks for its last label back, but doesn't insist.
+        let c = c.resuming(&handle);
+        assert_eq!(c.config().slug.as_deref(), Some("shop-a"));
+        assert_eq!(c.required_slug(), None);
     }
 
     #[test]

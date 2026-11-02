@@ -18,10 +18,13 @@
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::time::{Duration, Instant};
 
 use bougie_cli::{OutputFormat, ShareArgs};
 use bougie_tunnel::supervise::{self, Event};
-use bougie_tunnel::{PasswordMode, RequestLog, ShareHandle, TunnelClient, TunnelConfig};
+use bougie_tunnel::{
+    PasswordMode, RequestLog, Serving, ShareHandle, SlugNotGranted, TunnelClient, TunnelConfig,
+};
 use eyre::{Result, WrapErr, eyre};
 use serde_json::{Value, json};
 
@@ -170,7 +173,7 @@ pub fn run(format: OutputFormat, args: ShareArgs) -> Result<ExitCode> {
         .build()?;
     rt.block_on(async move {
         let client = TunnelClient::new(tunnel_cfg);
-        let (handle, serving) = client.open().await?;
+        let (handle, serving) = open_first(&client).await?;
 
         // Register the relay-assigned `<slug>.bougie.show` as a `[[host]]`
         // mirroring the tenant (same project/root/rewrites), then reload the
@@ -201,6 +204,50 @@ pub fn run(format: OutputFormat, args: ShareArgs) -> Result<ExitCode> {
     })?;
 
     Ok(ExitCode::SUCCESS)
+}
+
+/// How long the first connect keeps retrying a `--slug` the relay hasn't
+/// granted. The relay holds a dropped share's host for two minutes so its
+/// owner can reconnect, which also blocks restarting the share right after
+/// stopping it. It only frees an expired hold on its minute-long sweep, so
+/// the slug can stay taken for up to about three minutes (178s measured
+/// against bougie-relay bc15bf9). This outlasts that.
+const SLUG_WAIT: Duration = Duration::from_secs(200);
+/// Pause between those retries.
+const SLUG_RETRY: Duration = Duration::from_secs(10);
+
+/// Open the share. With `--slug`, a relay that assigns some other host is
+/// retried until [`SLUG_WAIT`] runs out, then reported as an error. Serving on
+/// another URL would look healthy while everything sent to the requested one
+/// gets a 404.
+async fn open_first(client: &TunnelClient) -> Result<(ShareHandle, Serving)> {
+    let deadline = Instant::now() + SLUG_WAIT;
+    loop {
+        let err = match client.open().await {
+            Ok(opened) => return Ok(opened),
+            Err(e) => e,
+        };
+        let Some(not_granted) = err.downcast_ref::<SlugNotGranted>() else {
+            return Err(err);
+        };
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left < SLUG_RETRY {
+            return Err(eyre!(
+                "the relay would not give out the slug {} (it kept assigning a different URL for \
+                 {}s). Another share is probably using it. Pick a different --slug, or leave it \
+                 out for a random URL",
+                not_granted.requested,
+                SLUG_WAIT.as_secs()
+            ));
+        }
+        eprintln!(
+            "{not_granted}; a share that just ended may still be holding it. \
+             Retrying in {}s ({}s left)…",
+            SLUG_RETRY.as_secs(),
+            left.as_secs()
+        );
+        tokio::time::sleep(SLUG_RETRY).await;
+    }
 }
 
 /// Where the share's temporary `[[host]]` lives, for re-registering it when a
