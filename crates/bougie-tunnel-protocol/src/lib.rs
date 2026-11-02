@@ -85,7 +85,8 @@ pub struct HelloResponse {
     /// A resume token the client can present on reconnect to reclaim this slug.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resume: Option<String>,
-    /// How long, in seconds, the relay will hold this share.
+    /// How long, in seconds, the relay will hold this share. `None` means no
+    /// time limit: the share lasts while the client stays connected.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ttl_secs: Option<u64>,
     /// A human-readable reason, when [`HelloResponse::ok`] is `false`.
