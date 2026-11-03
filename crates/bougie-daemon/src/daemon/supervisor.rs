@@ -1592,6 +1592,13 @@ fn render_exec_args(
                 // No cluster bootstrap — single-node dev mode skips
                 // discovery + initial_cluster_manager_nodes ceremony.
                 "-Ediscovery.type=single-node".into(),
+                // Disk watermarks as free space, not percent used. The
+                // stock 85/90/95% trip early on large dev disks (a 1 TB
+                // disk at 90% still has 100 GB free); flood stage makes
+                // every index read-only, which breaks reindexing.
+                "-Ecluster.routing.allocation.disk.watermark.low=20gb".into(),
+                "-Ecluster.routing.allocation.disk.watermark.high=15gb".into(),
+                "-Ecluster.routing.allocation.disk.watermark.flood_stage=10gb".into(),
             ]
         }
         "mariadb" => {
@@ -2124,6 +2131,21 @@ mod tests {
         // Must include "0" right after "--port"
         let i = args.iter().position(|a| a == "--port").unwrap();
         assert_eq!(args[i + 1], "0");
+    }
+
+    #[test]
+    fn render_exec_args_for_opensearch_sets_free_space_watermarks() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let paths = Paths::new(tmp.path().into(), tmp.path().into());
+        let entry = catalog::find("opensearch").unwrap();
+        let args = render_exec_args(entry, entry.version, &paths, None);
+        for want in [
+            "-Ecluster.routing.allocation.disk.watermark.low=20gb",
+            "-Ecluster.routing.allocation.disk.watermark.high=15gb",
+            "-Ecluster.routing.allocation.disk.watermark.flood_stage=10gb",
+        ] {
+            assert!(args.iter().any(|a| a == want), "missing {want}: {args:?}");
+        }
     }
 
     #[test]
