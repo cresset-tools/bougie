@@ -555,6 +555,13 @@ pub mod project {
         state_dir(root).join("bin")
     }
 
+    /// `<root>/vendor/bougie/state/installed-packages.json` — what the
+    /// last successful Composer install put on disk, and where. Read by
+    /// the next install to remove packages that left the lock.
+    pub fn installed_packages(root: &Path) -> PathBuf {
+        state_dir(root).join("installed-packages.json")
+    }
+
     /// `<root>/vendor/bougie/state/resolved` — resolved `<ver>-<flavor>`.
     pub fn resolved(root: &Path) -> PathBuf {
         state_dir(root).join("resolved")
