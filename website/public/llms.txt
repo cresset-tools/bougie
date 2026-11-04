@@ -22,8 +22,8 @@ and the common paths.
   exist and work on every subcommand.
 - **Non-interactive:** anything that prompts (e.g. `projects purge`)
   has a `--yes`/`-y` or `--dry-run` flag. Always pass one in automation.
-- **No Composer plugins or scripts.** bougie never runs `pre-/post-*` scripts
-  or Composer plugins. Behaviors that normally come from plugins
+- **No Composer plugins; scripts are opt-in.** bougie never runs Composer
+  plugins, and root `composer.json` scripts only run with `--scripts`. Behaviors that normally come from plugins
   (composer/installers paths, Symfony Flex recipes, Laravel package discovery)
   are reimplemented natively. Don't expect plugin side effects.
 - **Implicit sync.** Many verbs (`run`, `make`/`start`, `server`, `share`,
@@ -254,6 +254,29 @@ Version request grammar: `8.3`, `8.3.12`, `8.3+zts`, constraints like `~8.3`.
   tree; no composer.json change). Mix both in one call.
 - `remove NAMES... [--no-sync]`
 - `list [--only-installed] [--only-available] [--all-versions] [--all-platforms] [--show-urls]`
+
+### Repositories — `bougie repo`
+
+Manage where the project's packages come from (the `repositories` in `composer.json`).
+
+- `bougie repo add URL` — add a Composer repository, such as a Bougie Repo
+  (`bougie repo add https://acme.bougierepo.com`). `URL` is the one its
+  `packages.json` is served under. Already present is not an error.
+- `bougie repo remove URL` — remove a repository by its URL, as `repo add` was given it.
+
+### Registry login — `bougie login`
+
+Authenticate against a Composer registry (hidden from the top-level help).
+
+- `bougie login [URL] [--ci] [--repository ORG/REPO] [--audience AUD] [--no-provision] [--composer-json]`
+  — with no `URL`, signs in to Bougie Cloud (`bougie.cloud`, or `$BOUGIE_LOGIN_URL`);
+  a bare domain is resolved via its `_bougie-login._tcp` SRV record, a full URL
+  is used as-is. `--ci` is the non-interactive path: it exchanges the CI
+  workflow's OIDC JWT (`$SCONCE_ID_TOKEN`, or GitHub Actions' token service)
+  for a short-lived read token, and requires `--repository`. After login the
+  project's `repositories` are auto-provisioned into the local, gitignored
+  `.bougie/repositories.json` overlay; `--composer-json` writes them into the
+  committed `composer.json` instead, `--no-provision` stores only the token.
 
 ### Patch management — `bougie patches`
 
