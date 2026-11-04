@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.56.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.55.0...bougie-v0.56.0) (2026-11-04)
+
+
+### Features
+
+* **lock:** finish bougie.lock — --frozen, --all-targets, --upgrade, portable locks ([53345d8](https://github.com/cresset-tools/bougie/commit/53345d82b96e3aec2e17c0bd24efc4d23d99c8fd))
+
 ## [0.55.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.54.1...bougie-v0.55.0) (2026-11-04)
 
 
