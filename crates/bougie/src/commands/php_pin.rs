@@ -73,7 +73,7 @@ pub fn run(format: OutputFormat, request: &str, pin_target: PinTarget) -> Result
         &project_root,
         format,
         false,
-        false,
+        crate::commands::locked_toolchain::LockPolicy::Update,
         false,
         None,
         None,

@@ -148,19 +148,23 @@ Run `bougie help <command>` for full flags. Global: `--quiet`, `--verbose`,
   flags are ignored in that mode.
 - `bougie new DIRECTORY [--toml] [--name …] [--starter …] [--start]`
   — create DIRECTORY and scaffold inside it.
-- `bougie sync [--offline] [--locked] [--dry-run] [--scripts | --no-scripts] [--patches | --no-patches] [--resolution STRATEGY] [--managed-php | --no-managed-php] [--no-php-downloads] [--ignore-platform-reqs] [--ignore-platform-req REQ]`
+- `bougie sync [--offline] [--locked | --frozen] [--dry-run] [--scripts | --no-scripts] [--patches | --no-patches] [--resolution STRATEGY] [--managed-php | --no-managed-php] [--no-php-downloads] [--ignore-platform-reqs] [--ignore-platform-req REQ]`
   — install everything the project requires (toolchain + extensions + `vendor/`).
   `--locked` requires fresh committed `composer.lock` and `bougie.lock` files,
   including digests for the current target; it never refreshes or extends them.
+  `--frozen` installs both locks as written without checking they match the
+  project (still requires current-target digests, never writes a lock).
   The workhorse. Scripts are off by default; `--scripts` opts in. Patches are on
   by default when declared; `--no-patches` suppresses them. `--resolution`
   applies when a fresh lock must be resolved. PHP source: `--managed-php` (only
   bougie-managed), `--no-managed-php` (only system), `--no-php-downloads` (no
   auto-download).
-- `bougie run [--script] [--with EXT=VER]... [--no-sync] [--xdebug] [--php VER|PATH] [--managed-php | --no-managed-php] [--no-php-downloads] -- ARGV...`
+- `bougie run [--script] [--with EXT=VER]... [--no-sync] [--locked | --frozen] [--xdebug] [--php VER|PATH] [--managed-php | --no-managed-php] [--no-php-downloads] -- ARGV...`
   — run a command or script in the project env. Ad-hoc extensions via
   `--with`. `--script` treats the first argument as a self-contained PHP
-  script instead (see "Single-file scripts" below).
+  script instead (see "Single-file scripts" below). The implicit sync installs
+  from `bougie.lock` when one is committed; `--locked` / `--frozen` check the
+  locks before running even when no sync is needed.
 - `bougie start [--no-sync] [--dry-run] [--explain] [--no-builtin] [--recipe NAME]`
   — bring the whole project up: sync the toolchain + vendor, provision and start
   services, run any setup, start the dev server. Runs the detected recipe's
@@ -187,11 +191,17 @@ full Composer-compatible flag parity.
   `--frozen` edits `composer.json` only. `--script FILE` adds to a self-contained
   script's inline dependency block instead (see "Single-file scripts" below).
 - `bougie remove PACKAGES... [--dev] [--no-sync] [--frozen] [-d DIR] [--dry-run] [--ignore-platform-reqs] [--ignore-platform-req REQ]`
-- `bougie lock [--script FILE] [--with-platform] [--resolution STRATEGY] [-d DIR] [--dry-run] [--ignore-platform-reqs] [--ignore-platform-req REQ]` — minimal lock refresh: reconcile
+- `bougie lock [--script FILE] [--with-platform [--all-targets] [-U | -P NAME...]] [--resolution STRATEGY] [-d DIR] [--dry-run] [--ignore-platform-reqs] [--ignore-platform-req REQ]` — minimal lock refresh: reconcile
   `composer.lock` with `composer.json`, holding each package at its locked
   version where still valid, re-resolving only what changed. Never bumps
   versions, never installs. `--with-platform` also resolves PHP, extensions,
-  and services into `bougie.lock`. Content-hash match → offline no-op. `--script FILE`
+  and services into `bougie.lock` and lists what moved. Like `uv lock`, a
+  re-lock keeps every toolchain pin that still satisfies its constraint;
+  `--upgrade` (`-U`) moves them all to the newest allowed version, and
+  `--upgrade-package NAME` (`-P`, repeatable: `php`, an extension, or a
+  service) moves just that one. `--all-targets` records digests for every target the index
+  serves, so CI on another OS can use `sync --locked` straight away.
+  Content-hash match → offline no-op. `--script FILE`
   locks a single-file script's inline dependencies into an adjacent
   `<file>.lock` instead.
 - `bougie tree [PACKAGE] [--no-dev] [-d DIR]` — print the dependency tree

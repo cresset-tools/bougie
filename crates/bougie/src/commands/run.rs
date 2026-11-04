@@ -33,6 +33,7 @@ pub fn run(
     argv: &[String],
     format: OutputFormat,
     no_sync: bool,
+    lock_mode: sync::LockPolicy,
     xdebug_flag: bool,
     php_pref: bougie_cli::PhpPrefArgs,
     php_request: Option<&str>,
@@ -61,7 +62,14 @@ pub fn run(
     }
     let cwd = std::env::current_dir()?;
     let project_root = resolve_project_root(&cwd);
-    let ephemeral_php = implicit_sync(&project_root, format, no_sync, php_pref, php_request)?;
+    let ephemeral_php = implicit_sync(
+        &project_root,
+        format,
+        no_sync,
+        lock_mode,
+        php_pref,
+        php_request,
+    )?;
 
     // The xdebug overlay loads a bougie-managed `xdebug.so`, which a
     // foreign system build can't take — and the overlay rides on
@@ -238,6 +246,7 @@ fn implicit_sync(
     project_root: &Path,
     format: OutputFormat,
     no_sync: bool,
+    lock_mode: sync::LockPolicy,
     php_pref: bougie_cli::PhpPrefArgs,
     php_request: Option<&str>,
 ) -> Result<Option<std::path::PathBuf>> {
@@ -250,10 +259,19 @@ fn implicit_sync(
         );
     }
     if !no_sync && !is_environment_present(project_root)? {
-        return Ok(
-            sync::run_with_default_fallback(project_root, format, false, php_pref)?
-                .ephemeral_system_php,
-        );
+        return Ok(sync::run_with_default_fallback(
+            project_root,
+            format,
+            false,
+            lock_mode,
+            php_pref,
+        )?
+        .ephemeral_system_php);
+    }
+    // uv-parity: `run --locked` / `--frozen` check the locks even when the
+    // environment is already present and no sync is needed.
+    if lock_mode != sync::LockPolicy::Update {
+        sync::check_locks(project_root, lock_mode)?;
     }
     Ok(None)
 }

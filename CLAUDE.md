@@ -126,11 +126,19 @@ Top-level subcommands (from `bougie-cli`):
   lower-bound default (vs `composer require`'s caret); shared engine,
   [`DefaultConstraint`] policy selects the default. `--frozen` = edit
   composer.json only; `--no-sync` = re-lock but don't install.
-- `lock [--dry-run] [--resolution S]` — minimal `composer.lock` refresh
+- `lock [--dry-run] [--resolution S] [--with-platform [--all-targets] [-U | -P NAME]]` —
+  minimal `composer.lock` refresh
   (uv's `uv lock`): reconcile the lock with `composer.json`, holding each
   package at its locked version where still valid; re-resolve only what
   changed. Never bumps versions, never installs (use `bougie composer
   update` to pull newer). Content-hash match → offline no-op.
+  `--with-platform` also writes the toolchain lock `bougie.lock` (PHP,
+  extensions, services; per-target digests) and prints what moved. Re-locking
+  keeps each pin that still satisfies its constraint (uv semantics);
+  `--upgrade`/`-U` re-resolves all of them, `--upgrade-package`/`-P NAME`
+  (`php`, an extension, a service) just one. When no pin moved, other targets'
+  digests and the snapshot are kept. `--all-targets` records digests for
+  every target the index serves instead of only this one.
 - `--resolution {highest,lowest,lowest-direct}` (on `add`, `lock`, `sync`,
   `composer update`) is uv's version-preference knob: `highest` (default)
   picks newest in range, `lowest` picks oldest for every package,
@@ -153,14 +161,21 @@ Top-level subcommands (from `bougie-cli`):
   any pre-release suffix, pads to three segments, and preserves a `v`
   prefix. A newly-added key is spliced after `description`/`name` rather
   than appended, so it doesn't land below `require`.
-- `sync [--offline] [--locked] [--dry-run]` — Install everything the project
-  requires. `--locked` is the CI gate: require fresh `composer.lock` and
-  `bougie.lock` files that already cover the current target, without changing
-  either lock.
+- `sync [--offline] [--locked | --frozen] [--dry-run]` — Install everything
+  the project requires. `--locked` is the CI gate: require fresh
+  `composer.lock` and `bougie.lock` files that already cover the current
+  target, without changing either lock. `--frozen` installs both locks as
+  written, skipping the staleness checks; it still needs digests for the
+  current target and never writes either lock. A baseline extension a
+  platform cannot build (gettext off Linux) is pinned in `bougie.lock` but
+  carries no digest for that platform. On Windows, `[services]` is neither
+  enforced nor treated as drift.
 - `up [names...]` / `down [names...] [--purge]` — Start / stop declared
   services.
-- `run [--with EXT=VER] [--no-sync] [--xdebug] -- ARGV...` — Run a command
-  in the project env; supports ad-hoc extensions and xdebug overlay.
+- `run [--with EXT=VER] [--no-sync] [--locked | --frozen] [--xdebug] -- ARGV...`
+  — Run a command in the project env; supports ad-hoc extensions and xdebug
+  overlay. The implicit sync installs from `bougie.lock` like `sync` does;
+  `--locked` / `--frozen` check the locks even when no sync is needed.
 - `php {install,uninstall,list,find,pin,upgrade,dir}` — Manage PHP
   interpreters.
 - `composer {install,update,require,remove,show,why,why-not,outdated,audit,licenses,fund,status,validate,dump-autoload}`

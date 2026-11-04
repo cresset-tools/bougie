@@ -294,6 +294,9 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
         Command::Lock {
             script,
             with_platform,
+            all_targets,
+            upgrade,
+            upgrade_package,
             resolution,
             working_dir,
             dry_run,
@@ -307,7 +310,14 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
                     format,
                     working_dir,
                     dry_run,
-                    with_platform,
+                    commands::lock::PlatformLock {
+                        enabled: with_platform,
+                        all_targets,
+                        upgrade: commands::platform_lock::Upgrade::from_flags(
+                            upgrade,
+                            upgrade_package,
+                        ),
+                    },
                     resolution_strategy(resolution),
                     platform_ignore(ignore_platform_reqs, &ignore_platform_req),
                 )
@@ -359,6 +369,7 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
         Command::Sync {
             offline,
             locked,
+            frozen,
             dry_run,
             scripts,
             no_scripts,
@@ -376,7 +387,7 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
                 &project_root,
                 format,
                 offline,
-                locked,
+                lock_mode(locked, frozen),
                 dry_run,
                 scripts_override(scripts, no_scripts),
                 tristate(patches, no_patches),
@@ -389,6 +400,8 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
             script,
             with,
             no_sync,
+            locked,
+            frozen,
             xdebug,
             php_request,
             php,
@@ -402,6 +415,7 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
                     &argv,
                     format,
                     no_sync,
+                    lock_mode(locked, frozen),
                     xdebug,
                     php,
                     php_request.as_deref(),
@@ -993,6 +1007,16 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
                 args,
             },
         ),
+    }
+}
+
+fn lock_mode(locked: bool, frozen: bool) -> commands::sync::LockPolicy {
+    if locked {
+        commands::sync::LockPolicy::Locked
+    } else if frozen {
+        commands::sync::LockPolicy::Frozen
+    } else {
+        commands::sync::LockPolicy::Update
     }
 }
 

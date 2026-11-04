@@ -94,7 +94,7 @@ pub fn run(format: OutputFormat, args: ShareArgs) -> Result<ExitCode> {
             &project_root,
             format,
             false,
-            false,
+            crate::commands::locked_toolchain::LockPolicy::Update,
             false,
             None,
             None,

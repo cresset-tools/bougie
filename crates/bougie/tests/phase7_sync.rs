@@ -1,6 +1,7 @@
 //! Phase 7: end-to-end `bougie sync` against a wiremock fake index.
 
 use base64::Engine;
+use predicates::prelude::PredicateBooleanExt;
 use predicates::str::contains;
 use sha2::{Digest, Sha256};
 use sigstore::crypto::signing_key::ecdsa::{ECDSAKeys, EllipticCurve};
@@ -67,6 +68,9 @@ struct Fixture {
     pub_pem: String,
     snapshot: String,
     target: String,
+    /// A second target the index serves with the same artifacts, for
+    /// `bougie lock --with-platform --all-targets`.
+    other_target: String,
     manifest_sha: String,
     blob_sha: String,
     redis_manifest_sha: String,
@@ -103,10 +107,26 @@ async fn build_fixture() -> Fixture {
     let manifest_bytes = serde_json::to_vec(&manifest_json).unwrap();
     let manifest_sha = hex(&manifest_bytes);
 
+    // An older patch release, so re-lock tests can tell "kept the pin"
+    // from "resolved the newest".
+    let old_manifest_path_abs =
+        format!("/targets/{target}/manifests/php/8.3/php-8.3.11-{target}-nts.json");
+    let mut old_manifest_json = manifest_json.clone();
+    old_manifest_json["tag"] = format!("php-8.3.11-{target}-nts").into();
+    old_manifest_json["version"] = "8.3.11".into();
+    let old_manifest_bytes = serde_json::to_vec(&old_manifest_json).unwrap();
+    let old_manifest_sha = hex(&old_manifest_bytes);
+
     let section_json = serde_json::json!({
         "schema": 1, "name": "php", "kind": "interpreter",
         "target": target,
         "artifacts": [{
+            "tag": format!("php-8.3.11-{target}-nts"),
+            "version": "8.3.11",
+            "flavor": "nts",
+            "manifest": {"path": old_manifest_path_abs, "sha256": old_manifest_sha},
+            "yanked": false, "frozen": false
+        }, {
             "tag": format!("php-8.3.12-{target}-nts"),
             "version": "8.3.12",
             "flavor": "nts",
@@ -153,27 +173,28 @@ async fn build_fixture() -> Fixture {
     let redis_section_sha = hex(&redis_section_bytes);
 
     let publish_version = "20260509T000000Z";
+    let other_target = if target == "aarch64-apple-darwin" {
+        "x86_64-unknown-linux-gnu".to_owned()
+    } else {
+        "aarch64-apple-darwin".to_owned()
+    };
+    let sections = serde_json::json!({
+        "interpreter/php": {"sha256": section_sha, "size": section_bytes.len()},
+        "extension/redis": {"sha256": redis_section_sha, "size": redis_section_bytes.len()}
+    });
     let root = serde_json::json!({
         "schema": 1, "version": publish_version, "generated": "2026-05-09T00:00:00Z",
         "targets": {
-            target.clone(): {
-                "sections": {
-                    "interpreter/php": {"sha256": section_sha, "size": section_bytes.len()},
-                    "extension/redis": {"sha256": redis_section_sha, "size": redis_section_bytes.len()}
-                }
-            }
+            target.clone(): {"sections": sections.clone()},
+            other_target.clone(): {"sections": sections}
         }
     });
     let root_bytes = serde_json::to_vec(&root).unwrap();
     let sig = signer.sign(&root_bytes).unwrap();
     let sig_b64 = base64::engine::general_purpose::STANDARD.encode(&sig);
 
-    let section_path =
-        format!("/versions/{publish_version}/targets/{target}/sections/interpreter/php.json");
     let manifest_path = manifest_path_abs.clone();
     let blob_path = format!("/blobs/{blob_sha}");
-    let redis_section_path =
-        format!("/versions/{publish_version}/targets/{target}/sections/extension/redis.json");
     let redis_blob_path = format!("/blobs/{redis_blob_sha}");
 
     Mock::given(method("GET"))
@@ -190,9 +211,25 @@ async fn build_fixture() -> Fixture {
         .respond_with(ResponseTemplate::new(200).set_body_bytes(sig_b64.into_bytes()))
         .mount(&server)
         .await;
+    for section_target in [&target, &other_target] {
+        Mock::given(method("GET"))
+            .and(path(format!(
+                "/versions/{publish_version}/targets/{section_target}/sections/interpreter/php.json"
+            )))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(section_bytes.clone()))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(format!(
+                "/versions/{publish_version}/targets/{section_target}/sections/extension/redis.json"
+            )))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(redis_section_bytes.clone()))
+            .mount(&server)
+            .await;
+    }
     Mock::given(method("GET"))
-        .and(path(section_path))
-        .respond_with(ResponseTemplate::new(200).set_body_bytes(section_bytes))
+        .and(path(old_manifest_path_abs))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(old_manifest_bytes))
         .mount(&server)
         .await;
     Mock::given(method("GET"))
@@ -203,11 +240,6 @@ async fn build_fixture() -> Fixture {
     Mock::given(method("GET"))
         .and(path(blob_path))
         .respond_with(ResponseTemplate::new(200).set_body_bytes(blob_bytes))
-        .mount(&server)
-        .await;
-    Mock::given(method("GET"))
-        .and(path(redis_section_path))
-        .respond_with(ResponseTemplate::new(200).set_body_bytes(redis_section_bytes))
         .mount(&server)
         .await;
     Mock::given(method("GET"))
@@ -226,6 +258,7 @@ async fn build_fixture() -> Fixture {
         pub_pem,
         snapshot: publish_version.into(),
         target,
+        other_target,
         manifest_sha,
         blob_sha,
         redis_manifest_sha,
@@ -774,4 +807,341 @@ fn sync_without_require_php_uses_newest_then_reuses_it() {
             .trim(),
         "8.3.12-nts"
     );
+}
+
+fn bougie_at(
+    env: &TestEnv,
+    fx: &Fixture,
+    trust: &std::path::Path,
+    dir: &std::path::Path,
+) -> assert_cmd::Command {
+    let mut cmd = env.bougie();
+    cmd.current_dir(dir)
+        .env("BOUGIE_INDEX_URL", fx.server.uri())
+        .env("BOUGIE_TRUST_ROOT_PATH", trust);
+    cmd
+}
+
+#[test]
+fn lock_with_platform_writes_current_target() {
+    let runtime = rt();
+    let fx = runtime.block_on(build_fixture());
+    let env = TestEnv::new();
+    let trust = write_trust_root(&env, &fx.pub_pem);
+    let proj = tempfile::TempDir::new().unwrap();
+    std::fs::write(
+        proj.path().join("composer.json"),
+        r#"{"require":{"php":"8.3.12"}}"#,
+    )
+    .unwrap();
+    disable_baseline(proj.path());
+    write_composer_lock(proj.path());
+
+    bougie_at(&env, &fx, &trust, proj.path())
+        .args(["lock", "--with-platform"])
+        .assert()
+        .success()
+        .stdout(contains("wrote"));
+
+    let lock = bougie_lock::ToolchainLock::read(proj.path())
+        .unwrap()
+        .unwrap();
+    assert_eq!(lock.php.version, "8.3.12");
+    assert_eq!(lock.snapshot, fx.snapshot);
+    assert_eq!(lock.targets.keys().collect::<Vec<_>>(), [&fx.target]);
+    assert_eq!(lock.targets[&fx.target].php.blob_sha256, fx.blob_sha);
+}
+
+#[test]
+fn lock_with_platform_all_targets_records_every_target() {
+    let runtime = rt();
+    let fx = runtime.block_on(build_fixture());
+    let env = TestEnv::new();
+    let trust = write_trust_root(&env, &fx.pub_pem);
+    let proj = tempfile::TempDir::new().unwrap();
+    std::fs::write(
+        proj.path().join("composer.json"),
+        r#"{"require":{"php":"8.3.12"}}"#,
+    )
+    .unwrap();
+    disable_baseline(proj.path());
+    write_composer_lock(proj.path());
+
+    bougie_at(&env, &fx, &trust, proj.path())
+        .args(["lock", "--with-platform", "--all-targets"])
+        .assert()
+        .success();
+
+    let lock = bougie_lock::ToolchainLock::read(proj.path())
+        .unwrap()
+        .unwrap();
+    assert!(lock.targets.contains_key(&fx.target));
+    assert!(lock.targets.contains_key(&fx.other_target));
+}
+
+#[test]
+fn relock_keeps_other_targets_when_pins_are_unchanged() {
+    let runtime = rt();
+    let fx = runtime.block_on(build_fixture());
+    let env = TestEnv::new();
+    let trust = write_trust_root(&env, &fx.pub_pem);
+    let proj = tempfile::TempDir::new().unwrap();
+    std::fs::write(
+        proj.path().join("composer.json"),
+        r#"{"require":{"php":"8.3.12"}}"#,
+    )
+    .unwrap();
+    disable_baseline(proj.path());
+    write_composer_lock(proj.path());
+
+    bougie_at(&env, &fx, &trust, proj.path())
+        .args(["lock", "--with-platform", "--all-targets"])
+        .assert()
+        .success();
+    let before = std::fs::read_to_string(proj.path().join("bougie.lock")).unwrap();
+
+    // A plain re-lock on this machine must not drop the other target's
+    // digests: nothing moved, so the file is unchanged.
+    bougie_at(&env, &fx, &trust, proj.path())
+        .args(["lock", "--with-platform"])
+        .assert()
+        .success();
+    assert_eq!(
+        std::fs::read_to_string(proj.path().join("bougie.lock")).unwrap(),
+        before
+    );
+}
+
+#[test]
+fn lock_dry_run_reports_toolchain_changes_without_writing() {
+    let runtime = rt();
+    let fx = runtime.block_on(build_fixture());
+    let env = TestEnv::new();
+    let trust = write_trust_root(&env, &fx.pub_pem);
+    let proj = tempfile::TempDir::new().unwrap();
+    std::fs::write(
+        proj.path().join("composer.json"),
+        r#"{"require":{"php":"8.3.12"}}"#,
+    )
+    .unwrap();
+    disable_baseline(proj.path());
+    write_composer_lock(proj.path());
+    write_toolchain_lock(proj.path(), &fx, fx.blob_sha.clone());
+    let mut lock = bougie_lock::ToolchainLock::read(proj.path())
+        .unwrap()
+        .unwrap();
+    lock.php.version = "8.3.11".into();
+    lock.write(proj.path()).unwrap();
+    let before = std::fs::read_to_string(proj.path().join("bougie.lock")).unwrap();
+
+    bougie_at(&env, &fx, &trust, proj.path())
+        .args(["lock", "--with-platform", "--dry-run"])
+        .assert()
+        .success()
+        .stdout(contains("php 8.3.11 (nts) -> 8.3.12 (nts)"))
+        .stdout(contains("would write bougie.lock"));
+    assert_eq!(
+        std::fs::read_to_string(proj.path().join("bougie.lock")).unwrap(),
+        before
+    );
+}
+
+/// Lock `^8.3` with PHP pinned at 8.3.11, though 8.3.12 is published.
+fn project_locked_at_older_php(
+    env: &TestEnv,
+    fx: &Fixture,
+    trust: &std::path::Path,
+) -> tempfile::TempDir {
+    let proj = tempfile::TempDir::new().unwrap();
+    std::fs::write(
+        proj.path().join("composer.json"),
+        r#"{"require":{"php":"^8.3"}}"#,
+    )
+    .unwrap();
+    disable_baseline(proj.path());
+    write_composer_lock(proj.path());
+    bougie_at(env, fx, trust, proj.path())
+        .args(["lock", "--with-platform", "--upgrade-package", "php"])
+        .assert()
+        .success();
+    let mut lock = bougie_lock::ToolchainLock::read(proj.path())
+        .unwrap()
+        .unwrap();
+    lock.php.version = "8.3.11".into();
+    lock.targets.clear();
+    lock.write(proj.path()).unwrap();
+    proj
+}
+
+#[test]
+fn relock_keeps_a_pin_that_still_satisfies_its_constraint() {
+    let runtime = rt();
+    let fx = runtime.block_on(build_fixture());
+    let env = TestEnv::new();
+    let trust = write_trust_root(&env, &fx.pub_pem);
+    let proj = project_locked_at_older_php(&env, &fx, &trust);
+
+    bougie_at(&env, &fx, &trust, proj.path())
+        .args(["lock", "--with-platform"])
+        .assert()
+        .success();
+    let lock = bougie_lock::ToolchainLock::read(proj.path())
+        .unwrap()
+        .unwrap();
+    assert_eq!(lock.php.version, "8.3.11");
+    assert!(lock.targets.contains_key(&fx.target));
+}
+
+#[test]
+fn relock_upgrade_moves_pins_to_the_newest_allowed() {
+    let runtime = rt();
+    let fx = runtime.block_on(build_fixture());
+    let env = TestEnv::new();
+    let trust = write_trust_root(&env, &fx.pub_pem);
+
+    for flags in [&["--upgrade"][..], &["--upgrade-package", "php"][..]] {
+        let proj = project_locked_at_older_php(&env, &fx, &trust);
+        bougie_at(&env, &fx, &trust, proj.path())
+            .args(["lock", "--with-platform"])
+            .args(flags)
+            .assert()
+            .success()
+            .stdout(contains("php 8.3.11 (nts) -> 8.3.12 (nts)"));
+    }
+
+    // Naming something else leaves PHP where it was, and says the name
+    // matched nothing.
+    let proj = project_locked_at_older_php(&env, &fx, &trust);
+    bougie_at(&env, &fx, &trust, proj.path())
+        .args(["lock", "--with-platform", "-P", "ext-nope"])
+        .assert()
+        .success()
+        .stderr(contains("--upgrade-package nope matches nothing"));
+    let lock = bougie_lock::ToolchainLock::read(proj.path())
+        .unwrap()
+        .unwrap();
+    assert_eq!(lock.php.version, "8.3.11");
+}
+
+#[test]
+fn sync_frozen_installs_a_stale_lock_as_written() {
+    let runtime = rt();
+    let fx = runtime.block_on(build_fixture());
+    let env = TestEnv::new();
+    let trust = write_trust_root(&env, &fx.pub_pem);
+    let proj = tempfile::TempDir::new().unwrap();
+    // The lock says 8.3.12 while composer.json moved to ^8.3: --frozen
+    // installs the lock without the staleness check or a fallback.
+    std::fs::write(
+        proj.path().join("composer.json"),
+        r#"{"require":{"php":"^8.3"}}"#,
+    )
+    .unwrap();
+    disable_baseline(proj.path());
+    write_toolchain_lock(proj.path(), &fx, fx.blob_sha.clone());
+
+    bougie_at(&env, &fx, &trust, proj.path())
+        .args(["sync", "--frozen"])
+        .assert()
+        .success()
+        .stderr(contains("stale").not());
+    assert_eq!(
+        std::fs::read_to_string(proj.path().join("vendor/bougie/state/resolved"))
+            .unwrap()
+            .trim(),
+        "8.3.12-nts"
+    );
+}
+
+#[test]
+fn sync_frozen_rejects_missing_target_without_extending_lock() {
+    let runtime = rt();
+    let fx = runtime.block_on(build_fixture());
+    let env = TestEnv::new();
+    let trust = write_trust_root(&env, &fx.pub_pem);
+    let proj = tempfile::TempDir::new().unwrap();
+    std::fs::write(
+        proj.path().join("composer.json"),
+        r#"{"require":{"php":"8.3.12"}}"#,
+    )
+    .unwrap();
+    disable_baseline(proj.path());
+    write_toolchain_lock(proj.path(), &fx, fx.blob_sha.clone());
+    let mut lock = bougie_lock::ToolchainLock::read(proj.path())
+        .unwrap()
+        .unwrap();
+    lock.targets.clear();
+    lock.write(proj.path()).unwrap();
+    let before = std::fs::read_to_string(proj.path().join("bougie.lock")).unwrap();
+
+    bougie_at(&env, &fx, &trust, proj.path())
+        .args(["sync", "--frozen"])
+        .assert()
+        .failure()
+        .stderr(contains("--frozen is set"))
+        .stderr(contains("is not covered"));
+    assert_eq!(
+        std::fs::read_to_string(proj.path().join("bougie.lock")).unwrap(),
+        before
+    );
+}
+
+#[test]
+fn run_locked_rejects_stale_lock_even_when_environment_is_present() {
+    let runtime = rt();
+    let fx = runtime.block_on(build_fixture());
+    let env = TestEnv::new();
+    let trust = write_trust_root(&env, &fx.pub_pem);
+    let proj = tempfile::TempDir::new().unwrap();
+    std::fs::write(
+        proj.path().join("composer.json"),
+        r#"{"require":{"php":"8.3.12"}}"#,
+    )
+    .unwrap();
+    disable_baseline(proj.path());
+    write_composer_lock(proj.path());
+    write_toolchain_lock(proj.path(), &fx, fx.blob_sha.clone());
+    bougie_at(&env, &fx, &trust, proj.path())
+        .args(["sync", "--locked"])
+        .assert()
+        .success();
+
+    // Loosen the constraint after syncing: the environment is present,
+    // but the lock no longer matches the project.
+    std::fs::write(
+        proj.path().join("composer.json"),
+        r#"{"require":{"php":"^8.3"}}"#,
+    )
+    .unwrap();
+    write_composer_lock(proj.path());
+
+    bougie_at(&env, &fx, &trust, proj.path())
+        .args(["run", "--locked", "php", "-v"])
+        .assert()
+        .failure()
+        .stderr(contains("bougie.lock is stale and --locked is set"));
+}
+
+#[test]
+fn run_installs_the_locked_php_on_first_use() {
+    let runtime = rt();
+    let fx = runtime.block_on(build_fixture());
+    let env = TestEnv::new();
+    let trust = write_trust_root(&env, &fx.pub_pem);
+    let proj = tempfile::TempDir::new().unwrap();
+    std::fs::write(
+        proj.path().join("composer.json"),
+        r#"{"require":{"php":"8.3.12"}}"#,
+    )
+    .unwrap();
+    disable_baseline(proj.path());
+    // A wrong digest proves `bougie run`'s implicit sync goes through the
+    // lock instead of floating past it.
+    write_toolchain_lock(proj.path(), &fx, "0".repeat(64));
+
+    bougie_at(&env, &fx, &trust, proj.path())
+        .args(["run", "php", "-v"])
+        .assert()
+        .failure()
+        .stderr(contains("blob sha256 mismatch"));
 }
