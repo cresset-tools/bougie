@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.55.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.54.1...bougie-v0.55.0) (2026-11-04)
+
+
+### Features
+
+* **bougie:** prefetch a second binary out of a native-binary archive ([a8935b5](https://github.com/cresset-tools/bougie/commit/a8935b5a29bd90a52ea8c2c5bb8b62c445960fce))
+* **cli:** bougie repo add/remove, to declare a Composer repository ([0795d0d](https://github.com/cresset-tools/bougie/commit/0795d0dcfd704bf6b9a05857503fb15e482a094b))
+
+
+### Bug Fixes
+
+* **bougie:** accept the `repo` verb in the telemetry command vocab ([a5e2524](https://github.com/cresset-tools/bougie/commit/a5e25249224b7ee3ba5cb854ac200332f9075115))
+* **bougie:** name the conflict when a package's conflict blocks resolution ([f2489db](https://github.com/cresset-tools/bougie/commit/f2489db33d5a45e6b2cca121212712f2b39e1277))
+* **bougie:** remove packages that left the lock even after an autoloader dump ([689ff76](https://github.com/cresset-tools/bougie/commit/689ff76096cda44c4a7a34527710a96e79d96513))
+* **bougie:** resolve against config.platform.php and record platform-overrides ([d624b6c](https://github.com/cresset-tools/bougie/commit/d624b6cd7566f419ca08f01b3bb5c7335d30bac3))
+* **bougie:** use free-space disk watermarks for OpenSearch ([d1498e4](https://github.com/cresset-tools/bougie/commit/d1498e4d1259afe261a8338ae065106dc127e756))
+* **share:** never serve a --slug share on a different URL ([#574](https://github.com/cresset-tools/bougie/issues/574)) ([0401962](https://github.com/cresset-tools/bougie/commit/0401962875682a83bbe30e871ab2c6739c04f650))
+* **share:** stop dropping shares after an hour ([c21ce6d](https://github.com/cresset-tools/bougie/commit/c21ce6d52ce4f1300a802aa306204e8fa213d65a))
+
 ## [0.54.1](https://github.com/cresset-tools/bougie/compare/bougie-v0.54.0...bougie-v0.54.1) (2026-11-01)
 
 
