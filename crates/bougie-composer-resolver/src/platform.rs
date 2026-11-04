@@ -27,6 +27,7 @@
 //!     risks rejecting packages the shipped phar would accept.
 //!   - `hhvm` and build-flag `php-*` (`php-zts`, `php-debug`, …).
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use composer_semver::version::Version;
@@ -153,9 +154,13 @@ impl PlatformEnv {
         self
     }
 
-    /// Best-effort detection of the project's PHP version, preferring
-    /// the exact resolved pin written by `sync`
-    /// (`vendor/bougie/state/resolved`) and falling back to the *declared*
+    /// Best-effort detection of the PHP version to resolve against.
+    ///
+    /// `config.platform.php` in composer.json wins: like Composer, it
+    /// overrides the real runtime, so a project can lock versions that
+    /// work on the oldest PHP it supports while running a newer one.
+    /// Otherwise prefer the exact resolved pin written by `sync`
+    /// (`vendor/bougie/state/resolved`), falling back to the *declared*
     /// pin in composer.json (`extra.bougie.php.version`). The fallback
     /// matters because `bougie php pin` records the declared pin in
     /// composer.json immediately, but the resolved marker only appears
@@ -163,7 +168,9 @@ impl PlatformEnv {
     /// resolve would skip PHP validation. Any failure yields an env
     /// that models nothing — never an error.
     pub fn detect(project_root: &Path, composer_json: &Value) -> Self {
-        let php = read_resolved_pin(project_root).or_else(|| read_declared_pin(composer_json));
+        let php = read_platform_override(composer_json)
+            .or_else(|| read_resolved_pin(project_root))
+            .or_else(|| read_declared_pin(composer_json));
         Self {
             php,
             ignore: PlatformIgnore::default(),
@@ -215,6 +222,34 @@ fn read_resolved_pin(project_root: &Path) -> Option<Version> {
     let line = body.trim();
     let version = line.split('-').next().unwrap_or(line);
     Version::parse(version).ok()
+}
+
+/// `config.platform` from composer.json as the lock's
+/// `platform-overrides` map. Composer copies the whole map; bougie keeps
+/// the string entries only — a `false` value (which hides a platform
+/// package) has no string form in [`bougie_composer::lockfile::Lock`].
+pub fn config_platform_overrides(composer_json: &Value) -> BTreeMap<String, String> {
+    composer_json
+        .get("config")
+        .and_then(|c| c.get("platform"))
+        .and_then(Value::as_object)
+        .map(|m| {
+            m.iter()
+                .filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string())))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Read `config.platform.php` from composer.json — Composer's platform
+/// override (e.g. `"8.3.0"`).
+fn read_platform_override(composer_json: &Value) -> Option<Version> {
+    let raw = composer_json
+        .get("config")?
+        .get("platform")?
+        .get("php")?
+        .as_str()?;
+    Version::parse(raw).ok()
 }
 
 /// Read the declared PHP pin from composer.json's
@@ -359,6 +394,42 @@ mod tests {
         assert!(!ig.is_ignored("php"));
         let env = PlatformEnv::new(Some(v("8.3.31"))).ignoring(ig);
         assert_eq!(env.candidate("php"), Some(v("8.3.31")));
+    }
+
+    #[test]
+    fn detect_prefers_config_platform_php_over_pins() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let state = tmp.path().join("vendor").join("bougie").join("state");
+        std::fs::create_dir_all(&state).unwrap();
+        std::fs::write(state.join("resolved"), "8.4.5-nts\n").unwrap();
+        let composer_json = serde_json::json!({
+            "config": { "platform": { "php": "8.3.0" } },
+            "extra": { "bougie": { "php": { "version": "8.4" } } }
+        });
+        let env = PlatformEnv::detect(tmp.path(), &composer_json);
+        assert_eq!(env.candidate("php"), Some(v("8.3.0")));
+    }
+
+    #[test]
+    fn detect_uses_config_platform_php_without_any_pin() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let composer_json = serde_json::json!({
+            "config": { "platform": { "php": "8.3.0" } }
+        });
+        let env = PlatformEnv::detect(tmp.path(), &composer_json);
+        assert_eq!(env.candidate("php"), Some(v("8.3.0")));
+    }
+
+    #[test]
+    fn config_platform_overrides_keeps_string_entries() {
+        let composer_json = serde_json::json!({
+            "config": { "platform": { "php": "8.3.0", "ext-redis": "6.0.0", "ext-xdebug": false } }
+        });
+        let got = config_platform_overrides(&composer_json);
+        assert_eq!(got.len(), 2);
+        assert_eq!(got["php"], "8.3.0");
+        assert_eq!(got["ext-redis"], "6.0.0");
+        assert!(config_platform_overrides(&serde_json::json!({})).is_empty());
     }
 
     #[test]
