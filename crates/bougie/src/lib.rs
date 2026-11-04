@@ -114,6 +114,7 @@ fn command_name(cmd: &Command) -> &'static str {
         Command::Php(_) => "php",
         Command::Node(_) => "node",
         Command::Patches(_) => "patches",
+        Command::Repo(_) => "repo",
         Command::Composer(_) => "composer",
         Command::Tool(_) => "tool",
         Command::ToolExec { .. } => "tool-exec",
@@ -408,6 +409,7 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
             }
         }
         Command::Patches(cmd) => commands::patches_cmd::run(format, cmd),
+        Command::Repo(cmd) => commands::repo::run(format, cmd),
         Command::Ext(ExtCommand::Add { args, no_sync, php }) => {
             commands::ext_add_remove::add(format, args, no_sync, php)
         }

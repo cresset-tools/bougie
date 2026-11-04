@@ -571,7 +571,8 @@ pub struct RepositoriesApplied {
     pub composer_json_path: PathBuf,
     pub composer_lock_path: Option<PathBuf>,
     pub new_content_hash: String,
-    /// Newly-added entries (0 = every URL was already present).
+    /// Entries added (0 = every URL was already present), or for
+    /// [`remove_repository`] entries removed.
     pub added: usize,
 }
 
@@ -612,6 +613,61 @@ pub fn add_repositories(project_root: &Path, urls: &[String]) -> Result<Reposito
         new_content_hash,
         added,
     })
+}
+
+/// Remove every repository entry whose `url` is `url` from the project
+/// composer.json's `repositories` (array or named-object form), syncing an
+/// existing composer.lock's `content-hash` like [`add_repositories`]. Returns
+/// how many entries went; with none, nothing is written.
+pub fn remove_repository(project_root: &Path, url: &str) -> Result<RepositoriesApplied> {
+    let composer_json_path = project_root.join("composer.json");
+    let composer_lock_path = project_root.join("composer.lock");
+
+    let mut composer_json = read_json_file(&composer_json_path)?;
+    let removed = repositories_remove(&mut composer_json, url)?;
+    let written_bytes = encode_for_disk(&composer_json);
+    let new_content_hash = content_hash(&written_bytes)?;
+    let mut lock_updated = false;
+    if removed > 0 {
+        write_json_bytes(&composer_json_path, &written_bytes)?;
+        if composer_lock_path.exists() {
+            let mut lock = read_json_file(&composer_lock_path)?;
+            lock_set_content_hash(&mut lock, &new_content_hash)?;
+            write_json_file(&composer_lock_path, &lock)?;
+            lock_updated = true;
+        }
+    }
+    Ok(RepositoriesApplied {
+        composer_json_path,
+        composer_lock_path: lock_updated.then_some(composer_lock_path),
+        new_content_hash,
+        added: removed,
+    })
+}
+
+/// Drop repository entries whose `url` is `url`. An absent `repositories` has
+/// nothing to drop. Returns how many went.
+fn repositories_remove(composer_json: &mut Value, url: &str) -> Result<usize> {
+    let obj = composer_json
+        .as_object_mut()
+        .ok_or_else(|| eyre!("composer.json top level must be a JSON object"))?;
+    let has_url = |e: &Value| e.get("url").and_then(Value::as_str) == Some(url);
+    match obj.get_mut("repositories") {
+        None => Ok(0),
+        Some(Value::Array(arr)) => {
+            let before = arr.len();
+            arr.retain(|e| !has_url(e));
+            Ok(before - arr.len())
+        }
+        Some(Value::Object(named)) => {
+            let before = named.len();
+            named.retain(|_, e| !has_url(e));
+            Ok(before - named.len())
+        }
+        Some(_) => Err(eyre!(
+            "composer.json `repositories` must be an array or object"
+        )),
+    }
 }
 
 /// Insert composer-type repository entries (by URL) into a composer.json value's

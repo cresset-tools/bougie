@@ -185,6 +185,10 @@ pub enum Command {
     #[command(subcommand, display_order = 16)]
     Patches(PatchesCommand),
 
+    /// Manage the project's Composer repositories (where packages come from)
+    #[command(subcommand, display_order = 17)]
+    Repo(RepoCommand),
+
     /// Add dependencies to the project
     #[command(display_order = 10)]
     Add {
@@ -1229,6 +1233,24 @@ pub enum ExtCommand {
         /// Show the URLs of available extension downloads
         #[arg(long)]
         show_urls: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum RepoCommand {
+    /// Add a Composer repository to composer.json, such as a Bougie Repo
+    /// (`bougie repo add https://acme.bougierepo.com`). Already present is
+    /// not an error
+    Add {
+        /// The repository URL, the one its packages.json is served under
+        #[arg(value_name = "URL")]
+        url: String,
+    },
+    /// Remove a Composer repository from composer.json, by its URL
+    Remove {
+        /// The repository URL, as `repo add` was given it
+        #[arg(value_name = "URL")]
+        url: String,
     },
 }
 
