@@ -83,13 +83,16 @@ use composer_semver::stability::Stability;
 use composer_semver::version::Version;
 use eyre::{Result, WrapErr, eyre};
 use pubgrub::{
-    DefaultStringReporter, Dependencies, DependencyConstraints, DependencyProvider,
-    PackageResolutionStatistics, PubGrubError, Reporter, resolve,
+    Dependencies, DependencyConstraints, DependencyProvider, PackageResolutionStatistics,
+    PubGrubError,
 };
 use serde::Serialize;
 use serde_json::Value;
 
 use crate::metadata::build_client;
+
+mod conflicts;
+use conflicts::{ConflictEdge, ConflictViolation, pretty_version_in};
 
 /// Whether `solve_into_lock_packages` should render a progress
 /// spinner during its pre-fetch closure. `resolve_for_lockfile`
@@ -317,8 +320,16 @@ pub struct ResolveProvider {
     /// Versions excluded by post-solve conflict validation. When the
     /// solver picks version V for package P and V's conflict map is
     /// violated by another package in the solution, (P, V) is added
-    /// here and the solve retries. `versions_for` filters these out.
-    conflict_excludes: RefCell<FxHashSet<(PackageName, Version)>>,
+    /// here with the violation and the solve retries.
+    /// `get_dependencies` then reports (P, V) as unavailable *because
+    /// of that conflict*, so a failed re-solve explains itself instead
+    /// of claiming P has no available version.
+    conflict_excludes: RefCell<FxHashMap<(PackageName, Version), ConflictViolation>>,
+    /// Dependency edges that came from a `conflict` declaration rather
+    /// than a `require`, keyed by `(declarer, target)`. Lets the
+    /// no-solution explanation say "conflicts with" instead of pubgrub's
+    /// generic "depends on" (see `conflicts::ConflictAwareFormatter`).
+    conflict_edges: RefCell<FxHashMap<(PackageName, PackageName), ConflictEdge>>,
     raw_root_constraints: FxHashMap<String, String>,
     /// Partial-update pins: packages held to their currently-locked
     /// version because they're outside the update scope (`composer
@@ -567,7 +578,8 @@ impl ResolveProvider {
             v1_provider_tables: RefCell::new(FxHashMap::default()),
             parsed_deps: RefCell::new(FxHashMap::default()),
             solve_progress: RefCell::new(SolveProgress::hidden()),
-            conflict_excludes: RefCell::new(FxHashSet::default()),
+            conflict_excludes: RefCell::new(FxHashMap::default()),
+            conflict_edges: RefCell::new(FxHashMap::default()),
             raw_root_constraints,
             locked_pins: FxHashMap::default(),
             platform,
@@ -626,13 +638,13 @@ impl ResolveProvider {
         self.parsed_deps.borrow_mut().clear();
     }
 
-    /// Check the solution for conflict violations. Returns the set of
-    /// `(declarer, version)` pairs whose conflict map is violated by
-    /// another package in the solution.
+    /// Check the solution for conflict violations. Returns one
+    /// [`ConflictViolation`] per declarer version whose conflict map is
+    /// violated by another package in the solution.
     fn check_conflict_violations(
         &self,
         solution: &[(&PubGrubPackage, &Version)],
-    ) -> Vec<(PackageName, Version)> {
+    ) -> Vec<ConflictViolation> {
         let solution_map: FxHashMap<&str, &Version> = solution
             .iter()
             .filter_map(|(pkg, ver)| match pkg {
@@ -671,7 +683,14 @@ impl ResolveProvider {
                 };
                 let range = to_range(&constraint);
                 if range.contains(target_ver) {
-                    violations.push((name.clone(), (*version).clone()));
+                    violations.push(ConflictViolation {
+                        declarer: name.clone(),
+                        version: (*version).clone(),
+                        target: PackageName::from(conflict_name.as_str()),
+                        target_version: (*target_ver).clone(),
+                        target_pretty: pretty_version_in(&mc, conflict_name, target_ver),
+                        constraint: raw_constraint.clone(),
+                    });
                     break;
                 }
             }
@@ -863,6 +882,7 @@ impl ResolveProvider {
         let mut unsatisfiable: FxHashSet<String> = FxHashSet::default();
 
         self.collect_missing_version_problems(&mut problems, &mut unsatisfiable);
+        self.collect_declared_conflict_problems(&mut problems, &unsatisfiable);
         self.collect_transitive_conflict_problems(&mut problems, &unsatisfiable);
 
         if problems.is_empty() {
@@ -3304,11 +3324,41 @@ fn push_constraint_map(
     Ok(())
 }
 
+/// pubgrub takes one range per dependency (`DependencyConstraints` is a
+/// map), so several edges to the same package — a require narrowed by a
+/// conflict, or a require plus an exact replace — must be intersected.
+/// Collecting them straight into the map let the last edge silently
+/// overwrite the others.
+fn intersect_duplicate_edges(
+    edges: impl IntoIterator<Item = (PackageName, ComposerRange)>,
+) -> Vec<(PubGrubPackage, ComposerRange)> {
+    let mut merged: Vec<(PubGrubPackage, ComposerRange)> = Vec::new();
+    for (n, r) in edges {
+        let pkg = PubGrubPackage::Package(n);
+        if let Some((_, existing)) = merged.iter_mut().find(|(p, _)| *p == pkg) {
+            *existing = existing.intersection(&r);
+        } else {
+            merged.push((pkg, r));
+        }
+    }
+    merged
+}
+
 /// Conflict declarations: `{ "dep": "<7.4" }` means "cannot coexist
 /// with dep at versions matching `<7.4`". Expressed as a pubgrub
 /// dependency on the *complement* range — "requires dep NOT `<7.4`"
 /// = "requires dep `>=7.4`". Caller pre-filters to only include
-/// entries whose target is already in the dependency graph.
+/// entries whose target is certain to be installed (a root require, or
+/// a require of the declarer itself); only then is "requires the
+/// complement" equivalent to "conflicts with".
+///
+/// A conflict on every version (`"*"`, the rename idiom) has an empty
+/// complement. It is still emitted: pubgrub turns a dependency on the
+/// empty set into "this version can't be installed", which — given the
+/// pre-filter — is exactly the conflict's meaning, and it keeps the
+/// conflict in the derivation tree. Dropping it left the conflict to
+/// the post-solve check, whose re-solve then reported the declarer as
+/// having "no available version".
 fn push_conflict_map(
     out: &mut Vec<(PackageName, ComposerRange)>,
     map: &std::collections::BTreeMap<String, String>,
@@ -3331,10 +3381,10 @@ fn push_conflict_map(
             ))
         })?;
         let conflict_range = to_range(&constraint);
-        let allowed = conflict_range.complement();
-        if allowed != ComposerRange::empty() {
-            out.push((PackageName::from(dep_name.as_str()), allowed));
-        }
+        out.push((
+            PackageName::from(dep_name.as_str()),
+            conflict_range.complement(),
+        ));
     }
     Ok(())
 }
@@ -3418,19 +3468,18 @@ impl DependencyProvider for ResolveProvider {
                 // Partial update (`composer update <pkg>...`): a package
                 // outside the update scope is held to its locked version.
                 // Offer exactly that version — but only if it's still an
-                // available candidate, in range, and not conflict-excluded.
-                // If the locked version has since been yanked or the range
-                // moved past it, fall through and let it float rather than
-                // dead-ending the solve.
-                if let Some(pinned) = self.locked_pins.get(name.as_str()) {
-                    if range.contains(pinned) && versions.iter().any(|(v, _)| v == pinned) {
-                        let excludes = self.conflict_excludes.borrow();
-                        let pin_excluded = !excludes.is_empty()
-                            && excludes.contains(&(name.clone(), pinned.clone()));
-                        if !pin_excluded {
-                            return Ok(Some(pinned.clone()));
-                        }
-                    }
+                // available candidate and in range. If the locked version
+                // has since been yanked or the range moved past it, fall
+                // through and let it float rather than dead-ending the
+                // solve. A conflict-excluded pin is still offered:
+                // `get_dependencies` rejects it with the conflict as the
+                // reason, pubgrub drops it from the range, and the next
+                // call floats.
+                if let Some(pinned) = self.locked_pins.get(name.as_str())
+                    && range.contains(pinned)
+                    && versions.iter().any(|(v, _)| v == pinned)
+                {
+                    return Ok(Some(pinned.clone()));
                 }
                 // `versions_for` sorts descending, so scanning front-to-back
                 // picks the highest in range. Under a `lowest` resolution
@@ -3448,10 +3497,12 @@ impl DependencyProvider for ResolveProvider {
                 // already `Stable`, every candidate is stable, so
                 // the prefer-stable pass would just duplicate the
                 // fallback. Skip it.
-                let excludes = self.conflict_excludes.borrow();
-                let is_excluded = |v: &Version| -> bool {
-                    !excludes.is_empty() && excludes.contains(&(name.clone(), v.clone()))
-                };
+                //
+                // Conflict-excluded versions are deliberately *not*
+                // skipped here: `get_dependencies` reports them as
+                // unavailable with the conflict as the reason, so a
+                // failed solve names the conflict rather than saying
+                // the package has no available version.
                 let prefer_lowest = match self.resolution {
                     ResolutionStrategy::Highest => false,
                     ResolutionStrategy::Lowest => true,
@@ -3461,9 +3512,7 @@ impl DependencyProvider for ResolveProvider {
                 // lowest), optionally restricted to stable versions.
                 let scan = |stable_only: bool| -> Option<Version> {
                     let matches = |v: &Version| {
-                        (!stable_only || v.stability() == Stability::Stable)
-                            && range.contains(v)
-                            && !is_excluded(v)
+                        (!stable_only || v.stability() == Stability::Stable) && range.contains(v)
                     };
                     if prefer_lowest {
                         versions
@@ -3527,6 +3576,15 @@ impl DependencyProvider for ResolveProvider {
         if let PubGrubPackage::Package(name) = package {
             if is_platform(name.as_str()) {
                 return Ok(Dependencies::Available(DependencyConstraints::default()));
+            }
+            // A version an earlier solve found violating a declared
+            // conflict: make it unusable and say why.
+            if let Some(v) = self
+                .conflict_excludes
+                .borrow()
+                .get(&(name.clone(), version.clone()))
+            {
+                return Ok(Dependencies::Unavailable(v.reason()));
             }
         }
         let parsed = self.parsed_deps_for(package, version)?;
@@ -3799,14 +3857,16 @@ impl ResolveProvider {
                 })
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect();
+            let before = staging.len();
             push_conflict_map(
                 &mut staging,
                 &conflict_in_graph,
                 name.as_str(),
                 owner_version,
             )?;
+            self.record_conflict_edges(name, &staging, before, &conflict_in_graph);
         }
-        Ok(staging
+        let edges = staging
             .into_iter()
             // Drop edges to packages the root wildcard-`replace`s: the
             // root provides them, so they (and their exclusive transitive
@@ -3827,9 +3887,31 @@ impl ResolveProvider {
             // removed from the solution by the post-solve replaced-package
             // filter anyway; here we just stop its noise from breaking the
             // solve. See `replaced_by`.
-            .filter(|(n, _)| !self.replaced_by(name.as_str(), n.as_str()))
-            .map(|(n, r)| (PubGrubPackage::Package(n), r))
-            .collect())
+            .filter(|(n, _)| !self.replaced_by(name.as_str(), n.as_str()));
+        Ok(intersect_duplicate_edges(edges))
+    }
+
+    /// Remember which of `staging[conflicts_from..]` (the edges
+    /// `push_conflict_map` just added for `owner`) came from `conflict`,
+    /// for `conflicts::ConflictAwareFormatter`'s wording.
+    fn record_conflict_edges(
+        &self,
+        owner: &PackageName,
+        staging: &[(PackageName, ComposerRange)],
+        conflicts_from: usize,
+        conflict_map: &std::collections::BTreeMap<String, String>,
+    ) {
+        let mut edges = self.conflict_edges.borrow_mut();
+        for (dep, _) in &staging[conflicts_from..] {
+            let raw = conflict_map.get(dep.as_str()).cloned().unwrap_or_default();
+            // An edge the package *also* requires (or replaces) is a
+            // narrowed require, not a pure conflict — keep pubgrub's
+            // "depends on" wording for it.
+            let mixed = staging[..conflicts_from].iter().any(|(n, _)| n == dep);
+            let edge = edges.entry((owner.clone(), dep.clone())).or_default();
+            edge.constraints.insert(raw);
+            edge.mixed |= mixed;
+        }
     }
 
     /// True when `original` is `replace`d/`provide`d by `replacer` —
@@ -4157,32 +4239,9 @@ pub fn dry_run_update_partial(
 
     provider.begin_solve_progress();
     let t_solve = std::time::Instant::now();
-    // Solve loop: after each solve, validate conflict declarations.
-    // If a package in the solution declares a conflict violated by
-    // another package in the solution, exclude the violating version
-    // and re-solve. Bounded to avoid infinite loops.
-    let mut result = resolve(&provider, PubGrubPackage::Root, root.clone());
-    for _retry in 0..10 {
-        let Ok(ref solution) = result else { break };
-        let pairs: Vec<_> = solution.iter().collect();
-        let violations = provider.check_conflict_violations(&pairs);
-        if violations.is_empty() {
-            break;
-        }
-        tracing::debug!(
-            count = violations.len(),
-            excluded = ?violations,
-            "conflict violations found, re-solving",
-        );
-        {
-            let mut excludes = provider.conflict_excludes.borrow_mut();
-            for (name, ver) in violations {
-                excludes.insert((name, ver));
-            }
-        }
-        provider.reset_for_re_solve();
-        result = resolve(&provider, PubGrubPackage::Root, root.clone());
-    }
+    // Conflicts pubgrub can't see are checked after each solve; see
+    // `solve_with_conflict_retries`.
+    let result = provider.solve_with_conflict_retries(&root);
     let solve_elapsed = t_solve.elapsed();
     provider.finish_solve_progress();
     tracing::info!(
@@ -4190,25 +4249,8 @@ pub fn dry_run_update_partial(
         ok = result.is_ok(),
         "pubgrub_resolve",
     );
-    // Retry exhaustion guard: the loop above can exit after 10 attempts
-    // with a solution that *still* violates a conflict (e.g. the
-    // conflict-declaring package has only one version, so excluding it
-    // makes no progress). Returning that solution would write a lock
-    // that violates a declared conflict — error instead.
     if let Ok(ref solution) = result {
-        let pairs: Vec<_> = solution.iter().collect();
-        let remaining = provider.check_conflict_violations(&pairs);
-        if !remaining.is_empty() {
-            let detail = remaining
-                .iter()
-                .map(|(name, ver)| format!("{name}@{ver}"))
-                .collect::<Vec<_>>()
-                .join(", ");
-            return Err(eyre!(
-                "could not satisfy declared package conflicts after 10 resolution \
-                 attempts; still violated by: {detail}"
-            ));
-        }
+        provider.ensure_no_conflict_violations(solution)?;
     }
     let summary = match result {
         Ok(solution) => {
@@ -4252,9 +4294,7 @@ pub fn dry_run_update_partial(
             }
         }
         Err(PubGrubError::NoSolution(tree)) => {
-            let detail = provider
-                .analyze_resolution_problems()
-                .unwrap_or_else(|| DefaultStringReporter::report(&tree));
+            let detail = provider.explain_no_solution(&tree);
             return Err(eyre!("no valid dependency resolution exists:\n\n{detail}"));
         }
         Err(PubGrubError::ErrorChoosingVersion { package, source }) => {
@@ -4537,30 +4577,7 @@ fn solve_into_lock_packages(
     // Entered across the whole (possibly retried) pubgrub solve — the
     // CPU-bound phase a Ctrl-\ dump should surface as "still solving".
     let solve_guard = tracing::info_span!("pubgrub_solve", no_dev).entered();
-    let mut solve_result = resolve(&provider, PubGrubPackage::Root, root.clone());
-    for _retry in 0..10 {
-        let Ok(ref solution) = solve_result else {
-            break;
-        };
-        let pairs: Vec<_> = solution.iter().collect();
-        let violations = provider.check_conflict_violations(&pairs);
-        if violations.is_empty() {
-            break;
-        }
-        tracing::debug!(
-            count = violations.len(),
-            excluded = ?violations,
-            "conflict violations found, re-solving",
-        );
-        {
-            let mut excludes = provider.conflict_excludes.borrow_mut();
-            for (name, ver) in violations {
-                excludes.insert((name, ver));
-            }
-        }
-        provider.reset_for_re_solve();
-        solve_result = resolve(&provider, PubGrubPackage::Root, root.clone());
-    }
+    let solve_result = provider.solve_with_conflict_retries(&root);
     drop(solve_guard);
     let solve_elapsed = t_solve.elapsed();
     provider.finish_solve_progress();
@@ -4571,11 +4588,15 @@ fn solve_into_lock_packages(
         "pubgrub_resolve",
     );
     let solution = match solve_result {
-        Ok(s) => s,
+        Ok(s) => {
+            // The dry-run path always had this guard; the lock path
+            // didn't, so an exhausted retry loop could write a lock
+            // that violates a declared conflict.
+            provider.ensure_no_conflict_violations(&s)?;
+            s
+        }
         Err(PubGrubError::NoSolution(tree)) => {
-            let detail = provider
-                .analyze_resolution_problems()
-                .unwrap_or_else(|| DefaultStringReporter::report(&tree));
+            let detail = provider.explain_no_solution(&tree);
             return Err(eyre!("no valid dependency resolution exists:\n\n{detail}"));
         }
         Err(PubGrubError::ErrorChoosingVersion { package, source }) => {
