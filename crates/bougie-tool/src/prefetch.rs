@@ -44,15 +44,6 @@
 //! to it, and a cache slot at `<user cache>/{name}/{version}/` — the
 //! exact path the PHP launcher probes on startup.
 //!
-//! An optional `bin` names a different binary inside the same archive,
-//! for a release that ships several (the magequery archive carries both
-//! `magequery` and `magecommand`): the binary is then
-//! `{name}-{target}/{bin}[.exe]` and the cache slot
-//! `<user cache>/{bin}/{version}/`. `name` keeps naming the archive. It
-//! defaults to `name`; a bougie that predates the field ignores it and
-//! prefetches `name` instead, which the launcher for `bin` never looks
-//! at, so it still downloads on first run.
-//!
 //! Safety model. The spec is untrusted input (any Packagist package
 //! can declare one), so:
 //! - bougie never *executes* anything it prefetches — it verifies the
@@ -92,11 +83,8 @@ pub const SUPPORTED_SPEC: u64 = 1;
 /// Parsed + validated `extra.bougie.native-binary` block.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeBinarySpec {
-    /// Archive stem: `{name}-{target}.tar.gz`, unpacking to `{name}-{target}/`.
+    /// Binary stem; also the launcher's cache directory name.
     pub name: String,
-    /// Binary stem inside the archive; also the launcher's cache
-    /// directory name. Equal to `name` unless the spec sets `bin`.
-    pub bin: String,
     /// Release tag = `{tag_prefix}{version}` (e.g. `wick-v` → `wick-v0.2.1`).
     pub tag_prefix: String,
     /// Download bases tried in order (mirror first, GitHub fallback).
@@ -125,7 +113,6 @@ pub enum SpecLookup {
 /// paths, no further derivation or trust decisions on its side.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PrefetchPlan {
-    /// The binary being placed (the spec's `bin`).
     pub name: String,
     pub version: String,
     pub target: String,
@@ -135,10 +122,10 @@ pub struct PrefetchPlan {
     pub sidecar_urls: Vec<String>,
     pub kind: ArchiveKind,
     /// Where the binary sits inside the extracted archive
-    /// (`{name}-{target}/{bin}[.exe]`).
+    /// (`{name}-{target}/{name}[.exe]`).
     pub staged_rel: PathBuf,
     /// Final cache location — the path the PHP launcher probes:
-    /// `<user cache>/{bin}/{version}/{bin}[.exe]`.
+    /// `<user cache>/{name}/{version}/{name}[.exe]`.
     pub cache_file: PathBuf,
     /// Sigstore verification requirement, when the spec declares one.
     pub signing: Option<PlanSigning>,
@@ -249,7 +236,6 @@ pub fn read_spec(composer_json: &serde_json::Value) -> Result<SpecLookup> {
     if !valid_segment(&name) {
         bail!("`extra.bougie.native-binary.name` `{name}` has characters outside [A-Za-z0-9._-]");
     }
-    let bin = read_bin(section, &name)?;
     // The prefix may be empty (tag == bare version); when set it must
     // be segment-safe since it's spliced into the tag URL segment.
     let tag_prefix = str_field("tag-prefix")?;
@@ -300,27 +286,11 @@ pub fn read_spec(composer_json: &serde_json::Value) -> Result<SpecLookup> {
 
     Ok(SpecLookup::Found(NativeBinarySpec {
         name,
-        bin,
         tag_prefix,
         base_urls,
         targets,
         sigstore_repository,
     }))
-}
-
-/// The optional `bin`: which binary in the `name` archive to place.
-/// Absent means `name` itself.
-fn read_bin(section: &serde_json::Value, name: &str) -> Result<String> {
-    let Some(v) = section.get("bin") else {
-        return Ok(name.to_owned());
-    };
-    let bin = v
-        .as_str()
-        .ok_or_else(|| eyre::eyre!("`extra.bougie.native-binary.bin` is not a string"))?;
-    if !valid_segment(bin) {
-        bail!("`extra.bougie.native-binary.bin` `{bin}` has characters outside [A-Za-z0-9._-]");
-    }
-    Ok(bin.to_owned())
 }
 
 /// A GitHub `owner/name`: exactly one `/`, both halves segment-safe.
@@ -371,9 +341,9 @@ pub fn plan(
         ArchiveKind::TarGz
     };
     let bin_name = if windows {
-        format!("{}.exe", spec.bin)
+        format!("{}.exe", spec.name)
     } else {
-        spec.bin.clone()
+        spec.name.clone()
     };
 
     let tag = format!("{}{version}", spec.tag_prefix);
@@ -393,8 +363,8 @@ pub fn plan(
             bundle_urls: file_urls(&format!("{archive_name}.sig")),
         }),
         staged_rel: PathBuf::from(format!("{}-{host_target}", spec.name)).join(&bin_name),
-        cache_file: cache_base.join(&spec.bin).join(version).join(&bin_name),
-        name: spec.bin.clone(),
+        cache_file: cache_base.join(&spec.name).join(version).join(&bin_name),
+        name: spec.name.clone(),
         version: version.to_string(),
         target: host_target.to_string(),
         archive_name,
@@ -565,7 +535,6 @@ mod tests {
     fn read_spec_parses_wick_block() {
         let spec = wick_spec();
         assert_eq!(spec.name, "wick");
-        assert_eq!(spec.bin, "wick", "bin defaults to name");
         assert_eq!(spec.tag_prefix, "wick-v");
         assert_eq!(spec.base_urls.len(), 2);
         assert_eq!(spec.targets.len(), 4);
@@ -700,67 +669,6 @@ mod tests {
             PathBuf::from("wick-x86_64-pc-windows-msvc/wick.exe")
         );
         assert_eq!(p.cache_file, PathBuf::from("/base/wick/0.2.1/wick.exe"));
-    }
-
-    fn magecommand_spec(bin: &str) -> serde_json::Value {
-        serde_json::from_str(&format!(
-            r#"{{"name":"cresset/magecommand","bin":["bin/magecommand"],
-              "extra":{{"bougie":{{"native-binary":{{"spec":1,"name":"magequery",{bin}
-              "tag-prefix":"magequery-v",
-              "base-urls":["https://github.com/cresset-tools/magequery/releases/download"],
-              "targets":["x86_64-unknown-linux-gnu","x86_64-pc-windows-msvc"]}}}}}}}}"#
-        ))
-        .unwrap()
-    }
-
-    #[test]
-    fn plan_takes_a_second_binary_out_of_the_named_archive() {
-        let SpecLookup::Found(spec) =
-            read_spec(&magecommand_spec(r#""bin":"magecommand","#)).unwrap()
-        else {
-            panic!("expected Found");
-        };
-        for (target, archive, staged, cache) in [
-            (
-                "x86_64-unknown-linux-gnu",
-                "magequery-x86_64-unknown-linux-gnu.tar.gz",
-                "magequery-x86_64-unknown-linux-gnu/magecommand",
-                "/c/magecommand/0.22.0/magecommand",
-            ),
-            (
-                "x86_64-pc-windows-msvc",
-                "magequery-x86_64-pc-windows-msvc.zip",
-                "magequery-x86_64-pc-windows-msvc/magecommand.exe",
-                "/c/magecommand/0.22.0/magecommand.exe",
-            ),
-        ] {
-            let PlanDecision::Fetch(p) = plan(&spec, "v0.22.0", target, Path::new("/c")) else {
-                panic!("expected Fetch for {target}");
-            };
-            assert_eq!(p.name, "magecommand");
-            assert_eq!(p.archive_name, archive);
-            assert_eq!(
-                p.archive_urls[0],
-                format!(
-                    "https://github.com/cresset-tools/magequery/releases/download/magequery-v0.22.0/{archive}"
-                )
-            );
-            assert_eq!(p.staged_rel, PathBuf::from(staged));
-            assert_eq!(p.cache_file, PathBuf::from(cache));
-        }
-    }
-
-    #[test]
-    fn read_spec_rejects_a_bad_bin() {
-        for bad in [
-            r#""bin":"../evil","#,
-            r#""bin":"a/b","#,
-            r#""bin":"","#,
-            r#""bin":7,"#,
-        ] {
-            let err = read_spec(&magecommand_spec(bad)).unwrap_err();
-            assert!(err.to_string().contains("bin"), "{bad}: {err}");
-        }
     }
 
     #[test]

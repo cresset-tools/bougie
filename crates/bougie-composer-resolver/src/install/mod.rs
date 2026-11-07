@@ -10,7 +10,6 @@ mod downloader;
 mod orchestrate;
 mod path_link;
 mod source;
-mod stale;
 
 pub use downloader::{DistOutcome, DistRequest, fetch_and_extract_dists};
 pub use orchestrate::{

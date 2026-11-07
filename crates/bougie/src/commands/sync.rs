@@ -20,8 +20,6 @@ use bougie_installer::install::{
     preinstall_into_with_backend,
 };
 use bougie_lock::ToolchainLock;
-
-pub use super::locked_toolchain::LockPolicy;
 use bougie_output::changelog::{fmt_elapsed as fmt_ms, plural};
 use bougie_output::output::{Render, emit};
 use bougie_paths::Paths;
@@ -235,22 +233,13 @@ fn ensure_lock(
     paths: &Paths,
     project_root: &std::path::Path,
     offline: bool,
-    lock_mode: LockPolicy,
+    locked: bool,
     dry_run: bool,
     resolution: ResolutionStrategy,
     ignore_platform: &PlatformIgnore,
 ) -> Result<()> {
     let lock_path = project_root.join("composer.lock");
-    if lock_mode == LockPolicy::Frozen {
-        // Use composer.lock as written, without the content-hash check.
-        if lock_path.is_file() || !composer_json_has_external_requires(project_root) {
-            return Ok(());
-        }
-        return Err(eyre!(
-            "composer.lock not found and --frozen is set; run `bougie lock` and commit the result"
-        ));
-    }
-    if lock_mode == LockPolicy::Locked {
+    if locked {
         if !lock_path.is_file() {
             return Err(eyre!(
                 "composer.lock not found and --locked is set; run `bougie lock` and commit the result"
@@ -374,7 +363,7 @@ pub fn run(
     project_root: &Path,
     format: OutputFormat,
     offline: bool,
-    lock_mode: LockPolicy,
+    locked: bool,
     dry_run: bool,
     scripts: Option<bool>,
     patches: Option<bool>,
@@ -408,7 +397,7 @@ pub fn run(
         &paths,
         &project_root,
         offline,
-        lock_mode,
+        locked,
         dry_run,
         pkg_resolution,
         &ignore_platform,
@@ -420,9 +409,7 @@ pub fn run(
     let (spec, flavor) = resolve_php_inputs(&project_root, &project)?;
     let resolution = PhpResolution::from_args(php_pref, &project, SelectionContext::Project)?;
 
-    // A dry run still validates the lock under --locked / --frozen (both
-    // are read-only); in update mode it skips the load, which may write.
-    let toolchain_lock = if lock_mode != LockPolicy::Update || !dry_run {
+    let toolchain_lock = if locked || !dry_run {
         super::locked_toolchain::load_fresh(
             &project_root,
             &paths,
@@ -430,7 +417,11 @@ pub fn run(
             &spec,
             flavor,
             offline,
-            lock_mode,
+            if locked {
+                super::locked_toolchain::LockPolicy::Locked
+            } else {
+                super::locked_toolchain::LockPolicy::Update
+            },
         )?
     } else {
         None
@@ -609,34 +600,6 @@ fn elapsed_ms(started: Instant) -> f64 {
     started.elapsed().as_secs_f64() * 1000.0
 }
 
-/// Validate `composer.lock` and `bougie.lock` under `--locked` /
-/// `--frozen` without installing anything. `bougie run` uses this when
-/// the environment is already present and no sync is needed.
-pub fn check_locks(project_root: &Path, lock_mode: LockPolicy) -> Result<()> {
-    let paths = Paths::from_env()?;
-    ensure_lock(
-        &paths,
-        project_root,
-        false,
-        lock_mode,
-        true,
-        ResolutionStrategy::Highest,
-        &PlatformIgnore::default(),
-    )?;
-    let project = load_project(project_root)?;
-    let (spec, flavor) = resolve_php_inputs(project_root, &project)?;
-    super::locked_toolchain::load_fresh(
-        project_root,
-        &paths,
-        &project,
-        &spec,
-        flavor,
-        false,
-        lock_mode,
-    )?;
-    Ok(())
-}
-
 /// Same as [`run`] but tuned for `bougie run`'s implicit sync: the PHP
 /// selection is a one-off ([`SelectionContext::OneOff`]) rather than a
 /// project configuration, the lock refresh never errors offline, and
@@ -648,7 +611,6 @@ pub fn run_with_default_fallback(
     project_root: &Path,
     format: OutputFormat,
     dry_run: bool,
-    lock_mode: LockPolicy,
     php_pref: PhpPrefArgs,
 ) -> Result<ImplicitSyncOutcome> {
     let paths = Paths::from_env()?;
@@ -662,7 +624,7 @@ pub fn run_with_default_fallback(
         &paths,
         &project_root,
         false,
-        lock_mode,
+        false,
         dry_run,
         ResolutionStrategy::Highest,
         &PlatformIgnore::default(),
@@ -680,28 +642,8 @@ pub fn run_with_default_fallback(
         return Ok(ImplicitSyncOutcome::default());
     }
 
-    // Toolchain sync. A committed bougie.lock binds `bougie run` exactly
-    // as it binds `bougie sync`, so the first run on a fresh checkout
-    // installs the locked toolchain rather than whatever is newest.
-    let toolchain_lock = super::locked_toolchain::load_fresh(
-        &project_root,
-        &paths,
-        &project,
-        &spec,
-        flavor,
-        false,
-        lock_mode,
-    )?;
-    let result = ensure_synced_with_lock(
-        &paths,
-        &project_root,
-        &project,
-        spec,
-        flavor,
-        resolution,
-        toolchain_lock.as_ref(),
-        false,
-    )?;
+    // Toolchain sync.
+    let result = ensure_synced_with(&paths, &project_root, &project, spec, flavor, resolution)?;
     let outcome = ImplicitSyncOutcome::from_result(&result);
 
     // Vendor install. Root scripts are config-driven here (no CLI flag on
@@ -751,7 +693,7 @@ pub fn run_with_php_request(
         &paths,
         &project_root,
         false,
-        LockPolicy::Update,
+        false,
         dry_run,
         ResolutionStrategy::Highest,
         &PlatformIgnore::default(),
@@ -841,7 +783,7 @@ pub fn sync_script_slot(
         paths,
         slot,
         false,
-        LockPolicy::Update,
+        false,
         false,
         ResolutionStrategy::Highest,
         &PlatformIgnore::default(),
@@ -1209,7 +1151,7 @@ fn ensure_synced_managed(
             let digest = &lock
                 .targets
                 .get(&target)
-                .ok_or_else(|| eyre!("bougie.lock has no digests for {target}"))?
+                .expect("fresh lock covers target")
                 .php;
             Ok::<_, eyre::Report>(ExpectedArtifact {
                 manifest_sha256: &digest.manifest_sha256,
@@ -1516,22 +1458,14 @@ fn install_locked_extensions(
     flavor: Flavor,
 ) -> Result<Vec<String>> {
     let target = Triple::detect()?.to_string();
-    let target_artifacts = lock
-        .targets
-        .get(&target)
-        .ok_or_else(|| eyre!("bougie.lock has no digests for {target}"))?;
+    let target_artifacts = lock.targets.get(&target).expect("fresh lock covers target");
     let bar = DownloadBar::new("downloading");
     let mut installed_names = Vec::with_capacity(lock.extensions.len());
     for (name, pin) in &lock.extensions {
-        // A baseline extension this platform cannot build (gettext off
-        // Linux) is pinned for the other targets only.
-        if !super::platform_lock::extension_expected_on(name, pin.origin, &target) {
-            continue;
-        }
         let digest = target_artifacts
             .extensions
             .get(name)
-            .ok_or_else(|| eyre!("bougie.lock has no {target} digest for extension {name}"))?;
+            .expect("fresh lock covers every extension");
         let installed = install_extension_with_backend_verified(
             backend,
             paths,

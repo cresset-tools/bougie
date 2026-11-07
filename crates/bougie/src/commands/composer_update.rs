@@ -313,14 +313,10 @@ pub fn resolve_and_write_lock_partial(
     // `fossil`/`package`/`artifact`) so a package available only there
     // doesn't fail later with a mysterious "not found". Matches the
     // install path's stderr warnings (sync.rs).
-    let mut platform_overrides = BTreeMap::new();
     if let Ok(cj) = serde_json::from_slice::<serde_json::Value>(&composer_json_bytes) {
         for w in bougie_composer_resolver::unsupported_repo_warnings(&cj) {
             eprintln!("warning: {w}");
         }
-        // Record `config.platform` like Composer does, so later installs
-        // and `platform_check.php` agree with the platform we resolved for.
-        platform_overrides = bougie_composer_resolver::platform::config_platform_overrides(&cj);
     }
 
     let lock_path = project_root.join("composer.lock");
@@ -348,7 +344,7 @@ pub fn resolve_and_write_lock_partial(
         prefer_lowest: resolution != ResolutionStrategy::Highest,
         platform: BTreeMap::new(),
         platform_dev: BTreeMap::new(),
-        platform_overrides,
+        platform_overrides: BTreeMap::new(),
         plugin_api_version: Some("2.6.0".into()),
     };
 
