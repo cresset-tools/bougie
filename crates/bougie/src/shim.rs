@@ -247,6 +247,9 @@ pub fn exec(role: Role) -> Result<ExitCode> {
             cmd.args(&args)
                 .env("PHP_INI_SCAN_DIR", &scan_dir)
                 .env("PHP_BINARY", &bin);
+            if let Some(ca) = bougie_platform::ca::ssl_cert_file() {
+                cmd.env(bougie_platform::ca::SSL_CERT_FILE, ca);
+            }
             #[cfg(unix)]
             cmd.arg0(&bin);
             run_and_propagate(cmd, role.name())

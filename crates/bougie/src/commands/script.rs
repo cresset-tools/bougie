@@ -247,6 +247,9 @@ fn exec_script(
     cmd.arg(script_path).args(args);
     cmd.env("PHP_INI_SCAN_DIR", &scan_dir)
         .env("BOUGIE_SCRIPT", script_path);
+    if let Some(ca) = bougie_platform::ca::ssl_cert_file() {
+        cmd.env(bougie_platform::ca::SSL_CERT_FILE, ca);
+    }
     if xdebug_flag && !env_session_set {
         cmd.env("XDEBUG_SESSION", "1");
     }
