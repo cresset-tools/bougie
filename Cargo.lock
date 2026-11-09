@@ -780,6 +780,7 @@ dependencies = [
  "bougie-installer",
  "bougie-output",
  "bougie-paths",
+ "bougie-platform",
  "bougie-resolver",
  "eyre",
  "http-body-util",
