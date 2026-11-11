@@ -165,9 +165,70 @@ pub enum ReferenceMode {
     None,
 }
 
-/// Auth credentials for a single repository: the shared Composer credential
-/// type, which redacts secrets in `Debug` and renders the header to send.
-pub use composer_auth::AuthCredentials;
+/// Auth credentials for a single repository. Skipped from `Debug`
+/// output so credentials never leak into logs / error messages.
+#[derive(Clone)]
+pub enum AuthCredentials {
+    /// HTTP Basic — Composer's `http-basic` shape.
+    Basic { username: String, password: String },
+    /// Bearer token — Composer's `bearer` shape.
+    Bearer { token: String },
+    /// GitHub OAuth — sends `Authorization: token <tok>`.
+    /// Composer only sends this to `api.github.com` URLs; for
+    /// other `github.com` URLs the token is omitted.
+    GitHubToken { token: String },
+    /// GitLab private/CI token — sends `PRIVATE-TOKEN: <tok>`.
+    GitLabToken { token: String },
+}
+
+impl std::fmt::Debug for AuthCredentials {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Basic { username, .. } => f
+                .debug_struct("Basic")
+                .field("username", username)
+                .field("password", &"<redacted>")
+                .finish(),
+            Self::Bearer { .. } => f
+                .debug_struct("Bearer")
+                .field("token", &"<redacted>")
+                .finish(),
+            Self::GitHubToken { .. } => f
+                .debug_struct("GitHubToken")
+                .field("token", &"<redacted>")
+                .finish(),
+            Self::GitLabToken { .. } => f
+                .debug_struct("GitLabToken")
+                .field("token", &"<redacted>")
+                .finish(),
+        }
+    }
+}
+
+impl AuthCredentials {
+    /// Render the credentials as an `Authorization` header value.
+    pub fn header_value(&self) -> String {
+        use base64::Engine;
+        match self {
+            Self::Basic { username, password } => {
+                let raw = format!("{username}:{password}");
+                let encoded = base64::engine::general_purpose::STANDARD.encode(raw);
+                format!("Basic {encoded}")
+            }
+            Self::Bearer { token } => format!("Bearer {token}"),
+            Self::GitHubToken { token } => format!("token {token}"),
+            Self::GitLabToken { token } => token.clone(),
+        }
+    }
+
+    /// The HTTP header name for this credential type.
+    pub fn header_name(&self) -> &'static str {
+        match self {
+            Self::Basic { .. } | Self::Bearer { .. } | Self::GitHubToken { .. } => "authorization",
+            Self::GitLabToken { .. } => "private-token",
+        }
+    }
+}
 
 impl Repo {
     /// Build a repo from a URL. The cache namespace is taken from
@@ -313,7 +374,13 @@ fn extract_cache_namespace(url: &str) -> String {
 /// match any host-keyed auth map, which is the correct "no
 /// credentials" outcome.
 pub fn auth_origin(url: &str) -> String {
-    composer_auth::auth_key(url).map_or_else(|| url.to_owned(), str::to_owned)
+    if let Some(after_scheme) = url.split_once("://").map(|(_, rest)| rest) {
+        let host_and_port = after_scheme.split('/').next().unwrap_or("");
+        if !host_and_port.is_empty() {
+            return host_and_port.to_owned();
+        }
+    }
+    url.to_owned()
 }
 
 /// FNV-1a 64-bit hash of a string. Cheap, allocation-free; used for

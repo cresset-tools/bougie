@@ -9,7 +9,7 @@ rust-version = "1.95"
 authors.workspace = true
 
 [dependencies]
-composer-autoload = { workspace = true }
+bougie-autoloader = { workspace = true }
 bougie-cli = { workspace = true }
 bougie-config = { workspace = true }
 bougie-errors = { workspace = true }

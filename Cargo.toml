@@ -6,6 +6,7 @@
 resolver = "3"
 members = [
     "crates/bougie",
+    "crates/bougie-autoloader",
     "crates/bougie-babysit",
     "crates/bougie-cli",
     "crates/bougie-backend",
@@ -18,8 +19,10 @@ members = [
     "crates/bougie-fs",
     "crates/bougie-index",
     "crates/bougie-installer",
+    "crates/bougie-installers",
     "crates/bougie-lock",
     "crates/bougie-output",
+    "crates/bougie-patches",
     "crates/bougie-paths",
     "crates/bougie-php-discovery",
     "crates/bougie-platform",
@@ -53,6 +56,7 @@ authors = ["Jelle Besseling <jelle@pingiun.com>"]
 # `[workspace.package].version` above (Cargo.toml is a release-please
 # `extra-file`), so they never drift.
 [workspace.dependencies]
+bougie-autoloader = { path = "crates/bougie-autoloader", version = "0.56.0" } # x-release-please-version
 bougie-babysit = { path = "crates/bougie-babysit", version = "0.56.0" } # x-release-please-version
 bougie-backend = { path = "crates/bougie-backend", version = "0.56.0" } # x-release-please-version
 bougie-cli = { path = "crates/bougie-cli", version = "0.56.0" } # x-release-please-version
@@ -72,8 +76,10 @@ bougie-fs = { path = "crates/bougie-fs", version = "0.56.0" } # x-release-please
 # workspace entry with defaults on.
 bougie-index = { path = "crates/bougie-index", version = "0.56.0" } # x-release-please-version
 bougie-installer = { path = "crates/bougie-installer", version = "0.56.0" } # x-release-please-version
+bougie-installers = { path = "crates/bougie-installers", version = "0.56.0" } # x-release-please-version
 bougie-lock = { path = "crates/bougie-lock", version = "0.56.0" } # x-release-please-version
 bougie-output = { path = "crates/bougie-output", version = "0.56.0" } # x-release-please-version
+bougie-patches = { path = "crates/bougie-patches", version = "0.56.0" } # x-release-please-version
 bougie-paths = { path = "crates/bougie-paths", version = "0.56.0" } # x-release-please-version
 bougie-php-discovery = { path = "crates/bougie-php-discovery", version = "0.56.0" } # x-release-please-version
 bougie-platform = { path = "crates/bougie-platform", version = "0.56.0" } # x-release-please-version
@@ -100,18 +106,6 @@ composer-semver = "0.1.0"
 # `bougie-php-json` crate; composer-wire was `bougie-composer::metadata`.)
 composer-php-json = "0.1"
 composer-wire = "0.1"
-composer-auth = "0.2"
-# composer.json / composer.lock model, the native installer plugins, the
-# autoloader generator and the patcher, from the composer-client workspace,
-# shared with magebuild. Versioned independently on crates.io — NOT
-# release-please marker lines. (They were the local `bougie-composer` model,
-# `bougie-installers`, `bougie-autoloader`, `bougie-patches` and the
-# resolver's `install/` module.)
-composer-manifest = "0.2"
-composer-installers = "0.1"
-composer-autoload = "0.1"
-composer-patches = "0.2"
-composer-install = "0.6"
 
 [workspace.lints.rust]
 # `deny` rather than `forbid` so the daemon's process-supervisor can

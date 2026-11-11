@@ -68,16 +68,8 @@ pub fn upgrade_one(
 
     install_mod::write_composer_json_for_receipt(&tool_dir, &receipt)?;
     (ctx.resolve_lock)(ctx.paths, &tool_dir).wrap_err("resolving composer.lock for tool")?;
-    install_from_lock(
-        ctx.paths,
-        &tool_dir,
-        InstallOptions {
-            no_dev: true,
-            ..Default::default()
-        },
-        None,
-    )
-    .wrap_err("installing tool dependencies during upgrade")?;
+    install_from_lock(ctx.paths, &tool_dir, InstallOptions { no_dev: true }, None)
+        .wrap_err("installing tool dependencies during upgrade")?;
 
     // Same best-effort native-binary cache warming as `install_into`:
     // an upgraded launcher package fetches a *new* binary version on

@@ -1,0 +1,28 @@
+{
+    "packages": [
+        {
+            "name": "acme/helpers",
+            "version": "1.0.0",
+            "version_normalized": "1.0.0.0",
+            "dist": {
+                "type": "path",
+                "url": "packages/helpers",
+                "reference": "a3ef6914e17a39a8b777f3cfedd8bec30ecfe443"
+            },
+            "type": "library",
+            "installation-source": "dist",
+            "autoload": {
+                "files": [
+                    "functions.php"
+                ]
+            },
+            "transport-options": {
+                "symlink": false,
+                "relative": true
+            },
+            "install-path": "../acme/helpers"
+        }
+    ],
+    "dev": true,
+    "dev-package-names": []
+}

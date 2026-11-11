@@ -10,7 +10,7 @@
 //! [`dispatch`]es a named event, given a host-injected [`ScriptContext`]
 //! (resolved PHP binary, env, callback registry). Everything that needs to
 //! know about bougie's path/PHP/service-env machinery lives in the caller —
-//! mirroring how `composer-installers` isolates declarative-plugin logic.
+//! mirroring how `bougie-installers` isolates declarative-plugin logic.
 //!
 //! **Scope:** the non-internal entry forms (`@php`, `@composer`, `@putenv`,
 //! `@<alias>`, plain shell). PHP-callback entries (`Class::method`) reach into

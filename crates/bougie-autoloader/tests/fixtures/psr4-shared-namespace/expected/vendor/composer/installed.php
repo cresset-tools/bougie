@@ -1,0 +1,41 @@
+<?php return array(
+    'root' => array(
+        'name' => 'fixture/psr4-shared-namespace',
+        'pretty_version' => '1.0.0+no-version-set',
+        'version' => '1.0.0.0',
+        'reference' => null,
+        'type' => 'project',
+        'install_path' => __DIR__ . '/../../',
+        'aliases' => array(),
+        'dev' => true,
+    ),
+    'versions' => array(
+        'acme/alpha' => array(
+            'pretty_version' => '1.0.0',
+            'version' => '1.0.0.0',
+            'reference' => 'ebe8918e59f4741af2d192e6aac71099b2ae599b',
+            'type' => 'library',
+            'install_path' => __DIR__ . '/../acme/alpha',
+            'aliases' => array(),
+            'dev_requirement' => false,
+        ),
+        'acme/beta' => array(
+            'pretty_version' => '1.0.0',
+            'version' => '1.0.0.0',
+            'reference' => '6143618b59337fbd65229dd79118acf776d33372',
+            'type' => 'library',
+            'install_path' => __DIR__ . '/../acme/beta',
+            'aliases' => array(),
+            'dev_requirement' => false,
+        ),
+        'fixture/psr4-shared-namespace' => array(
+            'pretty_version' => '1.0.0+no-version-set',
+            'version' => '1.0.0.0',
+            'reference' => null,
+            'type' => 'project',
+            'install_path' => __DIR__ . '/../../',
+            'aliases' => array(),
+            'dev_requirement' => false,
+        ),
+    ),
+);

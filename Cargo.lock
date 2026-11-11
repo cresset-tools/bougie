@@ -379,6 +379,7 @@ dependencies = [
  "anstream",
  "assert_cmd",
  "base64 0.22.1",
+ "bougie-autoloader",
  "bougie-babysit",
  "bougie-backend",
  "bougie-cli",
@@ -391,8 +392,10 @@ dependencies = [
  "bougie-fs",
  "bougie-index",
  "bougie-installer",
+ "bougie-installers",
  "bougie-lock",
  "bougie-output",
+ "bougie-patches",
  "bougie-paths",
  "bougie-php-discovery",
  "bougie-platform",
@@ -406,15 +409,13 @@ dependencies = [
  "bougie-version",
  "clap",
  "color-eyre",
- "composer-autoload",
- "composer-installers",
- "composer-patches",
  "composer-semver",
  "eyre",
  "flate2",
  "hickory-resolver",
  "insta",
  "predicates",
+ "rand 0.8.6",
  "reqwest",
  "rustix",
  "sandbox-run",
@@ -435,6 +436,24 @@ dependencies = [
  "wiremock",
  "zip",
  "zstd",
+]
+
+[[package]]
+name = "bougie-autoloader"
+version = "0.56.0"
+dependencies = [
+ "bougie-installers",
+ "composer-php-json",
+ "composer-semver",
+ "criterion",
+ "md-5",
+ "memchr",
+ "rayon",
+ "regex",
+ "serde",
+ "serde_json",
+ "tracing",
+ "walkdir",
 ]
 
 [[package]]
@@ -476,10 +495,14 @@ dependencies = [
 name = "bougie-composer"
 version = "0.56.0"
 dependencies = [
- "composer-manifest",
  "composer-php-json",
+ "composer-semver",
+ "composer-wire",
  "eyre",
+ "md-5",
+ "serde",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -487,20 +510,24 @@ name = "bougie-composer-resolver"
 version = "0.56.0"
 dependencies = [
  "arcstr",
+ "base64 0.22.1",
+ "bougie-autoloader",
  "bougie-composer",
  "bougie-errors",
  "bougie-fetch",
+ "bougie-installers",
  "bougie-output",
+ "bougie-patches",
  "bougie-paths",
- "composer-auth",
- "composer-install",
- "composer-patches",
  "composer-semver",
  "criterion",
  "eyre",
+ "flate2",
  "glob",
  "indicatif",
+ "junction",
  "pubgrub",
+ "rayon",
  "reqwest",
  "rustc-hash",
  "serde",
@@ -632,6 +659,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "bougie-installers"
+version = "0.56.0"
+dependencies = [
+ "eyre",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "bougie-lock"
 version = "0.56.0"
 dependencies = [
@@ -651,6 +687,19 @@ dependencies = [
  "eyre",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "bougie-patches"
+version = "0.56.0"
+dependencies = [
+ "eyre",
+ "flickzeug",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "similar",
+ "tempfile",
 ]
 
 [[package]]
@@ -724,6 +773,7 @@ dependencies = [
  "anstream",
  "anstyle",
  "axum",
+ "bougie-autoloader",
  "bougie-cli",
  "bougie-config",
  "bougie-errors",
@@ -733,7 +783,6 @@ dependencies = [
  "bougie-paths",
  "bougie-platform",
  "bougie-resolver",
- "composer-autoload",
  "eyre",
  "http-body-util",
  "mime_guess",
@@ -1089,102 +1138,6 @@ checksum = "ba5a308b75df32fe02788e748662718f03fde005016435c444eea572398219fd"
 dependencies = [
  "bytes",
  "memchr",
-]
-
-[[package]]
-name = "composer-auth"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cccb75eb05a2407e8f2c163a60e7ba5ed0dd556cb335566daa76eff94cf3957d"
-dependencies = [
- "base64 0.22.1",
- "serde_json",
-]
-
-[[package]]
-name = "composer-autoload"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "58ff7d12cb880ab02562731e5228f562e86a8c38d220b835265a45bd93fdf4a1"
-dependencies = [
- "composer-installers",
- "composer-php-json",
- "composer-semver",
- "md-5",
- "memchr",
- "rayon",
- "regex",
- "serde",
- "serde_json",
- "tracing",
- "walkdir",
-]
-
-[[package]]
-name = "composer-install"
-version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "72d6d4428ad41c8dbd317f31dbba3b8f9484097e50f32fcee0743d217aca81be"
-dependencies = [
- "composer-auth",
- "composer-autoload",
- "composer-installers",
- "composer-manifest",
- "composer-patches",
- "eyre",
- "flate2",
- "junction",
- "rayon",
- "reqwest",
- "serde",
- "serde_json",
- "sha1",
- "tar",
- "tracing",
- "zip",
- "zstd",
-]
-
-[[package]]
-name = "composer-installers"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eaf18eb3b2bc79e51004e6694d06d6de8d9014be9577ce4ec8682ecd51c0a47a"
-dependencies = [
- "eyre",
- "serde_json",
-]
-
-[[package]]
-name = "composer-manifest"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eef64dc8d85349bb09689caff6a6688173e3c59b65e831af2acfdd1c9199b0ba"
-dependencies = [
- "composer-php-json",
- "composer-semver",
- "composer-wire",
- "eyre",
- "md-5",
- "serde",
- "serde_json",
- "tempfile",
-]
-
-[[package]]
-name = "composer-patches"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "52b4bed2c60c420f6c6f22d4f87b4a4ffeb1b0626583d97b5a859f84bb3d2010"
-dependencies = [
- "composer-installers",
- "eyre",
- "flickzeug",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "similar",
- "tempfile",
 ]
 
 [[package]]
