@@ -30,6 +30,7 @@ pub mod init;
 pub mod lock;
 pub mod locked_toolchain;
 pub mod login;
+mod login_browser;
 #[cfg(unix)]
 pub mod make;
 pub mod native_fetch;
