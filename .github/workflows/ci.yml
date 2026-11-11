@@ -47,7 +47,9 @@ jobs:
 
   test:
     name: cargo test (${{ matrix.label || matrix.os }})
-    runs-on: ${{ matrix.os }}
+    # Entries marked self_hosted run on the Mac mini, but only for code from this
+    # repo (pushes and same-repo PRs). Fork PRs fall back to GitHub's runner.
+    runs-on: ${{ matrix.self_hosted && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","mac-mini"]') || matrix.os }}
     strategy:
       fail-fast: false
       matrix:
@@ -59,7 +61,8 @@ jobs:
             build_cmd: cargo build --all-targets --features test-fixtures
             test_cmd: cargo test --features test-fixtures
           # Test only: the self-hosted Mac mini, next to macos-latest for comparison.
-          - os: [self-hosted, mac-mini]
+          - os: macos-latest
+            self_hosted: true
             label: mac-mini
             build_cmd: cargo build --all-targets --features test-fixtures
             test_cmd: cargo test --features test-fixtures
