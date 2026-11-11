@@ -46,7 +46,7 @@ jobs:
         run: cargo fmt --all -- --check
 
   test:
-    name: cargo test (${{ matrix.os }})
+    name: cargo test (${{ matrix.label || matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -56,6 +56,11 @@ jobs:
             build_cmd: cargo build --all-targets --features test-fixtures
             test_cmd: cargo test --features test-fixtures
           - os: macos-latest
+            build_cmd: cargo build --all-targets --features test-fixtures
+            test_cmd: cargo test --features test-fixtures
+          # Test only: the self-hosted Mac mini, next to macos-latest for comparison.
+          - os: [self-hosted, mac-mini]
+            label: mac-mini
             build_cmd: cargo build --all-targets --features test-fixtures
             test_cmd: cargo test --features test-fixtures
           # Windows runs lib unit tests + the dedicated windows_smoke
