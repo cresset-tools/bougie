@@ -493,18 +493,14 @@ dependencies = [
  "bougie-fetch",
  "bougie-output",
  "bougie-paths",
- "composer-autoload",
- "composer-installers",
+ "composer-install",
  "composer-patches",
  "composer-semver",
  "criterion",
  "eyre",
- "flate2",
  "glob",
  "indicatif",
- "junction",
  "pubgrub",
- "rayon",
  "reqwest",
  "rustc-hash",
  "serde",
@@ -1096,6 +1092,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "composer-auth"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cccb75eb05a2407e8f2c163a60e7ba5ed0dd556cb335566daa76eff94cf3957d"
+dependencies = [
+ "base64 0.22.1",
+ "serde_json",
+]
+
+[[package]]
 name = "composer-autoload"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1112,6 +1118,30 @@ dependencies = [
  "serde_json",
  "tracing",
  "walkdir",
+]
+
+[[package]]
+name = "composer-install"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ffb0b348140fb287f0add59a0f9e334f4c49f3b869206f911dad8de42ba89664"
+dependencies = [
+ "composer-auth",
+ "composer-autoload",
+ "composer-installers",
+ "composer-manifest",
+ "composer-patches",
+ "eyre",
+ "flate2",
+ "junction",
+ "rayon",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha1",
+ "tar",
+ "tracing",
+ "zip",
 ]
 
 [[package]]

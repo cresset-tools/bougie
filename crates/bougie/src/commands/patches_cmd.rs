@@ -490,13 +490,12 @@ fn extract_pristine(
     reference: &str,
     dest: &std::path::Path,
 ) -> Result<()> {
-    let client = bougie_fetch::default_client()?;
     let req = bougie_composer_resolver::DistRequest {
         package_name: package,
         url,
         sha1: shasum,
         reference,
-        archive: bougie_fetch::ArchiveKind::Zip,
+        archive: bougie_composer_resolver::DistArchive::Zip,
         strip_prefix: None,
         vendor_dest: dest,
         auth_header: None,
@@ -504,12 +503,7 @@ fn extract_pristine(
         project_root,
         fallbacks: &[],
     };
-    bougie_composer_resolver::fetch_and_extract_dists(
-        &client,
-        paths,
-        std::slice::from_ref(&req),
-        &bougie_fetch::DownloadBar::hidden(),
-    )
+    bougie_composer_resolver::fetch_and_extract_dists(paths, std::slice::from_ref(&req))
     .wrap_err_with(|| {
         format!(
             "could not materialize the pristine copy of `{package}` (the dist may not be cached — \

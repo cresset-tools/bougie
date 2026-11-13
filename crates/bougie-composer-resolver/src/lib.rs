@@ -1,10 +1,10 @@
-//! Native Composer dependency resolver + installer for bougie.
+//! Native Composer dependency resolver for bougie.
 //!
-//! The crate ships the parallel dist downloader/extractor, the
-//! pubgrub-based solver + metadata fetcher, the `install_from_lock`
-//! orchestrator, and Phase D git support — resolving versions from a
-//! `{type: vcs}` repository and installing from a git `source` (the
-//! [`vcs`] plumbing). The original `RESOLVER_PLAN.md` design doc was
+//! The crate ships the pubgrub-based solver + metadata fetcher, Phase D
+//! git support for resolving versions from a `{type: vcs}` repository (the
+//! [`vcs`] plumbing), and [`install`], which wires bougie's fetcher, cache,
+//! credentials and progress bar onto `composer-install`, the shared
+//! install-from-lock crate. The original `RESOLVER_PLAN.md` design doc was
 //! removed once the resolver shipped (it lives in git history); ongoing
 //! test work is tracked in `RESOLVER_TEST_PLAN.md`.
 
@@ -31,8 +31,8 @@ fn elapsed_ms(d: std::time::Duration) -> u64 {
 
 pub use audit::{Advisory, fetch_advisories};
 pub use install::{
-    DistOutcome, DistRequest, InstallOptions, InstallSummary, ScriptHooks, fetch_and_extract_dists,
-    install_from_lock, install_from_lock_with_patches,
+    DistArchive, DistRequest, InstallOptions, InstallSummary, LinkMode, ScriptHooks,
+    fetch_and_extract_dists, install_from_lock, install_from_lock_with_patches,
 };
 pub use platform::{PlatformEnv, PlatformIgnore};
 pub use query::{
