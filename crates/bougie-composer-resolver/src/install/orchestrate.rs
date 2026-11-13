@@ -25,9 +25,9 @@ use rustc_hash::FxHasher;
 
 use bougie_composer::lockfile::{self, Lock, LockPackage};
 use bougie_fetch::{ArchiveKind, DownloadBar};
-use bougie_patches::{ApplyOptions, FailureMode, MaterializedPatch, PatchPlan, apply_patch_text};
 use bougie_paths::Paths;
 use composer_autoload::{DumpRequest, dump_autoload};
+use composer_patches::{ApplyOptions, FailureMode, MaterializedPatch, PatchPlan, apply_patch_text};
 use eyre::{Context, Result, eyre};
 use serde_json::Value;
 
@@ -129,7 +129,7 @@ pub fn install_from_lock(
 /// exactly as before.
 ///
 /// The plan drives **two** touch points required for re-application
-/// correctness (see `bougie-patches`): pre-extraction it forces every package
+/// correctness (see `composer-patches`): pre-extraction it forces every package
 /// whose patch fingerprint changed into the install set (so a changed patch
 /// set re-extracts pristine), and post-extraction it applies the patches and
 /// rewrites `patches.lock.json`.
@@ -775,7 +775,7 @@ fn apply_patch_plan(
         let Some(pkg_patches) = plan.patches.get(&pkg.name) else {
             continue;
         };
-        let res = bougie_patches::apply_package_patches(
+        let res = composer_patches::apply_package_patches(
             vendor_dir,
             &pkg.name,
             pkg_patches,
@@ -812,7 +812,7 @@ fn apply_patch_plan(
             if !plan.skip_report {
                 for pkg in &rp.packages {
                     if let Some(dir) = vendor_by_name.get(pkg.as_str())
-                        && let Err(e) = bougie_patches::append_patches_txt(dir, &[&rp.patch])
+                        && let Err(e) = composer_patches::append_patches_txt(dir, &[&rp.patch])
                     {
                         warnings.push(format!(
                             "could not update PATCHES.txt in `{}`: {e}",
@@ -846,7 +846,8 @@ fn apply_patch_plan(
     }
 
     let human = plan.write_lock.then(|| plan.human_view());
-    if let Err(e) = bougie_patches::lock::write_with_human(project_root, &new_fingerprints, human) {
+    if let Err(e) = composer_patches::lock::write_with_human(project_root, &new_fingerprints, human)
+    {
         warnings.push(format!("could not write patches.lock.json: {e}"));
     }
     Ok(())

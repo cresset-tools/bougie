@@ -336,7 +336,7 @@ fn install_vendor(
     paths: &Paths,
     project_root: &std::path::Path,
     hooks: Option<&dyn bougie_composer_resolver::ScriptHooks>,
-    patches: Option<&bougie_patches::PatchPlan>,
+    patches: Option<&composer_patches::PatchPlan>,
 ) -> Result<Option<InstallSummary>> {
     let lock_path = project_root.join("composer.lock");
     if !lock_path.is_file() {

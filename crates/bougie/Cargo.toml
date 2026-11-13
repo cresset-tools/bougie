@@ -89,7 +89,7 @@ bougie-installer = { workspace = true }
 composer-installers = { workspace = true }
 bougie-lock = { workspace = true }
 bougie-output = { workspace = true }
-bougie-patches = { workspace = true }
+composer-patches = { workspace = true }
 bougie-paths = { workspace = true }
 bougie-platform = { workspace = true }
 bougie-resolver = { workspace = true }
