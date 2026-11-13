@@ -2,33 +2,17 @@
 name = "bougie-composer"
 version.workspace = true
 edition = "2024"
-description = "composer.json / composer.lock + Packagist v2 metadata model for bougie."
+description = "Composer data model for bougie: composer-manifest plus single-file script metadata."
 license = "EUPL-1.2"
 repository = "https://github.com/cresset-tools/bougie"
 rust-version = "1.95"
 authors.workspace = true
 
 [dependencies]
+composer-manifest = { workspace = true }
 composer-php-json = { workspace = true }
-composer-semver = { workspace = true }
-composer-wire = { workspace = true }
-
-[dependencies.eyre]
-version = "0.6"
-
-[dependencies.md-5]
-version = "0.11"
-
-[dependencies.serde]
-version = "1.0"
-features = ["derive"]
-
-[dependencies.serde_json]
-version = "1.0"
-features = ["preserve_order"]
-
-[dependencies.tempfile]
-version = "3.10"
+eyre = "0.6"
+serde_json = { version = "1.0", features = ["preserve_order"] }
 
 [lints]
 workspace = true

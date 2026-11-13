@@ -3,7 +3,7 @@
 //! `vendor/` tree. The eventual end-to-end `bougie composer install`
 //! command will read `composer.lock`, build [`DistRequest`]s from the
 //! locked packages, call [`fetch_and_extract_dists`], then hand off to
-//! `bougie-autoloader` for `vendor/autoload.php` generation.
+//! `composer-autoload` for `vendor/autoload.php` generation.
 
 mod bin_proxy;
 mod downloader;

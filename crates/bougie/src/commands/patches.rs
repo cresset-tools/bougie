@@ -274,7 +274,7 @@ pub fn lock_install_paths(project_root: &Path, composer_value: &Value) -> Vec<(S
     let Ok(lock) = serde_json::from_slice::<Value>(&bytes) else {
         return Vec::new();
     };
-    let installer_paths = bougie_installers::InstallerPaths::parse(composer_value);
+    let installer_paths = composer_installers::InstallerPaths::parse(composer_value);
     let mut out = Vec::new();
     for key in ["packages", "packages-dev"] {
         let Some(arr) = lock.get(key).and_then(Value::as_array) else {
@@ -285,7 +285,7 @@ pub fn lock_install_paths(project_root: &Path, composer_value: &Value) -> Vec<(S
                 continue;
             };
             let ptype = p.get("type").and_then(Value::as_str);
-            let rel = bougie_installers::install_path(name, ptype, &installer_paths);
+            let rel = composer_installers::install_path(name, ptype, &installer_paths);
             out.push((name.to_string(), rel));
         }
     }

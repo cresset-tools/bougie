@@ -1,7 +1,0 @@
-{
-    "name": "acme/foo-polyfill",
-    "version": "1.0.0",
-    "provide": {
-        "ext-foo": "*"
-    }
-}

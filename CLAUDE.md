@@ -55,12 +55,11 @@ contract for index format, server behavior, and service tarballs).
 - `bougie-cli` — clap derive types: `Cli`, `Command`, all subcommand enums.
 
 **Composer ecosystem:**
-- `bougie-composer` — `composer.json` / `composer.lock` model + PHP channel
-  fetch.
+- `bougie-composer` — re-exports the shared `composer.json` /
+  `composer.lock` model (`composer-manifest`), plus inline metadata for
+  single-file PHP scripts.
 - `bougie-composer-resolver` — Native pubgrub-based Composer dep resolver +
   async metadata fetcher + parallel dist download/extract.
-- `bougie-autoloader` — Generates `vendor/composer/autoload_*.php`
-  byte-equivalent to Composer 2.8.12. Parallel scan, SIMD classmap.
 - `bougie-semver` — Composer-flavored semver (Version, Constraint, Stability)
   with ported composer/semver test cases.
 - `bougie-version` — PHP version + Composer-constraint grammar (shared
@@ -70,6 +69,10 @@ The Composer wire format and PHP-exact `json_encode` live in the shared
 `composer-rs` workspace (crates.io: `composer-semver`, `composer-wire`,
 `composer-php-json`), consumed by both bougie and sconce. `bougie-composer`
 re-exports them (`bougie_composer::php_json`, `bougie_composer::metadata`).
+The `composer.json` / `composer.lock` model, the native installer-plugin
+ports and the autoloader generator come from the composer-client workspace
+(crates.io: `composer-manifest`, `composer-installers`, `composer-autoload`),
+shared with magebuild.
 
 **PHP toolchain / package management:**
 - `bougie-backend` — Pluggable PHP-distribution backends (bougie index +
@@ -345,7 +348,7 @@ Merging the PR tags `bougie-v<version>`, which triggers
   Trusted Publishing (OIDC) — no long-lived registry secret. cargo-dist
   (`bougie-release.yml`) independently owns the GitHub Release binaries
   on the same tag. Test fixtures are `exclude`d from the heavier crates
-  (bougie-autoloader, bougie-composer-resolver, the `bougie` bin) to
+  (bougie-composer-resolver, the `bougie` bin) to
   keep packed crates lean.
 
 **Use conventional commit prefixes** or release-please won't pick the
@@ -390,20 +393,20 @@ coordinated PRs.
 - **No Composer plugins.** Bougie never runs plugin install-time hooks.
   When users need a plugin's behavior (composer/installers paths, Symfony
   Flex recipes, Laravel package discovery), reimplement it natively. See
-  `bougie-recipe` for the Flex-recipe lane and `bougie-installers` for the
-  declarative-plugin ports.
+  `bougie-recipe` for the Flex-recipe lane and `composer-installers` (in
+  composer-client) for the declarative-plugin ports.
 - **Root `composer.json` scripts: opt-in, off by default.** Composer only
   ever runs scripts from the *root* package (never dependencies), so they
   are the project author's own commands. `bougie-scripts` runs them when
   enabled via `[scripts] run = true` / `--scripts` (parse → classify →
   dispatch). The default stays deterministic-native: scripts don't run,
   and bougie reproduces the effect of the ones it can (Laravel discovery
-  via `bougie-installers`). PHP-callback entries (`Class::method`) are
+  via `composer-installers`). PHP-callback entries (`Class::method`) are
   warn-skipped except a small native allowlist. The resolver fires
   lifecycle hooks (`ScriptHooks`) during `install_from_lock`; the CLI
   (`commands/scripts.rs`) builds the `ScriptContext`.
 - **Byte-equivalent Composer output where applicable.**
-  `bougie-autoloader` matches Composer 2.8.12's `autoload_*.php`
+  `composer-autoload` matches Composer 2.8.12's `autoload_*.php`
   byte-for-byte across the fixture suite. `bougie-php-json` exists
   solely to match PHP's `json_encode` byte output for content hashing.
 - **Conventional commits required** (see Release flow).
@@ -417,8 +420,10 @@ coordinated PRs.
 - New CLI flag: `crates/bougie-cli/src/lib.rs`.
 - New subcommand impl: `crates/bougie/src/commands/`.
 - Composer-side change: `crates/bougie-composer{,-resolver}/`.
-- Autoloader change: `crates/bougie-autoloader/` + run
-  `scripts/generate-autoload-fixtures.sh` if expected output shifts.
+- Autoloader or installer-plugin change: `composer-autoload` /
+  `composer-installers` in composer-client (`products/mage/composer/composer-client`
+  in the monorepo), whose `scripts/generate-autoload-fixtures.sh` regenerates
+  fixtures if expected output shifts.
 - Server / FastCGI: `crates/bougie-server/`.
 - Service supervision / sandboxing: `crates/bougie-daemon/`,
   `crates/bougie-babysit/`, `crates/sandbox-run/`.

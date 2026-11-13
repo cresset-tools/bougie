@@ -3,7 +3,7 @@
 //! A `patches/*.patch` file carries no package key — bougie infers the target
 //! by matching the diff's header paths against the install paths of the locked
 //! packages. The host supplies `(package name, install path)` pairs (computed
-//! from the lock via `bougie_installers::install_path`); this module stays
+//! from the lock via `composer_installers::install_path`); this module stays
 //! FS/PHP-agnostic.
 //!
 //! Inference only works for **project-root-relative** patches whose paths

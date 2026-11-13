@@ -12,11 +12,11 @@ authors.workspace = true
 exclude = ["/tests"]
 
 [dependencies]
-bougie-autoloader = { workspace = true }
+composer-autoload = { workspace = true }
 bougie-composer = { workspace = true }
 bougie-errors = { workspace = true }
 bougie-fetch = { workspace = true }
-bougie-installers = { workspace = true }
+composer-installers = { workspace = true }
 bougie-output = { workspace = true }
 bougie-patches = { workspace = true }
 bougie-paths = { workspace = true }

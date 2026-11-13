@@ -311,11 +311,11 @@ fn create(
         )
     })?;
 
-    let installer_paths = bougie_installers::InstallerPaths::parse(&composer_value);
+    let installer_paths = composer_installers::InstallerPaths::parse(&composer_value);
     let ptype = pkg.get("type").and_then(Value::as_str);
     // The install dir relative to the project root, e.g. `vendor/acme/foo`. It
     // doubles as the patch header prefix so the `patches/` lane can route it.
-    let install_rel = bougie_installers::install_path(package, ptype, &installer_paths);
+    let install_rel = composer_installers::install_path(package, ptype, &installer_paths);
     let edited_dir = project_root.join(&install_rel);
     if !edited_dir.is_dir() {
         bail!(

@@ -8,7 +8,7 @@
 //! shelling out to `git apply` / `patch` — so behavior is identical across
 //! Linux, macOS, and Windows.
 //!
-//! The crate is intentionally FS/PHP-agnostic, like `bougie-installers` and
+//! The crate is intentionally FS/PHP-agnostic, like `composer-installers` and
 //! `bougie-scripts`: it parses, plans, and applies; the host
 //! (`bougie-composer-resolver`'s install orchestrator) decides *when* to call
 //! it and wires it into the install lifecycle.

@@ -24,7 +24,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use bougie_autoloader::{Autoloader, DumpRequest, user_code_roots};
+use composer_autoload::{Autoloader, DumpRequest, user_code_roots};
 use tokio::sync::Mutex;
 
 use super::watch_registry::WatchRegistry;

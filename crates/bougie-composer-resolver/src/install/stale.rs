@@ -22,7 +22,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::{Component, Path, PathBuf};
 
 use bougie_composer::lockfile::LockPackage;
-use bougie_installers::InstallerPaths;
+use composer_installers::InstallerPaths;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -50,7 +50,7 @@ impl InstallRecord {
             .iter()
             .filter(|p| !p.is_metapackage())
             .map(|p| {
-                let rel = bougie_installers::install_path(
+                let rel = composer_installers::install_path(
                     &p.name,
                     p.package_type.as_deref(),
                     installer_paths,
