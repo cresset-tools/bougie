@@ -104,11 +104,13 @@ composer-wire = "0.1"
 # autoloader generator and the patcher, from the composer-client workspace,
 # shared with magebuild. Versioned independently on crates.io — NOT
 # release-please marker lines. (They were the local `bougie-composer` model,
-# `bougie-installers`, `bougie-autoloader` and `bougie-patches`.)
+# `bougie-installers`, `bougie-autoloader`, `bougie-patches` and the
+# resolver's `install/` module.)
 composer-manifest = "0.2"
 composer-installers = "0.1"
 composer-autoload = "0.1"
 composer-patches = "0.2"
+composer-install = "0.5"
 
 [workspace.lints.rust]
 # `deny` rather than `forbid` so the daemon's process-supervisor can

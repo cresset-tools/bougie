@@ -59,7 +59,9 @@ contract for index format, server behavior, and service tarballs).
   `composer.lock` model (`composer-manifest`), plus inline metadata for
   single-file PHP scripts.
 - `bougie-composer-resolver` — Native pubgrub-based Composer dep resolver +
-  async metadata fetcher + parallel dist download/extract.
+  async metadata fetcher, plus `install/`, which runs `composer-install`
+  with bougie's fetcher, cache dirs, `bougie login` credentials, progress
+  bar and error types.
 - `bougie-semver` — Composer-flavored semver (Version, Constraint, Stability)
   with ported composer/semver test cases.
 - `bougie-version` — PHP version + Composer-constraint grammar (shared
@@ -70,9 +72,10 @@ The Composer wire format and PHP-exact `json_encode` live in the shared
 `composer-php-json`), consumed by both bougie and sconce. `bougie-composer`
 re-exports them (`bougie_composer::php_json`, `bougie_composer::metadata`).
 The `composer.json` / `composer.lock` model, the native installer-plugin
-ports and the autoloader generator come from the composer-client workspace
-(crates.io: `composer-manifest`, `composer-installers`, `composer-autoload`),
-shared with magebuild.
+ports, the autoloader generator, the patcher and the install-from-lock
+engine come from the composer-client workspace (crates.io:
+`composer-manifest`, `composer-installers`, `composer-autoload`,
+`composer-patches`, `composer-install`), shared with magebuild.
 
 **PHP toolchain / package management:**
 - `bougie-backend` — Pluggable PHP-distribution backends (bougie index +

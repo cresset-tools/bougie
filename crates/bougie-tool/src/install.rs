@@ -354,8 +354,16 @@ pub fn install_prepared(
         &plan.composer_extras,
     )?;
     (ctx.resolve_lock)(paths, &tool_dir).wrap_err("resolving composer.lock for tool")?;
-    install_from_lock(paths, &tool_dir, InstallOptions { no_dev: true }, None)
-        .wrap_err("installing tool dependencies")?;
+    install_from_lock(
+        paths,
+        &tool_dir,
+        InstallOptions {
+            no_dev: true,
+            ..Default::default()
+        },
+        None,
+    )
+    .wrap_err("installing tool dependencies")?;
 
     let conf_d = tool_dir.join("conf.d");
     std::fs::create_dir_all(&conf_d).wrap_err_with(|| format!("creating {}", conf_d.display()))?;

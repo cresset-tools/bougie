@@ -345,7 +345,7 @@ fn install_vendor(
     let summary = bougie_composer_resolver::install_from_lock_with_patches(
         paths,
         project_root,
-        InstallOptions { no_dev: false },
+        InstallOptions::default(),
         hooks,
         patches,
     )?;

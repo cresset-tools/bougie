@@ -242,7 +242,10 @@ pub fn run(
     let summary = bougie_composer_resolver::install_from_lock_with_patches(
         &paths,
         &project_root,
-        InstallOptions { no_dev },
+        InstallOptions {
+            no_dev,
+            ..Default::default()
+        },
         hooks
             .as_ref()
             .map(|h| h as &dyn bougie_composer_resolver::ScriptHooks),
