@@ -100,6 +100,7 @@ composer-semver = "0.1.0"
 # `bougie-php-json` crate; composer-wire was `bougie-composer::metadata`.)
 composer-php-json = "0.1"
 composer-wire = "0.1"
+composer-auth = "0.2"
 # composer.json / composer.lock model, the native installer plugins, the
 # autoloader generator and the patcher, from the composer-client workspace,
 # shared with magebuild. Versioned independently on crates.io — NOT

@@ -3172,8 +3172,9 @@ fn discover_repos_resolves_via_v1_protocol_end_to_end() {
 // The env-driven sources (`read_global_auth_json`, `read_composer_auth_env`)
 // can't be unit-tested directly without racing other tests that share
 // the same env. We test the pure helpers under them
-// (`global_auth_json_candidates`, `parse_composer_auth_env`,
-// `read_auth_json_at`) which carry the real logic.
+// (`parse_composer_auth_env`, `read_auth_json_at`); the global
+// `auth.json` lookup and the precedence merge are tested in
+// composer-install, which owns them.
 
 #[test]
 fn parse_composer_auth_env_empty_input_yields_empty_map() {
@@ -3293,53 +3294,6 @@ fn gitlab_token_object_format_extracts_token() {
         }
         other => panic!("expected GitLabToken, got {other:?}"),
     }
-}
-
-#[test]
-fn global_auth_json_candidates_honors_composer_home_first() {
-    let env = |k: &str| match k {
-        "COMPOSER_HOME" => Some("/opt/composer".into()),
-        "XDG_CONFIG_HOME" => Some("/xdg".into()),
-        "HOME" => Some("/home/u".into()),
-        _ => None,
-    };
-    let got = crate::update::global_auth_json_candidates(env);
-    assert_eq!(
-        got,
-        vec![
-            std::path::PathBuf::from("/opt/composer/auth.json"),
-            std::path::PathBuf::from("/xdg/composer/auth.json"),
-            std::path::PathBuf::from("/home/u/.config/composer/auth.json"),
-            std::path::PathBuf::from("/home/u/.composer/auth.json"),
-        ],
-    );
-}
-
-#[test]
-fn global_auth_json_candidates_falls_back_to_xdg_then_legacy() {
-    // No COMPOSER_HOME, no XDG_CONFIG_HOME — just $HOME. We expect
-    // the XDG-default path first, the legacy ~/.composer path second.
-    let env = |k: &str| {
-        if k == "HOME" {
-            Some("/home/u".into())
-        } else {
-            None
-        }
-    };
-    let got = crate::update::global_auth_json_candidates(env);
-    assert_eq!(
-        got,
-        vec![
-            std::path::PathBuf::from("/home/u/.config/composer/auth.json"),
-            std::path::PathBuf::from("/home/u/.composer/auth.json"),
-        ],
-    );
-}
-
-#[test]
-fn global_auth_json_candidates_empty_env_yields_no_candidates() {
-    let got = crate::update::global_auth_json_candidates(|_| None);
-    assert!(got.is_empty());
 }
 
 #[test]
@@ -3481,69 +3435,6 @@ fn read_auth_json_at_parses_basic_and_bearer_with_path_in_errors() {
     let msg = format!("{err}");
     assert!(msg.contains("bad.json"), "{msg}");
     assert!(msg.contains("http-basic.h.username"), "{msg}");
-}
-
-#[test]
-fn merge_auth_sources_follows_composer_precedence() {
-    // Pins Composer's precedence order (see `Composer\Factory.php`
-    // lines 209-219 + 328-344). Lowest → highest:
-    //   1. global auth.json
-    //   2. composer.json `config`
-    //   3. project auth.json
-    //   4. COMPOSER_AUTH env
-    // We supply the same host in every source with a distinct
-    // password marker, then assert the env-var marker wins.
-    use crate::metadata::AuthCredentials;
-    fn basic(p: &str) -> AuthCredentials {
-        AuthCredentials::Basic {
-            username: "u".into(),
-            password: p.into(),
-        }
-    }
-    let host = "example.com";
-
-    // env wins over everything.
-    let out = crate::update::merge_auth_sources(
-        [(host.into(), basic("global"))].into_iter().collect(),
-        [(host.into(), basic("composer.json"))]
-            .into_iter()
-            .collect(),
-        [(host.into(), basic("project"))].into_iter().collect(),
-        [(host.into(), basic("env"))].into_iter().collect(),
-    );
-    match out.get(host).unwrap() {
-        AuthCredentials::Basic { password, .. } => assert_eq!(password, "env"),
-        _ => unreachable!(),
-    }
-
-    // Without env, project wins over composer.json wins over global.
-    let out = crate::update::merge_auth_sources(
-        [(host.into(), basic("global"))].into_iter().collect(),
-        [(host.into(), basic("composer.json"))]
-            .into_iter()
-            .collect(),
-        [(host.into(), basic("project"))].into_iter().collect(),
-        HashMap::new(),
-    );
-    match out.get(host).unwrap() {
-        AuthCredentials::Basic { password, .. } => assert_eq!(password, "project"),
-        _ => unreachable!(),
-    }
-
-    // Just global + composer.json: composer.json wins (this is the
-    // case the previous implementation got backwards).
-    let out = crate::update::merge_auth_sources(
-        [(host.into(), basic("global"))].into_iter().collect(),
-        [(host.into(), basic("composer.json"))]
-            .into_iter()
-            .collect(),
-        HashMap::new(),
-        HashMap::new(),
-    );
-    match out.get(host).unwrap() {
-        AuthCredentials::Basic { password, .. } => assert_eq!(password, "composer.json"),
-        _ => unreachable!(),
-    }
 }
 
 #[test]
