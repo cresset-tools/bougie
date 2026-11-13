@@ -1122,9 +1122,9 @@ dependencies = [
 
 [[package]]
 name = "composer-install"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ffb0b348140fb287f0add59a0f9e334f4c49f3b869206f911dad8de42ba89664"
+checksum = "72d6d4428ad41c8dbd317f31dbba3b8f9484097e50f32fcee0743d217aca81be"
 dependencies = [
  "composer-auth",
  "composer-autoload",
@@ -1142,6 +1142,7 @@ dependencies = [
  "tar",
  "tracing",
  "zip",
+ "zstd",
 ]
 
 [[package]]

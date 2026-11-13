@@ -13,7 +13,7 @@ use bougie_fetch::{ArchiveKind, DownloadBar, Hash};
 use bougie_paths::Paths;
 use composer_install::{
     DistOutcome, FetchSpec, Fetcher, GitSourceFetcher, InstallEnv, InstallError, Progress,
-    VcsFailure,
+    VcsFailure, Wording,
 };
 use composer_patches::PatchPlan;
 use eyre::Result;
@@ -25,6 +25,16 @@ pub use composer_install::{
 /// The autoloader freshness marker bougie has always written, kept so an
 /// existing warm `vendor/` stays warm.
 const AUTOLOAD_MARKER: &str = ".bougie-autoload-fresh";
+
+/// How the installer's warnings and blockers name bougie and its commands.
+fn wording() -> Wording<'static> {
+    let mut wording = Wording::default();
+    wording.tool = "bougie";
+    wording.update_command = "bougie run -- composer update";
+    wording.install_command = "bougie run -- composer install";
+    wording.scripts_hint = "Enable with `[scripts] run = true` in bougie.toml or pass `--scripts`.";
+    wording
+}
 
 /// Apply `composer.lock` to `project_root`.
 ///
@@ -65,7 +75,8 @@ pub fn install_from_lock_with_patches(
     let env = InstallEnv::new(&fetcher, &progress, &cache_root)
         .with_source_fetcher(&git)
         .with_machine_auth(&machine_auth)
-        .with_autoload_marker(AUTOLOAD_MARKER);
+        .with_autoload_marker(AUTOLOAD_MARKER)
+        .with_wording(wording());
 
     let result =
         composer_install::install_from_lock_with_patches(&env, project_root, opts, hooks, patches);
@@ -199,6 +210,12 @@ fn to_bougie_error(report: eyre::Report) -> eyre::Report {
             detail: detail.clone(),
         }
         .into(),
+        InstallError::Unsupported { reasons } => {
+            eyre::eyre!(
+                "this lockfile requires features bougie's install does not yet handle:\n  - {}",
+                reasons.join("\n  - ")
+            )
+        }
         InstallError::Vcs {
             failure,
             operation,
@@ -242,5 +259,65 @@ fn vcs_hint(failure: VcsFailure) -> &'static str {
             "the repository could not be reached — check the URL and your network/access"
         }
         _ => "see git's output above",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn warnings_and_blockers_name_bougie() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = Paths::new(tmp.path().join("home"), tmp.path().join("cache"));
+        let root = tmp.path().join("proj");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("composer.json"),
+            r#"{ "name": "acme/app", "scripts": { "post-install-cmd": "echo hi" } }"#,
+        )
+        .unwrap();
+
+        // Scripts declared but not run: the hint is bougie's opt-in.
+        std::fs::write(
+            root.join("composer.lock"),
+            r#"{ "content-hash": "stale", "packages": [], "packages-dev": [] }"#,
+        )
+        .unwrap();
+        let summary = install_from_lock(&paths, &root, InstallOptions::default(), None).unwrap();
+        let scripts = summary
+            .warnings
+            .iter()
+            .find(|w| w.contains("declares `scripts`"))
+            .unwrap_or_else(|| panic!("no scripts warning in {:?}", summary.warnings));
+        assert!(scripts.contains("`[scripts] run = true`"), "{scripts}");
+        assert!(scripts.contains("`--scripts`"), "{scripts}");
+        // The stale lock points at bougie's update command.
+        assert!(
+            summary
+                .warnings
+                .iter()
+                .any(|w| w.contains("Run `bougie run -- composer update`")),
+            "{:?}",
+            summary.warnings
+        );
+
+        // A lock bougie can't install: its heading, tool name and escape hatch.
+        std::fs::write(
+            root.join("composer.lock"),
+            r#"{ "content-hash": "stale", "packages": [ { "name": "acme/lib", "version": "1.0.0",
+                 "source": { "type": "svn", "url": "https://svn.example/lib", "reference": "1" } } ],
+                 "packages-dev": [] }"#,
+        )
+        .unwrap();
+        let err = install_from_lock(&paths, &root, InstallOptions::default(), None).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("bougie's install does not yet handle"),
+            "{msg}"
+        );
+        assert!(msg.contains("bougie can only install git sources"), "{msg}");
+        assert!(msg.contains("`bougie run -- composer install`"), "{msg}");
+        assert!(!msg.contains("this installer"), "{msg}");
     }
 }

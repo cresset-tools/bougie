@@ -111,7 +111,7 @@ composer-manifest = "0.2"
 composer-installers = "0.1"
 composer-autoload = "0.1"
 composer-patches = "0.2"
-composer-install = "0.5"
+composer-install = "0.6"
 
 [workspace.lints.rust]
 # `deny` rather than `forbid` so the daemon's process-supervisor can
