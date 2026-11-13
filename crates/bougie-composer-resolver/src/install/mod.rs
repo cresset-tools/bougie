@@ -5,7 +5,6 @@
 //! map, progress renders on bougie's package bar, and the installer's typed
 //! errors become [`BougieError`]s with bougie's hints and exit codes.
 
-use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -22,8 +21,6 @@ use eyre::Result;
 pub use composer_install::{
     ArchiveKind as DistArchive, DistRequest, InstallOptions, InstallSummary, LinkMode, ScriptHooks,
 };
-
-use crate::metadata::AuthCredentials;
 
 /// The autoloader freshness marker bougie has always written, kept so an
 /// existing warm `vendor/` stays warm.
@@ -63,12 +60,7 @@ pub fn install_from_lock_with_patches(
     };
     let progress = PackageBar::new();
     let git = GitSourceFetcher::new(paths.cache_composer_vcs());
-    let machine_auth: HashMap<String, composer_install::AuthCredentials> =
-        crate::update::read_bougie_auth_json()
-            .map_err(|e| eyre::eyre!(e))?
-            .into_iter()
-            .map(|(host, creds)| (host, to_composer_auth(creds)))
-            .collect();
+    let machine_auth = crate::update::read_bougie_auth_json().map_err(|e| eyre::eyre!(e))?;
     let cache_root = paths.cache_composer_dist();
     let env = InstallEnv::new(&fetcher, &progress, &cache_root)
         .with_source_fetcher(&git)
@@ -188,16 +180,6 @@ impl Progress for PackageBar {
     fn on_retry(&self, package: &str, attempt: u32, _error: &eyre::Report) {
         self.pb
             .println(format!("  retrying {package} (attempt {attempt})…"));
-    }
-}
-
-fn to_composer_auth(creds: AuthCredentials) -> composer_install::AuthCredentials {
-    use composer_install::AuthCredentials as C;
-    match creds {
-        AuthCredentials::Basic { username, password } => C::Basic { username, password },
-        AuthCredentials::Bearer { token } => C::Bearer { token },
-        AuthCredentials::GitHubToken { token } => C::GitHubToken { token },
-        AuthCredentials::GitLabToken { token } => C::GitLabToken { token },
     }
 }
 

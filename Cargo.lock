@@ -487,12 +487,12 @@ name = "bougie-composer-resolver"
 version = "0.56.0"
 dependencies = [
  "arcstr",
- "base64 0.22.1",
  "bougie-composer",
  "bougie-errors",
  "bougie-fetch",
  "bougie-output",
  "bougie-paths",
+ "composer-auth",
  "composer-install",
  "composer-patches",
  "composer-semver",
