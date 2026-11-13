@@ -122,7 +122,12 @@ impl Fetcher for BougieFetcher {
             auth_header: spec.auth_header,
             auth_header_name: spec.auth_header_name,
         };
-        bougie_fetch::fetch_file(&self.client, &blob, &self.bar).map(|_| ())
+        // The byte bar is hidden here, so its own retry notice goes nowhere:
+        // report the retry to the package bar instead.
+        bougie_fetch::fetch_file_with(&self.client, &blob, &self.bar, &|attempt, error| {
+            spec.progress.on_retry(spec.package_name, attempt, error);
+        })
+        .map(|_| ())
     }
 }
 
