@@ -1,8 +1,0 @@
-{
-    "name": "acme/scanner",
-    "version": "1.0.0",
-    "autoload": {
-        "classmap": ["lib/"],
-        "exclude-from-classmap": ["lib/Fixtures/"]
-    }
-}

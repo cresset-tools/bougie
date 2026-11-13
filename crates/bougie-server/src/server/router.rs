@@ -45,7 +45,7 @@ pub struct AppState {
     /// rare (only on config reload).
     pub hosts: RwLock<HashMap<String, Arc<HostBlock>>>,
     pub pools: Arc<PoolManager>,
-    /// Manages per-project [`bougie_autoloader::Autoloader`] state.
+    /// Manages per-project [`composer_autoload::Autoloader`] state.
     /// `dispatch` calls `ensure_bootstrap` on the first request to a
     /// project so the in-memory classmap converges to Live without
     /// blocking the request itself.

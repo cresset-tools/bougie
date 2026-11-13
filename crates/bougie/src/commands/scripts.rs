@@ -134,7 +134,7 @@ fn callback_registry() -> CallbackRegistry {
     reg.register(
         "Illuminate\\Foundation\\ComposerScripts::postAutoloadDump",
         Box::new(|ctx: &ScriptContext| {
-            bougie_installers::clear_compiled(ctx.project_root)
+            composer_installers::clear_compiled(ctx.project_root)
                 .map_err(|e| eyre::eyre!("clearCompiled: {e}"))
         }),
     );

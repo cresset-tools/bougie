@@ -9,7 +9,7 @@
 //! bougie installs the package zips but never runs their PHP), builds
 //! [`DistRequest`]s only for changed/new packages, removes stale
 //! packages, calls [`fetch_and_extract_dists`] to populate `vendor/`,
-//! then hands off to `bougie_autoloader::dump_autoload` to emit
+//! then hands off to `composer_autoload::dump_autoload` to emit
 //! `vendor/autoload.php` + `vendor/composer/installed.{json,php}`.
 //!
 //! Preflight failures are aggregated into a single error so the user
@@ -23,11 +23,11 @@ use std::path::{Path, PathBuf};
 
 use rustc_hash::FxHasher;
 
-use bougie_autoloader::{DumpRequest, dump_autoload};
 use bougie_composer::lockfile::{self, Lock, LockPackage};
 use bougie_fetch::{ArchiveKind, DownloadBar};
 use bougie_patches::{ApplyOptions, FailureMode, MaterializedPatch, PatchPlan, apply_patch_text};
 use bougie_paths::Paths;
+use composer_autoload::{DumpRequest, dump_autoload};
 use eyre::{Context, Result, eyre};
 use serde_json::Value;
 
@@ -243,7 +243,7 @@ pub fn install_from_lock_with_patches(
             .get("scripts")
             .cloned()
             .unwrap_or(Value::Null);
-        let blocking = bougie_installers::blocking_post_autoload_dump(&scripts);
+        let blocking = composer_installers::blocking_post_autoload_dump(&scripts);
         if !blocking.is_empty() {
             return Err(eyre!(
                 "Laravel post-autoload-dump runs steps before/among the default Laravel steps \
@@ -266,7 +266,7 @@ pub fn install_from_lock_with_patches(
 
     // Path packages are materialized separately (symlink-or-copy), not
     // downloaded.
-    let installer_paths = bougie_installers::InstallerPaths::parse(&composer_json_value);
+    let installer_paths = composer_installers::InstallerPaths::parse(&composer_json_value);
     let path_packages: Vec<&LockPackage> = candidates
         .iter()
         .copied()
@@ -275,7 +275,7 @@ pub fn install_from_lock_with_patches(
     let path_dests: Vec<PathBuf> = path_packages
         .iter()
         .map(|p| {
-            let rel = bougie_installers::install_path(
+            let rel = composer_installers::install_path(
                 &p.name,
                 p.package_type.as_deref(),
                 &installer_paths,
@@ -315,13 +315,13 @@ pub fn install_from_lock_with_patches(
     // Native `composer/installers`: a package's on-disk location can be
     // remapped by its `type` and the root `extra.installer-paths`. For
     // the common case (and every Magento 2 module) this resolves to
-    // `vendor/<name>`. The same computation runs in `bougie-autoloader`
+    // `vendor/<name>`. The same computation runs in `composer-autoload`
     // so the generated autoload + `installed.json` install-path point at
     // the relocated tree.
     let vendor_dirs: Vec<PathBuf> = install_set
         .iter()
         .map(|p| {
-            let rel = bougie_installers::install_path(
+            let rel = composer_installers::install_path(
                 &p.name,
                 p.package_type.as_deref(),
                 &installer_paths,
@@ -333,7 +333,7 @@ pub fn install_from_lock_with_patches(
             // would have relocated it, in which case there's no gap).
             if rel == format!("vendor/{}", p.name)
                 && let Some(framework) =
-                    bougie_installers::unsupported_framework(p.package_type.as_deref())
+                    composer_installers::unsupported_framework(p.package_type.as_deref())
             {
                 warnings.push(format!(
                     "{}: package type '{}' is a composer/installers '{}' type that bougie \
@@ -910,14 +910,14 @@ fn deploy_components(
     let mut deployed_component = false;
 
     for (pkg, vendor_dir) in install_set.iter().zip(vendor_dirs.iter()) {
-        let Some(plan) = bougie_installers::plan_deploy(pkg.package_type.as_deref(), &pkg.extra)
+        let Some(plan) = composer_installers::plan_deploy(pkg.package_type.as_deref(), &pkg.extra)
         else {
             continue;
         };
         if plan.map.is_empty() && plan.chmod.is_empty() {
             continue;
         }
-        match bougie_installers::apply_deploy(&plan, vendor_dir, project_root) {
+        match composer_installers::apply_deploy(&plan, vendor_dir, project_root) {
             Ok(stats) => {
                 files_deployed += stats.files_copied;
                 deployed_component |= plan.is_component;
@@ -957,10 +957,10 @@ fn run_laravel_discovery(project_root: &Path, composer_json_value: &Value) -> Re
         .cloned()
         .unwrap_or(Value::Null);
 
-    let manifest = bougie_installers::build_package_manifest(&installed, &root_extra);
-    let php = bougie_installers::render_packages_php(&manifest);
+    let manifest = composer_installers::build_package_manifest(&installed, &root_extra);
+    let php = composer_installers::render_packages_php(&manifest);
 
-    let cache_path = project_root.join(bougie_installers::PACKAGES_CACHE);
+    let cache_path = project_root.join(composer_installers::PACKAGES_CACHE);
     if let Some(parent) = cache_path.parent() {
         std::fs::create_dir_all(parent)
             .wrap_err_with(|| format!("creating {}", parent.display()))?;
@@ -970,7 +970,7 @@ fn run_laravel_discovery(project_root: &Path, composer_json_value: &Value) -> Re
 
     // clearCompiled(): drop the config/services caches so they can't
     // reference a package set that just changed.
-    for rel in bougie_installers::STALE_CACHES {
+    for rel in composer_installers::STALE_CACHES {
         let path = project_root.join(rel);
         if path.exists() {
             let _ = std::fs::remove_file(path);
@@ -985,7 +985,7 @@ fn write_vendor_path_php(project_root: &Path) -> Result<()> {
     std::fs::create_dir_all(&dir).wrap_err_with(|| format!("creating {}", dir.display()))?;
     std::fs::write(
         dir.join("vendor_path.php"),
-        bougie_installers::VENDOR_PATH_PHP,
+        composer_installers::VENDOR_PATH_PHP,
     )
     .wrap_err("writing vendor_path.php")?;
     Ok(())
@@ -1235,7 +1235,9 @@ fn preflight(
             .get("scripts")
             .and_then(Value::as_object)
             .is_some_and(|s| !s.is_empty())
-        && !bougie_installers::only_reproduced_scripts(value.get("scripts").unwrap_or(&Value::Null))
+        && !composer_installers::only_reproduced_scripts(
+            value.get("scripts").unwrap_or(&Value::Null),
+        )
     {
         warnings.push(
             "composer.json declares `scripts`; bougie does not run them by default. \

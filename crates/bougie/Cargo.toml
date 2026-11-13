@@ -11,7 +11,7 @@ authors.workspace = true
 # Drop CI-only fixture data and the probe example from the published
 # crate. Can't blanket-exclude `/tests` here: the `fake-redis` bin
 # target (gated on test-fixtures) lives at tests/fixtures/fake_redis.rs.
-exclude = ["/tests/fixtures/cross-check", "/examples"]
+exclude = ["/tests/fixtures/cross-check", "/tests/fixtures/dump-autoloader", "/examples"]
 
 [[bin]]
 name = "bougie"
@@ -72,7 +72,7 @@ dev-trust-root = ["bougie-index/dev-trust-root"]
 
 [dependencies]
 bougie-backend = { workspace = true }
-bougie-autoloader = { workspace = true }
+composer-autoload = { workspace = true }
 bougie-cli = { workspace = true }
 bougie-composer = { workspace = true }
 bougie-composer-resolver = { workspace = true }
@@ -86,7 +86,7 @@ bougie-fs = { workspace = true }
 # (release-please rewrites it) since it bypasses the workspace entry.
 bougie-index = { path = "../bougie-index", version = "0.56.0", default-features = false } # x-release-please-version
 bougie-installer = { workspace = true }
-bougie-installers = { workspace = true }
+composer-installers = { workspace = true }
 bougie-lock = { workspace = true }
 bougie-output = { workspace = true }
 bougie-patches = { workspace = true }
