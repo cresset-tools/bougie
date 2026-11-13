@@ -1,3 +1,0 @@
-<?php
-// deprecated
-echo "old";

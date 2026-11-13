@@ -12,10 +12,10 @@ use std::process::ExitCode;
 
 use bougie_cli::{OutputFormat, PatchesCommand, PhpPrefArgs};
 use bougie_config::load_project;
-use bougie_patches::lock;
-use bougie_patches::make::{FileEntry, MakeOutcome, make_patch};
-use bougie_patches::model::{DepthSpec, PatchSource};
 use bougie_paths::Paths;
+use composer_patches::lock;
+use composer_patches::make::{FileEntry, MakeOutcome, make_patch};
+use composer_patches::model::{DepthSpec, PatchSource};
 use eyre::{Result, WrapErr, bail};
 use serde_json::{Value, json};
 
@@ -237,7 +237,7 @@ fn add(
         let cache = paths.cache().join("patches");
         let dest = patches::download_for_add(&cache, source)?;
         let bytes = std::fs::read(&dest)?;
-        let sha = bougie_patches::content_sha256(&bytes);
+        let sha = composer_patches::content_sha256(&bytes);
         (bytes, source.to_string(), Some(sha))
     } else {
         let abs = project_root.join(source);
@@ -538,7 +538,7 @@ fn reconstruct_applied_baseline(
     dir: &Path,
 ) -> Result<()> {
     let plan = patches::build_plan(paths, project_root, project, None)?;
-    let others: Vec<bougie_patches::MaterializedPatch> = plan
+    let others: Vec<composer_patches::MaterializedPatch> = plan
         .as_ref()
         .and_then(|p| p.patches.get(package))
         .map(|v| {
@@ -563,11 +563,11 @@ fn reconstruct_applied_baseline(
         return Ok(());
     }
 
-    bougie_patches::apply_package_patches(
+    composer_patches::apply_package_patches(
         dir,
         package,
         &others,
-        bougie_patches::model::FailureMode::Abort,
+        composer_patches::model::FailureMode::Abort,
         true, // no PATCHES.txt in the throwaway baseline
     )
     .wrap_err_with(|| {
@@ -693,21 +693,21 @@ fn import(packages: &[String], all: bool, to_file: bool) -> Result<ExitCode> {
 fn infer_target_for(project_root: &Path, patch_bytes: &[u8]) -> Result<String> {
     let text =
         std::str::from_utf8(patch_bytes).wrap_err("patch is not valid UTF-8; pass --package")?;
-    let files = bougie_patches::diff::split(text)?;
+    let files = composer_patches::diff::split(text)?;
     let header_paths: Vec<&str> = files
         .iter()
-        .filter_map(bougie_patches::diff::FileDiff::routed_path)
+        .filter_map(composer_patches::diff::FileDiff::routed_path)
         .collect();
     let value = read_composer_value(project_root);
     let install_paths = patches::lock_install_paths(project_root, &value);
-    let inferred = bougie_patches::infer_target(&header_paths, &install_paths)
+    let inferred = composer_patches::infer_target(&header_paths, &install_paths)
         .wrap_err("could not infer target package; pass --package")?;
     match inferred.scope {
-        bougie_patches::PatchScope::Package => Ok(inferred.target),
+        composer_patches::PatchScope::Package => Ok(inferred.target),
         // A multi-package top-level patch has no single `extra.patches` key.
         // Drop it in the `patches/` directory instead, where it applies at the
         // project root with no configuration.
-        bougie_patches::PatchScope::Root { packages } => bail!(
+        composer_patches::PatchScope::Root { packages } => bail!(
             "patch spans multiple packages ({}); it can't be added under a single \
              `extra.patches` key — drop it in the `patches/` directory instead, \
              where a top-level patch applies at the project root with no config",
@@ -794,9 +794,9 @@ fn ensure_object(v: &mut Value) -> Result<&mut serde_json::Map<String, Value>> {
 }
 
 fn group_by_target(
-    patches: &[bougie_patches::Patch],
-) -> BTreeMap<&str, Vec<&bougie_patches::Patch>> {
-    let mut by_target: BTreeMap<&str, Vec<&bougie_patches::Patch>> = BTreeMap::new();
+    patches: &[composer_patches::Patch],
+) -> BTreeMap<&str, Vec<&composer_patches::Patch>> {
+    let mut by_target: BTreeMap<&str, Vec<&composer_patches::Patch>> = BTreeMap::new();
     for p in patches {
         by_target.entry(&p.target).or_default().push(p);
     }
@@ -814,7 +814,7 @@ fn basename(s: &str) -> String {
     s.rsplit(['/', '\\']).next().unwrap_or(s).to_string()
 }
 
-fn patch_to_json(p: &bougie_patches::Patch) -> Value {
+fn patch_to_json(p: &composer_patches::Patch) -> Value {
     json!({
         "target": p.target,
         "description": p.description,

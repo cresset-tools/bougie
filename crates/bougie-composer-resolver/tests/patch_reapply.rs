@@ -14,9 +14,9 @@ use std::io::Write;
 use std::path::Path;
 
 use bougie_composer_resolver::{InstallOptions, install_from_lock_with_patches};
-use bougie_patches::model::{DepthSpec, FailureMode};
-use bougie_patches::{MaterializedPatch, PatchPlan, RootPatch, content_sha256, lock};
 use bougie_paths::Paths;
+use composer_patches::model::{DepthSpec, FailureMode};
+use composer_patches::{MaterializedPatch, PatchPlan, RootPatch, content_sha256, lock};
 use tempfile::TempDir;
 
 const PRISTINE: &str = "alpha\nbeta\ngamma\n";
@@ -494,7 +494,7 @@ fn reapplication_state_matrix() {
 /// target's freshly-extracted tree.
 #[test]
 fn deferred_vendor_sourced_patch_applies_after_install() {
-    use bougie_patches::DeferredPatch;
+    use composer_patches::DeferredPatch;
 
     let tmp = TempDir::new().unwrap();
     let paths = paths_in(tmp.path());

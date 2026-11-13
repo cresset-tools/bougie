@@ -18,7 +18,7 @@ bougie-errors = { workspace = true }
 bougie-fetch = { workspace = true }
 composer-installers = { workspace = true }
 bougie-output = { workspace = true }
-bougie-patches = { workspace = true }
+composer-patches = { workspace = true }
 bougie-paths = { workspace = true }
 composer-semver = { workspace = true }
 eyre = "0.6"

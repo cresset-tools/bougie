@@ -1,27 +1,26 @@
-//! Bridge between the install lifecycle and `bougie-patches`.
+//! Bridge between the install lifecycle and `composer-patches`.
 //!
-//! Resolves the root patch set ([`bougie_patches::resolve_root`]), materializes
-//! each patch (local files pass through; remote URLs download into the cache
-//! with sha256 verify/TOFU), loads the applied fingerprints from
-//! `patches.lock.json`, and assembles the [`PatchPlan`] the install
-//! orchestrator consumes. Mirrors `commands/scripts.rs` as the lifecycle
+//! [`composer_patches::build_plan`] resolves the root patch set, materializes
+//! each patch and loads the applied fingerprints from `patches.lock.json`;
+//! magebuild builds its plan with the same function. This module maps bougie's
+//! `[patches]` config and `--patches` flag onto its [`PlanOptions`], downloads
+//! remote patches through `bougie-fetch`, and surfaces the patches dependencies
+//! declare (never applied). Mirrors `commands/scripts.rs` as the lifecycle
 //! bridge; the orchestrator stays FS/PHP-agnostic.
 
-use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use bougie_config::ProjectConfig;
 use bougie_fetch::{ArchiveKind, BlobSpec, DownloadBar, Hash, default_client};
-use bougie_patches::model::{FailureMode, PatchScope, PatchSource};
-use bougie_patches::{
-    DeferredPatch, MaterializedPatch, PatchPlan, RootPatch, content_sha256, lock, resolve_root,
-};
 use bougie_paths::Paths;
-use eyre::{Result, WrapErr, bail};
+use composer_patches::{PatchFetcher, PatchPlan, PlanOptions, content_sha256};
+use eyre::{Result, WrapErr};
 use serde_json::Value;
 
+pub use composer_patches::lock_install_paths;
+
 /// Build the [`PatchPlan`] for an install, or `None` when patching is disabled
-/// or the root declares no patches.
+/// or the root declares no patches (and none were applied before).
 ///
 /// Enablement precedence: an explicit `--patches`/`--no-patches` CLI flag
 /// wins, then `[patches] enable` (bougie config) / Composer's
@@ -33,163 +32,44 @@ pub fn build_plan(
     project: &ProjectConfig,
     cli_flag: Option<bool>,
 ) -> Result<Option<PatchPlan>> {
-    let composer_json = project_root.join("composer.json");
-    let Ok(bytes) = std::fs::read(&composer_json) else {
-        return Ok(None);
+    let fetcher = BougieFetcher {
+        client: default_client()?,
     };
-    let value: Value =
-        serde_json::from_slice(&bytes).wrap_err("parsing composer.json for patches")?;
-
-    // Root sources, unioned: inline `extra.patches` / patches-file, plus the
-    // zero-config `patches/` directory (target inferred from diff headers).
-    let patches = resolve_all(project_root, project, &value)?;
-    let applied = lock::read(project_root);
-
-    // Enablement gate.
-    let config_enable = project.bougie.patches.enable.or_else(|| {
-        value
-            .pointer("/extra/enable-patching")
-            .and_then(Value::as_bool)
-    });
-    let enabled = cli_flag.or(config_enable).unwrap_or(true);
-
-    // When patching is off or nothing is declared, we still need a *cleanup*
-    // plan if a previous run applied patches: the orchestrator must restore
-    // those packages to pristine and clear `patches.lock.json`. With no
-    // declared patches and no applied state there is genuinely nothing to do.
-    if !enabled || patches.is_empty() {
-        if applied.is_empty() {
-            return Ok(None);
-        }
-        return Ok(Some(PatchPlan {
-            patches: BTreeMap::new(),
-            root_patches: Vec::new(),
-            deferred: Vec::new(),
-            applied,
-            failure_mode: FailureMode::SkipAndWarn,
-            skip_report: skip_reporting(&value, project),
-            write_lock: project.bougie.patches.write_lock.unwrap_or(false),
-        }));
-    }
-
-    let failure_mode = if exit_on_failure(&value, project) {
-        FailureMode::Abort
-    } else {
-        FailureMode::SkipAndWarn
-    };
-    let skip_report = skip_reporting(&value, project);
-
-    // Materialize each patch. Package-scoped patches are grouped by target;
-    // root ("top-level") patches are collected separately — they apply at the
-    // project root and couple every package they touch. A package-scoped patch
-    // whose source lives inside a not-yet-installed vendor package can't be
-    // read yet (issue #421): it is *deferred*, to be materialized after the
-    // owning package is extracted.
-    let client = default_client()?;
-    let cache_dir = paths.cache().join("patches");
-    let mut grouped: BTreeMap<String, Vec<MaterializedPatch>> = BTreeMap::new();
-    let mut root_patches: Vec<RootPatch> = Vec::new();
-    let mut deferred: Vec<DeferredPatch> = Vec::new();
-    for patch in patches {
-        if matches!(patch.scope, PatchScope::Package)
-            && let Some(d) = defer_vendor_internal(project_root, &patch)
-        {
-            deferred.push(d);
-            continue;
-        }
-        let materialized = materialize(&client, &cache_dir, project_root, &patch)?;
-        match patch.scope {
-            PatchScope::Package => {
-                grouped.entry(patch.target).or_default().push(materialized);
-            }
-            PatchScope::Root { packages } => {
-                root_patches.push(RootPatch {
-                    patch: materialized,
-                    packages,
-                });
-            }
-        }
-    }
-
-    Ok(Some(PatchPlan {
-        patches: grouped,
-        root_patches,
-        deferred,
-        applied,
-        failure_mode,
-        skip_report,
-        write_lock: project.bougie.patches.write_lock.unwrap_or(false),
-    }))
+    composer_patches::build_plan(
+        project_root,
+        &plan_options(paths, project, cli_flag),
+        &fetcher,
+    )
 }
 
-/// If `patch` is a package-scoped local patch whose source file isn't present
-/// yet and resolves inside the project's `vendor/` tree, return a
-/// [`DeferredPatch`] to materialize after the owning package is installed
-/// (issue #421 — a patch shipped as its own Composer package, referenced
-/// before `vendor/` is populated). Returns `None` for anything else: remote
-/// patches, present files, and — deliberately — a *missing* file outside
-/// `vendor/`, which stays a hard error at materialize time so a typo'd project
-/// patch fails fast rather than after a full install.
-fn defer_vendor_internal(
-    project_root: &Path,
-    patch: &bougie_patches::Patch,
-) -> Option<DeferredPatch> {
-    let PatchSource::Local(rel) = &patch.source else {
-        return None;
-    };
-    let abs = if rel.is_absolute() {
-        rel.clone()
-    } else {
-        project_root.join(rel)
-    };
-    if abs.exists() || !abs.starts_with(project_root.join("vendor")) {
-        return None;
+/// bougie's `[patches]` config as [`PlanOptions`]: a setting it leaves unset
+/// falls through to `composer.json` `extra`, then the `COMPOSER_*` env var.
+fn plan_options(paths: &Paths, project: &ProjectConfig, cli_flag: Option<bool>) -> PlanOptions {
+    let config = &project.bougie.patches;
+    PlanOptions {
+        enable: cli_flag.or(config.enable),
+        exit_on_failure: config.exit_on_failure,
+        skip_report: config.skip_report,
+        write_lock: config.write_lock.unwrap_or(false),
+        patches_dir: config.dir.clone(),
+        cache_dir: Some(paths.cache().join("patches")),
     }
-    Some(DeferredPatch {
-        target: patch.target.clone(),
-        description: patch.description.clone(),
-        origin: rel.to_string_lossy().into_owned(),
-        local_path: abs,
-        depth: patch.depth,
-        declared_sha256: patch.sha256.clone(),
-    })
 }
 
 /// Resolve the root patch set without materializing (no network): inline
 /// `extra.patches` / patches-file unioned with the zero-config `patches/`
-/// directory, deduped. Used by `build_plan` and the read-only `patches list`
-/// / `doctor` commands.
+/// directory, deduped. Used by the read-only `patches list` / `doctor`
+/// commands.
 pub fn resolve_all(
     project_root: &Path,
     project: &ProjectConfig,
     composer_value: &Value,
-) -> Result<Vec<bougie_patches::Patch>> {
-    let mut patches = resolve_root(composer_value, project_root)?;
-    let dir_name = patches_dir_name(composer_value, project);
-    let install_paths = lock_install_paths(project_root, composer_value);
-    // Files already covered by an explicit declaration are skipped by the
-    // zero-config scan: the declaration owns target + depth, and the dedup
-    // below can't catch the pair (declared sources are relative, scanned
-    // ones absolute; descriptions differ too).
-    let declared_local: Vec<std::path::PathBuf> = patches
-        .iter()
-        .filter_map(|p| match &p.source {
-            PatchSource::Local(rel) => Some(if rel.is_absolute() {
-                rel.clone()
-            } else {
-                project_root.join(rel)
-            }),
-            PatchSource::Remote(_) => None,
-        })
-        .collect();
-    let dir_patches = bougie_patches::resolve_patches_dir(
-        &project_root.join(&dir_name),
-        &install_paths,
-        &declared_local,
-    )?;
-    patches.extend(dir_patches);
-    dedup_patches(&mut patches);
-    Ok(patches)
+) -> Result<Vec<composer_patches::Patch>> {
+    composer_patches::resolve_all(
+        project_root,
+        composer_value,
+        project.bougie.patches.dir.as_deref(),
+    )
 }
 
 /// A dependency's declared `extra.patches`, surfaced for `patches list` /
@@ -201,7 +81,7 @@ pub struct DependencyPatches {
     /// Its version in the lock.
     pub version: String,
     /// The patches it declares (target package preserved in each `Patch`).
-    pub patches: Vec<bougie_patches::Patch>,
+    pub patches: Vec<composer_patches::Patch>,
 }
 
 /// Read every dependency-declared `extra.patches` from `composer.lock`. These
@@ -234,7 +114,7 @@ pub fn dependency_patches(project_root: &Path) -> Vec<DependencyPatches> {
                 .to_string();
             let mut patches = Vec::new();
             for (target, value) in map {
-                if let Ok(parsed) = bougie_patches::parse_target_patches(target, value) {
+                if let Ok(parsed) = composer_patches::parse_target_patches(target, value) {
                     patches.extend(parsed);
                 }
             }
@@ -253,184 +133,58 @@ pub fn dependency_patches(project_root: &Path) -> Vec<DependencyPatches> {
 /// The `patches/` directory name: bougie `[patches] dir`, else Composer's
 /// `extra.composer-patches.patches-dir`, else the default `patches`.
 pub fn patches_dir_name(value: &Value, project: &ProjectConfig) -> String {
-    if let Some(dir) = &project.bougie.patches.dir {
-        return dir.clone();
-    }
-    value
-        .pointer("/extra/composer-patches/patches-dir")
-        .and_then(Value::as_str)
-        .unwrap_or("patches")
-        .to_string()
+    composer_patches::patches_dir_name(value, project.bougie.patches.dir.as_deref())
 }
 
-/// Compute each locked package's install directory (`vendor/<name>` or a
-/// `composer/installers` remap), for `patches/` header inference. Reads
-/// `composer.lock` directly; an absent/unparseable lock yields no paths (the
-/// `patches/` dir then can't infer targets, which surfaces as a clear error).
-pub fn lock_install_paths(project_root: &Path, composer_value: &Value) -> Vec<(String, String)> {
-    let Ok(bytes) = std::fs::read(project_root.join("composer.lock")) else {
-        return Vec::new();
-    };
-    let Ok(lock) = serde_json::from_slice::<Value>(&bytes) else {
-        return Vec::new();
-    };
-    let installer_paths = composer_installers::InstallerPaths::parse(composer_value);
-    let mut out = Vec::new();
-    for key in ["packages", "packages-dev"] {
-        let Some(arr) = lock.get(key).and_then(Value::as_array) else {
-            continue;
-        };
-        for p in arr {
-            let Some(name) = p.get("name").and_then(Value::as_str) else {
-                continue;
-            };
-            let ptype = p.get("type").and_then(Value::as_str);
-            let rel = composer_installers::install_path(name, ptype, &installer_paths);
-            out.push((name.to_string(), rel));
+/// Download a remote patch for `patches add` (no declared sha — trusted on
+/// first use), returning the cached local path. Same cache key as
+/// [`build_plan`] uses for an undeclared patch, so the install that follows
+/// finds it there.
+pub fn download_for_add(cache_dir: &Path, url: &str) -> Result<PathBuf> {
+    let dest = cache_dir.join(format!("{}.patch", content_sha256(url.as_bytes())));
+    if !dest.exists() {
+        std::fs::create_dir_all(cache_dir)
+            .wrap_err_with(|| format!("creating patch cache `{}`", cache_dir.display()))?;
+        BougieFetcher {
+            client: default_client()?,
         }
-    }
-    out
-}
-
-/// Drop exact duplicate patches — same target + same source + same
-/// description (the same entry declared twice, e.g. inline and via the
-/// external patches-file). A `patches/` file that duplicates a declaration
-/// never gets here: `resolve_all` excludes declared files from the scan.
-fn dedup_patches(patches: &mut Vec<bougie_patches::Patch>) {
-    let mut seen = std::collections::HashSet::new();
-    patches.retain(|p| {
-        let source = match &p.source {
-            PatchSource::Local(path) => path.to_string_lossy().into_owned(),
-            PatchSource::Remote(url) => url.clone(),
-        };
-        seen.insert((p.target.clone(), source, p.description.clone()))
-    });
-}
-
-/// Materialize one resolved patch into a local file + content hash.
-fn materialize(
-    client: &reqwest::blocking::Client,
-    cache_dir: &Path,
-    project_root: &Path,
-    patch: &bougie_patches::Patch,
-) -> Result<MaterializedPatch> {
-    let (local_path, content_sha256_hex, origin) = match &patch.source {
-        PatchSource::Local(rel) => {
-            let abs = if rel.is_absolute() {
-                rel.clone()
-            } else {
-                project_root.join(rel)
-            };
-            let bytes = std::fs::read(&abs).wrap_err_with(|| {
-                format!(
-                    "patch file `{}` for `{}` not found",
-                    abs.display(),
-                    patch.target
-                )
-            })?;
-            let sha = content_sha256(&bytes);
-            if let Some(declared) = &patch.sha256
-                && !declared.eq_ignore_ascii_case(&sha)
-            {
-                bail!(
-                    "patch `{}` for `{}`: sha256 mismatch (declared {declared}, actual {sha})",
-                    patch.description,
-                    patch.target
-                );
-            }
-            (abs, sha, rel.to_string_lossy().into_owned())
-        }
-        PatchSource::Remote(url) => {
-            let dest = download_remote(client, cache_dir, url, patch.sha256.as_deref())?;
-            let bytes = std::fs::read(&dest)
-                .wrap_err_with(|| format!("reading downloaded patch `{}`", dest.display()))?;
-            (dest, content_sha256(&bytes), url.clone())
-        }
-    };
-
-    Ok(MaterializedPatch {
-        description: patch.description.clone(),
-        origin,
-        local_path,
-        content_sha256: content_sha256_hex,
-        depth: patch.depth,
-    })
-}
-
-/// Download a remote patch for `patches add` (no declared sha — TOFU),
-/// returning the cached local path.
-pub fn download_for_add(cache_dir: &Path, url: &str) -> Result<std::path::PathBuf> {
-    let client = default_client()?;
-    download_remote(&client, cache_dir, url, None)
-}
-
-/// Download a remote patch into the cache, verifying a declared sha256 or
-/// trusting-on-first-use. Cache key is the declared sha (content-addressed) or
-/// a hash of the URL when none is declared.
-fn download_remote(
-    client: &reqwest::blocking::Client,
-    cache_dir: &Path,
-    url: &str,
-    declared_sha: Option<&str>,
-) -> Result<std::path::PathBuf> {
-    let partial = cache_dir.join(".partial");
-    std::fs::create_dir_all(&partial)
-        .wrap_err_with(|| format!("creating patch cache `{}`", cache_dir.display()))?;
-
-    let key = declared_sha.map_or_else(|| content_sha256(url.as_bytes()), str::to_ascii_lowercase);
-    let dest = cache_dir.join(format!("{key}.patch"));
-
-    let spec = BlobSpec {
-        url,
-        hash: Hash::sha256(declared_sha.unwrap_or("")),
-        partial_dir: &partial,
-        dest: &dest,
-        strip_prefix: "",
-        archive: ArchiveKind::Zip, // ignored by fetch_file
-        auth_header: None,
-        auth_header_name: None,
-    };
-    bougie_fetch::fetch_file(client, &spec, &DownloadBar::hidden())
+        .fetch(url, &dest)
         .wrap_err_with(|| format!("downloading patch `{url}`"))?;
+    }
     Ok(dest)
 }
 
-/// Whether to abort the install on the first failed patch: bougie config wins,
-/// then Composer's `extra.composer-exit-on-patch-failure`, then the
-/// `COMPOSER_EXIT_ON_PATCH_FAILURE` env var.
-fn exit_on_failure(value: &Value, project: &ProjectConfig) -> bool {
-    if let Some(b) = project.bougie.patches.exit_on_failure {
-        return b;
-    }
-    if let Some(b) = value
-        .pointer("/extra/composer-exit-on-patch-failure")
-        .and_then(Value::as_bool)
-    {
-        return b;
-    }
-    std::env::var_os("COMPOSER_EXIT_ON_PATCH_FAILURE").is_some()
+/// Downloads remote patches with `bougie-fetch`: retries, and an atomic write
+/// through a `.partial` directory beside the cache. `composer-patches` checks
+/// a declared sha256 afterwards.
+struct BougieFetcher {
+    client: reqwest::blocking::Client,
 }
 
-/// Whether to suppress `PATCHES.txt`: bougie config, then Composer's
-/// `extra.composer-patches-skip-reporting`, then `COMPOSER_PATCHES_SKIP_REPORTING`.
-fn skip_reporting(value: &Value, project: &ProjectConfig) -> bool {
-    if let Some(b) = project.bougie.patches.skip_report {
-        return b;
+impl PatchFetcher for BougieFetcher {
+    fn fetch(&self, url: &str, dest: &Path) -> Result<()> {
+        let partial = dest.parent().unwrap_or(Path::new(".")).join(".partial");
+        std::fs::create_dir_all(&partial)
+            .wrap_err_with(|| format!("creating `{}`", partial.display()))?;
+        let spec = BlobSpec {
+            url,
+            hash: Hash::sha256(""),
+            partial_dir: &partial,
+            dest,
+            strip_prefix: "",
+            archive: ArchiveKind::Zip, // ignored by fetch_file
+            auth_header: None,
+            auth_header_name: None,
+        };
+        bougie_fetch::fetch_file(&self.client, &spec, &DownloadBar::hidden())?;
+        Ok(())
     }
-    if let Some(b) = value
-        .pointer("/extra/composer-patches-skip-reporting")
-        .and_then(Value::as_bool)
-    {
-        return b;
-    }
-    std::env::var_os("COMPOSER_PATCHES_SKIP_REPORTING").is_some()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use bougie_config::{BougieConfig, PatchesConfig};
-    use serde_json::json;
 
     fn project(enable: Option<bool>) -> ProjectConfig {
         ProjectConfig {
@@ -446,29 +200,33 @@ mod tests {
     }
 
     #[test]
-    fn exit_on_failure_precedence() {
-        // bougie config wins.
-        assert!(exit_on_failure(&Value::Null, &{
-            let mut p = project(None);
-            p.bougie.patches.exit_on_failure = Some(true);
-            p
-        }));
-        // Composer extra key.
-        assert!(exit_on_failure(
-            &json!({"extra": {"composer-exit-on-patch-failure": true}}),
-            &project(None)
-        ));
-        // Default off.
-        assert!(!exit_on_failure(&Value::Null, &project(None)));
-    }
+    fn plan_options_take_bougie_config_and_the_cli_flag() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = Paths::new(tmp.path().join("home"), tmp.path().join("cache"));
 
-    #[test]
-    fn skip_reporting_from_composer_extra() {
-        assert!(skip_reporting(
-            &json!({"extra": {"composer-patches-skip-reporting": true}}),
-            &project(None)
-        ));
-        assert!(!skip_reporting(&Value::Null, &project(None)));
+        // Unset config defers every setting to composer.json and the env.
+        let opts = plan_options(&paths, &project(None), None);
+        assert_eq!(opts.enable, None);
+        assert_eq!(opts.exit_on_failure, None);
+        assert_eq!(opts.skip_report, None);
+        assert!(!opts.write_lock);
+        assert_eq!(opts.patches_dir, None);
+        assert_eq!(opts.cache_dir, Some(paths.cache().join("patches")));
+
+        let mut p = project(Some(true));
+        p.bougie.patches.exit_on_failure = Some(true);
+        p.bougie.patches.skip_report = Some(false);
+        p.bougie.patches.write_lock = Some(true);
+        p.bougie.patches.dir = Some("fixes".into());
+        let opts = plan_options(&paths, &p, None);
+        assert_eq!(opts.enable, Some(true));
+        assert_eq!(opts.exit_on_failure, Some(true));
+        assert_eq!(opts.skip_report, Some(false));
+        assert!(opts.write_lock);
+        assert_eq!(opts.patches_dir.as_deref(), Some("fixes"));
+
+        // --no-patches beats `[patches] enable = true`.
+        assert_eq!(plan_options(&paths, &p, Some(false)).enable, Some(false));
     }
 
     #[test]
@@ -501,7 +259,10 @@ mod tests {
         assert_eq!(widget.len(), 1);
         assert_eq!(widget[0].description, "widget.patch");
         // a/(1) + vendor/acme/widget(3) = depth 4.
-        assert_eq!(widget[0].depth, bougie_patches::model::DepthSpec::Fixed(4));
+        assert_eq!(
+            widget[0].depth,
+            composer_patches::model::DepthSpec::Fixed(4)
+        );
     }
 
     #[test]
