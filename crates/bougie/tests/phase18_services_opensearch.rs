@@ -58,6 +58,17 @@ fn stop_daemon(env: &TestEnv) {
     common::wait_for_port_free(9200, Duration::from_secs(30));
 }
 
+/// Stops the test's daemon when dropped, so a failing test doesn't leave
+/// opensearch holding 9200 for the next one. Declare it after the
+/// `TestEnv` so it drops first.
+struct StopDaemonOnDrop<'a>(&'a TestEnv);
+
+impl Drop for StopDaemonOnDrop<'_> {
+    fn drop(&mut self) {
+        stop_daemon(self.0);
+    }
+}
+
 /// Run `bougie service up` for the project and panic on failure
 /// AFTER dumping opensearch.log + the bougied call's stderr — so a
 /// CI failure surfaces the real JVM/sandbox error instead of just
@@ -105,6 +116,42 @@ fn dump_opensearch_log(env: &TestEnv, label: &str) {
         Err(e) => eprintln!("(could not read: {e})"),
     }
     eprintln!("===== end opensearch.log =====\n");
+}
+
+/// Assert the tenant's index template exists, and on failure print what
+/// explains a missing one: the daemon and opensearch logs, the ledger,
+/// the templates the cluster does have, and the node's uptime (a restart
+/// shows as an uptime shorter than the test has been running).
+fn assert_template_or_dump(env: &TestEnv, tenant: &str, label: &str) {
+    let (status, body) = http_get(&format!("http://127.0.0.1:9200/_index_template/{tenant}"));
+    if status == 200 {
+        return;
+    }
+    let state = env.home_path().join("state");
+    for (name, path) in [
+        ("bougied.log", state.join("bougied.log")),
+        (
+            "tenants.json",
+            state.join("services/opensearch/2.19.5/tenants.json"),
+        ),
+    ] {
+        let text = fs::read_to_string(&path).unwrap_or_else(|e| format!("(could not read: {e})"));
+        let mut start = text.len().saturating_sub(8 * 1024);
+        while !text.is_char_boundary(start) {
+            start += 1;
+        }
+        let tail = &text[start..];
+        eprintln!("\n===== {name} [{label}] =====\n{tail}\n===== end {name} =====");
+    }
+    dump_opensearch_log(env, label);
+    for url in [
+        "http://127.0.0.1:9200/_cat/templates?v",
+        "http://127.0.0.1:9200/_cat/nodes?v&h=name,pid,uptime",
+    ] {
+        let (s, b) = http_get(url);
+        eprintln!("GET {url} -> {s}\n{b}");
+    }
+    panic!("tenant {tenant} template missing {label} ({status}): {body}");
 }
 
 fn http_get(url: &str) -> (u16, String) {
@@ -160,6 +207,7 @@ fn up_starts_opensearch_and_provisions_index_template() {
     let _guard = opensearch_test_lock();
     let env = TestEnv::new();
     opensearch_fixture::install_into(env.home_path());
+    let _stop = StopDaemonOnDrop(&env);
     let proj = project_with_composer("acme/blog");
 
     env.bougie()
@@ -197,8 +245,6 @@ fn up_starts_opensearch_and_provisions_index_template() {
     let tmpl: serde_json::Value = serde_json::from_str(&body).unwrap();
     let patterns = &tmpl["index_templates"][0]["index_template"]["index_patterns"];
     assert_eq!(patterns[0], "acme_blog-*", "template body: {body}");
-
-    stop_daemon(&env);
 }
 
 #[test]
@@ -210,6 +256,7 @@ fn second_up_is_idempotent() {
     let _guard = opensearch_test_lock();
     let env = TestEnv::new();
     opensearch_fixture::install_into(env.home_path());
+    let _stop = StopDaemonOnDrop(&env);
     let proj = project_with_composer("acme/blog");
     env.bougie()
         .args(["service", "add", "opensearch"])
@@ -227,8 +274,6 @@ fn second_up_is_idempotent() {
     .unwrap();
     let n = ledger.lines().filter(|l| !l.trim().is_empty()).count();
     assert_eq!(n, 1, "expected one tenant line, got\n{ledger}");
-
-    stop_daemon(&env);
 }
 
 #[test]
@@ -240,10 +285,13 @@ fn two_projects_have_separate_index_prefixes() {
     let _guard = opensearch_test_lock();
     let env = TestEnv::new();
     opensearch_fixture::install_into(env.home_path());
+    let _stop = StopDaemonOnDrop(&env);
     let pa = project_with_composer("acme/blog");
     let pb = project_with_composer("acme/store");
 
-    for p in [pa.path(), pb.path()] {
+    // Checking the first template before the second project comes up
+    // tells a template that was never created apart from one lost later.
+    for (p, tenant) in [(pa.path(), "acme_blog"), (pb.path(), "acme_store")] {
         env.bougie()
             .args(["service", "add", "opensearch"])
             .current_dir(p)
@@ -251,16 +299,16 @@ fn two_projects_have_separate_index_prefixes() {
             .assert()
             .success();
         services_up_or_dump(&env, p, &[]);
-    }
-    if !wait_for_http_root(Duration::from_mins(1)) {
-        dump_opensearch_log(&env, "wait_for_http_root timeout (two_projects)");
-        panic!("opensearch HTTP root never responded");
+        if !wait_for_http_root(Duration::from_mins(1)) {
+            dump_opensearch_log(&env, "wait_for_http_root timeout (two_projects)");
+            panic!("opensearch HTTP root never responded");
+        }
+        assert_template_or_dump(&env, tenant, &format!("after up of {tenant}"));
     }
 
-    // Two templates exist.
+    // Both templates still exist once both projects are up.
     for tenant in ["acme_blog", "acme_store"] {
-        let (status, _body) = http_get(&format!("http://127.0.0.1:9200/_index_template/{tenant}"));
-        assert_eq!(status, 200, "tenant {tenant} template missing");
+        assert_template_or_dump(&env, tenant, "after both ups");
     }
 
     // Project A writes a doc; project B's prefix-scoped search sees zero hits.
@@ -275,8 +323,6 @@ fn two_projects_have_separate_index_prefixes() {
         v["hits"]["total"]["value"], 0,
         "tenant acme_store should NOT see acme_blog's docs; body: {body}"
     );
-
-    stop_daemon(&env);
 }
 
 #[test]
@@ -288,6 +334,7 @@ fn down_purge_drops_template_and_indices() {
     let _guard = opensearch_test_lock();
     let env = TestEnv::new();
     opensearch_fixture::install_into(env.home_path());
+    let _stop = StopDaemonOnDrop(&env);
     let proj = project_with_composer("acme/blog");
     env.bougie()
         .args(["service", "add", "opensearch"])
@@ -346,8 +393,6 @@ fn down_purge_drops_template_and_indices() {
     assert_eq!(s, 404, "index should be gone after --purge");
     let (s, _) = http_get("http://127.0.0.1:9200/_index_template/acme_blog");
     assert_eq!(s, 404, "template should be gone after --purge");
-
-    stop_daemon(&env);
 }
 
 #[test]
@@ -359,6 +404,7 @@ fn bougie_run_exports_opensearch_env_vars() {
     let _guard = opensearch_test_lock();
     let env = TestEnv::new();
     opensearch_fixture::install_into(env.home_path());
+    let _stop = StopDaemonOnDrop(&env);
     let proj = project_with_composer("acme/blog");
     env.bougie()
         .args(["service", "add", "opensearch"])
@@ -385,6 +431,4 @@ fn bougie_run_exports_opensearch_env_vars() {
         stdout.contains("BOUGIE_SERVICE_OPENSEARCH_INDEX_PREFIX=acme_blog-"),
         "missing INDEX_PREFIX var; env was:\n{stdout}"
     );
-
-    stop_daemon(&env);
 }
