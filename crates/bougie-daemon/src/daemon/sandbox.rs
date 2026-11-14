@@ -48,7 +48,7 @@ pub fn build_policy(
     }
 }
 
-/// `apply_sandbox` fails open when the kernel doesn't enforce Landlock
+/// The sandbox fails open when the kernel doesn't enforce Landlock
 /// (< 5.13 or disabled), so spawned services would run unconfined. Warn
 /// once at the first policy build so the operator knows the filesystem
 /// boundary isn't active — fail-open should never be silent.

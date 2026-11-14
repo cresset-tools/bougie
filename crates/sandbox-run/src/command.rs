@@ -5,7 +5,7 @@ use std::{
     process::{Child, ExitStatus, Output, Stdio},
 };
 
-use crate::{platform, sandbox::SandboxPolicy};
+use crate::sandbox::SandboxPolicy;
 
 /// A sandboxed process builder, providing fine-grained control over how a new
 /// process should be spawned.
@@ -157,12 +157,16 @@ impl Command {
     fn apply_sandbox_pre_exec(&mut self, policy: SandboxPolicy) -> io::Result<()> {
         use std::os::unix::process::CommandExt;
 
+        // Everything that allocates or touches the filesystem happens here, in
+        // the parent. A failure to build the policy is reported before any
+        // process is created.
+        let prepared = policy.prepare().map_err(io::Error::other)?;
+
         // SAFETY: The pre_exec closure runs in the child process after fork
-        // but before exec. We apply the sandbox here so the executed program
-        // runs under the sandbox restrictions.
+        // but before exec, where only async-signal-safe calls are allowed.
+        // `PreparedSandbox::apply` is limited to those (see its docs).
         unsafe {
-            self.inner
-                .pre_exec(move || platform::apply_sandbox(&policy).map_err(io::Error::other));
+            self.inner.pre_exec(move || prepared.apply());
         }
         Ok(())
     }
