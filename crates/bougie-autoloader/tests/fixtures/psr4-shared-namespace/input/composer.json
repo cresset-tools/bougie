@@ -1,0 +1,13 @@
+{
+    "name": "fixture/psr4-shared-namespace",
+    "description": "Two independent packages declare the same PSR-4 prefix (Shared\\) and the same class (Shared\\Foo) in their respective src/ dirs. Composer aggregates the paths in reverse-sortPackageMap order (root first, then dependents); for two leaf packages with no relative dependency the order is implementation-defined. This fixture pins what Composer 2.8.12 actually emits so bougie has a target.",
+    "type": "project",
+    "repositories": [
+        { "type": "path", "url": "packages/acme-alpha", "options": { "symlink": false } },
+        { "type": "path", "url": "packages/acme-beta",  "options": { "symlink": false } }
+    ],
+    "require": {
+        "acme/alpha": "*",
+        "acme/beta": "*"
+    }
+}

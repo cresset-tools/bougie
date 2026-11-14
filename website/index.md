@@ -52,6 +52,7 @@ It does it all: install PHP, install your <code>vendor/</code> and then starts y
 
 <feature-grid>
 <feature-cell>
+<feature-num>01</feature-num>
 <h3>PHP</h3>
 <p>
 Are you running multiple projects at the same time?
@@ -59,23 +60,27 @@ bougie allows you to install <key-token>multiple PHP versions</key-token> and us
 </p>
 </feature-cell>
 <feature-cell>
+<feature-num>02</feature-num>
 <h3>Extensions</h3>
 <p>
 bougie installs a basic PHP extension set by default, but add that niche extension you need with just a <key-token>bougie ext add protobuf</key-token>
 </p>
 </feature-cell>
 <feature-cell>
+<feature-num>03</feature-num>
 <h3>Services</h3>
 <p>
 You may only need <code>php artisan serve</code>, but in case you need Elasticsearch, Rabbitmq, Redis and Mysql <key-token>bougie manages and runs your services</key-token>.
 </p>
 </feature-cell>
 <feature-cell>
+<feature-num>04</feature-num>
 <h3>Drop-in compatible</h3>
 <p>Reads your <key-token>composer.json</key-token> and <key-token>composer.lock</key-token> and
 produces the same <key-token>vendor/</key-token>. Pick up more bougie features when you need it</p>
 </feature-cell>
 <feature-cell class="double">
+<feature-num>05</feature-num>
 <h3>All native</h3>
 <p>
 HTTP server, Elasticsearch, Rabbitmq, Redis, Mysql and of course: PHP-FPM all run with <key-token>native binaries</key-token>.
@@ -90,6 +95,7 @@ When installing this signature makes sure that the binary was built from source 
 </feature-grid>
 
 <call-band>
+<band-tag>Mage-OS and Magento</band-tag>
 <h2>First class support for Magento</h2>
 <p>Magento has the heaviest dev setup in PHP. bougie makes it so you don't need a long tutorial but only
 <band-em>one command to a running store</band-em>. You'll have the correct PHP version, every required extension,

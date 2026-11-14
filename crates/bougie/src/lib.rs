@@ -114,7 +114,6 @@ fn command_name(cmd: &Command) -> &'static str {
         Command::Php(_) => "php",
         Command::Node(_) => "node",
         Command::Patches(_) => "patches",
-        Command::Repo(_) => "repo",
         Command::Composer(_) => "composer",
         Command::Tool(_) => "tool",
         Command::ToolExec { .. } => "tool-exec",
@@ -294,9 +293,6 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
         Command::Lock {
             script,
             with_platform,
-            all_targets,
-            upgrade,
-            upgrade_package,
             resolution,
             working_dir,
             dry_run,
@@ -310,14 +306,7 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
                     format,
                     working_dir,
                     dry_run,
-                    commands::lock::PlatformLock {
-                        enabled: with_platform,
-                        all_targets,
-                        upgrade: commands::platform_lock::Upgrade::from_flags(
-                            upgrade,
-                            upgrade_package,
-                        ),
-                    },
+                    with_platform,
                     resolution_strategy(resolution),
                     platform_ignore(ignore_platform_reqs, &ignore_platform_req),
                 )
@@ -369,7 +358,6 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
         Command::Sync {
             offline,
             locked,
-            frozen,
             dry_run,
             scripts,
             no_scripts,
@@ -387,7 +375,7 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
                 &project_root,
                 format,
                 offline,
-                lock_mode(locked, frozen),
+                locked,
                 dry_run,
                 scripts_override(scripts, no_scripts),
                 tristate(patches, no_patches),
@@ -400,8 +388,6 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
             script,
             with,
             no_sync,
-            locked,
-            frozen,
             xdebug,
             php_request,
             php,
@@ -415,7 +401,6 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
                     &argv,
                     format,
                     no_sync,
-                    lock_mode(locked, frozen),
                     xdebug,
                     php,
                     php_request.as_deref(),
@@ -423,7 +408,6 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
             }
         }
         Command::Patches(cmd) => commands::patches_cmd::run(format, cmd),
-        Command::Repo(cmd) => commands::repo::run(format, cmd),
         Command::Ext(ExtCommand::Add { args, no_sync, php }) => {
             commands::ext_add_remove::add(format, args, no_sync, php)
         }
@@ -1007,16 +991,6 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
                 args,
             },
         ),
-    }
-}
-
-fn lock_mode(locked: bool, frozen: bool) -> commands::sync::LockPolicy {
-    if locked {
-        commands::sync::LockPolicy::Locked
-    } else if frozen {
-        commands::sync::LockPolicy::Frozen
-    } else {
-        commands::sync::LockPolicy::Update
     }
 }
 

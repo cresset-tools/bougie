@@ -1,7 +1,7 @@
-//! End-to-end `bougie composer dump-autoloader` against inputs copied
-//! from composer-autoload's byte-equivalence fixtures, under
-//! `tests/fixtures/dump-autoloader/`. composer-autoload's own harness
-//! already proves byte-equivalence per fixture; this file
+//! End-to-end `bougie composer dump-autoloader` against the byte-
+//! equivalence fixtures committed under
+//! `crates/bougie-autoloader/tests/fixtures/`. The library-level
+//! harness already proves byte-equivalence per fixture; this file
 //! proves the CLI dispatches into it correctly (flag parsing,
 //! `--working-dir`, error path on a missing composer.json, and the
 //! `dump-autoload` alias for Composer muscle-memory).
@@ -22,10 +22,12 @@ use common::TestEnv;
 
 fn fixture_input(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("bougie-autoloader")
         .join("tests")
         .join("fixtures")
-        .join("dump-autoloader")
         .join(name)
+        .join("input")
 }
 
 fn copy_dir(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {

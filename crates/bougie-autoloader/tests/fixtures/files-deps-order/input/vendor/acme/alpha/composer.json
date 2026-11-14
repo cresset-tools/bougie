@@ -1,0 +1,10 @@
+{
+    "name": "acme/alpha",
+    "version": "1.0.0",
+    "require": {
+        "acme/zulu": "*"
+    },
+    "autoload": {
+        "files": ["alpha.php"]
+    }
+}

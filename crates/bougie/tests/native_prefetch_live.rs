@@ -17,7 +17,6 @@ const WICK_VERSION: &str = "v0.2.1";
 fn wick_spec(sigstore_repository: Option<String>) -> NativeBinarySpec {
     NativeBinarySpec {
         name: "wick".into(),
-        bin: "wick".into(),
         tag_prefix: "wick-v".into(),
         base_urls: vec![
             "https://releases.bougie.tools/github/wick/releases/download".into(),

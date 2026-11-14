@@ -760,10 +760,6 @@ async fn spawn_runtime(
     // bougie's ABI-foreign fragments.
     if let Some(dir) = scan_dir {
         cmd.env("PHP_INI_SCAN_DIR", dir);
-        // Workers inherit this (the pool sets `clear_env = no`).
-        if let Some(ca) = bougie_platform::ca::ssl_cert_file() {
-            cmd.env(bougie_platform::ca::SSL_CERT_FILE, ca);
-        }
     }
     cmd.stderr(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())

@@ -1,0 +1,41 @@
+{
+    "_readme": [
+        "This file locks the dependencies of your project to a known state",
+        "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
+        "This file is @generated automatically"
+    ],
+    "content-hash": "0adbcc452307c48aba2fb5429f63400e",
+    "packages": [
+        {
+            "name": "acme/scanner",
+            "version": "1.0.0",
+            "dist": {
+                "type": "path",
+                "url": "packages/scanner",
+                "reference": "16a5aa13dfb559c7aa9e382ff78723cc775a222a"
+            },
+            "type": "library",
+            "autoload": {
+                "classmap": [
+                    "lib/"
+                ],
+                "exclude-from-classmap": [
+                    "lib/Fixtures/"
+                ]
+            },
+            "transport-options": {
+                "symlink": false,
+                "relative": true
+            }
+        }
+    ],
+    "packages-dev": [],
+    "aliases": [],
+    "minimum-stability": "stable",
+    "stability-flags": {},
+    "prefer-stable": false,
+    "prefer-lowest": false,
+    "platform": {},
+    "platform-dev": {},
+    "plugin-api-version": "2.6.0"
+}

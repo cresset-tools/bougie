@@ -15,13 +15,13 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use bougie_autoloader::{DumpRequest, PsrWarning, dump_autoload};
 use bougie_cli::OutputFormat;
 use bougie_output::output::{Render, emit};
-use composer_autoload::{DumpRequest, PsrWarning, dump_autoload};
 use eyre::{Context, Result};
 use serde::Serialize;
 
-/// Serializable mirror of [`composer_autoload::PsrWarning`] used in
+/// Serializable mirror of [`bougie_autoloader::PsrWarning`] used in
 /// `--format json-v1`. Kept as a separate struct so the JSON schema
 /// is owned by this command crate (not by the autoloader library).
 #[derive(Debug, Serialize)]

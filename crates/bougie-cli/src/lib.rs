@@ -185,10 +185,6 @@ pub enum Command {
     #[command(subcommand, display_order = 16)]
     Patches(PatchesCommand),
 
-    /// Manage the project's Composer repositories (where packages come from)
-    #[command(subcommand, display_order = 17)]
-    Repo(RepoCommand),
-
     /// Add dependencies to the project
     #[command(display_order = 10)]
     Add {
@@ -281,27 +277,6 @@ pub enum Command {
         /// Also resolve PHP, extensions, and services into bougie.lock
         #[arg(long = "with-platform", conflicts_with = "script")]
         with_platform: bool,
-        /// With --with-platform, record digests for every target the
-        /// index serves, not just this machine's, so a CI on another OS
-        /// can run `bougie sync --locked` without a first lazy sync
-        #[arg(long = "all-targets", requires = "with_platform")]
-        all_targets: bool,
-        /// With --with-platform, re-resolve PHP, extensions, and services
-        /// to the newest versions their constraints allow, instead of
-        /// keeping the pins already in bougie.lock (uv's `--upgrade`)
-        #[arg(short = 'U', long = "upgrade", requires = "with_platform")]
-        upgrade: bool,
-        /// With --with-platform, re-resolve one entry to its newest
-        /// allowed version and keep the rest: `php`, an extension
-        /// (`redis`), or a service (`mysql`); repeatable
-        #[arg(
-            short = 'P',
-            long = "upgrade-package",
-            value_name = "NAME",
-            requires = "with_platform",
-            conflicts_with = "upgrade"
-        )]
-        upgrade_package: Vec<String>,
         /// Version-preference policy when re-resolving changed requires
         #[arg(
             long = "resolution",
@@ -400,13 +375,8 @@ pub enum Command {
         offline: bool,
         /// Assert composer.lock and bougie.lock are present and up to date.
         /// Never resolve, refresh, or extend either lock
-        #[arg(long, conflicts_with = "frozen")]
-        locked: bool,
-        /// Install from composer.lock and bougie.lock as written, without
-        /// checking them against composer.json / bougie.toml. Never
-        /// resolve, refresh, or extend either lock
         #[arg(long)]
-        frozen: bool,
+        locked: bool,
         /// Show the plan, change nothing on disk
         #[arg(long)]
         dry_run: bool,
@@ -463,14 +433,6 @@ pub enum Command {
         /// Skip the implicit `bougie sync` before running
         #[arg(long)]
         no_sync: bool,
-        /// Assert composer.lock and bougie.lock are present and up to
-        /// date before running. Never resolve, refresh, or extend either
-        #[arg(long, conflicts_with_all = ["frozen", "php_request"])]
-        locked: bool,
-        /// Sync from composer.lock and bougie.lock as written, without
-        /// checking them against the project's constraints
-        #[arg(long, conflicts_with = "php_request")]
-        frozen: bool,
         /// Layer the server's debug overlay (`vendor/bougie/conf.d-debug/`)
         /// into `PHP_INI_SCAN_DIR` and set `XDEBUG_SESSION=1` for the
         /// child. Installs xdebug on first use if not already present
@@ -1267,24 +1229,6 @@ pub enum ExtCommand {
         /// Show the URLs of available extension downloads
         #[arg(long)]
         show_urls: bool,
-    },
-}
-
-#[derive(Subcommand, Debug)]
-pub enum RepoCommand {
-    /// Add a Composer repository to composer.json, such as a Bougie Repo
-    /// (`bougie repo add https://acme.bougierepo.com`). Already present is
-    /// not an error
-    Add {
-        /// The repository URL, the one its packages.json is served under
-        #[arg(value_name = "URL")]
-        url: String,
-    },
-    /// Remove a Composer repository from composer.json, by its URL
-    Remove {
-        /// The repository URL, as `repo add` was given it
-        #[arg(value_name = "URL")]
-        url: String,
     },
 }
 
@@ -2202,68 +2146,6 @@ mod tests {
             cmd(&["bougie", "sync", "--locked"]),
             Command::Sync { locked: true, .. }
         ));
-    }
-
-    #[test]
-    fn sync_frozen_conflicts_with_locked() {
-        assert!(matches!(
-            cmd(&["bougie", "sync", "--frozen"]),
-            Command::Sync { frozen: true, .. }
-        ));
-        assert!(Cli::try_parse_from(["bougie", "sync", "--locked", "--frozen"]).is_err());
-    }
-
-    #[test]
-    fn run_accepts_lock_modes_but_not_with_php() {
-        assert!(matches!(
-            cmd(&["bougie", "run", "--locked", "php", "-v"]),
-            Command::Run { locked: true, .. }
-        ));
-        assert!(matches!(
-            cmd(&["bougie", "run", "--frozen", "php", "-v"]),
-            Command::Run { frozen: true, .. }
-        ));
-        assert!(Cli::try_parse_from(["bougie", "run", "--locked", "--php", "8.3", "php"]).is_err());
-    }
-
-    #[test]
-    fn lock_all_targets_requires_with_platform() {
-        assert!(matches!(
-            cmd(&["bougie", "lock", "--with-platform", "--all-targets"]),
-            Command::Lock {
-                with_platform: true,
-                all_targets: true,
-                ..
-            }
-        ));
-        assert!(Cli::try_parse_from(["bougie", "lock", "--all-targets"]).is_err());
-    }
-
-    #[test]
-    fn lock_upgrade_flags_need_with_platform() {
-        assert!(matches!(
-            cmd(&["bougie", "lock", "--with-platform", "-U"]),
-            Command::Lock { upgrade: true, .. }
-        ));
-        let Command::Lock {
-            upgrade_package, ..
-        } = cmd(&[
-            "bougie",
-            "lock",
-            "--with-platform",
-            "-P",
-            "php",
-            "--upgrade-package",
-            "redis",
-        ])
-        else {
-            panic!("expected lock");
-        };
-        assert_eq!(upgrade_package, ["php", "redis"]);
-        assert!(Cli::try_parse_from(["bougie", "lock", "--upgrade"]).is_err());
-        assert!(
-            Cli::try_parse_from(["bougie", "lock", "--with-platform", "-U", "-P", "php"]).is_err()
-        );
     }
 
     #[test]

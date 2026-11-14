@@ -83,16 +83,13 @@ use composer_semver::stability::Stability;
 use composer_semver::version::Version;
 use eyre::{Result, WrapErr, eyre};
 use pubgrub::{
-    Dependencies, DependencyConstraints, DependencyProvider, PackageResolutionStatistics,
-    PubGrubError,
+    DefaultStringReporter, Dependencies, DependencyConstraints, DependencyProvider,
+    PackageResolutionStatistics, PubGrubError, Reporter, resolve,
 };
 use serde::Serialize;
 use serde_json::Value;
 
 use crate::metadata::build_client;
-
-mod conflicts;
-use conflicts::{ConflictEdge, ConflictViolation, pretty_version_in};
 
 /// Whether `solve_into_lock_packages` should render a progress
 /// spinner during its pre-fetch closure. `resolve_for_lockfile`
@@ -320,16 +317,8 @@ pub struct ResolveProvider {
     /// Versions excluded by post-solve conflict validation. When the
     /// solver picks version V for package P and V's conflict map is
     /// violated by another package in the solution, (P, V) is added
-    /// here with the violation and the solve retries.
-    /// `get_dependencies` then reports (P, V) as unavailable *because
-    /// of that conflict*, so a failed re-solve explains itself instead
-    /// of claiming P has no available version.
-    conflict_excludes: RefCell<FxHashMap<(PackageName, Version), ConflictViolation>>,
-    /// Dependency edges that came from a `conflict` declaration rather
-    /// than a `require`, keyed by `(declarer, target)`. Lets the
-    /// no-solution explanation say "conflicts with" instead of pubgrub's
-    /// generic "depends on" (see `conflicts::ConflictAwareFormatter`).
-    conflict_edges: RefCell<FxHashMap<(PackageName, PackageName), ConflictEdge>>,
+    /// here and the solve retries. `versions_for` filters these out.
+    conflict_excludes: RefCell<FxHashSet<(PackageName, Version)>>,
     raw_root_constraints: FxHashMap<String, String>,
     /// Partial-update pins: packages held to their currently-locked
     /// version because they're outside the update scope (`composer
@@ -578,8 +567,7 @@ impl ResolveProvider {
             v1_provider_tables: RefCell::new(FxHashMap::default()),
             parsed_deps: RefCell::new(FxHashMap::default()),
             solve_progress: RefCell::new(SolveProgress::hidden()),
-            conflict_excludes: RefCell::new(FxHashMap::default()),
-            conflict_edges: RefCell::new(FxHashMap::default()),
+            conflict_excludes: RefCell::new(FxHashSet::default()),
             raw_root_constraints,
             locked_pins: FxHashMap::default(),
             platform,
@@ -638,13 +626,13 @@ impl ResolveProvider {
         self.parsed_deps.borrow_mut().clear();
     }
 
-    /// Check the solution for conflict violations. Returns one
-    /// [`ConflictViolation`] per declarer version whose conflict map is
-    /// violated by another package in the solution.
+    /// Check the solution for conflict violations. Returns the set of
+    /// `(declarer, version)` pairs whose conflict map is violated by
+    /// another package in the solution.
     fn check_conflict_violations(
         &self,
         solution: &[(&PubGrubPackage, &Version)],
-    ) -> Vec<ConflictViolation> {
+    ) -> Vec<(PackageName, Version)> {
         let solution_map: FxHashMap<&str, &Version> = solution
             .iter()
             .filter_map(|(pkg, ver)| match pkg {
@@ -683,14 +671,7 @@ impl ResolveProvider {
                 };
                 let range = to_range(&constraint);
                 if range.contains(target_ver) {
-                    violations.push(ConflictViolation {
-                        declarer: name.clone(),
-                        version: (*version).clone(),
-                        target: PackageName::from(conflict_name.as_str()),
-                        target_version: (*target_ver).clone(),
-                        target_pretty: pretty_version_in(&mc, conflict_name, target_ver),
-                        constraint: raw_constraint.clone(),
-                    });
+                    violations.push((name.clone(), (*version).clone()));
                     break;
                 }
             }
@@ -882,7 +863,6 @@ impl ResolveProvider {
         let mut unsatisfiable: FxHashSet<String> = FxHashSet::default();
 
         self.collect_missing_version_problems(&mut problems, &mut unsatisfiable);
-        self.collect_declared_conflict_problems(&mut problems, &unsatisfiable);
         self.collect_transitive_conflict_problems(&mut problems, &unsatisfiable);
 
         if problems.is_empty() {
@@ -2720,13 +2700,120 @@ pub fn repositories_overlay_path(project_root: &Path) -> PathBuf {
     project_root.join(REPO_OVERLAY_REL_PATH)
 }
 
-/// [`composer_auth::parse_auth_object`] with bougie's error type. Messages
-/// are prefixed with `source`, so they name the file or env var at fault.
+/// Parse an `{http-basic, bearer}` auth object — the shape that lives
+/// at the top level of `auth.json` and (nested under `config`) inside
+/// `composer.json`. Error messages prefix each path with `source` so
+/// diagnostics name the file/env-var the bad value came from.
+///
+/// Out of scope: `github-oauth`, `gitlab-token`, `gitlab-oauth`,
+/// `bitbucket-oauth`, `client-certificate`, `forgejo-token`,
+/// `custom-headers` — Composer reads these from the same containers,
+/// but bougie only fetches from URLs that need basic / bearer creds
+/// today. The follow-up that wires github-oauth will extend this
+/// parser without changing the outer reader functions.
 fn parse_auth_object(
     obj: &serde_json::Map<String, Value>,
     source: &str,
 ) -> Result<HashMap<String, crate::metadata::AuthCredentials>, BuildError> {
-    composer_auth::parse_auth_object(obj, source).map_err(|e| BuildError::Internal(e.to_string()))
+    use crate::metadata::AuthCredentials;
+    let mut out: HashMap<String, AuthCredentials> = HashMap::new();
+    if let Some(bearer) = obj.get("bearer").and_then(Value::as_object) {
+        for (host, val) in bearer {
+            let token = val.as_str().ok_or_else(|| {
+                BuildError::Internal(format!("{source}: bearer.{host} must be a string token",))
+            })?;
+            out.insert(
+                host.clone(),
+                AuthCredentials::Bearer {
+                    token: token.to_owned(),
+                },
+            );
+        }
+    }
+    if let Some(github) = obj.get("github-oauth").and_then(Value::as_object) {
+        for (host, val) in github {
+            let token = val.as_str().ok_or_else(|| {
+                BuildError::Internal(format!(
+                    "{source}: github-oauth.{host} must be a string token",
+                ))
+            })?;
+            out.insert(
+                host.clone(),
+                AuthCredentials::GitHubToken {
+                    token: token.to_owned(),
+                },
+            );
+        }
+    }
+    if let Some(gitlab) = obj.get("gitlab-oauth").and_then(Value::as_object) {
+        for (host, val) in gitlab {
+            let token = val.as_str().ok_or_else(|| {
+                BuildError::Internal(format!(
+                    "{source}: gitlab-oauth.{host} must be a string token",
+                ))
+            })?;
+            out.insert(
+                host.clone(),
+                AuthCredentials::Bearer {
+                    token: token.to_owned(),
+                },
+            );
+        }
+    }
+    if let Some(gitlab) = obj.get("gitlab-token").and_then(Value::as_object) {
+        for (host, val) in gitlab {
+            let token = if let Some(s) = val.as_str() {
+                s.to_owned()
+            } else if let Some(obj) = val.as_object() {
+                obj.get("token")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        BuildError::Internal(format!(
+                            "{source}: gitlab-token.{host}.token is missing or not a string",
+                        ))
+                    })?
+                    .to_owned()
+            } else {
+                return Err(BuildError::Internal(format!(
+                    "{source}: gitlab-token.{host} must be a string or object with `token`",
+                )));
+            };
+            out.insert(host.clone(), AuthCredentials::GitLabToken { token });
+        }
+    }
+    if let Some(http_basic) = obj.get("http-basic").and_then(Value::as_object) {
+        for (host, val) in http_basic {
+            let entry = val.as_object().ok_or_else(|| {
+                BuildError::Internal(format!(
+                    "{source}: http-basic.{host} must be an object with `username` and `password`",
+                ))
+            })?;
+            let username = entry
+                .get("username")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    BuildError::Internal(format!(
+                        "{source}: http-basic.{host}.username is missing or not a string",
+                    ))
+                })?;
+            let password = entry
+                .get("password")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    BuildError::Internal(format!(
+                        "{source}: http-basic.{host}.password is missing or not a string",
+                    ))
+                })?;
+            out.insert(
+                host.clone(),
+                AuthCredentials::Basic {
+                    username: username.to_owned(),
+                    password: password.to_owned(),
+                },
+            );
+        }
+    }
+    Ok(out)
 }
 
 /// Read auth credentials from composer.json's `config.http-basic`
@@ -2735,8 +2822,13 @@ fn parse_auth_object(
 pub fn read_auth_from_composer_json(
     composer_json: &Value,
 ) -> Result<HashMap<String, crate::metadata::AuthCredentials>, BuildError> {
-    composer_install::read_auth_from_composer_json(composer_json)
-        .map_err(|e| BuildError::Internal(e.to_string()))
+    let Some(obj) = composer_json.as_object() else {
+        return Ok(HashMap::new());
+    };
+    let Some(config) = obj.get("config").and_then(Value::as_object) else {
+        return Ok(HashMap::new());
+    };
+    parse_auth_object(config, "composer.json config")
 }
 
 /// Read auth from a project-level `auth.json` (next to
@@ -2746,12 +2838,13 @@ pub fn read_auth_from_composer_json(
 pub fn read_auth_json(
     project_root: &Path,
 ) -> Result<HashMap<String, crate::metadata::AuthCredentials>, BuildError> {
-    composer_install::read_auth_json(project_root).map_err(|e| BuildError::Internal(e.to_string()))
+    read_auth_json_at(&project_root.join("auth.json"))
 }
 
 /// Read auth from a specific `auth.json` path. Returns an empty map
 /// when the file doesn't exist; otherwise parses with [`parse_auth_object`].
-/// Reads bougie's own credential store, which has the same shape.
+/// Split out from [`read_auth_json`] so the global-auth path picker
+/// can reuse it without restating the read-then-parse dance.
 pub(crate) fn read_auth_json_at(
     path: &Path,
 ) -> Result<HashMap<String, crate::metadata::AuthCredentials>, BuildError> {
@@ -2768,24 +2861,69 @@ pub(crate) fn read_auth_json_at(
     parse_auth_object(obj, &path.display().to_string())
 }
 
-/// Read auth from the global Composer `auth.json`, if present
-/// (`$COMPOSER_HOME`, then the XDG and legacy locations). Agencies already
-/// keep their GitHub / private-Packagist credentials there for Composer
-/// itself, so bougie inherits a working credential store for free.
+/// Candidate locations bougie probes for the **global** Composer
+/// `auth.json`, in lookup order. Composer itself reads from
+/// `$COMPOSER_HOME/auth.json` (see `Composer\Factory::createConfig`,
+/// `Factory.php:209`); we add the XDG-strict and legacy locations
+/// because that's where the file actually lives across distributions.
+///
+/// First existing file in the returned list wins.
+///
+/// Taking `env` as a closure keeps the function pure for unit tests
+/// (no `std::env::set_var` races between threads). The public
+/// [`read_global_auth_json`] wires it to `std::env::var`.
+pub(crate) fn global_auth_json_candidates(env: impl Fn(&str) -> Option<String>) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    if let Some(h) = env("COMPOSER_HOME") {
+        out.push(PathBuf::from(h).join("auth.json"));
+    }
+    if let Some(h) = env("XDG_CONFIG_HOME") {
+        out.push(PathBuf::from(h).join("composer").join("auth.json"));
+    }
+    if let Some(h) = env("HOME") {
+        // XDG default and the historical Composer location, in
+        // Composer's own preference order.
+        out.push(
+            PathBuf::from(&h)
+                .join(".config")
+                .join("composer")
+                .join("auth.json"),
+        );
+        out.push(PathBuf::from(&h).join(".composer").join("auth.json"));
+    }
+    out
+}
+
+/// Read auth from the global Composer `auth.json`, if present.
+/// Returns an empty map when no candidate file exists. See
+/// [`global_auth_json_candidates`] for the lookup order.
+///
+/// The high-value point of this source: agencies already keep their
+/// GitHub / private-Packagist credentials in
+/// `~/.config/composer/auth.json` for Composer itself. Reading the
+/// same file for free means bougie inherits a working credential
+/// store without any reconfiguration.
 pub fn read_global_auth_json()
 -> Result<HashMap<String, crate::metadata::AuthCredentials>, BuildError> {
-    composer_install::read_global_auth_json().map_err(|e| BuildError::Internal(e.to_string()))
+    for candidate in global_auth_json_candidates(|k| std::env::var(k).ok()) {
+        if candidate.is_file() {
+            return read_auth_json_at(&candidate);
+        }
+    }
+    Ok(HashMap::new())
 }
 
 /// Candidate locations for bougie's **own** credential store, in lookup
-/// order. Unlike the global Composer `auth.json`, this is a bougie-specific file under the user's
+/// order. Unlike [`global_auth_json_candidates`] (which mirrors Composer's
+/// `auth.json` search), this is a bougie-specific file under the user's
 /// XDG config dir. `bougie new --starter` writes prompted license keys
 /// here (e.g. a Hyvä token) so the secret stays out of the scaffolded
 /// project tree while still being picked up by every resolve.
 ///
 /// First existing file wins for reads; the first entry is the write target.
 ///
-/// Taking `env` as a closure keeps it pure for unit tests.
+/// Taking `env` as a closure keeps it pure for unit tests, matching
+/// [`global_auth_json_candidates`].
 pub(crate) fn bougie_auth_json_candidates(env: impl Fn(&str) -> Option<String>) -> Vec<PathBuf> {
     let mut out = Vec::new();
     if let Some(x) = env("XDG_CONFIG_HOME") {
@@ -2985,7 +3123,18 @@ pub(crate) fn write_bearer_at(path: &Path, host: &str, token: &str) -> Result<()
 pub fn parse_composer_auth_env(
     raw: &str,
 ) -> Result<HashMap<String, crate::metadata::AuthCredentials>, BuildError> {
-    composer_install::parse_composer_auth_env(raw).map_err(|e| BuildError::Internal(e.to_string()))
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let value: Value = serde_json::from_str(trimmed)
+        .map_err(|e| BuildError::Internal(format!("COMPOSER_AUTH is not valid JSON: {e}")))?;
+    let Some(obj) = value.as_object() else {
+        return Err(BuildError::Internal(
+            "COMPOSER_AUTH must decode to a JSON object".into(),
+        ));
+    };
+    parse_auth_object(obj, "COMPOSER_AUTH")
 }
 
 /// Read auth from the `COMPOSER_AUTH` environment variable. The
@@ -3024,13 +3173,36 @@ pub fn read_all_auth(
     composer_json: &Value,
     project_root: &Path,
 ) -> Result<HashMap<String, crate::metadata::AuthCredentials>, BuildError> {
-    // bougie's own store (where `bougie new --starter` writes prompted
-    // license keys) joins the machine-wide slot: it wins over Composer's
-    // global `auth.json` for the same host, while composer.json `config`,
-    // the project `auth.json` and `COMPOSER_AUTH` still override both.
-    let machine = read_bougie_auth_json()?;
-    composer_install::read_all_auth_with(composer_json, project_root, Some(&machine))
-        .map_err(|e| BuildError::Internal(e.to_string()))
+    // Machine-wide credential stores merged into the lowest-precedence
+    // slot: Composer's global `auth.json` first, then bougie's own store
+    // (where `bougie new --starter` writes prompted license keys), which
+    // wins over Composer's global file for the same host. composer.json
+    // `config`, the project `auth.json`, and `COMPOSER_AUTH` still override
+    // both, exactly as before.
+    let mut machine = read_global_auth_json()?;
+    machine.extend(read_bougie_auth_json()?);
+    Ok(merge_auth_sources(
+        machine,
+        read_auth_from_composer_json(composer_json)?,
+        read_auth_json(project_root)?,
+        read_composer_auth_env()?,
+    ))
+}
+
+/// Pure merger so the precedence order can be unit-tested without
+/// env-var or filesystem races. Arguments are listed lowest- to
+/// highest-precedence; the returned map carries the per-host winner.
+pub(crate) fn merge_auth_sources(
+    global: HashMap<String, crate::metadata::AuthCredentials>,
+    composer_json_config: HashMap<String, crate::metadata::AuthCredentials>,
+    project_auth_json: HashMap<String, crate::metadata::AuthCredentials>,
+    composer_auth_env: HashMap<String, crate::metadata::AuthCredentials>,
+) -> HashMap<String, crate::metadata::AuthCredentials> {
+    let mut out = global;
+    out.extend(composer_json_config);
+    out.extend(project_auth_json);
+    out.extend(composer_auth_env);
+    out
 }
 
 /// Format a version list for error messages. Short lists are shown in
@@ -3132,41 +3304,11 @@ fn push_constraint_map(
     Ok(())
 }
 
-/// pubgrub takes one range per dependency (`DependencyConstraints` is a
-/// map), so several edges to the same package — a require narrowed by a
-/// conflict, or a require plus an exact replace — must be intersected.
-/// Collecting them straight into the map let the last edge silently
-/// overwrite the others.
-fn intersect_duplicate_edges(
-    edges: impl IntoIterator<Item = (PackageName, ComposerRange)>,
-) -> Vec<(PubGrubPackage, ComposerRange)> {
-    let mut merged: Vec<(PubGrubPackage, ComposerRange)> = Vec::new();
-    for (n, r) in edges {
-        let pkg = PubGrubPackage::Package(n);
-        if let Some((_, existing)) = merged.iter_mut().find(|(p, _)| *p == pkg) {
-            *existing = existing.intersection(&r);
-        } else {
-            merged.push((pkg, r));
-        }
-    }
-    merged
-}
-
 /// Conflict declarations: `{ "dep": "<7.4" }` means "cannot coexist
 /// with dep at versions matching `<7.4`". Expressed as a pubgrub
 /// dependency on the *complement* range — "requires dep NOT `<7.4`"
 /// = "requires dep `>=7.4`". Caller pre-filters to only include
-/// entries whose target is certain to be installed (a root require, or
-/// a require of the declarer itself); only then is "requires the
-/// complement" equivalent to "conflicts with".
-///
-/// A conflict on every version (`"*"`, the rename idiom) has an empty
-/// complement. It is still emitted: pubgrub turns a dependency on the
-/// empty set into "this version can't be installed", which — given the
-/// pre-filter — is exactly the conflict's meaning, and it keeps the
-/// conflict in the derivation tree. Dropping it left the conflict to
-/// the post-solve check, whose re-solve then reported the declarer as
-/// having "no available version".
+/// entries whose target is already in the dependency graph.
 fn push_conflict_map(
     out: &mut Vec<(PackageName, ComposerRange)>,
     map: &std::collections::BTreeMap<String, String>,
@@ -3189,10 +3331,10 @@ fn push_conflict_map(
             ))
         })?;
         let conflict_range = to_range(&constraint);
-        out.push((
-            PackageName::from(dep_name.as_str()),
-            conflict_range.complement(),
-        ));
+        let allowed = conflict_range.complement();
+        if allowed != ComposerRange::empty() {
+            out.push((PackageName::from(dep_name.as_str()), allowed));
+        }
     }
     Ok(())
 }
@@ -3276,18 +3418,19 @@ impl DependencyProvider for ResolveProvider {
                 // Partial update (`composer update <pkg>...`): a package
                 // outside the update scope is held to its locked version.
                 // Offer exactly that version — but only if it's still an
-                // available candidate and in range. If the locked version
-                // has since been yanked or the range moved past it, fall
-                // through and let it float rather than dead-ending the
-                // solve. A conflict-excluded pin is still offered:
-                // `get_dependencies` rejects it with the conflict as the
-                // reason, pubgrub drops it from the range, and the next
-                // call floats.
-                if let Some(pinned) = self.locked_pins.get(name.as_str())
-                    && range.contains(pinned)
-                    && versions.iter().any(|(v, _)| v == pinned)
-                {
-                    return Ok(Some(pinned.clone()));
+                // available candidate, in range, and not conflict-excluded.
+                // If the locked version has since been yanked or the range
+                // moved past it, fall through and let it float rather than
+                // dead-ending the solve.
+                if let Some(pinned) = self.locked_pins.get(name.as_str()) {
+                    if range.contains(pinned) && versions.iter().any(|(v, _)| v == pinned) {
+                        let excludes = self.conflict_excludes.borrow();
+                        let pin_excluded = !excludes.is_empty()
+                            && excludes.contains(&(name.clone(), pinned.clone()));
+                        if !pin_excluded {
+                            return Ok(Some(pinned.clone()));
+                        }
+                    }
                 }
                 // `versions_for` sorts descending, so scanning front-to-back
                 // picks the highest in range. Under a `lowest` resolution
@@ -3305,12 +3448,10 @@ impl DependencyProvider for ResolveProvider {
                 // already `Stable`, every candidate is stable, so
                 // the prefer-stable pass would just duplicate the
                 // fallback. Skip it.
-                //
-                // Conflict-excluded versions are deliberately *not*
-                // skipped here: `get_dependencies` reports them as
-                // unavailable with the conflict as the reason, so a
-                // failed solve names the conflict rather than saying
-                // the package has no available version.
+                let excludes = self.conflict_excludes.borrow();
+                let is_excluded = |v: &Version| -> bool {
+                    !excludes.is_empty() && excludes.contains(&(name.clone(), v.clone()))
+                };
                 let prefer_lowest = match self.resolution {
                     ResolutionStrategy::Highest => false,
                     ResolutionStrategy::Lowest => true,
@@ -3320,7 +3461,9 @@ impl DependencyProvider for ResolveProvider {
                 // lowest), optionally restricted to stable versions.
                 let scan = |stable_only: bool| -> Option<Version> {
                     let matches = |v: &Version| {
-                        (!stable_only || v.stability() == Stability::Stable) && range.contains(v)
+                        (!stable_only || v.stability() == Stability::Stable)
+                            && range.contains(v)
+                            && !is_excluded(v)
                     };
                     if prefer_lowest {
                         versions
@@ -3384,15 +3527,6 @@ impl DependencyProvider for ResolveProvider {
         if let PubGrubPackage::Package(name) = package {
             if is_platform(name.as_str()) {
                 return Ok(Dependencies::Available(DependencyConstraints::default()));
-            }
-            // A version an earlier solve found violating a declared
-            // conflict: make it unusable and say why.
-            if let Some(v) = self
-                .conflict_excludes
-                .borrow()
-                .get(&(name.clone(), version.clone()))
-            {
-                return Ok(Dependencies::Unavailable(v.reason()));
             }
         }
         let parsed = self.parsed_deps_for(package, version)?;
@@ -3665,16 +3799,14 @@ impl ResolveProvider {
                 })
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect();
-            let before = staging.len();
             push_conflict_map(
                 &mut staging,
                 &conflict_in_graph,
                 name.as_str(),
                 owner_version,
             )?;
-            self.record_conflict_edges(name, &staging, before, &conflict_in_graph);
         }
-        let edges = staging
+        Ok(staging
             .into_iter()
             // Drop edges to packages the root wildcard-`replace`s: the
             // root provides them, so they (and their exclusive transitive
@@ -3695,31 +3827,9 @@ impl ResolveProvider {
             // removed from the solution by the post-solve replaced-package
             // filter anyway; here we just stop its noise from breaking the
             // solve. See `replaced_by`.
-            .filter(|(n, _)| !self.replaced_by(name.as_str(), n.as_str()));
-        Ok(intersect_duplicate_edges(edges))
-    }
-
-    /// Remember which of `staging[conflicts_from..]` (the edges
-    /// `push_conflict_map` just added for `owner`) came from `conflict`,
-    /// for `conflicts::ConflictAwareFormatter`'s wording.
-    fn record_conflict_edges(
-        &self,
-        owner: &PackageName,
-        staging: &[(PackageName, ComposerRange)],
-        conflicts_from: usize,
-        conflict_map: &std::collections::BTreeMap<String, String>,
-    ) {
-        let mut edges = self.conflict_edges.borrow_mut();
-        for (dep, _) in &staging[conflicts_from..] {
-            let raw = conflict_map.get(dep.as_str()).cloned().unwrap_or_default();
-            // An edge the package *also* requires (or replaces) is a
-            // narrowed require, not a pure conflict — keep pubgrub's
-            // "depends on" wording for it.
-            let mixed = staging[..conflicts_from].iter().any(|(n, _)| n == dep);
-            let edge = edges.entry((owner.clone(), dep.clone())).or_default();
-            edge.constraints.insert(raw);
-            edge.mixed |= mixed;
-        }
+            .filter(|(n, _)| !self.replaced_by(name.as_str(), n.as_str()))
+            .map(|(n, r)| (PubGrubPackage::Package(n), r))
+            .collect())
     }
 
     /// True when `original` is `replace`d/`provide`d by `replacer` —
@@ -4047,9 +4157,32 @@ pub fn dry_run_update_partial(
 
     provider.begin_solve_progress();
     let t_solve = std::time::Instant::now();
-    // Conflicts pubgrub can't see are checked after each solve; see
-    // `solve_with_conflict_retries`.
-    let result = provider.solve_with_conflict_retries(&root);
+    // Solve loop: after each solve, validate conflict declarations.
+    // If a package in the solution declares a conflict violated by
+    // another package in the solution, exclude the violating version
+    // and re-solve. Bounded to avoid infinite loops.
+    let mut result = resolve(&provider, PubGrubPackage::Root, root.clone());
+    for _retry in 0..10 {
+        let Ok(ref solution) = result else { break };
+        let pairs: Vec<_> = solution.iter().collect();
+        let violations = provider.check_conflict_violations(&pairs);
+        if violations.is_empty() {
+            break;
+        }
+        tracing::debug!(
+            count = violations.len(),
+            excluded = ?violations,
+            "conflict violations found, re-solving",
+        );
+        {
+            let mut excludes = provider.conflict_excludes.borrow_mut();
+            for (name, ver) in violations {
+                excludes.insert((name, ver));
+            }
+        }
+        provider.reset_for_re_solve();
+        result = resolve(&provider, PubGrubPackage::Root, root.clone());
+    }
     let solve_elapsed = t_solve.elapsed();
     provider.finish_solve_progress();
     tracing::info!(
@@ -4057,8 +4190,25 @@ pub fn dry_run_update_partial(
         ok = result.is_ok(),
         "pubgrub_resolve",
     );
+    // Retry exhaustion guard: the loop above can exit after 10 attempts
+    // with a solution that *still* violates a conflict (e.g. the
+    // conflict-declaring package has only one version, so excluding it
+    // makes no progress). Returning that solution would write a lock
+    // that violates a declared conflict — error instead.
     if let Ok(ref solution) = result {
-        provider.ensure_no_conflict_violations(solution)?;
+        let pairs: Vec<_> = solution.iter().collect();
+        let remaining = provider.check_conflict_violations(&pairs);
+        if !remaining.is_empty() {
+            let detail = remaining
+                .iter()
+                .map(|(name, ver)| format!("{name}@{ver}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(eyre!(
+                "could not satisfy declared package conflicts after 10 resolution \
+                 attempts; still violated by: {detail}"
+            ));
+        }
     }
     let summary = match result {
         Ok(solution) => {
@@ -4102,7 +4252,9 @@ pub fn dry_run_update_partial(
             }
         }
         Err(PubGrubError::NoSolution(tree)) => {
-            let detail = provider.explain_no_solution(&tree);
+            let detail = provider
+                .analyze_resolution_problems()
+                .unwrap_or_else(|| DefaultStringReporter::report(&tree));
             return Err(eyre!("no valid dependency resolution exists:\n\n{detail}"));
         }
         Err(PubGrubError::ErrorChoosingVersion { package, source }) => {
@@ -4385,7 +4537,30 @@ fn solve_into_lock_packages(
     // Entered across the whole (possibly retried) pubgrub solve — the
     // CPU-bound phase a Ctrl-\ dump should surface as "still solving".
     let solve_guard = tracing::info_span!("pubgrub_solve", no_dev).entered();
-    let solve_result = provider.solve_with_conflict_retries(&root);
+    let mut solve_result = resolve(&provider, PubGrubPackage::Root, root.clone());
+    for _retry in 0..10 {
+        let Ok(ref solution) = solve_result else {
+            break;
+        };
+        let pairs: Vec<_> = solution.iter().collect();
+        let violations = provider.check_conflict_violations(&pairs);
+        if violations.is_empty() {
+            break;
+        }
+        tracing::debug!(
+            count = violations.len(),
+            excluded = ?violations,
+            "conflict violations found, re-solving",
+        );
+        {
+            let mut excludes = provider.conflict_excludes.borrow_mut();
+            for (name, ver) in violations {
+                excludes.insert((name, ver));
+            }
+        }
+        provider.reset_for_re_solve();
+        solve_result = resolve(&provider, PubGrubPackage::Root, root.clone());
+    }
     drop(solve_guard);
     let solve_elapsed = t_solve.elapsed();
     provider.finish_solve_progress();
@@ -4396,15 +4571,11 @@ fn solve_into_lock_packages(
         "pubgrub_resolve",
     );
     let solution = match solve_result {
-        Ok(s) => {
-            // The dry-run path always had this guard; the lock path
-            // didn't, so an exhausted retry loop could write a lock
-            // that violates a declared conflict.
-            provider.ensure_no_conflict_violations(&s)?;
-            s
-        }
+        Ok(s) => s,
         Err(PubGrubError::NoSolution(tree)) => {
-            let detail = provider.explain_no_solution(&tree);
+            let detail = provider
+                .analyze_resolution_problems()
+                .unwrap_or_else(|| DefaultStringReporter::report(&tree));
             return Err(eyre!("no valid dependency resolution exists:\n\n{detail}"));
         }
         Err(PubGrubError::ErrorChoosingVersion { package, source }) => {

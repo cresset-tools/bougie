@@ -1,0 +1,6 @@
+{
+    "name": "acme/platform-check-php-only",
+    "require": {
+        "php": ">=8.1"
+    }
+}

@@ -106,7 +106,7 @@ impl ScriptsConfig {
 /// Mirrors cweagans' superset of config; lives under `[patches]` in
 /// `bougie.toml` or `extra.bougie.patches` in `composer.json`. The Composer
 /// `extra.patches` / `extra.composer-patches.*` keys are read separately from
-/// `composer.json` `extra` by `composer-patches` (they're Composer-namespaced,
+/// `composer.json` `extra` by `bougie-patches` (they're Composer-namespaced,
 /// not bougie config).
 #[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default)]

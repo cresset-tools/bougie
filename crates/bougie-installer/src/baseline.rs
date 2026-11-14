@@ -133,14 +133,7 @@ pub const BASELINE_EXTENSIONS: &[&str] = &[
 /// hardcoded — these are upstream-library facts (Apple's libc), not
 /// runtime probes.
 pub fn skip_for_platform(name: &str) -> bool {
-    skip_for_os(name, cfg!(target_os = "linux"))
-}
-
-/// [`skip_for_platform`] for an arbitrary target rather than the host.
-/// `bougie.lock` records digests for targets other than the one it was
-/// written on, so it needs the same fact keyed by the target's OS.
-pub fn skip_for_os(name: &str, target_is_linux: bool) -> bool {
-    matches!(name, "gettext") && !target_is_linux
+    matches!(name, "gettext") && !cfg!(target_os = "linux")
 }
 
 /// `true` when the named baseline extension is statically built into
@@ -429,10 +422,7 @@ mod tests {
         } else {
             assert!(skip_for_platform("gettext"));
         }
-        assert!(!skip_for_os("gettext", true));
-        assert!(skip_for_os("gettext", false));
         // Non-gettext names always pass.
-        assert!(!skip_for_os("ffi", false));
         assert!(!skip_for_platform("ffi"));
         assert!(!skip_for_platform("opcache"));
     }

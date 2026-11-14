@@ -1,0 +1,6 @@
+{
+    "name": "acme/wp-plugin",
+    "type": "wordpress-plugin",
+    "version": "1.0.0",
+    "autoload": {"psr-4": {"Acme\\\\Wp\\\\": "src/"}}
+}

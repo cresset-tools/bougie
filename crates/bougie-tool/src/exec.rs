@@ -147,9 +147,6 @@ pub fn prepare(paths: &Paths, wrapper: &Path, user_args: Vec<OsString>) -> Resul
         ("PHP_INI_SCAN_DIR".to_string(), scan),
         ("BOUGIE_TOOL".to_string(), receipt.package.clone().into()),
     ];
-    if let Some(ca) = bougie_platform::ca::ssl_cert_file() {
-        env.push((bougie_platform::ca::SSL_CERT_FILE.to_string(), ca.into()));
-    }
 
     // Prepend bougie's `unzip` shim dir to the tool's PATH so tools that
     // shell out to `unzip` work — chiefly the real Composer's

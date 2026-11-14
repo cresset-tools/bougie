@@ -51,28 +51,12 @@ pub struct LockResult {
     pub toolchain: Option<ToolchainLockResult>,
 }
 
-/// What `--with-platform` / `--all-targets` / `--upgrade` asked for.
-#[derive(Debug, Clone)]
-pub struct PlatformLock {
-    pub enabled: bool,
-    pub all_targets: bool,
-    pub upgrade: super::platform_lock::Upgrade,
-}
-
 #[derive(Debug, Serialize)]
 pub struct ToolchainLockResult {
     pub dry_run: bool,
     pub php_version: String,
     pub extensions: usize,
     pub services: usize,
-    /// Targets the lock carries digests for.
-    pub targets: Vec<String>,
-    /// Per-entry changes against the previous `bougie.lock` (empty when
-    /// there was none, or nothing moved).
-    pub changes: Vec<String>,
-    /// Targets `--all-targets` could not cover, with the reason.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub skipped_targets: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lock_path: Option<PathBuf>,
 }
@@ -103,12 +87,6 @@ impl Render for LockResult {
                 "PHP {}, {} extensions, {} services",
                 toolchain.php_version, toolchain.extensions, toolchain.services
             );
-            for change in &toolchain.changes {
-                writeln!(w, "  {change}")?;
-            }
-            for skipped in &toolchain.skipped_targets {
-                writeln!(w, "  skipped {skipped}")?;
-            }
             if toolchain.dry_run {
                 writeln!(w, "lock --dry-run: would write bougie.lock ({summary})")?;
             } else if let Some(path) = &toolchain.lock_path {
@@ -127,7 +105,7 @@ pub fn run(
     format: OutputFormat,
     working_dir: Option<PathBuf>,
     dry_run: bool,
-    with_platform: PlatformLock,
+    with_platform: bool,
     resolution: ResolutionStrategy,
     ignore_platform: PlatformIgnore,
 ) -> Result<ExitCode> {
@@ -361,75 +339,23 @@ fn finish(format: OutputFormat, result: &LockResult) -> Result<ExitCode> {
 fn finish_with_platform(
     format: OutputFormat,
     mut result: LockResult,
-    with_platform: PlatformLock,
+    with_platform: bool,
     paths: &Paths,
 ) -> Result<ExitCode> {
-    if with_platform.enabled {
-        result.toolchain = Some(lock_toolchain(
-            &result.project_root,
-            paths,
-            with_platform.all_targets,
-            &with_platform.upgrade,
-            result.dry_run,
-        )?);
+    if with_platform {
+        let lock = super::platform_lock::resolve(&result.project_root, paths)?;
+        let lock_path = if result.dry_run {
+            None
+        } else {
+            Some(lock.write(&result.project_root)?)
+        };
+        result.toolchain = Some(ToolchainLockResult {
+            dry_run: result.dry_run,
+            php_version: lock.php.version.clone(),
+            extensions: lock.extensions.len(),
+            services: lock.services.len(),
+            lock_path,
+        });
     }
     finish(format, &result)
-}
-
-/// Resolve and (unless `dry_run`) write `bougie.lock`. Re-locking keeps
-/// existing pins unless `upgrade` releases them, and keeps other targets'
-/// digests when the pins did not move; `all_targets` fills in every
-/// target the index serves.
-fn lock_toolchain(
-    project_root: &std::path::Path,
-    paths: &Paths,
-    all_targets: bool,
-    upgrade: &super::platform_lock::Upgrade,
-    dry_run: bool,
-) -> Result<ToolchainLockResult> {
-    use super::platform_lock;
-
-    let previous = bougie_lock::ToolchainLock::read(project_root)?;
-    let ctx = platform_lock::IndexCtx::open(paths)?;
-    let prefer = platform_lock::Preferences::new(previous.as_ref(), upgrade);
-    let mut lock = platform_lock::resolve(project_root, &ctx, prefer)?;
-    for name in upgrade.unknown_names(&lock) {
-        eprintln!("warning: --upgrade-package {name} matches nothing in bougie.lock");
-    }
-    if let Some(previous) = &previous {
-        platform_lock::merge_previous(&mut lock, previous);
-    }
-    let mut skipped_targets = Vec::new();
-    if all_targets {
-        let targets: Vec<String> = ctx.root.targets.keys().cloned().collect();
-        for target in targets {
-            if lock.targets.contains_key(&target) {
-                continue;
-            }
-            // A target that does not publish a locked version cannot use
-            // this lock at all; say so rather than failing the whole lock.
-            match platform_lock::resolve_target(&ctx, &lock, &target) {
-                Ok(artifacts) => {
-                    lock.targets.insert(target, artifacts);
-                }
-                Err(error) => skipped_targets.push(format!("{target}: {error}")),
-            }
-        }
-    }
-    let changes = platform_lock::describe_changes(previous.as_ref(), &lock);
-    let lock_path = if dry_run {
-        None
-    } else {
-        Some(lock.write(project_root)?)
-    };
-    Ok(ToolchainLockResult {
-        dry_run,
-        php_version: lock.php.version.clone(),
-        extensions: lock.extensions.len(),
-        services: lock.services.len(),
-        targets: lock.targets.keys().cloned().collect(),
-        changes,
-        skipped_targets,
-        lock_path,
-    })
 }

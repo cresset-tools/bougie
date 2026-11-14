@@ -1,0 +1,11 @@
+{
+    "name": "fixture/psr4-overlap",
+    "description": "Two PSR-4 prefixes whose scans both accept the same class (declared in two files). Composer's krsort sorts namespaces by reverse key order, so the more-specific prefix scans first and wins the classmap entry. A naive implementation that walks PSR-* in composer.json declaration order picks the OTHER file and diverges byte-for-byte.",
+    "type": "project",
+    "repositories": [
+        { "type": "path", "url": "packages/acme-overlap", "options": { "symlink": false } }
+    ],
+    "require": {
+        "acme/overlap": "*"
+    }
+}

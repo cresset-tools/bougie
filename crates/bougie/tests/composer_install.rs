@@ -158,7 +158,7 @@ fn install_against_wiremock_dist_emits_vendor_and_autoload() {
     assert!(vendor_foo.join("src/Foo.php").is_file());
     assert!(!vendor_foo.join(top).exists());
 
-    // composer-autoload emitted the standard surface.
+    // bougie-autoloader emitted the standard surface.
     assert!(proj.path().join("vendor/autoload.php").is_file());
     assert!(
         proj.path()

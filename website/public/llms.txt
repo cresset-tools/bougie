@@ -22,8 +22,8 @@ and the common paths.
   exist and work on every subcommand.
 - **Non-interactive:** anything that prompts (e.g. `projects purge`)
   has a `--yes`/`-y` or `--dry-run` flag. Always pass one in automation.
-- **No Composer plugins; scripts are opt-in.** bougie never runs Composer
-  plugins, and root `composer.json` scripts only run with `--scripts`. Behaviors that normally come from plugins
+- **No Composer plugins or scripts.** bougie never runs `pre-/post-*` scripts
+  or Composer plugins. Behaviors that normally come from plugins
   (composer/installers paths, Symfony Flex recipes, Laravel package discovery)
   are reimplemented natively. Don't expect plugin side effects.
 - **Implicit sync.** Many verbs (`run`, `make`/`start`, `server`, `share`,
@@ -148,23 +148,19 @@ Run `bougie help <command>` for full flags. Global: `--quiet`, `--verbose`,
   flags are ignored in that mode.
 - `bougie new DIRECTORY [--toml] [--name …] [--starter …] [--start]`
   — create DIRECTORY and scaffold inside it.
-- `bougie sync [--offline] [--locked | --frozen] [--dry-run] [--scripts | --no-scripts] [--patches | --no-patches] [--resolution STRATEGY] [--managed-php | --no-managed-php] [--no-php-downloads] [--ignore-platform-reqs] [--ignore-platform-req REQ]`
+- `bougie sync [--offline] [--locked] [--dry-run] [--scripts | --no-scripts] [--patches | --no-patches] [--resolution STRATEGY] [--managed-php | --no-managed-php] [--no-php-downloads] [--ignore-platform-reqs] [--ignore-platform-req REQ]`
   — install everything the project requires (toolchain + extensions + `vendor/`).
   `--locked` requires fresh committed `composer.lock` and `bougie.lock` files,
   including digests for the current target; it never refreshes or extends them.
-  `--frozen` installs both locks as written without checking they match the
-  project (still requires current-target digests, never writes a lock).
   The workhorse. Scripts are off by default; `--scripts` opts in. Patches are on
   by default when declared; `--no-patches` suppresses them. `--resolution`
   applies when a fresh lock must be resolved. PHP source: `--managed-php` (only
   bougie-managed), `--no-managed-php` (only system), `--no-php-downloads` (no
   auto-download).
-- `bougie run [--script] [--with EXT=VER]... [--no-sync] [--locked | --frozen] [--xdebug] [--php VER|PATH] [--managed-php | --no-managed-php] [--no-php-downloads] -- ARGV...`
+- `bougie run [--script] [--with EXT=VER]... [--no-sync] [--xdebug] [--php VER|PATH] [--managed-php | --no-managed-php] [--no-php-downloads] -- ARGV...`
   — run a command or script in the project env. Ad-hoc extensions via
   `--with`. `--script` treats the first argument as a self-contained PHP
-  script instead (see "Single-file scripts" below). The implicit sync installs
-  from `bougie.lock` when one is committed; `--locked` / `--frozen` check the
-  locks before running even when no sync is needed.
+  script instead (see "Single-file scripts" below).
 - `bougie start [--no-sync] [--dry-run] [--explain] [--no-builtin] [--recipe NAME]`
   — bring the whole project up: sync the toolchain + vendor, provision and start
   services, run any setup, start the dev server. Runs the detected recipe's
@@ -191,17 +187,11 @@ full Composer-compatible flag parity.
   `--frozen` edits `composer.json` only. `--script FILE` adds to a self-contained
   script's inline dependency block instead (see "Single-file scripts" below).
 - `bougie remove PACKAGES... [--dev] [--no-sync] [--frozen] [-d DIR] [--dry-run] [--ignore-platform-reqs] [--ignore-platform-req REQ]`
-- `bougie lock [--script FILE] [--with-platform [--all-targets] [-U | -P NAME...]] [--resolution STRATEGY] [-d DIR] [--dry-run] [--ignore-platform-reqs] [--ignore-platform-req REQ]` — minimal lock refresh: reconcile
+- `bougie lock [--script FILE] [--with-platform] [--resolution STRATEGY] [-d DIR] [--dry-run] [--ignore-platform-reqs] [--ignore-platform-req REQ]` — minimal lock refresh: reconcile
   `composer.lock` with `composer.json`, holding each package at its locked
   version where still valid, re-resolving only what changed. Never bumps
   versions, never installs. `--with-platform` also resolves PHP, extensions,
-  and services into `bougie.lock` and lists what moved. Like `uv lock`, a
-  re-lock keeps every toolchain pin that still satisfies its constraint;
-  `--upgrade` (`-U`) moves them all to the newest allowed version, and
-  `--upgrade-package NAME` (`-P`, repeatable: `php`, an extension, or a
-  service) moves just that one. `--all-targets` records digests for every target the index
-  serves, so CI on another OS can use `sync --locked` straight away.
-  Content-hash match → offline no-op. `--script FILE`
+  and services into `bougie.lock`. Content-hash match → offline no-op. `--script FILE`
   locks a single-file script's inline dependencies into an adjacent
   `<file>.lock` instead.
 - `bougie tree [PACKAGE] [--no-dev] [-d DIR]` — print the dependency tree
@@ -264,29 +254,6 @@ Version request grammar: `8.3`, `8.3.12`, `8.3+zts`, constraints like `~8.3`.
   tree; no composer.json change). Mix both in one call.
 - `remove NAMES... [--no-sync]`
 - `list [--only-installed] [--only-available] [--all-versions] [--all-platforms] [--show-urls]`
-
-### Repositories — `bougie repo`
-
-Manage where the project's packages come from (the `repositories` in `composer.json`).
-
-- `bougie repo add URL` — add a Composer repository, such as a Bougie Repo
-  (`bougie repo add https://acme.bougierepo.com`). `URL` is the one its
-  `packages.json` is served under. Already present is not an error.
-- `bougie repo remove URL` — remove a repository by its URL, as `repo add` was given it.
-
-### Registry login — `bougie login`
-
-Authenticate against a Composer registry (hidden from the top-level help).
-
-- `bougie login [URL] [--ci] [--repository ORG/REPO] [--audience AUD] [--no-provision] [--composer-json]`
-  — with no `URL`, signs in to Bougie Cloud (`bougie.cloud`, or `$BOUGIE_LOGIN_URL`);
-  a bare domain is resolved via its `_bougie-login._tcp` SRV record, a full URL
-  is used as-is. `--ci` is the non-interactive path: it exchanges the CI
-  workflow's OIDC JWT (`$SCONCE_ID_TOKEN`, or GitHub Actions' token service)
-  for a short-lived read token, and requires `--repository`. After login the
-  project's `repositories` are auto-provisioned into the local, gitignored
-  `.bougie/repositories.json` overlay; `--composer-json` writes them into the
-  committed `composer.json` instead, `--no-provision` stores only the token.
 
 ### Patch management — `bougie patches`
 
