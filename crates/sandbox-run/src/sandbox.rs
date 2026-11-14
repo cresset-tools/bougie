@@ -260,3 +260,37 @@ impl Sandbox {
 pub struct SandboxPolicy {
     pub(crate) config: Sandbox,
 }
+
+impl SandboxPolicy {
+    /// Do all the work of applying this policy that can be done ahead of time:
+    /// resolve paths, walk the filesystem, build the platform's ruleset or
+    /// profile.
+    ///
+    /// Call this in the **parent**, before the child is forked, and call
+    /// [`PreparedSandbox::apply`] in the child. Prepare shortly before
+    /// spawning: paths that do not exist at this point are left out of the
+    /// policy.
+    pub fn prepare(&self) -> Result<PreparedSandbox, SandboxError> {
+        crate::platform::prepare(self).map(PreparedSandbox)
+    }
+}
+
+/// A policy ready to be applied to a freshly forked child.
+///
+/// Created by [`SandboxPolicy::prepare`]. One prepared sandbox can confine any
+/// number of children.
+#[derive(Debug)]
+pub struct PreparedSandbox(crate::platform::Prepared);
+
+impl PreparedSandbox {
+    /// Confine the **calling** process. Meant for a `pre_exec` closure: call
+    /// it in the child after `fork` and before `exec`.
+    ///
+    /// On Linux this is async-signal-safe (it makes direct syscalls and does
+    /// not allocate), which is what `pre_exec` requires in a multi-threaded
+    /// parent. On macOS the Rust side does not allocate on success, but the
+    /// system sandbox library it calls is not documented as async-signal-safe.
+    pub fn apply(&self) -> std::io::Result<()> {
+        self.0.apply()
+    }
+}

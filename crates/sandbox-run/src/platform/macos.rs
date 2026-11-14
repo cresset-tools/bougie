@@ -2,22 +2,27 @@ use crate::{
     error::SandboxError,
     sandbox::{ProtectHome, ProtectSystem, SandboxPolicy},
 };
+use std::ffi::CString;
+use std::io;
 use std::path::Path;
 
-/// Apply the sandbox policy using macOS sandbox profiles.
-pub fn apply_sandbox(policy: &SandboxPolicy) -> Result<(), SandboxError> {
-    let config = &policy.config;
-
-    // 1. Resource limits (before sandbox)
-    apply_resource_limits(config)?;
-
-    // 2. macOS sandbox profile
-    let profile = generate_profile(policy)?;
-    macos_sandbox_sys::create_sandbox_with_parameters(profile, 0, &[]).map_err(SandboxError::MacOS)
+/// Everything the child needs, computed in the parent before `fork`.
+///
+/// Generating the profile canonicalizes paths, reads the environment and
+/// allocates; none of that is safe between `fork` and `exec` in a
+/// multi-threaded process. So the profile is generated and converted to a C
+/// string here, and [`Prepared::apply`] is left with `setrlimit` and the one
+/// libsandbox call.
+#[derive(Debug)]
+pub struct Prepared {
+    limits: [Option<(libc::c_int, u64)>; 8],
+    profile: CString,
 }
 
-fn apply_resource_limits(config: &crate::sandbox::Sandbox) -> Result<(), SandboxError> {
-    let limits: [(Option<u64>, libc::c_int); 8] = [
+/// Generate the profile and collect the limits. Runs in the parent.
+pub fn prepare(policy: &SandboxPolicy) -> Result<Prepared, SandboxError> {
+    let config = &policy.config;
+    let limits = [
         (config.limit_nofile, libc::RLIMIT_NOFILE),
         (config.limit_nproc, libc::RLIMIT_NPROC),
         (config.limit_core, libc::RLIMIT_CORE),
@@ -26,21 +31,37 @@ fn apply_resource_limits(config: &crate::sandbox::Sandbox) -> Result<(), Sandbox
         (config.limit_stack, libc::RLIMIT_STACK),
         (config.limit_cpu, libc::RLIMIT_CPU),
         (config.limit_memlock, libc::RLIMIT_MEMLOCK),
-    ];
+    ]
+    .map(|(value, resource)| value.map(|limit| (resource, limit)));
 
-    for (value, resource) in limits {
-        if let Some(limit) = value {
+    let profile = CString::new(generate_profile(policy)?)
+        .map_err(|_| SandboxError::InvalidPath("a sandbox path contains a NUL byte".to_string()))?;
+    Ok(Prepared { limits, profile })
+}
+
+impl Prepared {
+    /// Confine the calling process. Runs in the child, after `fork` and before
+    /// `exec`. Nothing on the success path allocates on the Rust side;
+    /// `sandbox_init_with_parameters` itself is outside our control. A failure
+    /// allocates to carry libsandbox's message, which is acceptable on a path
+    /// that ends with the child exiting.
+    pub fn apply(&self) -> io::Result<()> {
+        // 1. Resource limits (before sandbox)
+        for (resource, limit) in self.limits.iter().flatten() {
             let rlim = libc::rlimit {
-                rlim_cur: limit,
-                rlim_max: limit,
+                rlim_cur: *limit,
+                rlim_max: *limit,
             };
-            let ret = unsafe { libc::setrlimit(resource, &rlim) };
+            let ret = unsafe { libc::setrlimit(*resource, &rlim) };
             if ret != 0 {
-                return Err(SandboxError::Io(std::io::Error::last_os_error()));
+                return Err(io::Error::last_os_error());
             }
         }
+
+        // 2. macOS sandbox profile
+        macos_sandbox_sys::init_with_profile(&self.profile, 0)
+            .map_err(|msg| io::Error::other(SandboxError::MacOS(msg)))
     }
-    Ok(())
 }
 
 fn generate_profile(policy: &SandboxPolicy) -> Result<String, SandboxError> {

@@ -6,7 +6,7 @@
 //! compiles and "runs" just fine while enforcing nothing.
 //!
 //! Every test is gated on [`sandbox_run::landlock_available`]: on a
-//! kernel without Landlock (< 5.13 or disabled) `apply_sandbox` fails
+//! kernel without Landlock (< 5.13 or disabled) the sandbox fails
 //! open, so the assertions below couldn't hold — we skip rather than
 //! flake. This mirrors production, where the daemon warns and proceeds
 //! unconfined instead of refusing to launch.
@@ -258,4 +258,50 @@ fn protect_home_yes_denies_home_content() {
     let denied = !can_read(&secret, policy);
     let _ = std::fs::remove_file(&secret);
     assert!(denied, "ProtectHome::Yes must hide files under $HOME");
+}
+
+/// The integration path the daemon uses: prepare in the parent, apply from a
+/// hand-written `pre_exec`. One prepared sandbox must confine every child it
+/// is applied to, and preparing must leave the parent itself unconfined.
+#[test]
+fn one_prepared_sandbox_confines_every_child_and_not_the_parent() {
+    use std::os::unix::process::CommandExt;
+    use std::sync::Arc;
+
+    if !landlock_available() {
+        eprintln!("skipping: Landlock not enforced on this kernel");
+        return;
+    }
+    let dir = tempfile::tempdir().expect("tempdir");
+    let secret = dir.path().join("secret");
+    std::fs::write(&secret, "s").expect("write secret");
+
+    let prepared = Arc::new(
+        Sandbox::new()
+            .inaccessible_paths([dir.path()])
+            .limit_core(0)
+            .build()
+            .expect("build")
+            .prepare()
+            .expect("prepare"),
+    );
+
+    for round in 0..2 {
+        let prepared = Arc::clone(&prepared);
+        let mut cmd = std::process::Command::new("cat");
+        cmd.arg(&secret).stdout(Stdio::null()).stderr(Stdio::null());
+        // SAFETY: `PreparedSandbox::apply` is async-signal-safe on Linux.
+        unsafe {
+            cmd.pre_exec(move || prepared.apply());
+        }
+        assert!(
+            !cmd.status().expect("spawn cat").success(),
+            "child {round} read a path the sandbox makes inaccessible"
+        );
+    }
+
+    assert_eq!(
+        std::fs::read_to_string(&secret).expect("the parent is not confined"),
+        "s"
+    );
 }
