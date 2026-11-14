@@ -1,0 +1,14 @@
+{
+    "name": "fixture/autoloader-suffix",
+    "description": "Dumped with config.autoloader-suffix set, which overrides composer.lock's content-hash as the ComposerAutoloaderInit<X> / ComposerStaticInit<X> class suffix.",
+    "type": "project",
+    "config": {
+        "autoloader-suffix": "FixtureSuffix0123456789abcdef0123456789abcd"
+    },
+    "repositories": [
+        { "type": "path", "url": "packages/lib", "options": { "symlink": false } }
+    ],
+    "require": {
+        "acme/lib": "*"
+    }
+}

@@ -1,0 +1,8 @@
+{
+    "name": "fixture/psr0-fallback",
+    "description": "Root PSR-0 entry with empty prefix — Composer routes empty-prefix PSR-0 (and PSR-4) entries to fallbackDirsPsr0 / fallbackDirsPsr4 instead of the per-letter prefix buckets. Magento root composer.json hits this with a top-level autoload.psr-0 map keyed on `\"\"`.",
+    "type": "project",
+    "autoload": {
+        "psr-0": { "": "fallback-lib/" }
+    }
+}

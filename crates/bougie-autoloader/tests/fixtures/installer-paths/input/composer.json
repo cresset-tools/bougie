@@ -1,0 +1,15 @@
+{
+    "name": "test/installer-paths",
+    "require": {
+        "composer/installers": "^2.0",
+        "acme/theme": "*"
+    },
+    "repositories": [
+        {"type": "path", "url": "packages/theme", "options": {"symlink": false}}
+    ],
+    "config": {
+        "allow-plugins": {"composer/installers": true},
+        "platform-check": false
+    },
+    "minimum-stability": "stable"
+}

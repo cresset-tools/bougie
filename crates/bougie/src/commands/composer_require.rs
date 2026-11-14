@@ -462,7 +462,7 @@ fn run_add(
             bougie_composer_resolver::install_from_lock_with_patches(
                 &paths,
                 &project_root,
-                InstallOptions::default(),
+                InstallOptions { no_dev: false },
                 None,
                 patch_plan.as_ref(),
             )
@@ -558,10 +558,7 @@ pub fn remove(
             bougie_composer_resolver::install_from_lock_with_patches(
                 &paths,
                 &project_root,
-                InstallOptions {
-                    no_dev,
-                    ..Default::default()
-                },
+                InstallOptions { no_dev },
                 None,
                 patch_plan.as_ref(),
             )

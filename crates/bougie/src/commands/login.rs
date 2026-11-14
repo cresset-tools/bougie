@@ -1,14 +1,18 @@
-//! `bougie login <URL>` — authenticate against a sconce Composer registry via
-//! the OAuth 2.0 device authorization grant (RFC 8628), then auto-provision the
-//! project's Composer `repositories`.
+//! `bougie login <URL>` — authenticate against a sconce Composer registry,
+//! then auto-provision the project's Composer `repositories`.
 //!
-//! The CLI starts a flow, prints a short user code and opens the dashboard, then
-//! polls until a signed-in team member approves it in the browser. On approval
-//! the registry mints an **org-scoped read token** — one credential that
-//! authenticates every repository served under that host — which we persist to
-//! bougie's own credential store keyed by origin (`host[:port]`), exactly where
-//! the resolver looks for it. No browser callback, no local listener: the CLI
-//! only ever makes outbound requests, so it works over SSH and in containers.
+//! Two interactive flows end in the same **org-scoped read token** — one
+//! credential that authenticates every repository served under that host —
+//! which we persist to bougie's own credential store keyed by origin
+//! (`host[:port]`), exactly where the resolver looks for it:
+//!
+//! - **Browser sign-in** (authorization code + PKCE, see `login_browser`), used
+//!   when the registry advertises it: the browser hands the approval straight
+//!   back to a listener on `127.0.0.1`, or shows a code to paste when it's on
+//!   another machine.
+//! - **Device flow** (RFC 8628), for older registries or with `--device`: the
+//!   CLI prints a short code, the user confirms it on the dashboard, and the
+//!   CLI polls until it's approved. Outbound requests only.
 //!
 //! With a token in hand we then discover which repositories it can access
 //! (`GET /api/v1/repos`) and provision them so the dev doesn't paste URLs:
@@ -146,7 +150,7 @@ impl Render for LoginResult {
     }
 }
 
-pub fn run(format: OutputFormat, url: &str, mode: ProvisionMode) -> Result<ExitCode> {
+pub fn run(format: OutputFormat, url: &str, mode: ProvisionMode, device: bool) -> Result<ExitCode> {
     let base = resolve_login_base(url);
     let base = base.as_str();
     // `resolve_login_base` always returns an `http(s)://` base; this guards
@@ -165,6 +169,22 @@ pub fn run(format: OutputFormat, url: &str, mode: ProvisionMode) -> Result<ExitC
         .build()
         .wrap_err("building http client")?;
 
+    // Browser sign-in when the registry offers it; otherwise the device flow.
+    if !device
+        && let Some(meta) = super::login_browser::discover(&client, base)
+        && let Some(token) = super::login_browser::sign_in(&client, &meta)?
+    {
+        return finish(format, &client, base, &host, &token, mode);
+    }
+    let token = device_flow(&client, base)?;
+
+    // 4 + 5: store the token where the resolver reads it, then auto-provision.
+    finish(format, &client, base, &host, &token, mode)
+}
+
+/// The device authorization grant (RFC 8628): print a code, open the approval
+/// page, and poll until it's approved. Returns the access token.
+fn device_flow(client: &reqwest::blocking::Client, base: &str) -> Result<String> {
     // 1. Start the flow.
     let start: DeviceStart = client
         .post(format!("{base}/oauth/device"))
@@ -230,9 +250,7 @@ pub fn run(format: OutputFormat, url: &str, mode: ProvisionMode) -> Result<ExitC
             None => return Err(eyre!("login failed with HTTP {status}")),
         }
     };
-
-    // 4 + 5: store the token where the resolver reads it, then auto-provision.
-    finish(format, &client, base, &host, &token, mode)
+    Ok(token)
 }
 
 /// Non-interactive **CI** login: exchange the workflow's OIDC JWT for a

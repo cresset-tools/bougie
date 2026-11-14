@@ -1,0 +1,11 @@
+{
+    "name": "fixture/classmap-exclude",
+    "description": "Classmap scan with one package subdirectory dropped via exclude-from-classmap.",
+    "type": "project",
+    "repositories": [
+        { "type": "path", "url": "packages/scanner", "options": { "symlink": false } }
+    ],
+    "require": {
+        "acme/scanner": "*"
+    }
+}

@@ -686,6 +686,10 @@ pub enum Command {
         /// `.bougie/repositories.json` overlay
         #[arg(long = "composer-json", conflicts_with = "no_provision")]
         composer_json: bool,
+        /// Sign in by confirming a short code in the browser (device flow)
+        /// instead of the browser handing the login straight back to bougie
+        #[arg(long, conflicts_with = "ci")]
+        device: bool,
     },
 
     /// Run project tasks
