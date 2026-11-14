@@ -45,8 +45,5 @@ features = ["verify", "rustls-tls", "sigstore-trust-root"]
 [dev-dependencies.base64]
 version = "0.22"
 
-[dev-dependencies.tempfile]
-version = "3.10"
-
 [lints]
 workspace = true

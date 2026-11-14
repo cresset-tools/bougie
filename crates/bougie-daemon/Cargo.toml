@@ -16,7 +16,6 @@ bougie-fs = { workspace = true }
 bougie-index = { workspace = true }
 bougie-backend = { workspace = true }
 bougie-installer = { workspace = true }
-bougie-output = { workspace = true }
 bougie-paths = { workspace = true }
 bougie-platform = { workspace = true }
 bougie-server = { workspace = true }
