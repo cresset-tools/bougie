@@ -1,3 +1,5 @@
+use std::io;
+use std::os::fd::{AsRawFd, OwnedFd};
 use std::path::{Path, PathBuf};
 
 use crate::{
@@ -18,34 +20,35 @@ type RlimitResource = libc::__rlimit_resource_t;
 #[cfg(not(target_env = "gnu"))]
 type RlimitResource = libc::c_int;
 
-/// Apply the sandbox policy using Linux-specific mechanisms.
-pub fn apply_sandbox(policy: &SandboxPolicy) -> Result<(), SandboxError> {
+/// Everything the child needs, computed in the parent before `fork`.
+///
+/// Building a Landlock ruleset walks the filesystem and allocates; neither is
+/// safe between `fork` and `exec` in a multi-threaded process, where only
+/// async-signal-safe calls are allowed (another thread may have held the
+/// allocator lock at the moment of the fork, and it is never released in the
+/// child). So the ruleset is built here, and [`Prepared::apply`] is left with
+/// three kinds of plain syscall: `prctl`, `setrlimit` and
+/// `landlock_restrict_self`.
+#[derive(Debug)]
+pub struct Prepared {
+    /// `NoNewPrivileges=` was asked for: failing to set it is an error.
+    no_new_privs_required: bool,
+    /// A ruleset was requested. Landlock needs `no_new_privs` to restrict an
+    /// unprivileged process, so it is set even when the option was not asked
+    /// for (and even when the kernel turns out not to enforce Landlock, as the
+    /// `landlock` crate's own `restrict_self` does).
+    landlock_requested: bool,
+    limits: [Option<(RlimitResource, u64)>; 8],
+    /// The ruleset to enforce. `None` when the policy has no filesystem or
+    /// network restrictions, or when the kernel does not enforce Landlock
+    /// (fail open, see `build_ruleset`).
+    ruleset: Option<OwnedFd>,
+}
+
+/// Build the ruleset and collect the limits. Runs in the parent.
+pub fn prepare(policy: &SandboxPolicy) -> Result<Prepared, SandboxError> {
     let config = &policy.config;
-
-    // 1. NoNewPrivileges first (cannot be undone)
-    if config.no_new_privileges {
-        apply_no_new_privs()?;
-    }
-
-    // 2. Resource limits
-    apply_resource_limits(config)?;
-
-    // 3. Landlock filesystem + network restrictions
-    apply_landlock(policy)?;
-
-    Ok(())
-}
-
-fn apply_no_new_privs() -> Result<(), SandboxError> {
-    let ret = unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) };
-    if ret != 0 {
-        return Err(SandboxError::Io(std::io::Error::last_os_error()));
-    }
-    Ok(())
-}
-
-fn apply_resource_limits(config: &crate::sandbox::Sandbox) -> Result<(), SandboxError> {
-    let limits: [(Option<u64>, RlimitResource); 8] = [
+    let limits = [
         (config.limit_nofile, libc::RLIMIT_NOFILE),
         (config.limit_nproc, libc::RLIMIT_NPROC),
         (config.limit_core, libc::RLIMIT_CORE),
@@ -54,24 +57,60 @@ fn apply_resource_limits(config: &crate::sandbox::Sandbox) -> Result<(), Sandbox
         (config.limit_stack, libc::RLIMIT_STACK),
         (config.limit_cpu, libc::RLIMIT_CPU),
         (config.limit_memlock, libc::RLIMIT_MEMLOCK),
-    ];
+    ]
+    .map(|(value, resource)| value.map(|limit| (resource, limit)));
 
-    for (value, resource) in limits {
-        if let Some(limit) = value {
-            let rlim = libc::rlimit {
-                rlim_cur: limit,
-                rlim_max: limit,
-            };
-            let ret = unsafe { libc::setrlimit(resource, &rlim) };
-            if ret != 0 {
-                return Err(SandboxError::Io(std::io::Error::last_os_error()));
-            }
-        }
-    }
-    Ok(())
+    let ruleset = build_ruleset(policy)?;
+    Ok(Prepared {
+        no_new_privs_required: config.no_new_privileges,
+        landlock_requested: ruleset.is_some(),
+        limits,
+        ruleset: ruleset.and_then(Option::<OwnedFd>::from),
+    })
 }
 
-fn apply_landlock(policy: &SandboxPolicy) -> Result<(), SandboxError> {
+impl Prepared {
+    /// Confine the calling process. Runs in the child, after `fork` and before
+    /// `exec`, and is async-signal-safe: no allocation, no locks, nothing but
+    /// direct syscalls. `io::Error::last_os_error` only reads `errno`.
+    pub fn apply(&self) -> io::Result<()> {
+        // 1. NoNewPrivileges first (cannot be undone)
+        if self.no_new_privs_required || self.landlock_requested {
+            let ret = unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) };
+            // Only fatal when it was asked for. When it is here for Landlock's
+            // sake, `landlock_restrict_self` below reports the real failure.
+            if ret != 0 && self.no_new_privs_required {
+                return Err(io::Error::last_os_error());
+            }
+        }
+
+        // 2. Resource limits
+        for (resource, limit) in self.limits.iter().flatten() {
+            let rlim = libc::rlimit {
+                rlim_cur: *limit,
+                rlim_max: *limit,
+            };
+            let ret = unsafe { libc::setrlimit(*resource, &rlim) };
+            if ret != 0 {
+                return Err(io::Error::last_os_error());
+            }
+        }
+
+        // 3. Landlock filesystem + network restrictions
+        if let Some(fd) = &self.ruleset {
+            let ret =
+                unsafe { libc::syscall(libc::SYS_landlock_restrict_self, fd.as_raw_fd(), 0u32) };
+            if ret != 0 {
+                return Err(io::Error::last_os_error());
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Build the Landlock ruleset for `policy`, or `None` when the policy restricts
+/// neither the filesystem nor the network.
+fn build_ruleset(policy: &SandboxPolicy) -> Result<Option<RulesetCreated>, SandboxError> {
     let config = &policy.config;
 
     // Check if any restrictions apply
@@ -86,7 +125,7 @@ fn apply_landlock(policy: &SandboxPolicy) -> Result<(), SandboxError> {
     let has_net_restrictions = config.private_network;
 
     if !has_fs_restrictions && !has_net_restrictions {
-        return Ok(());
+        return Ok(None);
     }
 
     // Define access rights
@@ -186,16 +225,14 @@ fn apply_landlock(policy: &SandboxPolicy) -> Result<(), SandboxError> {
     // adding no net rules denies all TCP; not handling it allows all.
 
     // Fail OPEN. `BestEffort` (the default) downgrades to a no-op on
-    // kernels < 5.13 or when Landlock is disabled, and `restrict_self`
-    // then reports `NotEnforced`. By request we proceed unconfined
-    // rather than refusing to launch the service. We can't warn from
-    // here (this runs in the post-fork pre_exec, an async-signal
-    // context), so the daemon probes `landlock_available()` up front
-    // and logs once when services will run without confinement. A
-    // genuine error from `restrict_self` (not mere non-enforcement) is
-    // still propagated.
-    let _status = ruleset.restrict_self()?;
-    Ok(())
+    // kernels < 5.13 or when Landlock is disabled: the created ruleset
+    // then carries no descriptor and `Prepared::apply` skips
+    // `landlock_restrict_self`. By request we proceed unconfined rather
+    // than refusing to launch the service. The daemon probes
+    // `landlock_available()` up front and logs once when services will
+    // run without confinement. A genuine error from the kernel (not mere
+    // non-enforcement) is still propagated.
+    Ok(Some(ruleset))
 }
 
 /// Grant `access` to everything under `dir` except the subtrees listed

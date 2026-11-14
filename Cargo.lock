@@ -415,7 +415,6 @@ dependencies = [
  "hickory-resolver",
  "insta",
  "predicates",
- "rand 0.8.6",
  "reqwest",
  "rustix",
  "sandbox-run",

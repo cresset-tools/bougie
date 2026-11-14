@@ -709,9 +709,19 @@ impl Supervisor {
         // can't be implemented on this platform (today: server's
         // `LightHome` on Linux). Skip the sandbox call in that case
         // so the child runs with the daemon's own privileges.
+        //
+        // The sandbox is prepared here, in the daemon: building it walks
+        // the filesystem and allocates, which is not async-signal-safe.
+        // Only `PreparedSandbox::apply` runs in the child. Prepared right
+        // before the spawn because paths that do not exist yet are left
+        // out of the policy.
+        let sandbox = policy
+            .as_ref()
+            .map(sandbox_run::SandboxPolicy::prepare)
+            .transpose()
+            .map_err(|e| eyre!("preparing the sandbox for {}: {e}", entry.name))?;
         #[allow(unsafe_code)]
         unsafe {
-            let policy = policy.clone();
             cmd.pre_exec(move || {
                 let rc = libc_dup2(child_sock_fd, BABYSIT_CONTROL_FD);
                 if rc < 0 {
@@ -735,9 +745,8 @@ impl Supervisor {
                     rustix::io::write(borrowed, b"0")
                         .map_err(|e| std::io::Error::from_raw_os_error(e.raw_os_error()))?;
                 }
-                if let Some(policy) = policy.as_ref() {
-                    sandbox_run::apply_sandbox(policy)
-                        .map_err(|e| std::io::Error::other(format!("sandbox: {e}")))?;
+                if let Some(sandbox) = sandbox.as_ref() {
+                    sandbox.apply()?;
                 }
                 Ok(())
             });

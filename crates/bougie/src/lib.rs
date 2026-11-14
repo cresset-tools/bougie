@@ -889,7 +889,6 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
             audience,
             no_provision,
             composer_json,
-            device,
         } => {
             let mode = commands::login::ProvisionMode::from_flags(no_provision, composer_json);
             // No URL given → sign in to Bougie Cloud (or `$BOUGIE_LOGIN_URL`).
@@ -903,7 +902,7 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
                     mode,
                 )
             } else {
-                commands::login::run(format, &url, mode, device)
+                commands::login::run(format, &url, mode)
             }
         }
         Command::Version {
