@@ -405,7 +405,6 @@ dependencies = [
  "bougie-tunnel",
  "bougie-version",
  "clap",
- "color-eyre",
  "composer-autoload",
  "composer-installers",
  "composer-patches",
@@ -413,12 +412,10 @@ dependencies = [
  "eyre",
  "flate2",
  "hickory-resolver",
- "insta",
  "predicates",
  "rand 0.8.6",
  "reqwest",
  "rustix",
- "sandbox-run",
  "serde",
  "serde_json",
  "sha1",
@@ -538,7 +535,6 @@ dependencies = [
  "bougie-fs",
  "bougie-index",
  "bougie-installer",
- "bougie-output",
  "bougie-paths",
  "bougie-platform",
  "bougie-server",
@@ -607,7 +603,6 @@ dependencies = [
  "serde_json",
  "sha2 0.11.0",
  "sigstore",
- "tempfile",
 ]
 
 [[package]]
@@ -625,8 +620,6 @@ dependencies = [
  "bougie-version",
  "eyre",
  "reqwest",
- "serde",
- "serde_json",
  "sha2 0.11.0",
  "tempfile",
  "tracing",
@@ -726,8 +719,6 @@ dependencies = [
  "anstyle",
  "axum",
  "bougie-cli",
- "bougie-config",
- "bougie-errors",
  "bougie-fs",
  "bougie-installer",
  "bougie-output",
@@ -742,7 +733,6 @@ dependencies = [
  "percent-encoding",
  "rand 0.8.6",
  "regex",
- "reqwest",
  "rustix",
  "serde",
  "serde_json",
@@ -751,7 +741,6 @@ dependencies = [
  "tokio",
  "tokio-util",
  "toml_edit",
- "tracing",
 ]
 
 [[package]]
@@ -779,7 +768,6 @@ name = "bougie-tool"
 version = "0.56.0"
 dependencies = [
  "bougie-composer-resolver",
- "bougie-errors",
  "bougie-fs",
  "bougie-paths",
  "bougie-platform",
@@ -1048,33 +1036,6 @@ name = "cmov"
 version = "0.5.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c9ea0ac24bc397ab3c98583a3c9ba74fa56b09a4449bbe172b9b1ddb016027a"
-
-[[package]]
-name = "color-eyre"
-version = "0.6.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e5920befb47832a6d61ee3a3a846565cfa39b331331e68a3b1d1116630f2f26d"
-dependencies = [
- "backtrace",
- "color-spantrace",
- "eyre",
- "indenter",
- "once_cell",
- "owo-colors",
- "tracing-error",
-]
-
-[[package]]
-name = "color-spantrace"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b8b88ea9df13354b55bc7234ebcce36e6ef896aca2e42a15de9e10edce01b427"
-dependencies = [
- "once_cell",
- "owo-colors",
- "tracing-core",
- "tracing-error",
-]
 
 [[package]]
 name = "colorchoice"
@@ -2652,18 +2613,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "insta"
-version = "1.47.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7b4a6248eb93a4401ed2f37dfe8ea592d3cf05b7cf4f8efa867b6895af7e094e"
-dependencies = [
- "console",
- "once_cell",
- "similar",
- "tempfile",
-]
-
-[[package]]
 name = "ipconfig"
 version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3369,12 +3318,6 @@ checksum = "68f19d67e5a2795c94e73e0bb1cc1a7edeb2e28efd39e2e1c9b7a40c1108b11c"
 dependencies = [
  "num-traits",
 ]
-
-[[package]]
-name = "owo-colors"
-version = "4.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d211803b9b6b570f68772237e415a029d5a50c65d382910b879fb19d3271f94d"
 
 [[package]]
 name = "p256"
@@ -5295,17 +5238,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "db97caf9d906fbde555dd62fa95ddba9eecfd14cb388e4f491a66d74cd5fb79a"
 dependencies = [
  "once_cell",
- "valuable",
-]
-
-[[package]]
-name = "tracing-error"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8b1581020d7a273442f5b45074a6a57d5757ad0a47dac0e9f0bd57b81936f3db"
-dependencies = [
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]
@@ -5443,12 +5375,6 @@ dependencies = [
  "js-sys",
  "wasm-bindgen",
 ]
-
-[[package]]
-name = "valuable"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
 
 [[package]]
 name = "version-ranges"

@@ -10,7 +10,6 @@ authors.workspace = true
 
 [dependencies]
 bougie-composer-resolver = { workspace = true }
-bougie-errors = { workspace = true }
 bougie-fs = { workspace = true }
 bougie-paths = { workspace = true }
 bougie-platform = { workspace = true }
