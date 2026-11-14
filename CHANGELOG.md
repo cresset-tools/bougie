@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.56.1](https://github.com/cresset-tools/bougie/compare/bougie-v0.56.0...bougie-v0.56.1) (2026-11-14)
+
+
+### Bug Fixes
+
+* **bougie:** name bougie and its commands in install warnings and blockers ([4c42233](https://github.com/cresset-tools/bougie/commit/4c42233b3d0e86a41b34655ee342a3205b447fc4))
+* **bougie:** print a notice when a package download is retried ([401addb](https://github.com/cresset-tools/bougie/commit/401addb0f2dcccf8c4de8951aa688341881372f9))
+
 ## [0.56.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.55.0...bougie-v0.56.0) (2026-11-09)
 
 
