@@ -203,7 +203,7 @@ version = "2.5"
 # symlinks). We satisfy that preference by exposing `unzip` as an
 # argv[0] role on the bougie binary, implemented against this crate.
 [dependencies.zip]
-version = "8.0"
+version = "9.0"
 default-features = false
 features = ["deflate"]
 
@@ -229,7 +229,7 @@ tempfile = "3.10"
 serde_json = "1.0"
 base64 = "0.22"           # encode test signatures
 tokio = { version = "1", features = ["rt", "macros"] }  # drive wiremock
-zip = { version = "8.0", default-features = false, features = ["deflate"] }
+zip = { version = "9.0", default-features = false, features = ["deflate"] }
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "rustls"] }
 # Crates only used by integration tests in tests/; kept out of the
 # regular [dependencies] block so a bin-only build doesn't link them.

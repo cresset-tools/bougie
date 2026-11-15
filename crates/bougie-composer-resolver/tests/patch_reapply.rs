@@ -33,7 +33,7 @@ fn paths_in(tmp: &Path) -> Paths {
 fn make_zip(dest: &Path, wrapper: &str, files: &[(&str, &str)]) {
     let f = std::fs::File::create(dest).unwrap();
     let mut zip = zip::ZipWriter::new(f);
-    let opts: zip::write::FileOptions<'_, ()> =
+    let opts: zip::write::FileOptions<'_, '_, ()> =
         zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
     for (rel, content) in files {
         zip.start_file(format!("{wrapper}/{rel}"), opts).unwrap();

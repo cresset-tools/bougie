@@ -128,7 +128,10 @@ fn list(file: &std::path::Path) -> Result<ExitCode> {
         let entry = archive
             .by_index(i)
             .map_err(|e| eyre!("unzip: reading entry {i}: {e}"))?;
-        writeln!(out, "{}", entry.name())?;
+        let name = entry
+            .name()
+            .map_err(|e| eyre!("unzip: reading entry {i}: {e}"))?;
+        writeln!(out, "{name}")?;
     }
     Ok(ExitCode::SUCCESS)
 }
