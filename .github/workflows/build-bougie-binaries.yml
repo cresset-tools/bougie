@@ -41,7 +41,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix: ${{ fromJson(inputs.plan).ci.github.artifacts_matrix }}
-    runs-on: ${{ matrix.runner }}
+    # Hand-edited: dist plans the macOS build on the self-hosted Mac mini
+    # (`mac-mini`); the org variable MAC_MINI_DISABLED=true sends it back to
+    # GitHub. Re-apply after `dist generate`.
+    runs-on: ${{ matrix.runner == 'mac-mini' && vars.MAC_MINI_DISABLED == 'true' && 'macos-15' || matrix.runner }}
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       BUILD_MANIFEST_NAME: target/distrib/${{ join(matrix.targets, '-') }}-dist-manifest.json

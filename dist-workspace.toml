@@ -162,8 +162,11 @@ local-artifacts-jobs = ["./build-bougie-binaries"]
 [dist.binaries]
 "*" = ["bougie", "bgx"]
 
-# dist 0.32.0 builds aarch64-apple-darwin on `macos-14` by default. GitHub
-# retired that image on 2026-11-02, and its brownouts before that date
-# broke the bougie-v0.54.0 release, so pin a supported image.
 [dist.github-custom-runners]
-aarch64-apple-darwin = "macos-15"
+# The macOS release binary builds on the self-hosted Mac mini (runner label
+# `mac-mini`), not on GitHub's macOS runners, whose arm64 queue kept
+# cancelling release jobs. The release workflow's build-local-artifacts job
+# sends it back to GitHub's macos-15 when the org variable
+# MAC_MINI_DISABLED=true (that `runs-on` is hand-edited; re-apply it after
+# `dist generate`).
+aarch64-apple-darwin = { runner = "mac-mini", host = "aarch64-apple-darwin" }
