@@ -432,7 +432,7 @@ dependencies = [
  "tracing-subscriber",
  "walkdir",
  "wiremock",
- "zip 9.6.0",
+ "zip",
  "zstd",
 ]
 
@@ -510,7 +510,7 @@ dependencies = [
  "tokio",
  "tracing",
  "wiremock",
- "zip 9.6.0",
+ "zip",
  "zstd",
 ]
 
@@ -575,7 +575,7 @@ dependencies = [
  "tar",
  "tempfile",
  "tracing",
- "zip 9.6.0",
+ "zip",
  "zstd",
 ]
 
@@ -1066,9 +1066,9 @@ dependencies = [
 
 [[package]]
 name = "composer-autoload"
-version = "0.1.0"
+version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "58ff7d12cb880ab02562731e5228f562e86a8c38d220b835265a45bd93fdf4a1"
+checksum = "de3f5560df9384ddeff68debd5dba2a814f8b8a6ee59fe7899094acec714ecb4"
 dependencies = [
  "composer-installers",
  "composer-php-json",
@@ -1085,9 +1085,9 @@ dependencies = [
 
 [[package]]
 name = "composer-install"
-version = "0.6.0"
+version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "72d6d4428ad41c8dbd317f31dbba3b8f9484097e50f32fcee0743d217aca81be"
+checksum = "6293d5459c491a5db264adfb01b0b795ea0aefdc0ebd14c74533664ac72be9a3"
 dependencies = [
  "composer-auth",
  "composer-autoload",
@@ -1104,15 +1104,15 @@ dependencies = [
  "sha1",
  "tar",
  "tracing",
- "zip 8.6.0",
+ "zip",
  "zstd",
 ]
 
 [[package]]
 name = "composer-installers"
-version = "0.1.0"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eaf18eb3b2bc79e51004e6694d06d6de8d9014be9577ce4ec8682ecd51c0a47a"
+checksum = "6a8c164375526116cea908534a5242466a6f300981d8058dbb7af26b3cbcb2ec"
 dependencies = [
  "eyre",
  "serde_json",
@@ -1120,9 +1120,9 @@ dependencies = [
 
 [[package]]
 name = "composer-manifest"
-version = "0.2.0"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eef64dc8d85349bb09689caff6a6688173e3c59b65e831af2acfdd1c9199b0ba"
+checksum = "e459791410df5e87b7fdffc63c493d4207b76e9a5160c98360916f505bf3971f"
 dependencies = [
  "composer-php-json",
  "composer-semver",
@@ -1136,9 +1136,9 @@ dependencies = [
 
 [[package]]
 name = "composer-patches"
-version = "0.2.0"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "52b4bed2c60c420f6c6f22d4f87b4a4ffeb1b0626583d97b5a859f84bb3d2010"
+checksum = "2cd1639f73a0667960839db31b7869086a5f257ff7359f8f3719b175dcfdf0c3"
 dependencies = [
  "composer-installers",
  "eyre",
@@ -5460,12 +5460,6 @@ checksum = "82205ffd44a9697e34fc145491aa47310f9871540bb7909eaa9365e0a9a46607"
 
 [[package]]
 name = "typed-path"
-version = "0.12.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "54ec2755506471f54baf5e4bb5499d8e510cc1caf271270e778a736bd2d7336c"
-
-[[package]]
-name = "typed-path"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9ce898823d8cd0f028662d2f349694b1af0a5cc9be83f1d213a00d3147445e1e"
@@ -6158,20 +6152,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.10",
-]
-
-[[package]]
-name = "zip"
-version = "8.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2d04a6b5381502aa6087c94c669499eb1602eb9c5e8198e534de571f7154809b"
-dependencies = [
- "crc32fast",
- "flate2",
- "indexmap 2.14.2",
- "memchr",
- "typed-path 0.12.4",
- "zopfli",
 ]
 
 [[package]]
