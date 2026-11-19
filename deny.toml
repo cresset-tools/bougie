@@ -7,5 +7,13 @@
 ignore = [
     { id = "RUSTSEC-2023-0071", reason = "rsa 0.9 (Marvin timing attack) has no fixed release. It arrives through sigstore/openidconnect, which only verify signatures with public keys here" },
     { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile is unmaintained, not vulnerable. bougie-tunnel uses it to read PEM; replace with rustls-pki-types PemObject" },
+    { id = "RUSTSEC-2026-0367", reason = "zip 8 arrives only through composer-install 0.6.0, which never calls ZipArchive::extract. Remove once composer-install ships with zip 9" },
+    { id = "RUSTSEC-2026-0368", reason = "zip 8 arrives only through composer-install 0.6.0, which never calls ZipArchive::extract. Remove once composer-install ships with zip 9" },
+    { id = "RUSTSEC-2026-0369", reason = "zip 8 arrives only through composer-install 0.6.0, which never calls ZipArchive::extract. Remove once composer-install ships with zip 9" },
+    { id = "RUSTSEC-2026-0429", reason = "zip 8 arrives only through composer-install 0.6.0, which never calls ZipArchive::extract. Remove once composer-install ships with zip 9" },
     { id = "RUSTSEC-2026-0543", reason = "chrono is unmaintained, not vulnerable. It arrives through sigstore (openidconnect, oauth2, tough); nothing here depends on it directly" },
+    { id = "RUSTSEC-2026-0545", reason = "zip 8 arrives only through composer-install 0.6.0 with just the deflate feature: no AES, no legacy decoders, no ZipStreamReader, no ZipArchive::extract. Remove once composer-install ships with zip 9" },
+    { id = "RUSTSEC-2026-0546", reason = "zip 8 arrives only through composer-install 0.6.0 with just the deflate feature: no AES, no legacy decoders, no ZipStreamReader, no ZipArchive::extract. Remove once composer-install ships with zip 9" },
+    { id = "RUSTSEC-2026-0547", reason = "zip 8 arrives only through composer-install 0.6.0 with just the deflate feature: no AES, no legacy decoders, no ZipStreamReader, no ZipArchive::extract. Remove once composer-install ships with zip 9" },
+    { id = "RUSTSEC-2026-0548", reason = "zip 8 arrives only through composer-install 0.6.0 with just the deflate feature: no AES, no legacy decoders, no ZipStreamReader, no ZipArchive::extract. Remove once composer-install ships with zip 9" },
 ]
