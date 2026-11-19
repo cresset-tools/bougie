@@ -236,8 +236,7 @@ applied to a single PHP file instead of a project:
 
 ### PHP interpreters — `bougie php`
 
-- `install [REQUESTS...] [--flavor nts|nts-debug|zts|zts-debug] [--bare] [--without EXT]...`
-  — with no request, installs the latest PHP.
+- `install REQUESTS... [--flavor nts|nts-debug|zts|zts-debug] [--bare] [--without EXT]...`
 - `uninstall REQUESTS... [--flavor …]`
 - `list [REQUEST] [--only-installed] [--only-available] [--all-versions] [--all-platforms] [--all-arches] [--show-urls]`
 - `find [REQUEST]` — search for an interpreter.
@@ -279,15 +278,10 @@ Manage where the project's packages come from (the `repositories` in `composer.j
 
 Authenticate against a Composer registry (hidden from the top-level help).
 
-- `bougie login [URL] [--ci] [--repository ORG/REPO] [--audience AUD] [--no-provision] [--composer-json] [--device]`
+- `bougie login [URL] [--ci] [--repository ORG/REPO] [--audience AUD] [--no-provision] [--composer-json]`
   — with no `URL`, signs in to Bougie Cloud (`bougie.cloud`, or `$BOUGIE_LOGIN_URL`);
   a bare domain is resolved via its `_bougie-login._tcp` SRV record, a full URL
-  is used as-is. The interactive login opens the browser and the approval is
-  handed straight back to bougie (it also prints a link for a browser on
-  another machine, whose page shows a code to paste at the `Code:` prompt).
-  `--device` forces the device flow instead (confirm a short code in the
-  browser); registries that don't offer the browser flow fall back to it
-  automatically. `--ci` is the non-interactive path: it exchanges the CI
+  is used as-is. `--ci` is the non-interactive path: it exchanges the CI
   workflow's OIDC JWT (`$SCONCE_ID_TOKEN`, or GitHub Actions' token service)
   for a short-lived read token, and requires `--repository`. After login the
   project's `repositories` are auto-provisioned into the local, gitignored
