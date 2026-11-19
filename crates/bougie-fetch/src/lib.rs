@@ -404,11 +404,52 @@ pub fn fetch_file_with(
     fetch_with_retry(client, spec, bar, try_once_file, on_retry)
 }
 
+/// One failed fetch attempt, plus whether trying again could help.
+///
+/// Everything is retryable by default (the `From` impls), because the
+/// failures this loop exists for — a stalled read, a dropped
+/// connection, a 5xx from one mirror node — are indistinguishable from
+/// most others at the point they surface. The exception is an answer
+/// the server will repeat verbatim: see [`AttemptError::fatal`].
+#[derive(Debug)]
+struct AttemptError {
+    report: eyre::Report,
+    retryable: bool,
+}
+
+impl AttemptError {
+    /// A failure that retrying cannot change, so the loop returns it at
+    /// once instead of spending the backoff schedule on it.
+    fn fatal(report: eyre::Report) -> Self {
+        Self {
+            report,
+            retryable: false,
+        }
+    }
+}
+
+impl From<eyre::Report> for AttemptError {
+    fn from(report: eyre::Report) -> Self {
+        Self {
+            report,
+            retryable: true,
+        }
+    }
+}
+
+impl From<BougieError> for AttemptError {
+    fn from(err: BougieError) -> Self {
+        eyre::Report::from(err).into()
+    }
+}
+
+type AttemptResult<T> = std::result::Result<T, AttemptError>;
+
 fn fetch_with_retry(
     client: &reqwest::blocking::Client,
     spec: &BlobSpec<'_>,
     bar: &DownloadBar,
-    once: fn(&reqwest::blocking::Client, &BlobSpec<'_>, &DownloadBar) -> Result<()>,
+    once: fn(&reqwest::blocking::Client, &BlobSpec<'_>, &DownloadBar) -> AttemptResult<()>,
     on_retry: &dyn Fn(u32, &eyre::Report),
 ) -> Result<BlobOutcome> {
     if spec.dest.exists() {
@@ -424,7 +465,10 @@ fn fetch_with_retry(
     loop {
         match once(client, spec, bar) {
             Ok(()) => return Ok(BlobOutcome::Downloaded),
-            Err(e) if attempts < RETRY_BUDGET => {
+            Err(AttemptError {
+                report: e,
+                retryable: true,
+            }) if attempts < RETRY_BUDGET => {
                 attempts += 1;
                 tracing::warn!(error = %e, attempt = attempts, "blob fetch failed; retrying");
                 // Surface the retry above the (possibly shared, possibly
@@ -436,7 +480,7 @@ fn fetch_with_retry(
                 on_retry(attempts, &e);
                 backoff_sleep(attempts);
             }
-            Err(e) => return Err(e),
+            Err(e) => return Err(e.report),
         }
     }
 }
@@ -463,7 +507,7 @@ fn fetch_to_partial(
     client: &reqwest::blocking::Client,
     spec: &BlobSpec<'_>,
     bar: &DownloadBar,
-) -> Result<PathBuf> {
+) -> AttemptResult<PathBuf> {
     // Skip-verify mode (empty hex): name the partial after a hash of
     // the URL so concurrent fetches in the same partial_dir don't
     // collide and a retry resumes the same path.
@@ -488,11 +532,26 @@ fn fetch_to_partial(
         detail: error_chain(&e),
     })?;
     if !resp.status().is_success() {
-        return Err(BougieError::Network {
+        let err = eyre::Report::from(BougieError::Network {
             operation: format!("GET {:?}", spec.url),
             detail: format!("server returned HTTP {}", resp.status()),
-        }
-        .into());
+        });
+        // 401, 403 and 404 are the server's considered answer to this
+        // exact request: credentials rejected, access denied, nothing
+        // at that URL. The same request gets the same answer, so
+        // retrying only delays the error by the whole backoff schedule
+        // — once per package in a parallel install.
+        let fatal = matches!(
+            resp.status(),
+            reqwest::StatusCode::UNAUTHORIZED
+                | reqwest::StatusCode::FORBIDDEN
+                | reqwest::StatusCode::NOT_FOUND
+        );
+        return Err(if fatal {
+            AttemptError::fatal(err)
+        } else {
+            err.into()
+        });
     }
 
     let mut file = File::create(&tmp).wrap_err_with(|| format!("creating {}", tmp.display()))?;
@@ -569,7 +628,7 @@ fn try_once_blob(
     client: &reqwest::blocking::Client,
     spec: &BlobSpec<'_>,
     bar: &DownloadBar,
-) -> Result<()> {
+) -> AttemptResult<()> {
     let tmp = fetch_to_partial(client, spec, bar)?;
 
     // Bytes are all in; the rest of this function is the silent,
@@ -598,7 +657,7 @@ fn try_once_file(
     client: &reqwest::blocking::Client,
     spec: &BlobSpec<'_>,
     bar: &DownloadBar,
-) -> Result<()> {
+) -> AttemptResult<()> {
     let tmp = fetch_to_partial(client, spec, bar)?;
 
     // Stage the verified bytes as a sibling of `dest` so the rename is
@@ -1401,6 +1460,70 @@ mod tests {
             *seen.lock().unwrap(),
             (1..=RETRY_BUDGET).collect::<Vec<_>>()
         );
+    }
+
+    /// Serve `status` to every connection, counting them.
+    fn serve_status(status: u16) -> (String, Arc<std::sync::atomic::AtomicU32>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/x.zip", listener.local_addr().unwrap());
+        let hits = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let counter = Arc::clone(&hits);
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                counter.fetch_add(1, Ordering::SeqCst);
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf);
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 {status} X\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+                );
+            }
+        });
+        (url, hits)
+    }
+
+    fn retries_for_status(status: u16) -> (Vec<u32>, u32, String) {
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("out.bin");
+        let (url, hits) = serve_status(status);
+        let spec = BlobSpec {
+            url: &url,
+            hash: Hash::sha256(""),
+            partial_dir: tmp.path(),
+            dest: &dest,
+            strip_prefix: "",
+            archive: ArchiveKind::Zip,
+            auth_header: None,
+            auth_header_name: None,
+        };
+        let seen = std::sync::Mutex::new(Vec::new());
+        let err = fetch_file_with(
+            &default_client().unwrap(),
+            &spec,
+            &DownloadBar::hidden(),
+            &|attempt, _| seen.lock().unwrap().push(attempt),
+        )
+        .unwrap_err();
+        let seen = seen.into_inner().unwrap();
+        (seen, hits.load(Ordering::SeqCst), format!("{err}"))
+    }
+
+    #[test]
+    fn auth_and_missing_statuses_are_not_retried() {
+        for status in [401, 403, 404] {
+            let (retries, hits, msg) = retries_for_status(status);
+            assert!(retries.is_empty(), "{status}: {retries:?}");
+            assert_eq!(hits, 1, "{status}");
+            assert!(msg.contains(&status.to_string()), "{msg}");
+        }
+    }
+
+    #[test]
+    fn server_error_is_still_retried() {
+        let (retries, hits, _) = retries_for_status(503);
+        assert_eq!(retries, (1..=RETRY_BUDGET).collect::<Vec<_>>());
+        assert_eq!(hits, RETRY_BUDGET + 1);
     }
 
     #[test]

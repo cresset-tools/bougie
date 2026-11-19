@@ -339,7 +339,7 @@ pub(crate) fn resolve(
             name,
             ExtensionPin {
                 constraint: input.constraint,
-                version: selected.artifact.version.clone(),
+                version: selected.version.to_string(),
                 origin: input.origin,
             },
         );

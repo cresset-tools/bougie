@@ -239,7 +239,7 @@ impl super::Backend for BougieIndexBackend {
 
         Ok(ExtRecipe {
             name: manifest.name.clone(),
-            version: selected.artifact.version.clone(),
+            version: selected.version,
             php_minor,
             flavor,
             blob: BlobRef {

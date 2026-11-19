@@ -129,7 +129,7 @@ impl super::Backend for WindowsPhpNetBackend {
         let dll_name = format!("php_{}.dll", artifact.name);
         Ok(ExtRecipe {
             name: artifact.name,
-            version: artifact.version.to_string(),
+            version: artifact.version,
             php_minor: artifact.php_minor,
             flavor: artifact.flavor,
             blob: BlobRef {
@@ -1240,7 +1240,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(recipe.name, "imagick");
-        assert_eq!(recipe.version, "3.8.1");
+        assert_eq!(recipe.version, Version::new(3, 8, 1));
         assert_eq!(
             recipe.artifact_rel,
             std::path::PathBuf::from("php_imagick.dll")
@@ -1291,7 +1291,7 @@ mod tests {
                 bougie_resolver::ResolveOptions::default(),
             )
             .unwrap();
-        assert_eq!(recipe.version, "3.5.1");
+        assert_eq!(recipe.version, Version::new(3, 5, 1));
     }
 
     #[test]
