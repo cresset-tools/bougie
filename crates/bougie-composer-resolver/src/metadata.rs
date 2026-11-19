@@ -1074,6 +1074,78 @@ fn v1_package_cache_path(paths: &Paths, repo: &Repo, package_name: &str, sha256:
 // material benefit; a blocking syscall on the local cache is cheap
 // compared to network RTT.
 
+/// A metadata request that failed in a way another attempt can fix: the
+/// transport broke (connect, TLS, a reset connection, a truncated body)
+/// or the server answered 408, 429 or 5xx. Wraps the user-facing
+/// [`BougieError::Network`] and displays exactly as it does, so error
+/// messages are unchanged; the prefetch fan-out's retry loop looks for
+/// it with [`TransientFetchError::of`] to decide whether to try again.
+/// Anything not wrapped (a 401/403/other 4xx, a body that isn't valid
+/// metadata) is permanent, and retrying it would only delay the error.
+#[derive(Debug)]
+pub struct TransientFetchError {
+    pub error: BougieError,
+    /// The server's `Retry-After`, when it sent one in seconds form.
+    pub retry_after: Option<std::time::Duration>,
+}
+
+impl std::fmt::Display for TransientFetchError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.error.fmt(f)
+    }
+}
+
+impl std::error::Error for TransientFetchError {}
+
+impl TransientFetchError {
+    /// The transient failure at the top of `report`, if that is what it is.
+    #[must_use]
+    pub fn of(report: &eyre::Report) -> Option<&Self> {
+        report.downcast_ref::<Self>()
+    }
+}
+
+/// A transport-level failure of `operation`. Transient unless reqwest
+/// says the request itself was malformed, which no retry fixes.
+fn transport_error(operation: String, e: &reqwest::Error) -> eyre::Report {
+    let error = BougieError::Network {
+        operation,
+        detail: error_chain(e),
+    };
+    if e.is_builder() {
+        return error.into();
+    }
+    TransientFetchError {
+        error,
+        retry_after: None,
+    }
+    .into()
+}
+
+/// A non-success status for `url`. 408, 429 and 5xx are transient (an
+/// overloaded or rate-limiting origin, a CDN edge hiccup); every other
+/// status is permanent.
+fn status_error(url: &str, resp: &reqwest::Response) -> eyre::Report {
+    let status = resp.status();
+    let error = BougieError::Network {
+        operation: format!("GET {url}"),
+        detail: format!("server returned HTTP {status}"),
+    };
+    let transient = status == reqwest::StatusCode::REQUEST_TIMEOUT
+        || status == reqwest::StatusCode::TOO_MANY_REQUESTS
+        || status.is_server_error();
+    if !transient {
+        return error.into();
+    }
+    let retry_after = resp
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .map(std::time::Duration::from_secs);
+    TransientFetchError { error, retry_after }.into()
+}
+
 /// Async sibling of [`fetch_package_metadata_optional`]. Same
 /// 404/HTML-fallback behavior, same ETag-conditional-GET shape,
 /// same on-disk cache layout — just `client.get(...).send().await`
@@ -1103,10 +1175,10 @@ pub async fn fetch_package_metadata_optional_async(
     }
 
     let start = std::time::Instant::now();
-    let resp = req.send().await.map_err(|e| BougieError::Network {
-        operation: format!("GET {url}"),
-        detail: error_chain(&e),
-    })?;
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| transport_error(format!("GET {url}"), &e))?;
     tracing::debug!(
         url = %url,
         status = %resp.status(),
@@ -1124,11 +1196,7 @@ pub async fn fetch_package_metadata_optional_async(
         return Ok(None);
     }
     if !resp.status().is_success() {
-        return Err(BougieError::Network {
-            operation: format!("GET {url}"),
-            detail: format!("server returned HTTP {}", resp.status()),
-        }
-        .into());
+        return Err(status_error(&url, &resp));
     }
 
     if response_is_html_async(&resp) {
@@ -1140,10 +1208,10 @@ pub async fn fetch_package_metadata_optional_async(
         .get(reqwest::header::ETAG)
         .and_then(|v| v.to_str().ok())
         .map(str::to_owned);
-    let bytes = resp.bytes().await.map_err(|e| BougieError::Network {
-        operation: format!("reading body of {url}"),
-        detail: error_chain(&e),
-    })?;
+    let bytes = resp
+        .bytes()
+        .await
+        .map_err(|e| transport_error(format!("reading body of {url}"), &e))?;
 
     write_atomic(&json_path, &bytes)?;
     if let Some(t) = etag {
@@ -1226,21 +1294,17 @@ async fn fetch_v1_include_cached_async(
     if let Some(auth) = &repo.auth {
         req = req.header(auth.header_name(), auth.header_value());
     }
-    let resp = req.send().await.map_err(|e| BougieError::Network {
-        operation: format!("GET {url}"),
-        detail: error_chain(&e),
-    })?;
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| transport_error(format!("GET {url}"), &e))?;
     if !resp.status().is_success() {
-        return Err(BougieError::Network {
-            operation: format!("GET {url}"),
-            detail: format!("server returned HTTP {}", resp.status()),
-        }
-        .into());
+        return Err(status_error(&url, &resp));
     }
-    let bytes = resp.bytes().await.map_err(|e| BougieError::Network {
-        operation: format!("reading body of {url}"),
-        detail: error_chain(&e),
-    })?;
+    let bytes = resp
+        .bytes()
+        .await
+        .map_err(|e| transport_error(format!("reading body of {url}"), &e))?;
     write_atomic(&cache_path, &bytes)?;
     Ok(bytes.to_vec())
 }
@@ -1271,24 +1335,20 @@ pub async fn fetch_package_metadata_v1_optional_async(
         if let Some(auth) = &repo.auth {
             req = req.header(auth.header_name(), auth.header_value());
         }
-        let resp = req.send().await.map_err(|e| BougieError::Network {
-            operation: format!("GET {url}"),
-            detail: error_chain(&e),
-        })?;
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| transport_error(format!("GET {url}"), &e))?;
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
             return Ok(None);
         }
         if !resp.status().is_success() {
-            return Err(BougieError::Network {
-                operation: format!("GET {url}"),
-                detail: format!("server returned HTTP {}", resp.status()),
-            }
-            .into());
+            return Err(status_error(&url, &resp));
         }
-        let body = resp.bytes().await.map_err(|e| BougieError::Network {
-            operation: format!("reading body of {url}"),
-            detail: error_chain(&e),
-        })?;
+        let body = resp
+            .bytes()
+            .await
+            .map_err(|e| transport_error(format!("reading body of {url}"), &e))?;
         write_atomic(&cache_path, &body)?;
         body.to_vec()
     };

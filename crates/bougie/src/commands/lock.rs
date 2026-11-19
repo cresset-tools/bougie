@@ -295,16 +295,33 @@ pub fn run(
 }
 
 /// Root requires (`require` + `require-dev`) that must be re-resolved:
-/// those absent from the lock, or whose constraint no longer matches the
-/// locked version. Platform packages (php, ext-*, …) are skipped — they
+/// those the lock does not satisfy, or whose constraint no longer matches
+/// the locked version. Platform packages (php, ext-*, …) are skipped — they
 /// aren't lock packages. A constraint that fails to parse is treated as
 /// changed so the resolver surfaces the error.
+///
+/// A require is also satisfied by a locked package that `replace`s or
+/// `provide`s it with a compatible constraint: the resolver picks the
+/// replacer, so the replaced name never gets a lock entry of its own
+/// (`buckaroo/magento2` replaces `buckaroo/magento2secondchance`, and
+/// Mage-OS ships many such replacements). Without this, every such require
+/// was reported as re-resolved on every run.
 fn changed_requires(composer_json: &serde_json::Value, lock: &Lock) -> Vec<String> {
-    let mut locked: std::collections::HashMap<String, Version> = std::collections::HashMap::new();
+    use std::collections::HashMap;
+    let mut locked: HashMap<String, Version> = HashMap::new();
+    // name → (link constraint, locked version of the package declaring it)
+    let mut stand_ins: HashMap<String, Vec<(&str, Option<Version>)>> = HashMap::new();
     for p in lock.all_packages() {
         let raw = p.version_normalized.as_deref().unwrap_or(&p.version);
-        if let Ok(v) = Version::parse(raw) {
-            locked.insert(p.name.to_ascii_lowercase(), v);
+        let version = Version::parse(raw).ok();
+        if let Some(v) = &version {
+            locked.insert(p.name.to_ascii_lowercase(), v.clone());
+        }
+        for (target, link) in p.replace.iter().chain(&p.provide) {
+            stand_ins
+                .entry(target.to_ascii_lowercase())
+                .or_default()
+                .push((link.as_str(), version.clone()));
         }
     }
     let mut changed = Vec::new();
@@ -322,15 +339,35 @@ fn changed_requires(composer_json: &serde_json::Value, lock: &Lock) -> Vec<Strin
             let Some(constraint) = constraint.as_str() else {
                 continue;
             };
-            let satisfied = locked
-                .get(&name.to_ascii_lowercase())
-                .is_some_and(|v| Constraint::parse(constraint).is_ok_and(|c| c.matches(v)));
-            if !satisfied {
+            let Ok(wanted) = Constraint::parse(constraint) else {
+                changed.push(name.clone());
+                continue;
+            };
+            let lower = name.to_ascii_lowercase();
+            let by_package = locked.get(&lower).is_some_and(|v| wanted.matches(v));
+            let by_stand_in = || {
+                stand_ins.get(&lower).is_some_and(|links| {
+                    links
+                        .iter()
+                        .any(|(link, owner)| link_satisfies(link, owner.as_ref(), &wanted))
+                })
+            };
+            if !by_package && !by_stand_in() {
                 changed.push(name.clone());
             }
         }
     }
     changed
+}
+
+/// Whether a `replace`/`provide` link constraint can satisfy `wanted`:
+/// `self.version` stands for the declaring package's own locked version;
+/// anything else must intersect the requirement, as Composer checks it.
+fn link_satisfies(link: &str, owner: Option<&Version>, wanted: &Constraint) -> bool {
+    if link.trim() == "self.version" {
+        return owner.is_some_and(|v| wanted.matches(v));
+    }
+    Constraint::parse(link).is_ok_and(|c| c.intersects(wanted))
 }
 
 fn read_root_require_names(composer_json: &serde_json::Value) -> Vec<String> {
@@ -432,4 +469,75 @@ fn lock_toolchain(
         skipped_targets,
         lock_path,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn lock_of(packages: serde_json::Value) -> Lock {
+        serde_json::from_value(json!({
+            "content-hash": "x",
+            "packages": packages,
+            "packages-dev": [],
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn replaced_require_is_not_changed() {
+        // The large Mage-OS project: four requires are satisfied by
+        // replacers and have no lock entry of their own. They were listed
+        // under "re-resolving:" on every `bougie lock`.
+        let lock = lock_of(json!([
+            {"name": "buckaroo/magento2", "version": "v2.7.6",
+             "version_normalized": "2.7.6.0",
+             "replace": {"buckaroo/magento2secondchance": "*"}},
+            {"name": "mage-os/module-admin-activity-log", "version": "2.0.4",
+             "version_normalized": "2.0.4.0",
+             "replace": {"kiwicommerce/module-admin-activity": "1.0.8"}},
+            {"name": "acme/polyfill", "version": "1.2.0",
+             "version_normalized": "1.2.0.0",
+             "provide": {"acme/iface": "self.version"}},
+        ]));
+        let composer_json = json!({"require": {
+            "buckaroo/magento2": ">=2.7",
+            "buckaroo/magento2secondchance": ">=1.1",
+            "kiwicommerce/module-admin-activity": ">=1.0",
+            "acme/iface": "^1.0",
+        }});
+        assert!(changed_requires(&composer_json, &lock).is_empty());
+    }
+
+    #[test]
+    fn incompatible_replace_or_missing_package_is_changed() {
+        let lock = lock_of(json!([
+            {"name": "mage-os/module-admin-activity-log", "version": "2.0.4",
+             "version_normalized": "2.0.4.0",
+             "replace": {"kiwicommerce/module-admin-activity": "1.0.8"}},
+            {"name": "acme/polyfill", "version": "1.2.0",
+             "version_normalized": "1.2.0.0",
+             "provide": {"acme/iface": "self.version"}},
+            {"name": "acme/foo", "version": "1.0.0", "version_normalized": "1.0.0.0"},
+        ]));
+        let composer_json = json!({"require": {
+            "kiwicommerce/module-admin-activity": "^2.0",
+            "acme/iface": "^2.0",
+            "acme/foo": "^2.0",
+            "acme/new": "^1.0",
+            "php": ">=8.1",
+        }});
+        let mut changed = changed_requires(&composer_json, &lock);
+        changed.sort();
+        assert_eq!(
+            changed,
+            vec![
+                "acme/foo".to_string(),
+                "acme/iface".to_string(),
+                "acme/new".to_string(),
+                "kiwicommerce/module-admin-activity".to_string(),
+            ]
+        );
+    }
 }

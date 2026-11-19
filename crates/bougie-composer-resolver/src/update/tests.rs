@@ -4097,3 +4097,187 @@ fn with_dependencies_vs_with_all_dependencies_scope() {
         "-W floats the whole closure, leaving nothing pinned",
     );
 }
+
+/// Build a provider for a one-package `composer.json` against `uri`.
+fn single_package_provider(paths: Paths, uri: String) -> ResolveProvider {
+    let composer_json = json!({"require": {"acme/foo": "^1.0"}});
+    let client = crate::metadata::build_client().unwrap();
+    ResolveProvider::build(
+        client,
+        paths,
+        crate::metadata::Repo::from_url(uri),
+        &composer_json,
+        true,
+    )
+    .unwrap()
+}
+
+/// A bare HTTP/1.1 server that resets the first `resets` connections
+/// (closing them with the request still unread makes Linux answer with a
+/// RST, which the client sees as "Connection reset by peer" — the error
+/// Packagist produced) and then serves `body` for every request. Returns
+/// its base URL and a counter of accepted connections.
+fn resetting_server(resets: usize, body: String) -> (String, Arc<std::sync::atomic::AtomicUsize>) {
+    use std::io::{Read, Write};
+    use std::sync::atomic::Ordering;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let accepted = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counter = Arc::clone(&accepted);
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { return };
+            let n = counter.fetch_add(1, Ordering::SeqCst);
+            if n < resets {
+                // Let the request land in the receive buffer, then drop
+                // the socket without reading it: the kernel sends RST.
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                drop(stream);
+                continue;
+            }
+            let mut buf = Vec::new();
+            let mut chunk = [0_u8; 1024];
+            while !buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                match stream.read(&mut chunk) {
+                    Ok(0) | Err(_) => break,
+                    Ok(k) => buf.extend_from_slice(&chunk[..k]),
+                }
+            }
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                 Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(response.as_bytes());
+        }
+    });
+    (format!("http://{addr}"), accepted)
+}
+
+#[test]
+fn prefetch_retries_through_a_burst_of_connection_resets() {
+    // Regression: `bougie lock` on a large Mage-OS project failed with
+    // "connection error: Connection reset by peer (os error 104)" for one
+    // Packagist package while Packagist was resetting new connections, and
+    // succeeded on an immediate rerun. The fan-out retried 4 times over
+    // ~0.9s, which a reset window of a second or two exhausts. Four
+    // consecutive resets must now be ridden out.
+    let tmp = TempDir::new().unwrap();
+    let paths = paths_in(tmp.path());
+    let body = p2_body("acme/foo", &[("1.0.0", json!({}))]);
+    let (uri, accepted) = resetting_server(4, body);
+
+    let provider = single_package_provider(paths, uri);
+    provider
+        .pre_fetch_closure_silent()
+        .expect("a burst of resets is retried, not fatal");
+    assert_eq!(
+        accepted.load(std::sync::atomic::Ordering::SeqCst),
+        5,
+        "four reset attempts, then the one that succeeded"
+    );
+    let root = provider.root_version();
+    let solution = resolve(&provider, PubGrubPackage::Root, root).unwrap();
+    assert_eq!(
+        solution
+            .get(&PubGrubPackage::Package("acme/foo".into()))
+            .unwrap()
+            .to_string(),
+        "1.0.0.0"
+    );
+}
+
+#[test]
+fn prefetch_retries_rate_limit_and_server_errors() {
+    // 429 and 5xx are the other transient shapes a throttling or
+    // overloaded origin produces; they are retried like a reset.
+    let tmp = TempDir::new().unwrap();
+    let paths = paths_in(tmp.path());
+    let body = p2_body("acme/foo", &[("1.0.0", json!({}))]);
+
+    let rt = rt();
+    let (uri, server) = rt.block_on(async {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(wm_path("/p2/acme/foo.json"))
+            .respond_with(ResponseTemplate::new(429))
+            .up_to_n_times(2)
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(wm_path("/p2/acme/foo.json"))
+            .respond_with(ResponseTemplate::new(503))
+            .up_to_n_times(2)
+            .with_priority(2)
+            .mount(&server)
+            .await;
+        mount_p2(&server, "acme/foo", body).await;
+        (server.uri(), server)
+    });
+
+    let provider = single_package_provider(paths, uri);
+    provider
+        .pre_fetch_closure_silent()
+        .expect("429/503 are retried, not fatal");
+    let requests = rt.block_on(server.received_requests()).unwrap();
+    assert_eq!(requests.len(), 5, "2×429, 2×503, then the 200");
+}
+
+#[test]
+fn prefetch_does_not_retry_a_permanent_failure() {
+    // A 403 will not fix itself: fail on the first answer instead of
+    // spending the retry budget on it.
+    let tmp = TempDir::new().unwrap();
+    let paths = paths_in(tmp.path());
+
+    let rt = rt();
+    let (uri, server) = rt.block_on(async {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(wm_path("/p2/acme/foo.json"))
+            .respond_with(ResponseTemplate::new(403))
+            .mount(&server)
+            .await;
+        (server.uri(), server)
+    });
+
+    let provider = single_package_provider(paths, uri);
+    let err = provider
+        .pre_fetch_closure_silent()
+        .expect_err("a 403 fails the prefetch");
+    assert!(
+        err.0.contains("HTTP 403"),
+        "error names the status: {}",
+        err.0
+    );
+    let requests = rt.block_on(server.received_requests()).unwrap();
+    assert_eq!(requests.len(), 1, "a permanent failure is not retried");
+}
+
+#[test]
+fn prefetch_retry_delay_backs_off_exponentially_and_honours_retry_after() {
+    let ms = |attempt, ra: Option<u64>| {
+        u64::try_from(
+            prefetch_retry_delay(attempt, ra.map(std::time::Duration::from_secs), "acme/foo")
+                .as_millis(),
+        )
+        .unwrap()
+    };
+    for (attempt, base) in [
+        (0, 250),
+        (1, 500),
+        (2, 1_000),
+        (3, 2_000),
+        (4, 4_000),
+        (9, 4_000),
+    ] {
+        let d = ms(attempt, None);
+        assert!(
+            (base..=base + base / 4).contains(&d),
+            "attempt {attempt}: {d}ms not in {base}ms + 25% jitter"
+        );
+    }
+    assert_eq!(ms(0, Some(5)), 5_000, "Retry-After raises the delay");
+    assert_eq!(ms(0, Some(3_600)), 30_000, "Retry-After is capped");
+}
