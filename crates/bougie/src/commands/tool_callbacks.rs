@@ -69,8 +69,7 @@ pub fn tool_requires_fetcher() -> Box<ToolRequiresFetcher> {
                     let extensions = v
                         .require
                         .keys()
-                        .filter_map(|k| k.strip_prefix("ext-"))
-                        .map(str::to_ascii_lowercase)
+                        .filter_map(|k| bougie_config::composer_ext_name(k))
                         .filter(|n| ext_needs_install(n))
                         .collect();
                     return Ok(ToolRequires {

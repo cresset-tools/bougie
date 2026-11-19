@@ -305,11 +305,11 @@ fn check_platform_requirements(
                         pkg.name, raw_constraint, php_version,
                     ));
                 }
-            } else if let Some(ext_name) = dep_name.strip_prefix("ext-") {
+            } else if let Some(ext_name) = bougie_config::composer_ext_name(dep_name) {
                 if ignore.is_ignored(dep_name) {
                     continue;
                 }
-                if !available_extensions.contains(ext_name) {
+                if !available_extensions.contains(&ext_name) {
                     errors.push(format!(
                         "{} requires {} but it is not installed. \
                          Install it with: bougie ext add {ext_name}",
@@ -348,11 +348,11 @@ fn check_platform_requirements(
                                 "root composer.json requires php {raw_str} but {php_version} is installed",
                             ));
                         }
-                    } else if let Some(ext_name) = dep_name.strip_prefix("ext-") {
+                    } else if let Some(ext_name) = bougie_config::composer_ext_name(dep_name) {
                         if ignore.is_ignored(dep_name) {
                             continue;
                         }
-                        if !available_extensions.contains(ext_name) {
+                        if !available_extensions.contains(&ext_name) {
                             errors.push(format!(
                                 "root composer.json requires {dep_name} but it is not installed. \
                                  Install it with: bougie ext add {ext_name}",

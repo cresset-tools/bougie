@@ -8,7 +8,7 @@ mod composer;
 mod merge;
 mod toml;
 
-pub use composer::{ComposerJson, read_composer_json};
+pub use composer::{ComposerJson, composer_ext_name, normalize_composer_ext, read_composer_json};
 pub use merge::{ProjectConfig, load_project, merge};
 pub use toml::{read_bougie_toml, write_bougie_toml_skeleton};
 

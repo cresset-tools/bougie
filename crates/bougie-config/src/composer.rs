@@ -42,11 +42,7 @@ pub fn read_composer_json(text: &str) -> Result<ComposerJson> {
         .map(String::from);
 
     let require_extensions = require
-        .map(|r| {
-            r.keys()
-                .filter_map(|k| k.strip_prefix("ext-").map(String::from))
-                .collect()
-        })
+        .map(|r| r.keys().filter_map(|k| composer_ext_name(k)).collect())
         .unwrap_or_default();
 
     let direct_requires = require
@@ -80,6 +76,33 @@ pub fn read_composer_json(text: &str) -> Result<ComposerJson> {
         extra_bougie,
         scripts,
     })
+}
+
+/// Composer platform names whose `ext-` suffix differs from the
+/// extension name bougie builds, publishes, and enables. Composer
+/// derives `ext-*` names from `php -m`, lowercased with spaces turned
+/// into `-`, so a module that reports a display name rather than its
+/// short name gets a different package name. Among the extensions PHP
+/// bundles only opcache does this (`Zend OPcache`); Composer's own
+/// `platform_check.php` special-cases the same single name.
+const COMPOSER_EXT_ALIASES: &[(&str, &str)] = &[("zend-opcache", "opcache")];
+
+/// Map a Composer extension name (without the `ext-` prefix) to the
+/// extension name bougie uses: lowercased, with Composer-only aliases
+/// such as `zend-opcache` resolved to `opcache`.
+pub fn normalize_composer_ext(name: &str) -> String {
+    let lower = name.to_ascii_lowercase();
+    COMPOSER_EXT_ALIASES
+        .iter()
+        .find(|(composer, _)| *composer == lower)
+        .map_or(lower, |(_, ext)| (*ext).to_owned())
+}
+
+/// The bougie extension name for a Composer platform-package key, or
+/// `None` when `key` isn't an `ext-*` requirement. `ext-zend-opcache`
+/// yields `opcache`; see [`normalize_composer_ext`].
+pub fn composer_ext_name(key: &str) -> Option<String> {
+    key.strip_prefix("ext-").map(normalize_composer_ext)
 }
 
 /// Composer's platform-package name rules: `php` (+ suffixed
@@ -172,6 +195,22 @@ mod tests {
         assert_eq!(c.require_php.as_deref(), Some("^8.3"));
         assert!(c.require_extensions.contains("xdebug"));
         assert!(c.require_extensions.contains("redis"));
+    }
+
+    #[test]
+    fn zend_opcache_maps_to_builtin_opcache() {
+        let c = read_composer_json(
+            r#"{"require":{"ext-zend-opcache":"*","ext-Intl":"*","ext-pdo_mysql":"*"}}"#,
+        )
+        .unwrap();
+        let got: Vec<&str> = c.require_extensions.iter().map(String::as_str).collect();
+        assert_eq!(got, ["intl", "opcache", "pdo_mysql"]);
+        assert_eq!(
+            composer_ext_name("ext-zend-opcache").as_deref(),
+            Some("opcache")
+        );
+        assert_eq!(composer_ext_name("ext-opcache").as_deref(), Some("opcache"));
+        assert_eq!(composer_ext_name("lib-icu"), None);
     }
 
     #[test]
