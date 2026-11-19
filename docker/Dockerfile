@@ -22,7 +22,7 @@
 # Bumps to this flow through PRs so the image stays reproducible. RUST_VERSION
 # tracks rust-toolchain.toml (the toolchain file still wins at build time; this
 # only picks the base image).
-ARG RUST_VERSION=1.100
+ARG RUST_VERSION=1.95
 
 FROM rust:${RUST_VERSION}-alpine AS build
 

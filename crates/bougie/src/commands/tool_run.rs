@@ -82,5 +82,7 @@ pub fn run(
     // `run::run` returns `Infallible` on Unix because it execve's
     // into PHP. The `Result` carries only the prep-time / execve
     // failure mode.
-    match run::run(&ctx, &req, php_spec, with, project.as_ref(), bin, args)? {}
+    let _: std::convert::Infallible =
+        run::run(&ctx, &req, php_spec, with, project.as_ref(), bin, args)?;
+    unreachable!("tool run execve never returns on success");
 }

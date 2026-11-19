@@ -9,7 +9,3 @@ rust-version = "1.95"
 authors.workspace = true
 
 [dependencies]
-
-# Deliberately empty: this crate does not inherit the workspace lints, which
-# deny `unsafe_code`.
-[lints]

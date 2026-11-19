@@ -8,7 +8,6 @@ use bougie_paths::Paths;
 use bougie_platform::target::Triple;
 use bougie_version::request::{Flavor, VersionLike};
 use eyre::Result;
-#[cfg(unix)]
 use std::collections::BTreeMap;
 use std::path::Path;
 
