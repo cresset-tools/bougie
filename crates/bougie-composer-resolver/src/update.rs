@@ -690,6 +690,7 @@ impl ResolveProvider {
                         target_version: (*target_ver).clone(),
                         target_pretty: pretty_version_in(&mc, conflict_name, target_ver),
                         constraint: raw_constraint.clone(),
+                        replaced: None,
                     });
                     break;
                 }

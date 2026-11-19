@@ -7,8 +7,12 @@
 //! *name* the conflict. Before this module it said the declaring package
 //! had "no available version", which sends people looking at their
 //! repositories and stability flags instead of at the `conflict` entry.
+//!
+//! The same post-solve loop enforces Composer's implicit conflict
+//! between two packages that `replace` the same name; see
+//! `check_same_replace_violations`.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
 use crate::hash::{FxHashMap, FxHashSet};
@@ -21,8 +25,8 @@ use pubgrub::{
 };
 
 use super::{
-    ComposerRange, LockPackage, PackageName, PubGrubPackage, ResolveProvider, format_version_list,
-    is_platform, split_stability_flag, to_range,
+    ComposerRange, LockPackage, PackageName, PubGrubPackage, ResolveProvider,
+    collect_active_replaces, format_version_list, is_platform, split_stability_flag, to_range,
 };
 
 /// A pubgrub solution for this provider.
@@ -49,6 +53,9 @@ pub(crate) struct ConflictViolation {
     pub(super) target_pretty: String,
     /// The declarer's raw conflict constraint (`*`, `<2.0`).
     pub(super) constraint: String,
+    /// `Some(name)` when nothing was *declared*: `declarer` and `target`
+    /// both `replace` `name`, which Composer treats as a conflict.
+    pub(super) replaced: Option<PackageName>,
 }
 
 impl ConflictViolation {
@@ -56,7 +63,14 @@ impl ConflictViolation {
     /// in `External::Custom`, which [`ConflictAwareFormatter`] renders
     /// as `<declarer> <version> <reason>`.
     pub(super) fn reason(&self) -> String {
-        format!("conflicts with {} {}", self.target, self.target_pretty)
+        match &self.replaced {
+            Some(replaced) => format!(
+                "cannot be installed with {} {}: they both replace {replaced} \
+                 and thus cannot coexist",
+                self.target, self.target_pretty
+            ),
+            None => format!("conflicts with {} {}", self.target, self.target_pretty),
+        }
     }
 }
 
@@ -102,7 +116,7 @@ impl ResolveProvider {
         for _retry in 0..MAX_CONFLICT_RETRIES {
             let Ok(ref solution) = result else { break };
             let pairs: Vec<_> = solution.iter().collect();
-            let violations = self.check_conflict_violations(&pairs);
+            let violations = self.check_violations(&pairs);
             if violations.is_empty() {
                 break;
             }
@@ -129,24 +143,119 @@ impl ResolveProvider {
     /// itself refuses to install.
     pub(super) fn ensure_no_conflict_violations(&self, solution: &Solution) -> eyre::Result<()> {
         let pairs: Vec<_> = solution.iter().collect();
-        let remaining = self.check_conflict_violations(&pairs);
+        let remaining = self.check_violations(&pairs);
         if remaining.is_empty() {
             return Ok(());
         }
         let detail = remaining
             .iter()
-            .map(|v| {
-                format!(
-                    "{}@{} conflicts with {} {}",
-                    v.declarer, v.version, v.target, v.target_pretty
-                )
-            })
+            .map(|v| format!("{}@{} {}", v.declarer, v.version, v.reason()))
             .collect::<Vec<_>>()
             .join(", ");
         Err(eyre!(
             "could not satisfy declared package conflicts after {MAX_CONFLICT_RETRIES} \
              resolution attempts; still violated: {detail}"
         ))
+    }
+
+    /// Everything a solution violates that pubgrub could not see:
+    /// declared conflicts, and two packages replacing the same name.
+    fn check_violations(&self, solution: &[(&PubGrubPackage, &Version)]) -> Vec<ConflictViolation> {
+        let mut violations = self.check_conflict_violations(solution);
+        for v in self.check_same_replace_violations(solution) {
+            // One exclusion per declarer version is all the retry uses.
+            if !violations
+                .iter()
+                .any(|seen| seen.declarer == v.declarer && seen.version == v.version)
+            {
+                violations.push(v);
+            }
+        }
+        violations
+    }
+
+    /// Two different packages in the solution that both `replace` the
+    /// same name. Composer refuses to install them together:
+    ///
+    /// ```text
+    ///   - Only one of these can be installed: b/b[1.0.0], a/a[1.0.0].
+    ///     They both replace x/x and thus cannot coexist.
+    /// ```
+    ///
+    /// Mirrors `RuleSetGenerator::addConflictRules` (Composer 2.x): every
+    /// package is indexed under `BasePackage::getNames(false)` — its own
+    /// name plus each `replace` target, but *not* its `provide` targets —
+    /// and each name with more than one package gets a
+    /// `RULE_PACKAGE_SAME_NAME` rule allowing at most one of them. So:
+    ///
+    /// - the constraint on the `replace` link is irrelevant: `"*"`,
+    ///   `"self.version"` and two disjoint versions all conflict alike;
+    /// - platform names are not special (two packages replacing
+    ///   `ext-foo` conflict too);
+    /// - two packages that only `provide` the same name coexist, as do a
+    ///   provider and a replacer of it.
+    ///
+    /// The other half of that rule, a replacer against the package that
+    /// really has the name, is handled elsewhere: the replaced original
+    /// is dropped from the output (`collect_active_replaces`), and those
+    /// dropped originals are skipped here because Composer would never
+    /// have selected them.
+    ///
+    /// Reported as one violation per surplus replacer, against the
+    /// first replacer by name, so a retry can look for a version of the
+    /// surplus one that no longer replaces the name.
+    fn check_same_replace_violations(
+        &self,
+        solution: &[(&PubGrubPackage, &Version)],
+    ) -> Vec<ConflictViolation> {
+        let shadowed = collect_active_replaces(self, solution);
+        let mc = self.merged_cache.borrow();
+        let mut replacers: BTreeMap<&str, Vec<(&PackageName, &Version)>> = BTreeMap::new();
+        for (pkg, version) in solution {
+            let PubGrubPackage::Package(name) = pkg else {
+                continue;
+            };
+            if shadowed.contains(name.as_str()) {
+                continue;
+            }
+            // Synthetic virtual candidates carry no `replace` map (or are
+            // not cached at all), so only real packages contribute.
+            let Some((_, entry)) = mc
+                .get(name.as_str())
+                .and_then(|vs| vs.iter().find(|(v, _)| v == *version))
+            else {
+                continue;
+            };
+            for replaced in entry.replace.keys() {
+                // A self-replace adds no name beyond the package's own.
+                if replaced.as_str() != name.as_str() {
+                    replacers
+                        .entry(replaced.as_str())
+                        .or_default()
+                        .push((name, *version));
+                }
+            }
+        }
+
+        let mut violations = Vec::new();
+        for (replaced, mut packages) in replacers {
+            packages.sort_by(|a, b| a.0.as_str().cmp(b.0.as_str()));
+            let Some(((keep, keep_version), surplus)) = packages.split_first() else {
+                continue;
+            };
+            for (declarer, version) in surplus {
+                violations.push(ConflictViolation {
+                    declarer: (*declarer).clone(),
+                    version: (*version).clone(),
+                    target: (*keep).clone(),
+                    target_version: (*keep_version).clone(),
+                    target_pretty: pretty_version_in(&mc, keep.as_str(), keep_version),
+                    constraint: "*".to_owned(),
+                    replaced: Some(PackageName::from(replaced)),
+                });
+            }
+        }
+        violations
     }
 
     /// The explanation for a `NoSolution`: Composer-style problems when
