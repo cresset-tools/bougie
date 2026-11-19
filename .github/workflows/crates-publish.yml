@@ -49,7 +49,7 @@ jobs:
           ref: ${{ github.event.release.tag_name }}
           persist-credentials: false
 
-      # rust-toolchain.toml pins Rust 1.100 + rustfmt/clippy; rustup installs it
+      # rust-toolchain.toml pins Rust 1.95 + rustfmt/clippy; rustup installs it
       # on the first cargo invocation in the repo dir. cargo-workspaces is
       # version-pinned for reproducible release behavior.
       - name: Install cargo-workspaces

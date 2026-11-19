@@ -19,7 +19,3 @@ landlock = "0.4"
 
 [dev-dependencies]
 tempfile = "3.10"
-
-# Deliberately empty: this crate does not inherit the workspace lints, which
-# deny `unsafe_code`.
-[lints]
