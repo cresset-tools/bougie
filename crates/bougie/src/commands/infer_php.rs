@@ -328,8 +328,8 @@ fn lockfile_extensions(composer_lock: &str) -> BTreeSet<String> {
                 continue;
             };
             for k in req.keys() {
-                if let Some(name) = k.strip_prefix("ext-") {
-                    out.insert(name.to_string());
+                if let Some(name) = bougie_config::composer_ext_name(k) {
+                    out.insert(name);
                 }
             }
         }
@@ -445,6 +445,21 @@ mod tests {
         assert!(set.contains("curl"));
         assert!(set.contains("xdebug"));
         assert!(!set.contains("php"));
+    }
+
+    #[test]
+    fn lockfile_zend_opcache_is_the_builtin_opcache() {
+        // amnuts/opcache-gui requires `ext-zend-opcache`, Composer's name
+        // for opcache; it must not be fetched as `extension/zend-opcache`.
+        let lock = r#"{
+            "packages": [
+                {"name": "amnuts/opcache-gui", "require": {"ext-zend-opcache": "*"}}
+            ]
+        }"#;
+        let set = lockfile_extensions(lock);
+        assert!(set.contains("opcache"));
+        assert!(!set.contains("zend-opcache"));
+        assert!(bougie_installer::baseline::is_baseline("opcache"));
     }
 
     #[test]

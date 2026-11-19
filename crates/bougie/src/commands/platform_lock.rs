@@ -118,10 +118,7 @@ impl Upgrade {
             Self::Only(
                 packages
                     .into_iter()
-                    .map(|name| {
-                        name.strip_prefix("ext-")
-                            .map_or(name.clone(), str::to_owned)
-                    })
+                    .map(|name| bougie_config::composer_ext_name(&name).unwrap_or(name))
                     .collect(),
             )
         }
@@ -761,7 +758,7 @@ fn composer_extension_constraints(project_root: &Path) -> BTreeMap<String, Strin
         .flatten()
         .filter_map(|(name, constraint)| {
             Some((
-                name.strip_prefix("ext-")?.to_owned(),
+                bougie_config::composer_ext_name(name)?,
                 constraint.as_str()?.to_owned(),
             ))
         })
