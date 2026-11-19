@@ -651,6 +651,190 @@ fn violation_reason_uses_the_pretty_target_version() {
         target_version: Version::parse("1.0.0").unwrap(),
         target_pretty: "v1.0.0".into(),
         constraint: "*".into(),
+        replaced: None,
     };
     assert_eq!(v.reason(), "conflicts with acme/old v1.0.0");
+}
+
+// Two packages replacing the same name. Composer's
+// `RuleSetGenerator::addConflictRules` allows at most one package per
+// name, where a package's names are its own plus its `replace` targets
+// (`BasePackage::getNames(false)`); `provide` targets do not count.
+
+/// The reported shape: a metapackage pins one replacer of
+/// `magento/module-elasticsearch`, the root requires another.
+fn two_replacers_fixture(disable_versions: Vec<Value>) -> Fixture {
+    fixture(
+        &[
+            (
+                "acme/product",
+                vec![entry(
+                    "acme/product",
+                    "4.0.0",
+                    json!({"require": {"acme/module-elasticsearch": "4.0.0"}}),
+                )],
+            ),
+            (
+                "acme/module-elasticsearch",
+                vec![entry(
+                    "acme/module-elasticsearch",
+                    "4.0.0",
+                    json!({"replace": {"magento/module-elasticsearch": "101.0.0"}}),
+                )],
+            ),
+            ("zep/module-disable-search-engine", disable_versions),
+        ],
+        &json!({"require": {
+            "acme/product": "4.0.0",
+            "zep/module-disable-search-engine": "*",
+        }}),
+    )
+}
+
+#[test]
+fn two_packages_replacing_the_same_name_do_not_resolve() {
+    // Composer: "Only one of these can be installed: zep/…[0.4.0],
+    // acme/module-elasticsearch[4.0.0]. They both replace
+    // magento/module-elasticsearch and thus cannot coexist." The replace
+    // constraints differ (`*` vs `101.0.0`); that makes no difference.
+    let f = two_replacers_fixture(vec![entry(
+        "zep/module-disable-search-engine",
+        "0.4.0",
+        json!({"replace": {"magento/module-elasticsearch": "*"}}),
+    )]);
+    let why = failed(&f);
+    assert!(
+        why.contains("zep/module-disable-search-engine 0.4.0"),
+        "{why}"
+    );
+    assert!(why.contains("acme/module-elasticsearch 4.0.0"), "{why}");
+    assert!(
+        why.contains("they both replace magento/module-elasticsearch and thus cannot coexist"),
+        "{why}"
+    );
+    assert_no_phantom_missing_version(&why);
+}
+
+#[test]
+fn two_replacers_fall_back_to_a_version_that_does_not_replace() {
+    let f = two_replacers_fixture(vec![
+        entry(
+            "zep/module-disable-search-engine",
+            "0.4.0",
+            json!({"replace": {"magento/module-elasticsearch": "*"}}),
+        ),
+        entry("zep/module-disable-search-engine", "0.3.0", json!({})),
+    ]);
+    let s = solved(&f);
+    assert_eq!(s["zep/module-disable-search-engine"], "0.3.0.0");
+    assert_eq!(s["acme/module-elasticsearch"], "4.0.0.0");
+    let excludes = f.provider.conflict_excludes.borrow();
+    let v = excludes.values().next().expect("one exclusion recorded");
+    assert_eq!(
+        v.replaced.as_ref().map(PackageName::as_str),
+        Some("magento/module-elasticsearch")
+    );
+}
+
+#[test]
+fn two_replacers_conflict_even_when_the_replaced_package_exists() {
+    // The original is in the graph too (acme/user requires it). One
+    // replacer standing in for it is fine; a second one still clashes.
+    let f = fixture(
+        &[
+            ("acme/orig", vec![entry("acme/orig", "1.0.0", json!({}))]),
+            (
+                "acme/user",
+                vec![entry(
+                    "acme/user",
+                    "1.0.0",
+                    json!({"require": {"acme/orig": "^1.0"}}),
+                )],
+            ),
+            (
+                "acme/fork-a",
+                vec![entry(
+                    "acme/fork-a",
+                    "1.0.0",
+                    json!({"replace": {"acme/orig": "1.0.0"}}),
+                )],
+            ),
+            (
+                "acme/fork-b",
+                vec![entry(
+                    "acme/fork-b",
+                    "1.0.0",
+                    json!({"replace": {"acme/orig": "1.0.0"}}),
+                )],
+            ),
+        ],
+        &json!({"require": {"acme/user": "*", "acme/fork-a": "*", "acme/fork-b": "*"}}),
+    );
+    let why = failed(&f);
+    assert!(why.contains("acme/fork-a 1.0.0"), "{why}");
+    assert!(why.contains("acme/fork-b 1.0.0"), "{why}");
+    assert!(why.contains("they both replace acme/orig"), "{why}");
+}
+
+#[test]
+fn two_packages_providing_the_same_name_resolve_together() {
+    // `provide` is a capability, not an identity: Composer installs any
+    // number of providers of one name side by side (think two
+    // `psr/log-implementation`s), and a provider next to a replacer.
+    let f = fixture(
+        &[
+            (
+                "acme/impl-a",
+                vec![entry(
+                    "acme/impl-a",
+                    "1.0.0",
+                    json!({"provide": {"acme/virtual": "1.0.0"}}),
+                )],
+            ),
+            (
+                "acme/impl-b",
+                vec![entry(
+                    "acme/impl-b",
+                    "1.0.0",
+                    json!({"provide": {"acme/virtual": "1.0.0"}}),
+                )],
+            ),
+            (
+                "acme/impl-c",
+                vec![entry(
+                    "acme/impl-c",
+                    "1.0.0",
+                    json!({"replace": {"acme/virtual": "1.0.0"}}),
+                )],
+            ),
+        ],
+        &json!({"require": {
+            "acme/impl-a": "*",
+            "acme/impl-b": "*",
+            "acme/impl-c": "*",
+            "acme/virtual": "^1.0",
+        }}),
+    );
+    let s = solved(&f);
+    for name in ["acme/impl-a", "acme/impl-b", "acme/impl-c"] {
+        assert_eq!(s[name], "1.0.0.0", "{s:?}");
+    }
+    assert!(f.provider.conflict_excludes.borrow().is_empty());
+}
+
+#[test]
+fn replace_violation_reason_names_the_replaced_package() {
+    let v = ConflictViolation {
+        declarer: PackageName::from("acme/b"),
+        version: Version::parse("1.0.0").unwrap(),
+        target: PackageName::from("acme/a"),
+        target_version: Version::parse("2.0.0").unwrap(),
+        target_pretty: "2.0.0".into(),
+        constraint: "*".into(),
+        replaced: Some(PackageName::from("acme/x")),
+    };
+    assert_eq!(
+        v.reason(),
+        "cannot be installed with acme/a 2.0.0: they both replace acme/x and thus cannot coexist"
+    );
 }
