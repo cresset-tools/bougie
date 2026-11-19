@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.57.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.56.0...bougie-v0.57.0) (2026-11-19)
+
+
+### Features
+
+* **login:** sign in through the browser without typing a code ([ef3b940](https://github.com/cresset-tools/bougie/commit/ef3b940d5713ec7bb34188357a97d8d6d5f446f0))
+
+
+### Bug Fixes
+
+* **bougie:** build the service sandbox before fork, not in pre_exec ([3a9967b](https://github.com/cresset-tools/bougie/commit/3a9967bad41ae60e06ca74e39c431cc14fce2760))
+* **bougie:** bump zip to 9 for the extract advisories ([9240f60](https://github.com/cresset-tools/bougie/commit/9240f60f82de8b2ee230b00936bd0d5556d59be1))
+* **bougie:** don't report replaced requires as re-resolved in bougie lock ([fd259af](https://github.com/cresset-tools/bougie/commit/fd259af3f6076a1a0a1f9a7851bc19ba8e99713b))
+* **bougie:** don't report success for a start already in flight ([e270fb8](https://github.com/cresset-tools/bougie/commit/e270fb8689a289fb3335aeade19705bf4aafc129))
+* **bougie:** name bougie and its commands in install warnings and blockers ([4c42233](https://github.com/cresset-tools/bougie/commit/4c42233b3d0e86a41b34655ee342a3205b447fc4))
+* **bougie:** print a notice when a package download is retried ([401addb](https://github.com/cresset-tools/bougie/commit/401addb0f2dcccf8c4de8951aa688341881372f9))
+* **bougie:** refuse two packages that replace the same package ([af8b9f7](https://github.com/cresset-tools/bougie/commit/af8b9f75705fc20486c817afb75726b8cd86622d))
+* **bougie:** ride out bursts of connection resets during the metadata prefetch ([cd072dc](https://github.com/cresset-tools/bougie/commit/cd072dc2f723085f48808dca58ce1061d53c2b92))
+* **bougie:** take composer-client's funding, extra.map and glob fixes ([ff88149](https://github.com/cresset-tools/bougie/commit/ff881497349f4c0afa08fde63b42ceaa72469f6d))
+* **bougie:** treat ext-zend-opcache as the built-in opcache ([b4eb8c4](https://github.com/cresset-tools/bougie/commit/b4eb8c446dd88c83da8d0588f89fa7246631a67d))
+* **bougie:** update locked dependencies ([5cf2920](https://github.com/cresset-tools/bougie/commit/5cf29205883c92c1c06bd91a2e1fd2fd37105374))
+
 ## [0.56.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.55.0...bougie-v0.56.0) (2026-11-09)
 
 
