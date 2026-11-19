@@ -1727,6 +1727,75 @@ fn prefetch_per_host_limit() -> usize {
         .unwrap_or(12)
 }
 
+/// Attempts per package in the prefetch fan-out before the resolve gives
+/// up. With [`prefetch_retry_delay`] that is ~8s of backoff in total,
+/// enough to ride out a burst of connection resets from a throttling
+/// CDN edge, short enough that a real outage still fails promptly.
+const PREFETCH_MAX_ATTEMPTS: usize = 6;
+
+/// Ceiling on one prefetch attempt (every repo's stable + dev fetch for
+/// one package, including the wait for a per-host permit).
+const PREFETCH_ATTEMPT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// Backoff before retry number `attempt + 1`: 250ms doubling per attempt
+/// (250ms, 500ms, 1s, 2s, 4s), capped at 4s, plus up to 25% jitter so
+/// the dozen tasks that one connection reset fails together do not all
+/// come back in the same instant. The jitter is derived from the package
+/// name, which spreads tasks without needing a random source. A server's
+/// `Retry-After` raises the delay to what it asked for, up to 30s.
+fn prefetch_retry_delay(
+    attempt: usize,
+    retry_after: Option<std::time::Duration>,
+    name: &str,
+) -> std::time::Duration {
+    const BASE_MS: u64 = 250;
+    const CAP_MS: u64 = 4_000;
+    const RETRY_AFTER_CAP: std::time::Duration = std::time::Duration::from_secs(30);
+    let shift = u32::try_from(attempt).unwrap_or(u32::MAX).min(16);
+    let backoff_ms = BASE_MS.saturating_mul(1_u64 << shift).min(CAP_MS);
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in name.bytes().chain(attempt.to_le_bytes()) {
+        hash ^= u64::from(b);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    let jitter_ms = hash % (backoff_ms / 4 + 1);
+    let delay = std::time::Duration::from_millis(backoff_ms + jitter_ms);
+    match retry_after {
+        Some(ra) => delay.max(ra.min(RETRY_AFTER_CAP)),
+        None => delay,
+    }
+}
+
+/// One failed prefetch attempt for a package, classified for the retry
+/// loop in [`run_prefetch_fanout`].
+struct AttemptError {
+    error: ProviderError,
+    /// The failure was a [`crate::metadata::TransientFetchError`]:
+    /// another attempt may succeed.
+    transient: bool,
+    retry_after: Option<std::time::Duration>,
+}
+
+impl AttemptError {
+    fn permanent(error: ProviderError) -> Self {
+        Self {
+            error,
+            transient: false,
+            retry_after: None,
+        }
+    }
+
+    /// Classify `report`, prefixing its message with `context`.
+    fn from_report(context: &str, report: &eyre::Report) -> Self {
+        let transient = crate::metadata::TransientFetchError::of(report);
+        Self {
+            error: ProviderError(format!("{context}: {report:#}")),
+            transient: transient.is_some(),
+            retry_after: transient.and_then(|t| t.retry_after),
+        }
+    }
+}
+
 /// Host key for per-host throttling. Parses the repo URL and returns
 /// its host (`repo.mage-os.org`); falls back to the raw URL so two
 /// repos on the same host still share a limiter and an unparseable URL
@@ -1834,16 +1903,22 @@ async fn run_prefetch_fanout(
                 // and without this a single stalled request blocks the
                 // whole closure — `join_next` waits on it — for up to that
                 // full 5 minutes. Abandon a slow attempt fast and retry on
-                // a fresh connection instead. 404s come back as `Ok(None)`
-                // from `fetch_one_isolated`, so a missing package is never
-                // an `Err` here and never burns retries.
-                const ATTEMPT_TIMEOUT: std::time::Duration =
-                    std::time::Duration::from_secs(20);
-                const MAX_ATTEMPTS: usize = 4;
+                // a fresh connection instead.
+                //
+                // Only transient failures are retried: a timeout, a broken
+                // transport, or a 408/429/5xx (see `TransientFetchError`).
+                // 404s come back as `Ok(None)` from `fetch_one_isolated`, so
+                // a missing package never gets here; a 403 or an unparsable
+                // body fails at once. The backoff is exponential because the
+                // transient failures seen in practice come in windows, not
+                // one-offs: Packagist resetting every new connection for a
+                // second or two under load. The old 150/300/450ms linear
+                // backoff spent all four attempts inside one such window and
+                // failed the whole resolve on one package.
                 let mut last_err: Option<ProviderError> = None;
-                for attempt in 0..MAX_ATTEMPTS {
-                    match tokio::time::timeout(
-                        ATTEMPT_TIMEOUT,
+                for attempt in 0..PREFETCH_MAX_ATTEMPTS {
+                    let (error, retry_after) = match tokio::time::timeout(
+                        PREFETCH_ATTEMPT_TIMEOUT,
                         load_real_candidates_isolated(
                             &client,
                             &paths,
@@ -1858,25 +1933,30 @@ async fn run_prefetch_fanout(
                     .await
                     {
                         Ok(Ok(outcome)) => return Ok(outcome),
-                        Ok(Err(e)) => last_err = Some(e),
-                        Err(_elapsed) => {
-                            last_err = Some(ProviderError(format!(
-                                "metadata fetch for `{}` timed out after {}s (attempt {}/{MAX_ATTEMPTS})",
+                        Ok(Err(e)) if !e.transient => return Err(e.error),
+                        Ok(Err(e)) => (e.error, e.retry_after),
+                        Err(_elapsed) => (
+                            ProviderError(format!(
+                                "metadata fetch for `{}` timed out after {}s (attempt {}/{PREFETCH_MAX_ATTEMPTS})",
                                 name.as_str(),
-                                ATTEMPT_TIMEOUT.as_secs(),
+                                PREFETCH_ATTEMPT_TIMEOUT.as_secs(),
                                 attempt + 1,
-                            )));
-                        }
+                            )),
+                            None,
+                        ),
+                    };
+                    if attempt + 1 < PREFETCH_MAX_ATTEMPTS {
+                        let delay = prefetch_retry_delay(attempt, retry_after, name.as_str());
+                        tracing::debug!(
+                            package = %name.as_str(),
+                            attempt = attempt + 1,
+                            delay_ms = crate::elapsed_ms(delay),
+                            error = %error.0,
+                            "retrying metadata fetch",
+                        );
+                        tokio::time::sleep(delay).await;
                     }
-                    if attempt + 1 < MAX_ATTEMPTS {
-                        // Linear backoff: 150ms, 300ms, 450ms. Short —
-                        // the goal is to dodge a single bad connection,
-                        // not to ride out an outage.
-                        tokio::time::sleep(std::time::Duration::from_millis(
-                            150 * (attempt as u64 + 1),
-                        ))
-                        .await;
-                    }
+                    last_err = Some(error);
                 }
                 Err(last_err.unwrap_or_else(|| {
                     ProviderError(format!("metadata fetch for `{}` failed", name.as_str()))
@@ -1938,7 +2018,7 @@ async fn load_real_candidates_isolated(
     floor: Stability,
     host_sems: &HashMap<String, Arc<tokio::sync::Semaphore>>,
     meta_cache: &MetaCache,
-) -> Result<PrefetchOutcome, ProviderError> {
+) -> Result<PrefetchOutcome, AttemptError> {
     let mut versions: Vec<LockPackage> = Vec::new();
     for repo in repos {
         // Path/vcs repos contribute nothing over the network — their
@@ -1953,11 +2033,9 @@ async fn load_real_candidates_isolated(
         // the map (shouldn't happen — built from this same list) is
         // simply not throttled.
         let _host_permit = match host_sems.get(&repo_host(&repo.url)) {
-            Some(s) => Some(
-                s.acquire()
-                    .await
-                    .map_err(|e| ProviderError(format!("host semaphore closed: {e}")))?,
-            ),
+            Some(s) => Some(s.acquire().await.map_err(|e| {
+                AttemptError::permanent(ProviderError(format!("host semaphore closed: {e}")))
+            })?),
             None => None,
         };
         let stable_md = fetch_one_isolated(
@@ -1971,10 +2049,10 @@ async fn load_real_candidates_isolated(
         )
         .await
         .map_err(|e| {
-            ProviderError(format!(
-                "fetching metadata for {name} from {}: {e:#}",
-                repo.url,
-            ))
+            AttemptError::from_report(
+                &format!("fetching metadata for {name} from {}", repo.url),
+                &e,
+            )
         })?;
         // Union across every repo's hit rather than stopping at the
         // first non-404 — matches the synchronous `load_real_candidates`
@@ -1999,10 +2077,10 @@ async fn load_real_candidates_isolated(
             )
             .await
             .map_err(|e| {
-                ProviderError(format!(
-                    "fetching dev metadata for {name} from {}: {e:#}",
-                    repo.url,
-                ))
+                AttemptError::from_report(
+                    &format!("fetching dev metadata for {name} from {}", repo.url),
+                    &e,
+                )
             })?;
             if let Some(md) = dev_md
                 && let Some(extra) = md.packages.get(name)
