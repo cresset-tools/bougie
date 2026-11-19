@@ -31,8 +31,13 @@ pub fn run(format: OutputFormat, args: DbRefreshArgs) -> Result<ExitCode> {
 
     // Pull — this refreshes the per-project pulled-snapshot pointer. A pull
     // failure is an `Err` (propagated here), so we never reseed on a failed
-    // download and clobber good local data with nothing.
-    super::pull::run(format, args.pull)?;
+    // download and clobber good local data with nothing. A pull skipped under
+    // `--if-configured` is not an `Err` but a non-zero exit code: pass it on
+    // rather than reseed from whatever snapshot was pulled before.
+    let pulled = super::pull::run(format, args.pull)?;
+    if pulled != ExitCode::SUCCESS {
+        return Ok(pulled);
+    }
 
     // Force-reseed from the just-pulled snapshot, bypassing the one-shot gate.
     // `yes: true`: the clobber was confirmed above (or `--yes` skipped it), so
