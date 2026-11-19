@@ -5,8 +5,11 @@
 //! `require.php`: wildcards, hyphen ranges, stability suffixes, etc.)
 //! live in the [`composer_semver`] crate. This module keeps only the
 //! narrow exact-triple shape bougie's own index and on-disk install
-//! layout use — every bougie artifact version is `<u32>.<u32>.<u32>`
+//! layout use — every PHP interpreter version is `<u32>.<u32>.<u32>`
 //! by construction, and there's no need for the wider grammar here.
+//! Extension artifacts are the exception: they carry upstream's version
+//! string, which can be a pre-release such as `3.6.0alpha1`, and
+//! `bougie-resolver` parses those with [`composer_semver`].
 
 use eyre::{Result, eyre};
 use std::fmt;

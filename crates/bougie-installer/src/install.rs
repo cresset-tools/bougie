@@ -214,7 +214,8 @@ fn pick_flavor(in_request: Option<Flavor>, flag: Option<Flavor>) -> Result<Flavo
 #[derive(Debug, Clone)]
 pub struct InstalledExt {
     pub name: String,
-    pub version: Version,
+    /// The publisher's version string, e.g. `3.5.1` or `3.6.0alpha1`.
+    pub version: String,
     pub flavor: Flavor,
     pub php_minor: PartialVersion,
     /// Store directory the tarball was extracted into.

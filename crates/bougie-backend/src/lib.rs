@@ -215,7 +215,9 @@ impl BlobRef {
 #[derive(Debug, Clone)]
 pub struct ExtRecipe {
     pub name: String,
-    pub version: Version,
+    /// The publisher's version string. Not a numeric triple: an
+    /// extension may be a pre-release such as `3.6.0alpha1`.
+    pub version: String,
     pub php_minor: PartialVersion,
     pub flavor: Flavor,
     pub blob: BlobRef,

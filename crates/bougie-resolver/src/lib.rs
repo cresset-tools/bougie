@@ -31,6 +31,8 @@ pub struct ResolveOptions {
 #[derive(Debug, Clone)]
 pub struct Selected<'a> {
     pub artifact: &'a Artifact,
+    /// The numeric triple. For an extension pre-release this drops the
+    /// suffix; `artifact.version` is the full version string.
     pub version: Version,
     pub frozen_warning: bool,
     pub yanked_warning: bool,
@@ -90,7 +92,7 @@ pub fn resolve_extension<'a>(
         section.name,
         version_pin.unwrap_or("latest"),
     );
-    pick_highest(candidates, "extension", &label)
+    pick_highest_extension(candidates, &label)
 }
 
 pub fn resolve_extension_constraint<'a>(
@@ -110,14 +112,67 @@ pub fn resolve_extension_constraint<'a>(
         {
             return false;
         }
-        parse_artifact_version(&artifact.version)
-            .is_ok_and(|version| constraint.matches(&lift(version)))
+        parse_extension_version(&artifact.version)
+            .is_some_and(|version| constraint.matches(&version.full))
     });
     let label = format!(
         "{} constraint (php={php_minor_string} flavor={flavor})",
         section.name
     );
-    pick_highest(candidates, "extension", &label)
+    pick_highest_extension(candidates, &label)
+}
+
+/// An extension artifact version. PHP interpreters are always a plain
+/// `<major>.<minor>.<patch>`, but extensions carry upstream's version
+/// string, which may be a pre-release (`3.6.0alpha1`, `1.0.0RC2`) when
+/// that is the only upstream release supporting a PHP minor.
+struct ExtensionVersion {
+    /// The numeric triple, without any pre-release suffix.
+    base: Version,
+    /// The full version in Composer's grammar; orders `3.6.0alpha1`
+    /// below `3.6.0`.
+    full: composer_semver::Version,
+}
+
+fn parse_extension_version(s: &str) -> Option<ExtensionVersion> {
+    let full = composer_semver::Version::parse(s).ok()?;
+    let numeric_len = s
+        .find(|c: char| !(c.is_ascii_digit() || c == '.'))
+        .unwrap_or(s.len());
+    let base = s[..numeric_len].trim_end_matches('.').parse().ok()?;
+    Some(ExtensionVersion { base, full })
+}
+
+/// Highest stable candidate; a pre-release is chosen only when no
+/// stable candidate exists (Composer's `prefer-stable`).
+fn pick_highest_extension<'a, I>(candidates: I, label: &str) -> Result<Selected<'a>>
+where
+    I: Iterator<Item = &'a Artifact>,
+{
+    let mut best: Option<(&Artifact, ExtensionVersion, bool)> = None;
+    for artifact in candidates {
+        let Some(version) = parse_extension_version(&artifact.version) else {
+            continue;
+        };
+        let stable = version.full.stability() == composer_semver::Stability::Stable;
+        let better = match &best {
+            None => true,
+            Some((_, prev, prev_stable)) => (stable, &version.full) > (*prev_stable, &prev.full),
+        };
+        if better {
+            best = Some((artifact, version, stable));
+        }
+    }
+    let (artifact, version, _) = best.ok_or_else(|| BougieError::Resolution {
+        kind: "extension".to_owned(),
+        detail: format!("no candidate satisfies {label}"),
+    })?;
+    Ok(Selected {
+        artifact,
+        version: version.base,
+        frozen_warning: artifact.frozen,
+        yanked_warning: artifact.yanked,
+    })
 }
 
 fn pick_highest<'a, I>(candidates: I, kind: &str, label: &str) -> Result<Selected<'a>>
@@ -399,6 +454,68 @@ mod tests {
         )
         .unwrap();
         assert_eq!(selected.version, Version::new(6, 2, 0));
+    }
+
+    fn php83() -> PartialVersion {
+        PartialVersion {
+            major: 8,
+            minor: Some(3),
+            patch: None,
+        }
+    }
+
+    #[test]
+    fn extension_prerelease_is_selected_when_it_is_the_only_candidate() {
+        let s = section(
+            "extension/xdebug",
+            SectionKind::Extension,
+            vec![art("3.6.0alpha1", "nts", "8.3", false, false)],
+        );
+        let opts = ResolveOptions::default();
+        let latest = resolve_extension(&s, php83(), Flavor::Nts, None, opts).unwrap();
+        assert_eq!(latest.artifact.version, "3.6.0alpha1");
+        assert_eq!(latest.version, Version::new(3, 6, 0));
+
+        let pinned =
+            resolve_extension(&s, php83(), Flavor::Nts, Some("3.6.0alpha1"), opts).unwrap();
+        assert_eq!(pinned.artifact.version, "3.6.0alpha1");
+
+        let constraint = Constraint::parse("*").unwrap();
+        let by_constraint =
+            resolve_extension_constraint(&s, php83(), Flavor::Nts, &constraint, opts).unwrap();
+        assert_eq!(by_constraint.artifact.version, "3.6.0alpha1");
+    }
+
+    #[test]
+    fn extension_stable_is_preferred_over_a_newer_prerelease() {
+        let s = section(
+            "extension/xdebug",
+            SectionKind::Extension,
+            vec![
+                art("3.5.3", "nts", "8.3", false, false),
+                art("3.6.0alpha1", "nts", "8.3", false, false),
+                art("3.6.0RC1", "nts", "8.3", false, false),
+            ],
+        );
+        let opts = ResolveOptions::default();
+        let latest = resolve_extension(&s, php83(), Flavor::Nts, None, opts).unwrap();
+        assert_eq!(latest.artifact.version, "3.5.3");
+    }
+
+    #[test]
+    fn extension_prereleases_order_among_themselves() {
+        let s = section(
+            "extension/xdebug",
+            SectionKind::Extension,
+            vec![
+                art("3.6.0alpha1", "nts", "8.3", false, false),
+                art("3.6.0RC1", "nts", "8.3", false, false),
+                art("3.6.0beta2", "nts", "8.3", false, false),
+            ],
+        );
+        let opts = ResolveOptions::default();
+        let latest = resolve_extension(&s, php83(), Flavor::Nts, None, opts).unwrap();
+        assert_eq!(latest.artifact.version, "3.6.0RC1");
     }
 
     #[test]
