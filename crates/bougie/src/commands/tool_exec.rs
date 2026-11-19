@@ -59,8 +59,7 @@ pub fn run(wrapper: &Path, args: Vec<OsString>) -> Result<ExitCode> {
     let prep = exec::prepare(&paths, wrapper, args)?;
     // `execve_replace` returns Err only when prep is valid but execve
     // itself fails. On success it never returns.
-    let _: std::convert::Infallible = exec::execve_replace(&prep)?;
-    unreachable!("execve_replace returns Infallible on success");
+    match exec::execve_replace(&prep)? {}
 }
 
 #[cfg(test)]

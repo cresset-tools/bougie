@@ -391,7 +391,7 @@ mod tests {
         };
 
         // Reading a manifest with no version writes nothing.
-        run(
+        let _ = run(
             OutputFormat::Text,
             None,
             None,
@@ -403,7 +403,7 @@ mod tests {
         assert_eq!(read(&manifest), None);
 
         // Setting an explicit version writes it.
-        run(
+        let _ = run(
             OutputFormat::Text,
             Some("1.2.3".into()),
             None,
@@ -415,7 +415,7 @@ mod tests {
         assert_eq!(read(&manifest).as_deref(), Some("1.2.3"));
 
         // `--dry-run` reports but does not write.
-        run(
+        let _ = run(
             OutputFormat::Text,
             None,
             Some(VersionBump::Minor),
@@ -427,7 +427,7 @@ mod tests {
         assert_eq!(read(&manifest).as_deref(), Some("1.2.3"));
 
         // A real bump does write.
-        run(
+        let _ = run(
             OutputFormat::Text,
             None,
             Some(VersionBump::Minor),

@@ -90,7 +90,7 @@ pub fn run(format: OutputFormat, args: ShareArgs) -> Result<ExitCode> {
     // The dev server routes PHP into this project, so it must be synced before
     // it can serve — the same implicit sync `bougie server` performs.
     if !no_sync {
-        crate::commands::sync::run(
+        let _ = crate::commands::sync::run(
             &project_root,
             format,
             false,

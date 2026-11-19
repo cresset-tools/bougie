@@ -97,9 +97,8 @@ composer-semver = "0.1.0"
 # Composer v2 wire-format types + PHP-exact json_encode, also extracted to the
 # composer-rs workspace and shared with sconce. Versioned independently on
 # crates.io — NOT release-please marker lines. (composer-php-json was the local
-# `bougie-php-json` crate; composer-wire was `bougie-composer::metadata`.)
+# `bougie-php-json` crate.)
 composer-php-json = "0.1"
-composer-wire = "0.1"
 composer-auth = "0.2"
 # composer.json / composer.lock model, the native installer plugins, the
 # autoloader generator and the patcher, from the composer-client workspace,

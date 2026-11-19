@@ -15,7 +15,7 @@ contract for index format, server behavior, and service tarballs).
 - `flake.nix` — Nix dev env with PHP, curl, bash, coreutils for running
   fixture-generation scripts. Does *not* provide the Rust toolchain (rustup
   handles that via `rust-toolchain.toml`).
-- `rust-toolchain.toml` — Pinned Rust **1.95**, `rustfmt` + `clippy`.
+- `rust-toolchain.toml` — Pinned Rust **1.100**, `rustfmt` + `clippy`.
 - `release-please-config.json` / `.release-please-manifest.json` —
   release-please config. Single-component "bougie" package. Each
   `[package]` block inherits `[workspace.package].version` via
