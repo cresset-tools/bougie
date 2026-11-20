@@ -5,14 +5,6 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.57.1](https://github.com/cresset-tools/bougie/compare/bougie-v0.57.0...bougie-v0.57.1) (2026-11-19)
-
-
-### Bug Fixes
-
-* **bougie:** resolve extensions published as pre-releases ([c32d1a2](https://github.com/cresset-tools/bougie/commit/c32d1a2c2e86807436700c486d4ff3b014223ccd))
-* **bougie:** stop retrying downloads that answer 401, 403 or 404 ([418b625](https://github.com/cresset-tools/bougie/commit/418b625cbd923e6a91f5dadedc5540ab735b4e30))
-
 ## [0.57.0](https://github.com/cresset-tools/bougie/compare/bougie-v0.56.0...bougie-v0.57.0) (2026-11-19)
 
 
