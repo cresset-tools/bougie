@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.57.2](https://github.com/cresset-tools/bougie/compare/bougie-v0.57.1...bougie-v0.57.2) (2026-11-20)
+
+
+### Bug Fixes
+
+* **bougie:** stop `db refresh` reseeding after a skipped pull ([9149362](https://github.com/cresset-tools/bougie/commit/9149362ed6b0d60cea3d2ab4459b2221c1dceda7))
+
 ## [0.57.1](https://github.com/cresset-tools/bougie/compare/bougie-v0.57.0...bougie-v0.57.1) (2026-11-19)
 
 
