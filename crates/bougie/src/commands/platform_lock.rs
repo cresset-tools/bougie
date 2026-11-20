@@ -192,7 +192,6 @@ fn exact_spec(version: Version) -> VersionLike {
 }
 
 /// Whether a Composer constraint string admits `version`.
-#[cfg(any(unix, test))]
 fn constraint_admits(constraint: &str, version: &str) -> bool {
     let constraint = constraint.trim();
     if constraint.is_empty() || constraint == "*" || constraint == version {
@@ -207,7 +206,6 @@ fn target_is_linux(target: &str) -> bool {
     target.split('-').any(|part| part == "linux")
 }
 
-#[cfg(any(unix, test))]
 fn target_is_windows(target: &str) -> bool {
     target.split('-').any(|part| part == "windows")
 }
@@ -223,7 +221,6 @@ pub(crate) fn extension_expected_on(name: &str, origin: ExtensionOrigin, target:
 
 /// Whether services are locked for `target`. The service daemon is
 /// Unix-only, so a Windows target never carries service digests.
-#[cfg(any(unix, test))]
 pub(crate) fn services_expected_on(target: &str) -> bool {
     !target_is_windows(target)
 }
