@@ -1559,6 +1559,10 @@ fn render_exec_args(
                 String::new(),
                 "--appendonly".into(),
                 "no".into(),
+                // One logical database per project tenant; redis's
+                // default of 16 runs out.
+                "--databases".into(),
+                super::provisioners::redis::REDIS_DATABASES.to_string(),
             ]
         }
         "server" => {

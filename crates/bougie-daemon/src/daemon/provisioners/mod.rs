@@ -58,7 +58,11 @@ pub async fn provision(
     project: &Path,
 ) -> Result<Tenant> {
     match entry.tenancy {
-        Tenancy::Redis => redis::provision(tenants_path, tenant_name, project).await,
+        Tenancy::Redis => {
+            let socket = paths.service_run("redis", version).join("redis.sock");
+            let db_count = redis::database_count(&socket).await;
+            redis::provision(tenants_path, tenant_name, project, db_count).await
+        }
         Tenancy::Mariadb => {
             let socket = paths.service_run("mariadb", version).join("mariadb.sock");
             mariadb::provision(paths, tenants_path, tenant_name, project, &socket).await
