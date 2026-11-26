@@ -308,6 +308,57 @@ mod tests {
     }
 
     #[test]
+    fn magento_cache_backend_follows_provider_socket_support() {
+        // Mage-OS 4's SymfonyAdapterProvider maps `backend` through a fixed
+        // type table and silently uses the filesystem adapter for a class
+        // name, so the recipe must write `redis` there — but only where the
+        // provider speaks unix sockets (`buildRedisBaseDsn`); older
+        // frameworks keep the Credis backend class.
+        let magento = load_builtin("magento").unwrap();
+        let install = magento.tasks["install"].run.clone().unwrap();
+        let class = r"run -- php -- Magento\Framework\Cache\Backend\Redis";
+        let redis = "run -- php -- redis\n";
+        let provider = "Cache/Frontend/Adapter/SymfonyAdapterProvider.php";
+        let with_provider = |rel: &str, body: &str| {
+            let dir = tempfile::tempdir().unwrap();
+            let f = dir.path().join(rel).join(provider);
+            std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+            std::fs::write(&f, body).unwrap();
+            dir
+        };
+
+        // No Symfony provider (Zend-era framework) → class name, on both the
+        // fresh-install and the team-seed path.
+        let dir = tempfile::tempdir().unwrap();
+        for rc in [3, 0] {
+            let log = run_script_pull(&install, dir.path(), false, rc);
+            assert!(log.contains(class), "rc={rc} log:\n{log}");
+            assert!(!log.contains(redis), "rc={rc} log:\n{log}");
+        }
+
+        // TCP-only provider (Mage-OS 3.x, Magento 2.4.9) → still the class.
+        let dir = with_provider("vendor/mage-os/framework", "'scheme' => 'tcp',");
+        let log = run_script(&install, dir.path(), false);
+        assert!(log.contains(class), "log:\n{log}");
+
+        // Socket-capable provider → `redis`, for every package vendor and
+        // the magento/magento2 monorepo layout, on both paths.
+        let body = "private function buildRedisBaseDsn(";
+        for rel in [
+            "vendor/mage-os/framework",
+            "vendor/modulargento/framework",
+            "lib/internal/Magento/Framework",
+        ] {
+            let dir = with_provider(rel, body);
+            for rc in [3, 0] {
+                let log = run_script_pull(&install, dir.path(), false, rc);
+                assert!(log.contains(redis), "{rel} rc={rc} log:\n{log}");
+                assert!(!log.contains(class), "{rel} rc={rc} log:\n{log}");
+            }
+        }
+    }
+
+    #[test]
     fn local_overrides_builtin_task() {
         let builtin = parse(
             r#"
