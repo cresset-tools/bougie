@@ -35,7 +35,7 @@ pub async fn pre_start(entry: &CatalogEntry, paths: &Paths, version: &str) -> Re
     match entry.tenancy {
         Tenancy::Mariadb => mariadb::pre_start(paths, version).await,
         Tenancy::Mysql => mysql::pre_start(paths, version).await,
-        Tenancy::Opensearch => opensearch::pre_start(paths).await,
+        Tenancy::Opensearch => opensearch::pre_start(paths, version).await,
         Tenancy::Rabbitmq => rabbitmq::pre_start(paths).await,
         Tenancy::BougieServer => bougie_server::pre_start(paths).await,
         // Mailpit needs no bootstrap — the sandbox creates its data dir

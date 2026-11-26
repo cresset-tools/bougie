@@ -500,6 +500,23 @@ mod tests {
     }
 
     #[test]
+    fn opensearch_major_pin_picks_that_line_and_wildcard_stays_on_2() {
+        // opensearch ships 2.19.5 (default) + 3.10.1.
+        assert_eq!(
+            resolve_service_version("opensearch", &pin("3")).unwrap(),
+            "3.10.1"
+        );
+        assert_eq!(
+            resolve_service_version("opensearch", &pin("2")).unwrap(),
+            "2.19.5"
+        );
+        assert_eq!(
+            resolve_service_version("opensearch", &pin("*")).unwrap(),
+            "2.19.5"
+        );
+    }
+
+    #[test]
     fn wildcard_and_unset_resolve_to_default() {
         assert_eq!(
             resolve_service_version("mysql", &pin("*")).unwrap(),

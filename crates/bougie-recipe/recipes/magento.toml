@@ -61,29 +61,14 @@ deps = ["vendor", "services"]
 # vendor is ensured); only the install step itself is skipped when already
 # installed.
 check = "test -f app/etc/env.php"
-# Redis is wired in two steps: install with the default file cache, then
-# rewrite env.php's cache frontends to bougie's redis, which is
-# socket-only. `setup:install --cache-backend=redis` can't be used for the
-# install itself: on frameworks whose Symfony cache provider hardcodes
-# `scheme => tcp` a socket server mis-parses as `tcp:///path` and
-# "Enabling caches" fails, and the CLI won't accept a backend class.
-#
-# Which `backend` value the rewrite writes depends on how the framework
-# builds its cache (probed once, before either install path below):
-#   - Mage-OS 4+ builds every cache through Cache/Frontend/Adapter/
-#     SymfonyAdapterProvider, which maps the lowercased `backend` through a
-#     fixed type table (redis, valkey, file, ...) and silently falls back to
-#     the *filesystem* adapter for anything else — a class name included.
-#     Its `buildRedisBaseDsn()` treats a `server` starting with `/` as a
-#     unix socket, so `redis` works. The probe keys off that method: the
-#     provider alone isn't enough, since the earlier Symfony-based ones
-#     (Mage-OS 3.x, Magento 2.4.9) lack it and are TCP-only.
-#   - Everything else gets the classic Credis backend class
-#     (Magento\Framework\Cache\Backend\Redis), which the Zend-based cache
-#     of Magento <= 2.4.8 / Mage-OS <= 2.x loads directly and which speaks
-#     the socket. The TCP-only Symfony frameworks map it to the file cache;
-#     there's no socket-capable Redis adapter there to pick instead.
-#
+# Redis is wired in two steps. bougie's redis is socket-only, but
+# Mage-OS 3.0.0's `--cache-backend=redis` shorthand routes through an
+# optimized Symfony/Predis adapter (framework/.../SymfonyAdapterProvider)
+# that hardcodes `scheme => tcp`, so a socket server mis-parses as
+# `tcp:///path` and "Enabling caches" fails. The CLI won't accept a custom
+# backend class either. So: install with the default file cache, then
+# rewrite env.php's cache to the classic Credis backend
+# (Magento\Framework\Cache\Backend\Redis), which speaks the unix socket.
 # rabbitmq below is TCP, so the amqp wiring stays inline — but only when
 # the Amqp module is on disk (same probe as [task.services]; without the
 # module, `setup:install` rejects `--amqp-*` as unknown options) AND the
@@ -100,12 +85,6 @@ check = "test -f app/etc/env.php"
 # pull failure (auth / network / 404) is a HARD error: we must not clobber a
 # would-be team database with a throwaway fresh install on a transient hiccup.
 run = """
-cache_backend='Magento\\Framework\\Cache\\Backend\\Redis'
-for f in vendor/*/framework/Cache/Frontend/Adapter/SymfonyAdapterProvider.php \\
-    lib/internal/Magento/Framework/Cache/Frontend/Adapter/SymfonyAdapterProvider.php; do
-  if [ -f "$f" ] && grep -q buildRedisBaseDsn "$f"; then cache_backend=redis; fi
-done
-
 rc=0
 bougie db pull --if-configured || rc=$?
 case "$rc" in
@@ -118,7 +97,7 @@ case "$rc" in
     # A fresh crypt key means production-encrypted config values (payment creds,
     # etc.) won't decrypt locally; that's expected for dev and stops neither
     # Magento nor admin login from working.
-    echo | bougie run -- php -- "$cache_backend" <<'PHP'
+    echo | bougie run -- php <<'PHP'
 <?php
 $redis = [
     'server' => getenv('BOUGIE_SERVICE_REDIS_SOCKET'),
@@ -126,7 +105,7 @@ $redis = [
     'database' => getenv('BOUGIE_SERVICE_REDIS_DB'),
     'id_prefix' => 'bgc_',
 ];
-$cache = ['backend' => $argv[1], 'backend_options' => $redis];
+$cache = ['backend' => 'Magento\\Framework\\Cache\\Backend\\Redis', 'backend_options' => $redis];
 $env = [
     'backend' => ['frontName' => 'admin'],
     'crypt' => ['key' => bin2hex(random_bytes(16))],
@@ -197,13 +176,13 @@ bougie run -- php -d memory_limit=4G bin/magento setup:install \
   --admin-email=admin@example.com --admin-user=admin \
   --admin-password=admin123 --language=en_US --currency=USD \
   --timezone=UTC --use-rewrites=1
-echo | bougie run -- php -- "$cache_backend" <<'PHP'
+echo | bougie run -- php <<'PHP'
 <?php
 $f = 'app/etc/env.php';
 $c = require $f;
 $o = ['server' => getenv('BOUGIE_SERVICE_REDIS_SOCKET'), 'port' => '0', 'database' => getenv('BOUGIE_SERVICE_REDIS_DB')];
 foreach (['default', 'page_cache'] as $k) {
-    $c['cache']['frontend'][$k] = ['id_prefix' => 'bgc_', 'backend' => $argv[1], 'backend_options' => $o];
+    $c['cache']['frontend'][$k] = ['id_prefix' => 'bgc_', 'backend' => 'Magento\\Framework\\Cache\\Backend\\Redis', 'backend_options' => $o];
 }
 file_put_contents($f, '<?php' . PHP_EOL . 'return ' . var_export($c, true) . ';' . PHP_EOL);
 PHP
