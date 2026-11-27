@@ -14,6 +14,7 @@ exclude = ["/tests"]
 [dependencies]
 bougie-composer = { workspace = true }
 bougie-errors = { workspace = true }
+bougie-fs = { workspace = true }
 bougie-fetch = { workspace = true }
 composer-auth = { workspace = true }
 composer-install = { workspace = true }

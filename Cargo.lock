@@ -489,6 +489,7 @@ dependencies = [
  "bougie-composer",
  "bougie-errors",
  "bougie-fetch",
+ "bougie-fs",
  "bougie-output",
  "bougie-paths",
  "composer-auth",
@@ -598,6 +599,7 @@ version = "0.57.2"
 dependencies = [
  "base64 0.22.1",
  "bougie-errors",
+ "bougie-fs",
  "eyre",
  "reqwest",
  "serde",

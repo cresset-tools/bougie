@@ -157,10 +157,7 @@ pub fn write_pool_conf(path: &Path, conf: &PoolConf<'_>) -> Result<()> {
         .parent()
         .ok_or_else(|| eyre::eyre!("pool conf path has no parent: {}", path.display()))?;
     create_dir_0700(parent)?;
-    let tmp = path.with_extension("conf.tmp");
-    std::fs::write(&tmp, conf.render()).wrap_err_with(|| format!("writing {}", tmp.display()))?;
-    std::fs::rename(&tmp, path).wrap_err_with(|| format!("renaming {}", path.display()))?;
-    Ok(())
+    bougie_fs::atomic::write(path, conf.render())
 }
 
 #[cfg(test)]
