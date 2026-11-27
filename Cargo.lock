@@ -337,7 +337,7 @@ dependencies = [
  "regex",
  "rustc-hash",
  "shlex",
- "syn 2.0.119",
+ "syn 3.0.10",
 ]
 
 [[package]]
@@ -1066,9 +1066,9 @@ dependencies = [
 
 [[package]]
 name = "composer-autoload"
-version = "0.1.1"
+version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "de3f5560df9384ddeff68debd5dba2a814f8b8a6ee59fe7899094acec714ecb4"
+checksum = "ee5994a08ebb435531bf0e3bc1195cedf292c7130ff6abf8a63ffaae5f9268e2"
 dependencies = [
  "composer-installers",
  "composer-php-json",
@@ -1085,9 +1085,9 @@ dependencies = [
 
 [[package]]
 name = "composer-install"
-version = "0.6.1"
+version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6293d5459c491a5db264adfb01b0b795ea0aefdc0ebd14c74533664ac72be9a3"
+checksum = "a447fc517a4ecb85627e1cc6bacdbdb2d173aab63355bae517ccd8fbe5af82de"
 dependencies = [
  "composer-auth",
  "composer-autoload",
@@ -1110,9 +1110,9 @@ dependencies = [
 
 [[package]]
 name = "composer-installers"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6a8c164375526116cea908534a5242466a6f300981d8058dbb7af26b3cbcb2ec"
+checksum = "eb9643c03ed5140f63375a581904539a59c792642873b05aa8c1feddf8126d92"
 dependencies = [
  "eyre",
  "serde_json",
@@ -1136,9 +1136,9 @@ dependencies = [
 
 [[package]]
 name = "composer-patches"
-version = "0.2.1"
+version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2cd1639f73a0667960839db31b7869086a5f257ff7359f8f3719b175dcfdf0c3"
+checksum = "07a36e6bd816602066e98e65336dc7086b01045a0ce56bcd731ce574144abefd"
 dependencies = [
  "composer-installers",
  "eyre",
