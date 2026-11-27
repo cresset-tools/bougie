@@ -16,8 +16,8 @@ use bougie_installer::conf_d;
 use bougie_installer::install::{
     ExpectedArtifact, InstalledExt, InstalledPhp, backend_for, backend_for_locked,
     install_baseline_into_with_backend, install_extension_with_backend_verified,
-    install_extension_with_bar, install_php_with_backend, install_php_with_backend_verified,
-    preinstall_into_with_backend,
+    install_extension_with_requires_bar, install_php_with_backend,
+    install_php_with_backend_verified, preinstall_into_with_backend,
 };
 use bougie_lock::ToolchainLock;
 
@@ -1485,7 +1485,10 @@ fn install_required_extensions(
             .get(name)
             .and_then(ExtensionPin::as_version);
 
-        let installed: InstalledExt = install_extension_with_bar(
+        // The manifest's `requires` (redis → igbinary) come back alongside
+        // the requested extension and get their own fragment, exactly as
+        // if composer.json had listed them.
+        let installed: Vec<InstalledExt> = install_extension_with_requires_bar(
             paths,
             name,
             version_pin,
@@ -1494,14 +1497,18 @@ fn install_required_extensions(
             ResolveOptions::default(),
             &bar,
         )?;
-        conf_d::write_ext_fragment(
-            project_root,
-            &installed.name,
-            &installed.so_path,
-            installed.load,
-            &installed.path_extras,
-        )?;
-        installed_names.push(installed.name);
+        for installed in installed {
+            conf_d::write_ext_fragment(
+                project_root,
+                &installed.name,
+                &installed.so_path,
+                installed.load,
+                &installed.path_extras,
+            )?;
+            if !installed_names.contains(&installed.name) {
+                installed_names.push(installed.name);
+            }
+        }
     }
     bar.finish();
     Ok(installed_names)
@@ -1558,10 +1565,34 @@ fn install_locked_extensions(
                 installed.name, installed.version
             );
         }
+        // A locked install only ever fetches what the lock pins, so a
+        // required extension has to be pinned too (`bougie lock` records
+        // it). Fail rather than leave an extension PHP refuses to load.
+        if let Some(missing) = missing_locked_requirement(&installed.requires, &lock.extensions) {
+            return Err(eyre!(
+                "extension {} requires extension {missing}, which bougie.lock does not pin; \
+                 run `bougie lock` to re-resolve",
+                installed.name
+            ));
+        }
         installed_names.push(installed.name);
     }
     bar.finish();
     Ok(installed_names)
+}
+
+/// The first of `requires` that neither `locked` pins nor the interpreter
+/// / baseline replication already provides.
+fn missing_locked_requirement<'a, V>(
+    requires: &'a [String],
+    locked: &std::collections::BTreeMap<String, V>,
+) -> Option<&'a str> {
+    requires
+        .iter()
+        .find(|req| {
+            !locked.contains_key(*req) && !baseline::is_builtin(req) && !baseline::is_baseline(req)
+        })
+        .map(String::as_str)
 }
 
 /// `true` if the project's `vendor/bougie/conf.d/` already has a fragment
@@ -2304,6 +2335,21 @@ fn link_shim(target: &std::path::Path, link: &std::path::Path) -> io::Result<()>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_locked_requirement_ignores_pinned_builtin_and_baseline() {
+        let locked: std::collections::BTreeMap<String, ()> =
+            [("igbinary".to_owned(), ())].into_iter().collect();
+        let reqs = |names: &[&str]| names.iter().map(|n| (*n).to_owned()).collect::<Vec<_>>();
+        assert_eq!(
+            missing_locked_requirement(&reqs(&["igbinary", "json", "sockets"]), &locked),
+            None
+        );
+        assert_eq!(
+            missing_locked_requirement(&reqs(&["igbinary", "msgpack"]), &locked),
+            Some("msgpack")
+        );
+    }
 
     /// A `Paths` over a temp home, with `installs/<version>-<flavor>`
     /// dirs staged so `list_installed` sees them.

@@ -239,6 +239,10 @@ pub struct InstalledExt {
     /// reads the `; bougie-path: <dir>` comments these emit into the
     /// conf.d fragment and prepends each dir to PATH.
     pub path_extras: Vec<PathBuf>,
+    /// Extensions this one requires loaded alongside it (the manifest's
+    /// `requires`). [`install_extension`] and friends do *not* install
+    /// them; [`install_extension_with_requires`] does.
+    pub requires: Vec<String>,
 }
 
 /// Install a PHP extension into the content-addressed store.
@@ -294,6 +298,106 @@ pub fn install_extension_with_bar(
         None,
         bar,
     )
+}
+
+/// Install `name` plus every extension its manifest `requires`,
+/// transitively. The requested extension comes first in the returned
+/// list, followed by the pulled-in ones in breadth-first order, each
+/// exactly once. Callers write a conf.d fragment for every entry.
+///
+/// Required extensions resolve at their latest version for the same
+/// PHP minor and flavor. Ones that are statically built in or part of
+/// the baseline set are skipped: the interpreter or the baseline
+/// replication already loads them, and a second fragment would make
+/// PHP warn "Module already loaded".
+pub fn install_extension_with_requires(
+    paths: &Paths,
+    name: &str,
+    version_pin: Option<&str>,
+    php_minor: PartialVersion,
+    flavor: Flavor,
+    opts: ResolveOptions,
+) -> Result<Vec<InstalledExt>> {
+    let bar = DownloadBar::new("downloading");
+    let out = install_extension_with_requires_bar(
+        paths,
+        name,
+        version_pin,
+        php_minor,
+        flavor,
+        opts,
+        &bar,
+    );
+    bar.finish();
+    out
+}
+
+/// [`install_extension_with_requires`] against a caller-owned bar.
+pub fn install_extension_with_requires_bar(
+    paths: &Paths,
+    name: &str,
+    version_pin: Option<&str>,
+    php_minor: PartialVersion,
+    flavor: Flavor,
+    opts: ResolveOptions,
+    bar: &DownloadBar,
+) -> Result<Vec<InstalledExt>> {
+    let _guard = ExclusiveGuard::acquire(&paths.global_lock(), LOCK_TIMEOUT)?;
+    let backend = backend_for(paths)?;
+    let first = install_extension_resolved(
+        &*backend,
+        paths,
+        name,
+        version_pin,
+        php_minor,
+        flavor,
+        opts,
+        None,
+        bar,
+    )?;
+    install_required_closure(first, |req| {
+        install_extension_resolved(
+            &*backend, paths, req, None, php_minor, flavor, opts, None, bar,
+        )
+    })
+}
+
+/// Walk `first.requires` transitively, installing each name once via
+/// `install`. Cycle-safe: a name already in the result (including the
+/// root) is never revisited. Split out from
+/// [`install_extension_with_requires_bar`] so the walk is testable
+/// without a backend.
+fn install_required_closure(
+    first: InstalledExt,
+    mut install: impl FnMut(&str) -> Result<InstalledExt>,
+) -> Result<Vec<InstalledExt>> {
+    let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    seen.insert(first.name.clone());
+    let mut queue: std::collections::VecDeque<(String, String)> = first
+        .requires
+        .iter()
+        .map(|req| (first.name.clone(), req.clone()))
+        .collect();
+    let mut out = vec![first];
+    while let Some((parent, req)) = queue.pop_front() {
+        if crate::baseline::is_builtin(&req) || crate::baseline::is_baseline(&req) {
+            continue;
+        }
+        if !seen.insert(req.clone()) {
+            continue;
+        }
+        let installed = install(&req).wrap_err_with(|| {
+            format!("extension {parent} requires extension {req}, which could not be installed")
+        })?;
+        queue.extend(
+            installed
+                .requires
+                .iter()
+                .map(|next| (installed.name.clone(), next.clone())),
+        );
+        out.push(installed);
+    }
+    Ok(out)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -458,6 +562,7 @@ fn install_extension_resolved(
         frozen_warning: recipe.frozen_warning,
         yanked_warning: recipe.yanked_warning,
         path_extras,
+        requires: recipe.requires,
     })
 }
 
@@ -1291,6 +1396,61 @@ pub fn resolved_php_for_ext_install(project_root: &Path) -> Result<(PartialVersi
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn fake_installed(name: &str, requires: &[&str]) -> InstalledExt {
+        InstalledExt {
+            name: name.to_owned(),
+            version: "1.0.0".to_owned(),
+            flavor: Flavor::Nts,
+            php_minor: PartialVersion {
+                major: 8,
+                minor: Some(5),
+                patch: None,
+            },
+            store_path: PathBuf::from(format!("/store/ext-{name}")),
+            so_path: PathBuf::from(format!("/store/ext-{name}/{name}.so")),
+            load: LoadDirective::Extension,
+            already_present: true,
+            frozen_warning: false,
+            yanked_warning: false,
+            path_extras: Vec::new(),
+            requires: requires.iter().map(|r| (*r).to_owned()).collect(),
+        }
+    }
+
+    #[test]
+    fn required_closure_is_transitive_deduped_and_cycle_safe() {
+        // a → b, c; b → c, a (cycle); c → d; plus builtin/baseline names
+        // that must be skipped rather than resolved.
+        let graph: &[(&str, &[&str])] = &[
+            ("b", &["c", "a", "json"]),
+            ("c", &["d", "sockets"]),
+            ("d", &[]),
+        ];
+        let mut calls = Vec::new();
+        let out = install_required_closure(fake_installed("a", &["b", "c"]), |name| {
+            calls.push(name.to_owned());
+            let (_, reqs) = graph.iter().find(|(n, _)| *n == name).unwrap();
+            Ok(fake_installed(name, reqs))
+        })
+        .unwrap();
+        let names: Vec<&str> = out.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, ["a", "b", "c", "d"]);
+        assert_eq!(calls, ["b", "c", "d"]);
+    }
+
+    #[test]
+    fn required_closure_names_both_extensions_on_failure() {
+        let err = install_required_closure(fake_installed("redis", &["igbinary"]), |_| {
+            Err(eyre!("no `extension/igbinary` section"))
+        })
+        .unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("extension redis requires extension igbinary"),
+            "{msg}"
+        );
+    }
 
     #[test]
     fn pick_flavor_resolves_consistent_pair() {

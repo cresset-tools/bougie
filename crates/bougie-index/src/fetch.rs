@@ -7,7 +7,7 @@
 //!   - `index.json.sig`     the matching signature sidecar
 
 use crate::verify::Verifier;
-use crate::wire::{Manifest, Root, Section};
+use crate::wire::{Manifest, Root, Section, check_schema};
 use bougie_errors::{BougieError, error_chain};
 use eyre::{Result, WrapErr};
 use sha2::{Digest, Sha256};
@@ -67,7 +67,7 @@ where
     if resp.status() == reqwest::StatusCode::NOT_MODIFIED {
         let bytes = fs::read(&root_path)
             .wrap_err_with(|| format!("reading cached {}", root_path.display()))?;
-        let root: Root = serde_json::from_slice(&bytes).wrap_err("parsing cached index.json")?;
+        let root = parse_root(&bytes, "parsing cached index.json")?;
         return Ok(FetchedRoot {
             root,
             outcome: FetchOutcome::Cached,
@@ -108,7 +108,7 @@ where
         atomic_write(&etag_path, etag.as_bytes())?;
     }
 
-    let root: Root = serde_json::from_slice(&body).wrap_err("parsing fetched index.json")?;
+    let root = parse_root(&body, "parsing fetched index.json")?;
     Ok(FetchedRoot {
         root,
         outcome: FetchOutcome::Refreshed,
@@ -118,7 +118,7 @@ where
 pub fn read_cached_root(cache_root: &Path) -> Result<Root> {
     let path = cache_root.join("index.json");
     let bytes = fs::read(&path).wrap_err_with(|| format!("reading cached {}", path.display()))?;
-    serde_json::from_slice(&bytes).wrap_err("parsing cached index.json")
+    parse_root(&bytes, "parsing cached index.json")
 }
 
 pub fn read_cached_section(cache_root: &Path, expected_sha256: &str) -> Result<Section> {
@@ -135,7 +135,7 @@ pub fn read_cached_section(cache_root: &Path, expected_sha256: &str) -> Result<S
         }
         .into());
     }
-    serde_json::from_slice(&bytes).wrap_err("parsing cached section")
+    parse_section(&bytes, "parsing cached section")
 }
 
 pub fn read_cached_manifest(cache_root: &Path, expected_sha256: &str) -> Result<Manifest> {
@@ -152,7 +152,7 @@ pub fn read_cached_manifest(cache_root: &Path, expected_sha256: &str) -> Result<
         }
         .into());
     }
-    serde_json::from_slice(&bytes).wrap_err("parsing cached manifest")
+    parse_manifest(&bytes, "parsing cached manifest")
 }
 
 /// Fetch a section file, verifying its sha256 against the value the
@@ -180,7 +180,7 @@ pub fn fetch_section(
     if let Ok(bytes) = fs::read(&cache_path)
         && hex_sha256(&bytes) == expected_sha256
     {
-        return serde_json::from_slice(&bytes).wrap_err("parsing cached section");
+        return parse_section(&bytes, "parsing cached section");
     }
     let url = format!(
         "{}/versions/{}/targets/{}/sections/{}.json",
@@ -212,7 +212,7 @@ pub fn fetch_section(
         fs::create_dir_all(parent).wrap_err("creating section cache dir")?;
     }
     atomic_write(&cache_path, &body)?;
-    serde_json::from_slice(&body).wrap_err("parsing fetched section")
+    parse_section(&body, "parsing fetched section")
 }
 
 /// Fetch a manifest body, cached by sha256.
@@ -235,7 +235,7 @@ pub fn fetch_manifest(
     if let Ok(bytes) = fs::read(&cache_path)
         && hex_sha256(&bytes) == expected_sha256
     {
-        return serde_json::from_slice(&bytes).wrap_err("parsing cached manifest");
+        return parse_manifest(&bytes, "parsing cached manifest");
     }
     let url = format!(
         "{}{}",
@@ -272,7 +272,29 @@ pub fn fetch_manifest(
         fs::create_dir_all(parent).wrap_err("creating manifest cache dir")?;
     }
     atomic_write(&cache_path, &body)?;
-    serde_json::from_slice(&body).wrap_err("parsing fetched manifest")
+    parse_manifest(&body, "parsing fetched manifest")
+}
+
+// Every index document goes through one of these, so the schema and
+// feature gates (DISTRIBUTION.md §Schema-and-versioning) apply on the cached and
+// the fetched path alike.
+
+fn parse_root(bytes: &[u8], context: &'static str) -> Result<Root> {
+    let root: Root = serde_json::from_slice(bytes).wrap_err(context)?;
+    check_schema("root", root.schema)?;
+    Ok(root)
+}
+
+fn parse_section(bytes: &[u8], context: &'static str) -> Result<Section> {
+    let mut section: Section = serde_json::from_slice(bytes).wrap_err(context)?;
+    section.retain_supported()?;
+    Ok(section)
+}
+
+fn parse_manifest(bytes: &[u8], context: &'static str) -> Result<Manifest> {
+    let manifest: Manifest = serde_json::from_slice(bytes).wrap_err(context)?;
+    manifest.check_supported()?;
+    Ok(manifest)
 }
 
 fn net_io(operation: String, e: &impl std::error::Error) -> BougieError {

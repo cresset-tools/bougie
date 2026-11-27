@@ -41,6 +41,10 @@ pub enum ExtensionOrigin {
     Declared,
     Inferred,
     Baseline,
+    /// Pulled in by another locked extension's manifest `requires`
+    /// (redis built with igbinary requires `igbinary`). Not derived from
+    /// project inputs, so drift detection does not expect it there.
+    Required,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

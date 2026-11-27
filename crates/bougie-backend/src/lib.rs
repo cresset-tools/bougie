@@ -224,6 +224,9 @@ pub struct ExtRecipe {
     pub artifact_rel: PathBuf,
     pub load: LoadDirective,
     pub closure: Vec<ClosureRef>,
+    /// Other extensions this one needs installed and loaded alongside it
+    /// (the manifest's `requires`). Always empty for windows.php.net.
+    pub requires: Vec<String>,
     pub needs_store_on_path: bool,
     pub frozen_warning: bool,
     pub yanked_warning: bool,

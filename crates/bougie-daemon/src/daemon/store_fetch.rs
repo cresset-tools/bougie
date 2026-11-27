@@ -700,6 +700,7 @@ mod tests {
             yanked,
             yanked_reason: None,
             frozen,
+            features: vec![],
         }
     }
 

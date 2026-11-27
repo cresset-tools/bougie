@@ -153,6 +153,7 @@ impl super::Backend for WindowsPhpNetBackend {
             // closure tarballs. The Windows DLL search path bleeds
             // through `needs_store_on_path` instead.
             closure: Vec::new(),
+            requires: Vec::new(),
             needs_store_on_path: artifact.needs_store_on_path,
             frozen_warning: false,
             yanked_warning: false,
