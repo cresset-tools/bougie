@@ -19,6 +19,7 @@ pub mod health;
 pub mod instance;
 pub mod ipc;
 pub mod logs;
+pub mod migrate;
 pub mod ports;
 pub mod provisioners;
 pub mod sandbox;

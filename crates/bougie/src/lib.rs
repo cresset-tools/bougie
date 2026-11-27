@@ -799,6 +799,10 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
             commands::service::restart::run(format, names)
         }
         #[cfg(unix)]
+        Command::Service(ServiceCommand::Upgrade { name, to }) => {
+            commands::service::upgrade::run(format, &name, to.as_deref())
+        }
+        #[cfg(unix)]
         Command::Service(ServiceCommand::Status { name }) => {
             commands::service::status::run(format, name)
         }

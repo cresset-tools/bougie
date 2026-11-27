@@ -82,6 +82,9 @@ pub enum Request {
     ServiceEnv(ServiceEnvArgs),
     /// Tail (and optionally follow) a service's log.
     ServiceLogs(ServiceLogsArgs),
+    /// Carry a project's service data from one instance version to
+    /// another (`bougie service upgrade`). See [`super::migrate`].
+    ServiceMigrate(ServiceMigrateArgs),
     /// Read-only: returns the in-binary catalog as JSON. Mirrors what
     /// `bougie service catalog` shows locally; exposed via IPC for
     /// external tooling.
@@ -92,6 +95,14 @@ pub enum Request {
 pub struct ServiceUpArgs {
     pub project: std::path::PathBuf,
     pub services: Vec<ServiceRequest>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ServiceMigrateArgs {
+    pub project: std::path::PathBuf,
+    pub service: String,
+    pub from: String,
+    pub to: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -389,6 +400,9 @@ fn parse_request(line: &str) -> Result<Request, String> {
         "service.restart" => serde_json::from_value::<ServiceRestartArgs>(env.args)
             .map(Request::ServiceRestart)
             .map_err(|e| format!("service.restart args: {e}")),
+        "service.migrate" => serde_json::from_value::<ServiceMigrateArgs>(env.args)
+            .map(Request::ServiceMigrate)
+            .map_err(|e| format!("service.migrate args: {e}")),
         "catalog" => Ok(Request::Catalog),
         "service.env" => serde_json::from_value::<ServiceEnvArgs>(env.args)
             .map(Request::ServiceEnv)
@@ -420,7 +434,34 @@ async fn dispatch(req: Request, state: &Arc<DaemonState>) -> ResultFrame {
         Request::ServiceRestart(_) => unreachable!("handled in handle_connection"),
         Request::ServiceEnv(args) => dispatch_env(state, args.project).await,
         Request::ServiceLogs(_) => unreachable!("handled in handle_connection"),
+        Request::ServiceMigrate(args) => dispatch_migrate(state, args).await,
         Request::Catalog => dispatch_catalog(),
+    }
+}
+
+/// `service.migrate`: one project's explicit move to another release
+/// line. Only that project's tenant row moves; the old instance keeps
+/// serving the projects still on it.
+async fn dispatch_migrate(state: &Arc<DaemonState>, args: ServiceMigrateArgs) -> ResultFrame {
+    use crate::daemon::{catalog, migrate};
+    let Some(entry) = catalog::find(&args.service).filter(|e| e.user_facing) else {
+        return ResultFrame::err(
+            "unknown_service",
+            format!("`{}` not in catalog", args.service),
+        );
+    };
+    match migrate::migrate(
+        state,
+        entry,
+        &args.project,
+        &args.from,
+        &args.to,
+        migrate::Rows::Project,
+    )
+    .await
+    {
+        Ok(done) => ResultFrame::ok(serde_json::to_value(done).unwrap_or(Value::Null)),
+        Err(e) => ResultFrame::err("migrate_failed", format!("{e:#}")),
     }
 }
 
@@ -1371,6 +1412,14 @@ async fn dispatch_up(
             if let Ok(v) = serde_json::to_value(&deps_for_service) {
                 dependencies.insert(name.to_string(), v);
             }
+        }
+        // A patch bump on the same release line (2.19.5 → 2.19.6) takes
+        // the previous patch's data over instead of starting empty.
+        if services.iter().any(|s| s.name == name)
+            && let Err(e) =
+                super::migrate::take_over_same_line(state, entry, &project, &version).await
+        {
+            return ResultFrame::err("migrate_failed", format!("{name}: {e:#}"));
         }
         // One-shot bootstrap (e.g. mariadb-install-db on first run).
         // Idempotent — safe even when the service is already running.

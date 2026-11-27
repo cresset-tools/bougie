@@ -138,7 +138,12 @@ pub fn run(format: OutputFormat, names: Vec<String>, detach: bool) -> Result<Exi
             let version = if let Some((_, locked)) = locked {
                 locked.version.clone()
             } else {
-                resolve_service_version(name, pin)?
+                let current = bougie_daemon::daemon::tenants::project_instance_versions(
+                    &paths,
+                    name,
+                    &project_root,
+                );
+                resolve_service_version_keeping_line(name, pin, &current)?
             };
             let digest = locked.and_then(|(lock, _)| {
                 lock.targets
@@ -239,6 +244,42 @@ pub fn run(format: OutputFormat, names: Vec<String>, detach: bool) -> Result<Exi
         }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// [`resolve_service_version`] for a project that may already run the
+/// service. `current` is every instance version whose ledger lists the
+/// project, newest first ([`project_instance_versions`]).
+///
+/// An unpinned (`*`) service without a lock stays on the release line
+/// (`major.minor`) of the instance it already has data in, and takes
+/// that line's newest patch. Without this, a new catalog default would
+/// move every such project to a fresh, empty instance on the next
+/// `up`. Only a project that has never run the service gets the
+/// default; moving to another line is `bougie service upgrade`, or an
+/// explicit pin. When the catalog no longer ships the line at all, the
+/// default applies as before.
+///
+/// [`project_instance_versions`]: bougie_daemon::daemon::tenants::project_instance_versions
+pub(crate) fn resolve_service_version_keeping_line(
+    name: &str,
+    pin: &ServicePin,
+    current: &[String],
+) -> Result<String> {
+    use bougie_daemon::daemon::catalog;
+
+    let unpinned = pin
+        .version()
+        .map(str::trim)
+        .is_none_or(|p| p.is_empty() || p == "*");
+    if unpinned
+        && let Some(entry) = catalog::find(name)
+        && let Some(kept) = current
+            .first()
+            .and_then(|v| catalog::newest_on_line(entry, v))
+    {
+        return Ok(kept.to_owned());
+    }
+    resolve_service_version(name, pin)
 }
 
 /// Resolve a project's `[services]` pin to the concrete version the
@@ -442,7 +483,8 @@ fn repoint_env_php_sockets(project_root: &std::path::Path, paths: &bougie_paths:
 #[cfg(test)]
 mod tests {
     use super::{
-        is_full_exact, parse_db_username, resolve_service_version, rewrite_env_php_sockets,
+        is_full_exact, parse_db_username, resolve_service_version,
+        resolve_service_version_keeping_line, rewrite_env_php_sockets,
     };
     use bougie_config::ServicePin;
     use std::path::{Path, PathBuf};
@@ -496,6 +538,59 @@ mod tests {
         assert_eq!(
             resolve_service_version("mysql", &pin("8.0.46")).unwrap(),
             "8.0.46"
+        );
+    }
+
+    #[test]
+    fn unpinned_project_keeps_the_line_it_has_data_on() {
+        let on = |v: &str| vec![v.to_owned()];
+        // A project with data on 2.19.x takes 2.19's newest patch, and
+        // keeps doing so whatever the default becomes.
+        assert_eq!(
+            resolve_service_version_keeping_line("opensearch", &pin("*"), &on("2.19.1")).unwrap(),
+            "2.19.5"
+        );
+        // A project already moved to 3.x is not sent back to the default.
+        assert_eq!(
+            resolve_service_version_keeping_line("opensearch", &pin("*"), &on("3.10.1")).unwrap(),
+            "3.10.1"
+        );
+        // mysql: a project on 8.0 stays there though 8.4 is the default.
+        assert_eq!(
+            resolve_service_version_keeping_line("mysql", &pin("*"), &on("8.0.40")).unwrap(),
+            "8.0.46"
+        );
+        // No instance yet: the default.
+        assert_eq!(
+            resolve_service_version_keeping_line("opensearch", &pin("*"), &[]).unwrap(),
+            "2.19.5"
+        );
+        // A line the catalog dropped: the default, as before.
+        assert_eq!(
+            resolve_service_version_keeping_line("opensearch", &pin("*"), &on("1.3.20")).unwrap(),
+            "2.19.5"
+        );
+        // An explicit pin wins over the instance the project has.
+        assert_eq!(
+            resolve_service_version_keeping_line("opensearch", &pin("3"), &on("2.19.5")).unwrap(),
+            "3.10.1"
+        );
+    }
+
+    #[test]
+    fn opensearch_major_pin_picks_that_line_and_wildcard_stays_on_2() {
+        // opensearch ships 2.19.5 (default) + 3.10.1.
+        assert_eq!(
+            resolve_service_version("opensearch", &pin("3")).unwrap(),
+            "3.10.1"
+        );
+        assert_eq!(
+            resolve_service_version("opensearch", &pin("2")).unwrap(),
+            "2.19.5"
+        );
+        assert_eq!(
+            resolve_service_version("opensearch", &pin("*")).unwrap(),
+            "2.19.5"
         );
     }
 

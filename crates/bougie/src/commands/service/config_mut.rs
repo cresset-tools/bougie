@@ -56,6 +56,56 @@ pub fn add_service(target: &ConfigTarget, name: &str, version: &str) -> Result<b
     }
 }
 
+/// Change the version of an existing service pin, keeping the rest of a
+/// detail-form entry (`tenant`) as it is. A bare-string entry is
+/// replaced.
+pub fn set_service_version(target: &ConfigTarget, name: &str, version: &str) -> Result<()> {
+    match target {
+        ConfigTarget::Composer(path) => {
+            let mut v = read_or_init_composer_json(path)?;
+            let services = ensure_extra_bougie_services(&mut v);
+            let map = services.as_object_mut().ok_or_else(|| {
+                eyre!(
+                    "extra.bougie.services in {} is not an object",
+                    path.display()
+                )
+            })?;
+            match map.get_mut(name) {
+                Some(Value::Object(detail)) => {
+                    detail.insert("version".into(), Value::String(version.into()));
+                }
+                _ => {
+                    map.insert(name.to_string(), Value::String(version.into()));
+                }
+            }
+            write_json_file(path, &v)?;
+            resync_lock_content_hash(path)
+        }
+        ConfigTarget::Toml(path) => {
+            let text = std::fs::read_to_string(path)
+                .wrap_err_with(|| format!("reading {}", path.display()))?;
+            let mut doc: toml_edit::DocumentMut = text
+                .parse()
+                .wrap_err_with(|| format!("parsing {} as TOML", path.display()))?;
+            if !doc.contains_table("services") {
+                doc["services"] = toml_edit::Item::Table(toml_edit::Table::new());
+            }
+            let services = doc["services"]
+                .as_table_mut()
+                .ok_or_else(|| eyre!("`services` in {} is not a table", path.display()))?;
+            match services.get_mut(name) {
+                Some(item) if item.is_table_like() => {
+                    if let Some(detail) = item.as_table_like_mut() {
+                        detail.insert("version", toml_edit::value(version));
+                    }
+                }
+                _ => services[name] = toml_edit::value(version),
+            }
+            atomic_write(path, doc.to_string().as_bytes())
+        }
+    }
+}
+
 /// Remove a service pin. Returns `true` if an entry was actually removed.
 pub fn remove_service(target: &ConfigTarget, name: &str) -> Result<bool> {
     match target {
@@ -308,6 +358,36 @@ mod tests {
         // the rest of the lock is preserved
         assert!(lock_v.get("_readme").is_some());
         assert!(lock_v.get("packages").is_some());
+    }
+
+    #[test]
+    fn set_service_version_keeps_the_tenant_of_a_detail_entry() {
+        let td = TempDir::new().unwrap();
+        let toml = td.path().join("bougie.toml");
+        std::fs::write(
+            &toml,
+            "[services]\nredis = \"*\"\n\n[services.opensearch]\nversion = \"*\"\ntenant = \"shop\"\n",
+        )
+        .unwrap();
+        let target = ConfigTarget::Toml(toml.clone());
+        set_service_version(&target, "opensearch", "3").unwrap();
+        set_service_version(&target, "redis", "8.6").unwrap();
+        let text = std::fs::read_to_string(&toml).unwrap();
+        assert!(text.contains("tenant = \"shop\""), "{text}");
+        assert!(text.contains("version = \"3\""), "{text}");
+        assert!(text.contains("redis = \"8.6\""), "{text}");
+
+        let cj = td.path().join("composer.json");
+        std::fs::write(
+            &cj,
+            r#"{"extra":{"bougie":{"services":{"opensearch":{"version":"*","tenant":"shop"}}}}}"#,
+        )
+        .unwrap();
+        set_service_version(&ConfigTarget::Composer(cj.clone()), "opensearch", "3").unwrap();
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&cj).unwrap()).unwrap();
+        let os = &v["extra"]["bougie"]["services"]["opensearch"];
+        assert_eq!(os["version"], "3");
+        assert_eq!(os["tenant"], "shop");
     }
 
     /// `extra.bougie.services` in `bougie.toml` is outside Composer's

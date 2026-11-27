@@ -55,15 +55,9 @@ const PROVISION_READY_TIMEOUT: Duration = Duration::from_secs(30);
 ///    `OPENSEARCH_PATH_CONF` at our copy (see `render_exec_env`).
 /// 3. **`<datadir>/data`** — for `path.data` and the JVM's
 ///    `-XX:HeapDumpPath=data` (also relative).
-pub async fn pre_start(paths: &Paths) -> Result<()> {
-    let data = paths.service_data(
-        "opensearch",
-        crate::daemon::catalog::default_version("opensearch"),
-    );
-    let conf = paths.service_conf(
-        "opensearch",
-        crate::daemon::catalog::default_version("opensearch"),
-    );
+pub async fn pre_start(paths: &Paths, version: &str) -> Result<()> {
+    let data = paths.service_data("opensearch", version);
+    let conf = paths.service_conf("opensearch", version);
     for sub in ["tmp", "logs", "data"] {
         let p = data.join(sub);
         tokio::fs::create_dir_all(&p)
@@ -76,11 +70,10 @@ pub async fn pre_start(paths: &Paths) -> Result<()> {
 
     let entry = crate::daemon::catalog::find("opensearch")
         .ok_or_else(|| eyre!("BUG: opensearch missing from catalog"))?;
-    // pre_start bootstraps the default-version instance's config tree.
-    // (Multi-version bootstrap is a Phase 4 concern; opensearch is
-    // single-version in the catalog.)
-    let basedir = store_layout::basedir(paths, entry, entry.version)
-        .wrap_err("resolving opensearch basedir")?;
+    // Each version's instance gets its own config tree, copied from that
+    // version's tarball: 2.x and 3.x ship different `config/` contents.
+    let basedir =
+        store_layout::basedir(paths, entry, version).wrap_err("resolving opensearch basedir")?;
     let src_config = basedir.join("config");
     if !tokio::fs::metadata(&src_config)
         .await
@@ -400,6 +393,35 @@ fn is_safe_template_name(s: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn pre_start_copies_the_config_of_the_instance_version() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let paths = Paths::new(tmp.path().into(), tmp.path().into());
+        // Two versions in the store, each with its own config/.
+        for v in ["2.19.5", "3.10.1"] {
+            let config = paths.store().join(format!("opensearch-{v}")).join("config");
+            std::fs::create_dir_all(&config).unwrap();
+            std::fs::write(config.join("jvm.options"), "-Xms1g\n").unwrap();
+            std::fs::write(config.join("version.txt"), v).unwrap();
+        }
+
+        pre_start(&paths, "3.10.1").await.unwrap();
+
+        let conf = paths.service_conf("opensearch", "3.10.1");
+        assert_eq!(
+            std::fs::read_to_string(conf.join("version.txt")).unwrap(),
+            "3.10.1"
+        );
+        assert!(
+            paths
+                .service_data("opensearch", "3.10.1")
+                .join("tmp")
+                .is_dir()
+        );
+        // The default version's instance is left alone.
+        assert!(!paths.service_conf("opensearch", "2.19.5").exists());
+    }
 
     #[test]
     fn safe_template_name_accepts_typical_tenants() {
