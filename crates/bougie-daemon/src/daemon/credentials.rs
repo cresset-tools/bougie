@@ -47,24 +47,78 @@ fn machine_secret(paths: &Paths) -> Result<Vec<u8>> {
         .and_then(|mut f| f.read_exact(&mut key))
         .wrap_err("reading /dev/urandom for the credential key")?;
 
-    // Atomic create-if-absent (`O_EXCL`). If a concurrent provisioner
-    // won the race, read its key instead so every derivation agrees.
-    match std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(&path)
-    {
-        Ok(mut f) => {
-            f.write_all(&key)
-                .wrap_err_with(|| format!("writing {}", path.display()))?;
-            Ok(key.to_vec())
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-            std::fs::read(&path).wrap_err_with(|| format!("reading {}", path.display()))
-        }
+    // Create-if-absent that only ever publishes a *complete* key: write
+    // and fsync a private temp file, then hard-link it to the real name.
+    // link(2) fails with EEXIST if the key already exists, so exactly one
+    // racer wins and every other one reads the winner's key. Creating the
+    // real name with O_EXCL and writing afterwards (the old approach) let
+    // a racer read the empty file in between, and a crash in between left
+    // an empty key behind for good — every password then derived from an
+    // empty, guessable secret.
+    let tmp = write_tmp_key(&state, &key)?;
+    let linked = std::fs::hard_link(&tmp, &path);
+    let _ = std::fs::remove_file(&tmp);
+    match linked {
+        Ok(()) => Ok(key.to_vec()),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => read_existing_key(&path),
         Err(e) => Err(e).wrap_err_with(|| format!("creating {}", path.display())),
     }
+}
+
+/// Write `key` to a fresh `0600` temp file in `state` and fsync it, so
+/// the bytes are durable before the link makes them visible. The name is
+/// unique per process and call, and `create_new` skips past any leftover
+/// from a crashed earlier process.
+fn write_tmp_key(state: &Path, key: &[u8]) -> Result<std::path::PathBuf> {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static SEQ: AtomicU32 = AtomicU32::new(0);
+    loop {
+        let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+        let tmp = state.join(format!(".{KEY_FILE}.{}.{seq}.tmp", std::process::id()));
+        let mut f = match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&tmp)
+        {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e).wrap_err_with(|| format!("creating {}", tmp.display())),
+        };
+        if let Err(e) = f.write_all(key).and_then(|()| f.sync_all()) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(e).wrap_err_with(|| format!("writing {}", tmp.display()));
+        }
+        return Ok(tmp);
+    }
+}
+
+/// Read a key another process created. Never returns a short key: a key
+/// file under `KEY_LEN` bytes was left by an older bougie that wrote the
+/// key in place, either still mid-write (brief, so retry) or killed
+/// mid-write (permanent). Using it would derive every password from a
+/// guessable secret; replacing it silently would change the password of
+/// every tenant already provisioned with it. Neither is safe to do
+/// unattended, so the permanent case is an error that says what to do.
+fn read_existing_key(path: &Path) -> Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    for attempt in 0..20 {
+        bytes = std::fs::read(path).wrap_err_with(|| format!("reading {}", path.display()))?;
+        if bytes.len() >= KEY_LEN {
+            return Ok(bytes);
+        }
+        if attempt < 19 {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+    Err(eyre::eyre!(
+        "credential key {} is truncated ({} of {KEY_LEN} bytes), most likely left by an \
+         interrupted write. Passwords derived from it are not secret. Delete the file to \
+         generate a new key; every derived password changes with it, so tenants and app \
+         config that stored the old ones (Magento's app/etc/env.php) must be updated",
+        path.display(),
+        bytes.len()
+    ))
 }
 
 /// Derive the per-tenant password for `service` + `project`. Stable
@@ -168,5 +222,55 @@ mod tests {
             .permissions()
             .mode();
         assert_eq!(mode & 0o777, 0o600, "credential key must be 0600");
+    }
+
+    /// Concurrent first use: every racer must get the same full-length
+    /// key. With create-then-write, a loser could read the winner's
+    /// still-empty file and derive passwords from an empty secret.
+    #[test]
+    fn concurrent_first_use_agrees_on_a_full_key() {
+        for _ in 0..50 {
+            let td = TempDir::new().unwrap();
+            let paths = paths_in(&td);
+            let keys: Vec<Vec<u8>> = std::thread::scope(|s| {
+                let handles: Vec<_> = (0..8)
+                    .map(|_| s.spawn(|| machine_secret(&paths).unwrap()))
+                    .collect();
+                handles.into_iter().map(|h| h.join().unwrap()).collect()
+            });
+            for k in &keys {
+                assert_eq!(k.len(), KEY_LEN, "a racer got a short key");
+                assert_eq!(k, &keys[0], "racers disagree on the key");
+            }
+            assert_eq!(
+                std::fs::read(paths.state().join(KEY_FILE)).unwrap(),
+                keys[0]
+            );
+            let leftovers: Vec<_> = std::fs::read_dir(paths.state())
+                .unwrap()
+                .map(|e| e.unwrap().file_name())
+                .filter(|n| n != KEY_FILE)
+                .collect();
+            assert!(leftovers.is_empty(), "temp files left: {leftovers:?}");
+        }
+    }
+
+    /// A key left truncated by an interrupted write must not be used
+    /// (guessable passwords) nor silently replaced (changes every
+    /// tenant's password) — it is an error naming the file.
+    #[test]
+    fn truncated_key_is_an_error_not_a_secret() {
+        let td = TempDir::new().unwrap();
+        let paths = paths_in(&td);
+        std::fs::create_dir_all(paths.state()).unwrap();
+        let path = paths.state().join(KEY_FILE);
+        std::fs::write(&path, b"").unwrap();
+
+        let err = machine_secret(&paths).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("truncated (0 of 32 bytes)"), "{msg}");
+        assert!(msg.contains(KEY_FILE), "{msg}");
+        // Left in place for the user to decide.
+        assert_eq!(std::fs::read(&path).unwrap(), b"");
     }
 }
