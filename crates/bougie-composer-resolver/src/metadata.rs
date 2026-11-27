@@ -821,11 +821,7 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).wrap_err_with(|| format!("creating {}", parent.display()))?;
     }
-    let tmp = path.with_extension("partial");
-    fs::write(&tmp, bytes).wrap_err_with(|| format!("writing {}", tmp.display()))?;
-    fs::rename(&tmp, path)
-        .wrap_err_with(|| format!("rename {} → {}", tmp.display(), path.display()))?;
-    Ok(())
+    bougie_fs::atomic::write(path, bytes)
 }
 
 // ===========================================================================

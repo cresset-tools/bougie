@@ -12,7 +12,7 @@ use bougie_errors::{BougieError, error_chain};
 use eyre::{Result, WrapErr};
 use sha2::{Digest, Sha256};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FetchOutcome {
@@ -299,13 +299,5 @@ fn hex_sha256(bytes: &[u8]) -> String {
 }
 
 fn atomic_write(dest: &Path, bytes: &[u8]) -> Result<()> {
-    let parent = dest
-        .parent()
-        .ok_or_else(|| eyre::eyre!("destination has no parent: {}", dest.display()))?;
-    let mut tmp = PathBuf::from(parent);
-    let stem = dest.file_name().and_then(|s| s.to_str()).unwrap_or("tmp");
-    tmp.push(format!(".{stem}.partial"));
-    fs::write(&tmp, bytes).wrap_err_with(|| format!("writing {}", tmp.display()))?;
-    fs::rename(&tmp, dest).wrap_err_with(|| format!("rename → {}", dest.display()))?;
-    Ok(())
+    bougie_fs::atomic::write(dest, bytes)
 }

@@ -565,10 +565,7 @@ fn write_atomically(path: &Path, contents: &str) -> Result<()> {
         std::fs::create_dir_all(parent)
             .wrap_err_with(|| format!("creating {}", parent.display()))?;
     }
-    let tmp = path.with_extension("toml.tmp");
-    std::fs::write(&tmp, contents).wrap_err_with(|| format!("writing {}", tmp.display()))?;
-    std::fs::rename(&tmp, path).wrap_err_with(|| format!("renaming {}", path.display()))?;
-    Ok(())
+    bougie_fs::atomic::write(path, contents)
 }
 
 fn parse_short_duration(s: &str) -> Result<Duration> {

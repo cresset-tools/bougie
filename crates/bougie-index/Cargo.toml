@@ -17,6 +17,7 @@ dev-trust-root = []
 
 [dependencies]
 bougie-errors = { workspace = true }
+bougie-fs = { workspace = true }
 
 [dependencies.eyre]
 version = "0.6"

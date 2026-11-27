@@ -113,12 +113,7 @@ impl ServiceEndpoint {
                 .wrap_err_with(|| format!("creating {}", parent.display()))?;
         }
         let json = serde_json::to_string(self).wrap_err("serializing endpoint")?;
-        let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, json.as_bytes())
-            .wrap_err_with(|| format!("writing {}", tmp.display()))?;
-        std::fs::rename(&tmp, path)
-            .wrap_err_with(|| format!("renaming {} -> {}", tmp.display(), path.display()))?;
-        Ok(())
+        bougie_fs::atomic::write(path, json)
     }
 }
 

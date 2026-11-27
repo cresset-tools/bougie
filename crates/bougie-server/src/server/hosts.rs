@@ -278,26 +278,12 @@ fn is_root() -> bool {
 }
 
 fn write_preserving_mode(path: &Path, contents: &str) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-
-    let parent = path
-        .parent()
-        .ok_or_else(|| eyre::eyre!("{} has no parent directory", path.display()))?;
-    let mode = std::fs::metadata(path).map_or(0o644, |m| m.permissions().mode() & 0o7777);
-    // Tempfile lives in the same directory so the final rename is
-    // atomic (cross-fs renames aren't).
-    let tmp = parent.join(format!(
-        "{}.bougie.tmp",
-        path.file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("etc-hosts")
-    ));
-    std::fs::write(&tmp, contents).wrap_err_with(|| format!("writing {}", tmp.display()))?;
-    std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(mode))
-        .wrap_err_with(|| format!("chmod {} -> {mode:o}", tmp.display()))?;
-    std::fs::rename(&tmp, path)
-        .wrap_err_with(|| format!("renaming {} -> {}", tmp.display(), path.display()))?;
-    Ok(())
+    use bougie_fs::atomic::{Mode, Options};
+    let opts = Options {
+        mode: Mode::PreserveOr(0o644),
+        sync: false,
+    };
+    bougie_fs::atomic::write_with(path, contents, opts)
 }
 
 #[cfg(test)]

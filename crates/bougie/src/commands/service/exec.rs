@@ -27,8 +27,6 @@ use bougie_daemon::daemon::{credentials, store_layout};
 use bougie_paths::Paths;
 use eyre::{Result, WrapErr, eyre};
 use std::ffi::OsString;
-use std::io::Write as _;
-use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
@@ -344,47 +342,18 @@ fn write_client_cnf(paths: &Paths, tenant: &str, socket: &Path, password: &str) 
     std::fs::create_dir_all(&dir).wrap_err_with(|| format!("creating {}", dir.display()))?;
     let path = dir.join(format!("{tenant}.cnf"));
     let content = client_cnf_content(socket, tenant, password);
-    // Replaced atomically (fresh temp file + rename) because concurrent
-    // invocations for one tenant share this path. Truncating it in
-    // place let one invocation empty the file while another's client
-    // was reading it; a client that reads an empty option file has no
-    // `socket=` and silently falls back to its compiled-in default
-    // (`/tmp/mysql.sock`), failing with ERROR 2002. The temp file is
-    // created 0600, so the rename also fixes up a looser older file.
-    let tmp = write_private_tmp(&dir, &format!("{tenant}.cnf"), content.as_bytes())?;
-    if let Err(e) = std::fs::rename(&tmp, &path) {
-        let _ = std::fs::remove_file(&tmp);
-        return Err(e).wrap_err_with(|| format!("replacing {}", path.display()));
-    }
+    // Replaced atomically: concurrent invocations for one tenant share
+    // this path, and truncating it in place let one invocation empty the
+    // file while another's client was reading it. A client that reads an
+    // empty option file has no `socket=` and falls back to its built-in
+    // `/tmp/mysql.sock` (ERROR 2002). Exact 0600 also tightens a looser
+    // file left by an older bougie.
+    let opts = bougie_fs::atomic::Options {
+        mode: bougie_fs::atomic::Mode::Exact(0o600),
+        sync: false,
+    };
+    bougie_fs::atomic::write_with(&path, content, opts)?;
     Ok(path)
-}
-
-/// Create a new mode-0600 file in `dir` holding `content`, under a name
-/// no concurrent writer shares (pid + per-process counter; `create_new`
-/// skips past any leftover from a crashed earlier process). The caller
-/// renames it into place.
-fn write_private_tmp(dir: &Path, name: &str, content: &[u8]) -> Result<PathBuf> {
-    use std::sync::atomic::{AtomicU32, Ordering};
-    static SEQ: AtomicU32 = AtomicU32::new(0);
-    loop {
-        let seq = SEQ.fetch_add(1, Ordering::Relaxed);
-        let tmp = dir.join(format!(".{name}.{}.{seq}.tmp", std::process::id()));
-        let mut f = match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&tmp)
-        {
-            Ok(f) => f,
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(e) => return Err(e).wrap_err_with(|| format!("creating {}", tmp.display())),
-        };
-        if let Err(e) = f.write_all(content) {
-            let _ = std::fs::remove_file(&tmp);
-            return Err(e).wrap_err_with(|| format!("writing {}", tmp.display()));
-        }
-        return Ok(tmp);
-    }
 }
 
 /// mariadb/mysqldump/mysqladmin all read `[client]`; `[mysql]` adds

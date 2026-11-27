@@ -19,11 +19,7 @@ pub fn write_project_resolved(
     let dir = project::state_dir(project_root);
     fs::create_dir_all(&dir).wrap_err_with(|| format!("creating {}", dir.display()))?;
     let dest = dir.join("resolved");
-    let tmp = dir.join("resolved.partial");
-    fs::write(&tmp, format!("{version}-{flavor}\n"))
-        .wrap_err_with(|| format!("writing {}", tmp.display()))?;
-    fs::rename(&tmp, &dest)
-        .wrap_err_with(|| format!("rename {} → {}", tmp.display(), dest.display()))?;
+    crate::atomic::write(&dest, format!("{version}-{flavor}\n"))?;
     Ok(dest)
 }
 
@@ -50,11 +46,7 @@ pub fn write_project_resolved_php_path(project_root: &Path, php: &Path) -> Resul
     let dir = project::state_dir(project_root);
     fs::create_dir_all(&dir).wrap_err_with(|| format!("creating {}", dir.display()))?;
     let dest = dir.join("resolved-php-path");
-    let tmp = dir.join("resolved-php-path.partial");
-    fs::write(&tmp, format!("{}\n", php.display()))
-        .wrap_err_with(|| format!("writing {}", tmp.display()))?;
-    fs::rename(&tmp, &dest)
-        .wrap_err_with(|| format!("rename {} → {}", tmp.display(), dest.display()))?;
+    crate::atomic::write(&dest, format!("{}\n", php.display()))?;
     Ok(dest)
 }
 
@@ -139,12 +131,8 @@ impl GlobalState {
             fs::create_dir_all(parent)
                 .wrap_err_with(|| format!("creating {}", parent.display()))?;
         }
-        let tmp = path.with_extension("json.partial");
         let bytes = serde_json::to_vec_pretty(self).wrap_err("encoding state.json")?;
-        fs::write(&tmp, &bytes).wrap_err_with(|| format!("writing {}", tmp.display()))?;
-        fs::rename(&tmp, &path)
-            .wrap_err_with(|| format!("rename {} → {}", tmp.display(), path.display()))?;
-        Ok(())
+        crate::atomic::write(&path, bytes)
     }
 
     /// Add a project root if not already present.
