@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.57.3](https://github.com/cresset-tools/bougie/compare/bougie-v0.57.2...bougie-v0.57.3) (2026-11-27)
+
+
+### Bug Fixes
+
+* **daemon:** never publish or use a partial credential key ([8524263](https://github.com/cresset-tools/bougie/commit/8524263d1aa59893936d2184899b215bf410d773))
+* **service:** replace mariadb client option file atomically ([c15d492](https://github.com/cresset-tools/bougie/commit/c15d49256460f3b65bbb87610ce3f9115a7763bc))
+
 ## [0.57.2](https://github.com/cresset-tools/bougie/compare/bougie-v0.57.1...bougie-v0.57.2) (2026-11-27)
 
 
