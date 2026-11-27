@@ -848,6 +848,19 @@ pub enum ServiceCommand {
     /// is preserved, so generated passwords / DB numbers survive.
     /// Affects every project sharing the same service
     Restart { names: Vec<String> },
+    /// Move this project to a newer release line of a service and take
+    /// its data along (e.g. OpenSearch 2.19 → 3). The old instance's
+    /// data is copied, not moved, so pinning the old line again rolls
+    /// back. Patch bumps on the same line need no upgrade: `up` carries
+    /// the data over by itself
+    Upgrade {
+        /// The service to upgrade (only `opensearch` so far)
+        name: String,
+        /// Version or constraint to move to (default: the newest
+        /// version bougie ships)
+        #[arg(long, value_name = "VERSION")]
+        to: Option<String>,
+    },
     /// Per-service status for the current project
     Status {
         /// Limit to a single service

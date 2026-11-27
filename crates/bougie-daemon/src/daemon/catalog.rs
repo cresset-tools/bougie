@@ -274,8 +274,16 @@ pub const CATALOG: &[CatalogEntry] = &[
     },
     CatalogEntry {
         name: "opensearch",
+        // 2.19 stays the default for now; 3.x rides alongside for
+        // projects that pin `opensearch = "3"` or run `bougie service
+        // upgrade opensearch` (Mage-OS 4.0 is tested against
+        // OpenSearch 3). An unpinned project without a lock keeps the
+        // line it has data on (`resolve_service_version_keeping_line`),
+        // so moving the default later only changes what projects that
+        // never ran OpenSearch get. Both are published by the bougie
+        // index (`tool/opensearch`).
         version: "2.19.5",
-        versions: &["2.19.5"],
+        versions: &["2.19.5", "3.10.1"],
         tarball: "opensearch-2.19.5",
         binary: "bin/opensearch",
         binding: Binding::Tcp { port: 9200 },
@@ -292,7 +300,7 @@ pub const CATALOG: &[CatalogEntry] = &[
         // availability checks see the dep — same shape as rabbitmq→erlang.
         runtime_deps: &["jdk"],
         user_facing: true,
-        summary: "OpenSearch 2.x search engine; per-tenant index template.",
+        summary: "OpenSearch (2.19 / 3.x) search engine; per-tenant index template.",
         sandbox: SandboxKind::Strict,
         // No curated clients: opensearch has no interactive CLI; the
         // maintenance tools (opensearch-plugin, …) stay reachable via
@@ -444,6 +452,39 @@ pub fn find(name: &str) -> Option<&'static CatalogEntry> {
     CATALOG.iter().find(|e| e.name == name)
 }
 
+/// The release line a version belongs to: its `major.minor`
+/// (`2.19.5` → `(2, 19)`). Moving within a line is a patch bump, whose
+/// data the new instance can take over as is; moving between lines is
+/// an upgrade the user asks for (`bougie service upgrade`). `None` for
+/// a version without two numeric components.
+#[must_use]
+pub fn release_line(version: &str) -> Option<(u64, u64)> {
+    let mut parts = version.split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    Some((major, minor))
+}
+
+/// Order versions by their numeric components (`2.19.10` > `2.19.5`).
+/// A non-numeric component sorts as 0, which is enough for the dotted
+/// release versions the catalog and the instance tree use.
+#[must_use]
+pub fn cmp_versions(a: &str, b: &str) -> std::cmp::Ordering {
+    let parse = |v: &str| -> Vec<u64> { v.split('.').map(|c| c.parse().unwrap_or(0)).collect() };
+    parse(a).cmp(&parse(b))
+}
+
+/// The newest version `entry` ships on the same release line as
+/// `version`, or `None` when the catalog no longer carries that line.
+#[must_use]
+pub fn newest_on_line(entry: &CatalogEntry, version: &str) -> Option<&'static str> {
+    let line = release_line(version)?;
+    std::iter::once(entry.version)
+        .chain(entry.versions.iter().copied())
+        .filter(|v| release_line(v) == Some(line))
+        .max_by(|a, b| cmp_versions(a, b))
+}
+
 /// The catalog default version for a service name, or `""` if unknown.
 ///
 /// The single-instance stand-in used while the runtime state tree is
@@ -516,6 +557,31 @@ mod tests {
                 e.versions
             );
         }
+    }
+
+    #[test]
+    fn release_lines_group_patch_versions() {
+        assert_eq!(release_line("2.19.5"), Some((2, 19)));
+        assert_eq!(release_line("3.10.1"), Some((3, 10)));
+        assert_eq!(release_line("8"), None);
+        assert_eq!(release_line(""), None);
+        assert_eq!(
+            cmp_versions("2.19.10", "2.19.5"),
+            std::cmp::Ordering::Greater
+        );
+        let os = find("opensearch").unwrap();
+        assert_eq!(newest_on_line(os, "2.19.1"), Some("2.19.5"));
+        assert_eq!(newest_on_line(os, "3.10.0"), Some("3.10.1"));
+        assert_eq!(newest_on_line(os, "1.3.20"), None);
+    }
+
+    #[test]
+    fn opensearch_ships_2_and_3_with_2_as_default() {
+        let o = find("opensearch").unwrap();
+        assert_eq!(o.version, "2.19.5");
+        assert!(o.versions.contains(&"2.19.5"));
+        assert!(o.versions.contains(&"3.10.1"));
+        assert_eq!(o.runtime_deps, &["jdk"]);
     }
 
     #[test]

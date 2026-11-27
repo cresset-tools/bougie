@@ -20,6 +20,7 @@ pub mod remove;
 pub mod restart;
 pub mod status;
 pub mod up;
+pub mod upgrade;
 
 /// Bridge for `bougie-recipe`'s `set_service_env_provider` hook:
 /// fetches the `BOUGIE_SERVICE_*` env for `project` from a running

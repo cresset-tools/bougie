@@ -123,6 +123,29 @@ pub fn project_instance_version(
     None
 }
 
+/// Every instance version whose ledger owns `project`, newest first.
+/// Normally one; more when a project moved between versions and the
+/// old ledger still lists it.
+#[must_use]
+pub fn project_instance_versions(
+    paths: &bougie_paths::Paths,
+    service: &str,
+    project: &Path,
+) -> Vec<String> {
+    let canon = std::fs::canonicalize(project).unwrap_or_else(|_| project.to_path_buf());
+    let mut out: Vec<String> = instance_versions(&paths.service_name_dir(service))
+        .into_iter()
+        .filter(|v| {
+            load_all_sync(&paths.service_tenants(service, v)).is_ok_and(|rows| {
+                rows.iter()
+                    .any(|t| t.project == canon || t.project == project)
+            })
+        })
+        .collect();
+    out.sort_by(|a, b| crate::daemon::catalog::cmp_versions(b, a));
+    out
+}
+
 #[must_use]
 pub fn instance_versions(name_dir: &Path) -> Vec<String> {
     let mut out = Vec::new();
