@@ -344,20 +344,47 @@ fn write_client_cnf(paths: &Paths, tenant: &str, socket: &Path, password: &str) 
     std::fs::create_dir_all(&dir).wrap_err_with(|| format!("creating {}", dir.display()))?;
     let path = dir.join(format!("{tenant}.cnf"));
     let content = client_cnf_content(socket, tenant, password);
-    let mut f = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(&path)
-        .wrap_err_with(|| format!("creating {}", path.display()))?;
-    f.write_all(content.as_bytes())
-        .wrap_err_with(|| format!("writing {}", path.display()))?;
-    // `mode(0o600)` only applies at creation; re-assert on refresh in
-    // case an older file was created looser.
-    let perms = std::os::unix::fs::PermissionsExt::from_mode(0o600);
-    std::fs::set_permissions(&path, perms).wrap_err_with(|| format!("chmod {}", path.display()))?;
+    // Replaced atomically (fresh temp file + rename) because concurrent
+    // invocations for one tenant share this path. Truncating it in
+    // place let one invocation empty the file while another's client
+    // was reading it; a client that reads an empty option file has no
+    // `socket=` and silently falls back to its compiled-in default
+    // (`/tmp/mysql.sock`), failing with ERROR 2002. The temp file is
+    // created 0600, so the rename also fixes up a looser older file.
+    let tmp = write_private_tmp(&dir, &format!("{tenant}.cnf"), content.as_bytes())?;
+    if let Err(e) = std::fs::rename(&tmp, &path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e).wrap_err_with(|| format!("replacing {}", path.display()));
+    }
     Ok(path)
+}
+
+/// Create a new mode-0600 file in `dir` holding `content`, under a name
+/// no concurrent writer shares (pid + per-process counter; `create_new`
+/// skips past any leftover from a crashed earlier process). The caller
+/// renames it into place.
+fn write_private_tmp(dir: &Path, name: &str, content: &[u8]) -> Result<PathBuf> {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static SEQ: AtomicU32 = AtomicU32::new(0);
+    loop {
+        let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+        let tmp = dir.join(format!(".{name}.{}.{seq}.tmp", std::process::id()));
+        let mut f = match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&tmp)
+        {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e).wrap_err_with(|| format!("creating {}", tmp.display())),
+        };
+        if let Err(e) = f.write_all(content) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(e).wrap_err_with(|| format!("writing {}", tmp.display()));
+        }
+        return Ok(tmp);
+    }
 }
 
 /// mariadb/mysqldump/mysqladmin all read `[client]`; `[mysql]` adds
@@ -510,6 +537,47 @@ mod tests {
                 .unwrap()
                 .contains("password=pw2")
         );
+    }
+
+    /// Concurrent `exec` invocations for one tenant rewrite the same
+    /// file while their clients read it. A reader must always see a
+    /// complete file — an empty one drops `socket=` and the client
+    /// falls back to `/tmp/mysql.sock`.
+    #[test]
+    fn client_cnf_refresh_never_exposes_partial_file() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let td = TempDir::new().unwrap();
+        let paths = Paths::new(td.path().into(), td.path().join("cache"));
+        let sock = Path::new("/run/mariadb.sock");
+        let path = write_client_cnf(&paths, "acme", sock, "pw").unwrap();
+        let expected = std::fs::read_to_string(&path).unwrap();
+
+        let stop = AtomicBool::new(false);
+        let bad = std::thread::scope(|s| {
+            for _ in 0..4 {
+                s.spawn(|| {
+                    while !stop.load(Ordering::Relaxed) {
+                        write_client_cnf(&paths, "acme", sock, "pw").unwrap();
+                    }
+                });
+            }
+            // Record rather than assert here: a panic before `stop` is
+            // set would leave the scope joining writers that never end.
+            let bad = (0..20_000)
+                .map(|_| std::fs::read_to_string(&path).unwrap())
+                .find(|got| *got != expected);
+            stop.store(true, Ordering::Relaxed);
+            bad
+        });
+        assert_eq!(bad, None, "reader saw a partial option file");
+
+        // No temp files left behind.
+        let leftovers: Vec<_> = std::fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .filter(|n| n != "acme.cnf")
+            .collect();
+        assert!(leftovers.is_empty(), "{leftovers:?}");
     }
 
     // ---------- redis ----------
