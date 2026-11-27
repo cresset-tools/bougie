@@ -274,8 +274,15 @@ pub const CATALOG: &[CatalogEntry] = &[
     },
     CatalogEntry {
         name: "opensearch",
+        // 2.19 stays the default: `bougie service add opensearch` pins
+        // `*`, and instances are keyed by version, so moving the default
+        // to 3.x would hand every existing project a fresh, empty
+        // instance. 3.x rides alongside for projects that pin
+        // `opensearch = "3"` (Mage-OS 4.0 is tested against
+        // OpenSearch 3). Both are published by the bougie index
+        // (`tool/opensearch`).
         version: "2.19.5",
-        versions: &["2.19.5"],
+        versions: &["2.19.5", "3.10.1"],
         tarball: "opensearch-2.19.5",
         binary: "bin/opensearch",
         binding: Binding::Tcp { port: 9200 },
@@ -292,7 +299,7 @@ pub const CATALOG: &[CatalogEntry] = &[
         // availability checks see the dep — same shape as rabbitmq→erlang.
         runtime_deps: &["jdk"],
         user_facing: true,
-        summary: "OpenSearch 2.x search engine; per-tenant index template.",
+        summary: "OpenSearch (2.19 / 3.x) search engine; per-tenant index template.",
         sandbox: SandboxKind::Strict,
         // No curated clients: opensearch has no interactive CLI; the
         // maintenance tools (opensearch-plugin, …) stay reachable via
@@ -516,6 +523,15 @@ mod tests {
                 e.versions
             );
         }
+    }
+
+    #[test]
+    fn opensearch_ships_2_and_3_with_2_as_default() {
+        let o = find("opensearch").unwrap();
+        assert_eq!(o.version, "2.19.5");
+        assert!(o.versions.contains(&"2.19.5"));
+        assert!(o.versions.contains(&"3.10.1"));
+        assert_eq!(o.runtime_deps, &["jdk"]);
     }
 
     #[test]

@@ -5,16 +5,6 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.57.2](https://github.com/cresset-tools/bougie/compare/bougie-v0.57.1...bougie-v0.57.2) (2026-11-27)
-
-
-### Bug Fixes
-
-* **bougie:** bump url to 2.5.9 for RUSTSEC-2026-0592 ([bd7ca7b](https://github.com/cresset-tools/bougie/commit/bd7ca7bc2b4a365174cc075eab763687a24314e6))
-* **bougie:** give redis 4096 databases and stop double-allocating them ([1f96a09](https://github.com/cresset-tools/bougie/commit/1f96a091c936134ddf834ac81093a24d2a5e98ba))
-* **bougie:** stop `db refresh` reseeding after a skipped pull ([9149362](https://github.com/cresset-tools/bougie/commit/9149362ed6b0d60cea3d2ab4459b2221c1dceda7))
-* **bougie:** use the redis cache adapter on Mage-OS 4 ([e8fbecb](https://github.com/cresset-tools/bougie/commit/e8fbecb2d5e17f36097a71e77936eee091529f52))
-
 ## [0.57.1](https://github.com/cresset-tools/bougie/compare/bougie-v0.57.0...bougie-v0.57.1) (2026-11-19)
 
 
