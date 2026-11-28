@@ -111,8 +111,13 @@ pub fn load_fresh(
             },
         }
     }
-    for name in lock.extensions.keys() {
-        if !current_extensions.contains_key(name) {
+    for (name, pin) in &lock.extensions {
+        // A `Required` pin comes from another locked extension's manifest
+        // `requires`, not from project inputs, so its absence there is not
+        // drift. It goes stale together with the extension requiring it.
+        if pin.origin != bougie_lock::ExtensionOrigin::Required
+            && !current_extensions.contains_key(name)
+        {
             drift.push(format!("extension {name} was removed"));
         }
     }

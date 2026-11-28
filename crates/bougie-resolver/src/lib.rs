@@ -44,7 +44,7 @@ pub fn resolve_php<'a>(
     flavor: Flavor,
     opts: ResolveOptions,
 ) -> Result<Selected<'a>> {
-    let candidates = section.artifacts.iter().filter(|a| {
+    let matches = |a: &&Artifact| {
         if a.yanked && !opts.allow_yanked {
             return false;
         }
@@ -55,8 +55,13 @@ pub fn resolve_php<'a>(
             Ok(v) => version_matches_spec(v, spec),
             Err(_) => false,
         }
-    });
-    pick_highest(candidates, "php interpreter", &request_diag(spec, flavor))
+    };
+    let label = request_diag(spec, flavor) + &newer_client_hint(section, matches);
+    pick_highest(
+        section.artifacts.iter().filter(matches),
+        "php interpreter",
+        &label,
+    )
 }
 
 pub fn resolve_extension<'a>(
@@ -67,7 +72,7 @@ pub fn resolve_extension<'a>(
     opts: ResolveOptions,
 ) -> Result<Selected<'a>> {
     let php_minor_string = format!("{}.{}", php_minor.major, php_minor.minor.unwrap_or(0));
-    let candidates = section.artifacts.iter().filter(|a| {
+    let matches = |a: &&Artifact| {
         if a.yanked && !opts.allow_yanked {
             return false;
         }
@@ -86,13 +91,14 @@ pub fn resolve_extension<'a>(
             return false;
         }
         true
-    });
+    };
     let label = format!(
-        "{} {} (php={php_minor_string} flavor={flavor})",
+        "{} {} (php={php_minor_string} flavor={flavor}){}",
         section.name,
         version_pin.unwrap_or("latest"),
+        newer_client_hint(section, matches),
     );
-    pick_highest_extension(candidates, &label)
+    pick_highest_extension(section.artifacts.iter().filter(matches), &label)
 }
 
 pub fn resolve_extension_constraint<'a>(
@@ -103,7 +109,7 @@ pub fn resolve_extension_constraint<'a>(
     opts: ResolveOptions,
 ) -> Result<Selected<'a>> {
     let php_minor_string = format!("{}.{}", php_minor.major, php_minor.minor.unwrap_or(0));
-    let candidates = section.artifacts.iter().filter(|artifact| {
+    let matches = |artifact: &&Artifact| {
         if artifact.yanked && !opts.allow_yanked {
             return false;
         }
@@ -114,12 +120,32 @@ pub fn resolve_extension_constraint<'a>(
         }
         parse_extension_version(&artifact.version)
             .is_some_and(|version| constraint.matches(&version.full))
-    });
+    };
     let label = format!(
-        "{} constraint (php={php_minor_string} flavor={flavor})",
-        section.name
+        "{} constraint (php={php_minor_string} flavor={flavor}){}",
+        section.name,
+        newer_client_hint(section, matches),
     );
-    pick_highest_extension(candidates, &label)
+    pick_highest_extension(section.artifacts.iter().filter(matches), &label)
+}
+
+/// Suffix for a "no candidate" error when rows this client skipped for
+/// unsupported features (`Section::needs_newer_client`) would have
+/// matched — the fix is upgrading bougie, not changing the request.
+fn newer_client_hint(section: &Section, matches: impl Fn(&&Artifact) -> bool) -> String {
+    let n = section
+        .needs_newer_client
+        .iter()
+        .filter(|a| matches(a))
+        .count();
+    if n == 0 {
+        String::new()
+    } else {
+        format!(
+            " — {n} matching artifact(s) need a newer bougie; \
+             upgrade with `bougie self update`"
+        )
+    }
 }
 
 /// An extension artifact version. PHP interpreters are always a plain
@@ -294,6 +320,7 @@ mod tests {
             yanked,
             yanked_reason: None,
             frozen,
+            features: vec![],
         }
     }
 
@@ -304,6 +331,7 @@ mod tests {
             kind,
             target: "x86_64-unknown-linux-gnu".into(),
             artifacts,
+            needs_newer_client: vec![],
         }
     }
 
@@ -535,5 +563,48 @@ mod tests {
         });
         let resolved = intersect_php(Some(&public), Some(&good)).unwrap();
         assert!(matches!(resolved, VersionLike::Version(_)));
+    }
+
+    #[test]
+    fn no_match_mentions_rows_that_need_a_newer_client() {
+        let mut newer = art("7.0.0", "nts", "8.5", false, false);
+        newer.features = vec!["from-the-future".into()];
+        let mut s = section(
+            "extension/redis",
+            SectionKind::Extension,
+            vec![art("6.3.0", "nts", "8.5", false, false), newer],
+        );
+        s.retain_supported().unwrap();
+        let minor = PartialVersion {
+            major: 8,
+            minor: Some(5),
+            patch: None,
+        };
+        // Unpinned: falls back to the newest row this client can install.
+        let got =
+            resolve_extension(&s, minor, Flavor::Nts, None, ResolveOptions::default()).unwrap();
+        assert_eq!(got.artifact.version, "6.3.0");
+        // Pinned to the skipped row: the error says to upgrade.
+        let err = resolve_extension(
+            &s,
+            minor,
+            Flavor::Nts,
+            Some("7.0.0"),
+            ResolveOptions::default(),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("need a newer bougie"), "{err}");
+        // A pin nothing matches says nothing about upgrading.
+        let err = resolve_extension(
+            &s,
+            minor,
+            Flavor::Nts,
+            Some("1.0.0"),
+            ResolveOptions::default(),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(!err.contains("newer bougie"), "{err}");
     }
 }

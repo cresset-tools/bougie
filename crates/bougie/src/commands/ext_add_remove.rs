@@ -26,7 +26,7 @@ use bougie_fs::state::read_project_resolved;
 use bougie_fs::state::read_project_resolved_php_path;
 use bougie_index::wire::LoadDirective;
 use bougie_installer::conf_d;
-use bougie_installer::install::{install_extension, install_local_so};
+use bougie_installer::install::{install_extension_with_requires, install_local_so};
 use bougie_output::output::{Render, emit};
 use bougie_paths::Paths;
 use bougie_php_discovery::PhpPreference;
@@ -195,14 +195,33 @@ pub fn add(
             continue;
         }
 
-        let installed = install_extension(
+        let mut installed = install_extension_with_requires(
             &paths,
             &name,
             version_pin.as_deref(),
             php_minor,
             flavor,
             ResolveOptions::default(),
-        )?;
+        )?
+        .into_iter();
+        let installed_ext = installed
+            .next()
+            .ok_or_else(|| eyre!("installing {name} returned no extension"))?;
+
+        // Extensions the manifest `requires` (redis → igbinary) are
+        // enabled with their own fragment but not added to composer.json:
+        // they are a build detail of the requested extension, and sync
+        // re-derives them from its manifest.
+        for required in installed {
+            conf_d::write_ext_fragment(
+                &project_root,
+                &required.name,
+                &required.so_path,
+                required.load,
+                &required.path_extras,
+            )?;
+        }
+        let installed = installed_ext;
 
         let conf_d_path = conf_d::write_ext_fragment(
             &project_root,

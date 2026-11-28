@@ -254,6 +254,7 @@ impl super::Backend for BougieIndexBackend {
             artifact_rel: PathBuf::from(&ext_ref.path),
             load: ext_ref.load,
             closure: manifest.closure.iter().map(ClosureRef::from).collect(),
+            requires: manifest.requires.clone(),
             // bougie-index extensions get their dep closure via
             // install_closure_peers + RPATH; no PATH augmentation
             // needed at run time.

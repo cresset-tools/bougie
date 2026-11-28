@@ -98,7 +98,7 @@ struct Fixture {
 }
 
 #[allow(clippy::too_many_lines)]
-async fn build_fixture() -> Fixture {
+async fn build_fixture_with(with_igbinary_requirement: bool) -> Fixture {
     let keys = ECDSAKeys::new(EllipticCurve::P256).unwrap();
     let pub_pem = keys.as_inner().public_key_to_pem().unwrap();
     let signer = keys.to_sigstore_signer().unwrap();
@@ -134,55 +134,36 @@ async fn build_fixture() -> Fixture {
     let php_section_bytes = serde_json::to_vec(&php_section_json).unwrap();
     let php_section_sha = hex(&php_section_bytes);
 
-    // ---- redis extension ------------------------------------------------
-    let (redis_blob, redis_blob_sha, so_path, so_sha) = build_ext_tarball("redis");
-    let redis_blob_sha8: String = redis_blob_sha.chars().take(8).collect();
-    let redis_blob_url = format!("{}/blobs/{redis_blob_sha}", server.uri());
-    let redis_manifest_path =
-        format!("/targets/{target}/manifests/extension/redis/redis-6.0.2+php83-{target}-nts.json");
-    let redis_manifest_json = serde_json::json!({
-        "schema": 1, "kind": "extension", "name": "redis",
-        "tag": format!("redis-6.0.2+php83-{target}-nts"),
-        "version": "6.0.2", "target": target, "flavor": "nts",
-        "abi": {"php":"8.3","zend_module_api_no":"20230831","zend_extension_api_no":"420230831"},
-        "libc": {"family":"gnu","min":"2.17"},
-        "blob": {"url": redis_blob_url, "sha256": redis_blob_sha},
-        "extension": {"path": so_path, "sha256": so_sha},
-        "closure": []
+    // ---- extensions -----------------------------------------------------
+    let publish_version = "20260512T000000Z";
+    let redis_requires: Vec<&str> = if with_igbinary_requirement {
+        vec!["igbinary"]
+    } else {
+        Vec::new()
+    };
+    let redis = mount_ext(&server, &target, publish_version, "redis", &redis_requires).await;
+    let mut sections = serde_json::json!({
+        "interpreter/php": {
+            "sha256": php_section_sha,
+            "size": php_section_bytes.len(),
+        },
+        "extension/redis": {
+            "sha256": redis.section_sha,
+            "size": redis.section_size,
+        }
     });
-    let redis_manifest_bytes = serde_json::to_vec(&redis_manifest_json).unwrap();
-    let redis_manifest_sha = hex(&redis_manifest_bytes);
-    let redis_section_json = serde_json::json!({
-        "schema": 1, "name": "redis", "kind": "extension", "target": target,
-        "artifacts": [{
-            "tag": format!("redis-6.0.2+php83-{target}-nts"),
-            "version": "6.0.2", "flavor": "nts",
-            "php_minor": "8.3",
-            "manifest": {"path": redis_manifest_path, "sha256": redis_manifest_sha},
-            "yanked": false, "frozen": false
-        }]
-    });
-    let redis_section_bytes = serde_json::to_vec(&redis_section_json).unwrap();
-    let redis_section_sha = hex(&redis_section_bytes);
+    if with_igbinary_requirement {
+        let igbinary = mount_ext(&server, &target, publish_version, "igbinary", &[]).await;
+        sections["extension/igbinary"] = serde_json::json!({
+            "sha256": igbinary.section_sha,
+            "size": igbinary.section_size,
+        });
+    }
 
     // ---- root index -----------------------------------------------------
-    let publish_version = "20260512T000000Z";
     let root = serde_json::json!({
         "schema": 1, "version": publish_version, "generated": "2026-05-12T00:00:00Z",
-        "targets": {
-            target.clone(): {
-                "sections": {
-                    "interpreter/php": {
-                        "sha256": php_section_sha,
-                        "size": php_section_bytes.len(),
-                    },
-                    "extension/redis": {
-                        "sha256": redis_section_sha,
-                        "size": redis_section_bytes.len(),
-                    }
-                }
-            }
-        }
+        "targets": { target.clone(): { "sections": sections } }
     });
     let root_bytes = serde_json::to_vec(&root).unwrap();
     let sig = signer.sign(&root_bytes).unwrap();
@@ -190,8 +171,6 @@ async fn build_fixture() -> Fixture {
 
     let php_section_path =
         format!("/versions/{publish_version}/targets/{target}/sections/interpreter/php.json");
-    let redis_section_path =
-        format!("/versions/{publish_version}/targets/{target}/sections/extension/redis.json");
 
     Mock::given(method("GET"))
         .and(path("/index.json"))
@@ -222,27 +201,89 @@ async fn build_fixture() -> Fixture {
         .respond_with(ResponseTemplate::new(200).set_body_bytes(php_blob))
         .mount(&server)
         .await;
-    Mock::given(method("GET"))
-        .and(path(redis_section_path))
-        .respond_with(ResponseTemplate::new(200).set_body_bytes(redis_section_bytes))
-        .mount(&server)
-        .await;
-    Mock::given(method("GET"))
-        .and(path(redis_manifest_path))
-        .respond_with(ResponseTemplate::new(200).set_body_bytes(redis_manifest_bytes))
-        .mount(&server)
-        .await;
-    Mock::given(method("GET"))
-        .and(path(format!("/blobs/{redis_blob_sha}")))
-        .respond_with(ResponseTemplate::new(200).set_body_bytes(redis_blob))
-        .mount(&server)
-        .await;
-
     Fixture {
         server,
         pub_pem,
-        redis_blob_sha8,
-        redis_so_path_in_tarball: so_path,
+        redis_blob_sha8: redis.blob_sha8,
+        redis_so_path_in_tarball: redis.so_path,
+    }
+}
+
+async fn build_fixture() -> Fixture {
+    build_fixture_with(false).await
+}
+
+/// What [`mount_ext`] published, for the root index and assertions.
+struct MountedExt {
+    section_sha: String,
+    section_size: usize,
+    blob_sha8: String,
+    so_path: String,
+}
+
+/// Publish one extension (`<name>` 6.0.2 for PHP 8.3) on `server`:
+/// section, manifest (with `requires`), and blob.
+async fn mount_ext(
+    server: &MockServer,
+    target: &str,
+    publish_version: &str,
+    name: &str,
+    requires: &[&str],
+) -> MountedExt {
+    let (blob, blob_sha, so_path, so_sha) = build_ext_tarball(name);
+    let blob_url = format!("{}/blobs/{blob_sha}", server.uri());
+    let tag = format!("{name}-6.0.2+php83-{target}-nts");
+    let manifest_path = format!("/targets/{target}/manifests/extension/{name}/{tag}.json");
+    let manifest_json = serde_json::json!({
+        "schema": 1, "kind": "extension", "name": name,
+        "tag": tag,
+        "version": "6.0.2", "target": target, "flavor": "nts",
+        "abi": {"php":"8.3","zend_module_api_no":"20230831","zend_extension_api_no":"420230831"},
+        "libc": {"family":"gnu","min":"2.17"},
+        "blob": {"url": blob_url, "sha256": blob_sha},
+        "extension": {"path": so_path, "sha256": so_sha},
+        "closure": [],
+        "requires": requires,
+    });
+    let manifest_bytes = serde_json::to_vec(&manifest_json).unwrap();
+    let manifest_sha = hex(&manifest_bytes);
+    let section_json = serde_json::json!({
+        "schema": 1, "name": name, "kind": "extension", "target": target,
+        "artifacts": [{
+            "tag": tag,
+            "version": "6.0.2", "flavor": "nts",
+            "php_minor": "8.3",
+            "manifest": {"path": manifest_path, "sha256": manifest_sha},
+            "yanked": false, "frozen": false
+        }]
+    });
+    let section_bytes = serde_json::to_vec(&section_json).unwrap();
+    let section_sha = hex(&section_bytes);
+    let section_size = section_bytes.len();
+    let section_path =
+        format!("/versions/{publish_version}/targets/{target}/sections/extension/{name}.json");
+
+    Mock::given(method("GET"))
+        .and(path(section_path))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(section_bytes))
+        .mount(server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(manifest_path))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(manifest_bytes))
+        .mount(server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("/blobs/{blob_sha}")))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(blob))
+        .mount(server)
+        .await;
+
+    MountedExt {
+        section_sha,
+        section_size,
+        blob_sha8: blob_sha.chars().take(8).collect(),
+        so_path,
     }
 }
 
@@ -486,4 +527,56 @@ fn ext_list_only_available_marks_installed_rows() {
         status.contains(&"installed"),
         "redis row should ALSO carry `installed` after `ext add redis`: {status:?}"
     );
+}
+
+#[test]
+fn ext_add_redis_also_enables_required_igbinary() {
+    let runtime = rt();
+    let fx = runtime.block_on(build_fixture_with(true));
+    let env = TestEnv::new();
+    let trust = write_trust_root(&env, &fx.pub_pem);
+    let proj = tempfile::TempDir::new().unwrap();
+
+    std::fs::create_dir_all(proj.path().join("vendor").join("bougie")).unwrap();
+    std::fs::write(
+        proj.path().join("composer.json"),
+        r#"{
+    "name": "acme/widget-tool",
+    "require": {
+        "php": "8.3.12"
+    }
+}
+"#,
+    )
+    .unwrap();
+
+    env.bougie()
+        .current_dir(proj.path())
+        .env("BOUGIE_INDEX_URL", fx.server.uri())
+        .env("BOUGIE_TRUST_ROOT_PATH", &trust)
+        .args(["ext", "add", "redis"])
+        .assert()
+        .success();
+
+    // redis's manifest requires igbinary: both get a fragment...
+    let conf_d = proj.path().join("vendor/bougie/conf.d");
+    for name in ["redis", "igbinary"] {
+        let body = std::fs::read_to_string(conf_d.join(format!("20-{name}.ini")))
+            .unwrap_or_else(|e| panic!("20-{name}.ini should exist: {e}"));
+        let line = body
+            .lines()
+            .find(|l| l.starts_with("extension="))
+            .expect("extension= line");
+        assert!(
+            std::path::Path::new(line.trim_start_matches("extension=").trim()).exists(),
+            "{name}.so named by the fragment should exist"
+        );
+    }
+
+    // ...but only the requested one lands in composer.json.
+    let cj: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(proj.path().join("composer.json")).unwrap()).unwrap();
+    let require = cj.get("require").unwrap();
+    assert!(require.get("ext-redis").is_some());
+    assert!(require.get("ext-igbinary").is_none());
 }

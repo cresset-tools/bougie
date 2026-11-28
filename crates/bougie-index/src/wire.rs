@@ -14,6 +14,41 @@ use eyre::{Result, eyre};
 use serde::Deserialize;
 use std::collections::{BTreeMap, HashSet};
 
+/// Highest `schema` this client understands, at every level (root,
+/// section, manifest). A publisher bumps it only for a change older
+/// clients cannot safely read past; the client then refuses the index
+/// and asks to be upgraded instead of misreading it. Additive changes
+/// that only some artifacts need use [`SUPPORTED_FEATURES`] instead.
+/// See DISTRIBUTION.md §Schema-and-versioning.
+pub const SUPPORTED_SCHEMA: u32 = 1;
+
+/// Artifact features this client implements. A section row or manifest
+/// lists in `features` every wire-format addition a client must act on
+/// to install that artifact correctly (e.g. `requires`); a client that
+/// does not know one of them skips the artifact and resolves to the
+/// newest one it can install. See DISTRIBUTION.md §Schema-and-versioning.
+pub const SUPPORTED_FEATURES: &[&str] = &["requires"];
+
+/// Refuse a document whose schema is newer than [`SUPPORTED_SCHEMA`].
+pub fn check_schema(what: &str, schema: u32) -> Result<()> {
+    if schema > SUPPORTED_SCHEMA {
+        return Err(eyre!(
+            "the index {what} uses schema {schema}, but this bougie only understands \
+             schema {SUPPORTED_SCHEMA} — upgrade bougie (`bougie self update`)"
+        ));
+    }
+    Ok(())
+}
+
+/// The entries of `features` this client does not implement.
+fn unsupported_features(features: &[String]) -> Vec<&str> {
+    features
+        .iter()
+        .map(String::as_str)
+        .filter(|f| !SUPPORTED_FEATURES.contains(f))
+        .collect()
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct Root {
     pub schema: u32,
@@ -56,6 +91,26 @@ pub struct Section {
     pub kind: SectionKind,
     pub target: String,
     pub artifacts: Vec<Artifact>,
+    /// Rows removed by [`Section::retain_supported`] because they need a
+    /// feature this client lacks. Not on the wire; kept so a failed
+    /// resolution can say a newer bougie would have found a match.
+    #[serde(skip)]
+    pub needs_newer_client: Vec<Artifact>,
+}
+
+impl Section {
+    /// Check the schema, then move every row that lists an unsupported
+    /// feature out of `artifacts` into `needs_newer_client`, so every
+    /// resolver falls back to the newest artifact this client can install.
+    pub fn retain_supported(&mut self) -> Result<()> {
+        check_schema(&format!("section {}", self.name), self.schema)?;
+        let (ok, skipped): (Vec<Artifact>, Vec<Artifact>) = std::mem::take(&mut self.artifacts)
+            .into_iter()
+            .partition(Artifact::is_supported);
+        self.artifacts = ok;
+        self.needs_newer_client = skipped;
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -89,6 +144,19 @@ pub struct Artifact {
     pub yanked_reason: Option<String>,
     #[serde(default)]
     pub frozen: bool,
+    /// Wire-format features a client must implement to install this
+    /// artifact (see [`SUPPORTED_FEATURES`]). Mirrors the manifest's
+    /// `features`, so the resolver can skip the row without fetching it.
+    #[serde(default)]
+    pub features: Vec<String>,
+}
+
+impl Artifact {
+    /// `true` if this client implements every feature the row lists.
+    #[must_use]
+    pub fn is_supported(&self) -> bool {
+        unsupported_features(&self.features).is_empty()
+    }
 }
 
 /// Pointer to a manifest. `path` is server-absolute and hostname-free
@@ -128,18 +196,61 @@ pub struct Manifest {
     /// Extension manifests only.
     #[serde(default)]
     pub extension: Option<ExtensionRef>,
+    /// Extension manifests only. Other extensions this one needs loaded
+    /// alongside it (it declares them with `ZEND_MOD_REQUIRED`, so PHP
+    /// refuses to start it alone) — e.g. `redis` built with the igbinary
+    /// serializer requires `igbinary`. Resolved in the same extension
+    /// section for the same PHP minor / target / flavor and installed
+    /// transitively. Absent means none. See DISTRIBUTION.md
+    /// §Manifests-and-blobs.
+    #[serde(default)]
+    pub requires: Vec<String>,
+    /// Wire-format features a client must implement to install this
+    /// artifact correctly — e.g. `requires` when that list is non-empty.
+    /// See [`SUPPORTED_FEATURES`].
+    #[serde(default)]
+    pub features: Vec<String>,
     /// Interpreter manifests only.
     #[serde(default)]
     pub sapis: Option<Vec<String>>,
 }
 
 impl Manifest {
+    /// Refuse a manifest whose schema or features this client does not
+    /// implement. A section row normally filters such an artifact out
+    /// first; this catches paths that reach a manifest directly (a lock
+    /// file, a `requires_tools` pointer, a stale section cache).
+    pub fn check_supported(&self) -> Result<()> {
+        check_schema(&format!("manifest {}", self.tag), self.schema)?;
+        let missing = unsupported_features(&self.features);
+        if !missing.is_empty() {
+            return Err(eyre!(
+                "{} needs index feature(s) this bougie does not implement: {} — \
+                 upgrade bougie (`bougie self update`)",
+                self.tag,
+                missing.join(", ")
+            ));
+        }
+        Ok(())
+    }
+
     /// Cross-field validation that can only be checked once the whole
     /// manifest has parsed. Per-entry checks (`closure`, `requires_tools`)
     /// are delegated to those types' own `validate()`.
     pub fn validate(&self) -> Result<()> {
         for c in &self.closure {
             c.validate()?;
+        }
+        for r in &self.requires {
+            if !is_extension_name(r) {
+                return Err(eyre!(
+                    "manifest {} has invalid requires entry: {r:?}",
+                    self.tag
+                ));
+            }
+            if *r == self.name {
+                return Err(eyre!("manifest {} requires itself", self.tag));
+            }
         }
         let mut seen_link_into: HashSet<&str> = HashSet::new();
         for r in &self.requires_tools {
@@ -372,6 +483,19 @@ fn is_kebab_lower(s: &str) -> bool {
     chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '-'))
 }
 
+/// `true` if `s` is a plausible PHP extension name: `[a-z0-9_]+`,
+/// starting with a letter (`igbinary`, `pdo_mysql`). Guards `requires`
+/// entries, which the client splices into section names and store
+/// directory names.
+fn is_extension_name(s: &str) -> bool {
+    let mut chars = s.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    first.is_ascii_lowercase()
+        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+}
+
 /// `true` if `s` is at least `n` characters long and uses only the Nix
 /// base32 store-hash alphabet — i.e. `[a-z0-9]`. Note we accept the
 /// broader lowercase-alnum set rather than the strict Nix base32 set
@@ -516,6 +640,130 @@ mod tests {
         let ext = m.extension.as_ref().unwrap();
         assert_eq!(ext.load, LoadDirective::Extension);
         assert_eq!(ext.load.ini_directive(), "extension");
+        // Pre-`requires` manifests parse with no requirements.
+        assert_eq!(m.requires, Vec::<String>::new());
+    }
+
+    fn redis_manifest_with_requires(requires: &str) -> Manifest {
+        let json = format!(
+            r#"{{
+            "schema": 1,
+            "kind": "extension",
+            "name": "redis",
+            "tag": "redis-6.3.0+php85-x86_64-unknown-linux-gnu-nts",
+            "version": "6.3.0",
+            "target": "x86_64-unknown-linux-gnu",
+            "flavor": "nts",
+            "abi": {{"php":"8.5","zend_module_api_no":"20250925","zend_extension_api_no":"420250925"}},
+            "libc": {{"family":"gnu","min":"2.17"}},
+            "blob": {{"url":"https://blobs.example.com/blobs/cc/cccc","sha256":"cccc"}},
+            "extension": {{"path":"lib/extensions/20250925/redis.so","sha256":"dddd"}},
+            "closure": [],
+            "requires": {requires}
+        }}"#
+        );
+        serde_json::from_str(&json).unwrap()
+    }
+
+    #[test]
+    fn extension_manifest_parses_requires() {
+        let m = redis_manifest_with_requires(r#"["igbinary"]"#);
+        assert_eq!(m.requires, vec!["igbinary".to_string()]);
+        m.validate().unwrap();
+    }
+
+    #[test]
+    fn extension_manifest_rejects_bad_requires() {
+        for bad in [
+            r#"["../igbinary"]"#,
+            r#"["Igbinary"]"#,
+            r#"[""]"#,
+            r#"["redis"]"#,
+        ] {
+            let m = redis_manifest_with_requires(bad);
+            assert!(m.validate().is_err(), "{bad} should be rejected");
+        }
+        redis_manifest_with_requires(r#"["pdo_mysql"]"#)
+            .validate()
+            .unwrap();
+    }
+
+    // ---------- compatibility gates (DISTRIBUTION.md §Schema-and-versioning) ----------
+
+    fn section_with_rows(schema: u32, rows: &[(&str, &str)]) -> Section {
+        let artifacts: Vec<serde_json::Value> = rows
+            .iter()
+            .map(|(version, features)| {
+                let features: serde_json::Value = serde_json::from_str(features).unwrap();
+                serde_json::json!({
+                    "tag": format!("redis-{version}+php85-x86_64-unknown-linux-gnu-nts"),
+                    "version": version,
+                    "flavor": "nts",
+                    "php_minor": "8.5",
+                    "manifest": {"path": format!("/m/{version}.json"), "sha256": "ab"},
+                    "features": features,
+                })
+            })
+            .collect();
+        serde_json::from_value(serde_json::json!({
+            "schema": schema,
+            "name": "redis",
+            "kind": "extension",
+            "target": "x86_64-unknown-linux-gnu",
+            "artifacts": artifacts,
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn section_rows_default_to_no_features() {
+        let s = section_with_rows(1, &[]);
+        assert_eq!(s.needs_newer_client.len(), 0);
+        let json = r#"{"tag":"t","version":"1.0.0","flavor":"nts",
+            "manifest":{"path":"/m","sha256":"ab"}}"#;
+        let a: Artifact = serde_json::from_str(json).unwrap();
+        assert_eq!(a.features, Vec::<String>::new());
+        assert!(a.is_supported());
+    }
+
+    #[test]
+    fn retain_supported_moves_rows_with_unknown_features_aside() {
+        let mut s = section_with_rows(
+            1,
+            &[
+                ("6.2.0", "[]"),
+                ("6.3.0", r#"["requires"]"#),
+                ("7.0.0", r#"["requires", "from-the-future"]"#),
+            ],
+        );
+        s.retain_supported().unwrap();
+        let kept: Vec<&str> = s.artifacts.iter().map(|a| a.version.as_str()).collect();
+        assert_eq!(kept, ["6.2.0", "6.3.0"]);
+        assert_eq!(s.needs_newer_client.len(), 1);
+        assert_eq!(s.needs_newer_client[0].version, "7.0.0");
+    }
+
+    #[test]
+    fn newer_schema_is_refused_with_upgrade_hint() {
+        let mut s = section_with_rows(SUPPORTED_SCHEMA + 1, &[("6.3.0", "[]")]);
+        let err = s.retain_supported().unwrap_err().to_string();
+        assert!(err.contains("upgrade bougie"), "{err}");
+        assert!(check_schema("root", SUPPORTED_SCHEMA).is_ok());
+        assert!(check_schema("root", SUPPORTED_SCHEMA + 1).is_err());
+    }
+
+    #[test]
+    fn manifest_check_supported_gates_features_and_schema() {
+        let mut m = redis_manifest_with_requires(r#"["igbinary"]"#);
+        m.check_supported().unwrap();
+        m.features = vec!["requires".into()];
+        m.check_supported().unwrap();
+        m.features.push("from-the-future".into());
+        let err = m.check_supported().unwrap_err().to_string();
+        assert!(err.contains("from-the-future"), "{err}");
+        m.features = vec![];
+        m.schema = SUPPORTED_SCHEMA + 1;
+        assert!(m.check_supported().is_err());
     }
 
     #[test]

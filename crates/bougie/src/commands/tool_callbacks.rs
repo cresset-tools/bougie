@@ -7,7 +7,7 @@ use bougie_errors::BougieError;
 use bougie_installer::baseline::{BASELINE_EXTENSIONS, BUILTIN_EXTENSIONS, BaselineFilter};
 use bougie_installer::conf_d::write_ext_fragment_into;
 use bougie_installer::install::{
-    DEFAULT_INDEX_URL, install_baseline_into, install_extension, install_php,
+    DEFAULT_INDEX_URL, install_baseline_into, install_extension_with_requires, install_php,
 };
 use bougie_paths::Paths;
 use bougie_platform::target::Triple;
@@ -277,7 +277,7 @@ fn is_name_unknown_detail(detail: &str) -> bool {
     detail.contains(" section under target ") || detail.contains("`WINDOWS_PECL_VERSIONS` entry")
 }
 
-/// Build the extension installer. Calls `install_extension` for the
+/// Build the extension installer. Calls `install_extension_with_requires` for the
 /// `(php_minor, flavor)` the receipt records, then emits the matching
 /// conf.d fragment under the tool's `conf.d/` dir via the
 /// installer's existing fragment-writer.
@@ -285,7 +285,10 @@ pub fn extension_installer() -> Box<ExtInstaller> {
     Box::new(
         |paths: &Paths, name: &str, php: &PhpChoice, conf_d: &std::path::Path| -> Result<PathBuf> {
             let (php_minor, flavor) = parse_php_choice(php)?;
-            let installed = install_extension(
+            // The manifest's `requires` (redis → igbinary) are installed
+            // too and get their own fragment; the requested extension's
+            // fragment is the one returned.
+            let installed = install_extension_with_requires(
                 paths,
                 name,
                 None,
@@ -294,15 +297,19 @@ pub fn extension_installer() -> Box<ExtInstaller> {
                 ResolveOptions::default(),
             )
             .wrap_err_with(|| format!("installing extension `{name}` for tool"))?;
-            let ini = write_ext_fragment_into(
-                conf_d,
-                &installed.name,
-                &installed.so_path,
-                installed.load,
-                &installed.path_extras,
-            )
-            .wrap_err_with(|| format!("writing conf.d fragment for `{name}`"))?;
-            Ok(ini)
+            let mut requested_ini = None;
+            for installed in &installed {
+                let ini = write_ext_fragment_into(
+                    conf_d,
+                    &installed.name,
+                    &installed.so_path,
+                    installed.load,
+                    &installed.path_extras,
+                )
+                .wrap_err_with(|| format!("writing conf.d fragment for `{}`", installed.name))?;
+                requested_ini.get_or_insert(ini);
+            }
+            requested_ini.ok_or_else(|| eyre::eyre!("installing `{name}` returned no extension"))
         },
     )
 }

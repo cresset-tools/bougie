@@ -76,9 +76,8 @@ impl IndexCtx {
         )
     }
 
-    /// Fetch and validate a manifest, returning the digest pair a lock
-    /// records for it.
-    fn digest(&self, manifest_ref: &bougie_index::wire::ManifestRef) -> Result<ArtifactDigest> {
+    /// Fetch and validate a manifest.
+    fn manifest(&self, manifest_ref: &bougie_index::wire::ManifestRef) -> Result<Manifest> {
         let manifest: Manifest = fetch_manifest(
             &self.client,
             &self.host,
@@ -87,10 +86,24 @@ impl IndexCtx {
             &manifest_ref.sha256,
         )?;
         manifest.validate()?;
-        Ok(ArtifactDigest {
-            manifest_sha256: manifest_ref.sha256.clone(),
-            blob_sha256: manifest.blob.sha256,
-        })
+        Ok(manifest)
+    }
+
+    /// Fetch and validate a manifest, returning the digest pair a lock
+    /// records for it.
+    fn digest(&self, manifest_ref: &bougie_index::wire::ManifestRef) -> Result<ArtifactDigest> {
+        let manifest = self.manifest(manifest_ref)?;
+        Ok(digest_of(manifest_ref, &manifest))
+    }
+}
+
+fn digest_of(
+    manifest_ref: &bougie_index::wire::ManifestRef,
+    manifest: &Manifest,
+) -> ArtifactDigest {
+    ArtifactDigest {
+        manifest_sha256: manifest_ref.sha256.clone(),
+        blob_sha256: manifest.blob.sha256.clone(),
     }
 }
 
@@ -281,24 +294,91 @@ pub(crate) fn resolve(
         minor: Some(php_version.minor),
         patch: None,
     };
+    let (extension_pins, extension_digests) = resolve_extensions(
+        ctx,
+        extension_inputs(project_root, &project, php_minor),
+        &target,
+        php_minor,
+        flavor,
+        prefer,
+    )?;
+
+    let (service_pins, service_digests) = resolve_services(&project, ctx, &target, prefer)?;
+
+    Ok(ToolchainLock {
+        version: FORMAT_VERSION,
+        snapshot: ctx.root.version.clone(),
+        php: PhpPin {
+            constraint: php_constraint(project_root, &project, php_version),
+            version: php_version.to_string(),
+            flavor: flavor.to_string(),
+        },
+        extensions: extension_pins,
+        services: service_pins,
+        targets: BTreeMap::from([(
+            target,
+            TargetArtifacts {
+                php: php_digest,
+                extensions: extension_digests,
+                services: service_digests,
+            },
+        )]),
+    })
+}
+
+/// Resolve the extension half of a lock: every project input, then
+/// whatever their manifests `requires` (redis → igbinary), transitively,
+/// recorded with [`ExtensionOrigin::Required`]. A required name that is
+/// already an input keeps the input's pin and origin. Digests are only
+/// recorded for extensions the host `target` ships.
+fn resolve_extensions(
+    ctx: &IndexCtx,
+    inputs: BTreeMap<String, ExtensionInput>,
+    target: &str,
+    php_minor: PartialVersion,
+    flavor: Flavor,
+    prefer: Preferences<'_>,
+) -> Result<(
+    BTreeMap<String, ExtensionPin>,
+    BTreeMap<String, ArtifactDigest>,
+)> {
     let mut extension_pins = BTreeMap::new();
     let mut extension_digests = BTreeMap::new();
-    for (name, input) in extension_inputs(project_root, &project, php_minor) {
+    // Project inputs first, then whatever their manifests `requires`
+    // (redis → igbinary), transitively. A required name that is already
+    // an input keeps the input's pin and origin.
+    let mut queue: std::collections::VecDeque<(String, ExtensionInput)> =
+        inputs.into_iter().collect();
+    let mut queued: BTreeSet<String> = queue.iter().map(|(name, _)| name.clone()).collect();
+    // Required extension → the extension whose manifest required it,
+    // for error context.
+    let mut required_by: BTreeMap<String, String> = BTreeMap::new();
+    while let Some((name, input)) = queue.pop_front() {
+        let context = |what: String| match required_by.get(&name) {
+            Some(parent) => format!("{what} (extension {parent} requires extension {name})"),
+            None => what,
+        };
         // An extension this host cannot build is still part of the
         // portable layer: resolve its version against a target that
         // ships it, and record no digest for this one.
-        let on_host = extension_expected_on(&name, input.origin, &target);
+        let on_host = extension_expected_on(&name, input.origin, target);
         let resolve_on = if on_host {
-            target.clone()
+            target.to_owned()
         } else {
             ctx.root
                 .targets
                 .keys()
                 .find(|candidate| extension_expected_on(&name, input.origin, candidate))
                 .cloned()
-                .ok_or_else(|| eyre!("no target in the index ships extension {name}"))?
+                .ok_or_else(|| {
+                    eyre!(context(format!(
+                        "no target in the index ships extension {name}"
+                    )))
+                })?
         };
-        let section = ctx.section(&resolve_on, &format!("extension/{name}"))?;
+        let section = ctx
+            .section(&resolve_on, &format!("extension/{name}"))
+            .wrap_err_with(|| context(format!("resolving extension {name}")))?;
         let constraint =
             composer_semver::Constraint::parse(&input.constraint).map_err(|error| {
                 eyre!(
@@ -333,10 +413,30 @@ pub(crate) fn resolve(
                 &constraint,
                 ResolveOptions::default(),
             )
-            .wrap_err_with(|| format!("resolving extension {name}"))?,
+            .wrap_err_with(|| context(format!("resolving extension {name}")))?,
         };
+        let manifest = ctx.manifest(&selected.artifact.manifest)?;
         if on_host {
-            extension_digests.insert(name.clone(), ctx.digest(&selected.artifact.manifest)?);
+            extension_digests.insert(
+                name.clone(),
+                digest_of(&selected.artifact.manifest, &manifest),
+            );
+        }
+        for required in &manifest.requires {
+            if baseline::is_builtin(required)
+                || baseline::is_baseline(required)
+                || !queued.insert(required.clone())
+            {
+                continue;
+            }
+            required_by.insert(required.clone(), name.clone());
+            queue.push_back((
+                required.clone(),
+                ExtensionInput {
+                    constraint: "*".into(),
+                    origin: ExtensionOrigin::Required,
+                },
+            ));
         }
         extension_pins.insert(
             name,
@@ -347,28 +447,7 @@ pub(crate) fn resolve(
             },
         );
     }
-
-    let (service_pins, service_digests) = resolve_services(&project, ctx, &target, prefer)?;
-
-    Ok(ToolchainLock {
-        version: FORMAT_VERSION,
-        snapshot: ctx.root.version.clone(),
-        php: PhpPin {
-            constraint: php_constraint(project_root, &project, php_version),
-            version: php_version.to_string(),
-            flavor: flavor.to_string(),
-        },
-        extensions: extension_pins,
-        services: service_pins,
-        targets: BTreeMap::from([(
-            target,
-            TargetArtifacts {
-                php: php_digest,
-                extensions: extension_digests,
-                services: service_digests,
-            },
-        )]),
-    })
+    Ok((extension_pins, extension_digests))
 }
 
 #[cfg(unix)]
